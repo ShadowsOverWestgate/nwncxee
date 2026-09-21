@@ -29,11 +29,16 @@ namespace CX.Ui;
 /// <para>Faces: everything is measured in <see cref="Em"/>, the panel's own body face height (design
 /// <see cref="FacePx"/> × the game's GUI scale), never <c>ui.font</c>; help, section and path text use the
 /// <see cref="SmallPx"/> face of the same scale.</para>
+/// <para>Row source: by default the registry (the three columns above). A consumer that sets <see cref="Source"/>
+/// supplies its own <see cref="Categories"/> and, per relayout, its own rows through <see cref="Publish"/> --
+/// rows with no <see cref="Row.K"/>, carrying <see cref="Row.Act"/> + extras the consumer alone interprets --
+/// and takes the edits back through <see cref="RowPressed"/>, <see cref="ApplyValue"/> and
+/// <see cref="CommitLabel"/>; <see cref="SubFrac"/> 0 drops the submenu column. The chat window's per-window
+/// settings are that consumer (CX-696).</para>
 /// </summary>
 public sealed class KnobPanel
 {
-    public static readonly string[] Categories = { "General", "UI", "Graphics", "Camera", "Hotkeys" };
-    public const string Title = "CX settings";
+    public static readonly string[] KnobCategories = { "General", "UI", "Graphics", "Camera", "Hotkeys" };
     public const string ResetText = "Reset to defaults";
     public const string AdvancedClosed = "▸ Advanced", AdvancedOpen = "▾ Advanced";
     public const string BadgeText = "↻ restart";
@@ -42,8 +47,9 @@ public sealed class KnobPanel
     /// <summary>Design face heights before the GUI scale: the body face, and the small face help / sections / the
     /// submenu path draw in (the prototype's 0.82 em).</summary>
     public const float FacePx = 20f, SmallPx = 16f;
-    /// <summary>Window size as a fraction of the viewport, and the three column widths as fractions of it.</summary>
-    public const float WFrac = 0.70f, HFrac = 0.75f, CatFrac = 0.18f, SubFrac = 0.22f;
+    /// <summary>Window size as a fraction of the viewport, and the nav column widths as fractions of it;
+    /// <see cref="SubFrac"/> 0 = no submenu column (a consumer's two-column panel).</summary>
+    public float WFrac = 0.70f, HFrac = 0.75f, CatFrac = 0.18f, SubFrac = 0.22f;
     /// <summary>Rows one wheel notch scrolls a column by, in em.</summary>
     public const float WheelEm = 3.3f;
     /// <summary>Opacity of a value row under an off master.</summary>
@@ -65,20 +71,32 @@ public sealed class KnobPanel
     public enum RowKind { Note, Section, Knob, Status, Strip, Advanced, Channel }
 
     /// <summary>One laid-out line of the knob column: a section header, a note (the group's header text), the
-    /// status line, the parent-off strip, the Advanced disclosure, a knob row, or one channel of an expanded
-    /// swatch. Geometry is in list-content px (the column's scroll offset and origin are added at draw and
-    /// hit-test); the value state is a cache the draw thread refreshes when the knob moved.</summary>
+    /// status line, the parent-off strip, the Advanced disclosure, a control row (a knob's, or a consumer's
+    /// with <see cref="K"/> null), or one channel of an expanded swatch. Geometry is in list-content px (the
+    /// column's scroll offset and origin are added at draw and hit-test); the value state is a cache the draw
+    /// thread refreshes when the knob moved, or the consumer's own draw state.</summary>
     public sealed class Row
     {
         public RowKind Kind;
         public Knob? K;
-        /// <summary>Section / note text, a button's caption, or a channel's letter.</summary>
+        /// <summary>The control a <see cref="RowKind.Knob"/> / <see cref="RowKind.Channel"/> row draws and
+        /// hit-tests: the knob's kind, or what the consumer set.</summary>
+        public KnobKind Ctl;
+        /// <summary>The label (a knob's, or the consumer's), section / note text, a button's caption, or a channel's letter.</summary>
         public string Text = "";
-        /// <summary>The knob label, word-wrapped to the label column at layout (a button carries its label in
+        /// <summary>The label word-wrapped to the label column at layout (a button carries its caption in
         /// <see cref="Text"/> instead).</summary>
         public string[] Label = Array.Empty<string>();
         /// <summary>Help (or a status / strip / link address), word-wrapped at layout.</summary>
         public string[] Help = Array.Empty<string>();
+        /// <summary>A consumer row's help before wrapping; "" = none.</summary>
+        public string HelpText = "";
+        // A consumer row's identity + extras: the panel never interprets them beyond Min/Max/Choices.
+        public SetAct Act;
+        public string Key = "";
+        public uint Bit;
+        public float Min, Max;
+        public string[]? Choices;
         public float Top, H;
         /// <summary>Control width, laid out once so the label clip is known.</summary>
         public float CtlW;
@@ -162,13 +180,25 @@ public sealed class KnobPanel
     public float Em { get; private set; } = FacePx;
     /// <summary>The faces the layout measured with; the host re-fetches them by atlas epoch.</summary>
     public GlyphAtlas? Body, Small;
+    /// <summary>Title-bar caption.</summary>
+    public string Title = "CX settings";
+    /// <summary>A button in the header, left of the close ×; "" = none. Its press runs <see cref="HeaderActionPressed"/>.</summary>
+    public string HeaderAction = "";
+    public Action? HeaderActionPressed;
+    /// <summary>A modal panel owns the press that opened it and the off-panel press that closes it (the host's
+    /// release bookkeeping fires); the main panel leaves an off-panel press to whatever is under it.</summary>
+    public bool Modal;
 
+    /// <summary>The category column's entries: the registry's, or the consumer's.</summary>
+    public string[] Categories = KnobCategories;
     public int Category;
     public int Sub = -1;
     /// <summary>The Advanced disclosure; closes when the submenu changes.</summary>
     public bool AdvOpen;
     private KnobGroup[] _subs = Array.Empty<KnobGroup>();
-    private List<Row> _rows = new();
+    /// <summary>The laid-out rows; the draw walks these, hit-testing reads them. A layout swaps in a fresh list
+    /// (never mutates in place), so a reader on another thread iterates a stable snapshot.</summary>
+    private volatile List<Row> _rows = new();
     private string _khTitle = "", _khPath = "", _statusText = "";
     private Knob<bool>? _own;
     private Knob<bool>[] _ancestors = Array.Empty<Knob<bool>>();
@@ -177,7 +207,25 @@ public sealed class KnobPanel
     private Row? _confirm; private long _confirmAt;
     private Row? _copied; private long _copiedAt;
     public IReadOnlyList<KnobGroup> Subs => _subs;
-    public IReadOnlyList<Row> Rows => _rows;
+    public List<Row> Rows => _rows;
+
+    // ---- consumer contract (rows from a Source instead of the registry) ----
+
+    /// <summary>Rebuild the rows from the consumer's model, ending in <see cref="Publish"/>. Set, it replaces
+    /// the registry layout: after every category press and row edit so the change shows next frame.</summary>
+    public Action? Source;
+    /// <summary>A category entry was pressed. The consumer sets <see cref="Category"/> (unset: the pressed
+    /// index) and mutates its model; the panel then re-lays out.</summary>
+    public Action<int>? CategoryPicked;
+    /// <summary>A press landed on a consumer row that is not a slider or a text box (a toggle, a swatch, a
+    /// button's box, or a dropdown after its pick with <see cref="Row.Selected"/> set): the consumer mutates
+    /// its model.</summary>
+    public Action<Row>? RowPressed;
+    /// <summary>Write a raw value for a consumer slider / channel row (in the row's Min..Max units) onto the
+    /// consumer's model, and mirror it back onto the row's <see cref="Row.Norm"/>.</summary>
+    public Action<Row, float>? ApplyValue;
+    /// <summary>Commit a consumer text row's edit (never empty; the consumer decides what it means).</summary>
+    public Action<Row, string>? CommitLabel;
 
     public readonly ScrollColumn Cats = new(), SubCol = new(), List = new();
     public readonly Dropdown Drop = new();
@@ -196,15 +244,19 @@ public sealed class KnobPanel
     private float Pad => 1.2f * Em;
     private float NavPadX => 1f * Em;
     private float NavH => BodyLh + 1.2f * Em;
-    private float KHeadH => BodyLh + SmallLh + 1.2f * Em;
+    /// <summary>The row column's head: the title line, plus the path line when there are submenus.</summary>
+    private float KHeadH => BodyLh + (SubFrac > 0f ? SmallLh : 0f) + 1.2f * Em;
     private float RowMinH => 3.3f * Em;
-    private float RowAdvH => 2.4f * Em;
+    /// <summary>A row without help lines (or an Advanced row) is compact.</summary>
+    private float RowPlainH => 2.4f * Em;
     private float ChanH => 2f * Em;
     private float RowPadY => 0.4f * Em;
     private float SecH => SmallLh + 1.3f * Em;
     private float BodyLh => Body?.LineHeight ?? Em * 1.2f;
     private float SmallLh => Small?.LineHeight ?? Em;
     private float CloseW => 1.7f * Em;
+    private float HeaderBtnH => 1.7f * Em;
+    private float HeaderBtnW => (Body != null ? UiText.Measure(Body, HeaderAction) : 6f * Em) + 1.8f * Em;
     private float ToggleW => 2.6f * Em;
     private float ToggleH => 1.3f * Em;
     private float TrackW => 8f * Em;
@@ -229,7 +281,7 @@ public sealed class KnobPanel
     /// baked at <paramref name="em"/>. Keeps the last category / submenu selection.</summary>
     public void OpenAt(float vpW, float vpH, float em, GlyphAtlas? body, GlyphAtlas? small)
     {
-        Open = true; _pressed = false; _grab = null; _moving = false; _editRow = null; _editText = "";
+        Open = true; _pressed = Modal; _grab = null; _moving = false; _editRow = null; _editText = "";
         _confirm = null; _copied = null;
         Drop.Close(); Tip.Leave();
         Measure(vpW, vpH, em, body, small);
@@ -260,11 +312,11 @@ public sealed class KnobPanel
         Drop.Close(); Tip.Leave(); Cats.MouseUp(); SubCol.MouseUp(); List.MouseUp();
     }
 
-    /// <summary>Seat the three columns under the header for the current X/Y.</summary>
+    /// <summary>Seat the columns under the header for the current X/Y.</summary>
     private void Place()
     {
         float top = Y + HeaderH, h = H - HeaderH;
-        float cw = MathF.Round(W * CatFrac), sw = MathF.Round(W * SubFrac);
+        float cw = MathF.Round(W * CatFrac), sw = SubFrac > 0f ? MathF.Round(W * SubFrac) : 0f;
         Cats.SetRect(X, top, cw, h);
         SubCol.SetRect(X + cw, top, sw, h);
         List.SetRect(X + cw + sw, top + KHeadH, W - cw - sw, h - KHeadH);
@@ -275,9 +327,11 @@ public sealed class KnobPanel
 
     // ---- layout (cold) ----
 
-    /// <summary>Rebuild the submenu list for the category from the registry, then the rows.</summary>
+    /// <summary>Rebuild the submenu list for the category from the registry, then the rows -- or, with a
+    /// <see cref="Source"/>, the consumer's rows.</summary>
     public void Relayout()
     {
+        if (Source != null) { Source(); return; }
         var subs = new List<KnobGroup>();
         foreach (KnobGroup g in KnobGroup.All)
             if (string.Equals(g.Category, Categories[Category], StringComparison.OrdinalIgnoreCase)) subs.Add(g);
@@ -297,6 +351,7 @@ public sealed class KnobPanel
     /// the Advanced rows with their own sections.</summary>
     internal void LayoutRows()
     {
+        if (Source != null) { Source(); return; }
         if (Sub >= _subs.Length) Sub = _subs.Length - 1;
         if (Sub < 0 && _subs.Length > 0) Sub = 0;
         Cats.ContentH = 0.4f * Em + Categories.Length * NavH;
@@ -357,11 +412,67 @@ public sealed class KnobPanel
                 }
             }
         }
-        List.ContentH = y + 1.5f * Em;
+        Publish(rows, y);
+    }
+
+    /// <summary>Lay a consumer's rows out top to bottom for the current faces (control widths, wrapped label
+    /// and help, row heights, a slider's value text) and publish the list; the consumer's <see cref="Source"/>
+    /// ends here. A <see cref="RowKind.Section"/> row is a header; a <see cref="RowKind.Channel"/> row is a
+    /// compact 0..255 slider; every other row is a control of its <see cref="Row.Ctl"/>.</summary>
+    public void Publish(List<Row> rows)
+    {
+        Cats.ContentH = 0.4f * Em + Categories.Length * NavH;
+        Cats.Clamp();
+        _khTitle = (uint)Category < (uint)Categories.Length ? Categories[Category] : ""; _khPath = "";
+        float y = 0.4f * Em;
+        for (int i = 0; i < rows.Count; i++)
+        {
+            Row r = rows[i];
+            r.Top = y;
+            if (r.Kind == RowKind.Section) r.H = SecH;
+            else if (r.Kind == RowKind.Channel) { r.Ctl = KnobKind.Slider; r.H = ChanH; r.CtlW = TrackW + Gap + ValueW; r.Value = FormatValue(r); }
+            else
+            {
+                r.Kind = RowKind.Knob;
+                r.CtlW = ControlW(r);
+                float labelW = LabelW(r);
+                if (r.Ctl != KnobKind.Button) r.Label = Wrap(Body, r.Text, labelW);
+                r.Help = r.HelpText.Length > 0 ? Wrap(Small, r.HelpText, labelW) : Array.Empty<string>();
+                r.H = RowH(r, false);
+                if (r.Ctl == KnobKind.Slider) r.Value = FormatValue(r);
+            }
+            y += r.H;
+        }
+        Publish(rows, y);
+    }
+
+    /// <summary>Swap the laid-out list in, dropping every half-owned row interaction.</summary>
+    private void Publish(List<Row> rows, float contentY)
+    {
+        List.ContentH = contentY + 1.5f * Em;
         List.Clamp();
         _rows = rows;
         _grab = null; _editRow = null; _hoverRow = null; _confirm = null;
         Tip.Leave();
+    }
+
+    /// <summary>A control row's height: its label and help lines with padding, at least the plain or the
+    /// helped minimum (an Advanced row is always compact).</summary>
+    private float RowH(Row r, bool adv)
+    {
+        float h = 2f * RowPadY + (r.Label.Length > 0 ? r.Label.Length : 1) * BodyLh
+                  + (r.Help.Length > 0 ? 0.1f * Em + r.Help.Length * SmallLh : 0f);
+        float min = adv || r.Help.Length == 0 ? RowPlainH : RowMinH;
+        return h < min ? min : h;
+    }
+
+    /// <summary>A consumer slider / channel row's value-box text (a channel reads as a 0..255 integer).</summary>
+    private static string FormatValue(Row r)
+    {
+        float v = r.Min + r.Norm * (r.Max - r.Min);
+        return r.Channel >= 0
+            ? ((int)(v + 0.5f)).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private void AddSection(List<Row> rows, ref float y, Knob k, ref string section)
@@ -375,26 +486,23 @@ public sealed class KnobPanel
 
     private void AddKnobRow(List<Row> rows, ref float y, Knob k, bool master, bool adv)
     {
-        var r = new Row { Kind = RowKind.Knob, K = k, Text = k.Label, Top = y, Master = master, Adv = adv };
+        var r = new Row { Kind = RowKind.Knob, K = k, Ctl = k.Kind, Text = k.Label, Top = y, Master = master, Adv = adv };
         r.HasMark = adv && k.Help.Length > 0;
         r.Restart = k.Effect == Effect.Restart && k.Kind != KnobKind.Button && k.Kind != KnobKind.Link;
-        r.CtlW = ControlW(k);
+        r.CtlW = ControlW(r);
         r.ExtraW = (r.HasMark && Small != null ? 0.4f * Em + Tooltip.MarkerW(Small) : 0f) + (r.Restart ? 0.5f * Em + BadgeW : 0f);
         float labelW = LabelW(r);
         if (k.Kind != KnobKind.Button) r.Label = Wrap(Body, k.Label, labelW);
         if (k is KnobLink link) r.Help = Wrap(Small, link.Url, labelW + r.ExtraW);
         else r.Help = !adv && k.Help.Length > 0 ? Wrap(Small, k.Help, labelW + r.ExtraW) : Array.Empty<string>();
-        float h = 2f * RowPadY + (r.Label.Length > 0 ? r.Label.Length : 1) * BodyLh
-                  + (r.Help.Length > 0 ? 0.1f * Em + r.Help.Length * SmallLh : 0f);
-        float min = adv ? RowAdvH : RowMinH;
-        r.H = (h < min ? min : h) + (master ? MasterTop + MasterBottom : 0f);
+        r.H = RowH(r, adv) + (master ? MasterTop + MasterBottom : 0f);
         r.Refresh();
         y += r.H;
         rows.Add(r);
         if (k.Kind == KnobKind.Swatch && ReferenceEquals(k, _expanded))
             for (int ch = 0; ch < 4; ch++)
             {
-                var c = new Row { Kind = RowKind.Channel, K = k, Channel = ch, Text = ChannelNames[ch], Top = y, H = ChanH, CtlW = TrackW + Gap + ValueW };
+                var c = new Row { Kind = RowKind.Channel, K = k, Ctl = KnobKind.Slider, Channel = ch, Text = ChannelNames[ch], Top = y, H = ChanH, CtlW = TrackW + Gap + ValueW };
                 c.Refresh();
                 y += ChanH;
                 rows.Add(c);
@@ -434,9 +542,10 @@ public sealed class KnobPanel
     private float ListInnerW() => List.W - 2f * Pad - ScrollColumn.BarW;
 
     /// <summary>Control width per kind, at layout: the label clip and the row's hit zones derive from it.</summary>
-    private float ControlW(Knob k)
+    private float ControlW(Row r)
     {
-        switch (k.Kind)
+        Knob? k = r.K;
+        switch (r.Ctl)
         {
             case KnobKind.Toggle: return ToggleW;
             case KnobKind.Slider:
@@ -444,16 +553,17 @@ public sealed class KnobPanel
             case KnobKind.Dropdown:
             {
                 float w = 0f;
-                string[] choices = ChoicesOf(k);
+                string[] choices = ChoicesOf(r);
                 if (Body != null) for (int i = 0; i < choices.Length; i++) { float cw = UiText.Measure(Body, choices[i]); if (cw > w) w = cw; }
                 w += 2.6f * Em;
                 float min = 9f * Em, max = 14f * Em;
                 return w < min ? min : w > max ? max : w;
             }
-            case KnobKind.Swatch: return SwatchW + 0.4f * Em + HexW;
+            // A consumer swatch is the colour box alone; a knob's carries the hex field beside it.
+            case KnobKind.Swatch: return k != null ? SwatchW + 0.4f * Em + HexW : SwatchW;
             case KnobKind.Button:
             {
-                float w = Body != null ? UiText.Measure(Body, k.Label) : 6f * Em;
+                float w = Body != null ? UiText.Measure(Body, r.Text) : 6f * Em;
                 if (k is KnobButton { Confirm: true } && Body != null) { float cw = UiText.Measure(Body, ConfirmText); if (cw > w) w = cw; }
                 return w + 1.8f * Em;
             }
@@ -462,13 +572,14 @@ public sealed class KnobPanel
         }
     }
 
-    private static string UnitOf(Knob k) => k switch { Knob<float> f => f.Unit, Knob<int> i => i.Unit, _ => "" };
+    private static string UnitOf(Knob? k) => k switch { Knob<float> f => f.Unit, Knob<int> i => i.Unit, _ => "" };
 
-    /// <summary>A Dropdown's labels, whatever its T (the typed field is on <see cref="Knob{T}"/>).</summary>
-    private static string[] ChoicesOf(Knob k) => k switch
+    /// <summary>A Dropdown row's labels: the knob's whatever its T (the typed field is on <see cref="Knob{T}"/>),
+    /// or the consumer's array.</summary>
+    private static string[] ChoicesOf(Row r) => r.K switch
     {
         Knob<int> i => i.Choices, Knob<float> f => f.Choices, Knob<string> s => s.Choices, Knob<bool> b => b.Choices,
-        Knob<uint> u => u.Choices, _ => Array.Empty<string>(),
+        Knob<uint> u => u.Choices, null => r.Choices ?? Array.Empty<string>(), _ => Array.Empty<string>(),
     };
 
     /// <summary>Greedy word wrap in <paramref name="face"/> (cold: substrings are allocated once per layout).</summary>
@@ -545,6 +656,9 @@ public sealed class KnobPanel
         return i >= 0 && i < count ? i : -1;
     }
 
+    /// <summary>Screen y a row's top is drawn at.</summary>
+    public float RowTop(Row r) => List.ToScreen(r.Top);
+
     /// <summary>The row under the pointer, with its screen top.</summary>
     private Row? RowAt(float mx, float my, out float top)
     {
@@ -553,7 +667,7 @@ public sealed class KnobPanel
         float cy = List.ToContent(my);
         var rows = _rows;
         for (int i = 0; i < rows.Count; i++)
-            if (cy >= rows[i].Top && cy < rows[i].Top + rows[i].H) { top = List.ToScreen(rows[i].Top); return rows[i]; }
+            if (cy >= rows[i].Top && cy < rows[i].Top + rows[i].H) { top = RowTop(rows[i]); return rows[i]; }
         return null;
     }
 
@@ -568,25 +682,26 @@ public sealed class KnobPanel
         cy = r.Kind == RowKind.Channel ? top + r.H * 0.5f : top + (r.Master ? MasterTop : 0f) + RowPadY + BodyLh * 0.5f;
     }
 
-    private void TrackRect(Row r, float top, out float x0, out float x1, out float cy)
+    internal void TrackRect(Row r, float top, out float x0, out float x1, out float cy)
     {
         ControlAnchor(r, top, out float right, out cy);
         x1 = right - r.CtlW + TrackW; x0 = right - r.CtlW;
     }
 
-    private void ValueRect(Row r, float top, out float x0, out float x1, out float y0, out float y1)
+    internal void ValueRect(Row r, float top, out float x0, out float x1, out float y0, out float y1)
     {
         ControlAnchor(r, top, out float right, out float cy);
         x0 = right - r.CtlW + TrackW + Gap; x1 = x0 + ValueW;
         y0 = cy - CtlH * 0.5f; y1 = cy + CtlH * 0.5f;
     }
 
-    /// <summary>The one box of a dropdown / text / button / swatch-hex control (the right-aligned span).</summary>
-    private void BoxRect(Row r, float top, out float x0, out float x1, out float y0, out float y1)
+    /// <summary>The one box of a dropdown / text / button / swatch control (the right-aligned span; a knob
+    /// swatch's is its hex field).</summary>
+    internal void BoxRect(Row r, float top, out float x0, out float x1, out float y0, out float y1)
     {
         ControlAnchor(r, top, out float right, out float cy);
         x1 = right; x0 = right - r.CtlW;
-        if (r.K!.Kind == KnobKind.Swatch) x0 = right - HexW;
+        if (r.Ctl == KnobKind.Swatch && r.K != null) x0 = right - HexW;
         y0 = cy - CtlH * 0.5f; y1 = cy + CtlH * 0.5f;
     }
 
@@ -607,6 +722,21 @@ public sealed class KnobPanel
     private bool OverClose(float mx, float my)
         => mx >= X + W - Pad - CloseW && mx < X + W - Pad + 0.2f * Em && my >= Y && my < Y + HeaderH;
 
+    /// <summary>The header button's box (right of the title, left of the ×).</summary>
+    public void HeaderButtonRect(out float x0, out float x1, out float y0, out float y1)
+    {
+        x1 = X + W - Pad - CloseW - 0.6f * Em; x0 = x1 - HeaderBtnW;
+        float mid = Y + HeaderH * 0.5f;
+        y0 = mid - HeaderBtnH * 0.5f; y1 = mid + HeaderBtnH * 0.5f;
+    }
+
+    private bool OverHeaderButton(float mx, float my)
+    {
+        if (HeaderAction.Length == 0) return false;
+        HeaderButtonRect(out float x0, out float x1, out float y0, out float y1);
+        return In(mx, my, x0, x1, y0, y1);
+    }
+
     /// <summary>The Reset to defaults box, top-right of the knob column head.</summary>
     private void ResetRect(out float x0, out float x1, out float y0, out float y1)
     {
@@ -624,7 +754,8 @@ public sealed class KnobPanel
 
     // ---- input (cold) ----
 
-    /// <summary>Press. Consumed when it landed on the panel (or its open list); a press elsewhere is not ours.</summary>
+    /// <summary>Press. Consumed when it landed on the panel (or its open list); a press elsewhere is not ours --
+    /// unless <see cref="Modal"/>, where it closes the panel and is ours.</summary>
     public bool MouseDown(float mx, float my)
     {
         if (!Open) return false;
@@ -632,20 +763,33 @@ public sealed class KnobPanel
         {
             Row? dr = Drop.Tag as Row;
             Drop.MouseDown(mx, my, out int picked);
-            if (picked >= 0 && dr?.K != null) PickChoice(dr, picked);
+            if (picked >= 0 && dr != null) PickChoice(dr, picked);
             _pressed = true;
             return true;
         }
-        if (!Contains(mx, my)) return false;
+        if (!Contains(mx, my))
+        {
+            if (!Modal) return false;
+            Close(); _pressed = true;
+            return true;
+        }
         _pressed = true; _grab = null; _moving = false;
         Row? armed = _confirm; _confirm = null;
         Tip.Leave();
         if (_editRow != null) CommitEdit();
         if (OverClose(mx, my)) { Close(); return true; }
+        if (OverHeaderButton(mx, my)) { HeaderActionPressed?.Invoke(); return true; }
         if (my < Y + HeaderH) { _moving = true; _mgx = mx - X; _mgy = my - Y; return true; }
         if (Cats.MouseDown(mx, my) || SubCol.MouseDown(mx, my) || List.MouseDown(mx, my)) return true;
         int c = NavAt(Cats, Categories.Length, mx, my);
-        if (c >= 0) { if (c != Category) { Category = c; SelectSub(0); SubCol.Reset(); Relayout(); } return true; }
+        if (c >= 0)
+        {
+            if (CategoryPicked != null) CategoryPicked(c);
+            else if (c == Category) return true;
+            else Category = c;
+            SelectSub(0); SubCol.Reset(); Relayout();
+            return true;
+        }
         int s = NavAt(SubCol, _subs.Length, mx, my);
         if (s >= 0) { if (s != Sub) { SelectSub(s); Relayout(); } return true; }
         KnobGroup? g0 = Sub >= 0 && Sub < _subs.Length ? _subs[Sub] : null;
@@ -655,39 +799,18 @@ public sealed class KnobPanel
         Row? r = RowAt(mx, my, out float top);
         if (r == null) return true;
         if (r.Kind == RowKind.Advanced) { AdvOpen = !AdvOpen; LayoutRows(); return true; }
-        if (r.K == null) return true;
+        if (r.Kind != RowKind.Knob && r.Kind != RowKind.Channel) return true;
         if (Greyed(r)) return true;
+        if (r.Ctl == KnobKind.Slider) { SliderPress(r, top, mx, my); return true; }
+        if (r.Ctl == KnobKind.Dropdown) { DropPress(r, top, mx, my); return true; }
+        if (r.K == null) { ConsumerPress(r, top, mx, my); return true; }
         Knob k = r.K;
-        if (r.Kind == RowKind.Channel)
-        {
-            ValueRect(r, top, out float vx0, out float vx1, out float vy0, out float vy1);
-            if (In(mx, my, vx0, vx1, vy0, vy1)) { BeginEdit(r, ""); return true; }
-            TrackRect(r, top, out float tx0, out float tx1, out float cy);
-            if (mx >= tx0 - 0.4f * Em && mx < tx1 + 0.4f * Em && my >= cy - Em && my < cy + Em) { _grab = r; SetSliderFromX(r, mx); }
-            return true;
-        }
         switch (k.Kind)
         {
             case KnobKind.Toggle:
                 if (k is Knob<bool> kb) kb.Set(!kb.V); else { k.Parse(r.On ? "0" : "1"); r.Dirty = true; }
                 RefreshStatus(g0);
                 break;
-            case KnobKind.Slider:
-            {
-                ValueRect(r, top, out float vx0, out float vx1, out float vy0, out float vy1);
-                if (In(mx, my, vx0, vx1, vy0, vy1)) { BeginEdit(r, ""); break; }
-                TrackRect(r, top, out float tx0, out float tx1, out float cy);
-                if (mx >= tx0 - 0.4f * Em && mx < tx1 + 0.4f * Em && my >= cy - Em && my < cy + Em) { _grab = r; SetSliderFromX(r, mx); }
-                break;
-            }
-            case KnobKind.Dropdown:
-            {
-                BoxRect(r, top, out float bx0, out float bx1, out float by0, out float by1);
-                string[] choices = ChoicesOf(k);
-                if (In(mx, my, bx0, bx1, by0, by1) && choices.Length > 0)
-                    Drop.OpenAt(choices, k.ChoiceIndex, r, bx0, by0, by1, bx1 - bx0, CtlH, VpH, search: choices.Length > Dropdown.MaxVisible);
-                break;
-            }
             case KnobKind.Text:
             {
                 BoxRect(r, top, out float bx0, out float bx1, out float by0, out float by1);
@@ -722,6 +845,39 @@ public sealed class KnobPanel
             }
         }
         return true;
+    }
+
+    /// <summary>A press on a slider or channel row: the value box starts an edit, the track (with a margin)
+    /// starts the drag and applies at once.</summary>
+    private void SliderPress(Row r, float top, float mx, float my)
+    {
+        ValueRect(r, top, out float vx0, out float vx1, out float vy0, out float vy1);
+        if (In(mx, my, vx0, vx1, vy0, vy1)) { BeginEdit(r, ""); return; }
+        TrackRect(r, top, out float tx0, out float tx1, out float cy);
+        if (mx >= tx0 - 0.4f * Em && mx < tx1 + 0.4f * Em && my >= cy - Em && my < cy + Em) { _grab = r; SetSliderFromX(r, mx); }
+    }
+
+    /// <summary>A press on a dropdown row: its box opens the list on the current choice.</summary>
+    private void DropPress(Row r, float top, float mx, float my)
+    {
+        BoxRect(r, top, out float bx0, out float bx1, out float by0, out float by1);
+        string[] choices = ChoicesOf(r);
+        if (In(mx, my, bx0, bx1, by0, by1) && choices.Length > 0)
+            Drop.OpenAt(choices, r.Selected, r, bx0, by0, by1, bx1 - bx0, CtlH, VpH, search: choices.Length > Dropdown.MaxVisible);
+    }
+
+    /// <summary>A press on a consumer row that is neither slider nor dropdown: a text box starts its edit, a
+    /// button fires only from its box, anything else (toggle, swatch) anywhere -- then the consumer relays out.</summary>
+    private void ConsumerPress(Row r, float top, float mx, float my)
+    {
+        if (r.Ctl == KnobKind.Text || r.Ctl == KnobKind.Button)
+        {
+            BoxRect(r, top, out float bx0, out float bx1, out float by0, out float by1);
+            if (!In(mx, my, bx0, bx1, by0, by1)) return;
+            if (r.Ctl == KnobKind.Text) { BeginEdit(r, r.Value); return; }
+        }
+        RowPressed?.Invoke(r);
+        Relayout();
     }
 
     /// <summary>After a press that may have changed the group's status line: re-lay out when it did.</summary>
@@ -783,14 +939,17 @@ public sealed class KnobPanel
     }
 
     public bool Moving => _moving;
+    /// <summary>True while a slider is being dragged: a consumer's model changes per motion.</summary>
+    public bool SliderDragging => _grab != null;
     public bool Dragging => _grab != null || _moving || Cats.Dragging || SubCol.Dragging || List.Dragging || Drop.Dragging;
 
-    /// <summary>A pick from the open list: the choice's label round-trips through <see cref="Knob.Parse"/>, which
-    /// takes a label for any T.</summary>
+    /// <summary>A pick from the open list: a consumer row takes the index and the consumer relays out; a knob's
+    /// choice label round-trips through <see cref="Knob.Parse"/>, which takes a label for any T.</summary>
     private void PickChoice(Row r, int i)
     {
-        string[] choices = ChoicesOf(r.K!);
+        string[] choices = ChoicesOf(r);
         if (i < 0 || i >= choices.Length) return;
+        if (r.K == null) { r.Selected = i; RowPressed?.Invoke(r); Relayout(); return; }
         switch (r.K)
         {
             case Knob<int> ki: ki.Set(ki.Values[i]); break;
@@ -803,12 +962,13 @@ public sealed class KnobPanel
     }
 
     /// <summary>The slider: pointer x to a value snapped to the knob's step, applied as a set per motion. A
-    /// channel row sets its byte of the swatch.</summary>
+    /// channel row sets its byte of the swatch; a consumer row goes through <see cref="ApplyValue"/>.</summary>
     private void SetSliderFromX(Row r, float mx)
     {
-        TrackRect(r, List.ToScreen(r.Top), out float x0, out float x1, out _);
+        TrackRect(r, RowTop(r), out float x0, out float x1, out _);
         float norm = x1 > x0 ? (mx - x0) / (x1 - x0) : 0f;
         norm = norm < 0f ? 0f : norm > 1f ? 1f : norm;
+        if (r.K == null) { Apply(r, r.Min + norm * (r.Max - r.Min)); return; }
         if (r.Kind == RowKind.Channel) { SetChannel(r, (int)MathF.Round(norm * 255f)); return; }
         switch (r.K)
         {
@@ -827,6 +987,13 @@ public sealed class KnobPanel
                 break;
             }
         }
+    }
+
+    /// <summary>A consumer slider's value: the consumer writes it and mirrors Norm; the value text follows.</summary>
+    private void Apply(Row r, float v)
+    {
+        ApplyValue?.Invoke(r, v);
+        r.Value = FormatValue(r);
     }
 
     /// <summary>One byte of the swatch (0 R … 3 A) as a set of the whole colour.</summary>
@@ -862,13 +1029,28 @@ public sealed class KnobPanel
         if (_editRow != null && _editText.Length > 0) _editText = _editText.Substring(0, _editText.Length - 1);
     }
 
-    /// <summary>Commit: the text goes through the knob's own Parse (a slider clamps, a swatch wants rrggbbaa; a
-    /// channel row takes 0–255); unparseable text keeps the old value.</summary>
+    /// <summary>Commit: a searching list accepts its top match; a consumer text row hands the text to
+    /// <see cref="CommitLabel"/> and a consumer slider parses it for <see cref="ApplyValue"/>; a knob's text
+    /// goes through its own Parse (a slider clamps, a swatch wants rrggbbaa; a channel row takes 0–255).
+    /// Empty or unparseable text keeps the old value.</summary>
     public void CommitEdit()
     {
+        if (Drop.Searching)
+        {
+            Row? dr = Drop.Tag as Row;
+            int i = Drop.Accept();
+            if (i >= 0 && dr != null) PickChoice(dr, i);
+            return;
+        }
         Row? r = _editRow; string t = _editText;
         _editRow = null; _editText = "";
-        if (r?.K == null || t.Length == 0) return;
+        if (r == null || t.Length == 0) return;
+        if (r.K == null)
+        {
+            if (r.Ctl == KnobKind.Text) CommitLabel?.Invoke(r, t);
+            else if (float.TryParse(t, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v)) Apply(r, v);
+            return;
+        }
         if (r.Kind == RowKind.Channel)
         {
             if (int.TryParse(t, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int v)) SetChannel(r, v);
@@ -877,7 +1059,12 @@ public sealed class KnobPanel
         if (r.K.Parse(t)) r.Dirty = true;
     }
 
-    public void CancelEdit() { _editRow = null; _editText = ""; }
+    /// <summary>Escape: backs out of an edit, else closes an open list.</summary>
+    public void CancelEdit()
+    {
+        if (_editRow != null) { _editRow = null; _editText = ""; return; }
+        if (Drop.Open) Drop.Close();
+    }
 
     /// <summary>SDL keycodes the panel acts on.</summary>
     private const uint KeyEscape = 0x1B, KeyReturn = 0x0D, KeyKpEnter = 0x40000058, KeyBackspace = 0x08;
@@ -890,13 +1077,10 @@ public sealed class KnobPanel
         switch (sdlKey)
         {
             case KeyEscape:
-                if (_editRow != null) CancelEdit();
-                else if (Drop.Open) Drop.Close();
-                else Close();
+                if (_editRow != null || Drop.Open) CancelEdit(); else Close();
                 break;
             case KeyReturn: case KeyKpEnter:
-                if (Drop.Searching) { Row? dr = Drop.Tag as Row; int i = Drop.Accept(); if (i >= 0 && dr?.K != null) PickChoice(dr, i); }
-                else if (_editRow != null) CommitEdit();
+                CommitEdit();
                 break;
             case KeyBackspace: EditBackspace(); break;
         }
@@ -909,7 +1093,7 @@ public sealed class KnobPanel
     private void Dot(VertexBatch b, float cx, float cy, float a = 1f)
         => Fill(b, cx - DotR, cy - DotR, cx + DotR, cy + DotR, Accent2, a);
 
-    /// <summary>Draw the whole panel into <paramref name="b"/>: chrome, the three columns clipped to their boxes,
+    /// <summary>Draw the whole panel into <paramref name="b"/>: chrome, the columns clipped to their boxes,
     /// their scrollbars, then the open dropdown list and the tooltip on top. Reads cached geometry and cached
     /// value text only.</summary>
     public void Emit(VertexBatch b)
@@ -924,9 +1108,18 @@ public sealed class KnobPanel
         Fill(b, x + 1f, y + 1f, x + w - 1f, y + HeaderH, HeaderBg);
         Fill(b, x + 1f, y + HeaderH - 1f, x + w - 1f, y + HeaderH, Border);
         float hbase = y + (HeaderH - body.LineHeight) * 0.5f + body.Ascent;
-        UiText.Draw(b, body, Title, x + Pad, hbase, Tx, x + w * 0.4f);
         float closeX1 = x + w - Pad + 0.2f * em, closeX0 = closeX1 - CloseW;
         UiText.Draw(b, body, "×", closeX0 + (CloseW - UiText.Measure(body, "×")) * 0.5f, hbase, Grip, closeX1);
+        float titleClip1 = closeX0 - 0.6f * em;
+        if (HeaderAction.Length > 0)
+        {
+            HeaderButtonRect(out float hx0, out float hx1, out float hy0, out float hy1);
+            Fill(b, hx0, hy0, hx1, hy1, NavOn);
+            Outline(b, hx0, hy0, hx1, hy1, Frame2);
+            UiText.Draw(b, body, HeaderAction, hx0 + 0.9f * em, hbase, Tx, hx1 - 0.4f * em);
+            titleClip1 = hx0 - 0.6f * em;
+        }
+        UiText.Draw(b, body, Title, x + Pad, hbase, Tx, titleClip1);
 
         // categories
         Fill(b, Cats.X, Cats.Y, Cats.X + Cats.W, Cats.Y + Cats.H, CatBg);
@@ -937,13 +1130,16 @@ public sealed class KnobPanel
         Cats.Draw(b, C(Accent));
 
         // submenus, each with its dot when a row is off-default
-        Fill(b, SubCol.X, SubCol.Y, SubCol.X + SubCol.W, SubCol.Y + SubCol.H, SubBg);
-        Fill(b, SubCol.X + SubCol.W - 1f, SubCol.Y, SubCol.X + SubCol.W, SubCol.Y + SubCol.H, ColBorder);
-        b.ClipY(SubCol.Y, SubCol.Y + SubCol.H);
-        var subs = _subs;
-        for (int i = 0; i < subs.Length; i++) Nav(b, body, SubCol, i, subs[i].Submenu, i == Sub, i == _hoverSub, SubDirty(subs[i]));
-        b.ClearClip();
-        SubCol.Draw(b, C(Accent));
+        if (SubFrac > 0f)
+        {
+            Fill(b, SubCol.X, SubCol.Y, SubCol.X + SubCol.W, SubCol.Y + SubCol.H, SubBg);
+            Fill(b, SubCol.X + SubCol.W - 1f, SubCol.Y, SubCol.X + SubCol.W, SubCol.Y + SubCol.H, ColBorder);
+            b.ClipY(SubCol.Y, SubCol.Y + SubCol.H);
+            var subs = _subs;
+            for (int i = 0; i < subs.Length; i++) Nav(b, body, SubCol, i, subs[i].Submenu, i == Sub, i == _hoverSub, SubDirty(subs[i]));
+            b.ClearClip();
+            SubCol.Draw(b, C(Accent));
+        }
 
         // knob column head: submenu title + its path, the reset box at the right
         float kx = List.X, khTop = List.Y - KHeadH;
@@ -956,7 +1152,7 @@ public sealed class KnobPanel
             titleClip = rx0 - 0.5f * em;
         }
         UiText.Draw(b, body, _khTitle, kx + Pad, khTop + 0.6f * em + body.Ascent, Tx, titleClip);
-        UiText.Draw(b, small, _khPath, kx + Pad, khTop + 0.6f * em + body.LineHeight + small.Ascent, Tx3, titleClip);
+        if (_khPath.Length > 0) UiText.Draw(b, small, _khPath, kx + Pad, khTop + 0.6f * em + body.LineHeight + small.Ascent, Tx3, titleClip);
         Fill(b, kx, List.Y - 1f, kx + List.W, List.Y, ColBorder);
 
         // rows
@@ -967,7 +1163,7 @@ public sealed class KnobPanel
         for (int i = 0; i < rows.Count; i++)
         {
             Row r = rows[i];
-            float top = List.ToScreen(r.Top);
+            float top = RowTop(r);
             if (top + r.H <= clip0 || top >= clip1) continue;
             switch (r.Kind)
             {
@@ -1011,7 +1207,7 @@ public sealed class KnobPanel
                     continue;
                 }
             }
-            Knob k = r.K!;
+            Knob? k = r.K;
             r.Refresh();
             float alpha = Greyed(r) ? OffAlpha : 1f;
             float left = RowLeft(r);
@@ -1025,7 +1221,7 @@ public sealed class KnobPanel
             else Fill(b, kx + Pad, top + r.H - 1f, colRight, top + r.H, 0xFFFFFF, 0.03f);
             if (r.OffDefault) Dot(b, kx + 0.45f * em, cy);
             float ctlX0 = right - r.CtlW;
-            float labelClip = k.Kind == KnobKind.Button ? right : ctlX0 - Gap;
+            float labelClip = r.Ctl == KnobKind.Button ? right : ctlX0 - Gap;
             uint labelRgb = r.OffDefault ? Hi : Tx;
             float pen = left;
             for (int l = 0; l < r.Label.Length; l++)
@@ -1050,11 +1246,11 @@ public sealed class KnobPanel
                 UiText.Draw(b, small, BadgeText, bx0 + 0.45f * em, cy - small.LineHeight * 0.5f + small.Ascent, bc, bx1, alpha);
             }
             float helpBase = rowTop + RowPadY + (r.Label.Length > 0 ? r.Label.Length : 1) * body.LineHeight + 0.1f * em + small.Ascent;
-            uint helpRgb = k.Kind == KnobKind.Link ? Accent2 : Tx2;
+            uint helpRgb = r.Ctl == KnobKind.Link ? Accent2 : Tx2;
             for (int l = 0; l < r.Help.Length; l++)
                 UiText.Draw(b, small, r.Help[l], left, helpBase + l * small.LineHeight, helpRgb, colRight, alpha);
 
-            switch (k.Kind)
+            switch (r.Ctl)
             {
                 case KnobKind.Toggle:
                 {
@@ -1072,7 +1268,7 @@ public sealed class KnobPanel
                 {
                     BoxRect(r, top, out float bx0, out float bx1, out float by0, out float by1);
                     bool open = Drop.Open && ReferenceEquals(Drop.Tag, r);
-                    string[] choices = ChoicesOf(k);
+                    string[] choices = ChoicesOf(r);
                     string cur = (uint)r.Selected < (uint)choices.Length ? choices[r.Selected] : r.Value;
                     Dropdown.DrawBox(b, body, bx0, by0, bx1, by1, cy - body.LineHeight * 0.5f + body.Ascent, cur, C(Input), Tx, alpha);
                     Outline(b, bx0, by0, bx1, by1, open ? Accent2 : Frame2, alpha);
@@ -1081,8 +1277,16 @@ public sealed class KnobPanel
                 case KnobKind.Text:
                 case KnobKind.Swatch:
                 {
-                    if (k.Kind == KnobKind.Swatch)
+                    if (r.Ctl == KnobKind.Swatch)
                     {
+                        if (k == null)
+                        {
+                            // A consumer swatch: the colour box is the whole control; its press is the consumer's.
+                            BoxRect(r, top, out float cx0, out float cx1, out float cy0, out float cy1);
+                            Fill(b, cx0, cy0, cx1, cy1, r.Rgba >> 8, (r.Rgba & 0xFF) / 255f);
+                            Outline(b, cx0, cy0, cx1, cy1, Frame);
+                            break;
+                        }
                         SwatchRect(r, top, out float swx0, out float swx1, out float swy0, out float swy1);
                         Fill(b, swx0, swy0, swx1, swy1, r.Rgba >> 8, (r.Rgba & 0xFF) / 255f * alpha);
                         Outline(b, swx0, swy0, swx1, swy1, ReferenceEquals(_expanded, k) ? Accent2 : Frame, alpha);
@@ -1101,7 +1305,7 @@ public sealed class KnobPanel
                     BoxRect(r, top, out float bx0, out float bx1, out float by0, out float by1);
                     bool armed = ConfirmArmed(r);
                     Fill(b, bx0, by0, bx1, by1, NavOn, alpha);
-                    Outline(b, bx0, by0, bx1, by1, armed ? Warn : Frame2, alpha);
+                    Outline(b, bx0, by0, bx1, by1, armed ? Warn : ReferenceEquals(r, _hoverRow) ? Accent2 : Frame2, alpha);
                     UiText.Draw(b, body, armed ? ConfirmText : r.Text, bx0 + 0.9f * em, cy - body.LineHeight * 0.5f + body.Ascent, armed ? Warn : Tx, bx1 - 0.4f * em, alpha);
                     break;
                 }
@@ -1217,7 +1421,7 @@ public sealed class KnobPanel
             var p = new KnobPanel();
             p.ResolveParent = grp => ReferenceEquals(grp, g) ? pg.Master : null;
             // The registry is live: point the panel at the throwaway group directly (it is not enumerated).
-            p.Category = Array.IndexOf(Categories, "Hotkeys");
+            p.Category = Array.IndexOf(KnobCategories, "Hotkeys");
             p.OpenAt(1280f, 720f, FacePx, body, small);
             p._subs = new[] { g }; p.Sub = 0; p.LayoutRows();
             E(p.Open && MathF.Abs(p.W - 896f) < 0.5f && MathF.Abs(p.H - 540f) < 0.5f, $"70%×75% of 1280×720 ({p.W}×{p.H})");
@@ -1460,7 +1664,7 @@ public sealed class KnobPanel
             E(p.Category == 2 && p.Sub == (p.Subs.Count > 0 ? 0 : -1), "a category press selects it and its first submenu");
             E(!p.MouseDown(1f, 1f), "a press off the panel is not consumed");
             // 1080p: the same tree fits with nothing clipped, Advanced open.
-            p.Category = Array.IndexOf(Categories, "Hotkeys");
+            p.Category = Array.IndexOf(KnobCategories, "Hotkeys");
             p.OpenAt(1920f, 1080f, FacePx, body, small); p._subs = new[] { g }; p.Sub = 0; p.AdvOpen = true; p.LayoutRows();
             E(MathF.Abs(p.W - 1344f) < 0.5f && MathF.Abs(p.H - 810f) < 0.5f, "70%×75% of 1920×1080");
             FitCheck("1080p");
@@ -1497,6 +1701,103 @@ public sealed class KnobPanel
             p.Close();
         }
         finally { Clock = realClock; Tooltip.Clock = realTipClock; CopyText = realCopy; }
+
+        // Consumer mode (CX-696): two columns, a modal panel with a header button, rows from a Source; every
+        // edit reaches the consumer through its callbacks and never touches the registry.
+        {
+            var pressed = new List<Row>();
+            var picked = new List<int>();
+            float applied = float.NaN; string? committed = null; int layouts = 0;
+            var toggle = new Row { Ctl = KnobKind.Toggle, Act = SetAct.ToggleBit, Text = "T", HelpText = "A help line long enough to wrap onto a second line at least once." };
+            var slider = new Row { Ctl = KnobKind.Slider, Act = SetAct.SliderHold, Text = "S", Min = 0f, Max = 100f };
+            var text = new Row { Ctl = KnobKind.Text, Act = SetAct.TabLabel, Text = "C", Value = "old" };
+            var dd = new Row { Ctl = KnobKind.Dropdown, Act = SetAct.CycleAlign, Text = "Align", Choices = new[] { "Left", "Right", "Center" }, Selected = 1 };
+            var btn = new Row { Ctl = KnobKind.Button, Act = SetAct.CopyFrom, Text = "Copy" };
+            var p = new KnobPanel
+            {
+                Categories = new[] { "Window settings", "All", "Add new tab..." },
+                WFrac = 0.52f, HFrac = 0.66f, CatFrac = 0.30f, SubFrac = 0f, Modal = true,
+                HeaderAction = "Copy this window",
+            };
+            int headerFires = 0;
+            p.HeaderActionPressed = () => headerFires++;
+            p.Source = () =>
+            {
+                layouts++;
+                p.Publish(p.Category == 0
+                    ? new List<Row> { new Row { Kind = RowKind.Section, Text = "LOOK" }, toggle, slider, text, dd, btn }
+                    : new List<Row> { text });
+            };
+            p.RowPressed = r => pressed.Add(r);
+            p.CategoryPicked = c => { picked.Add(c); p.Category = c == 2 ? 1 : c; };
+            p.ApplyValue = (r, v) => { applied = v; r.Norm = (v < 0f ? 0f : v > 100f ? 100f : v) / 100f; };
+            p.CommitLabel = (r, t) => committed = t;
+            void Press(float mx, float my) { p.MouseDown(mx, my); p.MouseUp(); }
+
+            p.OpenAt(1280f, 800f, 20f, body, small);
+            E(p.Open && p.Rows.Count == 6 && layouts == 1 && p.SubCol.W == 0f && p.Cats.W + p.List.W == p.W, "OpenAt lays out through the Source into two columns");
+            E(MathF.Abs(p.W - MathF.Round(1280f * 0.52f)) < 0.01f, "the consumer's size fractions size the panel");
+            E(toggle.Help.Length >= 2 && toggle.H > slider.H && slider.H == p.RowPlainH && slider.Value == "0", "help wraps and grows its row; a plain row is compact; the slider's value text is laid out");
+            E(p.MouseUp(), "a modal panel owns the press that opened it");
+            Press(p.List.X + 5f, p.RowTop(toggle) + 2f);
+            E(pressed.Count == 1 && pressed[0] == toggle && layouts == 2, "a toggle row press reaches the consumer and relays out");
+            Press(p.List.X + 5f, p.RowTop(p.Rows[0]) + 2f);
+            E(pressed.Count == 1, "a section header is inert");
+
+            // Categories go through the consumer, which may redirect; a header button fires, the header around it drags.
+            Press(p.Cats.X + 5f, p.NavTop(p.Cats, 2) + 2f);
+            E(picked.Count == 1 && picked[0] == 2 && p.Category == 1 && p.Rows.Count == 1, "a category press is the consumer's pick (Add new tab... -> the new tab)");
+            Press(p.Cats.X + 5f, p.NavTop(p.Cats, 0) + 2f);
+            E(p.Category == 0 && p.Rows.Count == 6, "back to the first category");
+            p.HeaderButtonRect(out float hbx0, out float hbx1, out float hby0, out float hby1);
+            Press((hbx0 + hbx1) / 2f, (hby0 + hby1) / 2f);
+            E(headerFires == 1 && p.Open && !p.Moving, "the header button fires its action, no drag, stays open");
+            float px = p.X;
+            p.MouseDown(hbx0 - 2f, (hby0 + hby1) / 2f); p.MouseMove(hbx0 - 2f + 40f, (hby0 + hby1) / 2f);
+            E(headerFires == 1 && p.Moving && MathF.Abs(p.X - (px + 40f)) < 0.5f, "left of the button is the drag handle");
+            p.MouseUp();
+
+            // Slider: the track and the value box go through ApplyValue; a press elsewhere commits the edit.
+            p.TrackRect(slider, p.RowTop(slider), out float sx0, out float sx1, out float scy);
+            p.MouseDown(sx1 + 2f, scy);
+            E(MathF.Abs(applied - 100f) < 0.5f && slider.Value == "100" && p.SliderDragging, "the track applies through the consumer and re-formats the value text");
+            p.MouseMove((sx0 + sx1) / 2f, scy); p.MouseUp();
+            E(MathF.Abs(applied - 50f) < 1f, "a drag applies per motion");
+            p.ValueRect(slider, p.RowTop(slider), out float vx0, out float vx1, out float vy0, out float vy1);
+            Press((vx0 + vx1) / 2f, (vy0 + vy1) / 2f); p.EditInsert("42");
+            Press(p.List.X + 5f, p.RowTop(toggle) + 2f);
+            E(!p.Editing && MathF.Abs(applied - 42f) < 0.01f && slider.Value == "42", "a press elsewhere commits the typed value through the consumer");
+            applied = float.NaN;
+            Press((vx0 + vx1) / 2f, (vy0 + vy1) / 2f); p.EditInsert("9"); p.CancelEdit();
+            E(!p.Editing && float.IsNaN(applied), "cancel applies nothing");
+
+            // Text: the box edits in place, the commit is the consumer's; a dropdown pick sets Selected first.
+            p.BoxRect(text, p.RowTop(text), out float tx0, out float tx1, out float ty0, out float ty1);
+            Press((tx0 + tx1) / 2f, (ty0 + ty1) / 2f);
+            E(p.Editing && p.EditText == "old", "a text box press starts the edit seeded with the value");
+            p.EditInsert("!"); p.Key(0x0D);
+            E(committed == "old!" && !p.Editing, "Enter hands the text to CommitLabel");
+            p.BoxRect(dd, p.RowTop(dd), out float dx0, out float dx1, out float dy0, out float dy1);
+            Press((dx0 + dx1) / 2f, (dy0 + dy1) / 2f);
+            E(p.Drop.Open && p.Drop.Selected == 1, "the dropdown box opens the list on the row's Selected");
+            Press(p.Drop.X + 5f, p.Drop.ItemTop(2) + 2f);
+            E(!p.Drop.Open && dd.Selected == 2 && pressed[^1] == dd, "a pick sets Selected and reaches the consumer");
+            int n = pressed.Count;
+            Press(p.List.X + 5f, p.RowTop(btn) + 2f);
+            E(pressed.Count == n, "a press beside a button's box is nothing");
+            p.BoxRect(btn, p.RowTop(btn), out float bx0, out float bx1, out float by0, out float by1);
+            Press((bx0 + bx1) / 2f, (by0 + by1) / 2f);
+            E(pressed[^1] == btn, "a press in the box fires the button");
+
+            // A modal panel closes on an off-panel press and owns it; the draw allocates nothing.
+            var vb = new VertexBatch(body.SolidU, body.SolidV);
+            p.Emit(vb);
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 100; i++) { vb.Clear(); p.Emit(vb); }
+            long delta = GC.GetAllocatedBytesForCurrentThread() - before;
+            E(delta == 0, $"100 consumer-mode draws allocate nothing ({delta} bytes)");
+            E(p.MouseDown(p.X + p.W + 5f, p.Y + 5f) && !p.Open && p.MouseUp(), "an off-panel press closes a modal panel and is owned");
+        }
 
         log.Info(ok ? "KnobPanel.SelfCheck: passed" : "KnobPanel.SelfCheck: FAILED");
     }

@@ -27,7 +27,7 @@ public sealed class Dropdown
     public int Selected;
     /// <summary>Index under the pointer, or -1.</summary>
     public int Hover = -1;
-    /// <summary>The owner's handle on which row this list belongs to (a <see cref="SetRow"/> in the panel).</summary>
+    /// <summary>The owner's handle on which row this list belongs to (a <see cref="KnobPanel.Row"/> in the panel).</summary>
     public object? Tag;
     /// <summary>Item height, set at <see cref="OpenAt"/>.</summary>
     public float ItemH { get; private set; }

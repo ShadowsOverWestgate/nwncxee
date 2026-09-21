@@ -90,7 +90,7 @@ static readonly Knob<int>   Size    = Ui.Dropdown("font", "Text size", values: R
 
 Panel/chat set `V` on the input thread; the render thread reads it. A scalar field write is
 atomic on x64/Win64 and no two knobs need to change together, so **plain field**: no
-`Volatile`, no store-swap (the `SettingsPanel.Publish` precedent stays for row lists).
+`Volatile`, no store-swap (the `KnobPanel.Publish` precedent stays for row lists).
 `Changed` runs on the setter's thread, as `Tune` does today.
 Ceiling: the day two knobs must flip together, that pair becomes one `Knob<T>` with an object `T`.
 
@@ -143,7 +143,8 @@ Pinned by the #560 prototype, Variant B (Roomy).
 - **Header:** title, a dashed *reserved* search slot (empty; future search spans all
   categories), close.
 - **Row** = label with **one line of help beneath it**, control right-aligned; ≈3.3 em at 14 px
-  base. The `(?)` tooltip marker appears only on Advanced rows that have help.
+  base (a row without help, or an Advanced row, is compact at 2.4 em). The `(?)` tooltip marker
+  appears only on Advanced rows that have help.
 - **Master toggle** = boxed first row, bolder label. **Sections** = small-caps headers.
   **Advanced** = a collapsed `▸ Advanced` disclosure at the bottom of the submenu.
 - **Parent off** = a warning strip above the rows plus every *value* row at 42 % opacity.
@@ -223,7 +224,8 @@ state; no row.
 
 `/newwin` / `/closewin` stay (actions); `/nw` `/cw` die. Chat's `SettingsWindow` survives as
 the per-window editor with its own `SetAct`. Since CX-683 it wears the panel's design with ONE
-category column -- *Window settings*, one entry per kept tab, *Add new tab...* -- and the font
+category column -- *Window settings*, one entry per kept tab, *Add new tab...* -- and since
+CX-696 it *is* `KnobPanel` (a row `Source` + `Publish`, `SubFrac = 0`, `Modal`), and the font
 rows are the window's own (`w<N>.font` / `w<N>.typeface`, absent = follow `ui.font` /
 `ui.typeface`), drawn from a face of its own on the shared sheet. The tab bar keeps only the gear:
 a new window is the panel header's *Copy this window*, closing is the window category's *Close

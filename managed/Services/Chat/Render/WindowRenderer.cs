@@ -439,10 +439,10 @@ public static class WindowRenderer
 
         // Settings window open -> portraits still emit (the opaque panel is tail-drawn over them; suppressing
         // them made portraits vanish even when the movable panel sits elsewhere).
-        settings.Open = true;
+        settings.OpenAt(win, 1280, 800);
         E(Build(win, settings, store, atlas, showFooter: false, editText: "", caret: 0, showGrip: false).Portraits.Count == 1,
           "settings window open does not suppress portraits");
-        settings.Open = false;
+        settings.Reset();
 
         // Right-aligned: portrait flips to the right edge of the text area.
         win.Align = TextAlign.Right;

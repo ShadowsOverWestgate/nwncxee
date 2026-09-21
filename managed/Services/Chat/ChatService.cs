@@ -803,7 +803,7 @@ public sealed unsafe class ChatService : IExtenderService
 
     /// <summary>Per frame (render thread, hot): the settings panel over every window, from its live state --
     /// a drag or a hover shows next frame with no rebuild (as the main panel draws; CX-683). Allocates nothing
-    /// while open and idle: the batch is reused and <see cref="SettingsPanel.Emit"/> is zero-alloc.</summary>
+    /// while open and idle: the batch is reused and <see cref="KnobPanel.Emit"/> is zero-alloc.</summary>
     private static void DrawSettings()
     {
         GlyphAtlas? atlas = TextRig.Atlas;
@@ -1084,7 +1084,7 @@ public sealed unsafe class ChatService : IExtenderService
             _layout.FocusedIndex = index;
             win.ChannelListOpen = false;
             float scale = Metrics.GameUiScale < 1f ? 1f : Metrics.GameUiScale;
-            _panelPx = MathF.Round(SettingsPanel.FacePx * scale); _panelSmallPx = MathF.Round(SettingsPanel.SmallPx * scale);
+            _panelPx = MathF.Round(KnobPanel.FacePx * scale); _panelSmallPx = MathF.Round(KnobPanel.SmallPx * scale);
             GlyphAtlas? body = TextRig.Face(_panelPx) ?? TextRig.Atlas;   // cold: a miss bakes, on the input thread
             _settings.Panel.Title = _layout.Count > 1 ? $"Chat window {index + 1}" : "Chat window";
             _settings.OpenAt(win, TextRig.ViewportW, TextRig.ViewportH, _panelPx, body, TextRig.Face(_panelSmallPx) ?? body,
