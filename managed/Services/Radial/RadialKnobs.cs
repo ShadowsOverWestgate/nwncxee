@@ -23,7 +23,7 @@ internal static class RadialKnobs
 
     static RadialKnobs()
     {
-        G = KnobGroup.Declare("radial", "UI", "Radial menu", master: "Enable the CX radial menu", masterDefault: false,
+        G = KnobGroup.Declare("radial", "UI", "Radial menu", master: "Enable the CX radial menu", masterDefault: true,
             masterHelp: "Right-click menus as a nested dropdown drawn by CX. Off, the stock radial menu runs.",
             header: "Drag a row to reorder it, or drag a deep row onto the top list to keep it there; right-click a row for the same edits, Hide and Reset.");
         Enabled = G.Master!;

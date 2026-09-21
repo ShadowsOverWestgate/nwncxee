@@ -234,7 +234,7 @@ like every other window's; the chat window's per-window gear is the exception, n
 
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
-| radial.enabled | — | Enable the CX radial menu | T | off | U | L | Right-click menus as a nested dropdown drawn by CX. Off, the stock radial menu runs. |
+| radial.enabled | — | Enable the CX radial menu | T | on | U | L | Right-click menus as a nested dropdown drawn by CX. Off, the stock radial menu runs. |
 | radial.lock | — | Lock the layout | T | off | U | L | Rows cannot be dragged and right-clicking one opens no edit popup. Turn off to rearrange again. |
 | radial.mode | — | Submenus | D | cascade / drill · cascade | U | L | Cascade: a submenu opens beside its row, on hover. Drill down: it replaces the list where it is, on click, with a Back row on top -- the pointer never travels. |
 | radial.dwell | — | Submenu delay | S | 0..600 ms · 250 | U | L | Cascade only: how long the pointer rests on a row before its submenu opens; 0 opens it at once. |
