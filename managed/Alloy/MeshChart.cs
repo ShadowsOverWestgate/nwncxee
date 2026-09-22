@@ -112,6 +112,22 @@ internal static unsafe partial class MeshChart
     private static readonly SlotJobTable<Job, Entry> _jobs = new(MaxEntries, MaxPending);
     private static Dictionary<long, Entry> _table => _jobs.Entries;
 
+    /// <summary>Bumped by every edit that can change a <see cref="Range"/> answer (file, drop, compaction, the
+    /// world edge): a <see cref="RangeMemo"/> stamped with an older one re-probes (CX-12). Starts at 1 so a
+    /// zeroed memo is stale.</summary>
+    private static int _epoch = 1;
+
+    /// <summary>One caller slot's cached <see cref="Range"/> answer, valid while the table epoch, the key and
+    /// the asked LOD all match: the per-part draw skips the dictionary probe and its Entry copy (CX-12).</summary>
+    internal struct RangeMemo
+    {
+        internal long Key;
+        internal nint Off;
+        internal int Epoch, Base, Count;
+        internal byte Lod, Level;
+        internal bool Hit;
+    }
+
     /// <summary>One mesh handed to the worker and back. Input arrays are DENSE: <see cref="Offer"/> remaps
     /// the engine's indices to first-use order, so the content key sees no stale pool bytes and two parts
     /// of one mesh hash the same.</summary>
@@ -199,6 +215,7 @@ internal static unsafe partial class MeshChart
         {
             if (have.Sig == sig) return false;
             _table.Remove(KeyOf(slot, item));   // the item was refilled under the same key: chart the new mesh
+            _epoch++;
             if (have.Done && have.Refused == Refusal.None) _deadVerts += have.NV;
         }
         if (_table.Count >= MaxEntries) { _tableFull++; return false; }
@@ -439,7 +456,8 @@ internal static unsafe partial class MeshChart
             }
             else if (_logLeft-- > 0)
                 _log?.Info($"MeshChart: mesh {j.IdxCount / 3} tris {j.VertCount} verts -> {j.OutVerts} charted verts, atlas {j.W}x{j.H} ({(j.Hit ? "cache hit" : "built")}), lod {e.Cnt1 / 3}/{e.Cnt2 / 3}" + (j.Loose > 0 ? $", {j.Loose} loose verts (no face)" : ""));
-            if (!_jobs.File(j.Key, j.Sig, e) && e.Refused == Refusal.None) _deadVerts += e.NV;   // appended, unclaimed: the compaction takes it back
+            if (_jobs.File(j.Key, j.Sig, e)) _epoch++;
+            else if (e.Refused == Refusal.None) _deadVerts += e.NV;   // appended, unclaimed: the compaction takes it back
             _jobs.Recycle(j);
         }
         if (_vUsed != vFrom || _vUploaded != _vUsed) UploadVerts(vFrom);
@@ -563,6 +581,21 @@ internal static unsafe partial class MeshChart
         return true;
     }
 
+    /// <summary><see cref="Range"/> through the caller's <paramref name="m"/>: one probe per (key, LOD) per
+    /// table epoch instead of one per call.</summary>
+    internal static bool Range(ref RangeMemo m, int slot, int item, int lod, out int baseVertex, out nint off, out int count, out int level)
+    {
+        if (_vao == 0) { baseVertex = 0; off = 0; count = 0; level = 0; return false; }
+        long key = KeyOf(slot, item);
+        if (m.Epoch != _epoch || m.Key != key || m.Lod != lod)
+        {
+            m.Hit = Range(slot, item, lod, out m.Base, out m.Off, out m.Count, out int lvl);
+            m.Key = key; m.Epoch = _epoch; m.Lod = (byte)lod; m.Level = (byte)lvl;
+        }
+        baseVertex = m.Base; off = m.Off; count = m.Count; level = m.Level;
+        return m.Hit;
+    }
+
     /// <summary>The atlas size a charted mesh's UVs are in, its content key and its own-space bounds, for the
     /// bake (#674). False = not charted (yet, or refused).</summary>
     internal static bool Atlas(int slot, int item, out int w, out int h, out ulong content, out Vector3 bmin, out Vector3 bmax)
@@ -577,7 +610,11 @@ internal static unsafe partial class MeshChart
 
     /// <summary>A VDO slot was vacated or re-pointed: every range keyed on it names geometry that is no
     /// longer there. Arena bytes stay until <see cref="Revoke"/>.</summary>
-    internal static void ForgetSlot(int slot) => _jobs.ForgetSlot(slot, static e => { if (e.Done && e.Refused == Refusal.None) _deadVerts += e.NV; });
+    internal static void ForgetSlot(int slot)
+    {
+        _jobs.ForgetSlot(slot, static e => { if (e.Done && e.Refused == Refusal.None) _deadVerts += e.NV; });
+        _epoch++;
+    }
 
     /// <summary>Drop every entry no enrolled part keys (the engine frees a pool item without a word, and an
     /// in-module area change is no world edge: run 31 carried 42k entries over three areas and compacted 5k
@@ -590,6 +627,7 @@ internal static unsafe partial class MeshChart
         foreach (var kv in _table)
             if (!live.Contains(kv.Key)) (dead ??= new List<long>()).Add(kv.Key);
         if (dead == null) return;
+        _epoch++;
         int verts = 0;
         for (int i = 0; i < dead.Count; i++)
         {
@@ -605,6 +643,7 @@ internal static unsafe partial class MeshChart
     private static void Compact()
     {
         var keys = new List<long>(_table.Keys);
+        _epoch++;
         // ascending by arena place, so every copy slides DOWN over bytes already moved or dead
         keys.Sort((a, b) => _table[a].Base.CompareTo(_table[b].Base));
         int vU = 0, iU = 0;
@@ -644,6 +683,7 @@ internal static unsafe partial class MeshChart
     internal static void Revoke()
     {
         _jobs.Revoke();
+        _epoch++;
         _vUsed = _vUploaded = _iUsed = _iUploaded = 0; _arenaFull = false; _deadVerts = 0;
         _offered = _hit = _missed = _built = _refused = _stale = _lodBig = _lodKept = 0; Array.Clear(_refusedBy);
         _logLeft = LogCap;

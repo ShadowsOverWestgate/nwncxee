@@ -26,6 +26,8 @@ public sealed unsafe partial class AlloyRenderer
     /// from an Alloy arena, 0 otherwise. Carried per SLOT rather than per draw because the velocity pass redraws a mover off the
     /// ownership table and has to bind the element buffer the colour draw used, not the other one.</summary>
     private static readonly int[] _oLodBit = new int[MaxOwned];
+    /// <summary>CX-12: each part's last <see cref="MeshChart.Range"/> answer, re-probed on a table epoch or LOD change.</summary>
+    private static readonly MeshChart.RangeMemo[] _oChart = new MeshChart.RangeMemo[MaxOwned];
     private static readonly int[] _oRotBits = new int[MaxOwned];    // part+0xb0 at enrollment (revalidation)
     private static readonly float[] _oCos = new float[MaxOwned];
     private static readonly float[] _oSin = new float[MaxOwned];

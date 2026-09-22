@@ -799,7 +799,7 @@ public sealed unsafe partial class AlloyRenderer
             // #673: a charted mesh is the whole geometry (split vertices), picked at every level -- see MeshChart.Range.
             bool chartArmed = MeshChart.Armed;
             int drawn = 0;
-            if (chartArmed && MeshChart.Range(v, _oItem[src], lvl, out int cb, out nint co, out int cc, out drawn))
+            if (chartArmed && MeshChart.Range(ref _oChart[src], v, _oItem[src], lvl, out int cb, out nint co, out int cc, out drawn))
             {
                 idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc);
                 LightmapBake.Enrol(i, v, _oItem[src]);   // #674: once per slot (a -1 test after the first)

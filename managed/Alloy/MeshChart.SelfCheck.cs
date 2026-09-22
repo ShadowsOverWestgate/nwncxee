@@ -87,6 +87,18 @@ internal static partial class MeshChart
         }
         catch (Exception e) { check.Expect(false, $"the prune check could not run ({e.Message})"); }
 
+        uint svVao = _vao; _vao = 1;
+        var memo = default(RangeMemo);
+        _table[KeyOf(-7, 1)] = new Entry { Done = true, Base = 5, Off0 = 8, Cnt0 = 3, Off1 = 16, Cnt1 = 6 };
+        check.Expect(Range(ref memo, -7, 1, 2, out int mb, out nint mo, out _, out int ml) && mb == 5 && mo == 16 && ml == 1,
+          "the memo did not resolve LOD 2 to the finest level that exists");
+        _table[KeyOf(-7, 1)] = new Entry { Done = true, Base = 9, Off0 = 8, Cnt0 = 3 };
+        check.Expect(Range(ref memo, -7, 1, 2, out mb, out _, out _, out _) && mb == 5, "the memo re-probed inside one epoch");
+        check.Expect(Range(ref memo, -7, 1, 0, out mb, out mo, out _, out _) && mb == 9 && mo == 8, "a LOD change did not re-probe");
+        ForgetSlot(-7);
+        check.Expect(!Range(ref memo, -7, 1, 0, out _, out _, out _, out _), "the memo outlived a forgotten slot");
+        _vao = svVao;
+
         log.Info(check.Ok ? "MeshChart.SelfCheck: passed" : "MeshChart.SelfCheck: FAILED");
         return check.Ok;
     }
