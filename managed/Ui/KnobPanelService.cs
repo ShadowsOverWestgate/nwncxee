@@ -23,7 +23,6 @@ public sealed unsafe class KnobPanelService : IExtenderService
     private static int _epoch = -1;
     private static float _facePx, _smallPx;
     private static GlyphAtlas? _body, _small;
-    private static int _vpW, _vpH;
     private static delegate* unmanaged<void> _startText;
 
     /// <summary>The live panel, for the gear (#5) and the sibling tickets.</summary>
@@ -66,8 +65,8 @@ public sealed unsafe class KnobPanelService : IExtenderService
         RequestFaces();
         if (!_panel.Open)
         {
-            float vw = _vpW > 0 ? _vpW : TextRig.ViewportW > 0 ? TextRig.ViewportW : 1280f;
-            float vh = _vpH > 0 ? _vpH : TextRig.ViewportH > 0 ? TextRig.ViewportH : 720f;
+            float vw = TextRig.ViewportW > 0 ? TextRig.ViewportW : 1280f;
+            float vh = TextRig.ViewportH > 0 ? TextRig.ViewportH : 720f;
             _panel.OpenAt(vw, vh, _facePx, _body, _small);
             SyncRect();
             _log?.Info($"KnobPanelService: opened {_panel.W}x{_panel.H} at ({_panel.X},{_panel.Y}) in {vw}x{vh}, face {_facePx}px");
@@ -114,10 +113,11 @@ public sealed unsafe class KnobPanelService : IExtenderService
         if (!_panel.Open) return;
         float scale = Metrics.GameUiScale < 1f ? 1f : Metrics.GameUiScale;
         bool face = MathF.Round(KnobPanel.FacePx * scale) != _facePx;
-        bool vp = _vpW > 0 && (_vpW != (int)_panel.VpW || _vpH != (int)_panel.VpH);
+        int vpW = TextRig.ViewportW, vpH = TextRig.ViewportH;
+        bool vp = vpW > 0 && (vpW != (int)_panel.VpW || vpH != (int)_panel.VpH);
         if (!face && !vp) return;
         if (face) RequestFaces();
-        _panel.Rebase(_vpW > 0 ? _vpW : _panel.VpW, _vpH > 0 ? _vpH : _panel.VpH, _facePx, _body, _small);
+        _panel.Rebase(vpW > 0 ? vpW : _panel.VpW, vpH > 0 ? vpH : _panel.VpH, _facePx, _body, _small);
         SyncRect();
     }
 
@@ -167,10 +167,7 @@ public sealed unsafe class KnobPanelService : IExtenderService
     /// closes it; an ESC-menu sub-panel or the hidden HUD only hides it.</summary>
     private static void Draw()
     {
-        if (_log == null || !Gl.Init(_log) || Gl.GetIntegerv == null) return;
-        int* vp = stackalloc int[4];
-        Gl.GetIntegerv(Gl.VIEWPORT, vp);
-        _vpW = vp[2]; _vpH = vp[3];
+        if (_log == null || !Gl.Init(_log)) return;
         bool inModule = GameGate.InModule, atMenu = GameGate.AtMainMenu;
         bool left = (_wasInModule && !inModule) || (_wasAtMenu && !atMenu);
         _wasInModule = inModule; _wasAtMenu = atMenu;

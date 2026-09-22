@@ -442,14 +442,12 @@ internal static class Crosshair
         if (!Visible) return;
         GlyphAtlas? sheet = TextRig.Atlas;
         if (sheet == null) return;
-        int* vp = stackalloc int[4];
-        Gl.GetIntegerv(Gl.VIEWPORT, vp);
         int id = AimAssist.CursorId();
         byte fam = (uint)id < (uint)Family.Length ? Family[id] : FamPlain;
         int k = fam * 4;
         float r = Tint[k], gr = Tint[k + 1], bl = Tint[k + 2], arms = Tint[k + 3];
         float s = Metrics.GameUiScale < 1f ? 1f : Metrics.GameUiScale;
-        float cx = vp[2] * 0.5f, cy = vp[3] * 0.5f, a = Arm * s * arms, g = Gap * s, t = Thick * s * 0.5f;
+        float cx = TextRig.ViewportW * 0.5f, cy = TextRig.ViewportH * 0.5f, a = Arm * s * arms, g = Gap * s, t = Thick * s * 0.5f;
         VertexBatch b = _batch ??= new VertexBatch(sheet.SolidU, sheet.SolidV);
         b.Reset(sheet.SolidU, sheet.SolidV);
         // Dark outline under a light cross so it reads on any ground.

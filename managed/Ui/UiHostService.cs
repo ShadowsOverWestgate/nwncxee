@@ -103,7 +103,7 @@ public sealed unsafe class UiHostService : IExtenderService
         float dt = _gearLast == 0 ? 0f : (now - _gearLast) / (float)System.Diagnostics.Stopwatch.Frequency;
         _gearLast = now;
         if (!GearSurface) { _gear.Hovered = false; _gear.Bright = 0f; _gear.Spin = 0f; return; }
-        if (_log == null || !Gl.Init(_log) || Gl.GetIntegerv == null || !TextRig.Ready) return;
+        if (_log == null || !Gl.Init(_log) || !TextRig.Ready) return;
         float px = MenuGear.FaceFor(Metrics.GameUiScale);
         if (px != _gearFacePx || _gearEpoch != TextRig.AtlasEpoch)
         {
@@ -111,14 +111,13 @@ public sealed unsafe class UiHostService : IExtenderService
             _gearFacePx = px; _gearEpoch = TextRig.AtlasEpoch;
         }
         if (_gearFace == null || !_gearFace.TryGet(MenuGear.Codepoint, out Glyph g) || g.W <= 0) return;
-        int* vp = stackalloc int[4];
-        Gl.GetIntegerv(Gl.VIEWPORT, vp);
-        _gear.Layout(vp[2], vp[3], Metrics.GameUiScale, g);
+        int vw = TextRig.ViewportW, vh = TextRig.ViewportH;
+        _gear.Layout(vw, vh, Metrics.GameUiScale, g);
         if (_gearWindow != null) { _gearWindow.X = _gear.X; _gearWindow.Y = _gear.Y; _gearWindow.W = _gear.W; _gearWindow.H = _gear.H; }
-        if (_gearAnchor != (vp[2], vp[3], px))
+        if (_gearAnchor != (vw, vh, px))
         {
-            _gearAnchor = (vp[2], vp[3], px);
-            _log.Info($"[menugear] anchor: viewport {vp[2]}x{vp[3]}, GUI scale {Metrics.GameUiScale:F2}, face {px}px -> "
+            _gearAnchor = (vw, vh, px);
+            _log.Info($"[menugear] anchor: viewport {vw}x{vh}, GUI scale {Metrics.GameUiScale:F2}, face {px}px -> "
                     + $"gear {_gear.W}x{_gear.H}px at ({_gear.X},{_gear.Y}), inset {MenuGear.InsetPx * Metrics.GameUiScale}px from the lower-left; "
                     + "the PNL_MAINMENU column's pixel origin (MapGuiSceneToScreen) is the owed live check");
         }
@@ -214,13 +213,14 @@ public sealed unsafe class UiHostService : IExtenderService
         ((delegate* unmanaged<float, void>)(*_nkSlot))(aa);
     }
 
-    /// <summary>Refresh the session gate + UI scale, run the z-order roll-call, then hand the GL state back.
-    /// The hand-back is #210 (G1) one call earlier: our raw GL desyncs GLRender's shadow cache, and what
-    /// renders next is NUI, not the present.</summary>
+    /// <summary>Refresh the session gate, the UI scale and the viewport, run the z-order roll-call, then hand
+    /// the GL state back. The hand-back is #210 (G1) one call earlier: our raw GL desyncs GLRender's shadow
+    /// cache, and what renders next is NUI, not the present.</summary>
     private static void DrawWindows()
     {
         RefreshGate();
         SyncUiScale(); ApplyFont();   // #593: every frame, not only in game -- the menu gear and panel honour the UI scale
+        TextRig.SampleViewport();     // CX-709: the frame's one GL_VIEWPORT query; every draw below reads the pair
         long tUi = FrameZones.Now;
         UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
         FrameZones.Add(FrameZones.Zone.Ui, tUi);

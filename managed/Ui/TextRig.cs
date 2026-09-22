@@ -165,9 +165,22 @@ public static unsafe class TextRig
     /// (the attribution overlay) can tell its glyph UVs went stale and rebuild.</summary>
     internal static int AtlasEpoch { get; private set; }
 
-    /// <summary>Last swap-time viewport (px), published each hot frame for cold consumers (the settings window
-    /// clamps itself on-screen with these). 0 until the first frame draws.</summary>
+    /// <summary>The frame's viewport (px), sampled once per present by the frame host (<see cref="SampleViewport"/>)
+    /// and read by every UI draw and by cold consumers (the settings window clamps itself on-screen with these).
+    /// 0 until the first frame draws.</summary>
     public static volatile int ViewportW, ViewportH;
+
+    /// <summary>Sample the live GL viewport into <see cref="ViewportW"/>/<see cref="ViewportH"/>. The frame host
+    /// calls it once per present, before the window roll-call, and every draw below reads the published pair
+    /// instead of re-querying the driver (CX-709). A no-op off-device, where the pair stays 0.</summary>
+    public static void SampleViewport()
+    {
+        if (_log == null || !Gl.Init(_log) || Gl.GetIntegerv == null) return;
+        int* vp = stackalloc int[4];
+        Gl.GetIntegerv(Gl.VIEWPORT, vp);
+        ViewportW = vp[2]; ViewportH = vp[3];
+    }
+
     public static bool Ready => _sheet != null;
 
     // GL objects (created lazily on the first drawn frame; no context exists at init). _vbo is the shared
@@ -645,7 +658,7 @@ public static unsafe class TextRig
     public static void DrawBatch(ReadOnlySpan<float> verts, int count, float alpha = 1f, float offX = 0f, float offY = 0f,
                                  bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
-        if (count == 0 || _sheet == null || _log == null || alpha <= 0f) return;
+        if (count == 0 || _sheet == null || _log == null || alpha <= 0f || ViewportW <= 0) return;
         if (!Gl.Init(_log)) return;
         _textAlpha = alpha < 1f ? alpha : 1f;   // read by BindText; restored to 1 before returning
         _texOffX = offX; _texOffY = offY;       // ditto -- restored to (0,0) before returning
@@ -662,14 +675,12 @@ public static unsafe class TextRig
             Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE);
             Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
-            int* vp = stackalloc int[4];
-            Gl.GetIntegerv(Gl.VIEWPORT, vp);
-            ViewportW = vp[2]; ViewportH = vp[3];
+            int vw = ViewportW, vh = ViewportH;
             float* m = stackalloc float[16];
-            Ortho(m, vp[2], vp[3]);
+            Ortho(m, vw, vh);
 
             // GL scissor is bottom-left origin; our rects are y-down top-left, so flip Y.
-            if (clip) { Gl.Enable(Gl.SCISSOR_TEST); Gl.Scissor(cx, vp[3] - (cy + ch), cw < 0 ? 0 : cw, ch < 0 ? 0 : ch); }
+            if (clip) { Gl.Enable(Gl.SCISSOR_TEST); Gl.Scissor(cx, vh - (cy + ch), cw < 0 ? 0 : cw, ch < 0 ? 0 : ch); }
             else Gl.Disable(Gl.SCISSOR_TEST);
 
             BindText(m);
@@ -708,11 +719,9 @@ public static unsafe class TextRig
         Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE);
         Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
-        int* vp = stackalloc int[4];
-        Gl.GetIntegerv(Gl.VIEWPORT, vp);
         float* m = stackalloc float[16];
-        Ortho(m, vp[2], vp[3]);
-        if (clip) { Gl.Enable(Gl.SCISSOR_TEST); Gl.Scissor(cx, vp[3] - (cy + ch), cw < 0 ? 0 : cw, ch < 0 ? 0 : ch); }
+        Ortho(m, ViewportW, ViewportH);
+        if (clip) { Gl.Enable(Gl.SCISSOR_TEST); Gl.Scissor(cx, ViewportH - (cy + ch), cw < 0 ? 0 : cw, ch < 0 ? 0 : ch); }
         else Gl.Disable(Gl.SCISSOR_TEST);
 
         float* verts = stackalloc float[Floats * 6];
@@ -785,10 +794,8 @@ public static unsafe class TextRig
         Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
         Gl.Disable(Gl.SCISSOR_TEST);
 
-        int* vp = stackalloc int[4];
-        Gl.GetIntegerv(Gl.VIEWPORT, vp);
         float* m = stackalloc float[16];
-        Ortho(m, vp[2], vp[3]);
+        Ortho(m, ViewportW, ViewportH);
 
         float a = alpha < 1f ? alpha : 1f, x1 = x + w, y1 = y + h;
         float* v = stackalloc float[Floats * 6];

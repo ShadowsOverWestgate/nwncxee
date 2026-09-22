@@ -187,11 +187,8 @@ public static unsafe class ChatRenderer
             Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
             Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
-            int* vp = stackalloc int[4];
-            Gl.GetIntegerv(Gl.VIEWPORT, vp);
-            TextRig.ViewportW = vp[2]; TextRig.ViewportH = vp[3];
             float* m = stackalloc float[16];
-            TextRig.Ortho(m, vp[2], vp[3]);
+            TextRig.Ortho(m, TextRig.ViewportW, TextRig.ViewportH);
 
             for (int i = 0; i < frames.Length; i++)
             {
@@ -228,10 +225,10 @@ public static unsafe class ChatRenderer
                 {
                     Gl.DrainErrors();
                     _diagged = true;
-                    DrawFrame(f, m, vp, residual, now, ls);
-                    _log?.Info($"TextRig: draw verts={_drawCount} viewport={vp[2]}x{vp[3]} glErr=0x{Gl.GetError():x}");
+                    DrawFrame(f, m, residual, now, ls);
+                    _log?.Info($"TextRig: draw verts={_drawCount} viewport={TextRig.ViewportW}x{TextRig.ViewportH} glErr=0x{Gl.GetError():x}");
                 }
-                else DrawFrame(f, m, vp, residual, now, ls);
+                else DrawFrame(f, m, residual, now, ls);
             }
 
         }
@@ -294,8 +291,9 @@ public static unsafe class ChatRenderer
     }
 
     /// <summary>Draw the frame in three slices: chrome above the body, the animated body under a body-rect
-    /// scissor (with the portrait pass), then chrome below. <paramref name="vp"/> is the current viewport.</summary>
-    private static void DrawFrame(Frame f, float* proj, int* vp, float residual, System.DateTime now, System.DateTime ls)
+    /// scissor (with the portrait pass), then chrome below. The scissor flip reads the frame's published
+    /// viewport height (<see cref="TextRig.ViewportH"/>).</summary>
+    private static void DrawFrame(Frame f, float* proj, float residual, System.DateTime now, System.DateTime ls)
     {
         RenderFrame rf = f.Rf;
         TextRig.BindText(proj);
@@ -305,7 +303,7 @@ public static unsafe class ChatRenderer
         if (bodyVerts > 0 || rf.Portraits.Count > 0)
         {
             // Scissor to the body rect (GL is bottom-left origin, so flip y against the viewport height).
-            int sx = (int)rf.Bx, sy = (int)(vp[3] - (rf.By + rf.Bh)), sw = (int)rf.Bw, sh = (int)rf.Bh;
+            int sx = (int)rf.Bx, sy = (int)(TextRig.ViewportH - (rf.By + rf.Bh)), sw = (int)rf.Bw, sh = (int)rf.Bh;
             if (sx < 0) { sw += sx; sx = 0; }
             if (sy < 0) { sh += sy; sy = 0; }
             if (sw < 0) sw = 0;
@@ -422,11 +420,8 @@ public static unsafe class ChatRenderer
             Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
             Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
 
-            int* vp = stackalloc int[4];
-            Gl.GetIntegerv(Gl.VIEWPORT, vp);
-            TextRig.ViewportW = vp[2]; TextRig.ViewportH = vp[3];
             float* m = stackalloc float[16];
-            TextRig.Ortho(m, vp[2], vp[3]);
+            TextRig.Ortho(m, TextRig.ViewportW, TextRig.ViewportH);
 
             TextRig.BindText(m);
             Gl.BindBuffer(Gl.ARRAY_BUFFER, TextRig._vbo);

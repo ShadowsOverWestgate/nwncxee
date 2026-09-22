@@ -1018,10 +1018,8 @@ public sealed unsafe class NameplateService : IExtenderService
         }
         if (drawn == 0) return;
 
-        int* vp = stackalloc int[4];
-        Gl.GetIntegerv(Gl.VIEWPORT, vp);
         float* m = stackalloc float[16];
-        TextRig.Ortho(m, vp[2], vp[3]);
+        TextRig.Ortho(m, TextRig.ViewportW, TextRig.ViewportH);
 
         Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE); Gl.Disable(Gl.SCISSOR_TEST);
         Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
