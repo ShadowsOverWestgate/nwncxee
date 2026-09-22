@@ -140,7 +140,6 @@ public sealed unsafe partial class AlloyRenderer
     private static bool OccludeVerdict(int i)
     {
         float f = _occFade[i];
-        if (_occHitN == 0 && f == 0f) return false;
         bool hit = false;
         if (_occHitN > 0 && _oLit[i])
         {
@@ -148,6 +147,7 @@ public sealed unsafe partial class AlloyRenderer
             if (gob != IntPtr.Zero)
                 for (int n = 0; n < _occHitN && !hit; n++) hit = _occHitGob[n] == gob;
         }
+        if (!hit && f == 0f) return false;
         float target = hit ? 1f - Walls.Floor.V : 0f;
         f += (target - f) * _occStep;
         if (MathF.Abs(target - f) < 0.005f) f = target;
