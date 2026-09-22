@@ -205,6 +205,11 @@ internal static unsafe class Issue
     internal static IntPtr _onlyGob;
     internal static bool _onlyGobSet;
 
+    /// <summary>CX-10: the program the last issue loop left bound (-1 none). <see cref="_holdProg"/> lets the
+    /// next loop start from it instead of re-sending the rig; set only when nothing binds between the two.</summary>
+    internal static int _heldProg = -1;
+    internal static bool _holdProg;
+
     internal static void IssueColour(int from, int to, Matrix4x4* vp, int* viewport, float near, float far)
     {
         bool indirect = CullPass.Active;
@@ -255,7 +260,8 @@ internal static unsafe class Issue
         // #129: three programs now, not two -- fullbright (0), clustered lit (1) and water (2). Keyed on the
         // batch's CLASS for water and on _gLit for the other two, because water is a class the whole way
         // down: its stage samples the framebuffer copy, and no lit batch ever should.
-        int boundProg = -1;
+        int boundProg = _holdProg ? _heldProg : -1;
+        _holdProg = false;
         uint boundVao = 0; int boundTex = -1;
         uint boundSrc = 0, boundDst = 0;
         // GL_BLEND as this pass found it: DrawOwned's preamble disables it, and TransparentPass enables it
@@ -274,6 +280,12 @@ internal static unsafe class Issue
         float boundCut = float.NaN;   // per PROGRAM: reset on every UseProgram below
         int litBase = -1, litCut = -1, litOitBias = -1, litOitGob = -1; // the bound lit program's, whichever of the two it is
         int litSsaoOn = -1, litAoDirect = -1;
+        if (boundProg is 1 or 3 or 4)
+        {
+            ref LitLoc H = ref (boundProg == 3 ? ref Programs._litH : ref (boundProg == 4 ? ref Programs._litL : ref Programs._lit));
+            litBase = H.Base; litCut = H.Cut; litOitBias = H.OitBias; litOitGob = H.OitGob;
+            litSsaoOn = H.SsaoOn; litAoDirect = H.AoDirect;
+        }
         // #379 follow-up: SSAO is per BATCH, not per program bind. The visibility buffer is computed from
         // the DEPTH PREPASS, and a batch the prepass skipped (cutout, an out-of-prepass feature, the whole
         // blended range) has no depth of its own in it -- its fragments would read the occlusion of whatever
@@ -465,6 +477,7 @@ internal static unsafe class Issue
         // Hand the per-batch toggling back to the pass level: the next pass reads this rather than assuming
         // what the last batch left bound.
         _blendOn = boundBlend;
+        _heldProg = boundProg;
         if (boundMask != _passDepthMask) Gl.DepthMask(_passDepthMask);
         if (!boundTest) Gl.Enable(Gl.DEPTH_TEST);
         if (boundOffset) Gl.Disable(Gl.POLYGON_OFFSET_FILL);

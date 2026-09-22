@@ -879,8 +879,8 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>#336: one opaque class's batches under two GPU terms -- the plain run, then the keyhole
-    /// dissolve partition #327 placed at its tail. The seam is one more re-bind, and only when the class has
-    /// a dissolving tail at all; a roofless frame issues exactly as before.</summary>
+    /// dissolve partition #327 placed at its tail. The seam keeps the bound program and its rig (CX-10):
+    /// nothing between the two ranges binds one, so only per-batch state is re-sent.</summary>
     private static void IssueClass(int from, int to, GpuTerm plain, GpuTerm keyed,
                                    Matrix4x4* vp, int* viewport, float near, float far)
     {
@@ -890,6 +890,7 @@ public sealed unsafe partial class AlloyRenderer
         Issue.IssueColour(from, tail, vp, viewport, near, far);
         GpuEnd(plain);
         if (tail >= to) return;
+        Issue._holdProg = true;
         GpuBegin(keyed);
         Issue.IssueColour(tail, to, vp, viewport, near, far);
         GpuEnd(keyed);
