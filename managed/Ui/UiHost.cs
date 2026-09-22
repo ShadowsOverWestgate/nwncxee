@@ -216,12 +216,8 @@ public static partial class UiHost
     /// Topmost-first; true when one consumed the key.</summary>
     public static bool DispatchKeyPumpSwallow(uint key, int sdlMods)
     {
-        int lastZ = int.MaxValue;
-        for (int done = 0; done < _windows.Count; done++)
+        foreach (Window next in TopmostFirst())
         {
-            Window? next = NextBelow(lastZ);
-            if (next == null) break;
-            lastZ = next.Z;
             if (next.SuppressChords && next.OnKey != null && next.OnKey(key, sdlMods)) return true;
         }
         return false;
@@ -230,8 +226,8 @@ public static partial class UiHost
     /// <summary>Route a mouse button (press/release) to window content and return true at the first window that
     /// consumes it. Two topmost-first passes: modal windows (<see cref="Window.SuppressChords"/>, e.g. an open
     /// dialog) win the click first -- restoring the "modal: dialog wins the click" precedence -- then the rest.
-    /// Each window is visited exactly once (in the pass matching its modal flag), so no double-invoke. Zero-alloc:
-    /// the same O(n^2) z-walk the draw roll-call uses, no buffer. An unconsumed press then falls to the chord layer.
+    /// Each window is visited exactly once (in the pass matching its modal flag), so no double-invoke. An unconsumed
+    /// press then falls to the chord layer.
     /// <paramref name="captureOnly"/> visits just the <see cref="Window.CapturesPointer"/> windows: the pump's extra
     /// pass BEFORE the engine-GUI yield (CX-690), so every other window keeps the old precedence.</summary>
     public static bool DispatchMouseButton(bool down, int button, int x, int y, bool captureOnly = false)
@@ -240,12 +236,8 @@ public static partial class UiHost
         {
             bool modal = pass == 0;
             if (captureOnly && !modal) break;
-            int lastZ = int.MaxValue;
-            for (int done = 0; done < _windows.Count; done++)
+            foreach (Window next in TopmostFirst())
             {
-                Window? next = NextBelow(lastZ);
-                if (next == null) break;
-                lastZ = next.Z;
                 if (next.SuppressChords != modal || (captureOnly && !next.CapturesPointer)) continue;
                 if (next.OnMouseButton != null && next.OnMouseButton(down, button, x, y)) return true;
             }
@@ -254,35 +246,26 @@ public static partial class UiHost
     }
 
     /// <summary>Route pointer motion to window content, topmost-first; true at the first consumer (a drag owns
-    /// motion until release, so handlers self-gate on their own grab state). Zero-alloc z-walk.</summary>
+    /// motion until release, so handlers self-gate on their own grab state).</summary>
     public static bool DispatchMouseMotion(int x, int y)
     {
-        int lastZ = int.MaxValue;
-        for (int done = 0; done < _windows.Count; done++)
+        foreach (Window next in TopmostFirst())
         {
-            Window? next = NextBelow(lastZ);
-            if (next == null) break;
-            lastZ = next.Z;
             if (next.OnMouseMotion != null && next.OnMouseMotion(x, y)) return true;
         }
         return false;
     }
 
     /// <summary>Route a wheel notch to window content, topmost-first, modal windows first (the same two passes and
-    /// the same <paramref name="captureOnly"/> as <see cref="DispatchMouseButton"/>); true at the first consumer.
-    /// Zero-alloc z-walk.</summary>
+    /// the same <paramref name="captureOnly"/> as <see cref="DispatchMouseButton"/>); true at the first consumer.</summary>
     public static bool DispatchMouseWheel(int dy, bool captureOnly = false)
     {
         for (int pass = 0; pass < 2; pass++)
         {
             bool modal = pass == 0;
             if (captureOnly && !modal) break;
-            int lastZ = int.MaxValue;
-            for (int done = 0; done < _windows.Count; done++)
+            foreach (Window next in TopmostFirst())
             {
-                Window? next = NextBelow(lastZ);
-                if (next == null) break;
-                lastZ = next.Z;
                 if (next.SuppressChords != modal || (captureOnly && !next.CapturesPointer)) continue;
                 if (next.OnMouseWheel != null && next.OnMouseWheel(dy)) return true;
             }
@@ -290,8 +273,30 @@ public static partial class UiHost
         return false;
     }
 
-    /// <summary>The registered window with the highest z strictly below <paramref name="belowZ"/>, or null.
-    /// Zero-alloc descending-z scan (z values are unique, from the monotonic counter).</summary>
+    /// <summary>Every registered window, topmost-first. Zero-alloc: a struct enumerator over the O(n^2)
+    /// descending-z scan (z values are unique, from the monotonic counter, so the walk terminates even when a
+    /// handler unregisters a window mid-walk); no buffer, no sort, safe on the render thread.
+    /// ponytail: O(n^2) is free at this n; swap for a kept-sorted list only if the window count ever grows big.</summary>
+    private static ZWalk TopmostFirst() => new() { _lastZ = int.MaxValue };
+
+    /// <summary>The <see cref="TopmostFirst"/> enumerator. Only the factory seeds it: <c>default</c> starts at z 0
+    /// and silently visits nothing.</summary>
+    private struct ZWalk
+    {
+        internal int _lastZ;
+        public Window Current { get; private set; }
+        public ZWalk GetEnumerator() => this;
+        public bool MoveNext()
+        {
+            var next = NextBelow(_lastZ);
+            if (next == null) return false;
+            Current = next;
+            _lastZ = next.Z;
+            return true;
+        }
+    }
+
+    /// <summary>The registered window with the highest z strictly below <paramref name="belowZ"/>, or null.</summary>
     private static Window? NextBelow(int belowZ)
     {
         Window? next = null;
@@ -316,12 +321,8 @@ public static partial class UiHost
             if (w.WantsKeyboard) { w.OnKey?.Invoke(key, sdlMods); return true; }
         }
         // Pass 2: selective consumers, topmost-first.
-        int lastZ = int.MaxValue;
-        for (int done = 0; done < _windows.Count; done++)
+        foreach (Window next in TopmostFirst())
         {
-            Window? next = NextBelow(lastZ);
-            if (next == null) break;
-            lastZ = next.Z;
             if (next.OnKey != null && next.OnKey(key, sdlMods)) return true;
         }
         return false;
