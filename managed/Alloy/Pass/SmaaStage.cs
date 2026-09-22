@@ -198,75 +198,14 @@ internal static unsafe class SmaaStage
         Gl.Uniform4f(_locStageRt, 1f / w, 1f / h, w, h);
     }
 
-    /// <summary>What the two SMAA passes and the blend stage share: the GLSL 4 port, the preset the option
-    /// picked, and the reference library. Goes after a head that opened the file and before the pass body.</summary>
-    internal const string SmaaDefs = """
-        uniform vec4 uRt;            // (1/w, 1/h, w, h) of the frame -- SMAA_RT_METRICS
-        #define SMAA_RT_METRICS uRt
-        #define SMAA_GLSL_4 1
-        #define CX_AA_LEVEL $AA$
-        #if CX_AA_LEVEL >= 3
-        #define SMAA_PRESET_ULTRA 1
-        #elif CX_AA_LEVEL == 2
-        #define SMAA_PRESET_HIGH 1
-        #else
-        #define SMAA_PRESET_MEDIUM 1
-        #endif
-
-        """ + SmaaLib.Text + """
-
-        """;
-
-    /// <summary>Pass 1: luma edges of the resolved frame, RG = (left, top) edge flags.</summary>
-    internal const string EdgeFs = """
-        #version 460 core
-        in vec2 vUV;
-        out vec4 frag;
-        uniform sampler2D uSrc;      // the resolved frame, DISPLAY space -- SMAA wants perceptual luma
-
-        """ + SmaaDefs + """
-        void main()
-        {
-            vec4 off[3];
-            SMAAEdgeDetectionVS(vUV, off);
-            frag = vec4(SMAALumaEdgeDetectionPS(vUV, off, uSrc), 0.0, 1.0);
-        }
-        """;
-
     /// <summary>Pass 2: blend weights from the edges, through the area and search tables.</summary>
-    internal const string WeightFs = """
-        #version 460 core
-        in vec2 vUV;
-        out vec4 frag;
-        uniform sampler2D uEdges;
-        uniform sampler2D uArea;
-        uniform sampler2D uSearch;
-
-        """ + SmaaDefs + """
-        void main()
-        {
-            vec4 off[3];
-            vec2 pix;
-            SMAABlendingWeightCalculationVS(vUV, pix, off);
-            frag = SMAABlendingWeightCalculationPS(vUV, pix, off, uEdges, uArea, uSearch, vec4(0.0));
-        }
-        """;
+    internal static string WeightFs => ShaderSource.Get("SmaaStage.WeightFs.glsl");
 
     /// <summary>Pass 3, the stack stage: the neighbourhood blend of uSrc by the weights. Display space in
     /// and out, like every stage; the incoming <c>c</c> is re-fetched bilinearly by the reference. Carries
     /// the shared defs for the library's sake only -- no preset macro reaches this pass, which is why a
     /// live preset change rebuilds the other two programs and not this one.</summary>
-    internal const string BlendStageFs = """
-        uniform sampler2D uBlend;    // pass 2's weights
-
-        """ + SmaaDefs + """
-        vec4 CxStage(vec4 c)
-        {
-            vec4 off;
-            SMAANeighborhoodBlendingVS(vUV, off);
-            return SMAANeighborhoodBlendingPS(vUV, off, uSrc, uBlend);
-        }
-        """;
+    internal static string BlendStageFs => ShaderSource.Get("SmaaStage.BlendStageFs.glsl");
 
     /// <summary>Off-device: the option maps to the presets, the three passes compose on the port, and the
     /// tables are in the build at their reference sizes.</summary>

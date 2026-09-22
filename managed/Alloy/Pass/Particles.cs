@@ -1348,11 +1348,8 @@ internal static unsafe partial class Particles
     {
         if (_prog != 0) return true;
         if (_failed) return false;
-        string libs = AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib;
-        // #341: the fog half of KeyFogFs on its own -- this stage fogs and never dissolves.
-        string fsLibs = libs + AlloyRenderer.FogFs;
-        _prog = GlProgram.Graphics(ParticleVsHead + libs + ParticleVsMain,
-            ParticleFsHead + fsLibs + ParticleFsMain, _log, "Particles");
+        _prog = GlProgram.Graphics(ShaderSource.Get("Particles.ParticleVs.glsl"),
+            ShaderSource.Get("Particles.ParticleFs.glsl"), _log, "Particles");
         if (_prog == 0)
         { _failed = true; _log?.Info("Particles: program build failed -- emitters stay vanilla"); return false; }
         _locView = GlProgram.Loc(_prog, "uView");
@@ -1685,112 +1682,7 @@ internal static unsafe partial class Particles
 
     // ---- shaders ---------------------------------------------------------------------------------------
 
-    /// <summary>#288: the index build and the depth sort, in one dispatch of one workgroup per draw group.
-    /// <para><b>What moved.</b> #261 already expanded the six vertices a particle from <c>gl_VertexID</c>
-    /// against the persistent record buffer, so no per-quad geometry has been staged on the CPU since. What
-    /// remained on the CPU was the DRAW-ORDER INDEX LIST -- one write and four bytes a particle, every
-    /// frame, uploaded whole. That is now three numbers an emitter uploaded as a span descriptor, and this
-    /// stage writes the list.</para>
-    /// <para><b>The sort.</b> Alpha-over is the only class whose result depends on the order two of its own
-    /// particles arrive in, so it is the only class ordered: a shared-memory bitonic network over squared
-    /// distance to the eye, back to front. The other two are left alone deliberately -- punch-through writes
-    /// depth and discards, and addition commutes with itself. #131's rule is that additive does NOT commute
-    /// with alpha-over, and this dispatch cannot break it, because a workgroup only ever touches the index
-    /// range of its own single-class group.</para>
-    /// <para>The network is the textbook one: for each <c>k</c>, for each <c>j</c>, the element at <c>i</c>
-    /// pairs with <c>i ^ j</c> and only the LOWER of the two swaps, so within one step every element belongs
-    /// to exactly one pair and the stride loop cannot race itself. The tail past the particle count is
-    /// padded with <c>+inf</c>, which sorts to the end and is never written back.</para></summary>
-    /// <summary>The record and its buffer, as the vertex stage and the sort read it -- one text, so the
-    /// two cannot disagree about the layout <c>RecFloats</c> stages.</summary>
-    private const string ParticleRecDecl = """
-        // #261: one particle. Six vec4, std430 -- see Particles.RecFloats for the C# side of this layout.
-        struct CxParticle
-        {
-            vec4 posCol;      // xyz = near centre (world), w = RGBA8 colour as raw bits
-            vec4 farColFar;   // xyz = far centre (world),  w = the far end's colour
-            vec4 rightSoft;   // xyz = scaled right axis (world), w = particleSoftness
-            vec4 upType;      // xyz = scaled up axis (world),    w = render type
-            vec4 centre;      // xyz = the particle's OWN centre, which the facing direction is taken from
-            vec4 uv;          // u0, u1, v0, v1
-        };
-        layout(std430, binding = 10) readonly buffer CxParticleBuf { CxParticle particles[]; };
-
-        """;
-
-    private const string ParticleCs = """
-        #version 460 core
-        layout(local_size_x = 256) in;
-
-        """ + ParticleRecDecl + """
-        layout(std430, binding = 11) buffer CxParticleIdx { uint partIdx[]; };
-        // (record base, particles, index offset, -), one per emitter the pass placed
-        layout(std430, binding = 17) readonly buffer CxSpanBuf { uvec4 spans[]; };
-        // (first span, spans, index offset, particles | 0x80000000 when this group may be reordered)
-        layout(std430, binding = 18) readonly buffer CxGroupBuf { uvec4 groups[]; };
-
-        uniform vec3 uEye;
-
-        const uint CX_SORT_CAP = 2048u;
-        shared float sKey[CX_SORT_CAP];
-        shared uint  sVal[CX_SORT_CAP];
-
-        void main()
-        {
-            uvec4 g = groups[gl_WorkGroupID.x];
-            uint tid = gl_LocalInvocationID.x;
-            uint lanes = gl_WorkGroupSize.x;
-            uint dst = g.z;
-            uint count = g.w & 0x7fffffffu;
-
-            for (uint s = 0u; s < g.y; ++s)
-            {
-                uvec4 sp = spans[g.x + s];
-                for (uint j = tid; j < sp.y; j += lanes) partIdx[sp.z + j] = sp.x + j;
-            }
-            // The whole workgroup takes this branch together -- g is workgroup-uniform -- so leaving here
-            // cannot strand anyone at a barrier below.
-            if ((g.w & 0x80000000u) == 0u) return;
-            memoryBarrierBuffer();
-            barrier();
-
-            uint n = 1u;
-            while (n < count) n <<= 1u;
-            for (uint i = tid; i < n; i += lanes)
-            {
-                if (i < count)
-                {
-                    uint r = partIdx[dst + i];
-                    vec3 d = particles[r].centre.xyz - uEye;
-                    sKey[i] = -dot(d, d);
-                    sVal[i] = r;
-                }
-                else { sKey[i] = 3.0e38; sVal[i] = 0u; }
-            }
-            memoryBarrierShared();
-            barrier();
-
-            for (uint k = 2u; k <= n; k <<= 1u)
-            {
-                for (uint j = k >> 1u; j > 0u; j >>= 1u)
-                {
-                    for (uint i = tid; i < n; i += lanes)
-                    {
-                        uint l = i ^ j;
-                        if (l > i && (sKey[i] > sKey[l]) == ((i & k) == 0u))
-                        {
-                            float fk = sKey[i]; sKey[i] = sKey[l]; sKey[l] = fk;
-                            uint fv = sVal[i]; sVal[i] = sVal[l]; sVal[l] = fv;
-                        }
-                    }
-                    memoryBarrierShared();
-                    barrier();
-                }
-            }
-
-            for (uint i = tid; i < count; i += lanes) partIdx[dst + i] = sVal[i];
-        }
-        """;
+    private static string ParticleCs => ShaderSource.Get("Particles.ParticleCs.glsl");
 
     /// <summary>The vertex stage. Everything the stock <c>vsparticle</c> does is already done by the time a
     /// vertex exists -- it is <c>VertexColor = vColor; TransformMainCoordinates();</c> and nothing else.
@@ -1811,94 +1703,10 @@ internal static unsafe partial class Particles
     /// 5ms that equipping one cost; a media particle has no detail a per-vertex term loses. The cluster
     /// lookup takes its screen tile from this vertex's own NDC (CX_CLUSTER_XY) since there is no
     /// gl_FragCoord to read; the libraries compose between the head and the main.</para></summary>
-    private const string ParticleVsHead = """
-        #version 460 core
-
-        """ + ParticleRecDecl + """
-        layout(std430, binding = 11) readonly buffer CxParticleIdx { uint partIdx[]; };
-
-        uniform mat4 uView;
-        uniform mat4 uProj;
-        uniform vec3 uEye;
-
-        out vec4 vColor;
-        out vec2 vUv;
-        out float vViewZ;
-        out vec3 vWorld;
-        out vec3 vNrm;
-        out float vSoft;
-        out vec3 vLight;            // #336: ambient + sun + point at this vertex; 1.0 when the draw is unlit
-        flat out int vType;
-
-        uniform int uLit;           // 0 = this draw is self-illuminated (additive, punch-through) or unlit
-        uniform vec3 uAreaAmbient;
-        uniform vec3 uAreaDiffuse;
-        uniform vec3 uAreaDir;
-
-        vec2 cxClusterXY;
-        #define CX_CLUSTER_XY cxClusterXY
-
-        """;
+    private static string ParticleVsHead => ShaderSource.Get("Particles.ParticleVsHead.glsl");
 
     /// <summary>The vertex main, composed after <see cref="AlloyLights"/>'s three libraries.</summary>
-    private const string ParticleVsMain = """
-
-        vec3 CxSafeNorm(vec3 v)
-        {
-            float l = dot(v, v);
-            return l > 0.0 ? v * inversesqrt(l) : vec3(0.0);
-        }
-
-        void main()
-        {
-            int corner = gl_VertexID % 6;
-            CxParticle p = particles[partIdx[gl_VertexID / 6]];
-
-            // (A, B, C, C, B, D) as sign pairs: sx picks the right axis, sy picks the up axis AND which
-            // end of a stretched pair the vertex sits on.
-            const vec2 SIGNS[6] = vec2[6](vec2( 1.0,  1.0), vec2(-1.0,  1.0), vec2( 1.0, -1.0),
-                                          vec2( 1.0, -1.0), vec2(-1.0,  1.0), vec2(-1.0, -1.0));
-            vec2 sg = SIGNS[corner];
-            bool near = sg.y > 0.0;
-
-            vec3 base = near ? p.posCol.xyz : p.farColFar.xyz;
-            vec3 world = base + sg.x * p.rightSoft.xyz + sg.y * p.upType.xyz;
-
-            vec3 rn = CxSafeNorm(p.rightSoft.xyz);
-            vec3 un = CxSafeNorm(p.upType.xyz);
-            vec3 facing = CxSafeNorm(uEye - p.centre.xyz);
-
-            vColor = unpackUnorm4x8(floatBitsToUint(near ? p.posCol.w : p.farColFar.w));
-            vUv = vec2(sg.x > 0.0 ? p.uv.y : p.uv.x, near ? p.uv.w : p.uv.z);
-            vWorld = world;
-            vNrm = CxSafeNorm(sg.x * rn + sg.y * un + facing);
-            vSoft = p.rightSoft.w;
-            vType = int(p.upType.w);
-            vec4 vp = uView * vec4(world, 1.0);
-            vViewZ = -vp.z;
-            gl_Position = uProj * vp;
-
-            // #148's terms, the ones grass runs, on the hemispherical billboard normal -- per vertex (#336).
-            // Only the alpha-blended class is lit: smoke, dust and fog are media a torch should pick out,
-            // while additive and punch-through emit their own light and were never lit in vanilla either.
-            vLight = vec3(1.0);
-            if (uLit != 0)
-            {
-                // The cluster is the particle CENTRE's, for all six corners: a quad at the camera has corners
-                // behind the eye and off the screen, and a corner clamped to an edge tile reads a different
-                // light list from its neighbours -- a vertex popping dark as the smoke drifts, i.e. flicker.
-                vec4 cv = uView * vec4(p.centre.xyz, 1.0);
-                vec4 cc = uProj * cv;
-                cxClusterXY = (cc.xy / max(cc.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
-                float ndl = clamp(dot(vNrm, uAreaDir), 0.0, 1.0);
-                vec3 sun = uAreaDiffuse * (ndl * CxSunShadow(world, vNrm, ndl, ndl));
-                vec3 point = CxClusteredDiffuse(world, vNrm, max(-cv.z, 1e-3));
-                // the 0.15 floor and the sun-facing wrap are inc_lighting.shd:679, as every other owned
-                // stage runs them
-                vLight = uAreaAmbient * mix(0.15, 1.0, ndl) + sun + point;
-            }
-        }
-        """;
+    private static string ParticleVsMain => ShaderSource.Get("Particles.ParticleVsMain.glsl");
 
     /// <summary>The fragment stage, ported from the client's <c>fsparticle</c>: modulate, discard, fog.
     /// <para>The fog split is the stock one -- an additive fragment cannot be lerped towards the fog colour
@@ -1914,83 +1722,8 @@ internal static unsafe partial class Particles
     /// world around them rather than becoming the one coloured thing in a grey frame.</para>
     /// <para>No colour-space encode: since #139 the Alloy colour target holds DISPLAY-SPACE values (RGBA16F
     /// is headroom, not a colour space), so writing what vanilla wrote IS the match.</para></summary>
-    internal const string ParticleFsHead = """
-        #version 460 core
-        #define CX_FS 1   // #642: gl_FragCoord is in reach for the shadow lib's dither
-        in vec4 vColor;
-        in vec2 vUv;
-        in float vViewZ;
-        in vec3 vWorld;
-        in vec3 vNrm;
-        in float vSoft;
-        in vec3 vLight;
-        flat in int vType;
-
-        uniform sampler2D uTex;
-        uniform float uAlphaCut;    // fAlphaDiscardValue: 0.2 punch-through, -1.0 (off) otherwise
-        uniform int uAdditive;
-        uniform float uEmissive;    // .mtr fEmissive: >1 pushes the effect into #139's HDR headroom
-        uniform int uSoftOn;        // 0 = no depth copy this pass, so no fade
-        // uViz: /particles viz: 1 = tint by render type, 2 = flat, no texture. #336: the light rig's terms
-        // are the VERTEX stage's now; this stage only applies vLight. The libraries still compose in below
-        // for CxLinear.
-
-        """ + AlloyRenderer.SceneDepthLib + AlloyRenderer.FogDecl + """
-
-        """;
+    internal static string ParticleFsHead => ShaderSource.Get("Particles.ParticleFsHead.glsl");
 
     /// <summary>The body, composed after <see cref="AlloyLights"/>'s three libraries.</summary>
-    private const string ParticleFsMain = """
-        void main()
-        {
-            vec4 c = vColor * texture(uTex, vUv);
-            if (uViz == 2)
-            {
-                // Flat and opaque-ish: the quads as QUADS. A soft smoke texture hides everything about the
-                // geometry that could be wrong with it.
-                frag = vec4(0.6, 0.6, 0.6, 0.35);
-                return;
-            }
-            if (uViz == 1)
-            {
-                const vec3 tint[7] = vec3[7](vec3(1,0,0), vec3(0,1,0), vec3(0,0,1), vec3(1,1,0),
-                                             vec3(1,0,1), vec3(0,1,1), vec3(1,1,1));
-                frag = vec4(tint[clamp(vType, 0, 6)], c.a);
-                return;
-            }
-            if (uAlphaCut >= 0.0 && c.a <= uAlphaCut) discard;
-
-            // #132: the Alloy frame is LINEAR end to end, so the texel's own encode comes off here -- for
-            // every particle, lit or not. An additive plume that stayed display-space would add the wrong
-            // curve into a linear frame, which is exactly the compositing error the whole-frame resolve
-            // exists to make impossible.
-            vec3 albedo = CxLinear(c.rgb);
-            // #336: lit per vertex; vLight is 1.0 on an unlit draw
-            albedo *= vLight;
-            c.rgb = albedo;
-
-            // Soft particles, exactly where fsparticle puts them: after the discard, before fog. The fade is
-            // squared because a linear ramp still shows its own leading edge as a line -- the square is what
-            // the stock stage uses and what makes the contact read as a dissolve.
-            if (uSoftOn != 0 && vSoft > 0.0)
-            {
-                float gap = CxSceneViewZ(gl_FragCoord.xy / vec2(textureSize(uSceneDepth, 0))) - vViewZ;
-                float k = clamp(gap * vSoft, 0.0, 1.0);
-                c.a *= k * k;
-            }
-
-            // #148: past 1.0 this leaves display range and lands in #139's headroom, where the bloom
-            // threshold catches it because the effect IS bright -- not because a threshold happened to sit
-            // where its texture did. Before fog: fog attenuates what is there, and emission is what is there.
-            c.rgb *= uEmissive;
-
-            // #341: the SAME fog the world pass runs -- ramp, height layer, sky-matched target and all.
-            // An emitter that fogged toward a different colour than the terrain behind it is a smoke plume
-            // that reads as a different weather.
-            float f = CxFogFactor(vWorld, vViewZ);
-            if (uAdditive != 0) c.a *= 1.0 - f;
-            else c.rgb = CxFog(c.rgb, vWorld, vViewZ);
-            frag = c;
-        }
-        """;
+    private static string ParticleFsMain => ShaderSource.Get("Particles.ParticleFsMain.glsl");
 }

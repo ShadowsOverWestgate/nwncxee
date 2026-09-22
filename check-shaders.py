@@ -7,16 +7,21 @@ The runtime failure is quiet: a lit stage that does not compile only says "clust
 unavailable -- lit parts revert to engine drawing" in the log and the world keeps rendering, vanilla.
 This turns that into a build-time error.
 
-Composition is not written down here. `ShaderStages.Source` in C# is the authoritative table (ADR
-0012) and this script parses its switch arms, so a stage the extender compiles is the stage checked
-here by construction. Only program *linkage* -- which stages link together, including the depth-only
-ones that have no resref -- lives below. `ShaderResource.Tokens`' sizing tokens are expanded with
+Composition is not written down here. Every stage is a `managed/Alloy/Shaders/*.glsl` file whose
+`#include` lines name the libraries it is built from (#707), and this script compiles those same
+files -- the ones the extender embeds -- so a stage checked here is the stage that ships, by
+construction. Only program *linkage* -- which stages link together, including the depth-only ones
+that have no resref -- lives below. `ShaderResource.Tokens`' sizing tokens are expanded with
 stand-in values, since only the shapes matter here.
 
 Why a second copy of a composition is never tolerable: a `CxDraw` record layout that lives in C#
 was, until ADR 0012, also hand-copied into shipped `cx_*.shd`. When the record grew in #120 the
 stale copies read every draw out of a neighbour's slot and the world went black. Nothing ships a copy
 now, and nothing here restates one either.
+
+The audit at the end is the other half of that: every `ShaderSource.Get("x.glsl")` in C# names a
+file that exists, and every file is reached by something. A typo'd name is otherwise a stage that
+composes to nothing, on a machine that reaches that feature.
 
 Needs glslangValidator (Arch: `glslang`); the material pass also needs spirv-opt/spirv-dis
 (Arch: `spirv-tools`), and skips itself with a notice where they are absent.
@@ -27,90 +32,74 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SOURCES = [
-    # #171: the owned pass's GLSL lives in the partial, not the service. Must stay FIRST --
-    # harvest() inlines only constants it has already seen, and the files below name these.
-    # The service's own file is deliberately absent: it holds no shader text now. Keep it that way --
-    # a const string added THERE and concatenated into one here would splice in as empty and be
-    # validated as if it shipped. (A constant a Source arm names directly still hard-errors.)
-    "managed/Alloy/AlloyRenderer.Shaders.cs",
-    "managed/Alloy/Pass/AlloyLights.cs",
-    "managed/Alloy/Pass/LightmapBake.cs",           # #674: ChartBufDecl, which the lit stage composes
-    "managed/Alloy/Pass/LightmapBake.Shaders.cs",
-    "managed/Alloy/Pass/CasterPass.cs",
-    "managed/Alloy/Pass/GrassField.cs",
-    "managed/Alloy/Pass/PostChain.cs",
-    "managed/Alloy/Pass/OitPass.cs",
-    "managed/Alloy/Pass/PostStack.cs",
-    "managed/Alloy/Pass/SmaaLib.cs",   # before SmaaStage: the harvest folds references in list order
-    "managed/Alloy/Pass/SmaaStage.cs",
-    "managed/Alloy/Pass/SsaoPass.cs",
-    "managed/Alloy/Pass/Halos.cs",
-    "managed/Alloy/Pass/Weather.Draw.cs",
-    "managed/Alloy/Pass/Weather.Surface.cs",
-    "managed/Alloy/Pass/FrameSnapshot.cs",
-    "managed/Alloy/Pass/MotionVectors.cs",
-    "managed/Alloy/Pass/TaaStage.cs",
-    "managed/Alloy/Pass/ToonStage.cs",
-    "managed/Alloy/Pass/FbPostStage.cs",
-    "managed/Alloy/AlloyRenderer.Motion.cs",
-    "managed/Alloy/Highlight.cs",
-    "managed/Alloy/Pass/IdTarget.cs",
-]
-# ShaderResource.Tokens' three sizing tokens. Any legal value compiles the same shapes.
+SHADERS = os.path.join(ROOT, "managed/Alloy/Shaders")
+MANAGED = os.path.join(ROOT, "managed")
+# ShaderResource.Tokens' sizing tokens. Any legal value compiles the same shapes.
 TOKENS = {"$CAP$": "128", "$SORT$": "32", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3",
           # #352: the hosted post chain built with sharpen + vibrance on (the two hosted option bits), high quality
           "$POSTMASK$": "9", "$SQM$": "2"}
-STAGES = "managed/Alloy/Core/ShaderStages.cs"
-# ...and an expression-bodied `static string X => A + B;` alias (Weather.Draw.cs), which is a composition too.
-DECL = re.compile(r"\s*(?:private|internal|public)?\s*(?:static)?\s*(?:const|readonly) string (\w+) = (.*)$"
-                  r"|\s*(?:private|internal|public)\s+static string (\w+) => (.*)$")
-PIECE = re.compile(r'"""\n(.*?)\n\s*"""|([A-Za-z_]\w*)', re.S)
-RESREF = re.compile(r'(\w+)\s*=\s*"(cx_\w+)"')
-# `internal static string Source(string resref) => resref switch { ... };` -- the shape ShaderStages
-# guarantees. One arm per resref: a qualified resref constant, then a plain `+` chain of constants.
-SWITCH = re.compile(r"string Source\(string resref\) => resref switch\s*\{(.*?)\n\s*\};", re.S)
-ARM = re.compile(r"^\s*([\w.]+)\s*=>\s*([^,]+),\s*$", re.M)
+INCLUDE = re.compile(r'^\s*#include\s+"([^"]+\.glsl)"\s*$')
+GET = re.compile(r'ShaderSource\.Get\("([^"]+)"\)')
+RESREF = re.compile(r'"(cx_\w+)"')
 
 
-def harvest():
-    """Every `const string` raw-literal in the render sources, with concatenated constants inlined."""
-    lines = []
-    for path in SOURCES:
-        lines += open(os.path.join(ROOT, path)).read().split("\n")
-    decls, i = [], 0
-    while i < len(lines):
-        m = DECL.match(lines[i])
-        i += 1
-        if not m:
+def expand_includes(name, depth=0):
+    """Mirrors ShaderSource.Get: an #include line naming an embedded .glsl is spliced, anything else --
+    the engine's own `#include "inc_scriptable"`, a line inside a comment block -- stands."""
+    out = []
+    lines = open(os.path.join(SHADERS, name)).read().split("\n")
+    for i, line in enumerate(lines):
+        m = INCLUDE.match(line)
+        if m and depth < 8 and os.path.exists(os.path.join(SHADERS, m.group(1))):
+            body = expand_includes(m.group(1), depth + 1)
+            out.append(body if body.endswith("\n") else body + "\n")
+        else:
+            out.append(line + ("\n" if i < len(lines) - 1 else ""))
+    return "".join(out)
+
+
+def shaders():
+    """Every embedded stage and library, keyed by file name without the extension, includes spliced."""
+    out = {}
+    for f in sorted(os.listdir(SHADERS)):
+        if f.endswith(".glsl"):
+            out[f[:-5]] = expand_includes(f)
+    if not out:
+        sys.exit(f"{SHADERS}: no .glsl files -- did the shaders move?")
+    return out
+
+
+def cs_sources():
+    for base, _, files in os.walk(MANAGED):
+        for f in sorted(files):
+            if f.endswith(".cs"):
+                yield os.path.join(base, f)
+
+
+def audit(g):
+    """Every name C# asks ShaderSource for exists, and every file is reached by something."""
+    named, resrefs = set(), set()
+    for p in cs_sources():
+        text = open(p).read()
+        named.update(GET.findall(text))
+        resrefs.update(RESREF.findall(text))
+    included = {m.group(1) for f in g
+                for m in (INCLUDE.match(l) for l in open(os.path.join(SHADERS, f + ".glsl")))
+                if m}
+    files = {f + ".glsl" for f in g}
+    bad = 0
+    for n in sorted(named - files):
+        print(f"audit: C# asks ShaderSource for {n}, which no file answers"); bad = 1
+    # A stage file is named by resref, through ShaderStages.Source -- never by a literal.
+    for f in sorted(files - named - included):
+        if f[:-5] in resrefs:
             continue
-        name, expr = (m.group(1), [m.group(2)]) if m.group(1) else (m.group(3), [m.group(4)])
-        fenced = expr[0].count('"""') % 2 == 1
-        while fenced or not expr[-1].rstrip().endswith(";"):
-            expr.append(lines[i])
-            if lines[i].count('"""') % 2 == 1:
-                fenced = not fenced
-            i += 1
-        decls.append((name, "\n".join(expr)))
-    # Two passes: an alias (`A = B + C;`, no literal of its own -- GrassVs is `static readonly`, declared
-    # ABOVE the pieces it names) resolves only once every piece is known, so fold to a fixpoint rather
-    # than in declaration order. A const string that is not shader text -- a config key, a log line --
-    # names no known constant and folds to nothing, so it still drops out.
-    consts = {}
-    for _ in range(4):
-        for name, text in decls:
-            out = []
-            for p in PIECE.finditer(text):
-                if p.group(1) is not None:
-                    out.append(textwrap.dedent(p.group(1)) + "\n")
-                elif p.group(2) in consts:
-                    out.append(consts[p.group(2)])
-            if out:
-                consts[name] = "".join(out)
-    return consts
+        print(f"audit: {f} is not included, named from C# or an overridable resref -- dead text"); bad = 1
+    print(f"audit: {len(files)} embedded .glsl, {len(named)} named from C#, {len(included)} included"
+          + (" -- ok" if not bad else ""))
+    return bad
 
 
 # #346, the vanilla bridge: a stage can carry `// $VANILLA <resref>` … `// $VANILLA-END`, and at runtime
@@ -134,8 +123,8 @@ SKIP = re.compile(r"^[ \t]*// \$VANILLA-SKIP (.*)$", re.M)
 # environment block stands in for and which must never be pulled into an Alloy stage.
 SUPPLIED = {"inc_common", "inc_uniforms"}
 # ...and VanillaShader.Substituted: the one include a HOSTED stage gets a stand-in for (#350). The text is
-# the C# constant, read out of the harvest so the two cannot drift.
-SUBSTITUTED = {"inc_standard": "VanillaStandardFs"}
+# the embedded stand-in itself, so the two cannot drift.
+SUBSTITUTED = {"inc_standard": "AlloyRenderer.VanillaStandardFs"}
 
 
 def find_shd(name):
@@ -148,7 +137,7 @@ def find_shd(name):
     return None
 
 
-def expand(text, done, consts, depth=0):
+def expand(text, done, g, depth=0):
     """A content file's own #includes, resolved out of the checkout -- the C# side resolves them through
     the resource chain, and a cx_* hook file is composed OF them. One visit each PER STAGE (`done` is
     shared across a stage's regions, as VanillaShader.Splice shares its list): the files carry #ifndef
@@ -165,11 +154,11 @@ def expand(text, done, consts, depth=0):
             continue
         done.add(m.group(1))
         if m.group(1) in SUBSTITUTED:
-            out += expand(consts[SUBSTITUTED[m.group(1)]], done, consts, depth + 1)
+            out += expand(g[SUBSTITUTED[m.group(1)]], done, g, depth + 1)
             continue
         hit = find_shd(m.group(1))
         if hit:
-            out += expand(open(hit).read(), done, consts, depth + 1)
+            out += expand(open(hit).read(), done, g, depth + 1)
     return out
 
 
@@ -179,17 +168,17 @@ STUB_FN = re.compile(r"^\s*(?:\w+\s+)+(\w+)\s*\([^)]*\)\s*\{", re.M)
 OWN_DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)", re.M)
 
 
-def host(stock, resref, done, consts):
+def host(stock, resref, done, g):
     """Mirrors VanillaShader.HostText (#350): a content FRAGMENT STAGE rewritten to run as a function of the
     lit program. main() renamed, gl_FragColor redirected into FragmentColor, the stage's OWN #defines scoped
     to it (undefined before and after, then the environment's macros re-issued), and its declaration of a
     name the environment supplies dropped. The wrapper reads the MATERIAL_*_VALUE terms back."""
-    text = "\n".join(expand(stock, done, consts))
+    text = "\n".join(expand(stock, done, g))
     if not MAIN_FN.search(text):
         return None
     text = MAIN_FN.sub(f"void CxHostMain_{resref}()", text, count=1)
     text = re.sub(r"\bgl_FragColor\b", "FragmentColor", text)
-    env = OWN_DEFINE.findall(consts["VanillaEnvDefs"])
+    env = OWN_DEFINE.findall(g["AlloyRenderer.VanillaEnvDefs"])
     text = re.sub(r"^[ \t]*uniform\b[^;\n]*\b(?:" + "|".join(env) + r")[ \t]*;[^\n]*\n?", "", text, flags=re.M)
     own = list(dict.fromkeys(OWN_DEFINE.findall(stock)))
     undef = "".join(f"#undef {n}\n" for n in own)
@@ -197,10 +186,10 @@ def host(stock, resref, done, consts):
             + f"void CxHost_{resref}()\n{{\n    CxHostMain_{resref}();\n"
             + "    fSpecularity = MATERIAL_SPECULARITY_VALUE;\n    fRoughness = MATERIAL_ROUGHNESS_VALUE;\n"
             + "    fMetallicness = MATERIAL_METALLICNESS_VALUE;\n    SpecularColor = MATERIAL_SPECULAR_COLOR_VALUE;\n}\n"
-            + undef + consts["VanillaEnvDefs"])
+            + undef + g["AlloyRenderer.VanillaEnvDefs"])
 
 
-def splice(src, seen, consts):
+def splice(src, seen, g):
     """Replace each marked region with the content repo's copy of that .shd, where one exists."""
     done = set()
     for m in SKIP.finditer(src):
@@ -216,7 +205,7 @@ def splice(src, seen, consts):
             return indent + f"// $VANILLA{hosted or ''} {resref}"
         done.add(resref)
         stock = open(hit).read()
-        body = host(stock, resref, done, consts) if hosted else "\n".join(expand(stock, done, consts))
+        body = host(stock, resref, done, g) if hosted else "\n".join(expand(stock, done, g))
         # Mirrors VanillaShader.Validate: every function the stub defines must appear in the spliced text,
         # or the runtime compiles the stub for this region -- so the check does the same rather than
         # accepting text the runtime would reject.
@@ -230,40 +219,14 @@ def splice(src, seen, consts):
     return VANILLA.sub(one, src) if os.path.isdir(CONTENT_SHD) else src
 
 
-def composition(consts):
-    """Resref -> composed source, read out of `ShaderStages.Source`'s switch arms. C# owns this table;
-    a name that does not resolve is a hard error, because silently dropping a piece is the drift this
-    binding exists to prevent."""
-    refs = {}
-    for path in SOURCES:
-        for name, ref in RESREF.findall(open(os.path.join(ROOT, path)).read()):
-            refs[name] = ref
-    body = SWITCH.search(open(os.path.join(ROOT, STAGES)).read())
-    if not body:
-        sys.exit(f"{STAGES}: no `Source(string resref) => resref switch` found -- did the table move?")
-    out = {}
-    for left, expr in ARM.findall(body.group(1)):
-        if left == "_":
-            continue
-        ref = refs.get(left.rsplit(".", 1)[-1])
-        if ref is None:
-            sys.exit(f"{STAGES}: switch arm `{left}` is not a known cx_* resref constant")
-        pieces = []
-        for term in expr.split("+"):
-            leaf = term.strip().rsplit(".", 1)[-1]
-            if leaf not in consts:
-                sys.exit(f"{STAGES}: `{ref}` names shader constant {leaf}, which no render source declares")
-            pieces.append(consts[leaf])
-        out[ref] = "".join(pieces)
+def spliced(g):
+    """Every stage with its vanilla-bridge regions replaced from a content checkout, where one exists."""
     seen = {}
-    for ref in out:
-        out[ref] = splice(out[ref], seen, consts)
+    out = {k: splice(v, seen, g) for k, v in g.items()}
     for resref, path in sorted(seen.items()):
         print(f"vanilla bridge: {resref}.shd "
               + (f"spliced from {os.path.relpath(path, os.path.expanduser('~'))}" if path
                  else f"NOT FOUND under {CONTENT_SHD} -- compiled the stub, which checks nothing"))
-    if not out:
-        sys.exit(f"{STAGES}: the composition table parsed to nothing")
     return out
 
 
@@ -383,14 +346,14 @@ def fold(prelude, expr, tmp):
     return float(consts[v]), None
 
 
-def check_material(consts, stages):
+def check_material(g):
     """#122: the synthesis chain folded off-device and compared against the stock generators."""
     missing = [t for t in ("glslangValidator", "spirv-opt", "spirv-dis") if shutil.which(t) is None]
     if missing:
         print(f"material synthesis: SKIPPED -- no {', '.join(missing)} (Arch: spirv-tools)")
         return 0
     # The real lit stage minus its main, so the folds see whatever C# actually splices into the chain.
-    prelude, main = stages["cx_ownlit_fs"], consts["OwnedLitFsMain"]
+    prelude, main = g["cx_ownlit_fs"], g["AlloyRenderer.OwnedLitFsMain"]
     if not prelude.endswith(main):
         sys.exit("cx_ownlit_fs no longer ends with OwnedLitFsMain -- the material prelude broke")
     prelude = prelude[: -len(main)]
@@ -424,48 +387,48 @@ def check_material(consts, stages):
     return bad
 
 
-# Program linkage: which stages link together. Overridable stages are named by resref and come out of the
-# C# table; the depth-only stages have no resref, so they are the one place this file names shader text
-# directly. #339 took the tessellation out with the custom water shader: water is a plain vertex/fragment
-# pair again, like every other class here.
-def programs(c, s):
+# Program linkage: which stages link together, by file name -- an overridable stage is named by its
+# resref, the depth-only ones (no resref) by the class and constant they were reached by. #339 took the
+# tessellation out with the custom water shader: water is a plain vertex/fragment pair again, like every
+# other class here.
+def programs(g):
     return {
-        "fullbright": (s["cx_own_vs"], s["cx_own_fs"]),
-        "depth prepass": (c["DepthVs"], c["DepthFs"]),
-        "keyhole depth prepass": (c["DepthKeyVs"], c["DepthKeyFs"]),
-        "caster depth": (s["cx_cast_vs"], s["cx_cast_fs"]),
-        "caster depth (alpha-tested)": (c["CastMaskVs"], c["CastMaskFs"]),
-        "clustered lit": (s["cx_ownlit_vs"], s["cx_ownlit_fs"]),
-        "clustered lit (OIT lists)": (s["cx_ownlit_vs"], s["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_OIT_LISTS 1\n", 1)),
-        "post bloom downsample": (s["cx_post_vs"], s["cx_bloomdn_fs"]),
-        "post bloom upsample": (s["cx_post_vs"], s["cx_bloomup_fs"]),
-        "post resolve": (s["cx_post_vs"], s["cx_resolve_fs"]),
-        "post stack gamma": (s["cx_post_vs"], s["cx_postgam_fs"]),
-        "post stack toon": (s["cx_post_vs"], s["cx_toon_fs"]),
-        "post stack fbpost (hosted content chain)": (s["cx_post_vs"], s["cx_fbpost_fs"]),
-        "post stack aa edges": (s["cx_post_vs"], s["cx_smaaedge_fs"]),
-        "post stack aa weights": (s["cx_post_vs"], s["cx_smaawgt_fs"]),
-        "post stack aa blend": (s["cx_post_vs"], s["cx_smaablend_fs"]),
-        "ssao visibility": (s["cx_post_vs"], s["cx_ssao_fs"]),
-        "ssao blur": (s["cx_post_vs"], s["cx_ssaoblur_fs"]),
-        "halos": (s["cx_halo_vs"], s["cx_halo_fs"]),
-        "weather rain": (s["cx_weather_vs"], s["cx_rain_fs"]),
-        "weather snow": (s["cx_weather_vs"], s["cx_snow_fs"]),
-        "ssao temporal": (c["FullscreenVs"], c["TemporalFs"]),
-        "motion vectors": (c["FullscreenVs"], c["CameraFs"]),
-        "mover motion": (c["MotionVs"], c["MotionFs"]),
-        "taa resolve": (c["FullscreenVs"], c["TaaFs"]),
-        "post stack taa": (s["cx_post_vs"], s["cx_taa_fs"]),
-        "highlight composite": (c["FullscreenVs"], c["HighlightCompFs"]),
-        "owned water": (s["cx_water_vs"], s["cx_water_fs"]),
-        "instanced grass": (s["cx_grass_vs"], s["cx_grass_fs"]),
-        "grass depth prepass": (s["cx_grass_vs"], c["GrassDepthFs"]),
-        "clustered light build": (s["cx_cluster_cs"],),
-        "sky decode": (c["FullscreenVs"], c["SkyDecodeFs"]),
-        "oit resolve": (c["FullscreenVs"], c["OitResolveFs"]),
-        "oit clear": (c["FullscreenVs"], c["OitClearFs"]),
-        "lightmap bake": (c["BakeVs"], c["BakeFs"]),
-        "lightmap finish": (c["FullscreenVs"], c["FinishFs"]),
+        "fullbright": (g["cx_own_vs"], g["cx_own_fs"]),
+        "depth prepass": (g["AlloyRenderer.DepthVs"], g["AlloyRenderer.DepthFs"]),
+        "keyhole depth prepass": (g["AlloyRenderer.DepthKeyVs"], g["AlloyRenderer.DepthKeyFs"]),
+        "caster depth": (g["cx_cast_vs"], g["cx_cast_fs"]),
+        "caster depth (alpha-tested)": (g["CasterPass.CastMaskVs"], g["CasterPass.CastMaskFs"]),
+        "clustered lit": (g["cx_ownlit_vs"], g["cx_ownlit_fs"]),
+        "clustered lit (OIT lists)": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_OIT_LISTS 1\n", 1)),
+        "post bloom downsample": (g["cx_post_vs"], g["cx_bloomdn_fs"]),
+        "post bloom upsample": (g["cx_post_vs"], g["cx_bloomup_fs"]),
+        "post resolve": (g["cx_post_vs"], g["cx_resolve_fs"]),
+        "post stack gamma": (g["cx_post_vs"], g["cx_postgam_fs"]),
+        "post stack toon": (g["cx_post_vs"], g["cx_toon_fs"]),
+        "post stack fbpost (hosted content chain)": (g["cx_post_vs"], g["cx_fbpost_fs"]),
+        "post stack aa edges": (g["cx_post_vs"], g["cx_smaaedge_fs"]),
+        "post stack aa weights": (g["cx_post_vs"], g["cx_smaawgt_fs"]),
+        "post stack aa blend": (g["cx_post_vs"], g["cx_smaablend_fs"]),
+        "ssao visibility": (g["cx_post_vs"], g["cx_ssao_fs"]),
+        "ssao blur": (g["cx_post_vs"], g["cx_ssaoblur_fs"]),
+        "halos": (g["cx_halo_vs"], g["cx_halo_fs"]),
+        "weather rain": (g["cx_weather_vs"], g["cx_rain_fs"]),
+        "weather snow": (g["cx_weather_vs"], g["cx_snow_fs"]),
+        "ssao temporal": (g["PostChain.FullscreenVs"], g["SsaoPass.TemporalFs"]),
+        "motion vectors": (g["PostChain.FullscreenVs"], g["MotionVectors.CameraFs"]),
+        "mover motion": (g["AlloyRenderer.MotionVs"], g["AlloyRenderer.MotionFs"]),
+        "taa resolve": (g["PostChain.FullscreenVs"], g["TaaStage.TaaFs"]),
+        "post stack taa": (g["cx_post_vs"], g["cx_taa_fs"]),
+        "highlight composite": (g["PostChain.FullscreenVs"], g["Highlight.HighlightCompFs"]),
+        "owned water": (g["cx_water_vs"], g["cx_water_fs"]),
+        "instanced grass": (g["cx_grass_vs"], g["cx_grass_fs"]),
+        "grass depth prepass": (g["cx_grass_vs"], g["GrassField.GrassDepthFs"]),
+        "clustered light build": (g["cx_cluster_cs"],),
+        "sky decode": (g["PostChain.FullscreenVs"], g["AlloyRenderer.SkyDecodeFs"]),
+        "oit resolve": (g["PostChain.FullscreenVs"], g["OitPass.OitResolveFs"]),
+        "oit clear": (g["PostChain.FullscreenVs"], g["OitPass.OitClearFs"]),
+        "lightmap bake": (g["LightmapBake.BakeVs"], g["LightmapBake.BakeFs"]),
+        "lightmap finish": (g["PostChain.FullscreenVs"], g["LightmapBake.FinishFs"]),
     }
 
 
@@ -498,12 +461,11 @@ def check_early_z(progs):
 
 
 def main():
-    c = harvest()
-    s = composition(c)
+    g = spliced(shaders())
     try:
-        progs = programs(c, s)
+        progs = programs(g)
     except KeyError as e:
-        sys.exit(f"could not find shader constant {e} -- did a stage get renamed?")
+        sys.exit(f"could not find shader file {e} -- did a stage get renamed?")
 
     bad = 0
     with tempfile.TemporaryDirectory() as tmp:
@@ -520,9 +482,10 @@ def main():
             if r.returncode:
                 bad = 1
                 print(r.stdout, r.stderr)
-    print(f"{len(progs)} programs, {len(s)} overridable stages composed from ShaderStages.Source")
+    print(f"{len(progs)} programs from {len(g)} embedded .glsl")
     bad |= check_early_z(progs)
-    bad |= check_material(c, s)
+    bad |= check_material(g)
+    bad |= audit(g)
     return bad
 
 

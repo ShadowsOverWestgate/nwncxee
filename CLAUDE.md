@@ -87,6 +87,8 @@ Navigation:
         ExtenderLog.cs           inject this for logging
       Services/                business logic -- this is where you work
       Alloy/                   the renderer (#198). Core/ Scene/ Pass/ under namespace CX.Alloy
+        Shaders/                 the pipeline's GLSL, one .glsl per stage or library (embedded
+                                 resources; a stage names its libraries with #include)
     docs/hook-pattern.md       example: a real hook + trampoline
     docs/owned-resource-lifetimes.md  what creates/revokes each owned table, and Revoke vs ContextLost
     docs/alloy-refusals.md     why a frame is the engine's: the frame-start verdict and its reason set

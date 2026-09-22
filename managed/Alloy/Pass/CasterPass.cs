@@ -586,7 +586,6 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// radius, so cascade 0 admits casters within 15u of the light axis and 135u along it.</para></summary>
     private static float FitMargin() => _maxDist;
 
-
     private static ExtenderLog? _log;
     private static bool _armed, _disarmed;
     private static uint* _primTable;
@@ -594,7 +593,6 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// texture's live GL id. Both re-read per frame -- a CAurTexture* is BORROWED and freed on area
     /// transitions, so it is never cached.</summary>
     private static delegate* unmanaged<IntPtr, int, long> _getTexture;
-
 
     private static readonly float[] _liveCx = new float[MaxCasters], _liveCy = new float[MaxCasters],
                                     _liveCz = new float[MaxCasters], _liveR = new float[MaxCasters];
@@ -860,16 +858,6 @@ public sealed unsafe partial class CasterPass : IExtenderService
         _liveCount = 0; _liveCreatures = 0; _liveGen = -1;
         CasterGather.Stand();
     }
-
-
-
-
-
-
-
-
-
-
 
     /// <summary>#241: the whole re-bake decision for one VIEW, as four independent reasons a recorded depth
     /// layer may no longer describe the world. Pulled out so <see cref="SelfCheck"/> can pin each one.
@@ -1820,9 +1808,6 @@ public sealed unsafe partial class CasterPass : IExtenderService
         if (any) _log?.Info($"CasterPass: caster set released ({why})");
     }
 
-
-
-
     /// <summary>The two discard thresholds. Alpha means COVERAGE on everything the engine ships except one
     /// authoring, so the default is the engine's own 0.2 -- the value its colour pass uses, which is what
     /// makes a leaf cast a leaf. The exception is an env-mapped material, where the diffuse alpha is
@@ -1865,7 +1850,6 @@ public sealed unsafe partial class CasterPass : IExtenderService
         return 1f;
     }
 
-
     private const int TexCacheSize = 2048;
     private static readonly int[] _texKey = new int[TexCacheSize];
     private static readonly float[] _texHoles = new float[TexCacheSize], _texGraded = new float[TexCacheSize];
@@ -1879,9 +1863,6 @@ public sealed unsafe partial class CasterPass : IExtenderService
         if (_getTexture == null) return 0;
         return AurTex.Tid((IntPtr)_getTexture(mat, 0));
     }
-
-
-
 
     /// <summary>One-shot 4.6-side setup shared by both views: the depth program and the FBO every layer is
     /// attached into. Any failure disarms the pass by name rather than leaving it silently drawing nothing.</summary>
@@ -2149,8 +2130,6 @@ public sealed unsafe partial class CasterPass : IExtenderService
         Gl.BindTexture(target, 0);
         return t;
     }
-
-
 
     private static void Disarm(string why)
     {
@@ -2821,7 +2800,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         return false;
     }
 
-    /// <summary>Resrefs the caster pass looks up before falling back to the GLSL below (#92).</summary>
+    /// <summary>Resrefs the caster pass looks up before falling back to the embedded stage (#92).</summary>
     internal const string ShdCastVs = "cx_cast_vs", ShdCastFs = "cx_cast_fs";
 
     /// <summary>#161: the caster vertex stage's half of the override contract. #303 retired the CxCaster
@@ -2850,26 +2829,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// term (<c>CxBoneBase</c> / <c>CxSkinMat</c>, shared source, not a re-spelling), and the rigid arm is
     /// <see cref="AlloyRenderer.ClipExpr"/> character-for-character under <c>invariant gl_Position</c> --
     /// #119's standing constraint, which the depth prepass compares against.</summary>
-    internal const string CastVs = """
-        #version 460 core
-        layout(location = 0) in vec3 aPos;
-
-        """ + AlloyRenderer.DrawBufDecl + AlloyRenderer.FeatDecl + AlloyRenderer.BoneVs + """
-        uniform mat4 uVP;
-        invariant gl_Position;
-        void main()
-        {
-            CxDraw d = uDraw[gl_BaseInstance];
-            int bb = CxBoneBase(d);
-            if (bb >= 0) gl_Position = uVP * d.model * (CxSkinMat(bb) * vec4(aPos, 1.0));
-            else gl_Position = uVP * d.model * vec4(aPos, 1.0);
-        }
-        """;
+    internal static string CastVs => ShaderSource.Get("CasterPass.CastVs.glsl");
     /// <summary>Depth-only: the fixed-function depth write is the whole output.</summary>
-    internal const string CastFs = """
-        #version 460 core
-        void main() { }
-        """;
+    internal static string CastFs => ShaderSource.Get("CasterPass.CastFs.glsl");
 
     /// <summary>The masked caster's depth stage: the same clip position, plus the diffuse UVs, so the
     /// fragment stage can punch the cutout's holes into the shadow map. No skinning -- <see cref="Collect"/>
@@ -2878,75 +2840,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <para>No resref, for <see cref="DepthKeyVs"/>'s reason one level up: a content override that drifted
     /// from the 0.2 threshold would write shadow where the colour pass draws nothing, which reads as dirt on
     /// a wall and points at no file.</para></summary>
-    private const string CastMaskVs = """
-        #version 460 core
-        layout(location = 0) in vec3 aPos;
-        layout(location = 1) in vec2 aUV;
-
-        """ + AlloyRenderer.DrawBufDecl + """
-        uniform mat4 uVP;
-        invariant gl_Position;
-        out vec2 vUV;
-        flat out float vAlpha;
-        void main()
-        {
-            CxDraw d = uDraw[gl_BaseInstance];
-            gl_Position = uVP * d.model * vec4(aPos, 1.0);
-            vUV = aUV;
-            vAlpha = d.rot.w;
-        }
-        """;
-    /// <summary>...and the cutout itself, at the engine's own <c>fAlphaDiscardValue</c> -- a per-BATCH
-    /// uniform since #302, spelled <c>uAlphaCut</c> exactly as the colour path spells it, rather than a
-    /// per-draw record field. Two thresholds exist and the batch key carries which.
-    /// <para>KNOWN COLLISION, named because it fails the same way this fix was reported and in the opposite
-    /// direction: on env-mapped content the diffuse alpha carries TWO authorings. On foliage it is coverage
-    /// (transparent between the leaves) and the discard is exactly right; on a polished floor or chrome trim
-    /// it is REFLECTIVITY -- <c>fEnvMapLevel = 1 - alpha</c>, inc_standard.shd:248 -- so solid geometry
-    /// authored as very shiny sits at alpha &lt;= 0.2 by design, and only essentially-empty texels may punch
-    /// through there.</para></summary>
-    /// <summary>#363: after the cutout, the stochastic discard on the COLOUR pass's blend weight -- coverage
-    /// (1 on env-alpha batches, where the diffuse alpha is reflectivity) times the record's <c>rot.w</c> --
-    /// in <c>uDither</c>-texel blocks. That is what turns a translucent diffuse, or a half-alpha part, into a
-    /// partial shadow of the same strength.</summary>
-    private const string DitherLib = """
-        uniform int uDither;
-        uniform int uEnvAlpha;
-        // #363: ordered 4x4 Bayer threshold in (0, 1) -- alpha 1 never discards, and EVERY 4x4 block drops
-        // exactly the alpha fraction, which is what reads as a uniformly fainter shadow (white noise reads
-        // as blotches: a 4x4 patch of it lands anywhere between a quarter and three quarters)
-        float cxHash(uvec2 p)
-        {
-            const float m[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
-            return (m[(p.y & 3u) * 4u + (p.x & 3u)] + 0.5) / 16.0;
-        }
-
-        """;
-    private const string CastMaskHead = """
-        #version 460 core
-        uniform sampler2D uTex;
-        uniform float uAlphaCut;
-        """ + DitherLib + """
-        in vec2 vUV;
-        flat in float vAlpha;
-
-        """;
-    /// <summary>The cutout, then #363's dither: the body every masked depth stage runs.</summary>
-    private const string CastMaskCut = """
-            float t = texture(uTex, vUV).a;
-            if (t <= uAlphaCut) discard;
-            // the colour pass's own blend weight: coverage (1 where the diffuse alpha is reflectivity) x rot.w
-            float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;
-            if (uDither > 0 && cxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
-
-        """;
-    private const string CastMaskFs = CastMaskHead + """
-        void main()
-        {
-
-        """ + CastMaskCut + """
-        }
-        """;
+    private static string CastMaskVs => ShaderSource.Get("CasterPass.CastMaskVs.glsl");
+    private static string CastMaskFs => ShaderSource.Get("CasterPass.CastMaskFs.glsl");
 
     /// <summary>The handle-sampling pair: <see cref="CastMaskVs"/> carrying the record index out, and
     /// <see cref="CastMaskFs"/> with <c>uTex</c> redirected through the handle block by
@@ -2954,18 +2849,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
     private static readonly string CastMaskHVs = CastMaskVs
         .Replace("out vec2 vUV;", "out vec2 vUV;\n        flat out int vDraw;")
         .Replace("vUV = aUV;", "vUV = aUV;\n            vDraw = gl_BaseInstance;");
-    private const string CastMaskHFsSrc = CastMaskHead + """
-        flat in int vDraw;
-        void main()
-        {
-        #ifdef CX_BINDLESS
-            // a handle zeroed under a dying texture: opaque until the record is re-resolved, never sampled
-            if (uTexH[vDraw << 3] == uvec2(0u)) return;
-        #endif
-
-        """ + CastMaskCut + """
-        }
-        """;
+    private static string CastMaskHFsSrc => ShaderSource.Get("CasterPass.CastMaskHFsSrc.glsl");
     private static readonly string CastMaskHFs = AlloyRenderer.BindlessFs(CastMaskHFsSrc);
     private static readonly string CastLayerMaskHVs = CastLayerMaskVs
         .Replace("out vec2 vUV;", "out vec2 vUV;\n        flat out int vDraw;")
@@ -2977,50 +2861,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// LOCAL so the clip expression stays #119's character for character under the invariant -- the maths is
     /// identical, only where the matrix comes from moved. Embedded only, never overridable: an override here
     /// could only desync the two bake paths the A/B compares.</summary>
-    internal const string CastLayerVs = """
-        #version 460 core
-        #extension GL_ARB_shader_viewport_layer_array : require
-        layout(location = 0) in vec3 aPos;
-
-        """ + AlloyRenderer.DrawBufDecl + AlloyRenderer.FeatDecl + AlloyRenderer.BoneVs + """
-
-        """ + CasterGather.ViewTblDecl + """
-        invariant gl_Position;
-        void main()
-        {
-            int vi = gl_BaseInstance >> 18;
-            CxDraw d = uDraw[gl_BaseInstance & 0x3ffff];
-            gl_Layer = int(uViewTbl[vi].c.w);
-            mat4 uVP = uViewTbl[vi].vp;
-            int bb = CxBoneBase(d);
-            if (bb >= 0) gl_Position = uVP * d.model * (CxSkinMat(bb) * vec4(aPos, 1.0));
-            else gl_Position = uVP * d.model * vec4(aPos, 1.0);
-        }
-        """;
+    internal static string CastLayerVs => ShaderSource.Get("CasterPass.CastLayerVs.glsl");
 
     /// <summary>...and the masked twin, <see cref="CastMaskVs"/> with the same routing. No skinning, for
     /// the same bind-pose-cutout reason.</summary>
-    private const string CastLayerMaskVs = """
-        #version 460 core
-        #extension GL_ARB_shader_viewport_layer_array : require
-        layout(location = 0) in vec3 aPos;
-        layout(location = 1) in vec2 aUV;
-
-        """ + AlloyRenderer.DrawBufDecl + """
-
-        """ + CasterGather.ViewTblDecl + """
-        invariant gl_Position;
-        out vec2 vUV;
-        flat out float vAlpha;
-        void main()
-        {
-            int vi = gl_BaseInstance >> 18;
-            CxDraw d = uDraw[gl_BaseInstance & 0x3ffff];
-            gl_Layer = int(uViewTbl[vi].c.w);
-            mat4 uVP = uViewTbl[vi].vp;
-            gl_Position = uVP * d.model * vec4(aPos, 1.0);
-            vUV = aUV;
-            vAlpha = d.rot.w;
-        }
-        """;
+    private static string CastLayerMaskVs => ShaderSource.Get("CasterPass.CastLayerMaskVs.glsl");
 }

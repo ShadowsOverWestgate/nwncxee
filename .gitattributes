@@ -1,0 +1,3 @@
+# The shaders are text the extender embeds and content overrides: one line ending everywhere,
+# whatever a checkout does with the rest of the tree.
+*.glsl text eol=lf

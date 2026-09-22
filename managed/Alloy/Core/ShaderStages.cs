@@ -5,14 +5,11 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>The overridable stage set: which resrefs exist, what GLSL the extender compiles for each, and
-/// the warning header a dumped copy carries. This is the authoritative composition table (ADR 0012) --
-/// every program build reads <see cref="Source"/> rather than concatenating its own text, and
-/// <c>check-shaders.py</c> is bound to this table by #162.
-/// <para>Shape contract, because a Python harvester scrapes it: <see cref="Source"/> is one switch arm per
-/// resref, the resref constant on the left, a plain <c>+</c> chain of <c>const string</c> names on the
-/// right -- no interpolation, no helper calls, nothing conditional. The header constants are raw literals
-/// for the same reason.</para></summary>
+/// <summary>The overridable stage set: which resrefs exist and the warning header a dumped copy carries.
+/// Every program build reads <see cref="Source"/> rather than composing its own text (ADR 0012), and #707
+/// moved the composition itself into the GLSL: a stage is the embedded <c>&lt;resref&gt;.glsl</c>, whose
+/// <c>#include</c> lines name the libraries it is built from, so <c>check-shaders.py</c> compiles the same
+/// files the extender does.</summary>
 internal static class ShaderStages
 {
     /// <summary>The dump folder, inside the client's own user directory (next to nwn.ini).</summary>
@@ -26,14 +23,12 @@ internal static class ShaderStages
         // $CAP$ / $SORT$ / $GROUP$ / $SRGB$ / $BAND$ / $AA$ are expanded by the extender on load -- leave them as tokens.
         // The contract an override has to keep: docs/shader-overrides.md.
 
-
         """;
 
     internal const string Invariant = """
-        // LOAD-BEARING: `invariant gl_Position;` and the clip expression below. The depth prepass writes
+        // IMPORTANT: `invariant gl_Position;` and the clip expression below. The depth prepass writes
         // these depths and the colour pass re-tests them with LEQUAL, so any other spelling loses fragments
         // to a ULP of drift -- holes, and no log line. See docs/shader-overrides.md.
-
 
         """;
 
@@ -42,29 +37,26 @@ internal static class ShaderStages
     /// pass tests LEQUAL against the prepass's depth. It displaces, so it neither computes nor promises the
     /// <see cref="Invariant"/> expression.</summary>
     internal const string SelfInvariant = """
-        // LOAD-BEARING: `invariant gl_Position;`. This stage is compiled into TWO programs -- the grass depth
+        // IMPORTANT: `invariant gl_Position;`. This stage is compiled into TWO programs -- the grass depth
         // prepass and the grass colour pass -- and the second re-tests the first's depth with LEQUAL, so the
         // clip position must come out bit-identical from both. Keep the declaration; the expression is yours.
         // See docs/shader-overrides.md.
 
-
         """;
 
     internal const string Record = """
-        // LOAD-BEARING: the CxDraw struct below is the extender's per-draw SSBO record, and this file is a
+        // IMPORTANT: the CxDraw struct below is the extender's per-draw SSBO record, and this file is a
         // COPY of a layout that lives in C#. Drop or reorder a field and every draw reads its neighbour's.
         // The extender counts the vec4s and refuses a stage that disagrees. See docs/shader-overrides.md.
-
 
         """;
 
     internal const string CasterRecord = """
-        // LOAD-BEARING: this stage reads ALLOY's per-draw record (CxDraw) at gl_BaseInstance, which IS
+        // IMPORTANT: this stage reads ALLOY's per-draw record (CxDraw) at gl_BaseInstance, which IS
         // the ownership slot (#303 -- the gather dispatch writes it into every surviving command). Index it
         // any other way and every caster bakes at its neighbour's matrix. The skinning branch is
-        // load-bearing too: without it every creature casts its bind pose. The extender refuses a stage
+        // important too: without it every creature casts its bind pose. The extender refuses a stage
         // that disagrees. See docs/shader-overrides.md.
-
 
         """;
 
@@ -72,7 +64,6 @@ internal static class ShaderStages
         // REFERENCE ONLY -- not a starting point for an override, and not loadable under this name. This is
         // the lit fragment stage after the extender's own bindless rewrite (#153), which it applies to
         // whatever cx_ownlit_fs supplies when ARB_bindless_texture is available. Override that instead.
-
 
         """;
 
@@ -114,42 +105,11 @@ internal static class ShaderStages
         (Weather.ShdSnowFs,                Banner),
     };
 
-    /// <summary>The GLSL the extender compiles for one resref, sizing tokens unexpanded
-    /// (<see cref="ShaderResource.Tokens"/> expands them at compile time, for an override exactly as for the
-    /// embedded default). Cold: one call per program build, one per dumped file.</summary>
-    internal static string Source(string resref) => resref switch
-    {
-        AlloyRenderer.ShdFullbrightVs => AlloyRenderer.OwnedVs,
-        AlloyRenderer.ShdFullbrightFs => AlloyRenderer.OwnedFs,
-        AlloyRenderer.ShdLitVs => AlloyRenderer.OwnedLitVs,
-        AlloyRenderer.ShdLitFs => AlloyRenderer.OwnedLitFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + Weather.WeatherLib + AlloyRenderer.MaterialLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + AlloyRenderer.HostFs + AlloyRenderer.OwnedLitFsMain,
-        AlloyRenderer.ShdWaterVs => FrameSnapshot.VsHead + AlloyRenderer.DrawBufDecl + FrameSnapshot.VsMain,
-        AlloyRenderer.ShdWaterFs => FrameSnapshot.FsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + Weather.ImpactLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + FrameSnapshot.FsMain,
-        GrassField.ShdGrassVs => GrassField.GrassVs,
-        GrassField.ShdGrassFs => GrassField.GrassFsHead + AlloyLights.LocalShadowLib + AlloyLights.FragmentLib + AlloyLights.SunShadowLib + AlloyRenderer.KeyFogFs + AlloyRenderer.VanillaEnvFs + AlloyRenderer.HookFs + AlloyRenderer.TargetFs + GrassField.GrassFsMain,
-        AlloyLights.ShdClusterCs => AlloyLights.BuildSrc,
-        CasterPass.ShdCastVs => CasterPass.CastVs,
-        CasterPass.ShdCastFs => CasterPass.CastFs,
-        PostChain.ShdPostVs => PostChain.FullscreenVs,
-        PostChain.ShdBloomDownFs => PostChain.BloomDownFs,
-        PostChain.ShdBloomUpFs => PostChain.BloomUpFs,
-        PostChain.ShdResolveFs => PostChain.ResolveFs,
-        PostStack.ShdGammaFs => PostStack.PostStageHead + PostStack.GammaStageFs + PostStack.PostStageMain,
-        SmaaStage.ShdEdgeFs => SmaaStage.EdgeFs,
-        SmaaStage.ShdWeightFs => SmaaStage.WeightFs,
-        SmaaStage.ShdBlendFs => PostStack.PostStageHead + SmaaStage.BlendStageFs + PostStack.PostStageMain,
-        PostStack.ShdTaaFs => PostStack.PostStageHead + TaaStage.StageFs + PostStack.PostStageMain,
-        PostStack.ShdToonFs => PostStack.PostStageHead + ToonStage.StageFs + PostStack.PostStageMain,
-        FbPostStage.ShdFs => PostStack.PostStageHead + FbPostStage.FbPostFs + PostStack.PostStageMain,
-        SsaoPass.ShdSsaoFs => SsaoPass.SsaoFs,
-        SsaoPass.ShdSsaoBlurFs => SsaoPass.SsaoBlurFs,
-        Halos.ShdHaloVs => Halos.HaloVs,
-        Halos.ShdHaloFs => Halos.HaloFs,
-        Weather.ShdWeatherVs => Weather.WeatherVs,
-        Weather.ShdRainFs => Weather.RainFs,
-        Weather.ShdSnowFs => Weather.SnowFs,
-        _ => "",
-    };
+    /// <summary>The GLSL the extender compiles for one resref: the embedded <c>&lt;resref&gt;.glsl</c>
+    /// with its <c>#include</c>s spliced, sizing tokens left unexpanded (<see cref="ShaderResource.Tokens"/>
+    /// expands them at compile time, for an override exactly as for the embedded default). Cold: one call
+    /// per program build, one per dumped file.</summary>
+    internal static string Source(string resref) => ShaderSource.Get(resref + ".glsl");
 
     /// <summary>Write every overridable stage into <paramref name="dir"/> as an editable
     /// <c>&lt;resref&gt;.shd</c>, plus the bindless variant of the lit stage for reference. Returns the file

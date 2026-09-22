@@ -410,39 +410,15 @@ internal static unsafe class PostStack
 
     /// <summary>What every stack stage sees: the previous output, the frame's depth, and the dither the
     /// last stage owes the 8-bit target. Display space in, display space out -- no stage converts.</summary>
-    internal const string PostStageHead = """
-        #version 460 core
-        in vec2 vUV;
-        out vec4 frag;
-        uniform sampler2D uSrc;      // the previous stage's output (or the resolve's), DISPLAY space
-        uniform sampler2D uDepth;    // the frame's depth, for a stage that wants it
-        uniform float uDither;       // one LSB of the 8-bit target when this stage writes it, else 0
-
-        """ + PostChain.PostDitherLib + """
-
-        """;
+    internal static string PostStageHead => ShaderSource.Get("PostStack.PostStageHead.glsl");
 
     /// <summary>The engine's <c>inc_postpr_gam.shd</c>, verbatim in its maths: <c>pow(Color.rgb,
     /// vec3(Gamma/2.2))</c>. Alpha passes through, as the stock stage leaves it.</summary>
-    internal const string GammaStageFs = """
-        uniform float uGamma;        // the client's gamma option, the engine's global float param 0x0b
-        vec4 CxStage(vec4 c)
-        {
-            c.rgb = pow(max(c.rgb, vec3(0.0)), vec3(uGamma / 2.2));
-            return c;
-        }
-        """;
+    internal static string GammaStageFs => ShaderSource.Get("PostStack.GammaStageFs.glsl");
 
     /// <summary>The shared main: stage, then the dither -- AFTER the stage so the noise lands on the value
     /// that is about to quantise, which is the only place it breaks banding up.</summary>
-    internal const string PostStageMain = """
-
-        void main()
-        {
-            vec4 c = CxStage(texture(uSrc, vUV));
-            frag = vec4(CxDither(c.rgb, gl_FragCoord.xy, uDither), c.a);
-        }
-        """;
+    internal static string PostStageMain => ShaderSource.Get("PostStack.PostStageMain.glsl");
 
     /// <summary>Off-device (run-demo.sh): the stage table composes, the gamma stage IS the engine's maths,
     /// its gate is the engine's mask bit, and the stack's tuning route through <c>/post</c> is reachable.</summary>

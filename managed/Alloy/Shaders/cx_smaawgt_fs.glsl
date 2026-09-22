@@ -1,0 +1,1 @@
+#include "SmaaStage.WeightFs.glsl"

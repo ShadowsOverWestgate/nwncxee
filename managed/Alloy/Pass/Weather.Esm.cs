@@ -138,25 +138,5 @@ internal static unsafe partial class Weather
 
     /// <summary>One blur axis of the two moments, a Gaussian over 13 taps at uStep. The first axis reads the
     /// depth view (uFirst: r is the depth, its square is made here); the second reads the moment pair.</summary>
-    internal const string EsmFs = """
-        #version 460 core
-        in vec2 vUV;
-        uniform sampler2D uSrc;
-        uniform vec2 uStep;
-        uniform int uFirst;
-        out vec2 frag;
-        void main()
-        {
-            vec2 s = vec2(0.0); float wsum = 0.0;
-            for (int i = -6; i <= 6; i++)
-            {
-                float w = exp(-float(i * i) / 18.0);
-                vec2 m = texture(uSrc, vUV + uStep * float(i)).rg;
-                if (uFirst != 0) m.y = m.x * m.x;
-                s += w * m;
-                wsum += w;
-            }
-            frag = s / wsum;
-        }
-        """;
+    internal static string EsmFs => ShaderSource.Get("Weather.EsmFs.glsl");
 }

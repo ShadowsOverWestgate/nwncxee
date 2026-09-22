@@ -45,11 +45,7 @@ internal static unsafe class IdTarget
 
     /// <summary>The GLSL both halves share: the fragment output and the pack. Concatenated into every depth
     /// fragment stage so the three write the identical word.</summary>
-    internal const string OutDecl = """
-        layout(location = 1) out uint oVisId;
-        uint CxVisId(int slot, int prim) { return (uint(slot + 1) << 14) | (uint(prim) & 0x3FFFu); }
-
-        """;
+    internal static string OutDecl => ShaderSource.Get("IdTarget.OutDecl.glsl");
 
     /// <summary>C# twin of <c>CxVisId</c>, for the self-check and a later CPU readback.</summary>
     internal static uint Pack(int slot, int prim) => ((uint)(slot + 1) << PrimBits) | ((uint)prim & ((1u << PrimBits) - 1));
@@ -152,23 +148,7 @@ internal static unsafe class IdTarget
 
     /// <summary>Integer hash (lowbias32) of the whole word to rgb: neighbouring triangles land on unrelated
     /// colours, the same triangle on the same colour every frame. Black = no owned opaque draw.</summary>
-    internal const string VizFs = """
-        #version 460 core
-        in vec2 vUV;
-        out vec4 frag;
-        uniform usampler2D uId;
-        uint CxHash(uint x)
-        {
-            x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16; return x;
-        }
-        void main()
-        {
-            uint id = texelFetch(uId, ivec2(gl_FragCoord.xy), 0).r;
-            if (id == 0u) { frag = vec4(0.0, 0.0, 0.0, 1.0); return; }
-            uint h = CxHash(id);
-            frag = vec4(vec3(h & 0xFFu, (h >> 8) & 0xFFu, (h >> 16) & 0xFFu) / 255.0 * 0.8 + 0.1, 1.0);
-        }
-        """;
+    internal static string VizFs => ShaderSource.Get("IdTarget.VizFs.glsl");
 
     /// <summary>Off-device: the pack round-trips at the record ceiling, the three depth stages carry the one
     /// output text, and the viz mode is inside <see cref="AlloyRenderer.LightVizMax"/>.</summary>

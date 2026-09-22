@@ -259,7 +259,8 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Cache classification** — a caster is cached or re-baked based on whether its
   transform/pose changed since its last bake, not on a static/dynamic *kind*. A tile is
   simply a caster that never moves; a creature is one that changes every frame.
-- **Embedded stage** — the GLSL for an Alloy pass, compiled into the extender as a C# `const string`.
+- **Embedded stage** — the GLSL for an Alloy pass, embedded in the extender as a `.glsl` resource
+  (`managed/Alloy/Shaders/`, read through `ShaderSource`; #707 -- it was a C# `const string` before).
   This is the shader that ships: it travels with the renderer it agrees with, so the per-draw record,
   the uniform blocks and the clip expression can never disagree with the CPU side. Every overridable
   stage has one.

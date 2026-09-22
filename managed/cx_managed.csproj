@@ -42,6 +42,14 @@
     <EmbeddedResource Include="Alloy/ChartFixture.bin.gz" LogicalName="ChartFixture" />
   </ItemGroup>
 
+  <!-- #707: the Alloy pipeline's GLSL, one .glsl per stage or library, read through ShaderSource by file
+       name (which is what an `#include "Other.glsl"` line inside one names too). Embedded rather than
+       shipped as content (ADR 0012): a stage is overridden as a .shd through the resource chain, never by
+       editing what the extender compiles. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Alloy/Shaders/*.glsl" LogicalName="%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <!-- funchook is linked IN, not shipped beside us: DirectPInvoke turns the DllImport("funchook") calls in
        HookService into direct calls against the static library the build scripts stage here. -->
   <ItemGroup>

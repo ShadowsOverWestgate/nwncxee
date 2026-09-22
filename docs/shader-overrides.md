@@ -301,6 +301,8 @@ broken text is refused — and `run-demo.sh` fails the build if any suite fails.
 exception is Skin, whose refusing direction cannot be asserted there: it short-circuits
 on an arming flag that is set after SelfCheck runs.
 
-`managed/Alloy/ShaderStages.cs` is the authoritative composition table: which
-constants concatenate into which resref, and the header each dumped file carries. The
-offline checker `check-shaders.py` reads that table rather than restating it.
+`managed/Alloy/Shaders/<resref>.glsl` is each stage's composition: a list of `#include`
+lines naming the libraries it is built from, spliced by `ShaderSource` when the stage is
+compiled or dumped. `managed/Alloy/Core/ShaderStages.cs` keeps the rest of the contract --
+which resrefs are overridable, and the header each dumped file carries. The offline checker
+`check-shaders.py` compiles those same files rather than restating them.

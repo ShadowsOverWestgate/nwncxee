@@ -280,76 +280,17 @@ internal static unsafe class PostChain
     }
 
     /// <summary>#491: the SSBO block the three programs share. Bin 0 is "below the floor" and ignored.</summary>
-    private const string AutoBufLib = """
-        layout(std430, binding = 24) buffer CxExposure { uint uHistBin[64]; float uAutoGain; };
-        """;
+    private static string AutoBufLib => ShaderSource.Get("PostChain.AutoBufLib.glsl");
 
     /// <summary>The resolve's view of the same block: it only reads the gain.</summary>
-    private const string AutoBufLibRead = """
-        layout(std430, binding = 24) readonly buffer CxExposure { uint uHistBin[64]; float uAutoGain; };
-        """;
+    private static string AutoBufLibRead => ShaderSource.Get("PostChain.AutoBufLibRead.glsl");
 
     /// <summary>#491: 16x16 tiles, a shared-memory histogram per tile, 64 atomics per tile into the SSBO.</summary>
-    internal const string AutoHistCs = """
-        #version 460 core
-        layout(local_size_x = 16, local_size_y = 16) in;
-        uniform sampler2D uHdr;
-        uniform vec2 uRange;   // (log2 floor, 1 / log2 span)
-
-        """ + AutoBufLib + """
-
-        shared uint sBin[64];
-        void main()
-        {
-            uint li = gl_LocalInvocationIndex;
-            if (li < 64u) sBin[li] = 0u;
-            barrier();
-            ivec2 p = ivec2(gl_GlobalInvocationID.xy);
-            if (all(lessThan(p, textureSize(uHdr, 0))))
-            {
-                float l = dot(texelFetch(uHdr, p, 0).rgb, vec3(0.2126, 0.7152, 0.0722));
-                uint b = 0u;
-                if (l > 1e-5) b = min(uint(clamp((log2(l) - uRange.x) * uRange.y, 0.0, 1.0) * 62.0), 61u) + 1u;
-                atomicAdd(sBin[b], 1u);
-            }
-            barrier();
-            if (li < 64u && sBin[li] != 0u) atomicAdd(uHistBin[li], sBin[li]);
-        }
-        """;
+    internal static string AutoHistCs => ShaderSource.Get("PostChain.AutoHistCs.glsl");
 
     /// <summary>#491: one thread reduces the bins to a log-average and eases the gain. A zero gain (fresh
     /// buffer, or /post auto just armed) snaps to the target instead of easing from nothing.</summary>
-    internal const string AutoAdaptCs = """
-        #version 460 core
-        layout(local_size_x = 1) in;
-        uniform vec2 uRange;    // (log2 floor, log2 span)
-        uniform vec4 uParams;   // dt, min gain, max gain, key
-        uniform vec2 uRates;    // 1/s: gain rising, gain falling
-
-        """ + AutoBufLib + """
-
-        void main()
-        {
-            float sum = 0.0, n = 0.0;
-            for (int i = 1; i < 64; i++)
-            {
-                float c = float(uHistBin[i]);
-                sum += c * (float(i - 1) + 0.5) / 62.0;
-                n += c;
-            }
-            if (n <= 0.0) { if (uAutoGain <= 0.0) uAutoGain = clamp(1.0, uParams.y, uParams.z); return; }
-            float avg = exp2(uRange.x + sum / n * uRange.y);
-            float target = clamp(uParams.w / avg, uParams.y, uParams.z);
-            float g = uAutoGain;
-            if (g <= 0.0) g = target;
-            else
-            {
-                float rate = target > g ? uRates.x : uRates.y;
-                g += (target - g) * (1.0 - exp(-rate * uParams.x));
-            }
-            uAutoGain = g;
-        }
-        """;
+    internal static string AutoAdaptCs => ShaderSource.Get("PostChain.AutoAdaptCs.glsl");
 
     /// <summary>#132: the refusals that are decidable WITHOUT the 4.6 bracket, asked in ENGINE context
     /// before the Alloy pass pays for its preamble. False stands the whole pass down to vanilla.
@@ -924,16 +865,7 @@ internal static unsafe class PostChain
     /// <summary>The full-screen triangle every post stage draws: three vertices, no buffers, no attributes.
     /// A triangle rather than a quad because the diagonal seam of a two-triangle quad costs a second
     /// rasterisation of every pixel along it and buys nothing.</summary>
-    internal const string FullscreenVs = """
-        #version 460 core
-        out vec2 vUV;
-        void main()
-        {
-            vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-            vUV = p;
-            gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
-        }
-        """;
+    internal static string FullscreenVs => ShaderSource.Get("PostChain.FullscreenVs.glsl");
 
     /// <summary>#132: the frame's one encode, and the only colour-space conversion left anywhere in the
     /// Alloy pipeline. Its own text rather than a share of <see cref="AlloyLights.FragmentLib"/> because
@@ -942,9 +874,7 @@ internal static unsafe class PostChain
     /// <para>Unconditional, and that is not the pre-#132 sin coming back: the engine's gamma parameter is
     /// asked in <see cref="Precheck"/>, which stands the whole Alloy pass down when it is off. This stage
     /// only ever runs on a frame whose stages linearised, so it always has an encode to undo.</para></summary>
-    private const string PostColorLib = """
-        vec3 CxEncode(vec3 c) { return pow(max(c, vec3(0.0)), vec3(1.0 / $SRGB$)); }
-        """;
+    private static string PostColorLib => ShaderSource.Get("PostChain.PostColorLib.glsl");
 
     /// <summary>The frame's one dither, shared by the resolve and every <see cref="PostStack"/> stage: the
     /// whole Alloy frame is computed in RGBA16F and written ONCE into an 8-bit target, so every gradient in
@@ -952,16 +882,7 @@ internal static unsafe class PostChain
     /// TRIANGULAR PDF, two independent samples summed, not uniform: a uniform dither leaves the noise floor
     /// modulated by where the signal sits inside its step, so bands survive faintly; the triangular sum
     /// decorrelates the error outright. <c>lsb</c> is one LSB of the target, or 0 for an intermediate.</summary>
-    internal const string PostDitherLib = """
-        float CxNoise(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-        vec3 CxDither(vec3 c, vec2 px, float lsb)
-        {
-            if (lsb <= 0.0) return c;
-            float r1 = CxNoise(px);
-            float r2 = CxNoise(px + vec2(17.31, 47.13));
-            return c + (r1 + r2 - 1.0) * lsb;
-        }
-        """;
+    internal static string PostDitherLib => ShaderSource.Get("PostChain.PostDitherLib.glsl");
 
     /// <summary>Progressive downsample, the 13-tap filter with the four-group Karis average (Jimenez'
     /// "Next Generation Post Processing"). The Karis weighting is not decoration: a plain box filter over a
@@ -972,160 +893,19 @@ internal static unsafe class PostChain
     /// the threshold is linear-referred. Its default does not move with it: the threshold is 1.0 and
     /// pow(1, 2.2) is 1, so the boundary is the same number in either space. Only the soft KNEE's width
     /// changes shape below it.</para></summary>
-    internal const string BloomDownFs = """
-        #version 460 core
-        in vec2 vUV;
-        out vec4 frag;
-        uniform sampler2D uSrc;
-        uniform int uLod;
-        uniform vec2 uTexel;    // 1 / size of the SOURCE level
-        uniform int uFirst;     // 1 = this pass reads the HDR colour: apply the threshold
-        uniform vec2 uThresh;   // x = brightness threshold, y = soft-knee width
-
-        vec3 T(vec2 o) { return textureLod(uSrc, vUV + o * uTexel, float(uLod)).rgb; }
-
-        void main()
-        {
-            vec3 a = T(vec2(-2.0,  2.0)), b = T(vec2( 0.0,  2.0)), c = T(vec2( 2.0,  2.0));
-            vec3 d = T(vec2(-2.0,  0.0)), e = T(vec2( 0.0,  0.0)), f = T(vec2( 2.0,  0.0));
-            vec3 g = T(vec2(-2.0, -2.0)), h = T(vec2( 0.0, -2.0)), i = T(vec2( 2.0, -2.0));
-            vec3 j = T(vec2(-1.0,  1.0)), k = T(vec2( 1.0,  1.0));
-            vec3 l = T(vec2(-1.0, -1.0)), m = T(vec2( 1.0, -1.0));
-            // Karis average: each 2x2 group is weighted by 1/(1+luma) before being summed, so one runaway
-            // texel cannot dominate the group it lands in.
-            vec3 grp[5] = vec3[5]((j + k + l + m) * 0.25, (a + b + d + e) * 0.25, (b + c + e + f) * 0.25,
-                                  (d + e + g + h) * 0.25, (e + f + h + i) * 0.25);
-            const float w[5] = float[5](0.5, 0.125, 0.125, 0.125, 0.125);
-            vec3 sum = vec3(0.0);
-            float wsum = 0.0;
-            for (int n = 0; n < 5; n++)
-            {
-                float kw = w[n] / (1.0 + dot(grp[n], vec3(0.2126, 0.7152, 0.0722)));
-                sum += grp[n] * kw;
-                wsum += kw;
-            }
-            vec3 col = sum / max(wsum, 1e-6);
-            if (uFirst != 0)
-            {
-                // Unreal's soft-knee curve: nothing below the threshold blooms at all, which is what keeps
-                // the effect off engine-drawn geometry's range and off every ordinary lit surface.
-                float br = max(col.r, max(col.g, col.b));
-                float soft = clamp(br - uThresh.x + uThresh.y, 0.0, 2.0 * uThresh.y);
-                soft = soft * soft / (4.0 * uThresh.y);
-                col *= max(soft, br - uThresh.x) / max(br, 1e-6);
-            }
-            frag = vec4(max(col, vec3(0.0)), 1.0);
-        }
-        """;
+    internal static string BloomDownFs => ShaderSource.Get("PostChain.BloomDownFs.glsl");
 
     /// <summary>The 3x3 tent back up the chain, added into the level below with ONE/ONE. Tent rather than
     /// bilinear: the upsample is what turns nine discrete mips into one continuous falloff, and a plain
     /// bilinear read leaves each level's own resolution visible as a ring.</summary>
-    internal const string BloomUpFs = """
-        #version 460 core
-        in vec2 vUV;
-        out vec4 frag;
-        uniform sampler2D uSrc;
-        uniform int uLod;
-        uniform vec2 uTexel;    // 1 / size of the SOURCE level
-
-        vec3 T(vec2 o) { return textureLod(uSrc, vUV + o * uTexel, float(uLod)).rgb; }
-
-        void main()
-        {
-            vec3 c = T(vec2(-1.0,  1.0)) + T(vec2(0.0,  1.0)) * 2.0 + T(vec2(1.0,  1.0))
-                   + T(vec2(-1.0,  0.0)) * 2.0 + T(vec2(0.0, 0.0)) * 4.0 + T(vec2(1.0, 0.0)) * 2.0
-                   + T(vec2(-1.0, -1.0)) + T(vec2(0.0, -1.0)) * 2.0 + T(vec2(1.0, -1.0));
-            frag = vec4(c * (1.0 / 16.0), 1.0);
-        }
-        """;
+    internal static string BloomUpFs => ShaderSource.Get("PostChain.BloomUpFs.glsl");
 
     /// <summary>The resolve: add the bloom, tonemap, and do the frame's ONE encode -- #132's exit step.
     /// <para><c>uMode</c> 1 (the default) is a shoulder: identity below the knee, asymptotic to 1 above it.
     /// That shape is the requirement -- engine-drawn geometry shares this framebuffer and never passes
     /// through here, so a curve that moved the midtones would split the frame in two. 2 is ACES
     /// (Narkowicz' fit), which does move them: a deliberate whole-frame look, not a default.</para></summary>
-    internal const string ResolveFs = """
-        #version 460 core
-        in vec2 vUV;
-        out vec4 frag;
-        uniform sampler2D uHdr;
-        uniform sampler2D uBloom;
-        uniform sampler2D uDepth;  // CX-374: the owned depth; the sky sits at exactly 1.0 (SkyOwnedPass's DepthRange)
-        uniform int uSkyRaw;      // CX-374: 1 = a sky pixel skips exposure and the tonemap (see main)
-        uniform float uStrength;
-        uniform int uMode;
-        uniform float uKnee;
-        uniform float uExposure;  // scene-referred gain before the tonemap; 1 = identity
-        uniform int uAuto;        // #491: 1 = multiply the adapted gain from the SSBO in as well
-        uniform float uAcesMix;   // mode 2: ACES mixed against the shoulder, in linear; 1 = full ACES
-        uniform float uDither;   // one LSB of the output target, or 0
-        uniform int uViz;        // 0 = the frame; 1 = bloom only; 2 = HDR only; 3 = bloom x20; 4 = motion vectors
-
-        """ + PostColorLib + PostDitherLib + AutoBufLibRead + """
-
-        vec3 CxShoulder(vec3 c, float k)
-        {
-            if (k <= 0.0) return c;
-            vec3 t = max(c - vec3(k), vec3(0.0));
-            // The curve is C1 at the knee and asymptotic to 1, so anything the target could already show is
-            // untouched and only the range that used to clip moves. k is a LINEAR value here; the encode
-            // below puts the result back in display space.
-            float m = 1.0 - k;
-            return min(c, vec3(k)) + m * t / (m + t);
-        }
-
-        vec3 CxAces(vec3 c)
-        {
-            const float a = 2.51, b = 0.03, d = 2.43, e = 0.59, f = 0.14;
-            return clamp((c * (a * c + b)) / (c * (d * c + e) + f), 0.0, 1.0);
-        }
-
-        void main()
-        {
-            // The stage views. Deliberately BEFORE the tonemap and the dither: the question they answer is
-            // "which stage introduced this", and running the answer through two more stages first is how a
-            // diagnostic ends up lying about the thing it was added to find.
-            if (uViz == 1 || uViz == 3)
-            {
-                vec3 b = textureLod(uBloom, vUV, 0.0).rgb * uStrength * (uViz == 3 ? 20.0 : 1.0);
-                frag = vec4(CxEncode(b), 1.0);
-                return;
-            }
-            if (uViz == 2) { frag = vec4(CxEncode(texture(uHdr, vUV).rgb), 1.0); return; }
-            // #388: the velocity target on the bloom unit. Mid-grey is zero motion; +-32 render pixels of
-            // motion is a full swing of red (x) or green (y), so a pan paints one flat colour over static
-            // geometry and standing still paints flat grey.
-            if (uViz == 4) { frag = vec4(0.5 + textureLod(uBloom, vUV, 0.0).rg / 64.0, 0.5, 1.0); return; }
-
-            vec3 c = texture(uHdr, vUV).rgb;
-            vec3 b = uStrength > 0.0 ? textureLod(uBloom, vUV, 0.0).rgb * uStrength : vec3(0.0);
-            // CX-374: the sky is display-referred as its shader authored it (vanilla encodes it straight),
-            // and exposure + the tonemap re-graded it ~2x at night. A sky pixel keeps its own value and
-            // takes only the EXPOSED bleed on top, so bright things still glow onto it.
-            if (uSkyRaw != 0 && texture(uDepth, vUV).r >= 1.0)
-            {
-                vec3 g = b * uExposure;
-                if (uAuto != 0) g *= uAutoGain;
-                frag = vec4(CxDither(CxEncode(c + g), gl_FragCoord.xy, uDither), texture(uHdr, vUV).a);
-                return;
-            }
-            c += b;
-            c *= uExposure;
-            if (uAuto != 0) c *= uAutoGain;
-            if (uMode == 1) c = CxShoulder(c, uKnee);
-            // ACES against the SHOULDER, not the raw value: the shoulder is the identity below its knee, so
-            // the mix keeps the darks the ACES toe would crush and takes only the roll-off and colour.
-            else if (uMode == 2) c = mix(CxShoulder(c, uKnee), CxAces(c), uAcesMix);
-            vec3 outc = CxEncode(c);
-            // Dithered in DISPLAY space, after the encode: this is where the frame meets 8 bits (or, when
-            // the post stack takes it, uDither is 0 and the stack's last stage dithers instead).
-            outc = CxDither(outc, gl_FragCoord.xy, uDither);
-            // The alpha channel passes through untouched: the Alloy blended classes wrote real coverage
-            // there and the engine's own later passes are entitled to find it, tonemapping or not.
-            frag = vec4(outc, texture(uHdr, vUV).a);
-        }
-        """;
+    internal static string ResolveFs => ShaderSource.Get("PostChain.ResolveFs.glsl");
 
     /// <summary>Off-device (run-demo.sh): the knob table has the shape the frame relies on and the shoulder
     /// really is the identity below its knee -- which is the whole parity argument, and the one property no
@@ -1207,8 +987,9 @@ internal static unsafe class PostChain
             check.Expect(AutoBufLib.Contains($"[{AutoBins}]") && AutoBufLibRead.Contains($"[{AutoBins}]")
               && AutoHistCs.Contains($"* {AutoBins - 2}.0), {AutoBins - 3}u") && AutoAdaptCs.Contains($"/ {AutoBins - 2}.0"),
               "the shader bin literals match AutoBins");
-            // Live, 2026-09-13: a raw string drops its last newline, so a lib joined after a trailing line
-            // comment is commented out with it. The joined text must put the block on its own line.
+            // Live, 2026-09-13: back when these were concatenated C# literals, a lib joined after a
+            // trailing line comment was commented out with it. #707's #include always starts a line, so
+            // this now guards the file: a declaration parked on the include's line would read the same way.
             check.Expect(AutoHistCs.Contains("\nlayout(std430") && AutoAdaptCs.Contains("\nlayout(std430")
               && AutoHistCs.Contains("};\nshared uint") && AutoAdaptCs.Contains("};\nvoid main"),
               "the exposure SSBO block sits on its own line in both compute stages");

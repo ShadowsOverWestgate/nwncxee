@@ -100,41 +100,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The mover vertex stage. <c>gl_Position</c> is the prepass's exact <see cref="ClipExpr"/> text
     /// under <c>invariant</c>, so LEQUAL against the depth the mover already wrote passes on every fragment;
     /// the previous clip position rides through the record's <c>prev</c> and last frame's view-projection.</summary>
-    internal const string MotionVs = """
-        #version 460 core
-        layout(location = 0) in vec3 aPos;
-
-        """ + DrawBufDecl + """
-        uniform mat4 uVP;
-        uniform mat4 uPrevVP;    // last frame's view-projection, unjittered
-        uniform int uDrawBase;
-        invariant gl_Position;
-        out vec4 vCur;
-        out vec4 vPrev;
-        void main()
-        {
-            CxDraw d = uDraw[CxSlot(uDrawBase + gl_DrawID)];
-            gl_Position = uVP * d.model * vec4(aPos, 1.0);
-            vCur = gl_Position;
-            vPrev = uPrevVP * d.prev * vec4(aPos, 1.0);
-        }
-        """;
+    internal static string MotionVs => ShaderSource.Get("AlloyRenderer.MotionVs.glsl");
 
     /// <summary>The same convention as <see cref="MotionVectors.CameraFs"/>: prev minus current, render pixels,
     /// the current position unjittered, bounded and never NaN.</summary>
-    internal const string MotionFs = """
-        #version 460 core
-        in vec4 vCur;
-        in vec4 vPrev;
-        out vec2 frag;
-        uniform vec2 uJitter;    // this frame's sub-pixel jitter, NDC
-        uniform vec2 uSize;      // the render size, pixels
-        void main()
-        {
-            if (abs(vPrev.w) < 1e-6 || abs(vCur.w) < 1e-6) { frag = vec2(0.0); return; }
-            vec2 v = (vPrev.xy / vPrev.w - (vCur.xy / vCur.w - uJitter)) * 0.5 * uSize;
-            if (any(isnan(v)) || any(isinf(v))) v = vec2(0.0);
-            frag = clamp(v, -uSize, uSize);
-        }
-        """;
+    internal static string MotionFs => ShaderSource.Get("AlloyRenderer.MotionFs.glsl");
 }

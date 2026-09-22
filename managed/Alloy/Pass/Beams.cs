@@ -261,7 +261,6 @@ internal static unsafe class Beams
         return vao;
     }
 
-
     /// <summary>The VAO this slot draws from.</summary>
     private static uint Vao(int v) => _vVao[v];
 
@@ -498,44 +497,10 @@ internal static unsafe class Beams
     /// invisible (ponytail: add the term if a foggy exterior ever shows a shaft standing too proud). And the
     /// stage does NOT carry #119's invariant clip expression, because beams are additive, never enter the
     /// depth prepass, and write no depth -- there is no LEQUAL match to preserve.</para></summary>
-    private const string BeamVs = """
-        #version 460 core
-        layout(location = 0) in vec4 aPos;
-        layout(location = 1) in float aFrontal;   // fProjectionFrontal: > 0 = the cap facing the light
-
-        uniform mat4 uModel;
-        uniform mat4 uView;
-        uniform mat4 uProj;
-        uniform vec4 uProjSrc;   // xyz = extrusion direction in world space (w < 0: directional)
-        uniform float uZClip;    // projectionWorldZClip
-
-        // Constant value inherited from old NWN (fMinOffset, vs_beamvol.shd).
-        const float CX_BEAM_MIN_OFFSET = 0.1;
-
-        void main()
-        {
-            vec3 wp = (uModel * aPos).xyz;
-            vec3 vp = (uView * vec4(wp, 1.0)).xyz;
-            vec3 dir = uProjSrc.xyz;
-            float off = CX_BEAM_MIN_OFFSET;
-            if (aFrontal <= 0.0)
-                off = max(CX_BEAM_MIN_OFFSET, (uZClip - wp.z) / dir.z);
-            vp += off * (mat3(uView) * dir);
-            gl_Position = uProj * vec4(vp, 1.0);
-        }
-        """;
+    private static string BeamVs => ShaderSource.Get("Beams.BeamVs.glsl");
 
     /// <summary>The fragment stage: a flat tint, exactly as <c>fs_beamvol.shd</c> is once its fog term goes.
     /// No encode -- #132 made the Alloy colour target LINEAR and the one whole-frame encode happens at the
     /// resolve; <c>uColor</c> is handed over already linearised.</summary>
-    private const string BeamFs = """
-        #version 460 core
-        uniform vec4 uColor;
-        out vec4 frag;
-
-        void main()
-        {
-            frag = uColor;
-        }
-        """;
+    private static string BeamFs => ShaderSource.Get("Beams.BeamFs.glsl");
 }

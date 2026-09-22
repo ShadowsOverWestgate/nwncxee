@@ -345,10 +345,7 @@ internal static unsafe class CasterGather
 
     /// <summary>The view table's GLSL declaration, shared by the layered dispatch and both layered depth
     /// stages -- <c>AlloyRenderer.DrawBufDecl</c>'s pattern, so the three cannot drift apart.</summary>
-    internal const string ViewTblDecl = """
-        struct CxView { mat4 vp; vec4 a; vec4 b; vec4 c; };   // a = focus/reach, b = dir/along, c = receiver/point/set/layer
-        layout(std430, binding = 20) readonly buffer CxBakeViews { CxView uViewTbl[]; };
-        """;
+    internal static string ViewTblDecl => ShaderSource.Get("CasterGather.ViewTblDecl.glsl");
 
     private static uint _layerProg;
     private static bool _layerFailed;
@@ -456,29 +453,7 @@ internal static unsafe class CasterGather
     /// rejecting one it can see deletes a shadow.</para></summary>
     /// <summary>The two culls both dispatches share, <c>@SLOPE@</c> unexpanded: the #488 receiver cull
     /// and the point-light face cull. Spliced, then the slope is interpolated over the whole text.</summary>
-    private const string ReceiverCullLib = """
-        // #488: the receiver cull. The shadow volume is bounded by the hull of two spheres (the caster's own
-        // and the extrusion's end) and misses the camera frustum only when BOTH sit wholly outside ONE
-        // plane. Conservative: a rejected caster casts on no visible pixel.
-        uniform vec4 uPlanes[6];
-        bool CxShadowMisses(vec3 p0, float r0, vec3 p1, float r1)
-        {
-            for (int i = 0; i < 6; i++)
-            {
-                vec4 pl = uPlanes[i];
-                if (dot(pl.xyz, p0) + pl.w < -r0 && dot(pl.xyz, p1) + pl.w < -r1) return true;
-            }
-            return false;
-        }
-
-        bool CxFaceCulls(float dSq, float t, float r)
-        {
-            if (t < -r) return true;
-            float lim = t * @SLOPE@ + 2.0 * r;
-            return lim < 0.0 || dSq - t * t > lim * lim;
-        }
-
-        """;
+    private static string ReceiverCullLib => ShaderSource.Get("CasterGather.ReceiverCullLib.glsl");
 
     private static readonly string GatherCs = ("""
         #version 460 core

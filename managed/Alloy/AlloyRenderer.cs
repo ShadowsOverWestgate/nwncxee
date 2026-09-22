@@ -799,6 +799,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         RspShim.SelfCheck(log);
         SelfCheckDrip(log);
         ShaderStages.SelfCheck(log);
+        ShaderSource.SelfCheck(log);
         // #262: Alloy does the bone solve itself now, so its arithmetic is ours to be wrong about. Up here
         // with the other unconditional checks -- a client that never arms still reports whether the maths
         // this build ships is right, and the answer does not depend on any engine symbol.
@@ -1826,5 +1827,4 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// depth range so it stays a constant world distance whatever the fit. Small because the receiver's normal
     /// offset carries most of the acne fight; <c>/shadow csmbias</c> tunes it.</summary>
     private static float _sunWorldBias => Shadows.CsmBias.V;
-
 }
