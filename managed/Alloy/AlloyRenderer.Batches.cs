@@ -798,16 +798,13 @@ public sealed unsafe partial class AlloyRenderer
             }
             // #673: a charted mesh is the whole geometry (split vertices), picked at every level -- see MeshChart.Range.
             bool chartArmed = MeshChart.Armed, picked = false;
-            if ((chartArmed || lvl > 0) && !VdoDirty(v) && !ItemMoved(v, _oItem[src]))
+            if (chartArmed && MeshChart.Range(v, _oItem[src], lvl, out int cb, out nint co, out int cc))
             {
-                if (chartArmed && MeshChart.Range(v, _oItem[src], lvl, out int cb, out nint co, out int cc))
-                {
-                    idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc); picked = true;
-                    LightmapBake.Enrol(i, v, _oItem[src]);   // #674: once per slot (a -1 test after the first)
-                }
-                else if (lvl > 0 && MeshLod.Range(v, _oItem[src], lvl, out nint lo, out int lc) && LodVao(v) != 0)
-                { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; picked = true; }
+                idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc); picked = true;
+                LightmapBake.Enrol(i, v, _oItem[src]);   // #674: once per slot (a -1 test after the first)
             }
+            else if (lvl > 0 && MeshLod.Range(v, _oItem[src], lvl, out nint lo, out int lc) && LodVao(v) != 0)
+            { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; picked = true; }
             if (MeshLod.Armed) MeshLod.Drew(picked ? lvl : 0, idxCount);
             _oLodBit[i] = vKey & (LodVaoBit | ChartVaoBit);
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
@@ -1034,9 +1031,9 @@ public sealed unsafe partial class AlloyRenderer
             bool verified = !stale && _recFrame[i] == _frameSeq;
             // The static set's fourth record state, below `verified` and cheaper than it: a settled member has
             // nothing left that a frame can move, so its record, sphere, handles and cast admission are last
-            // frame's by construction and everything below is skipped. See StaticSlot for the membership test
+            // frame's by construction and everything below is skipped. See StaticShape for the membership test
             // and StaticFrozen for the three stamps and the recheck stagger that bound its staleness.
-            bool member = !stale && GpuStatic.On && StaticSlot(i, cls, dis, dissolve, _passAlpha[k]);
+            bool member = !stale && GpuStatic.On && StaticShape(i, cls, dis, dissolve, _passAlpha[k]);
             if (member) c.StSettled++;
             if (!verified && StaticFrozen(i, member))
             { verified = true; _recFrame[i] = _frameSeq; c.StFrozen++; }

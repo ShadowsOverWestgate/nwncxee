@@ -90,24 +90,17 @@ public sealed unsafe partial class AlloyRenderer
          : $"On — {(float)_stFrozen / Counters._frames:F0} of {(float)_stSettled / Counters._frames:F0} static parts frozen per frame";
 
     /// <summary>Is this slot in the STATIC set this frame? Every term is state Alloy already owns -- no new
-    /// engine read, so no new <see cref="EngineLayout"/> row.
+    /// engine read, so no new <see cref="EngineLayout"/> row, and <see cref="StaticSelfCheck"/> runs it headless.
     /// <para>What it includes: tileset geometry, which is a part with no gob at all
     /// (<see cref="AlloyCandidate.Gob"/>: "zero for static geometry") and no matrix class, so
     /// <c>WriteStable</c> stamped it the identity and there is no transform to re-read -- and a Static
     /// placeable IS tile geometry here (its model is <c>Scene::SpawnTile</c>'d, #673). What it excludes:
     /// every instanced part (creatures, dynamic placeables, doors -- their colour folds and matrices are
-    /// per-frame by construction), skinned and dangly meshes, a part whose VDO item committed vertices, a
-    /// fading or dissolving part, a part below full alpha, a cycling texture, and the blended/water/additive
-    /// classes, which are not on the compacting indirect path.</para></summary>
-    private static bool StaticSlot(int i, int cls, bool dis, float dissolve, float alpha)
-        => StaticShape(i, cls, dis, dissolve, alpha)
-           && !VdoDirty(_oVao[i]) && !ItemMoved(_oVao[i], _oItem[i]);
-
-    /// <summary>The membership test's pure half: everything answerable from the slot's own columns. Split out
-    /// so <see cref="StaticSelfCheck"/> can exercise the decision table headless -- the two VDO terms above it
-    /// read the engine's commit ledger, which has no meaning before a frame has run. Its enrollment-stable
-    /// terms are <see cref="StaticAtEnroll"/>'s, the same function the charter's offer asks (#655: one predicate
-    /// over two inputs); what follows is the per-frame refinement.</summary>
+    /// per-frame by construction), skinned and dangly meshes, a fading or dissolving part, a part below full
+    /// alpha, a cycling texture, and the blended/water/additive classes, which are not on the compacting
+    /// indirect path. Its enrollment-stable terms are <see cref="StaticAtEnroll"/>'s, the same function the
+    /// charter's offer asks (#655: one predicate over two inputs); what follows is the per-frame refinement.
+    /// No vertex-dirty term (CX-2): it read after both brackets closed the commit window, so it never fired.</para></summary>
     private static bool StaticShape(int i, int cls, bool dis, float dissolve, float alpha)
     {
         // feat is not asked here: a displacing feature moves VERTICES in the vertex stage, never the record,
@@ -195,7 +188,7 @@ public sealed unsafe partial class AlloyRenderer
         check.Expect(CullPass.SrcUints == 6 && CullPass.CmdUints * sizeof(uint) == 20,
           "the cull's source record or indirect command stride moved under the static path");
 
-        // The decision table, on a scratch slot restored afterwards. Each row is one term of StaticSlot, and
+        // The decision table, on a scratch slot restored afterwards. Each row is one term of StaticShape, and
         // the row exists because the term names a way the part can move behind a frozen record.
         const int i = MaxOwned - 1;
         IntPtr gob = _oGob[i]; bool mx = _oMx[i], dangly = _oDangly[i], fading = _oFading[i], texStale = _recTexStale[i];
