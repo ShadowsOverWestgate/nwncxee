@@ -197,7 +197,7 @@ public sealed unsafe class DialogService : IExtenderService
         }
         try
         {
-            _npcText = ReadExo(text);
+            _npcText = Native.ReadExo(text);
             _dialogId = dialogId;
             _speakerId = speakerId;
             _portraitResref = ResolvePortrait(speakerId);   // same thread ShowDialogEntry ran on -> safe
@@ -236,7 +236,7 @@ public sealed unsafe class DialogService : IExtenderService
             uint* ip = (uint*)indices;
             for (int i = 0; i < n; i++)
             {
-                texts[i] = ReadExo(replies + i * 0x10);   // CExoString is 16 bytes
+                texts[i] = Native.ReadExo(replies + i * 0x10);   // CExoString is 16 bytes
                 idx[i] = ip != null ? ip[i] : 0xffffffff;
             }
             _replies = MakeReplies(texts, idx, numOldReplies);
@@ -1047,17 +1047,6 @@ public sealed unsafe class DialogService : IExtenderService
 
     // ---- helpers ------------------------------------------------------------------------------
 
-    private static string ReadExo(IntPtr exo)
-    {
-        if (exo == IntPtr.Zero) return "";
-        byte* buf = *(byte**)exo;
-        uint len = *(uint*)(exo + 8);
-        if (buf == null || len == 0 || len > 4096) return "";
-        var sb = new StringBuilder((int)len);
-        for (uint k = 0; k < len; k++) sb.Append((char)buf[k]);
-        return sb.ToString();
-    }
-
     private static string Trunc(string s) => s.Length <= 60 ? s : s.Substring(0, 60) + "...";
 
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
@@ -1114,7 +1103,7 @@ public sealed unsafe class DialogService : IExtenderService
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;   // MANDATORY: the engine frees a non-null buf before writing
         _getObjectName(app, speakerId, (IntPtr)exo);
-        string name = ReadExo((IntPtr)exo);        // copies out (Latin1); "" when len==0
+        string name = Native.ReadExo((IntPtr)exo);        // copies out (Latin1); "" when len==0
         _exoDtor((IntPtr)exo);                      // free the engine-allocated buffer (null-safe)
         return name.Trim();
     }

@@ -137,13 +137,13 @@ public sealed unsafe partial class ChatService : IExtenderService
                                  int hasPortrait, IntPtr portraitPtr)
     {
         CResRef16 portrait = portraitPtr != IntPtr.Zero ? *(CResRef16*)portraitPtr : default;
-        string raw = ReadExo(text);   // BEFORE the forward: the Win64 callee destroys its by-value CExoString
+        string raw = Native.ReadExo(text);   // BEFORE the forward: the Win64 callee destroys its by-value CExoString
         if (_tapOrig != null) _tapOrig(self, text, channel, playerId, hasPortrait, portraitPtr); // vanilla chat still needs it
 #else
     private static void OnAppend(IntPtr self, IntPtr text, uint channel, uint playerId,
                                  int hasPortrait, CResRef16 portrait)
     {
-        string raw = ReadExo(text);
+        string raw = Native.ReadExo(text);
         if (_tapOrig != null) _tapOrig(self, text, channel, playerId, hasPortrait, portrait); // vanilla chat still needs it
 #endif
         try
@@ -180,18 +180,6 @@ public sealed unsafe partial class ChatService : IExtenderService
     }
 
     private static long _faults;
-
-    /// <summary>Decode a CExoString ({char* buf; uint len}) to a string (Latin1 keeps color bytes intact).</summary>
-    private static string ReadExo(IntPtr exo)
-    {
-        if (exo == IntPtr.Zero) return "";
-        byte* buf = *(byte**)exo;
-        uint len = *(uint*)(exo + 8);
-        if (buf == null || len == 0 || len > 4096) return "";
-        var sb = new StringBuilder((int)len);
-        for (uint k = 0; k < len; k++) sb.Append((char)buf[k]);
-        return sb.ToString();
-    }
 
     /// <summary>Decode a 16-byte CResRef (null-padded ASCII) to its resref string.</summary>
     private static string ResRef(CResRef16 r)

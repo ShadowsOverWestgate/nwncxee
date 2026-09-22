@@ -221,7 +221,7 @@ internal static unsafe class RadialIcons
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;
         _getObjectName(app, id, (IntPtr)exo);
-        string name = NameplateNative.ReadExo((IntPtr)exo);
+        string name = Native.ReadExo((IntPtr)exo);
         _exoDtor((IntPtr)exo);
         return name.Trim();
     }

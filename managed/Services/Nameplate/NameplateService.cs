@@ -185,7 +185,7 @@ public sealed unsafe class NameplateService : IExtenderService
         // BEFORE the forward: the Win64 callee destroys its by-value CExoString and the caller sees it zeroed
         // on return (docs/windows-symbols.md), so a read afterwards yields "" and no line is ever banked --
         // which is bubbles working on Linux, where the CALLER owns the copy, and silently dead on Windows.
-        string text = bank && _inPlate == 0 ? NameplateNative.ReadExo(exo) : "";
+        string text = bank && _inPlate == 0 ? Native.ReadExo(exo) : "";
 
         if (_origBubbleText != null) _origBubbleText(self, exo, forceShow, perChar, fixedSec);
         if (!live) return;

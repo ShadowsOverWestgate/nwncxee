@@ -151,8 +151,8 @@ public sealed unsafe class CombatTextService : IExtenderService
         try
         {
             NameplateNative.UnfreezeAnchor(self);   // #591: a bubble that idled under vanilla has a frozen anchor
-            string body = NameplateNative.ReadExo(text);
-            string fontName = NameplateNative.ReadExo(font);
+            string body = Native.ReadExo(text);
+            string fontName = Native.ReadExo(font);
             if (OperatingSystem.IsWindows()) { Native.DestroyExoString(text); Native.DestroyExoString(font); }   // Win64: the swallowed callee owned both copies
             if (body.Length == 0) return;                 // an empty floaty draws nothing in either renderer
 

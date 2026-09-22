@@ -85,11 +85,30 @@ public static unsafe class Native
         return ((IntPtr)q, (uint)*(ulong*)(s + 8), q == s + 0x10 ? IntPtr.Zero : (IntPtr)q);
     }
 
-    /// <summary>The std::string reader against hand-built layouts -- the stub host has no engine to call.</summary>
+    /// <summary>Longest CExoString <see cref="ReadExo"/> trusts; a length past this is a stale or foreign pointer.</summary>
+    private const uint MaxExoLen = 4096;
+
+    /// <summary>Decode a <c>CExoString</c> {char* buf@0; uint len@8} to a string: Latin1 keeps colour bytes intact.
+    /// Copies out immediately, never holds the engine char* (cf. #33). Allocates: COLD paths only.
+    /// A Win64 by-value arg must be read BEFORE forwarding, the callee destroys it (#456).</summary>
+    public static string ReadExo(IntPtr exo)
+    {
+        if (exo == IntPtr.Zero) return "";
+        byte* buf = *(byte**)exo;
+        uint len = *(uint*)(exo + 8);
+        return buf == null || len == 0 || len > MaxExoLen ? "" : Encoding.Latin1.GetString(buf, (int)len);
+    }
+
+    /// <summary>The std::string and CExoString readers against hand-built layouts -- the stub host has no engine to call.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         byte* s = stackalloc byte[32];
         var check = new Checker(log);
+        byte* text = stackalloc byte[3]; text[0] = (byte)'a'; text[1] = 0xC7; text[2] = (byte)'z';
+        *(byte**)s = text; *(uint*)(s + 8) = 3;
+        check.Expect(ReadExo((IntPtr)s) == "a\u00C7z", "exo latin1 byte-for-byte");
+        *(uint*)(s + 8) = MaxExoLen + 1;
+        check.Expect(ReadExo((IntPtr)s) == "" && ReadExo(IntPtr.Zero) == "", "exo over-cap and null read empty");
         if (OperatingSystem.IsWindows())
         {
             s[0] = (byte)'a'; s[1] = (byte)'b'; *(ulong*)(s + 0x10) = 2; *(ulong*)(s + 0x18) = 15;

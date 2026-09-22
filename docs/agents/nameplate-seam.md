@@ -1149,7 +1149,7 @@ never per frame). You get:
 - `this` = `CNWCObject*` — **the speaking object**, from which you read its **object id** (see the rule
   below), which is the join key to its world position *and* to the nameplate for the same creature
   (they share an anchor);
-- the `CExoString` text, decoded with `ChatService.ReadExo`'s pattern (`ChatService.cs:139-148`), then
+- the `CExoString` text, decoded with `Native.ReadExo` (CX-701), then
   `ColorRunParser.Parse` for colours;
 - `SetPopUpBubblePortrait(CResRef)` on the same object for the portrait resref.
 

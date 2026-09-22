@@ -453,22 +453,9 @@ public static unsafe class NameplateNative
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;
         _getObjectName(app, id, (IntPtr)exo);
-        string name = ReadExo((IntPtr)exo);
+        string name = Native.ReadExo((IntPtr)exo);
         _exoDtor((IntPtr)exo);
         return name.Trim();
-    }
-
-    /// <summary>Decode a by-value <c>CExoString</c> {char* buf@0; uint len@8} the way the chat tap does.
-    /// COLD -- runs on the message thread inside the bubble-text hook.</summary>
-    public static string ReadExo(IntPtr exo)
-    {
-        if (exo == IntPtr.Zero) return "";
-        byte* buf = *(byte**)exo;
-        uint len = *(uint*)(exo + 8);
-        if (buf == null || len == 0 || len > 4096) return "";
-        var sb = new StringBuilder((int)len);
-        for (uint i = 0; i < len; i++) sb.Append((char)buf[i]);
-        return sb.ToString();
     }
 
     /// <summary>The object's plate portrait resref via the GetPortrait virtual, at
