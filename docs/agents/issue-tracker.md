@@ -1,93 +1,61 @@
-# Issue tracker: Plane (local, trial)
+# Issue tracker: Plane
 
-Issues and specs for this repo live as **work items** on a local Plane CE (v1.4.2) at
-`http://localhost`: workspace `shadows-over-westgate`, project **SoW Client Extender**,
-identifier `CX`. This is a **trial** of Plane as the team tracker. The previous tracker
-(Gitea) is documented in `issue-tracker-gitea.md`; every Gitea issue was migrated on
-2026-09-20 with its **number preserved**: Gitea `#42` is `CX-42` (PR numbers are gaps).
-Migration tooling: `tools/plane/` (re-runnable, idempotent per number). **To revert**:
-swap the two files back and delete `.mcp.json`.
+Live work for this repository lives on the SoW Plane at `https://plane.westgate.pw`,
+workspace `shadows-over-westgate`, in project **`CX`** (Client Extender) -- a work item
+is named `CX-12`. Gitea keeps code, pull requests and releases.
 
-## Two ways in
+The workspace is shared with `sow-codebase` (`GAME`), NodeBB (`WEB`) and the platform
+(`PLAT`); a reference like `GAME-12` is unique across the whole workspace. File against
+the project that owns the outcome: client/renderer work is `CX`, the server end of a
+packet or a `.shd` in topdata is `GAME`. The credentials story and what `tea` is still
+for live once in `sow-platform/docs/agents/plane-tracker.md`.
 
-1. **Plane MCP tools** (preferred; `.mcp.json` at the repo root): `workitem`,
-   `workitem_comment`, `label`, `state`, `member`. Each takes an `action`; the tool
-   description lists the actions and their params. The server reads `PLANE_API_KEY` from
-   your shell env.
-2. **REST**, for what the MCP server can't reach on this CE version (relations; see
-   Wayfinding): `curl -s -H "X-API-Key: $PLANE_API_KEY" http://localhost/api/v1/workspaces/shadows-over-westgate/projects/$P/...`.
-   Swagger for this exact version: `http://localhost/api/v1/schema/swagger-ui/`.
+## The client
 
-Constants (stable; no need to look them up):
+`plane` is `bin/plane`, a byte-identical copy of sow-platform's
+`infra/nixos/scripts/plane.py` (fix bugs at the source, then copy it out again). It
+needs Python 3 and your own `PLANE_API_KEY`, set in the environment or in
+`~/.config/sow/plane.env`; base URL and workspace default correctly. `bin/plane --help`
+lists the surface: `file CX "..."`, `show CX-12`, `comment`, `close`, `claim`, `parent`,
+`block`, `frontier`.
 
-| what | id |
-|---|---|
-| project `P` | `1910279f-42d5-4ad3-ae1c-55ab185f3d68` |
-| state Todo (`unstarted`) | `2591bf46-a4a2-4afc-b839-16fdb55cf02a` |
-| state In Progress (`started`) | `18f89cc1-54cf-4010-8da7-4dbb1a126714` |
-| state Done (`completed`) | `3f5dd86a-6775-4ddd-8558-afe2843506c5` |
-| state Cancelled (`cancelled`) | `c42f767f-df1b-428d-aaac-8cb110ac8557` |
-| label `wayfinder:map` | `fd1c5714-ea58-45bd-a3f5-ddf63937a95d` |
-| label `wayfinder:task` | `840392da-0aa4-4d9a-972d-33594ac80211` |
-| label `wayfinder:research` | `46f23d85-dc4d-4f93-9dc8-95c873c0a49e` |
-| label `wayfinder:grilling` | `73eeef27-3533-4ff2-9016-6941ee474578` |
-| label `wayfinder:prototype` | `21b04555-3283-4c48-bd48-ddac47a8609b` |
-| label `ready-for-agent` | `1d7ccfb7-5eeb-4c96-89d0-2dd33f499cce` |
+The Plane MCP server (`.mcp.json`, `uvx plane-mcp-server`) points at the same instance
+for ad-hoc reads and edits the CLI doesn't cover. It reads `PLANE_API_KEY` from the shell
+environment only, not from `plane.env`. The CLI stays the path for wayfinding, since
+`frontier` and the rules below live in it.
 
-Work items are UUIDs, but humans and the UI say `CX-<n>` (`sequence_id`).
-`workitem retrieve_by_identifier` with `workitem_identifier: "CX-<n>"` turns one into the
-other. In prose, refer to `CX-<n>` plus the title, never the UUID.
+## Old `CX-<n>` and `#<n>` references
 
-## Conventions
+Numbering restarted at `CX-1` on 2026-09-22. Every `CX-<n>` / `#<n>` in commits, ADRs,
+docs and memories written before then points at the retired local Plane (Gitea numbers
+were preserved there) and was **not** migrated. Treat such a reference as history, not
+as a live item on the new instance: a low `CX-<n>` there is a different, newer item.
 
-- **Create**: `workitem create` (`project_id`, `name`, `description_html`; optional
-  `labels`, `assignees`, `parent`, `state`). Bodies are **HTML**, not Markdown: write
-  `<h2>`/`<p>`/`<ul>` yourself (`description_stripped` takes plain text if HTML is overkill).
-  New items land in `Backlog`; pass `state` Todo for anything actionable.
-- **Read**: `workitem retrieve_by_identifier`, then `workitem_comment list` for the thread.
-- **List**: `workitem list` with `project_id`, `expand: "state"`, and a sparse `fields`
-  (`id,sequence_id,name,parent,state,assignees,labels`). CE rejects `pql`: filter the rows
-  client-side.
-- **Comment**: `workitem_comment create` with `comment_html`.
-- **Labels**: `workitem manage_label` (`add_label_id` / `remove_label_id`).
-- **Close / reopen**: `workitem update` with `state` = Done / Todo. There is no close verb;
-  "closed" = state group `completed` or `cancelled`.
+## Wayfinding
 
-## Pull requests as a triage surface
+A **map** is a work item labelled `wayfinder:map`. A **ticket** is a real child of it
+through the native parent field, labelled `wayfinder:research`, `:prototype`,
+`:grilling` or `:task`. **Blocking** is a `blocked_by` relation. The **frontier** is
+the map's open children with no assignee and no open blocker, and
+`bin/plane frontier CX-<map>` answers it.
 
-**PRs as a request surface: no.** Code and PRs stay on Gitea. Reference work items from
-commits and PR bodies as `CX-<n>` (Gitea will not link them; the text is the pointer).
+The rules from `sow-codebase/docs/agents/issue-tracker.md` hold here unchanged:
+
+1. **A map's tickets are its direct children, never nested** -- `frontier` looks one
+   level deep. Sub-structure means a second map.
+2. **A ticket has exactly one parent.** A ticket serving two arcs takes the owning map
+   as parent and reaches the other through `blocked_by`.
+3. **A map and all of its tickets live in one project.** Map-to-map edges are
+   `blocked_by`, which does cross projects.
+4. **A relation cannot be deleted through the public API.** Write a blocker when sure;
+   removing one is a human action in the UI.
+5. **`external_id` + `external_source`** is the idempotency key for anything that
+   writes into Plane.
 
 ## When a skill says "publish to the issue tracker"
 
-`workitem create` in project `P`.
+`bin/plane file CX "<title>"`.
 
 ## When a skill says "fetch the relevant ticket"
 
-`workitem retrieve_by_identifier` + `workitem_comment list`.
-
-## Wayfinding operations
-
-Used by `/wayfinder`. The **map** is a work item; tickets are its native **sub-work-items**.
-
-- **Map**: a work item labelled `wayfinder:map` holding the Destination / Notes /
-  Decisions-so-far / Fog body.
-- **Child ticket**: `workitem create` with `parent` = the map's id and label
-  `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). No `Part of` line: the UI
-  nests children under the map.
-- **Blocking**: Plane's native relations, **REST only** (the MCP server's
-  `workitem_relation` calls `/dependencies/`, which this CE version lacks -> 404).
-  Add an edge on the **child**:
-  `curl -s -X POST -H "X-API-Key: $PLANE_API_KEY" -H 'Content-Type: application/json' -d '{"relation_type":"blocked_by","issues":["<blocker uuid>"]}' http://localhost/api/v1/workspaces/shadows-over-westgate/projects/$P/work-items/<child uuid>/relations/`
-  `GET` the same URL returns `{"blocked_by":[{"issue_id":...}], "blocking":[...], ...}`:
-  ids only, so resolve each blocker's state against the list you already fetched.
-- **Frontier query**: `workitem list` (params as above), keep `parent == map`, drop rows
-  whose `state.group` is `completed`/`cancelled` or whose `assignees` is non-empty, then
-  `GET .../relations/` on each survivor and drop it if any `blocked_by` id is still open.
-  Sort by `sequence_id`; first wins.
-- **Claim**: `workitem manage_assignee` with `add_user_id` = `member me` -> `id`. The
-  session's first write.
-- **Resolve**: `workitem_comment create` with the answer, `workitem update` to Done, then
-  append a context pointer to the map's Decisions-so-far: `retrieve` the map, edit its
-  `description_html`, `update` it back (it is the whole body; Plane adds `class`/`data-id`
-  attributes on save, leave them).
+`bin/plane show CX-<n>`.

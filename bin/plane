@@ -1,0 +1,672 @@
+#!/usr/bin/env python3
+"""The one seam between this project and Plane (ADR-0054).
+
+Every call to Plane's REST API goes through `Plane` below. The importer, the
+pull-request bridge and the agent command surface are all thin callers of it,
+because the mapping decisions -- how a `Priority/*` label becomes a priority,
+how a Gitea issue number survives as a legacy reference, what "blocked" means
+-- have to be identical in all three, and one module is the only way to be sure
+they are.
+
+Configuration comes from the environment:
+
+    PLANE_BASE_URL    e.g. https://plane.example -- no trailing slash
+    PLANE_WORKSPACE   the workspace slug
+    PLANE_API_KEY     a workspace API key, sent as X-API-Key
+
+The base URL and the workspace have working defaults, so a new developer sets
+only PLANE_API_KEY. When the environment is bare the values are read from a
+personal config file instead, so nobody needs access to the host's encrypted
+files to use the tracker.
+
+Only the standard library is used, and the shebang is plain python3: this runs
+from a checkout, on the host, and out of any repository, and none of those
+places wants a dependency set or a development shell to keep in step.
+
+The source is sow-platform's `infra/nixos/scripts/plane.py`. Every other
+repository carries a byte-identical copy at `bin/plane`. Fix a bug at the
+source, then copy it out again (ADR-0060).
+
+Run `bin/plane --help` for the command surface.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import time
+import urllib.request
+
+# --- mapping ---------------------------------------------------------------
+
+# Priority stops being a label and becomes the native field. Carrying the
+# labels across as well would leave two sources of truth for one fact, which is
+# the whole reason for the move.
+PRIORITY_BY_LABEL = {
+    "Priority/Critical": "urgent",
+    "Priority/High": "high",
+    "Priority/Medium": "medium",
+    "Priority/Low": "low",
+}
+NO_PRIORITY = "none"
+
+# Where a migrated work item records the issue it came from. Plane matches on
+# the pair, so the source name is what makes a re-run an update instead of a
+# duplicate.
+EXTERNAL_SOURCE = "gitea"
+
+# Plane answers 429 with no `Retry-After`, so the wait is ours to choose: five
+# seconds, doubling, capped at a minute. Six tries covers a window of about two
+# minutes, which is longer than any throttle this instance applies.
+# A throttle answers 429; a gateway in front of Plane answers 502, 503 or 504
+# while the service behind it is still fine. Both are worth waiting out rather
+# than losing the run, but only a call that is safe to repeat is repeated.
+RETRY_STATUSES = (429, 502, 503, 504)
+
+RATE_LIMIT_RETRIES = 6
+RATE_LIMIT_BACKOFF = 5
+RATE_LIMIT_CEILING = 60
+
+# Where a developer's own credentials live when the environment does not carry
+# them. Every member mints a personal API key from their profile after signing
+# in with Gitea, so nothing in the day-to-day path needs a decryption key: the
+# encrypted file is the unattended host's copy, not everyone's.
+# What a checkout knows without being told. Only the key is personal, so this is
+# the difference between "mint a token" and "mint a token and find two strings".
+# Override either one from the environment to point at another instance.
+DEFAULTS = {
+    "PLANE_BASE_URL": "https://plane.westgate.pw",
+    "PLANE_WORKSPACE": "shadows-over-westgate",
+}
+
+CONFIG_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "sow",
+    "plane.env",
+)
+
+
+def config_file_values(path=None):
+    """`KEY=VALUE` lines from the personal config file. No file means no values."""
+    try:
+        with open(path or CONFIG_FILE, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return {}
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
+
+
+# Cloudflare sits in front of the instance and answers `Python-urllib/3.13`
+# with 403 error 1010 -- a banned browser signature -- before the request ever
+# reaches Plane. Any named agent passes; the default does not. So every call
+# says who it is, which is worth doing anyway when 754 work items arrive at
+# once and somebody is reading the access log wondering what did that.
+USER_AGENT = "sow-plane-client"
+
+# A state belongs to one of Plane's five groups. These two are the closed ones;
+# everything else is open, including backlog.
+CLOSED_GROUPS = frozenset({"completed", "cancelled"})
+
+# `Closes SOW-12`, `fixes sow-12`, `Resolved: PLAT-3` -- the explicit half of
+# what Gitea used to do for free. Only these close anything; a bare mention
+# does not, and that loss is accepted in ADR-0054.
+CLOSING_REFERENCE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b[:\s]+([A-Za-z][A-Za-z0-9]*)-(\d+)\b",
+    re.IGNORECASE,
+)
+
+WORK_ITEM_REFERENCE = re.compile(r"^([A-Za-z][A-Za-z0-9]*)-(\d+)$")
+
+
+def priority_for_labels(labels):
+    """The Plane priority a Gitea issue's labels map to.
+
+    At most one `Priority/*` label is allowed by the label policy; if several
+    arrive anyway the most urgent wins, because under-stating an urgent issue
+    is the worse failure.
+    """
+    order = ["urgent", "high", "medium", "low"]
+    found = [PRIORITY_BY_LABEL[name] for name in labels if name in PRIORITY_BY_LABEL]
+    for priority in order:
+        if priority in found:
+            return priority
+    return NO_PRIORITY
+
+
+def labels_to_carry(labels):
+    """The labels that survive the move: everything that is not a priority."""
+    return [name for name in labels if name not in PRIORITY_BY_LABEL]
+
+
+def closing_references(text):
+    """Every `Closes PROJ-123` in a pull request body, in order, deduplicated."""
+    seen = []
+    for identifier, sequence in CLOSING_REFERENCE.findall(text or ""):
+        reference = f"{identifier.upper()}-{int(sequence)}"
+        if reference not in seen:
+            seen.append(reference)
+    return seen
+
+
+def parse_reference(reference):
+    """`PROJ-123` -> ("PROJ", 123). Raises ValueError on anything else."""
+    match = WORK_ITEM_REFERENCE.match(reference.strip())
+    if not match:
+        raise ValueError(f"not a work item reference: {reference!r}")
+    return match.group(1).upper(), int(match.group(2))
+
+
+def legacy_reference(owner, repo, number):
+    """How a migrated item records where it came from: `owner/repo#number`."""
+    return f"{owner}/{repo}#{number}"
+
+
+def is_open(work_item, states_by_id):
+    """Open means: its state is not in a completed or cancelled group."""
+    state = states_by_id.get(str(work_item.get("state")))
+    if state is None:
+        return True
+    return state.get("group") not in CLOSED_GROUPS
+
+
+def frontier(children, relations_by_item, states_by_id):
+    """Open children, unassigned, with no open blocker.
+
+    This is wayfinder's "what can be picked up right now". It is a pure
+    function of three things the caller has already fetched so that the same
+    rule can be asserted without a live instance.
+    """
+    open_ids = {str(c["id"]) for c in children if is_open(c, states_by_id)}
+    ready = []
+    for child in children:
+        if str(child["id"]) not in open_ids:
+            continue
+        if child.get("assignees"):
+            continue
+        blockers = relations_by_item.get(str(child["id"]), {}).get("blocked_by", [])
+        if any(str(b["issue_id"]) in open_ids for b in blockers):
+            continue
+        ready.append(child)
+    return ready
+
+
+# --- client ----------------------------------------------------------------
+
+
+class PlaneError(RuntimeError):
+    """A failed call, carrying what the API said about it.
+
+    `status` and `payload` exist because one refusal is not an error at all:
+    a create whose external reference is taken comes back 409 with the id of
+    the item that already holds it, which is how a re-run finds its own work.
+    """
+
+    def __init__(self, message, status=None, payload=None):
+        super().__init__(message)
+        self.status = status
+        self.payload = payload if isinstance(payload, dict) else {}
+
+
+class Plane:
+    """Every call to Plane's public API. Nothing else talks to it."""
+
+    def __init__(self, base_url=None, workspace=None, api_key=None, timeout=30):
+        stored = config_file_values()
+
+        def setting(given, name):
+            return (
+                given
+                or os.environ.get(name)
+                or stored.get(name)
+                or DEFAULTS.get(name, "")
+            ).strip()
+
+        self.base_url = setting(base_url, "PLANE_BASE_URL").rstrip("/")
+        self.workspace = setting(workspace, "PLANE_WORKSPACE")
+        self.api_key = setting(api_key, "PLANE_API_KEY")
+        self.timeout = timeout
+        if not (self.base_url and self.workspace and self.api_key):
+            raise PlaneError(
+                "set PLANE_API_KEY in the environment, or put it in "
+                f"{CONFIG_FILE}. Mint a key from your tracker profile's API "
+                "tokens after signing in with Gitea."
+            )
+        self._project_cache = {}
+        self._legacy_index = {}
+
+    # -- transport
+
+    @staticmethod
+    def repeatable(method, body, status):
+        """Whether this exact call may be sent again after `status`.
+
+        A 429 always may: the throttle refused it, so nothing happened. A
+        gateway error is different -- 502 can mean the write landed and the
+        answer was lost. So a repeat needs the call to say what it is: reading
+        and patching name their target, and a POST is safe only when its
+        payload carries an external reference, which Plane answers with 409 and
+        the id it already holds. A relation or a link POST carries none, and
+        there is no DELETE on relations to undo a double write.
+        """
+        if status == 429:
+            return True
+        if status not in RETRY_STATUSES:
+            return False
+        if method in ("GET", "PATCH", "PUT"):
+            return True
+        return bool(body and body.get("external_id"))
+
+    def request(self, method, path, body=None, query=None):
+        """One call, waiting out a refusal that says nothing about the work.
+
+        Plane throttles the public API per key. A migration makes tens of
+        thousands of calls, so meeting a 429 is normal and stopping on one
+        would mean restarting an hour of work. A gateway error is waited out
+        the same way when the call is safe to repeat. Everything else is
+        raised.
+        """
+        for attempt in range(RATE_LIMIT_RETRIES):
+            try:
+                return self._request(method, path, body, query)
+            except PlaneError as error:
+                last = attempt == RATE_LIMIT_RETRIES - 1
+                if last or not self.repeatable(method, body, error.status):
+                    raise
+                time.sleep(min(RATE_LIMIT_BACKOFF * (2 ** attempt), RATE_LIMIT_CEILING))
+        raise AssertionError("unreachable")
+
+    def _request(self, method, path, body=None, query=None):
+        url = f"{self.base_url}/api/v1/workspaces/{self.workspace}/{path.lstrip('/')}"
+        if query:
+            url = f"{url}?{urllib.parse.urlencode(query)}"
+        data = None if body is None else json.dumps(body).encode()
+        request = urllib.request.Request(url, data=data, method=method)
+        request.add_header("X-API-Key", self.api_key)
+        request.add_header("User-Agent", USER_AGENT)
+        if data is not None:
+            request.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = response.read()
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode(errors="replace")[:500]
+            try:
+                payload = json.loads(detail)
+            except ValueError:
+                payload = None
+            raise PlaneError(
+                f"{method} {url} -> {error.code}: {detail}",
+                status=error.code,
+                payload=payload,
+            ) from error
+        if not payload:
+            return None
+        return json.loads(payload)
+
+    def paged(self, path, query=None):
+        """Every result across Plane's cursor pagination."""
+        query = dict(query or {})
+        while True:
+            page = self.request("GET", path, query=query)
+            if isinstance(page, list):
+                yield from page
+                return
+            yield from page.get("results", [])
+            cursor = page.get("next_cursor")
+            if not page.get("next_page_results") or not cursor:
+                return
+            query["cursor"] = cursor
+
+    # -- projects, states, labels
+
+    def projects(self):
+        return list(self.paged("projects/"))
+
+    def project(self, identifier):
+        """A project by its short identifier, e.g. SOW."""
+        if identifier not in self._project_cache:
+            for project in self.projects():
+                self._project_cache[project["identifier"]] = project
+        if identifier not in self._project_cache:
+            raise PlaneError(f"no project with identifier {identifier!r}")
+        return self._project_cache[identifier]
+
+    def members(self):
+        return list(self.paged("members/"))
+
+    def members_by_login(self):
+        """Workspace members, keyed by every handle a Gitea login might match.
+
+        Gitea and Plane share no identifier: the OAuth adapter matches an
+        existing user by email address, and a display name is whatever the user
+        set. So every handle a member carries is indexed, and an assignee that
+        matches none of them is reported rather than guessed at.
+        """
+        index = {}
+        for entry in self.members():
+            user = entry.get("member") if isinstance(entry.get("member"), dict) else entry
+            user_id = user.get("id") or entry.get("member") or entry.get("id")
+            # No local part of an email address: two people whose addresses
+            # start the same way would map to whichever was read first, and a
+            # wrong assignee on a migrated item is silent. An exact handle or
+            # nothing.
+            handles = [
+                user.get("display_name"),
+                user.get("username"),
+                user.get("email"),
+            ]
+            for handle in handles:
+                if handle:
+                    index.setdefault(str(handle).lower(), {"id": user_id})
+        return index
+
+    def index_by_legacy(self, project_id):
+        """Every migrated work item in a project, by the Gitea issue it came from."""
+        if project_id not in self._legacy_index:
+            self._legacy_index[project_id] = {
+                item["external_id"]: item
+                for item in self.work_items(project_id)
+                if item.get("external_id") and item.get("external_source") == EXTERNAL_SOURCE
+            }
+        return self._legacy_index[project_id]
+
+    def reference_index(self):
+        """Every migrated work item in the workspace, as `owner/repo#n` -> `PROJ-12`.
+
+        What a body's `#319` has to become. It spans projects because a
+        reference does: four repositories share `GAME`, and a platform ticket
+        cites a game one all the time.
+        """
+        index = {}
+        for project in self.projects():
+            identifier = project.get("identifier")
+            for legacy, item in self.index_by_legacy(project["id"]).items():
+                if identifier and item.get("sequence_id"):
+                    index[legacy] = f"{identifier}-{item['sequence_id']}"
+        return index
+
+    def find_by_legacy(self, legacy):
+        """A migrated work item anywhere in the workspace, or None.
+
+        Blocking crosses projects -- the maps already depend on each other
+        across repositories -- so a blocker is looked for everywhere and not
+        only in the project being imported.
+        """
+        for project in self.projects():
+            found = self.index_by_legacy(project["id"]).get(legacy)
+            if found:
+                return found
+        return None
+
+    def states(self, project_id):
+        return {str(s["id"]): s for s in self.paged(f"projects/{project_id}/states/")}
+
+    def state_in_group(self, project_id, group):
+        for state in self.states(project_id).values():
+            if state.get("group") == group:
+                return state
+        raise PlaneError(f"project {project_id} has no state in group {group!r}")
+
+    def labels(self, project_id):
+        return {label["name"]: label for label in self.paged(f"projects/{project_id}/labels/")}
+
+    def ensure_labels(self, project_id, names):
+        """Label ids for `names`, creating the ones that do not exist yet."""
+        existing = self.labels(project_id)
+        ids = []
+        for name in names:
+            label = existing.get(name)
+            if label is None:
+                label = self.request("POST", f"projects/{project_id}/labels/", {"name": name})
+                existing[name] = label
+            ids.append(label["id"])
+        return ids
+
+    # -- work items
+
+    def work_item(self, reference):
+        """One work item by its `PROJ-123` reference."""
+        identifier, sequence = parse_reference(reference)
+        return self.request("GET", f"work-items/{identifier}-{sequence}/")
+
+    def work_items(self, project_id, query=None):
+        return list(self.paged(f"projects/{project_id}/work-items/", query))
+
+    def create_work_item(self, project_id, fields):
+        return self.request("POST", f"projects/{project_id}/work-items/", fields)
+
+    def upsert_work_item(self, project_id, fields):
+        """Create, or update the item already carrying this external reference.
+
+        There is no upsert verb: the work-item collection takes POST only, and
+        answers a repeated external reference with 409 and the id of the item
+        that already holds it. So the create IS the lookup, and the second call
+        patches what the first one found. That round trip is what makes the
+        importer re-runnable -- a failed batch is retried, never cleaned up by
+        hand -- and it costs one extra request per already-imported issue.
+        """
+        if not fields.get("external_id") or not fields.get("external_source"):
+            raise PlaneError("upsert needs external_id and external_source")
+        try:
+            return self.create_work_item(project_id, fields)
+        except PlaneError as error:
+            existing = error.payload.get("id") if error.status == 409 else None
+            if not existing:
+                raise
+            return self.update_work_item(project_id, existing, fields)
+
+    def update_work_item(self, project_id, item_id, fields):
+        return self.request("PATCH", f"projects/{project_id}/work-items/{item_id}/", fields)
+
+    def close_work_item(self, project_id, item_id):
+        state = self.state_in_group(project_id, "completed")
+        return self.update_work_item(project_id, item_id, {"state": state["id"]})
+
+    def set_parent(self, project_id, item_id, parent_id):
+        return self.update_work_item(project_id, item_id, {"parent": parent_id})
+
+    def assign(self, project_id, item_id, user_ids):
+        return self.update_work_item(project_id, item_id, {"assignees": list(user_ids)})
+
+    # -- comments, links, relations
+
+    def work_item_detail(self, project_id, item_id):
+        """One work item by its id, with the fields the list view may omit."""
+        return self.request("GET", f"projects/{project_id}/work-items/{item_id}/")
+
+    def comments(self, project_id, item_id):
+        return list(self.paged(f"projects/{project_id}/work-items/{item_id}/comments/"))
+
+    def update_comment(self, project_id, item_id, comment_id, html):
+        """Rewrite a comment in place.
+
+        A comment is created, not upserted: posting one whose external_id is
+        already taken is an error, not an update. So a caller that may be
+        writing a second time has to read the thread and patch what is there --
+        which is what makes re-running the importer safe.
+        """
+        return self.request(
+            "PATCH",
+            f"projects/{project_id}/work-items/{item_id}/comments/{comment_id}/",
+            {"comment_html": html},
+        )
+
+    def comment(self, project_id, item_id, html, external_id=None):
+        """Add a comment. With an external id, a redelivery updates in place."""
+        body = {"comment_html": html}
+        if external_id:
+            body["external_id"] = external_id
+            body["external_source"] = EXTERNAL_SOURCE
+        return self.request("POST", f"projects/{project_id}/work-items/{item_id}/comments/", body)
+
+    def links(self, project_id, item_id):
+        return list(self.paged(f"projects/{project_id}/work-items/{item_id}/links/"))
+
+    def link(self, project_id, item_id, url, title=None):
+        """Attach a URL once. A second call with the same URL is a no-op."""
+        for existing in self.links(project_id, item_id):
+            if existing.get("url") == url:
+                return existing
+        return self.request(
+            "POST",
+            f"projects/{project_id}/work-items/{item_id}/links/",
+            {"url": url, "title": title or url},
+        )
+
+    def relations(self, project_id, item_id):
+        return self.request("GET", f"projects/{project_id}/work-items/{item_id}/relations/")
+
+    def add_relation(self, project_id, item_id, relation_type, related_ids):
+        return self.request(
+            "POST",
+            f"projects/{project_id}/work-items/{item_id}/relations/",
+            {"relation_type": relation_type, "issues": list(related_ids)},
+        )
+
+    def block(self, project_id, item_id, blocker_ids):
+        return self.add_relation(project_id, item_id, "blocked_by", blocker_ids)
+
+    # -- wayfinder
+
+    def frontier(self, project_id, parent_id):
+        """Open, unassigned children of a map with no open blocker."""
+        states = self.states(project_id)
+        children = [
+            item
+            for item in self.work_items(project_id)
+            if str(item.get("parent")) == str(parent_id)
+        ]
+        relations = {
+            str(child["id"]): self.relations(project_id, child["id"]) for child in children
+        }
+        return frontier(children, relations, states)
+
+
+# --- command surface -------------------------------------------------------
+
+
+def _resolve(client, reference):
+    identifier, _ = parse_reference(reference)
+    project = client.project(identifier)
+    item = client.work_item(reference)
+    return project["id"], item
+
+
+def _print(value):
+    print(json.dumps(value, indent=2, sort_keys=True, default=str))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Tracker operations against Plane (ADR-0054)")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("file", help="create a work item")
+    p.add_argument("project", help="project identifier, e.g. SOW")
+    p.add_argument("title")
+    p.add_argument("--body", default="")
+    p.add_argument("--label", action="append", default=[], dest="labels")
+    p.add_argument("--priority", default=None, help="override the label-derived priority")
+    p.add_argument("--assignee", action="append", default=[], dest="assignees")
+    p.add_argument("--parent", default=None, help="parent work item reference")
+
+    p = sub.add_parser("show", help="a whole thread: the item plus every comment")
+    p.add_argument("reference")
+
+    p = sub.add_parser("comment", help="add a comment")
+    p.add_argument("reference")
+    p.add_argument("text")
+
+    p = sub.add_parser("close", help="move a work item to a completed state")
+    p.add_argument("reference")
+
+    p = sub.add_parser("claim", help="assign a work item to a user")
+    p.add_argument("reference")
+    p.add_argument("user_id")
+
+    p = sub.add_parser("block", help="record that one item is blocked by others")
+    p.add_argument("reference")
+    p.add_argument("blocker", nargs="+")
+
+    p = sub.add_parser("parent", help="make a work item a child of another")
+    p.add_argument("reference")
+    p.add_argument("parent")
+
+    p = sub.add_parser("frontier", help="open, unassigned children of a map with no open blocker")
+    p.add_argument("map_reference")
+
+    args = parser.parse_args(argv)
+    client = Plane()
+
+    if args.command == "file":
+        project = client.project(args.project)
+        fields = {
+            "name": args.title,
+            "description_html": f"<p>{args.body}</p>" if args.body else "<p></p>",
+            "priority": args.priority or priority_for_labels(args.labels),
+        }
+        if args.labels:
+            fields["labels"] = client.ensure_labels(project["id"], labels_to_carry(args.labels))
+        if args.assignees:
+            fields["assignees"] = args.assignees
+        if args.parent:
+            _, parent = _resolve(client, args.parent)
+            fields["parent"] = parent["id"]
+        _print(client.create_work_item(project["id"], fields))
+        return 0
+
+    if args.command == "show":
+        project_id, item = _resolve(client, args.reference)
+        item["comments"] = client.comments(project_id, item["id"])
+        item["relations"] = client.relations(project_id, item["id"])
+        _print(item)
+        return 0
+
+    if args.command == "comment":
+        project_id, item = _resolve(client, args.reference)
+        _print(client.comment(project_id, item["id"], f"<p>{args.text}</p>"))
+        return 0
+
+    if args.command == "close":
+        project_id, item = _resolve(client, args.reference)
+        _print(client.close_work_item(project_id, item["id"]))
+        return 0
+
+    if args.command == "claim":
+        project_id, item = _resolve(client, args.reference)
+        _print(client.assign(project_id, item["id"], [args.user_id]))
+        return 0
+
+    if args.command == "block":
+        project_id, item = _resolve(client, args.reference)
+        blockers = [_resolve(client, reference)[1]["id"] for reference in args.blocker]
+        _print(client.block(project_id, item["id"], blockers))
+        return 0
+
+    if args.command == "parent":
+        project_id, item = _resolve(client, args.reference)
+        _, parent = _resolve(client, args.parent)
+        _print(client.set_parent(project_id, item["id"], parent["id"]))
+        return 0
+
+    if args.command == "frontier":
+        project_id, item = _resolve(client, args.map_reference)
+        _print(client.frontier(project_id, item["id"]))
+        return 0
+
+    raise SystemExit(f"unknown command {args.command}")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

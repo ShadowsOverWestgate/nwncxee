@@ -22,7 +22,7 @@ user-visible, not renamed (#530).
 
 ### Issue tracker
 
-Issues live on a local Plane CE (`http://localhost`, project `CX`) -- a trial, Gitea is the fallback. See `docs/agents/issue-tracker.md` (Plane) and `issue-tracker-gitea.md` (previous).
+Issues live on the SoW Plane (`https://plane.westgate.pw`, project `CX`) via `bin/plane`. See `docs/agents/issue-tracker.md`; `issue-tracker-gitea.md` is the pre-Plane tracker.
 
 ### Domain docs
 
