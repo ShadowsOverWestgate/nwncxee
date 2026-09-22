@@ -532,6 +532,9 @@ internal static unsafe class Programs
             loc.SInt[i] = GlProgram.Loc(prog, $"scriptableInt{i + 1}");
             loc.SFloat[i] = GlProgram.Loc(prog, $"scriptableFloat{i + 1}");
             loc.SVec[i] = GlProgram.Loc(prog, $"scriptableVec{i + 1}");
+            if (loc.SInt[i] >= 0) loc.SIntLive |= 1 << i;
+            if (loc.SFloat[i] >= 0) loc.SFloatLive |= 1 << i;
+            if (loc.SVec[i] >= 0) loc.SVecLive |= 1 << i;
         }
         return loc;
     }

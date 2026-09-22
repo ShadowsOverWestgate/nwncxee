@@ -163,13 +163,15 @@ public sealed unsafe partial class AlloyRenderer
         // #551: the block, not a selection. A content shader that begins reading a slot nobody thought to
         // wire would otherwise compile, link, and read zero -- working under the engine and silently doing
         // nothing under Alloy. sow-topdata#551 (Float13, the sky-light veil fade) is that case exactly.
-        // 48 uniforms per program per pass, all of them -1 on a program that declares none.
+        // CX-11: only the live slots -- a program that declares none makes no calls at all.
         fixed (FeatLoc* l = &loc)
-        for (int i = 0; i < ScriptableSlots; i++)
         {
-            Gl.Uniform1i(l->SInt[i], _shaderConstI[SIntBase + i]);
-            Gl.Uniform1f(l->SFloat[i], _shaderConstF[SFloatBase + i]);
-            Gl.Uniform4fv(l->SVec[i], 1, _shaderConstV4 + (SVecBase + i) * 4);
+            for (int m = l->SIntLive; m != 0; m &= m - 1)
+            { int i = BitOperations.TrailingZeroCount(m); Gl.Uniform1i(l->SInt[i], _shaderConstI[SIntBase + i]); }
+            for (int m = l->SFloatLive; m != 0; m &= m - 1)
+            { int i = BitOperations.TrailingZeroCount(m); Gl.Uniform1f(l->SFloat[i], _shaderConstF[SFloatBase + i]); }
+            for (int m = l->SVecLive; m != 0; m &= m - 1)
+            { int i = BitOperations.TrailingZeroCount(m); Gl.Uniform4fv(l->SVec[i], 1, _shaderConstV4 + (SVecBase + i) * 4); }
         }
     }
 

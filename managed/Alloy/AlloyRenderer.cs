@@ -1770,6 +1770,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         internal fixed int SInt[ScriptableSlots];
         internal fixed int SFloat[ScriptableSlots];
         internal fixed int SVec[ScriptableSlots];
+        /// <summary>CX-11: bit i set when slot i of that kind resolved to a live location, so the upload
+        /// walks only what the program declares instead of 48 calls, nearly all of them to -1.</summary>
+        internal int SIntLive, SFloatLive, SVecLive;
     }
     /// <summary>#123: <c>GLRender::m_shaderExposedRuntimeData</c>, the struct the engine's own SetUniforms
     /// uploads these five from. Null (symbol unresolved) leaves the wind still and the roofs wherever they
