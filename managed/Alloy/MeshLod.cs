@@ -108,13 +108,19 @@ internal static unsafe class MeshLod
     private static bool _arenaFull;
 
     private static int _offered, _generated, _declined, _dropped;
+    /// <summary>Offers refused under <see cref="MinTris"/>: the census that says whether this area has anything to simplify.</summary>
+    private static int _small;
     private static int _logLeft = 8;
     private static long _srcTris, _lod1Tris, _lod2Tris;
     private static readonly long[] _drawnTris = new long[Levels];
 
     /// <summary>Is a generated level available to pick this frame? False leaves every draw on the engine's own
     /// range, which is vanilla detail -- the stand-down, not a second code path.</summary>
-    internal static bool Armed => _ebo != 0 && Lod.G.Master is { V: true };
+    internal static bool Armed => _ebo != 0 && On;
+
+    /// <summary>The master knob alone: the staging walk picks a level whenever this is on, because
+    /// <see cref="MeshChart"/>'s levels live in its own arena and never arm this class's buffer.</summary>
+    internal static bool On => Lod.G.Master is { V: true };
 
     /// <summary>The element buffer the LOD VAOs bind. Zero until the first run lands.</summary>
     internal static uint Ebo => _ebo;
@@ -135,8 +141,8 @@ internal static unsafe class MeshLod
     /// so a mesh already on file, already queued, or past a budget costs one dictionary probe.</summary>
     internal static bool Wanted(int slot, int item, int idxCount, ulong sig)
     {
-        if (!_jobs.Running || _arenaFull || idxCount < MinTris * 3
-            || idxCount > MeshSimplify.MaxCorners || !Lod.G.Master!.V) return false;
+        if (!_jobs.Running || _arenaFull || idxCount > MeshSimplify.MaxCorners || !Lod.G.Master!.V) return false;
+        if (idxCount < MinTris * 3) { _small++; return false; }
         if (_table.TryGetValue(KeyOf(slot, item), out Entry have))
         {
             if (have.Sig == sig) return false;
@@ -280,14 +286,14 @@ internal static unsafe class MeshLod
     /// <summary>This mesh's generated range at <paramref name="lod"/>, falling back to the coarser level's
     /// neighbour when one was declined. False means "draw the engine's own range", which every caller must be
     /// able to do -- there is no level a mesh is obliged to have.</summary>
-    internal static bool Range(int slot, int item, int lod, out nint off, out int count)
+    internal static bool Range(int slot, int item, int lod, out nint off, out int count, out int level)
     {
-        off = 0; count = 0;
+        off = 0; count = 0; level = 0;
         if (lod <= 0 || _ebo == 0) return false;
         if (!_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done) return false;
-        if (lod >= 2 && e.Cnt2 > 0) { off = e.Off2; count = e.Cnt2; return true; }
-        if (e.Cnt1 > 0) { off = e.Off1; count = e.Cnt1; return true; }
-        if (e.Cnt2 > 0) { off = e.Off2; count = e.Cnt2; return true; }
+        if (lod >= 2 && e.Cnt2 > 0) { off = e.Off2; count = e.Cnt2; level = 2; return true; }
+        if (e.Cnt1 > 0) { off = e.Off1; count = e.Cnt1; level = 1; return true; }
+        if (e.Cnt2 > 0) { off = e.Off2; count = e.Cnt2; level = 2; return true; }
         return false;
     }
 
@@ -308,7 +314,7 @@ internal static unsafe class MeshLod
         _used = 0; _uploaded = 0; _arenaFull = false;
         Array.Clear(_drawnTris);
         _srcTris = _lod1Tris = _lod2Tris = 0;
-        _generated = _declined = _offered = _dropped = 0;
+        _generated = _declined = _offered = _dropped = _small = 0;
     }
 
     /// <summary>The context is gone, so the buffer name means nothing -- forgotten, never deleted (the number
@@ -323,9 +329,18 @@ internal static unsafe class MeshLod
     internal static string Describe()
         => !_jobs.Running
            ? "not running"
-           : $"{_offered} meshes offered, {_generated} simplified, {_declined} declined; {_srcTris} source triangles -> "
-             + $"{_lod1Tris} at half / {_lod2Tris} at a fifth"
-             + (_arenaFull ? "; the index arena is full and further levels are dropped" : "");
+           : $"{_offered} meshes offered, {_generated} simplified, {_declined} declined, {_small} under {MinTris} triangles; "
+             + $"{_srcTris} source triangles -> {_lod1Tris} at half / {_lod2Tris} at a fifth"
+             + (_arenaFull ? "; the index arena is full and further levels are dropped" : "")
+             + (MeshChart.LodNote() is { Length: > 0 } c ? "; " + c : "")
+             + DrawnNote();
+
+    /// <summary>The last period's triangles drawn per level, kept for the panel after <see cref="Stats"/> clears the tally.</summary>
+    private static string DrawnNote()
+        => _shown[0] + _shown[1] + _shown[2] == 0 ? ""
+         : $"; drawn per frame at lod 0/1/2: {_shown[0]}/{_shown[1]}/{_shown[2]} triangles";
+
+    private static readonly long[] _shown = new long[Levels];
 
     /// <summary>One clause of the Alloy period line: what the frame actually drew at each level.</summary>
     internal static string Stats(int frames)
@@ -333,6 +348,7 @@ internal static unsafe class MeshLod
         long t0 = _drawnTris[0], t1 = _drawnTris[1], t2 = _drawnTris[2];
         Array.Clear(_drawnTris);
         if (frames <= 0) frames = 1;
+        _shown[0] = t0 / frames; _shown[1] = t1 / frames; _shown[2] = t2 / frames;
         if (t0 + t1 + t2 == 0) return "";
         return $"lod {t0 / frames}/{t1 / frames}/{t2 / frames} tris per frame at lod 0/1/2"
                + $" ({_generated} meshes simplified, {_declined} declined, {_dropped} dropped)";
@@ -352,10 +368,10 @@ internal static unsafe class MeshLod
         check.Expect(Append(run, 6, out nint a) && a == 0, "the first run does not start at offset 0");
         check.Expect(Append(run, 6, out nint b) && b == 12, "the second run does not follow the first");
         _table[KeyOf(7, 3)] = new Entry { Done = true, Off1 = a, Cnt1 = 6 };
-        check.Expect(Range(7, 3, 1, out nint o1, out int c1) && o1 == a && c1 == 6, "a level-1 request does not find its run");
-        check.Expect(Range(7, 3, 2, out nint o2, out int c2) && o2 == a && c2 == 6, "a missing level 2 does not fall back to level 1");
-        check.Expect(!Range(7, 3, 0, out _, out _), "level 0 is a generated range");
-        check.Expect(!Range(7, 4, 1, out _, out _), "a mesh with no entry answered a range");
+        check.Expect(Range(7, 3, 1, out nint o1, out int c1, out int l1) && o1 == a && c1 == 6 && l1 == 1, "a level-1 request does not find its run");
+        check.Expect(Range(7, 3, 2, out nint o2, out int c2, out int l2) && o2 == a && c2 == 6 && l2 == 1, "a missing level 2 does not fall back to level 1");
+        check.Expect(!Range(7, 3, 0, out _, out _, out _), "level 0 is a generated range");
+        check.Expect(!Range(7, 4, 1, out _, out _, out _), "a mesh with no entry answered a range");
         _table.Remove(KeyOf(7, 3));
         _used = savedUsed; _ebo = savedEbo;
 

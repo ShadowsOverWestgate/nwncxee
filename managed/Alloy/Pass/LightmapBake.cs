@@ -733,7 +733,7 @@ internal static unsafe partial class LightmapBake
             // no live owner, or the chart range moved out from under it (a VDO slot re-pointed): the rect
             // cannot draw, so it is dropped and its readers re-enrol into a fresh one rather than land black
             ref Rect r = ref _rects[ri];
-            if (r.Slot < 0 || !MeshChart.Range(r.Vao, r.Item, 0, out _, out _, out _)) { Drop(ri); continue; }
+            if (r.Slot < 0 || !MeshChart.Range(r.Vao, r.Item, 0, out _, out _, out _, out _)) { Drop(ri); continue; }
             _bakeRects.Add(ri);
         }
         if (_bakeRects.Count == 0) return false;
@@ -819,7 +819,7 @@ internal static unsafe partial class LightmapBake
     private static void DrawRect(int ri)
     {
         ref Rect r = ref _rects[ri];
-        if (r.Slot < 0 || !MeshChart.Range(r.Vao, r.Item, 0, out int baseVertex, out nint off, out int count)) return;
+        if (r.Slot < 0 || !MeshChart.Range(r.Vao, r.Item, 0, out int baseVertex, out nint off, out int count, out _)) return;
         Gl.Uniform1i(_bSlot, r.Slot);
         Gl.Uniform4f(_bRect, r.X, r.Y, r.S, 0f);
         Gl.Uniform1f(_bSoftWorld, 1f / (MeshChart.AtlasTexelsPerUnit * r.S));

@@ -787,7 +787,7 @@ public sealed unsafe partial class AlloyRenderer
             int baseVertex = _cBase[i];
             int vKey = v;
             int lvl = 0;
-            if (MeshLod.Armed && _lodScale > 0f)
+            if (MeshLod.On && _lodScale > 0f)
             {
                 float* lsp = sphAll + (long)i * 4;
                 if (lsp[3] < NeverCull)
@@ -797,15 +797,16 @@ public sealed unsafe partial class AlloyRenderer
                 }
             }
             // #673: a charted mesh is the whole geometry (split vertices), picked at every level -- see MeshChart.Range.
-            bool chartArmed = MeshChart.Armed, picked = false;
-            if (chartArmed && MeshChart.Range(v, _oItem[src], lvl, out int cb, out nint co, out int cc))
+            bool chartArmed = MeshChart.Armed;
+            int drawn = 0;
+            if (chartArmed && MeshChart.Range(v, _oItem[src], lvl, out int cb, out nint co, out int cc, out drawn))
             {
-                idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc); picked = true;
+                idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc);
                 LightmapBake.Enrol(i, v, _oItem[src]);   // #674: once per slot (a -1 test after the first)
             }
-            else if (lvl > 0 && MeshLod.Range(v, _oItem[src], lvl, out nint lo, out int lc) && LodVao(v) != 0)
-            { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; picked = true; }
-            if (MeshLod.Armed) MeshLod.Drew(picked ? lvl : 0, idxCount);
+            else if (lvl > 0 && MeshLod.Range(v, _oItem[src], lvl, out nint lo, out int lc, out int ll) && LodVao(v) != 0)
+            { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; drawn = ll; }
+            if (MeshLod.On) MeshLod.Drew(drawn, idxCount);
             _oLodBit[i] = vKey & (LodVaoBit | ChartVaoBit);
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
             // but so the depth prepass can drop a whole batch: a displacing feature must not write its

@@ -156,6 +156,8 @@ internal static unsafe partial class MeshChart
     private static int _compactions;
 
     private static int _offered, _hit, _missed, _built, _refused, _stale, _tableFull, _logLeft = LogCap;
+    /// <summary>Charted meshes at or past <see cref="MeshLod.MinTris"/>, and those that kept a generated level.</summary>
+    private static int _lodBig, _lodKept;
     private static readonly int[] _refusedBy = new int[RefusalName.Length];
 
     /// <summary>#675: meshes offered, meshes answered (hit or built), and the difference still on the worker.</summary>
@@ -421,6 +423,11 @@ internal static unsafe partial class MeshChart
                     if (j.Out1N > 0) Append(j.Out1, j.Out1N, out e.Off1, out e.Cnt1);
                     if (j.Out2N > 0) Append(j.Out2, j.Out2N, out e.Off2, out e.Cnt2);
                     if (e.Cnt0 == 0) e.Refused = Refusal.Arena;
+                    else
+                    {
+                        if (e.Cnt0 / 3 >= MeshLod.MinTris) _lodBig++;
+                        if (e.Cnt1 > 0 || e.Cnt2 > 0) _lodKept++;
+                    }
                     e.W = j.W; e.H = j.H; e.NV = j.OutVerts;
                 }
             }
@@ -545,13 +552,13 @@ internal static unsafe partial class MeshChart
 
     /// <summary>This mesh's charted range at <paramref name="lod"/> (falling back to the finer level that
     /// exists). False = draw the engine's own geometry, which every caller must be able to do.</summary>
-    internal static bool Range(int slot, int item, int lod, out int baseVertex, out nint off, out int count)
+    internal static bool Range(int slot, int item, int lod, out int baseVertex, out nint off, out int count, out int level)
     {
-        baseVertex = 0; off = 0; count = 0;
+        baseVertex = 0; off = 0; count = 0; level = 0;
         if (_vao == 0 || !_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done || e.Refused != Refusal.None) return false;
         baseVertex = e.Base;
-        if (lod >= 2 && e.Cnt2 > 0) { off = e.Off2; count = e.Cnt2; return true; }
-        if (lod >= 1 && e.Cnt1 > 0) { off = e.Off1; count = e.Cnt1; return true; }
+        if (lod >= 2 && e.Cnt2 > 0) { off = e.Off2; count = e.Cnt2; level = 2; return true; }
+        if (lod >= 1 && e.Cnt1 > 0) { off = e.Off1; count = e.Cnt1; level = 1; return true; }
         off = e.Off0; count = e.Cnt0;
         return true;
     }
@@ -638,7 +645,7 @@ internal static unsafe partial class MeshChart
     {
         _jobs.Revoke();
         _vUsed = _vUploaded = _iUsed = _iUploaded = 0; _arenaFull = false; _deadVerts = 0;
-        _offered = _hit = _missed = _built = _refused = _stale = 0; Array.Clear(_refusedBy);
+        _offered = _hit = _missed = _built = _refused = _stale = _lodBig = _lodKept = 0; Array.Clear(_refusedBy);
         _logLeft = LogCap;
     }
 
@@ -647,6 +654,10 @@ internal static unsafe partial class MeshChart
     {
         _vao = 0; _vbo = 0; _ebo = 0; _vUploaded = 0; _iUploaded = 0; _vCapacity = 0; _iCapacity = 0;
     }
+
+    /// <summary>The <c>lod</c> panel's clause for the charted population, which never reaches <see cref="MeshLod"/>.</summary>
+    internal static string LodNote()
+        => !Armed ? "" : $"{Done - _refused} charted meshes, {_lodBig} of them at least {MeshLod.MinTris} triangles, {_lodKept} simplified";
 
     internal static string Describe()
         => !_jobs.Running ? "not running"
