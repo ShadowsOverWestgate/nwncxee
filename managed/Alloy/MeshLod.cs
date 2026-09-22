@@ -65,8 +65,8 @@ internal static unsafe class MeshLod
     /// level is left absent and the draw stays on the engine's range.</summary>
     internal const float MinSaving = 0.15f;
 
-    /// <summary>Meshes waiting on the worker. The queue IS the budget: a full queue refuses the offer without
-    /// creating a table entry, so the next enrollment offers the same mesh again.</summary>
+    /// <summary>Meshes waiting on the worker: a full queue refuses the offer without creating a table entry,
+    /// so the next enrollment offers the same mesh again.</summary>
     private const int MaxPending = 256;
     /// <summary>Meshes the table may hold. An area's tileset is a few thousand distinct ranges.</summary>
     private const int MaxEntries = 1 << 14;
@@ -78,25 +78,16 @@ internal static unsafe class MeshLod
     /// <summary>One mesh's generated runs. <see cref="Off1"/>/<see cref="Off2"/> are BYTE offsets into
     /// <see cref="_ebo"/>, which is what <c>glMultiDrawElementsBaseVertex</c> takes; a zero count is a level
     /// the simplifier declined and the selection falls through to the next coarser one, or to the engine's.</summary>
-    private struct Entry
+    private struct Entry : ISlotEntry
     {
         internal nint Off1, Off2;
         internal int Cnt1, Cnt2;
         internal bool Done;
-        /// <summary>The range's signature at offer time: a refilled pool item under the same key gets new runs.</summary>
-        internal ulong Sig;
+        public ulong Sig { get; set; }
     }
 
-    /// <summary>Every mesh on file. Touched ONLY from the render thread -- the enrollment walk that offers a
-    /// mesh, <see cref="Pump"/> that files its runs, the staging walk that reads them, and both lifetime
-    /// edges all run there -- so it takes no lock and the per-part read on the staging walk costs a probe.
-    /// The worker never sees it; <see cref="_gate"/> guards the three queues, which is the whole of the
-    /// cross-thread surface.</summary>
-    private static readonly Dictionary<long, Entry> _table = new(MaxEntries);
-    private static readonly object _gate = new();
-
-    /// <summary>One mesh handed to the worker and back. The arrays are pooled through
-    /// <see cref="_free"/> -- an area's enrollment offers thousands of these.</summary>
+    /// <summary>One mesh handed to the worker and back. The arrays are pooled by the table -- an area's
+    /// enrollment offers thousands of these.</summary>
     private sealed class Job
     {
         internal long Key;
@@ -108,11 +99,8 @@ internal static unsafe class MeshLod
         internal ushort[] Out2 = Array.Empty<ushort>();
     }
 
-    private static readonly Queue<Job> _in = new();
-    private static readonly Queue<Job> _out = new();
-    private static readonly Stack<Job> _free = new();
-    private static Thread? _worker;
-    private static bool _quit;
+    private static readonly SlotJobTable<Job, Entry> _jobs = new(MaxEntries, MaxPending);
+    private static Dictionary<long, Entry> _table => _jobs.Entries;
 
     private static ushort[] _mirror = Array.Empty<ushort>();
     private static int _used, _uploaded;
@@ -136,20 +124,18 @@ internal static unsafe class MeshLod
     {
         _log = log;
         _ = Lod.G;
-        if (_worker != null) return;
-        _quit = false;
-        _worker = new Thread(Work) { IsBackground = true, Name = "cx-meshlod" };
-        _worker.Start();
+        if (_jobs.Running) return;
+        _jobs.Start("cx-meshlod", Work);
         log.Info("MeshLod: armed -- eligible static meshes get two generated index runs (lod.enabled=0 draws every mesh as authored)");
     }
 
-    private static long KeyOf(int slot, int item) => ((long)slot << 32) | (uint)item;
+    private static long KeyOf(int slot, int item) => SlotJobTable<Job, Entry>.KeyOf(slot, item);
 
     /// <summary>Should the enrollment walk copy this range out for the worker? Asked before anything is read,
     /// so a mesh already on file, already queued, or past a budget costs one dictionary probe.</summary>
     internal static bool Wanted(int slot, int item, int idxCount, ulong sig)
     {
-        if (_worker == null || _arenaFull || idxCount < MinTris * 3
+        if (!_jobs.Running || _arenaFull || idxCount < MinTris * 3
             || idxCount > MeshSimplify.MaxCorners || !Lod.G.Master!.V) return false;
         if (_table.TryGetValue(KeyOf(slot, item), out Entry have))
         {
@@ -157,7 +143,7 @@ internal static unsafe class MeshLod
             _table.Remove(KeyOf(slot, item));
         }
         if (_table.Count >= MaxEntries) return false;
-        lock (_gate) return _in.Count < MaxPending;
+        return _jobs.QueueHasRoom;
     }
 
     /// <summary>Copy one part's index range and the positions it addresses off the pools' host shadows and
@@ -174,7 +160,7 @@ internal static unsafe class MeshLod
         int verts = maxI + 1;
         if (verts <= 0 || verts > MeshSimplify.MaxVerts) return;
 
-        Job j = Rent();
+        Job j = _jobs.Rent();
         j.Key = KeyOf(slot, item); j.Sig = sig;
         j.IdxCount = count; j.VertCount = verts; j.Out1N = 0; j.Out2N = 0;
         Grow(ref j.Idx, count); Grow(ref j.Out1, count); Grow(ref j.Out2, count);
@@ -186,58 +172,37 @@ internal static unsafe class MeshLod
             float* p = (float*)(vertHost + pos.Off + (long)(baseVertex + v) * pos.Stride);
             j.Pos[v * 3] = p[0]; j.Pos[v * 3 + 1] = p[1]; j.Pos[v * 3 + 2] = p[2];
         }
-        _table[j.Key] = new Entry { Sig = sig };   // claimed: a later enrollment must not offer the same range again
         _offered++;
-        lock (_gate) { _in.Enqueue(j); Monitor.Pulse(_gate); }
-    }
-
-    private static Job Rent()
-    {
-        lock (_gate) if (_free.Count > 0) return _free.Pop();
-        return new Job();
+        _jobs.Offer(j, j.Key, sig);
     }
 
     private static void Grow(ref ushort[] a, int n) { if (a.Length < n) a = new ushort[n]; }
 
-    /// <summary>The worker. One mesh at a time, no GL, no engine memory -- everything it reads was copied for
-    /// it by <see cref="Offer"/>, so nothing here can outlive a pool the engine freed.</summary>
-    private static void Work()
+    /// <summary>The worker body: both levels over one copied mesh. A fault files a decline, not a partial run.</summary>
+    private static void Work(Job j)
     {
-        while (true)
+        int tris = j.IdxCount / 3;
+        try
         {
-            Job j;
-            lock (_gate)
-            {
-                while (_in.Count == 0 && !_quit) Monitor.Wait(_gate);
-                if (_quit) return;
-                j = _in.Dequeue();
-            }
-            int tris = j.IdxCount / 3;
             j.Out1N = MeshSimplify.Run(j.Idx, j.IdxCount, j.Pos, j.VertCount,
                                        (int)(tris * Target1), Error1, j.Out1);
             if (j.Out1N > tris * 3 * (1f - MinSaving)) j.Out1N = 0;
             j.Out2N = MeshSimplify.Run(j.Idx, j.IdxCount, j.Pos, j.VertCount,
                                        (int)(tris * Target2), Error2, j.Out2);
             if (j.Out2N > tris * 3 * (1f - MinSaving) || j.Out2N >= j.Out1N && j.Out1N > 0) j.Out2N = 0;
-            lock (_gate) _out.Enqueue(j);
         }
+        catch (Exception e) { j.Out1N = j.Out2N = 0; _log?.Info($"MeshLod: worker fault -- {e.Message}"); }
     }
 
     /// <summary>Collect whatever the worker finished and append it to the shared element buffer. Render
     /// thread, inside the Alloy bracket, once a frame: this is the only place a GL name is touched.</summary>
     internal static void Pump()
     {
-        if (_worker == null || Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null) return;
+        if (!_jobs.Running || Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null) return;
         int dirtyFrom = _used;
-        while (true)
+        while (_jobs.TryTake(out Job j))
         {
-            Job j;
-            lock (_gate)
-            {
-                if (_out.Count == 0) break;
-                j = _out.Dequeue();
-            }
-            var e = new Entry { Done = true };
+            var e = new Entry { Done = true, Sig = j.Sig };
             if (j.Out1N > 0 && Append(j.Out1, j.Out1N, out e.Off1)) { e.Cnt1 = j.Out1N; _lod1Tris += j.Out1N / 3; }
             if (j.Out2N > 0 && Append(j.Out2, j.Out2N, out e.Off2)) { e.Cnt2 = j.Out2N; _lod2Tris += j.Out2N / 3; }
             if (e.Cnt1 > 0 || e.Cnt2 > 0)
@@ -248,9 +213,8 @@ internal static unsafe class MeshLod
                     _log?.Info($"MeshLod: mesh {j.IdxCount / 3} tris -> {e.Cnt1 / 3} / {e.Cnt2 / 3} at lod 1 / 2");
             }
             else _declined++;
-            // Revoke may have wiped the table while this job was in flight, or a refilled item re-claimed the key
-            if (_table.TryGetValue(j.Key, out Entry claim) && claim.Sig == j.Sig) { e.Sig = j.Sig; _table[j.Key] = e; }
-            lock (_gate) _free.Push(j);
+            _jobs.File(j.Key, j.Sig, e);
+            _jobs.Recycle(j);
         }
         if (_used == dirtyFrom && _uploaded == _used) return;
         Upload(dirtyFrom);
@@ -334,26 +298,13 @@ internal static unsafe class MeshLod
     /// <summary>A VDO slot was vacated or re-pointed: every range keyed on it names geometry that is no
     /// longer there. The arena bytes are left where they are -- the next <see cref="Revoke"/> reclaims
     /// them -- because compacting it would move every other mesh's offsets.</summary>
-    internal static void ForgetSlot(int slot)
-    {
-        if (_table.Count == 0) return;
-        List<long>? dead = null;
-        foreach (var kv in _table)
-            if ((int)(kv.Key >> 32) == slot) (dead ??= new List<long>()).Add(kv.Key);
-        if (dead == null) return;
-        for (int i = 0; i < dead.Count; i++) _table.Remove(dead[i]);
-    }
+    internal static void ForgetSlot(int slot) => _jobs.ForgetSlot(slot);
 
     /// <summary>The world edge: the part table is gone, so every (slot, item) key means nothing. The arena is
     /// rewound with it, which is the only point its bytes are ever reclaimed.</summary>
     internal static void Revoke()
     {
-        _table.Clear();
-        lock (_gate)
-        {
-            while (_in.Count > 0) _free.Push(_in.Dequeue());
-            while (_out.Count > 0) _free.Push(_out.Dequeue());
-        }
+        _jobs.Revoke();
         _used = 0; _uploaded = 0; _arenaFull = false;
         Array.Clear(_drawnTris);
         _srcTris = _lod1Tris = _lod2Tris = 0;
@@ -370,7 +321,7 @@ internal static unsafe class MeshLod
 
     /// <summary>The settings panel's status block.</summary>
     internal static string Describe()
-        => _worker == null
+        => !_jobs.Running
            ? "not running"
            : $"{_offered} meshes offered, {_generated} simplified, {_declined} declined; {_srcTris} source triangles -> "
              + $"{_lod1Tris} at half / {_lod2Tris} at a fifth"
@@ -407,6 +358,17 @@ internal static unsafe class MeshLod
         check.Expect(!Range(7, 4, 1, out _, out _), "a mesh with no entry answered a range");
         _table.Remove(KeyOf(7, 3));
         _used = savedUsed; _ebo = savedEbo;
+
+        // the table's own round trip, no worker: claim, file under the claim, refuse a stale sig, forget one slot
+        var t = new SlotJobTable<Job, Entry>(8, 1);
+        t.Offer(t.Rent(), KeyOf(7, 1), 11); t.Offer(t.Rent(), KeyOf(8, 1), 12);
+        check.Expect(!t.QueueHasRoom, "a full queue still has room");
+        check.Expect(t.File(KeyOf(7, 1), 11, new Entry { Done = true, Sig = 11 }), "a result under its claim was refused");
+        check.Expect(!t.File(KeyOf(7, 1), 99, default), "a result under a stale signature was filed");
+        t.ForgetSlot(7);
+        check.Expect(!t.Entries.ContainsKey(KeyOf(7, 1)) && t.Entries.ContainsKey(KeyOf(8, 1)), "ForgetSlot did not drop exactly its slot");
+        t.Revoke();
+        check.Expect(t.Entries.Count == 0 && t.QueueHasRoom, "Revoke left entries or queued jobs behind");
 
         log.Info(check.Ok ? "MeshLod.SelfCheck: passed" : "MeshLod.SelfCheck: FAILED");
         return check.Ok;

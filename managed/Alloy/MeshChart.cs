@@ -89,7 +89,7 @@ internal static unsafe partial class MeshChart
 
     /// <summary>One charted mesh in the arenas: base vertex, three index runs (BYTE offsets, the LOD 1/2
     /// ones zero-count when the simplifier declined), the atlas size in texels.</summary>
-    private struct Entry
+    private struct Entry : ISlotEntry
     {
         internal int Base;
         internal nint Off0, Off1, Off2;
@@ -104,14 +104,13 @@ internal static unsafe partial class MeshChart
         /// <summary>The range's signature at offer time (<c>AlloyRenderer.RangeSig</c>): a pool item the engine
         /// freed and refilled keeps its (slot, item) key, and without this the new tenant drew the OLD mesh
         /// out of the arena -- the floating nonsense after an area change.</summary>
-        internal ulong Sig;
+        public ulong Sig { get; set; }
         /// <summary>Charted vertices in the arena, for the compaction.</summary>
         internal int NV;
     }
 
-    /// <summary>Render-thread only (MeshLod's rule): the offer, Pump, the staging read and both lifetime edges.</summary>
-    private static readonly Dictionary<long, Entry> _table = new(MaxEntries);
-    private static readonly object _gate = new();
+    private static readonly SlotJobTable<Job, Entry> _jobs = new(MaxEntries, MaxPending);
+    private static Dictionary<long, Entry> _table => _jobs.Entries;
 
     /// <summary>One mesh handed to the worker and back. Input arrays are DENSE: <see cref="Offer"/> remaps
     /// the engine's indices to first-use order, so the content key sees no stale pool bytes and two parts
@@ -141,11 +140,6 @@ internal static unsafe partial class MeshChart
         internal Refusal Refused;
         internal bool Hit, Stale;
     }
-
-    private static readonly Queue<Job> _in = new();
-    private static readonly Queue<Job> _out = new();
-    private static readonly Stack<Job> _free = new();
-    private static Thread? _worker;
 
     private static int[] _remap = Array.Empty<int>();
 
@@ -184,13 +178,12 @@ internal static unsafe partial class MeshChart
     {
         _log = log;
         _ = Lightmap.G;
-        if (_worker != null) return;
-        _worker = new Thread(Work) { IsBackground = true, Name = "cx-chart" };
-        _worker.Start();
+        if (_jobs.Running) return;
+        _jobs.Start("cx-chart", Work);
         log.Info("MeshChart: worker up -- static meshes are charted as they enrol when lightmap.enabled=1 (default off)");
     }
 
-    internal static long KeyOf(int slot, int item) => ((long)slot << 32) | (uint)item;
+    internal static long KeyOf(int slot, int item) => SlotJobTable<Job, Entry>.KeyOf(slot, item);
 
     /// <summary>Asked before anything is read: a mesh on file, queued or past a budget costs one probe.
     /// <paramref name="later"/> = not now but not refused either: the worker's queue is full (an area's
@@ -199,7 +192,7 @@ internal static unsafe partial class MeshChart
     internal static bool Wanted(int slot, int item, int idxCount, ulong sig, out bool later)
     {
         later = false;
-        if (_worker == null || idxCount < 3 || !Lightmap.G.Master!.V) return false;
+        if (!_jobs.Running || idxCount < 3 || !Lightmap.G.Master!.V) return false;
         if (_table.TryGetValue(KeyOf(slot, item), out Entry have))
         {
             if (have.Sig == sig) return false;
@@ -210,11 +203,12 @@ internal static unsafe partial class MeshChart
         // full with dead bytes in it: the next Pump compacts, and the offer comes back through the deferred list
         if (_arenaFull) { if (_deadVerts > 0) { later = true; return false; } Skip(Refusal.Arena); return false; }
         if (idxCount > MeshSimplify.MaxCorners) { Skip(Refusal.Corners); return false; }
-        lock (_gate) { later = _in.Count >= MaxPending; return !later; }
+        later = !_jobs.QueueHasRoom;
+        return !later;
     }
 
     /// <summary>Room in the worker's queue for a deferred offer?</summary>
-    internal static bool HasRoom() { lock (_gate) return _in.Count < MaxPending; }
+    internal static bool HasRoom() => _jobs.QueueHasRoom;
 
     /// <summary>Copy one part's range and every attribute it addresses off the pools' host shadows, densely
     /// re-indexed, and queue it. Enrollment walk only: reads engine memory and allocates, off every frame path.</summary>
@@ -233,7 +227,7 @@ internal static unsafe partial class MeshChart
         if (_remap.Length <= maxI) _remap = new int[Math.Max(maxI + 1, MeshSimplify.MaxVerts)];
         Array.Fill(_remap, -1, 0, maxI + 1);
 
-        Job j = Rent();
+        Job j = _jobs.Rent();
         j.Key = KeyOf(slot, item); j.Sig = sig;
         j.IdxCount = count; j.HasNrm = hasNrm; j.HasUv = hasUv;
         j.Refused = Refusal.None; j.Hit = false; j.Stale = false; j.Out0N = j.Out1N = j.Out2N = 0; j.OutVerts = 0; j.Charts = 0; j.Loose = 0;
@@ -265,15 +259,8 @@ internal static unsafe partial class MeshChart
             j.Idx[i] = (ushort)d;
         }
         j.VertCount = n;
-        _table[j.Key] = new Entry { Sig = sig };   // claimed: a later enrollment must not offer the same range again
         _offered++;
-        lock (_gate) { _in.Enqueue(j); Monitor.Pulse(_gate); }
-    }
-
-    private static Job Rent()
-    {
-        lock (_gate) if (_free.Count > 0) return _free.Pop();
-        return new Job();
+        _jobs.Offer(j, j.Key, sig);
     }
 
     private static void Grow(ref ushort[] a, int n) { if (a.Length < n) a = new ushort[n]; }
@@ -281,20 +268,10 @@ internal static unsafe partial class MeshChart
 
     /// <summary>The worker: content key, ledger probe, xatlas on a miss, then the two LOD runs over the
     /// charted mesh. One mesh at a time, byte-identical across runs (xatlas single-threaded, fixed options).</summary>
-    private static void Work()
+    private static void Work(Job j)
     {
-        while (true)
-        {
-            Job j;
-            lock (_gate)
-            {
-                while (_in.Count == 0) Monitor.Wait(_gate);
-                j = _in.Dequeue();
-            }
-            try { Chart(j); }
-            catch (Exception e) { j.Refused = Refusal.Input; _log?.Info($"MeshChart: worker fault -- {e.Message}"); }
-            lock (_gate) _out.Enqueue(j);
-        }
+        try { Chart(j); }
+        catch (Exception e) { j.Refused = Refusal.Input; _log?.Info($"MeshChart: worker fault -- {e.Message}"); }
     }
 
     /// <summary>Quantum of <see cref="Job.Local"/>: 1/1024 m, under any texel at the densest knob, coarse
@@ -426,17 +403,11 @@ internal static unsafe partial class MeshChart
     /// frame, before <c>BuildBatches</c>: the only place a GL name is touched.</summary>
     internal static void Pump()
     {
-        if (_worker == null || Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null) return;
+        if (!_jobs.Running || Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null) return;
         if (_deadVerts > MaxArenaVerts / 2 || (_arenaFull && _deadVerts > 0)) Compact();
         int vFrom = _vUsed, iFrom = _iUsed;
-        while (true)
+        while (_jobs.TryTake(out Job j))
         {
-            Job j;
-            lock (_gate)
-            {
-                if (_out.Count == 0) break;
-                j = _out.Dequeue();
-            }
             var e = new Entry { Done = true, Refused = j.Refused, Content = j.Content, Bmin = j.Bmin, Bmax = j.Bmax, Sig = j.Sig };
             if (j.Hit) _hit++; else _missed++;
             if (j.Stale) _stale++;
@@ -461,11 +432,8 @@ internal static unsafe partial class MeshChart
             }
             else if (_logLeft-- > 0)
                 _log?.Info($"MeshChart: mesh {j.IdxCount / 3} tris {j.VertCount} verts -> {j.OutVerts} charted verts, atlas {j.W}x{j.H} ({(j.Hit ? "cache hit" : "built")}), lod {e.Cnt1 / 3}/{e.Cnt2 / 3}" + (j.Loose > 0 ? $", {j.Loose} loose verts (no face)" : ""));
-            // Revoke may have wiped the table while this job was in flight, or a refilled item re-claimed the
-            // key under another signature; either way this result describes a mesh nobody draws
-            if (_table.TryGetValue(j.Key, out Entry claim) && claim.Sig == j.Sig) _table[j.Key] = e;
-            else if (e.Refused == Refusal.None) _deadVerts += e.NV;   // appended, unclaimed: the compaction takes it back
-            lock (_gate) _free.Push(j);
+            if (!_jobs.File(j.Key, j.Sig, e) && e.Refused == Refusal.None) _deadVerts += e.NV;   // appended, unclaimed: the compaction takes it back
+            _jobs.Recycle(j);
         }
         if (_vUsed != vFrom || _vUploaded != _vUsed) UploadVerts(vFrom);
         if (_iUsed != iFrom || _iUploaded != _iUsed) UploadIndices(iFrom);
@@ -602,19 +570,7 @@ internal static unsafe partial class MeshChart
 
     /// <summary>A VDO slot was vacated or re-pointed: every range keyed on it names geometry that is no
     /// longer there. Arena bytes stay until <see cref="Revoke"/>.</summary>
-    internal static void ForgetSlot(int slot)
-    {
-        if (_table.Count == 0) return;
-        List<long>? dead = null;
-        foreach (var kv in _table)
-            if ((int)(kv.Key >> 32) == slot) (dead ??= new List<long>()).Add(kv.Key);
-        if (dead == null) return;
-        for (int i = 0; i < dead.Count; i++)
-        {
-            if (_table.TryGetValue(dead[i], out Entry e) && e.Done && e.Refused == Refusal.None) _deadVerts += e.NV;
-            _table.Remove(dead[i]);
-        }
-    }
+    internal static void ForgetSlot(int slot) => _jobs.ForgetSlot(slot, static e => { if (e.Done && e.Refused == Refusal.None) _deadVerts += e.NV; });
 
     /// <summary>Drop every entry no enrolled part keys (the engine frees a pool item without a word, and an
     /// in-module area change is no world edge: run 31 carried 42k entries over three areas and compacted 5k
@@ -680,12 +636,7 @@ internal static unsafe partial class MeshChart
     /// <summary>The world edge: every (slot, item) key means nothing and both arenas rewind.</summary>
     internal static void Revoke()
     {
-        _table.Clear();
-        lock (_gate)
-        {
-            while (_in.Count > 0) _free.Push(_in.Dequeue());
-            while (_out.Count > 0) _free.Push(_out.Dequeue());
-        }
+        _jobs.Revoke();
         _vUsed = _vUploaded = _iUsed = _iUploaded = 0; _arenaFull = false; _deadVerts = 0;
         _offered = _hit = _missed = _built = _refused = _stale = 0; Array.Clear(_refusedBy);
         _logLeft = LogCap;
@@ -698,7 +649,7 @@ internal static unsafe partial class MeshChart
     }
 
     internal static string Describe()
-        => _worker == null ? "not running"
+        => !_jobs.Running ? "not running"
          : !Lightmap.G.Master!.V ? "Off — every mesh draws from the game's own geometry"
          : $"{_offered} meshes offered: {_hit} charts from cache, {_built} built, {_refused} refused; "
            + $"{_vUsed} arena vertices ({_vUsed * Stride * 4 >> 20} MiB)" + (_arenaFull ? "; the arena is full" : "")
