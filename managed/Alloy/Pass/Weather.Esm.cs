@@ -104,7 +104,7 @@ internal static unsafe partial class Weather
         {
             if (_esmView != 0) { uint t = _esmView; Gl.DeleteTextures(1, &t); }
             uint t2; Gl.GenTextures(1, &t2);
-            while (Gl.GetError() != 0) { }
+            Gl.DrainErrors();
             Gl.TextureView(t2, Gl.TEXTURE_2D, array, Gl.DEPTH_COMPONENT24, 0, 1, (uint)layer, 1);
             if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t2); _esmFailed = true; _log?.Info("Weather: no texture view onto the cover layer -- the cover edge falls back to a hard compare"); return false; }
             Gl.BindTexture(Gl.TEXTURE_2D, t2);

@@ -91,11 +91,7 @@ internal static unsafe class TaaStage
             uint* t = stackalloc uint[2];
             Gl.GenTextures(2, t); _hist0 = t[0]; _hist1 = t[1];
             uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
-            uint s; Gl.GenSamplers(1, &s); _sampler = s;
-            Gl.SamplerParameteri(s, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+            _sampler = Gl.LinearClampSampler();
         }
         RenderTarget.AllocColor(_hist0, true, w, h, Gl.NEAREST);
         RenderTarget.AllocColor(_hist1, true, w, h, Gl.NEAREST);

@@ -2131,7 +2131,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
     {
         uint t; Gl.GenTextures(1, &t);
         Gl.BindTexture(target, t);
-        while (Gl.GetError() != 0) { }   // an earlier pass's error must not be read as this allocation's
+        Gl.DrainErrors();   // an earlier pass's error must not be read as this allocation's
         Gl.TexStorage3D(target, 1, Gl.DEPTH_COMPONENT24, size, size, layers);
         if (Gl.GetError() != 0)
         {

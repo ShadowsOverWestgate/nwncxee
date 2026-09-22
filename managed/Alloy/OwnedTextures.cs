@@ -401,7 +401,7 @@ internal static unsafe partial class OwnedTextures
         if (dst == 0) { if (!single) _borrowed.Add(etid); return false; }
 
         int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
-        DrainErrors();   // the verdict below is ours to read, so nobody else's error may be sitting here
+        Gl.DrainErrors(8);   // the verdict below is ours to read, so nobody else's error may be sitting here
         // Raw glBindTexture, NOT AurTextureBindTID: the engine caches what it thinks is bound, and routing
         // our name through its wrapper would leave that cache naming a texture the engine does not own.
         Gl.BindTexture(Gl.TEXTURE_2D, dst);
@@ -971,7 +971,7 @@ internal static unsafe partial class OwnedTextures
         int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
         int svUnpackBuf; Gl.GetIntegerv(Gl.PIXEL_UNPACK_BUFFER_BINDING, &svUnpackBuf);
         if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, 0);
-        DrainErrors();
+        Gl.DrainErrors(8);
         Gl.BindTexture(Gl.TEXTURE_2D, dst);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, job.MinF);
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, job.MagF);
@@ -1448,10 +1448,6 @@ internal static unsafe partial class OwnedTextures
         return total;
     }
 
-    /// <summary>Empty the error queue without trusting it to end. A context the driver has given up on
-    /// answers an error forever, and an unbounded drain there is a hang rather than a diagnostic.</summary>
-    private static void DrainErrors() { for (int i = 0; i < 8 && Gl.GetError() != 0; i++) { } }
-
     /// <summary>Capped: a driver that refuses one upload refuses every texture like it, and the first few
     /// lines say which as well as any number of them would.</summary>
     private static int _diagLeft = 8;
@@ -1714,7 +1710,7 @@ internal static unsafe partial class OwnedTextures
     private static void Copy(PltCopy q)
     {
         Gl.BindTexture(Gl.TEXTURE_2D, q.Src);
-        DrainErrors();   // the verdict below is ours to read
+        Gl.DrainErrors(8);   // the verdict below is ours to read
 
         int levels = 0, fmt = 0;
         int* lw = stackalloc int[MaxLevels], lh = stackalloc int[MaxLevels];

@@ -263,7 +263,7 @@ internal static unsafe class OitPass
         int cap = w * h * Layers;
         if (_nodes != 0 && cap == _cap) return true;
         if (_nodes != 0) { uint* old = stackalloc uint[2] { _nodes, _heads }; Gl.DeleteBuffers(2, old); }
-        Gl.GetError();   // drain: the refusal test below must see only this allocation
+        Gl.DrainErrors();   // drain: the refusal test below must see only this allocation
         uint* b = stackalloc uint[2]; Gl.GenBuffers(2, b);
         _nodes = b[0]; _heads = b[1];
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _nodes);

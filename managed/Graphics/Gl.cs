@@ -206,6 +206,15 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, int*, void> GetIntegerv;
     public static delegate* unmanaged<uint, byte> IsEnabled;   // GLboolean glIsEnabled(GLenum)
     public static delegate* unmanaged<uint> GetError;          // GLenum glGetError(void)
+    /// <summary>Empty the error queue without trusting it to end. A context the driver has given up on
+    /// answers an error forever, and an unbounded drain there is a hang rather than a diagnostic. Returns
+    /// how many codes it drained; safe before <see cref="Init"/> (no entry point, nothing drained).</summary>
+    public static int DrainErrors(int max = 16)
+    {
+        int n = 0;
+        if (GetError != null) while (n < max && GetError() != 0) n++;
+        return n;
+    }
     public static delegate* unmanaged<uint, void> Enable, Disable, ActiveTexture, UseProgram, BindVertexArray,
                                                   CullFace;
     public static delegate* unmanaged<uint, uint, void> BindTexture, BindBuffer, BlendFunc;
@@ -271,6 +280,19 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, void> BindSampler;
     public static delegate* unmanaged<uint, uint, int, void> SamplerParameteri;
     public static delegate* unmanaged<uint, uint, float, void> SamplerParameterf;
+    /// <summary>A LINEAR, clamp-to-edge sampler object -- the screen-sized-copy sampler five stages minted
+    /// by hand. 0 when the context has no sampler objects or the driver refused the name.</summary>
+    public static uint LinearClampSampler()
+    {
+        if (GenSamplers == null || SamplerParameteri == null) return 0;
+        uint s; GenSamplers(1, &s);
+        if (s == 0) return 0;
+        SamplerParameteri(s, TEXTURE_MIN_FILTER, LINEAR);
+        SamplerParameteri(s, TEXTURE_MAG_FILTER, LINEAR);
+        SamplerParameteri(s, TEXTURE_WRAP_S, CLAMP_TO_EDGE);
+        SamplerParameteri(s, TEXTURE_WRAP_T, CLAMP_TO_EDGE);
+        return s;
+    }
     public static delegate* unmanaged<uint, int, float*, void> GetUniformfv;
     public static delegate* unmanaged<uint, int, int*, void> GetUniformiv;
     public static delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, int, void*, void> GetTextureSubImage;
@@ -311,6 +333,15 @@ public static unsafe class Gl
         BindBuffer(SHADER_STORAGE_BUFFER, buf);
         ClearBufferSubData(SHADER_STORAGE_BUFFER, R32UI, IntPtr.Zero, (IntPtr)bytes, RED_INTEGER, UNSIGNED_INT, null);
         BindBuffer(SHADER_STORAGE_BUFFER, 0);
+    }
+    /// <summary>Mint <paramref name="buf"/> on first use and (re)allocate it as DYNAMIC_DRAW storage when
+    /// <paramref name="grow"/> asks; a fresh name always allocates. Leaves the SSBO binding on the buffer.</summary>
+    public static void EnsureStorage(ref uint buf, long bytes, bool grow)
+    {
+        if (buf == 0) { uint b; GenBuffers(1, &b); buf = b; grow = true; }
+        if (!grow) return;
+        BindBuffer(SHADER_STORAGE_BUFFER, buf);
+        BufferData(SHADER_STORAGE_BUFFER, (IntPtr)Math.Max(bytes, 4), null, DYNAMIC_DRAW);
     }
     public static delegate* unmanaged<uint, uint, uint, void> BindBufferBase;
     public static delegate* unmanaged<uint, byte*, uint> GetUniformBlockIndex;

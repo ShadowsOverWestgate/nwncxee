@@ -1410,15 +1410,9 @@ internal static unsafe partial class Particles
     private static bool EnsureSampler()
     {
         if (_samp != 0) return true;
-        if (Gl.GenSamplers == null || Gl.BindSampler == null || Gl.SamplerParameteri == null) return false;
-        uint s; Gl.GenSamplers(1, &s);
-        if (s == 0) return false;
-        Gl.SamplerParameteri(s, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-        Gl.SamplerParameteri(s, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-        Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-        Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        _samp = s;
-        return true;
+        if (Gl.BindSampler == null) return false;
+        _samp = Gl.LinearClampSampler();
+        return _samp != 0;
     }
 
     /// <summary>#288: build the index-build/sort program. Not an overridable stage -- ADR 0012's table is

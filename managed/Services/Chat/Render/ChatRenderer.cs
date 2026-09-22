@@ -226,7 +226,7 @@ public static unsafe class ChatRenderer
 
                 if (!_diagged)
                 {
-                    while (Gl.GetError() != 0) { }
+                    Gl.DrainErrors();
                     _diagged = true;
                     DrawFrame(f, m, vp, residual, now, ls);
                     _log?.Info($"TextRig: draw verts={_drawCount} viewport={vp[2]}x{vp[3]} glErr=0x{Gl.GetError():x}");

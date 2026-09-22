@@ -217,7 +217,7 @@ internal static unsafe class EnvProbe
 
         uint t; Gl.GenTextures(1, &t);
         Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, t);
-        while (Gl.GetError() != 0) { }   // an earlier pass's error must not be read as this allocation's
+        Gl.DrainErrors();   // an earlier pass's error must not be read as this allocation's
         for (uint f = 0; f < 6; f++)
             Gl.TexImage2D(Gl.TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, (int)Gl.RGBA16F, Size, Size, 0,
                           Gl.RGBA, Gl.HALF_FLOAT, null);

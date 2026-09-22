@@ -109,14 +109,7 @@ internal static unsafe class FbPostStage
         Gl.Uniform1i(_locMonth, AlloyRenderer.ModuleMonth);
         Gl.Uniform1i(_locDay, AlloyRenderer.ModuleDay);
         Gl.Uniform1f(_locTransition, AlloyRenderer.ModuleTimeIntoTransition);
-        if (_sampler == 0 && Gl.GenSamplers != null)
-        {
-            uint s; Gl.GenSamplers(1, &s); _sampler = s;
-            Gl.SamplerParameteri(s, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        }
+        if (_sampler == 0) _sampler = Gl.LinearClampSampler();
         if (_sampler != 0) Gl.BindSampler(TextureSlots.PostHdr, _sampler);
     }
 

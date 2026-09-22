@@ -111,11 +111,7 @@ internal static unsafe class SmaaStage
             Gl.GenTextures(4, t);
             _edges = t[0]; _blend = t[1]; _area = t[2]; _search = t[3];
             uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
-            uint s; Gl.GenSamplers(1, &s); _sampler = s;
-            Gl.SamplerParameteri(s, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-            Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+            _sampler = Gl.LinearClampSampler();
             if (!Table(_area, "SmaaArea", Gl.RG8, Gl.RG, AreaW, AreaH, Gl.LINEAR)
                 || !Table(_search, "SmaaSearch", Gl.R8, Gl.RED, SearchW, SearchH, Gl.NEAREST))
             {

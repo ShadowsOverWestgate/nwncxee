@@ -331,17 +331,17 @@ internal static unsafe class CullPass
 
         for (int i = 0; i < Phases; i++)
         {
-            Ensure(ref _cmdBuf[i], (long)drawN * CmdUints * sizeof(uint), drawN > _cmdCap);
-            Ensure(ref _slotBuf[i], (long)drawN * sizeof(uint), drawN > _cmdCap);
-            Ensure(ref _cntBuf[i], (long)groups * sizeof(uint), groups > _cntCap);
+            Gl.EnsureStorage(ref _cmdBuf[i], (long)drawN * CmdUints * sizeof(uint), drawN > _cmdCap);
+            Gl.EnsureStorage(ref _slotBuf[i], (long)drawN * sizeof(uint), drawN > _cmdCap);
+            Gl.EnsureStorage(ref _cntBuf[i], (long)groups * sizeof(uint), groups > _cntCap);
         }
         // #489: phase one's per-draw verdict, read back by phase two. One word per draw, written for EVERY
         // draw of phase one so a mark from an older list cannot linger under a shorter one.
-        Ensure(ref _rejBuf, (long)drawN * sizeof(uint), drawN > _cmdCap);
+        Gl.EnsureStorage(ref _rejBuf, (long)drawN * sizeof(uint), drawN > _cmdCap);
         // #290: the sort's scratch -- one key per draw, negative for a draw the cull dropped. One buffer
         // rather than a key array beside a keep array: distances are never negative, so the sign IS the
         // verdict, and the rank scan reads one word per neighbour instead of two.
-        Ensure(ref _keyBuf, (long)drawN * sizeof(float), drawN > _cmdCap);
+        Gl.EnsureStorage(ref _keyBuf, (long)drawN * sizeof(float), drawN > _cmdCap);
         if (drawN > _cmdCap) _cmdCap = drawN;
         if (groups > _cntCap) _cntCap = groups;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
@@ -369,14 +369,6 @@ internal static unsafe class CullPass
     /// <summary>The shared sphere buffer's GL name, for the shadow gather's dispatch. 0 until the first
     /// colour build uploads it, and the gather stands down for that frame.</summary>
     internal static uint SphereBuf => _sphBuf;
-
-    private static void Ensure(ref uint buf, long bytes, bool grow)
-    {
-        if (buf == 0) { uint b; Gl.GenBuffers(1, &b); buf = b; grow = true; }
-        if (!grow) return;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, buf);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)Math.Max(bytes, 4), null, Gl.DYNAMIC_DRAW);
-    }
 
     /// <summary>Run one dispatch into output set <paramref name="phase"/>. <paramref name="hiZ"/> false is
     /// a frustum-only dispatch; true adds the occlusion test -- for <see cref="PhaseColour"/> and
@@ -595,7 +587,7 @@ internal static unsafe class CullPass
         int w = _readSeq % 3, r = (_readSeq + 1) % 3;
         _readSeq++;
         var bytes = (IntPtr)((long)_groups * sizeof(uint));
-        Ensure(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
+        Gl.EnsureStorage(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
                _readBuf[w] == 0 || _counts.Length > _readCap);
         _readCap = _counts.Length;
         // #489: the three screen phases' counts back to back -- colour, then prepass phase one, then phase two.

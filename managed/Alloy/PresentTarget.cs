@@ -106,7 +106,7 @@ internal static unsafe class PresentTarget
             _log?.Always($"PresentTarget: the hand-back blit returned GL error 0x{err:x} -- the colour frame "
                        + "is fine, but the engine's highlight overlays are testing against the wrong depth (#456)");
         }
-        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+        Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
     }
 

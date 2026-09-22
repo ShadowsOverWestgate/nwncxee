@@ -1097,7 +1097,7 @@ internal static unsafe partial class LightmapBake
     {
         uint t; Gl.GenTextures(1, &t);
         Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, t);
-        while (Gl.GetError() != 0) { }
+        Gl.DrainErrors();
         Gl.TexStorage3D(Gl.TEXTURE_2D_ARRAY, 1, format, PageSize, PageSize, layers);
         if (Gl.GetError() != 0) { Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, 0); Gl.DeleteTextures(1, &t); return 0; }
         Gl.TexParameteri(Gl.TEXTURE_2D_ARRAY, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
@@ -1112,7 +1112,7 @@ internal static unsafe partial class LightmapBake
     {
         uint t; Gl.GenTextures(1, &t);
         Gl.BindTexture(Gl.TEXTURE_2D, t);
-        while (Gl.GetError() != 0) { }
+        Gl.DrainErrors();
         Gl.TexStorage2D(Gl.TEXTURE_2D, 1, Gl.RGBA16F, PageSize, PageSize);
         if (Gl.GetError() != 0) { Gl.BindTexture(Gl.TEXTURE_2D, 0); Gl.DeleteTextures(1, &t); return 0; }
         Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
@@ -1125,7 +1125,7 @@ internal static unsafe partial class LightmapBake
     {
         uint t; Gl.GenTextures(1, &t);
         Gl.BindTexture(Gl.TEXTURE_2D, t);
-        while (Gl.GetError() != 0) { }
+        Gl.DrainErrors();
         Gl.TexStorage2D(Gl.TEXTURE_2D, 1, Gl.DEPTH_COMPONENT16, PageSize, PageSize);
         if (Gl.GetError() != 0) { Gl.BindTexture(Gl.TEXTURE_2D, 0); Gl.DeleteTextures(1, &t); return 0; }
         Gl.BindTexture(Gl.TEXTURE_2D, 0);
@@ -1136,7 +1136,7 @@ internal static unsafe partial class LightmapBake
     {
         uint t; Gl.GenTextures(1, &t);
         Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, t);
-        while (Gl.GetError() != 0) { }
+        Gl.DrainErrors();
         Gl.TexStorage3D(Gl.TEXTURE_CUBE_MAP_ARRAY, 1, Gl.DEPTH_COMPONENT24, size, size, 6);
         if (Gl.GetError() != 0) { Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, 0); Gl.DeleteTextures(1, &t); return 0; }
         Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP_ARRAY, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);

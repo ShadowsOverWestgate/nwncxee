@@ -151,7 +151,7 @@ public sealed unsafe class UiHostService : IExtenderService
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         Gl.ReadPixels(vp[0] + vp[2] / 2, vp[1] + vp[3] / 2, 1, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, &px);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
-        for (int i = 0; i < 4 && Gl.GetError != null && Gl.GetError() != 0; i++) { }
+        Gl.DrainErrors(4);
         return px;
     }
 

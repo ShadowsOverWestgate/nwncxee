@@ -472,7 +472,7 @@ internal static unsafe class PostChain
     /// success. The two callers differ only in what a failure costs them.</summary>
     private static uint BlitDepthInto(uint dst, int dstW, int dstH)
     {
-        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+        Gl.DrainErrors(4);
         uint src = _fbo;
         // #391: a SCALING blit under a render scale -- legal for depth as long as the filter is NEAREST and
         // neither side is multisampled; into an MSAA target it goes through the 1x scratch first.
@@ -587,7 +587,7 @@ internal static unsafe class PostChain
             Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.STENCIL, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &sbits);
             Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &comp);
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
-            if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+            Gl.DrainErrors(4);
         }
         _defaultHasStencil = sbits > 0;
         _defaultFormat = bits <= 0 ? 0

@@ -225,7 +225,7 @@ public sealed unsafe class GlContextService : IExtenderService
         string renderer = getString != null ? CStr(getString(GL_RENDERER)) : "?";
         _zink = renderer.Contains("zink", StringComparison.OrdinalIgnoreCase);
         bool dbg = _debug && ArmDebug();
-        while (Gl.GetError() != 0) { }   // fresh-context error queue starts clean
+        Gl.DrainErrors();   // fresh-context error queue starts clean
         MakeCur(_engCtx);
 
         Context = ctx;
@@ -351,14 +351,13 @@ public sealed unsafe class GlContextService : IExtenderService
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         Gl.ReadPixels(_probeX, _probeY, 1, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, &px);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
-        for (int i = 0; i < 4 && Gl.GetError != null && Gl.GetError() != 0; i++) { }
+        Gl.DrainErrors(4);
         return px;
     }
 
     public static void Leave()
     {
-        int guard = 0;
-        while (Gl.GetError() != 0 && ++guard < 16) _err46++;
+        _err46 += Gl.DrainErrors();
         if (_stamped) _span.End();
 
         // Read BEFORE the switch, with the owned frame's resolve already in framebuffer 0. glReadPixels is
@@ -379,8 +378,7 @@ public sealed unsafe class GlContextService : IExtenderService
             return;
         }
         if (fOut != IntPtr.Zero) { _waitSync(fOut, 0, TimeoutIgnored); _deleteSync(fOut); }
-        guard = 0;
-        while (Gl.GetError() != 0 && ++guard < 16) _errEng++;
+        _errEng += Gl.DrainErrors();
         _worked = true;
 
         if (_swapProbe > 0 && GameGate.InModule)

@@ -148,7 +148,7 @@ internal static unsafe class FrameSnapshot
         if (!ProbeDepth((uint)src, w, h) || !EnsureTargets(w, h))
         { Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)src); return false; }
 
-        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+        Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, (uint)src);
         Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fbo);
         Gl.BlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, Gl.COLOR_BUFFER_BIT | _depMask, (uint)Gl.NEAREST);
@@ -379,55 +379,11 @@ internal static unsafe class FrameSnapshot
     /// GL_DEPTH_ATTACHMENT is not a legal name.</summary>
     private static bool ProbeDepth(uint src, int w, int h)
     {
-        // Keyed on the SIZE, not merely on "have we probed once": the engine reallocates its attachments on
-        // a resolution change, and a cached answer would then size the copy from the previous mode.
         if (_depFormat != 0 && _w == w && _h == h) return true;
-        int bits = 0, stencil = 0, type = 0, name = 0, fmt = 0;
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
-            src == 0 ? Gl.DEPTH : Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
-            src == 0 ? Gl.STENCIL : Gl.STENCIL_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencil);
-        // THE OBJECT'S OWN FORMAT, not the attachment's bit widths -- and this is the whole finding. Every
-        // owned framebuffer that can be bound here attaches its depth at
-        // DEPTH_ATTACHMENT alone (PostChain.Begin does; nothing ever uses
-        // DEPTH_STENCIL_ATTACHMENT). So the STENCIL_ATTACHMENT query answers nothing, and a packed D24S8
-        // engine depth reads as a plain 24-bit one. The blit then mismatches and is discarded whole.
-        if (src != 0)
-        {
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
-                Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
-                Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
-            if (name != 0 && type == (int)Gl.RENDERBUFFER && Gl.GetRenderbufferParameteriv != null
-                && Gl.BindRenderbuffer != null)
-            {
-                Gl.BindRenderbuffer(Gl.RENDERBUFFER, (uint)name);
-                Gl.GetRenderbufferParameteriv(Gl.RENDERBUFFER, Gl.RENDERBUFFER_INTERNAL_FORMAT, &fmt);
-                Gl.BindRenderbuffer(Gl.RENDERBUFFER, 0);
-            }
-            else if (name != 0 && Gl.GetTexLevelParameteriv != null)
-            {
-                Gl.ActiveTexture(Gl.TEXTURE0);
-                Gl.BindTexture(Gl.TEXTURE_2D, (uint)name);
-                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
-                Gl.BindTexture(Gl.TEXTURE_2D, 0);
-            }
-        }
-        // A probe of an absent attachment raises an error rather than answering; drain the queue so the next
-        // real GL failure is not read as this one. glGetError reports one error per call.
-        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
-        if (bits <= 0 && fmt == 0) return Refuse("the pass target has no depth attachment to copy");
-        _depFormat = (uint)fmt switch
-        {
-            Gl.DEPTH_COMPONENT16 or Gl.DEPTH_COMPONENT24 or Gl.DEPTH_COMPONENT32
-                or Gl.DEPTH_COMPONENT32F or Gl.DEPTH24_STENCIL8 or Gl.DEPTH32F_STENCIL8 => (uint)fmt,
-            // Unrecognised (or the default framebuffer, which has no object to ask): fall back to the bit
-            // widths. The blit check in Copy is what catches a wrong guess here.
-            _ => stencil > 0 ? Gl.DEPTH24_STENCIL8
-               : bits >= 32 ? Gl.DEPTH_COMPONENT32F
-               : bits >= 24 ? Gl.DEPTH_COMPONENT24 : Gl.DEPTH_COMPONENT16,
-        };
-        bool packed = _depFormat == Gl.DEPTH24_STENCIL8 || _depFormat == Gl.DEPTH32F_STENCIL8;
+        uint fmt = RenderTarget.ProbeDepthFormat(src);
+        if (fmt == 0) return Refuse("the pass target has no depth attachment to copy");
+        _depFormat = fmt;
+        bool packed = RenderTarget.Packed(_depFormat);
         _depMask = packed ? Gl.STENCIL_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT : Gl.DEPTH_BUFFER_BIT;
         return true;
     }

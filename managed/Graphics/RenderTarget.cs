@@ -59,4 +59,51 @@ public static unsafe class RenderTarget
         Clamp(filter);
         Gl.BindTexture(Gl.TEXTURE_2D, 0);
     }
+
+    /// <summary>The depth internal format the bound FRAMEBUFFER's depth attachment holds, 0 when it has none.
+    /// Asks the OBJECT for its format rather than the attachment for its bit widths (#129's finding): every
+    /// owned framebuffer attaches depth at DEPTH_ATTACHMENT alone, so the STENCIL_ATTACHMENT query answers
+    /// nothing and a packed D24S8 would read as a plain 24-bit one -- after which a blit mismatches and is
+    /// thrown away whole. The default framebuffer (<paramref name="fbo"/> 0) has no object to ask and answers
+    /// under GL_DEPTH/GL_STENCIL, so it falls back to the bit widths; a wrong guess there is the blit's to
+    /// catch. Probing an absent attachment raises rather than answers, so the error queue is drained.</summary>
+    public static uint ProbeDepthFormat(uint fbo)
+    {
+        int bits = 0, stencil = 0, type = 0, name = 0, fmt = 0;
+        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
+            fbo == 0 ? Gl.DEPTH : Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
+        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
+            fbo == 0 ? Gl.STENCIL : Gl.STENCIL_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencil);
+        if (fbo != 0)
+        {
+            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
+                Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
+            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
+                Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
+            if (name != 0 && type == (int)Gl.RENDERBUFFER && Gl.GetRenderbufferParameteriv != null
+                && Gl.BindRenderbuffer != null)
+            {
+                Gl.BindRenderbuffer(Gl.RENDERBUFFER, (uint)name);
+                Gl.GetRenderbufferParameteriv(Gl.RENDERBUFFER, Gl.RENDERBUFFER_INTERNAL_FORMAT, &fmt);
+                Gl.BindRenderbuffer(Gl.RENDERBUFFER, 0);
+            }
+            else if (name != 0 && Gl.GetTexLevelParameteriv != null)
+            {
+                Gl.ActiveTexture(Gl.TEXTURE0);
+                Gl.BindTexture(Gl.TEXTURE_2D, (uint)name);
+                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
+                Gl.BindTexture(Gl.TEXTURE_2D, 0);
+            }
+        }
+        Gl.DrainErrors(4);
+        if (bits <= 0 && fmt == 0) return 0;
+        return (uint)fmt switch
+        {
+            Gl.DEPTH_COMPONENT16 or Gl.DEPTH_COMPONENT24 or Gl.DEPTH_COMPONENT32
+                or Gl.DEPTH_COMPONENT32F or Gl.DEPTH24_STENCIL8 or Gl.DEPTH32F_STENCIL8 => (uint)fmt,
+            _ => stencil > 0 ? Gl.DEPTH24_STENCIL8
+               : bits >= 32 ? Gl.DEPTH_COMPONENT32F
+               : bits >= 24 ? Gl.DEPTH_COMPONENT24 : Gl.DEPTH_COMPONENT16,
+        };
+    }
 }

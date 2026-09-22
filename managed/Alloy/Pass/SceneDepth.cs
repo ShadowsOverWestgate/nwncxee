@@ -64,7 +64,7 @@ internal static unsafe class SceneDepth
         if (!Probe((uint)src, w, h) || !Ensure(w, h))
         { Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)src); return false; }
 
-        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
+        Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, (uint)src);
         Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fbo);
         Gl.BlitFramebuffer(0, 0, w, h, 0, 0, w, h, _depMask, (uint)Gl.NEAREST);
@@ -107,48 +107,9 @@ internal static unsafe class SceneDepth
     private static bool Probe(uint src, int w, int h)
     {
         if (_depFormat != 0 && _w == w && _h == h) return true;
-        int bits = 0, stencil = 0, type = 0, name = 0, fmt = 0;
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
-            src == 0 ? Gl.DEPTH : Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
-            src == 0 ? Gl.STENCIL : Gl.STENCIL_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencil);
-        // #129's finding, reproduced: ask the OBJECT for its format, not the attachment for its bit widths.
-        // Every framebuffer bindable here attaches depth at DEPTH_ATTACHMENT alone, so the STENCIL query
-        // answers nothing and a packed D24S8 reads as a plain 24-bit one -- after which the blit mismatches
-        // and is thrown away whole.
-        if (src != 0)
-        {
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
-                Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
-                Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &name);
-            if (name != 0 && type == (int)Gl.RENDERBUFFER && Gl.GetRenderbufferParameteriv != null
-                && Gl.BindRenderbuffer != null)
-            {
-                Gl.BindRenderbuffer(Gl.RENDERBUFFER, (uint)name);
-                Gl.GetRenderbufferParameteriv(Gl.RENDERBUFFER, Gl.RENDERBUFFER_INTERNAL_FORMAT, &fmt);
-                Gl.BindRenderbuffer(Gl.RENDERBUFFER, 0);
-            }
-            else if (name != 0 && Gl.GetTexLevelParameteriv != null)
-            {
-                Gl.ActiveTexture(Gl.TEXTURE0);
-                Gl.BindTexture(Gl.TEXTURE_2D, (uint)name);
-                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
-                Gl.BindTexture(Gl.TEXTURE_2D, 0);
-            }
-        }
-        // Probing an absent attachment raises rather than answers; drain so the next real failure is not
-        // read as this one.
-        if (Gl.GetError != null) for (int i = 0; i < 4 && Gl.GetError() != 0; i++) { }
-        if (bits <= 0 && fmt == 0) return false;
-        _depFormat = (uint)fmt switch
-        {
-            Gl.DEPTH_COMPONENT16 or Gl.DEPTH_COMPONENT24 or Gl.DEPTH_COMPONENT32
-                or Gl.DEPTH_COMPONENT32F or Gl.DEPTH24_STENCIL8 or Gl.DEPTH32F_STENCIL8 => (uint)fmt,
-            _ => stencil > 0 ? Gl.DEPTH24_STENCIL8
-               : bits >= 32 ? Gl.DEPTH_COMPONENT32F
-               : bits >= 24 ? Gl.DEPTH_COMPONENT24 : Gl.DEPTH_COMPONENT16,
-        };
+        uint fmt = RenderTarget.ProbeDepthFormat(src);
+        if (fmt == 0) return false;
+        _depFormat = fmt;
         bool packed = RenderTarget.Packed(_depFormat);
         _depMask = packed ? Gl.STENCIL_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT : Gl.DEPTH_BUFFER_BIT;
         return true;

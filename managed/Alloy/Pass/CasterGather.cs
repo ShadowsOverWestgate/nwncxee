@@ -210,22 +210,14 @@ internal static unsafe class CasterGather
 
         for (int i = 0; i < Rotation; i++)
         {
-            Ensure(ref _cmdBuf[i], (long)drawN * CmdBytes, drawN > _cmdCap);
-            Ensure(ref _cntBuf[i], (long)(groups + 1) * sizeof(uint), groups > _cntCap);
+            Gl.EnsureStorage(ref _cmdBuf[i], (long)drawN * CmdBytes, drawN > _cmdCap);
+            Gl.EnsureStorage(ref _cntBuf[i], (long)(groups + 1) * sizeof(uint), groups > _cntCap);
         }
         if (drawN > _cmdCap) _cmdCap = drawN;
         if (groups > _cntCap) _cntCap = groups;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         _drawN = drawN; _groups = groups;
         return true;
-    }
-
-    private static void Ensure(ref uint buf, long bytes, bool grow)
-    {
-        if (buf == 0) { uint b; Gl.GenBuffers(1, &b); buf = b; grow = true; }
-        if (!grow) return;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, buf);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)Math.Max(bytes, 4), null, Gl.DYNAMIC_DRAW);
     }
 
     /// <summary>Select this view's casters. <paramref name="point"/> picks the cube face's cone test over the
@@ -306,7 +298,7 @@ internal static unsafe class CasterGather
         }
         // Capacity is PER RING SLOT: after a growth the other two slots still hold their old size, and a
         // shared cap would skip re-sizing them -- a copy past the end of a too-small buffer.
-        Ensure(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
+        Gl.EnsureStorage(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
                _readBuf[w] == 0 || _counts.Length > _readCap[w]);
         _readCap[w] = _counts.Length;
         // No extra barrier: the dispatch's own MemoryBarrier names BUFFER_UPDATE_BARRIER_BIT, which is the
@@ -406,8 +398,8 @@ internal static unsafe class CasterGather
         bool growCmd = cmds > _lyCmdCap, growCnt = _groups > _lyCntCap;
         for (int i = 0; i < Rotation; i++)
         {
-            Ensure(ref _lyCmd[i], cmds * CmdBytes, growCmd);
-            Ensure(ref _lyCnt[i], (long)(_groups + 1) * sizeof(uint), growCnt);
+            Gl.EnsureStorage(ref _lyCmd[i], cmds * CmdBytes, growCmd);
+            Gl.EnsureStorage(ref _lyCnt[i], (long)(_groups + 1) * sizeof(uint), growCnt);
         }
         if (growCmd) _lyCmdCap = cmds;
         if (growCnt) _lyCntCap = _groups;
