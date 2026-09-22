@@ -887,9 +887,9 @@ internal static unsafe partial class GrassField
         Gl.Uniform1i(_loc.Lit, lightingOn ? 1 : 0);
         Gl.Uniform1f(_loc.RootAo, Grass.RootAo.V);
         Gl.Uniform1f(_loc.GroundTint, Grass.GTint.V);
-        // The frame as it stands before the grass, for the root blend. One blit; the water pass takes its
-        // own later. Skipped outright when the dial is off.
-        bool ground = Grass.GTint.V > 0f && FrameSnapshot.Copy(viewport);
+        // The frame as it stands before the grass, for the root blend. One colour-only blit (the shader reads
+        // no depth); the water pass takes its own, with depth, later. Skipped outright when the dial is off.
+        bool ground = Grass.GTint.V > 0f && FrameSnapshot.Copy(viewport, depth: false);
         Gl.Uniform1i(_loc.GroundOn, ground ? 1 : 0);
         Gl.Uniform1i(_loc.GroundViz, Grass.GViz.V);
         Gl.Uniform1i(_loc.SoftEdge, soft ? 1 : 0);

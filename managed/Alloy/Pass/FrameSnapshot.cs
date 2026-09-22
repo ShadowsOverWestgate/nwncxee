@@ -123,11 +123,13 @@ internal static unsafe class FrameSnapshot
     /// <summary>The last copy's rectangle as a fraction of the frame; 1 = a whole-frame copy.</summary>
     internal static float LastRectFrac { get; private set; } = 1f;
 
-    internal static bool Copy(int* viewport) => Copy(viewport, 0, 0, viewport[2], viewport[3]);
+    /// <summary>The whole-frame copy. <paramref name="depth"/> false blits colour alone (CX-3): the grass root
+    /// blend reads only colour, and a depth(+stencil) blit costs a full-res copy plus the driver's decompress.</summary>
+    internal static bool Copy(int* viewport, bool depth = true) => Copy(viewport, 0, 0, viewport[2], viewport[3], depth);
 
     /// <summary>The copy over one rectangle of the frame, source and destination at the same coordinates so
     /// the stage's gl_FragCoord read stays 1:1. Texels outside the rectangle keep the previous copy.</summary>
-    internal static bool Copy(int* viewport, int x0, int y0, int x1, int y1)
+    internal static bool Copy(int* viewport, int x0, int y0, int x1, int y1, bool depth = true)
     {
         Ready = false;
         if (!On || _down.Failed) return false;
@@ -151,7 +153,7 @@ internal static unsafe class FrameSnapshot
         Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, (uint)src);
         Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fbo);
-        Gl.BlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, Gl.COLOR_BUFFER_BIT | _depMask, (uint)Gl.NEAREST);
+        Gl.BlitFramebuffer(x0, y0, x1, y1, x0, y0, x1, y1, Gl.COLOR_BUFFER_BIT | (depth ? _depMask : 0), (uint)Gl.NEAREST);
         LastRectFrac = (float)(x1 - x0) * (y1 - y0) / ((float)w * h);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)src);
         // ...and the blit is CHECKED, because its whole-or-nothing failure mode is silent and total. A depth
