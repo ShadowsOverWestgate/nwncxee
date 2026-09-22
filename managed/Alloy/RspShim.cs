@@ -421,7 +421,7 @@ internal static unsafe class RspShim
         // #232 second mode: on a frame the owned outline+fill highlight drew, the engine glow would double
         // up on the gobs it covered -- but only on those. Read-and-clear, so a frame where the owned pass
         // refused (no depth blit, program failure) still gets the full engine glow instead of nothing.
-        bool ownedHighlight = AlloyRenderer.TakeHighlightDrawn();
+        bool ownedHighlight = Highlight.TakeHighlightDrawn();
         if (!WantsEngineOverlays || !PostChain.DefaultDepthOk) return;
         if (!GlowReplay) { }
         else if (!ownedHighlight) Vt(vptr, VtDoHighlightGob, scene);
@@ -450,12 +450,12 @@ internal static unsafe class RspShim
 
     private static void GlowRemainder(IntPtr vptr, IntPtr scene)
     {
-        int n = *(int*)(scene + AlloyRenderer.SceneHlCount);
-        int handled = AlloyRenderer.HandledCount;
+        int n = *(int*)(scene + Highlight.SceneHlCount);
+        int handled = Highlight.HandledCount;
         if (n <= 0 || handled >= n) return;   // everything owned: no glow at all
         if (n > GlowCap) { Vt(vptr, VtDoHighlightGob, scene); return; }
-        IntPtr* gobs = *(IntPtr**)(scene + AlloyRenderer.SceneHlGobs);
-        float* cols = (float*)*(IntPtr*)(scene + AlloyRenderer.SceneHlColors);
+        IntPtr* gobs = *(IntPtr**)(scene + Highlight.SceneHlGobs);
+        float* cols = (float*)*(IntPtr*)(scene + Highlight.SceneHlColors);
         IntPtr* savedGobs = stackalloc IntPtr[GlowCap];
         float* savedCols = stackalloc float[GlowCap * 3];
         new Span<IntPtr>(gobs, n).CopyTo(new Span<IntPtr>(savedGobs, n));
@@ -465,7 +465,7 @@ internal static unsafe class RspShim
         {
             bool owned = false;
             for (int k = 0; k < handled; k++)
-                if (AlloyRenderer.HandledHl[k] == savedGobs[i]) { owned = true; break; }
+                if (Highlight.HandledHl[k] == savedGobs[i]) { owned = true; break; }
             if (owned) continue;
             gobs[m] = savedGobs[i];
             cols[m * 3] = savedCols[i * 3];
@@ -473,11 +473,11 @@ internal static unsafe class RspShim
             cols[m * 3 + 2] = savedCols[i * 3 + 2];
             m++;
         }
-        *(int*)(scene + AlloyRenderer.SceneHlCount) = m;
+        *(int*)(scene + Highlight.SceneHlCount) = m;
         if (m > 0) Vt(vptr, VtDoHighlightGob, scene);
         new Span<IntPtr>(savedGobs, n).CopyTo(new Span<IntPtr>(gobs, n));
         new Span<float>(savedCols, n * 3).CopyTo(new Span<float>(cols, n * 3));
-        *(int*)(scene + AlloyRenderer.SceneHlCount) = n;
+        *(int*)(scene + Highlight.SceneHlCount) = n;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

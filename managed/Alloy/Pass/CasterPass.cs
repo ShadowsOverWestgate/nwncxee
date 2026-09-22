@@ -990,7 +990,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         if (!GlContextService.Enter()) { AlloyRenderer.PosedByShadow = false; return; }
         AlloyRenderer.ShadowPoseUpload();   // the GL half of ShadowPose above: this frame's bones, uploaded
         OwnedTextures.DropDeadHandles();        // the colour drain is AFTER this bracket; textures die on area load before both
-        AlloyRenderer.UploadHandlesForBake();   // a handle dropped since the last colour upload must not be sampled below
+        Issue.UploadHandlesForBake();   // a handle dropped since the last colour upload must not be sampled below
         // #260: the bake and the colour pass read the SAME buffer -- the pool's, which Alloy uploaded at the
         // engine's own commit -- so there is nothing to bring into agreement here any more. What closes is
         // the dirty window, and this bracket runs after the sweep has already read _vDirty off it.

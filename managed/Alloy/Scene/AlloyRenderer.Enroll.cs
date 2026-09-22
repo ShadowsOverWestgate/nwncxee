@@ -18,7 +18,7 @@ public sealed unsafe partial class AlloyRenderer
         if (_oTri[i] == IntPtr.Zero) return;
         AlloyCensus.OwnFlag[_oEntry[i]] = 0;
         FreeSlot(i);
-        _revokes++;   // mid-frame reverts only -- enrollment's own sweeps must not inflate `revokes=` (#149's triage habit)
+        Counters._revokes++;   // mid-frame reverts only -- enrollment's own sweeps must not inflate `revokes=` (#149's triage habit)
     }
 
     /// <summary>#308: retire a slot WITHOUT touching its entry's OwnFlag or the revoke counter. The
@@ -154,7 +154,7 @@ public sealed unsafe partial class AlloyRenderer
         // #209: above the empty-table guard, because the ownership count says what ALLOY took and nothing
         // about what the passes captured -- and for beams, particles and grass this walk is the only
         // teardown there is. See docs/owned-resource-lifetimes.md.
-        WipeHandles();
+        Issue.WipeHandles();
         // #212: above the guard for the same reason the registry walk is. The registry's Revoke deletes the
         // owned buffer copies, and the VAOs built over them are only invalidated here -- an enrollment that
         // took nothing (_ownCount == 0) with slots left from an earlier one would otherwise keep binding a
@@ -177,11 +177,11 @@ public sealed unsafe partial class AlloyRenderer
         // Re-arm the enrollment report: after a release (module unload, context loss) the NEXT enrollment is
         // a genuinely new fact -- whether ownership came back at all, and over how much. Suppressing it as a
         // repeat is what made a post-unload session look identical to one that never enrolled.
-        _reportedHit = false;
+        Diag._reportedHit = false;
         // #256: a wipe leaves the part table empty and the walk generation stale, so the next Tick must
         // re-enumerate rather than wait on an epoch bump that a release does not produce.
         SceneWalk.Dirty = true;
-        _enrollDiagLeft = EnrollDiagBudget;
+        Diag._enrollDiagLeft = EnrollDiagBudget;
         _log?.Info($"AlloyRenderer: ownership released ({why}) -- all parts revert to the engine walk");
     }
 
@@ -226,14 +226,14 @@ public sealed unsafe partial class AlloyRenderer
         // marks, a RequestWalk); only the full walk answers those.
         if (!_enrollDelta || newScene || tableWiped || overflow || n == 0 || _orderCount == 0 || _enrollBudget == 0)
         { _deltaFull++; return false; }
-        SceneWalk.Dirty = false; _sinceEnroll = 0; _enrolls++; _deltaEnrolls++; _deltaChanges += n;
+        SceneWalk.Dirty = false; _sinceEnroll = 0; Counters._enrolls++; _deltaEnrolls++; _deltaChanges += n;
         _enrollGen++;
         // The tri->slot hash is keyed on _enrollGen: the death notice (NotePartDeath) looks tenants up
         // through it between enrolments, so a bump without a re-hash leaves every standing slot invisible
         // to it and a dying part's slot dangling -- the 14:42 SIGSEGV on a stage worker (AurTex.Live on a
         // freed material's texture). ~20k inserts, on the ~1 frame in 4 that takes a delta.
         HashLiveSlots();
-        bool canLight = _lighting && !_litFailed;
+        bool canLight = _lighting && !Programs._litFailed;
         var c = default(AlloyCandidate);
         float* keep = stackalloc float[12];
         int orderBefore = _orderCount;
@@ -253,7 +253,7 @@ public sealed unsafe partial class AlloyRenderer
         }
         RebuildOrder();
         if (collect) CasterGen++;
-        _lastEnrolled = _orderCount;
+        Counters._lastEnrolled = _orderCount;
         if (refused) { _deltaRefused++; return false; }   // the full walk follows, this frame
         return true;
     }
@@ -270,7 +270,7 @@ public sealed unsafe partial class AlloyRenderer
         // a new Scene walks unbudgeted: the standing order is the OLD scene's, and drawing it into the new
         // one for a walk's length is exactly the half-built census the budget must never show
         bool newScene = scene != _enrollScene;
-        SceneWalk.Dirty = false; _sinceEnroll = 0; _enrolls++; _enrollScene = scene;
+        SceneWalk.Dirty = false; _sinceEnroll = 0; Counters._enrolls++; _enrollScene = scene;
         // #284: a new enrollment re-asks every VDO the drip deferred for want of resident pools. This is
         // the bounded re-arm -- the alternative, one attempt per VDO for the session, rebuilds the exact
         // permanence the drip exists to remove whenever the first attempt loses a race with residency.
@@ -284,7 +284,7 @@ public sealed unsafe partial class AlloyRenderer
         _tableGen = PartTable.TableGen;
         _walkBudget = tableWiped || newScene || _orderCount == 0 || _enrollBudget == 0 ? int.MaxValue : _enrollBudget;
         _walkAt = 0; _walkCandidates = 0; _walkOrderBefore = _orderCount; _freeAvail = _freeCount;
-        _watchEnrolled = 0;
+        Counters._watchEnrolled = 0;
         System.Array.Clear(AlloyCensus.WatchTex);
         for (int i = 0; i < _ownCount; i++)
             if (_oTri[i] != IntPtr.Zero)
@@ -298,7 +298,7 @@ public sealed unsafe partial class AlloyRenderer
         // whole space resets and the scan below repacks densely; the shadow side gets the blanket at the
         // bottom of this pass.
         if (tableWiped) { _ownCount = 0; _freeCount = 0; _freeAvail = 0; _ownLive = 0; }
-        _litUnownable = 0; _skinUnownable = 0; _gobOwned = 0;
+        Counters._litUnownable = 0; Counters._skinUnownable = 0; Counters._gobOwned = 0;
         // #308: bumped per SCAN as before, but a slot now only ADOPTS the new generation when its tenant
         // changes -- the same-frame shadow bracket runs before the record rebuild, and must not refuse a
         // still world. The tenants that survive are found through the hash, seated in their old slots, and
@@ -322,7 +322,7 @@ public sealed unsafe partial class AlloyRenderer
         // A lit part whose lighting cannot be reproduced (no normal stream, or the lit program failed to
         // build) is NOT enrolled: it goes back to the engine's own vanilla-lit draw, which is the only
         // fallback that holds "Alloy parts lit at least as well as vanilla". Fullbright is not.
-        bool canLight = _lighting && !_litFailed;
+        bool canLight = _lighting && !Programs._litFailed;
         var c = default(AlloyCandidate);
         // #308 follow-up: scratch for the kept-slot stable-half content compare below -- 8 PBR params + 4
         // feature floats. Outside the loop: a stackalloc inside it would stack a copy per candidate.
@@ -334,7 +334,7 @@ public sealed unsafe partial class AlloyRenderer
             int e = _walkAt;
             if (!AlloyCensus.TryOwnCandidate(e, ref c)) continue;
             stepped++; _walkCandidates++;
-            if (AlloyCensus.WatchAccepted(e, c.Mat)) _watchEnrolled++;
+            if (AlloyCensus.WatchAccepted(e, c.Mat)) Counters._watchEnrolled++;
             EnrollOne(e, ref c, FindSlot(c.Tri), canLight, keep);
         }
         // a budgeted walk finishes on a frame of its OWN: measured live, a finish riding the last step was
@@ -399,15 +399,15 @@ public sealed unsafe partial class AlloyRenderer
         // boneless would enrol as an ordinary rigid part, skip PoseSkinned, and draw in its bind pose --
         // which is the failure the asymmetric gate would have let through as the QUIET one.
         if (_vSkin[v] != (_skinning && PartTable.Skinned(e)))
-        { _skinUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: skin mismatch (armed={_skinning} boneStreams={_vSkin[v]} skinPart={PartTable.Skinned(e)})"); return Refused; }
+        { Counters._skinUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: skin mismatch (armed={_skinning} boneStreams={_vSkin[v]} skinPart={PartTable.Skinned(e)})"); return Refused; }
         if (lit && (!canLight || !_vLit[v]))
-        { _litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: lit but unshadeable (canLight={canLight} vdoLit={_vLit[v]})"); return Refused; }
+        { Counters._litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info($"[dumpframe] ENROLL refused: lit but unshadeable (canLight={canLight} vdoLit={_vLit[v]})"); return Refused; }
         // #121: an env-mapped part the engine draws UNLIT would go through the fullbright variant, which
         // has no env handling at all -- the engine still routes it to RenderEnvironmentMapped (the switch
         // in PartTriMesh::Draw is on HasEnvMap, not on the lit flag), so owning it would silently drop
         // whatever shine it had. Only the lit variant can reproduce it; the rest stay vanilla.
         if (c.Env && !lit)
-        { _litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info("[dumpframe] ENROLL refused: env-mapped but unlit"); return Refused; }
+        { Counters._litUnownable++; AlloyCensus.OwnRefuse(c.Cls, c.Gob); if (watch) _log?.Info("[dumpframe] ENROLL refused: env-mapped but unlit"); return Refused; }
         // #308: seat the tenant. A part that held a slot last enrollment keeps it -- the slot index is
         // what every persistent table is keyed by, so keeping it is what keeps the record, the spheres
         // and the shadow tenancy coherent across the scan. Only a genuine newcomer takes a fresh slot
@@ -468,7 +468,7 @@ public sealed unsafe partial class AlloyRenderer
         // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
         if (!kept) _oBone[i] = -1;
         _oDangly[i] = PartTable.IsDangly(c.Tri);   // #302: a permanent shadow mover
-        if (c.Gob != IntPtr.Zero) _gobOwned++;
+        if (c.Gob != IntPtr.Zero) Counters._gobOwned++;
         // #126: the local bbox centre, for the blended pass's back-to-front key.
         var tri = new PartRef(c.Tri);
         float* lo = tri.BboxMin, hi = tri.BboxMax;
@@ -564,7 +564,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         bool tableWiped = _walkWiped;
         int candidates = _walkCandidates, orderBefore = _walkOrderBefore;
-        WipeHandles();   // #153: still per-enrollment -- a no-op in the armed mode, and in the non-armed one
+        Issue.WipeHandles();   // #153: still per-enrollment -- a no-op in the armed mode, and in the non-armed one
                          // it is the only heal for the engine-name handle cache (#220). #308 removed only
                          // the unconditional record-epoch bump that rode with it: slots are stable now, so
                          // the records a scan orphans are unstamped one by one where they are re-seated.
@@ -589,20 +589,20 @@ public sealed unsafe partial class AlloyRenderer
         // a creature whose head fades and whose arm does not -- and the part we could not take (a skinmesh
         // cloak, a gob with an env override) is exactly the one that would be left standing. Dropping the
         // instance whole is the only state that reads as one renderer.
-        _gobParts = 0;
+        Counters._gobParts = 0;
         for (int i = 0; i < _ownCount; i++)
             if (_oTri[i] != IntPtr.Zero && AlloyCensus.GobRefused(_oGob[i]))
             {
                 if (AlloyCensus.WatchedEntry(_oEntry[i])) _log?.Info("[dumpframe] ENROLL revoked: instance dropped whole");
-                AlloyCensus.OwnFlag[_oEntry[i]] = 0; FreeSlot(i); _gobParts++;
+                AlloyCensus.OwnFlag[_oEntry[i]] = 0; FreeSlot(i); Counters._gobParts++;
             }
-        _blendedDropped = 0;
+        Counters._blendedDropped = 0;
         if (AlloyCensus.OwnRefusedByClass[(int)AlloyClass.Blended] > 0)
             for (int i = 0; i < _ownCount; i++)
                 if (_oTri[i] != IntPtr.Zero && _oCls[i] == (byte)AlloyClass.Blended)
                 {
                     if (AlloyCensus.WatchedEntry(_oEntry[i])) _log?.Info("[dumpframe] ENROLL revoked: blended class dropped whole");
-                    AlloyCensus.OwnFlag[_oEntry[i]] = 0; FreeSlot(i); _blendedDropped++;
+                    AlloyCensus.OwnFlag[_oEntry[i]] = 0; FreeSlot(i); Counters._blendedDropped++;
                 }
         // The radix digits are counted AFTER the sweep, so a dropped class costs no order slot.
         RebuildOrder();
@@ -621,13 +621,13 @@ public sealed unsafe partial class AlloyRenderer
         // #302: there is ONE enrollment now. The shadow pass walks this same table, so an instance that
         // changes hands changes hands on both sides in the same breath -- the two counters, and #128's
         // frames of darkness between them, are gone.
-        _lastEnrolled = _orderCount; _lastCandidates = candidates; _lastTextures = _matCount;
+        Counters._lastEnrolled = _orderCount; Counters._lastCandidates = candidates; Counters._lastTextures = _matCount;
         // Empty right after a resume means the records are not RESIDENT yet, not that nothing is ownable --
         // a fresh Scene binds its VertexPrimitives over the next few frames. OnRenderSinglePass's bounded
         // forced-enroll budget is what retries; nothing here may re-arm unboundedly.
         if (!PartTable.Active)
         {
-            if (_enrollDiagLeft-- > 0)
+            if (Diag._enrollDiagLeft-- > 0)
                 _log?.Info("AlloyRenderer: part capture inactive (drawhooks != batch or hooks unavailable) -- " +
                            "the Alloy pass enrolls from its capture tables, so nothing can be owned");
             return;
@@ -636,12 +636,12 @@ public sealed unsafe partial class AlloyRenderer
         // nothing to offer yet and must not burn the budget before there is an area to enroll from
         if (_orderCount == 0)
         {
-            if (_enrollDiagLeft-- > 0)
+            if (Diag._enrollDiagLeft-- > 0)
                 _log?.Info($"AlloyRenderer: enroll miss -- {AlloyCensus.OwnScanDiag()}");
         }
-        else if (!_reportedHit)
+        else if (!Diag._reportedHit)
         {
-            _reportedHit = true;
+            Diag._reportedHit = true;
             _log?.Info($"AlloyRenderer: enrolled {_orderCount}/{candidates} ownable parts on {_vdoCount} VDOs " +
                        $"({AlloyCensus.OwnScanDiag()}; {VertexArrays.Unaligned}/{VertexArrays.Streams} streams off 4-byte alignment)");
         }
@@ -703,7 +703,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void MeshCensus()
     {
         int n = 0;
-        _msUnread = 0; _msGobParts = 0; _msMxParts = 0;
+        Counters._msUnread = 0; Counters._msGobParts = 0; Counters._msMxParts = 0;
         for (int i = 0; i < _ownCount; i++)
         {
             if (_oTri[i] == IntPtr.Zero) continue;
@@ -714,29 +714,29 @@ public sealed unsafe partial class AlloyRenderer
             var vdo = new VdoRef(_oVdo[i]);
             long elem = vdo.ElemItems;
             int item = _oItem[i];
-            if (elem == 0 || item < 0 || item >= vdo.ElemCount) { _msUnread++; continue; }
+            if (elem == 0 || item < 0 || item >= vdo.ElemCount) { Counters._msUnread++; continue; }
             long first = (uint)*(int*)(elem + item * 8);
             int count = *(int*)(elem + item * 8 + 4);
-            if (count <= 0) { _msUnread++; continue; }
+            if (count <= 0) { Counters._msUnread++; continue; }
             bool gob = _oGob[i] != IntPtr.Zero;
-            if (gob) _msGobParts++;
+            if (gob) Counters._msGobParts++;
             long clamped = (uint)Math.Min(count, MsCountMax);
             _msKey[n] = ((long)(uint)_oVao[i] << MsVaoShift) | (_oMx[i] ? MsMxBit : 0L)
                         | (first << MsFirstShift) | clamped;
-            if (_oMx[i]) _msMxParts++;
+            if (_oMx[i]) Counters._msMxParts++;
             _msShape[n] = (gob ? MsGobBit : 0L) | (_oMx[i] ? MsShapeMxBit : 0L)
                           | ((long)(uint)_oPrim[i] << MsPrimShift)
                           | ((long)(uint)_oTexKey[i] << MsTexShift) | clamped;
             n++;
         }
-        _msParts = n;
+        Counters._msParts = n;
         Array.Sort(_msKey, 0, n);
         Array.Sort(_msShape, 0, n);
-        ScanRuns(_msKey, n, MsMxBit, out _msMeshes, out _msMaxInstances, out _msShared, out _msSharedMx);
-        ScanRuns(_msShape, n, MsGobBit, out _msShapes, out _msShapeMax, out _msShapeRepeat, out _msShapeRepeatGob);
+        ScanRuns(_msKey, n, MsMxBit, out Counters._msMeshes, out Counters._msMaxInstances, out Counters._msShared, out Counters._msSharedMx);
+        ScanRuns(_msShape, n, MsGobBit, out Counters._msShapes, out Counters._msShapeMax, out Counters._msShapeRepeat, out Counters._msShapeRepeatGob);
         // Same sorted key, a second flag: how much of the repeated population is COLLAPSIBLE at all. Cheaper
         // than a second key, and the three run figures it recomputes are identical by construction.
-        ScanRuns(_msShape, n, MsShapeMxBit, out _, out _, out _, out _msShapeRepeatMx);
+        ScanRuns(_msShape, n, MsShapeMxBit, out _, out _, out _, out Counters._msShapeRepeatMx);
     }
 
     /// <summary>#244: the equal runs of a sorted census key -- distinct values, the largest run, how many

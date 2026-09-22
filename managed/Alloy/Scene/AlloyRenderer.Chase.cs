@@ -472,17 +472,17 @@ public sealed unsafe partial class AlloyRenderer
         long mxAll = _mxChased + _mxCached, disAll = _disAsked + _disCached, fadeAll = _fadeRead + _fadeServed;
         int bspGob = 0;   // cold: once per period, over the live slots
         for (int i = 0; i < _ownCount; i++) if (_oTri[i] != IntPtr.Zero && _oBsp[i] && _oMx[i] && _oGob[i] != IntPtr.Zero) bspGob++;
-        return $"chase {_visGobsLast} gobs in view: routed {(float)_routeIn / _frames:F0}/frame, " +
-               $"{(float)_routeOut / _frames:F0} off-frustum untouched" +
-               (_visList ? $", visible set rebuilt {_visRebuilds} of {_frames} frames" : ", visible set OFF") +
-               $"; matrices {(float)_mxChased / _frames:F0}/frame read of " +
-               $"{(float)mxAll / _frames:F0}" + (bspGob == 0 ? "" : $" ({bspGob} BSP-filed gob parts always read)") +
-               $", keyhole {(float)_disAsked / _frames:F0}/frame asked of {(float)disAll / _frames:F0}, " +
-               $"tile fade {(float)_fadeRead / _frames:F0}/frame read of {(float)fadeAll / _frames:F0} " +
+        return $"chase {_visGobsLast} gobs in view: routed {(float)_routeIn / Counters._frames:F0}/frame, " +
+               $"{(float)_routeOut / Counters._frames:F0} off-frustum untouched" +
+               (_visList ? $", visible set rebuilt {_visRebuilds} of {Counters._frames} frames" : ", visible set OFF") +
+               $"; matrices {(float)_mxChased / Counters._frames:F0}/frame read of " +
+               $"{(float)mxAll / Counters._frames:F0}" + (bspGob == 0 ? "" : $" ({bspGob} BSP-filed gob parts always read)") +
+               $", keyhole {(float)_disAsked / Counters._frames:F0}/frame asked of {(float)disAll / Counters._frames:F0}, " +
+               $"tile fade {(float)_fadeRead / Counters._frames:F0}/frame read of {(float)fadeAll / Counters._frames:F0} " +
                $"({_movCount} tiles pending" + (_movCount == 0 ? "" : $", first live {_movLive:F3} pending {_movPending:F3}") + ")" +
-               $", keyhole {(float)_disBoxed / _frames:F0}/frame from the cached box" +
-               $"; dissolve refused {(float)_disNoLit / _frames:F0} unlit + {(float)_disNoFeat / _frames:F0} nokeyhole-feature"
-               + $" + {(float)_disGobUnpierced / _frames:F0} gob/frame" +
+               $", keyhole {(float)_disBoxed / Counters._frames:F0}/frame from the cached box" +
+               $"; dissolve refused {(float)_disNoLit / Counters._frames:F0} unlit + {(float)_disNoFeat / Counters._frames:F0} nokeyhole-feature"
+               + $" + {(float)_disGobUnpierced / Counters._frames:F0} gob/frame" +
                (_fullPoll ? $"; POLL AUDIT misses (must be 0): matrix {_pollMissMx} keyhole {_pollMissDis} fade {_pollMissFade} box {_pollMissBox} alpha {_pollMissAlpha}" : "");
     }
 

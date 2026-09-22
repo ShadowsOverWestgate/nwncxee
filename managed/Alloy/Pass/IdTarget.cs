@@ -8,7 +8,7 @@ namespace CX.Alloy;
 /// second attachment, one <c>R32UI</c> per render pixel packing the RECORD slot (the ownership slot, stable
 /// across frames -- not the per-pass draw index, which the cull reorders) and <c>gl_PrimitiveID</c>. Zero is
 /// "no owned opaque draw". Shading reads nothing from it yet; this slice proves it correct and cheap.
-/// <para>NOT the SSAO "visibility" term of <c>AlloyRenderer.Issue.cs</c> -- that name was taken, so this one
+/// <para>NOT the SSAO "visibility" term of <c>Issue.cs</c> -- that name was taken, so this one
 /// is the ID target / vis-ID everywhere in code and logs.</para>
 /// <para>It rides the prepass draws themselves (same FBO, same view-projection, same viewport), so render scale
 /// and the TAA jitter follow by construction: whatever the prepass depth is written at, so is this.</para>

@@ -4,10 +4,14 @@ using System.Runtime.InteropServices;
 using CX.Framework;
 using CX.Graphics;
 
+using static CX.Alloy.AlloyRenderer;
+
 namespace CX.Alloy;
 
-/// <summary>#173: BATCH ISSUE. Uploading the staged per-draw records and bone snapshots, then submitting the built groups as one multidraw per (program, VDO, texture, primitive) cut -- and the blended and water variants that ride the same records under different GL state. Hot: nothing on this path allocates.</summary>
-public sealed unsafe partial class AlloyRenderer
+/// <summary>#173: BATCH ISSUE. Uploading the staged per-draw records and bone snapshots, then submitting the built groups as one multidraw per (program, VDO, texture, primitive) cut -- and the blended and water variants that ride the same records under different GL state. Hot: nothing on this path allocates.
+/// <para>An ADR 0014 module, not a partial (CX-699): it reaches the renderer's tables and state through
+/// <c>using static</c>, a compile-time alias that emits the same static load the same-class read did.</para></summary>
+internal static unsafe class Issue
 {
     /// <summary>#153: forget every cached handle. Called at each enrollment -- the cadence at which the
     /// tids themselves are re-harvested -- and on release. Handles stay resident until their textures die;
@@ -27,7 +31,7 @@ public sealed unsafe partial class AlloyRenderer
         Array.Clear(_hRes, 0, _hRes.Length);
     }
 
-    private static void WipeHandles()
+    internal static void WipeHandles()
     {
         if (OwnedTextures.Armed) return;
         InvalidateRecords();   // #242: same reason as ForgetHandles -- a record outlives the wipe otherwise
@@ -61,7 +65,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>A wrong run uploads a stale record over a live slot, silently, so this joins the disarm
     /// chain: duplicates collapse, adjacent slots merge, a gap splits.</summary>
-    private static bool RunsSelfCheck(ExtenderLog log)
+    internal static bool RunsSelfCheck(ExtenderLog log)
     {
         int[] dirty = { 5, 3, 4, 9, 3, 11, 10 };
         Array.Sort(dirty);
@@ -84,7 +88,7 @@ public sealed unsafe partial class AlloyRenderer
     /// Orphaning is not available to a persistent buffer -- the whole point is that last frame's contents are
     /// still there. ponytail: if the Upload zone grows, the upgrade is triple-buffering through GpuRing's
     /// persistent coherent mapping, which is already bound; it is not a return to the orphan.</para></summary>
-    private static void UploadDraws()
+    internal static void UploadDraws()
     {
         int cap = _recOwnCap + MaxSkyDraws;
         bool grew = false;
@@ -127,7 +131,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The handle table alone. Its capacity is tracked apart from the draw records' so the bake can
     /// bring it up to date on a frame the colour bracket has not reached (or refused).</summary>
-    private static void UploadHandles(int cap, bool whole)
+    internal static void UploadHandles(int cap, bool whole)
     {
         if (_texHBuf == 0) { uint b; Gl.GenBuffers(1, &b); _texHBuf = b; }
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _texHBuf);
@@ -164,7 +168,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>#243: put the CPU-staged per-draw index array back on <see cref="BindDrawIdx"/>. The cull
     /// binds its own compacted one for the passes it drives; every other pass reads the staged order.</summary>
-    private static void BindStagedSlots()
+    internal static void BindStagedSlots()
     {
         if (_slotBuf != 0) Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDrawIdx, _slotBuf);
     }
@@ -173,7 +177,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <see cref="UploadDraws"/>'s reason. Nothing to upload is the common case (no skinmesh on screen), and
     /// the block stays bound empty rather than unbound -- a stage that declares it must find something there
     /// even on a frame where no draw reads it.</summary>
-    private static void UploadBones()
+    internal static void UploadBones()
     {
         if (!_skinning) return;
         if (_boneBuf == 0) { uint b; Gl.GenBuffers(1, &b); _boneBuf = b; }
@@ -198,10 +202,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The blended pass's per-creature filter: when set, only batches tagged with this run gob
     /// issue; when zero, only UNTAGGED ones. Zero-valued and unset (<see cref="_onlyGobSet"/> false) issues
     /// everything, which is every other pass.</summary>
-    private static IntPtr _onlyGob;
-    private static bool _onlyGobSet;
+    internal static IntPtr _onlyGob;
+    internal static bool _onlyGobSet;
 
-    private static void IssueColour(int from, int to, Matrix4x4* vp, int* viewport, float near, float far)
+    internal static void IssueColour(int from, int to, Matrix4x4* vp, int* viewport, float near, float far)
     {
         bool indirect = CullPass.Active;
         if (indirect) CullPass.BindForDraw(CullPass.PhaseColour);
@@ -209,7 +213,7 @@ public sealed unsafe partial class AlloyRenderer
         if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
     }
 
-    private static void IssueBatches(int from, int groups, float* vpRaw, int* viewport, float near, float far,
+    internal static void IssueBatches(int from, int groups, float* vpRaw, int* viewport, float near, float far,
                                      bool indirect = false)
     {
         long tIssue = FrameZones.Now;
@@ -236,7 +240,7 @@ public sealed unsafe partial class AlloyRenderer
          : _gDis[g] ? AoKeyhole
          : AoOutOfPrepass;
 
-    private static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far,
+    internal static void IssueBatchesInner(int from, int groups, float* vpRaw, int* viewport, float near, float far,
                                           bool indirect)
     {
         // A probe capture must not carry the debug viz through: /alloy viz would bake flat cyan (or a
@@ -286,7 +290,7 @@ public sealed unsafe partial class AlloyRenderer
             bool lit = _gLit[g];
             // #350: a hosted feature draws through the second lit program (3); everything else lit through
             // the first (1). Batches are cut on the feature id, so this is one switch per hosted batch.
-            bool hosted = lit && !water && _progLitHost != 0 && ShaderFeatures.Hosted(_gFeat[g]);
+            bool hosted = lit && !water && Programs._progLitHost != 0 && ShaderFeatures.Hosted(_gFeat[g]);
             // A hosted content program declares no revealage output: under OIT it would leave that buffer
             // undefined (NaN, which the resolve and the bloom then spread as white patches and blue blotches).
             // Those batches sit the accumulation out and draw after the resolve the plain-blend way.
@@ -304,24 +308,24 @@ public sealed unsafe partial class AlloyRenderer
                 boundCut = float.NaN;
                 if (water)
                 {
-                    Gl.UseProgram(_progWater);
-                    Gl.UniformMatrix4fv(_watVp, 1, 0, vpRaw);
-                    Gl.UniformMatrix4fv(_watView, 1, 0, _waterView);
-                    Gl.UniformMatrix4fv(_watProj, 1, 0, _waterProj);
-                    Gl.Uniform2f(_watNearFar, _waterNear, _waterFar);
+                    Gl.UseProgram(Programs._progWater);
+                    Gl.UniformMatrix4fv(Programs._watVp, 1, 0, vpRaw);
+                    Gl.UniformMatrix4fv(Programs._watView, 1, 0, _waterView);
+                    Gl.UniformMatrix4fv(Programs._watProj, 1, 0, _waterProj);
+                    Gl.Uniform2f(Programs._watNearFar, _waterNear, _waterFar);
                     AlloyLights.BindForDraw();
-                    AlloyLights.SetDrawUniforms(_watGrid, _watTile, _watZ, _watFalloff, _watWrap,
-                                                _watAtten, _watHot, _watWrapN, _watSss, viewport, near, far, _watReach);
-                    Gl.Uniform1i(_watViz, viz);
-                    Gl.Uniform1i(_watEnvOk, FrameSnapshot.EnvOk);
-                    Gl.Uniform1i(_watCapture, _capturing ? 1 : 0);
-                    Gl.Uniform1f(_watSplash, Weather.SplashRate(_capturing));
-                    UploadFeatureTerms(_watFeat, viewport);
-                    UploadAreaTerms(_watAmbient, _watDiffuse, _watDir);
-                    UploadSunCascades(_watSunTex, _watSunVp, _watSunTexel, _watSunBias, _watSunCount, _watSunDyn,
-                                      _watSunFocus, _watSunRadius);
-                    UploadLocalCubes(_watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft, _watCubePcss,
-                                     _watCubeDynPage, _watCubeFade, _watCubeFloor);
+                    AlloyLights.SetDrawUniforms(Programs._watGrid, Programs._watTile, Programs._watZ, Programs._watFalloff, Programs._watWrap,
+                                                Programs._watAtten, Programs._watHot, Programs._watWrapN, Programs._watSss, viewport, near, far, Programs._watReach);
+                    Gl.Uniform1i(Programs._watViz, viz);
+                    Gl.Uniform1i(Programs._watEnvOk, FrameSnapshot.EnvOk);
+                    Gl.Uniform1i(Programs._watCapture, _capturing ? 1 : 0);
+                    Gl.Uniform1f(Programs._watSplash, Weather.SplashRate(_capturing));
+                    UploadFeatureTerms(Programs._watFeat, viewport);
+                    UploadAreaTerms(Programs._watAmbient, Programs._watDiffuse, Programs._watDir);
+                    UploadSunCascades(Programs._watSunTex, Programs._watSunVp, Programs._watSunTexel, Programs._watSunBias, Programs._watSunCount, Programs._watSunDyn,
+                                      Programs._watSunFocus, Programs._watSunRadius);
+                    UploadLocalCubes(Programs._watCubeTex, Programs._watCubeLight, Programs._watCubePlane, Programs._watCubeCount, Programs._watCubeSoft, Programs._watCubePcss,
+                                     Programs._watCubeDynPage, Programs._watCubeFade, Programs._watCubeFloor);
                     // The cascade and cube uploads each left their own unit current for a moment; the copy
                     // pair and the noise texture have to be back on their units before the first water draw
                     // samples them.
@@ -329,8 +333,8 @@ public sealed unsafe partial class AlloyRenderer
                 }
                 else if (lit)
                 {
-                    ref LitLoc L = ref (hosted ? ref _litH : ref (lists ? ref _litL : ref _lit));
-                    Gl.UseProgram(hosted ? _progLitHost : lists ? _progLitList : _progLit46);
+                    ref LitLoc L = ref (hosted ? ref Programs._litH : ref (lists ? ref Programs._litL : ref Programs._lit));
+                    Gl.UseProgram(hosted ? Programs._progLitHost : lists ? Programs._progLitList : Programs._progLit46);
                     Gl.Uniform1i(L.Tex, 0);
                     Gl.UniformMatrix4fv(L.Vp, 1, 0, vpRaw);
                     AlloyLights.BindForDraw();
@@ -358,19 +362,19 @@ public sealed unsafe partial class AlloyRenderer
                 }
                 else
                 {
-                    Gl.UseProgram(_prog46);
-                    Gl.Uniform1i(_locTex, 0);
+                    Gl.UseProgram(Programs._prog46);
+                    Gl.Uniform1i(Programs._locTex, 0);
                     float* white = stackalloc float[3] { 1f, 1f, 1f };
-                    Gl.Uniform3fv(_locTint, 1, white);    // ...and white, which is Mat()'s ordinary branch
-                    Gl.Uniform1f(_locSkyFog, 0f);
-                    Gl.Uniform1i(_locViz, viz);
-                    OitPass.Upload(_locOit, _locOitDim, _oitOn); boundOitBias = -1f; boundOitGob = -1;
-                    Gl.UniformMatrix4fv(_locVp, 1, 0, vpRaw);
-                    UploadFeatureTerms(_locFeat, viewport);
+                    Gl.Uniform3fv(Programs._locTint, 1, white);    // ...and white, which is Mat()'s ordinary branch
+                    Gl.Uniform1f(Programs._locSkyFog, 0f);
+                    Gl.Uniform1i(Programs._locViz, viz);
+                    OitPass.Upload(Programs._locOit, Programs._locOitDim, _oitOn); boundOitBias = -1f; boundOitGob = -1;
+                    Gl.UniformMatrix4fv(Programs._locVp, 1, 0, vpRaw);
+                    UploadFeatureTerms(Programs._locFeat, viewport);
                 }
             }
             int s = _gStart[g];
-            Gl.Uniform1i(water ? _watBase : lit ? litBase : _locBase, s);
+            Gl.Uniform1i(water ? Programs._watBase : lit ? litBase : Programs._locBase, s);
             // #126: the alpha cutout, per batch because it is per class -- the engine's own
             // fAlphaDiscardValue, which is a global there and a uniform here.
             if (lit)
@@ -384,7 +388,7 @@ public sealed unsafe partial class AlloyRenderer
                 }
             }
             float cut = AlloyClasses.Discard(_gCls[g]);
-            if (cut != boundCut) { Gl.Uniform1f(water ? _watCut : lit ? litCut : _locCut, cut); boundCut = cut; }
+            if (cut != boundCut) { Gl.Uniform1f(water ? Programs._watCut : lit ? litCut : Programs._locCut, cut); boundCut = cut; }
             // ...and the blend state, per batch, because the opaque PASS now mixes both: a plain opaque batch
             // draws with GL_BLEND off and a cutout batch with it on and the material's own pair, which is
             // exactly the pair of states the engine draws buckets 0 and 1 in. Batches are class-grouped, so
@@ -418,9 +422,9 @@ public sealed unsafe partial class AlloyRenderer
             if (_oitOn)
             {
                 float bias = wash ? OitPass.WashBias : 0f;
-                if (bias != boundOitBias) { Gl.Uniform1f(lit ? litOitBias : _locOitBias, bias); boundOitBias = bias; }
+                if (bias != boundOitBias) { Gl.Uniform1f(lit ? litOitBias : Programs._locOitBias, bias); boundOitBias = bias; }
                 int gid = OitPass.GobId(_gGob[g]);
-                if (gid != boundOitGob) { Gl.Uniform1i(lit ? litOitGob : _locOitGob, gid); boundOitGob = gid; }
+                if (gid != boundOitGob) { Gl.Uniform1i(lit ? litOitGob : Programs._locOitGob, gid); boundOitGob = gid; }
             }
             // #292: the engine's own per-material decision, reproduced. Sub-list 1 of
             // Scene::RenderDrawBucket @0x46d060 draws under Disable(CULL_FACE); everything else draws under
@@ -467,9 +471,9 @@ public sealed unsafe partial class AlloyRenderer
             else
                 Gl.MultiDrawElementsBaseVertex(prim, counts + s, GlUnsignedShort,
                                                (void**)(offs + s), _gLen[g], bases + s);
-            _batches++;
-            _draws += _gLen[g];
-            _drawsByClass[_gCls[g]] += _gLen[g];
+            Counters._batches++;
+            Counters._draws += _gLen[g];
+            Counters._drawsByClass[_gCls[g]] += _gLen[g];
         }
         // Hand the per-batch toggling back to the pass level: the next pass reads this rather than assuming
         // what the last batch left bound.
@@ -490,9 +494,9 @@ public sealed unsafe partial class AlloyRenderer
     private static byte _passDepthMask = 1;
     /// <summary>The blended range is being drawn into OitPass's accumulation pair: programs write the pair,
     /// and the per-batch blend pair stays off the state.</summary>
-    private static bool _oitOn;
+    internal static bool _oitOn;
     /// <summary>The post-resolve sweep for the batches OIT skipped: hosted programs only.</summary>
-    private static bool _onlyHosted;
+    internal static bool _onlyHosted;
     /// <summary>Aurora blend-mode indices (see <see cref="BlendGl"/>) of the one pair OIT accumulates.</summary>
     private const byte AuroraSrcAlpha = 0, AuroraOneMinusSrcAlpha = 1;
 
@@ -510,7 +514,7 @@ public sealed unsafe partial class AlloyRenderer
     /// depth writes ON for every blend pair but additive (src 0 / dst 2), OFF for additive. The blended class
     /// therefore writes depth: a translucent creature's back parts are rejected by its front ones instead of
     /// compositing N times, and the outline mask has a depth to match at <c>GL_EQUAL</c>.</para>
-    private static void TransparentPass(int from, int to, Matrix4x4* vp, int* viewport, float near, float far,
+    internal static void TransparentPass(int from, int to, Matrix4x4* vp, int* viewport, float near, float far,
                                         bool depthWrite = false)
     {
         if (to <= from) return;
@@ -532,7 +536,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>Stands down whole whenever the copy could not be taken (<see cref="FrameSnapshot.Ready"/> false) or
     /// the program did not build. Nothing partial: <see cref="BucketGate"/>'s bucket-6 gate reads the
     /// same flag, so water is simply NOT DRAWN on exactly the passes this one does not take (#285).</para></summary>
-    private static void WaterOwnedPass(int from, int to, Matrix4x4* vp, float* view, float* proj,
+    internal static void WaterOwnedPass(int from, int to, Matrix4x4* vp, float* view, float* proj,
                                        int* viewport, float near, float far)
     {
         if (to <= from || !FrameSnapshot.Ready || !_waterArmed) return;
@@ -549,7 +553,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>One <c>Aurora::AuroraBlendModes</c> value as its GL blend factor -- the engine's own
     /// translation table at 0x12f5040, which <c>GLRender::SetBlendFunc</c> @0x4cb0c0 indexes. Out-of-range
     /// values fall back to the pair the engine's own default is, rather than to whatever GL enum 0 means.</summary>
-    private static uint BlendGl(int aurora) => aurora switch
+    internal static uint BlendGl(int aurora) => aurora switch
     {
         0 => GlSrcAlpha,
         1 => GlOneMinusSrcAlpha,

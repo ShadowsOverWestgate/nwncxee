@@ -655,7 +655,7 @@ public sealed unsafe partial class AlloyRenderer
     /// choice -- there is one VAO, over the pool buffers Alloy itself uploads -- so what is left is the
     /// report: which classes drew from pools Alloy owns. A slot whose pools the ENGINE uploaded (everything
     /// resident before the first present) draws correctly and is simply not counted.</summary>
-    private static uint VaoName(int v, int cls)
+    internal static uint VaoName(int v, int cls)
     {
         bool lod = (v & LodVaoBit) != 0, chart = (v & ChartVaoBit) != 0;
         v &= ~(LodVaoBit | ChartVaoBit);

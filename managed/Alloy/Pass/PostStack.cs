@@ -393,7 +393,7 @@ internal static unsafe class PostStack
         _log?.Info($"PostStack: the {st.Name} stage is dropped to rebuild -- {why}");
     }
 
-    /// <summary>#352: from <c>AlloyRenderer.DropSpliced</c> on the module-unload edge: the hosted chain is
+    /// <summary>#352: from <c>Programs.DropSpliced</c> on the module-unload edge: the hosted chain is
     /// spliced from the resource chain, so it has a module lifetime like the lit program's regions.</summary>
     internal static void DropSpliced()
     {

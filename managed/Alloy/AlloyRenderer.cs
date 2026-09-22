@@ -11,10 +11,13 @@ namespace CX.Alloy;
 /// <para>This file is the SERVICE -- hook install, the frame anchor, the pass-generation clock, the iterator's
 /// suppression answer, and the end-of-frame report. The frame path lives in siblings, one responsibility each:
 /// <c>.Table</c> (the ownership and staging arrays), <c>.Enroll</c> (the ownership walk), <c>.Frame</c>
-/// (per-pass dispatch), <c>.Batches</c> (build), <c>.Issue</c> (submit), <c>.Target</c> (framebuffer plumbing),
-/// <c>.Programs</c> (link), <c>.Uniforms</c> (per-pass scene terms), <c>.Shaders</c> (the embedded GLSL), with the
-/// contract predicates out in <see cref="ShaderContract"/>. One class still, because the hot path reads the
-/// tables directly and a boundary between them would be a copy or an indirection on a per-frame walk (#173).</para>
+/// (per-pass dispatch), <c>.Batches</c> (build), <c>.Target</c> (framebuffer plumbing), <c>.Uniforms</c> (per-pass
+/// scene terms), <c>.Shaders</c> (the embedded GLSL), with the contract predicates out in <see cref="ShaderContract"/>.
+/// The tables and the walks that read them are one class, because a boundary there would be a copy or an
+/// indirection per part per frame (#173). What is NOT table is not in it: <see cref="Issue"/> (submit),
+/// <see cref="Highlight"/> (the owned highlight) and <see cref="Programs"/> (link, and the program handles) are
+/// ADR 0014 modules reaching the columns through <c>using static</c>; the period tallies sit in
+/// <see cref="Counters"/> and the one-shot budgets in <see cref="Diag"/> (CX-699).</para>
 /// <para>Alloy is the only renderer of the 3D world (ADR 0016): every part is drawn from owned resources inside
 /// the 4.6 context bracket, texture ids re-fetched every frame so animated textures keep cycling. Parts the
 /// engine would draw LIT go through the clustered forward+ program over <see cref="AlloyLights"/>' unbounded
@@ -201,7 +204,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// sampled here is the probe.</summary>
     internal static readonly int SceneEnvMap = EngineLayout.SceneEnvMap;
     internal const uint GlUnsignedShort = 0x1403;   // not-an-offset: GL enum
-    /// <summary>The GL blend factors <see cref="BlendGl"/> maps the Aurora ones onto.</summary>
+    /// <summary>The GL blend factors <see cref="Issue.BlendGl"/> maps the Aurora ones onto.</summary>
     internal const uint GlZero = 0, GlOne = 1, GlSrcColor = 0x0300, GlSrcAlpha = 0x0302,   // not-an-offset: GL blend-factor enums
                        GlOneMinusSrcAlpha = 0x0303, GlDstColor = 0x0306, GlOneMinusDstAlpha = 0x0305;   // not-an-offset: as above
     /// <summary>Engine attribute locations, fixed for every engine program (Ghidra
@@ -222,12 +225,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// aurMatrixStack::Rotate scales by 0x3c8efa35 = pi/180 before RotateRadians: the field is DEGREES.</summary>
     internal const float DegToRad = 0.017453292f;
 
-    private static ExtenderLog? _log;
+    internal static ExtenderLog? _log;
     private static bool _armed;
     private static delegate* unmanaged<IntPtr, void> _origRsp;
     /// <summary>#132: the frame anchor's trampoline (<c>Scene::FadeDoors</c>).</summary>
     private static delegate* unmanaged<IntPtr, void> _origFade;
-    private static delegate* unmanaged<IntPtr, int, long> _getTexture;
+    internal static delegate* unmanaged<IntPtr, int, long> _getTexture;
     private static uint* _primTable;
     private static byte* _mtxStacks;
 
@@ -241,51 +244,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// therefore whether its capture window may open at all.</summary>
     internal static bool DrewThisPass => _drawnPass == PassGen;
 
-    // 4.6-side objects (touched only inside the bracket)
-    private static uint _prog46, _progLit46, _progDepth, _progDepthKey;
-    /// <summary>The feature-aware depth stage: the lit program's OWN compiled vertex text (override or
-    /// embedded, so its displacement is the colour pass's character for character) over an alpha-testing
-    /// fragment stage. Takes the cutout class and the wind-displaced batches the plain prepass skips.</summary>
-    private static uint _progDepthFeat;
-    private static int _depthFeatVp = -1, _depthFeatBase = -1, _depthFeatTex = -1, _depthFeatCut = -1;
-    private static FeatLoc _depthFeatFeat;
-    private static bool _depthFeatFailed;
     private static bool _prepassFeat => Renderer.PrepassFeat.V;
-    /// <summary>The vertex source the lit / fullbright programs actually compiled with (an override wins).</summary>
-    private static string? _litVsSrc;
-    /// <summary>#350: the spliced programs were built against a resource chain that is gone. Every program
-    /// carrying a <c>// $VANILLA</c> region (lit, hosted lit, water, grass) is compiled ONCE from whatever
-    /// the chain held at the time -- so a session that logged into SoW first kept SoW's display hooks (the
-    /// racial-vision veil, and a second clustered-light walk per fragment for it) running on Arelith, and a
-    /// session that logged into Arelith first never picked SoW's files up at all. Set on the module-unload
-    /// edge (outside the bracket), acted on by <see cref="DropSpliced"/> inside it.</summary>
-    private static bool _spliceStale;
-
-    /// <summary>#136: the hosted sky's display-to-linear decode (<see cref="SkyDecodeFs"/>) and its sampler.</summary>
-    private static uint _progSkyDecode;
-    private static int _skyDecodeHdr;
-    private static int _depthVp = -1, _depthBase = -1;
-    /// <summary>#124: the dissolving batches' depth program (<see cref="DepthKeyVs"/>). Zero = it could not
-    /// build, and those batches fall back to being excluded from the prepass -- the pre-fix behaviour, which
-    /// is slower but never wrong.</summary>
-    private static int _depthKeyVp = -1, _depthKeyBase = -1;
-    private static FeatLoc _depthKeyFeat;
-    /// <summary>The depth prepass could not build (or glColorMask is missing) -- latched, and the colour pass
-    /// simply shades every fragment as it did before #119.</summary>
-    private static bool _depthFailed;
     /// <summary><c>/alloy prepass 0</c>: skip the prepass, which is the A/B for its own acceptance number.</summary>
     private static bool _depthPrepass => Renderer.Prepass.V;
-    /// <summary>Every Alloy vertex stage that ran carries <see cref="ClipExpr"/> under an invariant
-    /// qualifier. False = a #92 override rewrote one, and the prepass cannot re-test its depth.</summary>
-    private static bool _vsDepthSafe = true;
-    private static int _locVp = -1, _locBase = -1, _locTex = -1;
-    /// <summary>#126: <c>uAlphaCut</c> on each colour program -- the engine's <c>fAlphaDiscardValue</c>, set
-    /// per batch from the batch's class.</summary>
-    private static int _locCut = -1;
-
     /// <summary>The clustered lit program's uniform locations, ONE struct per program: #350 builds the lit
-    /// stage twice -- <see cref="_progLit46"/> from the hosted regions' stubs, which every ordinary lit batch
-    /// draws with, and <see cref="_progLitHost"/> with the content bodies in, bound only for a batch whose
+    /// stage twice -- <see cref="Programs._progLit46"/> from the hosted regions' stubs, which every ordinary lit batch
+    /// draws with, and <see cref="Programs._progLitHost"/> with the content bodies in, bound only for a batch whose
     /// feature <see cref="ShaderFeatures.Hosted"/> names. The wrap terms (#139) and the rest stay at -1 on a
     /// content override (#92) that predates them, and simply do not get uploaded.</summary>
     internal struct LitLoc
@@ -300,17 +264,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    LightOcc;                           // light.hidden
         public FeatLoc Feat;
     }
-    private static LitLoc _lit, _litH, _litL;
     /// <summary>light.hidden: the roughness under which a surface's highlight is a mirror image of the source
     /// (wet ground is 0.35, a puddle 0.12) and takes the source's shadow whatever the cube cap says; a rougher
     /// lobe is too broad to be an image of anything.</summary>
-    private const float GlossyRough = 0.5f;
-    /// <summary>The lit program WITH the OIT append block (OitPass.WithLists), or 0. Bound only for lit batches inside a
-    /// linked-list bracket; every other lit draw keeps early-Z through <see cref="_progLit46"/>.</summary>
-    private static uint _progLitList;
-    /// <summary>#350: the lit program WITH the hosted content bodies, or 0 (hosting off, no hosted feature, or
-    /// its build failed -- hosted materials then draw the plain lit path through <see cref="_progLit46"/>).</summary>
-    private static uint _progLitHost;
+    internal const float GlossyRough = 0.5f;
     /// <summary>#120: THIS pass's eye, from the inverse of the view matrix the pass is drawing with. Never
     /// <c>FrameInputs.CameraPos</c> -- that belongs to whichever pass set a view last -- and taken per pass
     /// rather than from the scene latch so a reflection subframe reflects from its own camera.</summary>
@@ -355,40 +312,33 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
     internal const int LightVizMax = 44;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42 = unused since the probe grid left; 43/44 = the #674 lightmap term and its texel grid
-    private static int _lightViz => Renderer.Viz.V;
+    internal static int _lightViz => Renderer.Viz.V;
     /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
     /// frame looks WRONG on purpose (the diffuse's red channel is not an occlusion map); what it proves is
     /// that a material which does declare one will be sampled. No shipped content uses texture11 yet, so
     /// without this there is nothing to point the feature at.</summary>
     private static bool _aoTest => Renderer.AoTest.V;
-    private static int _locViz = -1;
-    private static int _locOit = -1, _locOitDim = -1, _locOitBias = -1, _locOitGob = -1;
-    /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
-    /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
-    private static int _locTint = -1;
-    private static int _locSkyFog;
     /// <summary>#121: this draw is going into the <see cref="EnvProbe"/> cube, not onto the screen. The lit
     /// and water stages read it, so a capture never samples the probe -- which is currently an attachment of
     /// the framebuffer being drawn into. Since #132 it says nothing about COLOUR SPACE any more: the screen
     /// target is linear too, so the capture and the frame want the same values and the fullbright stage
     /// stopped needing the flag at all.</summary>
-    private static bool _capturing;
+    internal static bool _capturing;
     internal static bool Capturing => _capturing;
-    /// <summary>GL_BLEND as the pass last set it, so <see cref="IssueBatches"/>' per-batch toggle starts from
+    /// <summary>GL_BLEND as the pass last set it, so <see cref="Issue.IssueBatches"/>' per-batch toggle starts from
     /// the truth instead of assuming.</summary>
-    private static bool _blendOn;
+    internal static bool _blendOn;
     /// <summary>Does the area declare an environment map at all? Read off the enrolled Scene each pass. When
     /// it is null the engine binds NOTHING for a plain part, so ambient specular is a term vanilla does not
     /// have there and only genuinely env-mapped materials get the probe.</summary>
     private static bool _sceneEnv;
-    private static bool _progFailed, _litFailed;
     /// <summary>#84: the driver has no glMultiDrawElementsBaseVertex or no glBindBufferBase, so batched
     /// submission cannot run at all. Latched, and EndFrame disarms on it by name rather than drawing nothing
     /// forever while the iterator keeps suppressing parts.</summary>
     private static bool _batchUnavailable;
     /// <summary><c>/alloy light 0</c> forces every Alloy part back to the #82 fullbright variant (the lighting A/B).</summary>
-    private static bool _lighting => Renderer.Light.V;
+    internal static bool _lighting => Renderer.Light.V;
     /// <summary>RenderInterface::IsEnabled -- queried for cap 5 (LIGHTING) once per Alloy pass.</summary>
     private static delegate* unmanaged<int, byte> _isEnabled;
     /// <summary>The AuroraEnableEnums value for lighting. <c>MatStatic</c>/<c>RenderFlat</c> both branch on
@@ -399,117 +349,40 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static int _tableGen = -1, _sinceEnroll;
     private static bool _wasInModule;
 
-    // period counters (the Alloy draw log counter, counterpart to M0's Alloy cast)
-    private static long _draws;
-    /// <summary>Why an Alloy part still did not draw this pass, by term. The single fallback count could not
-    /// separate a camera-dependent bail-out (keyhole, tile fade) from a content one, which is exactly the
-    /// distinction a part that is Alloy head-on and vanilla at the screen edge turns on.</summary>
-    private static long _skipLod;
-    private static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
-                        _skipRange, _skipVao;
-    /// <summary>Parts whose material declared a normal map, and the subset whose map survived the per-slot
-    /// re-fetch into the mask the lit stage samples on.</summary>
-    private static long _nrmDeclared, _nrmBound;
-    /// <summary>#124's coverage number: Alloy parts the camera dissolves this pass. Before the fold these
-    /// were the keyhole SKIP count -- same population, dropped from the frame; now they are drawn by the
-    /// Alloy program with the dissolve folded in, so the before/after the ticket asks for is this one figure
-    /// read off the period line either side of the change.</summary>
-    private static long _ownDissolve;
-    /// <summary>...and WHERE the unmatched came from, by captured bucket and by class. A part drawn and
-    /// never sighted is either a suppression gap (a bucket we draw into but do not suppress) or geometry the
-    /// engine culled this frame and we drew anyway; the two need different fixes and read identically in a
-    /// single total.</summary>
-    /// <summary>#134 diagnostic: the engine-culled skip, split by the bucket the part was captured in. "Owned
-    /// but never walked" is the one skip that cannot be read off the totals -- it means the part is neither
-    /// drawn by us nor suppressed, so whichever bucket dominates here names the walk we are missing.</summary>
-    /// <summary>#134: a small budget of watched-part draw-side lines, so following one part through the owned
-    /// loop costs a handful of log lines rather than one per frame forever.</summary>
-    private static int _watchDrawLeft = 20;
-    /// <summary>#134: how much of the <c>dumptex</c> population we enrolled, and how much of it we actually
-    /// submit each frame. The gap between them, and between both and the engine's own draw count, is the
-    /// only honest answer to "is that thing on screen ours".</summary>
-    private static int _watchEnrolled;
-    private static long _watchSubmitted;
-
     /// <summary>#134: one line naming what the Alloy draw loop did with the watched part. Always returns
-    /// true, so it reads as the reason at a skip site: <c>{ _skipTex++; if (W(i, "tex")) continue; }</c>.</summary>
+    /// true, so it reads as the reason at a skip site: <c>{ Counters._skipTex++; if (W(i, "tex")) continue; }</c>.</summary>
     private static bool W(int i, string why)
     {
-        if (AlloyCensus.WatchedEntry(_oEntry[i]) && _watchDrawLeft-- > 0)
+        if (AlloyCensus.WatchedEntry(_oEntry[i]) && Diag._watchDrawLeft-- > 0)
             _log?.Info($"[dumpframe] DRAW {why} (slot {i}, capture bucket {_oBucket[i]}, cls {(AlloyClass)_oCls[i]})");
         return true;
     }
-    /// <summary>#126's counterpart to it: Alloy parts the tile fade moves into the blended run this pass.
-    /// Before the fold these were the tilefade SKIP count -- same population, dropped from the frame.</summary>
-    private static long _ownFade;
-    /// <summary>#546's other half: parts whose tile fog ramp (or a gob part's filed tile) read 0, dropped outright at route.
-    /// Split by gob/tile because a creature part here is a HOLE the fog-of-war never explains.</summary>
-    private static long _skipFogTile, _skipFogGob;
-    /// <summary>#126: Alloy draws per class this pass, and the batches each class's pass submitted. The
-    /// cutout/blended split is the whole model, so it is reported rather than inferred.</summary>
-    private static readonly long[] _drawsByClass = new long[AlloyClasses.Count];
-    /// <summary>#84's measurable form of "draw count decoupled from part count": submitted multidraw batches.
-    /// draws/batches IS the batching ratio the acceptance criterion asks for, straight out of the log.</summary>
-    private static long _batches;
-    /// <summary>#292 (AC6): staged draws whose material said <c>twosided</c>, and the batches that the
-    /// culling term alone opened. Together they say what reproducing the engine's per-material cull decision
-    /// cost the batch count -- the criterion this ticket asks to be measured, not assumed.</summary>
-    private static long _twoSidedDraws, _cullCuts;
-    /// <summary>#327: opaque-range batch cuts per cut-key term, in <see cref="CutTerms"/> order.</summary>
+    /// <summary>The <see cref="Counters._cutBy"/> labels, by index.</summary>
     private static readonly string[] CutTerms = { "vao", "feat", "dissolve", "blend", "cull", "prim", "lit", "tex" };
-    private static readonly long[] _cutBy = new long[CutTerms.Length];
+    private static bool CutCensusSelfCheck(ExtenderLog log)
+    {
+        var check = new Checker(log);
+        check.Expect(CutTerms.Length == Counters.CutTermCount, "CutTerms labels every _cutBy slot");
+        return check.Ok;
+    }
     private static string CutCensus()
     {
         var sb = new System.Text.StringBuilder();   // cold: the period line
         for (int t = 0; t < CutTerms.Length; t++)
-            sb.Append(t == 0 ? "" : ", ").Append(CutTerms[t]).Append(' ').Append(((float)_cutBy[t] / _frames).ToString("F0"));
+            sb.Append(t == 0 ? "" : ", ").Append(CutTerms[t]).Append(' ').Append(((float)Counters._cutBy[t] / Counters._frames).ToString("F0"));
         return sb.ToString();
     }
-    private static int _frames, _revokes, _enrolls, _lastEnrolled, _lastCandidates, _enrollDiagLeft = EnrollDiagBudget;
     /// <summary>Passes an empty enrollment may retry back-to-back after a resume before falling back to the
     /// normal cadence (~2s at 60fps): enough for the re-record to complete, bounded so a genuinely unownable
     /// area cannot spin the scan every pass forever.</summary>
     internal const int EnrollDiagBudget = 8;
-    /// <summary>Distinct diffuse textures interned at the last enrollment -- the batch floor (see EndFrame).</summary>
-    private static int _lastTextures;
-    private static bool _reportedHit;
-    /// <summary>Lit parts refused at enrollment (no normal stream / lit program down) -- they stay vanilla.</summary>
-    private static int _litUnownable;
-    /// <summary>#128: parts refused for carrying bone streams, and what the per-instance sweep then cost --
-    /// already-accepted parts revoked because a SIBLING of theirs on the same instance was refused. Together
-    /// with <c>AlloyCensus.RefusedGobs</c> on the same line they are the honest answer to "why is that
-    /// creature still vanilla". Counted as PARTS, which is the figure the sweep actually produces: the gob
-    /// count includes instances that had nothing accepted to revoke.</summary>
-    private static int _skinUnownable, _gobParts;
-    /// <summary>#128: instanced parts this enrollment took -- placeables, doors and creatures alike. Its only
-    /// job is to say whether the shadow side needs poking, so it counts PARTS and not instances.</summary>
-    private static int _gobOwned;
-    /// <summary>The INSTANCED half of the draw accounting: gob parts Alloy staged this pass. Every other
-    /// number on the [alloy] line mixes tiles, placeables and creatures into one total, so "are characters
-    /// Alloy's" could only be inferred from the capture-bucket split, which is a CLASSIFICATION and not a
-    /// per-frame fact. This is the fact. #285: read it against <c>{_gobOwned} owned</c> -- a gap between them
-    /// is instanced geometry NOT DRAWN, since #264 left nothing behind an unstaged part.</summary>
-    private static long _drawsGob;
-    /// <summary>...and the three causes behind the <c>tex</c> fallback, which are three different bugs
-    /// wearing one number. "No diffuse" is content; "no GL id" is the copy path; "no owned handle" is the
-    /// BINDLESS layer, which #220 already caught being wrong once and which a part can fail every frame
-    /// forever -- a steady count here, roughly one creature's worth of parts, is a specific model whose
-    /// texture Alloy declined to own, and that model then renders vanilla for the whole session.</summary>
-    private static long _skipTexNone, _skipTexNoId, _skipTexNoHandle, _skipTexNotOwned;
-    /// <summary>A small budget of NAMED failures. The counters say which fault; only the resref says which
-    /// CONTENT, and that is what separates "one model's texture" from "a whole class of them". Budgeted
-    /// rather than rate-limited: the population is what matters and it is small, so a handful of distinct
-    /// names is the whole answer.</summary>
-    private static int _texSkipDiagLeft = 12;
-    private static readonly System.Collections.Generic.HashSet<string> _texSkipSeen = new();
-
     /// <summary>Name a diffuse the bindless guard turned away, once per distinct resref.</summary>
     private static void TexSkipDiag(bool owned, int tid, TextureRef aur)
     {
-        if (_texSkipDiagLeft <= 0) return;
+        if (Diag._texSkipDiagLeft <= 0) return;
         string nm = aur.ResolveName();
-        if (!_texSkipSeen.Add(nm)) return;
-        _texSkipDiagLeft--;
+        if (!Diag._texSkipSeen.Add(nm)) return;
+        Diag._texSkipDiagLeft--;
         _log?.Info($"AlloyRenderer: [texskip] \"{nm}\" tid={tid} owned={owned} -- "
                    + (owned ? "Alloy owns it but GetTextureHandleARB minted nothing"
                             : "never reached the upload funnel, so it is BORROWED and bindless will not vouch for it")
@@ -518,8 +391,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>Monotonic presented-frame counter: the light SSBO uploads once per frame, not once per pass.</summary>
     private static int _frameSeq;
 
-    private static bool _takeOverflow, _ambientFallbackLogged, _loggedOnce;
-    private static uint _clusterOverflow;
+    private static bool _takeOverflow;
     /// <summary>#119 measurement: prepass GPU time, and the fragments the COLOUR pass actually shaded.
     /// samples/screen-pixel is the overdraw figure, and its move with <c>/alloy prepass</c> is what the prepass
     /// is worth -- both are period averages on the [alloy] line.</summary>
@@ -628,7 +500,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (Probe(tid, out int hit, out int free)) return _hVal[hit];
         if (free < 0) return 0;                        // table full: no handle, caller falls back
         ulong v = Gl.GetTextureHandleARB((uint)tid);
-        if (_handleDiagLeft > 0) HandleDiag(tid, v);
+        if (Diag._handleDiagLeft > 0) HandleDiag(tid, v);
         // A failed mint is NOT cached. It used to be, and the enrollment wipe retried it within a second;
         // with that wipe gone (#220) a cached zero would be a permanently black texture.
         if (v == 0) return 0;
@@ -713,7 +585,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// with it, and asking the driver to make it non-resident is INVALID_OPERATION (Mesa) or worse. Tombstone only.</summary>
     internal static void ForgetHandle(uint name) => DropHandle(name, gl: false);
 
-    private static void DropHandle(uint name, bool gl)
+    internal static void DropHandle(uint name, bool gl)
     {
         if (name == 0) return;
         // #242: a persistent record carries its handles (and, bindless off, its cached tid) across frames, so a
@@ -738,10 +610,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         }
     }
 
-    /// <summary>Diagnostic budget for <see cref="HandleDiag"/>. Cold by construction -- the miss path runs
-    /// about once per distinct texture per enrollment, not per draw -- and it stops speaking after this many
-    /// reports, so it costs one branch on a warm cache.</summary>
-    private static int _handleDiagLeft = HandleDiagBudget;
     private const int HandleDiagBudget = 24;
     /// <summary>#153 follow-up: which GL call is failing on the handle path, and with what. The 4.6 bracket
     /// drains <c>glGetError</c> anonymously, so a session reporting "errors 4.6=450" says a fault exists and
@@ -757,16 +625,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         int guard = 0;
         while ((e = Gl.GetError()) != 0 && ++guard < 8) err = e;
         if (err == 0 && v != 0) return;   // the normal case; this path allocates nothing, so it stays silent
-        _handleDiagLeft--;
+        Diag._handleDiagLeft--;
         _log?.Info($"AlloyRenderer: [handle] tid={tid} handle=0x{v:x} err=0x{err:x} " +
                    (v == 0 ? "-- glGetTextureHandleARB returned NO handle for a tid the material resolved this frame"
                            : "-- the handle came back but the call errored") +
-                   $" ({_handleDiagLeft} reports left)");
+                   $" ({Diag._handleDiagLeft} reports left)");
     }
 
     /// <summary>#153: does this context expose ARB_bindless_texture? By STRING -- GLX returns non-null
     /// function pointers for unsupported extensions, so the pointers alone prove nothing.</summary>
-    private static bool HasBindless()
+    internal static bool HasBindless()
         => Gl.GetTextureHandleARB != null && Gl.MakeTextureHandleResidentARB != null
            && HasExt("GL_ARB_bindless_texture"u8);
 
@@ -884,18 +752,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         return outFs.Insert(at, sb.ToString());
     }
 
-    private static long _prepassDraws;
-    /// <summary>#124: prepass draws that went through the keyhole depth stage. The number that says the fix
-    /// is doing its job -- before it, every one of these was in <see cref="_prepassSkipped"/> instead.</summary>
-    private static long _prepassKeyed;
-    /// <summary>#123: draws the prepass had to leave out because their feature moves vertices, plus (#124)
-    /// the ones that dissolve, which discard. Reported, not
-    /// hidden -- it is the overdraw the prepass no longer removes, and the number that says whether the wind
-    /// content is big enough for a displacing prepass stage to be worth building.</summary>
-    private static long _prepassSkipped;
-    private static long _prepassFeatDraws;
-    private static int _lastPixels;
-
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
@@ -962,8 +818,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #571: the stock-settings reader forges a std::string for the engine; a header packed wrong is a
         // crash on the first world frame, not a misrender, so it joins the gating chain.
         StockConfig.Attach(log);
-        if (!SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
-            || !RunsSelfCheck(log)
+        if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
+            || !Issue.RunsSelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
             || !ShaderContract.SelfCheck(log)
             || !StockConfig.SelfCheck(log)) return;
@@ -1013,9 +869,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             SymbolMap.FadeDoors, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnFadeDoors);
         // #336: the highlight SOURCE. Cold -- it fires on a mouseover edge or a VFX starting, never per
         // frame -- and it is the only place the channel that produced a highlight is visible.
-        _origRefreshHilite = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.RefreshHilite, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRefreshHilite);
-        if (_origRefreshHilite == null)
+        Highlight._origRefreshHilite = (delegate* unmanaged<IntPtr, void>)hooks.Install(
+            SymbolMap.RefreshHilite, (IntPtr)(delegate* unmanaged<IntPtr, void>)&Highlight.OnRefreshHilite);
+        if (Highlight._origRefreshHilite == null)
             log.Info("AlloyRenderer: RefreshHilite unhooked -- no highlight claims a source, so every"
                      + " highlight keeps the engine glow and the owned outline draws nothing");
         _repackSlot = hooks.Chain(SymbolMap.VdoRepack,   // shared symbol: draw funnels + Alloy cast invalidate too (#88)
@@ -1179,7 +1035,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // an edge and none of those states raise one -- so a dense area settled at 910 of 1300 parts and
             // stayed there, the holes permanent. Same budget: the re-ask is bounded per scene, so a VDO that
             // will never harvest cannot spin the walk.
-            if ((_lastEnrolled == 0 || DripPending) && _forcedEnrolls < MaxForcedEnrolls)
+            if ((Counters._lastEnrolled == 0 || DripPending) && _forcedEnrolls < MaxForcedEnrolls)
             { SceneWalk.Dirty = true; _forcedEnrolls++; }
             bool prevShim = _inColourPass;
             _inColourPass = true;
@@ -1204,7 +1060,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// installed"; the capability pair is "a program built and the multidraw entry points exist", both of
     /// which latch and are deliberately never cleared by a context loss (see <see cref="ContextLost"/>).</summary>
     internal static bool ArmedForFrame => _armed;
-    internal static bool DrawCapable => !_progFailed && !_batchUnavailable;
+    internal static bool DrawCapable => !Programs._progFailed && !_batchUnavailable;
 
     /// <summary>#215: may the shim replace this pass? Taking the engine's frame away and THEN refusing to
     /// draw leaves the world as bare clear colour under the 2D UI, with nothing behind it -- so every
@@ -1234,7 +1090,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// THIS Scene, which is what makes one-owner true by construction rather than by the colour-pass gate
     /// alone. An area transition that replaces the Scene leaves it stale, so nothing draws until the next
     /// enrollment picks up the new one -- which the walk's Scene check triggers on the same frame.</summary>
-    private static IntPtr _enrollScene;
+    internal static IntPtr _enrollScene;
     private static int _drawnPass = -1;   // pass whose Alloy block already ran (once per pass)
 
     /// <summary>Ownable parts the last enrollment turned away for want of a slot. Non-zero means the area is
@@ -1259,7 +1115,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// included -- draws here, ahead of every bucket any of them is sighted in (engine order
     /// 0 -> [sky] -> 1 -> 7 -> 2 -> 3 -> 5 -> 8 -> 6 -> 4). That is what keeps suppression honest, and it is
     /// also why the blending classes composite before the engine's still-vanilla dynamic geometry -- the
-    /// approximation named on <see cref="TransparentPass"/>.
+    /// approximation named on <see cref="Issue.TransparentPass"/>.
     /// <para>Spec #114 asks for "RenderSinglePass entry" and that is not reachable: RSP's first act is
     /// <c>Camera::InitializeFrameBufferResources</c>, whose steady-state path binds the world FBO and then
     /// <c>Clear(7)</c>s it every frame, so a resolve written at literal entry is wiped -- and deferring the
@@ -1318,7 +1174,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// bracket.</summary>
     internal static void ShadowPoseUpload()
     {
-        if (PosedByShadow) UploadBones();
+        if (PosedByShadow) Issue.UploadBones();
     }
 
     /// <summary>Bone slots are STICKY -- a part keeps its slot in the bone block across frames, mirroring the
@@ -1355,7 +1211,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // Nothing to pose for if the pass cannot draw: DrawOwned bails on these two without stamping a
         // single part, so the engine walks every one of them itself -- and would then solve each pose a
         // second time.
-        if (!_skinning || _progFailed || _batchUnavailable) { _boneSlots = 0; return; }
+        if (!_skinning || Programs._progFailed || _batchUnavailable) { _boneSlots = 0; return; }
         for (int i = 0; i < _ownCount; i++)
         {
             int prev = _oBone[i];
@@ -1369,9 +1225,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             if (!IdentityOk(i, _oTri[i])) { FreeBoneSlot(prev); RevokeSkinned(i); continue; }
             int slot = prev >= 0 && prev < _boneTop && _boneOwner[prev] == i ? prev : AllocBoneSlot(i);
             if (slot < 0 || !SkinPose.Solve(_oTri[i], _boneStage + (long)slot * BoneFloats))
-            { _skinNoPose++; FreeBoneSlot(slot); RevokeSkinned(i); continue; }
+            { Counters._skinNoPose++; FreeBoneSlot(slot); RevokeSkinned(i); continue; }
             _oBone[i] = slot;
-            _skinDrawn++;
+            Counters._skinDrawn++;
             // #302: no separate shadow feed. The pose lands in _oBone/feat.y and the bake reads it through
             // the same record and the same bone block the colour pass draws from.
         }
@@ -1383,7 +1239,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // The block uploads the whole (holey) high water: stale floats in freed slots are never indexed,
         // and a contiguous re-pack is exactly the layout shift stickiness exists to prevent.
         _boneSlots = _boneTop;
-        if (_boneTop > _boneHigh) _boneHigh = _boneTop;
+        if (_boneTop > Counters._boneHigh) Counters._boneHigh = _boneTop;
     }
 
     /// <summary>#262: room for <paramref name="want"/> bone slots, doubling the stage rather than dropping a
@@ -1447,14 +1303,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// went with it -- the names are dropped so each Ensure rebuilds instead of short-circuiting on a
     /// non-zero handle and drawing through a dead one. That is #175's bug, in the one pass that still had it.
     /// <para>Uniform locations are not listed: every one of them is re-fetched by the Ensure that rebuilds
-    /// its program. <c>_progFailed</c>/<c>_litFailed</c> are deliberately NOT cleared -- a stage that could
+    /// its program. <c>Programs._progFailed</c>/<c>Programs._litFailed</c> are deliberately NOT cleared -- a stage that could
     /// not build is a fact about the source, not about the context, and clearing them would re-arm a pass
-    /// EndFrame already disarmed. <c>_waterFailed</c> is cleared because it also latches a knob state
+    /// EndFrame already disarmed. <c>Programs._waterFailed</c> is cleared because it also latches a knob state
     /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
     internal static void ContextLost()
     {
-        _prog46 = 0; _progLit46 = 0; _progLitHost = 0; _progLitList = 0; OitPass.ListsArmed = false; _progDepth = 0; _progDepthKey = 0; _progDepthFeat = 0; _progWater = 0; _progSkyDecode = 0;
-        HighlightContextLost();
+        Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0; Programs._progSkyDecode = 0;
+        Highlight.HighlightContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         MotionContextLost();
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
@@ -1467,7 +1323,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #136: the engine-layout VAO cache goes with it. Same rule, same reason -- a container object is
         // not shared, so every name in it belonged to the context that just went.
         for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vOwned[v] = false; ForgetEngineVao(v); ForgetLodVao(v); }
-        _waterFailed = false;
+        Programs._waterFailed = false;
         // #257: and so is the target latch -- every name in it belongs to the context that just went.
         ForgetTarget();
         DepthResource.Revoke();
@@ -1484,11 +1340,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // Disarming must never be silent: the [alloy] period line is the only evidence this pass runs at
         // all, so its ABSENCE has to name a reason rather than read as "no news". RevokeAll only speaks when
         // something was owned, which is exactly not the case when the program failed before the first enroll.
-        if (_progFailed || _batchUnavailable)
+        if (Programs._progFailed || _batchUnavailable)
         {
-            RevokeAll(_progFailed ? "program failed" : "multidraw unavailable");
+            RevokeAll(Programs._progFailed ? "program failed" : "multidraw unavailable");
             _armed = false;
-            _log?.Info("AlloyRenderer: DISARMED (" + (_progFailed
+            _log?.Info("AlloyRenderer: DISARMED (" + (Programs._progFailed
                            ? "program build failed"
                            : "glMultiDrawElementsBaseVertex or glBindBufferBase missing") +
                        ") -- the Alloy world pass is off for this session and no [alloy] lines will follow");
@@ -1496,16 +1352,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         }
         if (!GlContextService.Available) { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost(); }
         bool inModule = GameGate.InModule;
-        if (_wasInModule && !inModule) { RevokeAll("module unload"); _spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); }
+        if (_wasInModule && !inModule) { RevokeAll("module unload"); Programs._spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); }
         _wasInModule = inModule;
         if (_tableGen != PartTable.TableGen) { RevokeAll("part table wiped"); _tableGen = PartTable.TableGen; }
 
         // the overflow counter lives in a GL buffer, so its readback has to happen inside the 4.6 bracket:
         // arm it one frame ahead of the log so the value the log prints is this period's
-        int period = _loggedOnce ? LogEvery : FirstLogAt;
-        if (_frames == period - 2) _takeOverflow = true;
-        if (++_frames < period) return;
-        _loggedOnce = true;
+        int period = Diag._loggedOnce ? LogEvery : FirstLogAt;
+        if (Counters._frames == period - 2) _takeOverflow = true;
+        if (++Counters._frames < period) return;
+        Diag._loggedOnce = true;
         MeshCensus();   // #329: off the walk, for the line below alone
         // distinct textures is the BATCH FLOOR: one program + one VDO cannot batch below one call per texture,
         // so batches/frame ~= textures tells you the grouping is optimal and the ratio is scene-bound, while
@@ -1518,10 +1374,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // not drawn. Named in the line rather than left to subtraction -- "6944/7144" reads as coverage, and
         // "200 NOT DRAWN" reads as the missing geometry it actually is. The reject breakdown at the end of
         // this line is what it decomposes into.
-        int holes = _lastCandidates - _lastEnrolled;
+        int holes = Counters._lastCandidates - Counters._lastEnrolled;
         // #325: the old single colour timer's span, opaque through additive (water = copy + draw).
         double colourMs = 0; for (int t = (int)GpuTerm.Opaque; t <= (int)GpuTerm.Additive; t++) colourMs += GpuMs((GpuTerm)t);
-        _log?.Info($"AlloyRenderer: [alloy] {_lastEnrolled}/{_lastCandidates} parts owned{CapacityNote()}" +
+        _log?.Info($"AlloyRenderer: [alloy] {Counters._lastEnrolled}/{Counters._lastCandidates} parts owned{CapacityNote()}" +
                    (holes <= 0 ? "" : $" ({holes} NOT DRAWN -- nothing renders an unowned part since #264"
                                        + $"; harvest refused VDOs: no-engine-vao {HarvestNoVao} no-elembuf {HarvestNoElem}"
                                        + $" no-pos {HarvestNoPos} no-uv {HarvestNoUv})") +
@@ -1529,47 +1385,47 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // is the one printed on a period with no holes left at all.
                    DripNote() + " [" + OwnedTextures.TranscodeNote() + "; " + OwnedTextures.CacheNote() + "; " + OwnedTextures.PrefetchNote() + "; " + EnrollNote() + "]" +
                    $" on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}{UvlessNote()}) " +
-                   $"/ {_lastTextures} textures " +
-                   $"({_litCount} lit, {_litUnownable} lit left to the engine" +
+                   $"/ {Counters._lastTextures} textures " +
+                   $"({_litCount} lit, {Counters._litUnownable} lit left to the engine" +
                    // #128: what the creature class costs, split. "Creatures are still vanilla" has three
                    // different fixes behind it -- a skinning stage, an instance-state term, or nothing at all
                    // if the sweep is simply doing its job -- and only the split says which.
-                   (_skinUnownable == 0 && _gobParts == 0 ? "" :
-                       $", {_skinUnownable} skinned parts left to the engine, {_gobParts} accepted parts revoked " +
+                   (Counters._skinUnownable == 0 && Counters._gobParts == 0 ? "" :
+                       $", {Counters._skinUnownable} skinned parts left to the engine, {Counters._gobParts} accepted parts revoked " +
                        $"by the per-instance sweep (out of {AlloyCensus.RefusedGobs} instances with a refused part)" +
                        (AlloyCensus.RefusedGobOverflow ? " -- REFUSED-GOB SET OVERFLOWED, every instance dropped" : "")) +
                    // #137: and what the skinmesh class itself did. A zero everywhere with the class armed
                    // means no cloak was on screen, which is a different statement from "the pose failed" --
                    // so the failures are named, not merely absent.
                    (!_skinning ? ", skinmeshes not owned"
-                      : _skinDrawn == 0 && _skinNoPose == 0 ? ""
-                      : $", {(float)_skinDrawn / _frames:F1} skinmeshes posed/frame" +
-                        (_skinNoPose == 0 ? "" : $", {_skinNoPose} handed back unposed" +
+                      : Counters._skinDrawn == 0 && Counters._skinNoPose == 0 ? ""
+                      : $", {(float)Counters._skinDrawn / Counters._frames:F1} skinmeshes posed/frame" +
+                        (Counters._skinNoPose == 0 ? "" : $", {Counters._skinNoPose} handed back unposed" +
                             (SkinPose.NoBind == 0 ? "" : $" ({SkinPose.NoBind} node not prepared)") +
                             (SkinPose.Overflow == 0 ? "" : $" ({SkinPose.Overflow} bone tree too deep)")) +
-                        $", {_boneHigh} bone slots peak of {_boneCap}") +
+                        $", {Counters._boneHigh} bone slots peak of {_boneCap}") +
                    // #284: session totals, so a creature that is STILL a hole three periods later is
                    // visible as one rather than being reset out of the line every period.
                    SkinPose.PrepareNote() +
                    "), " +
-                   $"Alloy draws {(float)_draws / _frames:F0}/frame in {(float)_batches / _frames:F0} batches " +
+                   $"Alloy draws {(float)Counters._draws / Counters._frames:F0}/frame in {(float)Counters._batches / Counters._frames:F0} batches " +
                    // #126: the transparency model, as numbers. Cutout should dwarf blended on NWN content;
                    // a blended count that reads 0 while the scene plainly has transparents means the class
                    // was dropped whole rather than never classified -- which the next term names.
-                   $"({(float)_drawsByClass[1] / _frames:F0} cutout, {(float)_drawsByClass[2] / _frames:F0} blended, " +
+                   $"({(float)Counters._drawsByClass[1] / Counters._frames:F0} cutout, {(float)Counters._drawsByClass[2] / Counters._frames:F0} blended, " +
                    // #129: indexed off the enum, not off literals -- inserting Water at 3 renumbered
                    // Additive, and the line went on labelling water draws "additive" while additive itself
                    // stopped being printed at all. This line is the acceptance instrument; it must not lie.
-                   $"{(float)_drawsByClass[(int)AlloyClass.Water] / _frames:F0} water, " +
-                   $"{(float)_drawsByClass[(int)AlloyClass.Additive] / _frames:F0} additive" +
-                   (_blendedDropped == 0 ? "" : $"; {_blendedDropped} BLENDED PARTS HANDED BACK -- the class " +
+                   $"{(float)Counters._drawsByClass[(int)AlloyClass.Water] / Counters._frames:F0} water, " +
+                   $"{(float)Counters._drawsByClass[(int)AlloyClass.Additive] / Counters._frames:F0} additive" +
+                   (Counters._blendedDropped == 0 ? "" : $"; {Counters._blendedDropped} BLENDED PARTS HANDED BACK -- the class " +
                     "could not be Alloy whole, so none of it is") + ") " +
-                   $"({(_batches == 0 ? 0f : (float)_draws / _batches):F1} draws/batch), " +
+                   $"({(Counters._batches == 0 ? 0f : (float)Counters._draws / Counters._batches):F1} draws/batch), " +
                    // #292: the face-culling term's own cost. A two-sided count of 0 with a live scene means
                    // no shipped material here says `twosided`, which is a finding about the content, not a
                    // broken read; cuts above zero is what the term actually charged in batches.
-                   $"({(float)_twoSidedDraws / _frames:F0} two-sided draws/frame, " +
-                   $"{(float)_cullCuts / _frames:F1} batch cuts/frame on culling; " +
+                   $"({(float)Counters._twoSidedDraws / Counters._frames:F0} two-sided draws/frame, " +
+                   $"{(float)Counters._cullCuts / Counters._frames:F1} batch cuts/frame on culling; " +
                    // #327: the opaque cut census by term. A term that dominates here is the next sort digit.
                    $"opaque cuts/frame by term: {CutCensus()}), " +
                    // #243 (AC5): what the GPU cull kept, and what it dropped. Taken off the count buffer
@@ -1586,56 +1442,56 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                         $"{CullPass.SpreadX:F0}x{CullPass.SpreadY:F0}x{CullPass.SpreadZ:F0}u, largest radius " +
                         $"{CullPass.SpreadMaxR:F0}u), ") +
                    // #285: every reason on this list is a HOLE -- geometry that nothing renders this frame.
-                   $"NOT DRAWN this frame: unlit-pass {(float)_skipNoLight / _frames:F0} identity {(float)_skipIdentity / _frames:F0} " +
-                   $"inactive-LOD {(float)_skipLod / _frames:F0} " +
-                   $"dissolve {(float)_ownDissolve / _frames:F0} owned, fade {(float)_ownFade / _frames:F0} owned " +
-                   $"fog-out {(float)_skipFogTile / _frames:F0} tile + {(float)_skipFogGob / _frames:F0} gob " +
-                   $"no-mdl {(float)_skipNoMdl / _frames:F0} tex {(float)_skipTex / _frames:F0}" +
-                   (_skipTex == 0 ? " " : $" (no-diffuse {(float)_skipTexNone / _frames:F0}" +
-                       $" no-gl-id {(float)_skipTexNoId / _frames:F0}" +
-                       $" not-owned {(float)_skipTexNotOwned / _frames:F0}" +
-                       $" no-handle {(float)_skipTexNoHandle / _frames:F0}) ") +
-                   $"range {(float)_skipRange / _frames:F0} vao {(float)_skipVao / _frames:F0}), " +
+                   $"NOT DRAWN this frame: unlit-pass {(float)Counters._skipNoLight / Counters._frames:F0} identity {(float)Counters._skipIdentity / Counters._frames:F0} " +
+                   $"inactive-LOD {(float)Counters._skipLod / Counters._frames:F0} " +
+                   $"dissolve {(float)Counters._ownDissolve / Counters._frames:F0} owned, fade {(float)Counters._ownFade / Counters._frames:F0} owned " +
+                   $"fog-out {(float)Counters._skipFogTile / Counters._frames:F0} tile + {(float)Counters._skipFogGob / Counters._frames:F0} gob " +
+                   $"no-mdl {(float)Counters._skipNoMdl / Counters._frames:F0} tex {(float)Counters._skipTex / Counters._frames:F0}" +
+                   (Counters._skipTex == 0 ? " " : $" (no-diffuse {(float)Counters._skipTexNone / Counters._frames:F0}" +
+                       $" no-gl-id {(float)Counters._skipTexNoId / Counters._frames:F0}" +
+                       $" not-owned {(float)Counters._skipTexNotOwned / Counters._frames:F0}" +
+                       $" no-handle {(float)Counters._skipTexNoHandle / Counters._frames:F0}) ") +
+                   $"range {(float)Counters._skipRange / Counters._frames:F0} vao {(float)Counters._skipVao / Counters._frames:F0}), " +
                    // The one split that answers "are characters Alloy's" without inference. Drawn ~0 with
                    // owned nonzero means every creature and placeable in view is a HOLE (#285): since #264
                    // there is no engine walk behind the skip, so nothing renders them at all.
-                   $"instanced {(float)_drawsGob / _frames:F0} drawn/frame, " +
+                   $"instanced {(float)Counters._drawsGob / Counters._frames:F0} drawn/frame, " +
                    // #244 (AC1): the mesh-sharing census. "1,00x" says every owned part has its own item
                    // range and there is nothing for instancing to collapse; the object-space figure is the
                    // only part of the shared count that could become instances, for the reason MeshCensus
                    // states. Reported from the live area rather than assumed from the VDO count.
-                   $"mesh sharing {(_msMeshes == 0 ? 0f : (float)_msParts / _msMeshes):F2}x " +
-                   $"({_msMeshes} meshes, max {_msMaxInstances} instances, {_msShared} parts share a mesh " +
-                   $"of which {_msSharedMx} object-space" +
-                   (_msUnread == 0 ? "" : $"; {_msUnread} PARTS UNREAD -- their index range did not resolve, " +
+                   $"mesh sharing {(Counters._msMeshes == 0 ? 0f : (float)Counters._msParts / Counters._msMeshes):F2}x " +
+                   $"({Counters._msMeshes} meshes, max {Counters._msMaxInstances} instances, {Counters._msShared} parts share a mesh " +
+                   $"of which {Counters._msSharedMx} object-space" +
+                   (Counters._msUnread == 0 ? "" : $"; {Counters._msUnread} PARTS UNREAD -- their index range did not resolve, " +
                     "so they are outside this count") + "), " +
                    // #244: the SHAPE tier, which is the one that matters on placeable-heavy content -- fifty
                    // identical barrels are fifty placements of one model, and if the engine copies its
                    // vertices per placement then every RANGE is distinct while the geometry repeats fifty
                    // times. A signature, not a proof (same texture + same index count collides), so 1,00x is
                    // the conclusive reading and anything above it is a population to confirm, not design on.
-                   $"shape repeats {(_msShapes == 0 ? 0f : (float)_msParts / _msShapes):F2}x " +
-                   $"({_msShapes} shapes, max {_msShapeMax}, {_msShapeRepeat} parts on a repeated shape " +
-                   $"of which {_msShapeRepeatGob} placeable/creature and {_msShapeRepeatMx} object-space; " +
-                   $"{_msGobParts} gobs and {_msMxParts} object-space of {_msParts} censused parts" +
+                   $"shape repeats {(Counters._msShapes == 0 ? 0f : (float)Counters._msParts / Counters._msShapes):F2}x " +
+                   $"({Counters._msShapes} shapes, max {Counters._msShapeMax}, {Counters._msShapeRepeat} parts on a repeated shape " +
+                   $"of which {Counters._msShapeRepeatGob} placeable/creature and {Counters._msShapeRepeatMx} object-space; " +
+                   $"{Counters._msGobParts} gobs and {Counters._msMxParts} object-space of {Counters._msParts} censused parts" +
                    // #244: a SIGNATURE, never a proof -- same texture + same index count collides. ADR 0017
                    // settled the reading (1,00x at record identity, 2,5x at content level); #258 deleted the
                    // content pass that measured the second, because it could only reach the bytes by mapping
                    // a buffer back. Sharing is residency's question now (#254), keyed on content at load.
                    "), " +
-                   $"normal maps {(float)_nrmBound / _frames:F0} bound of " +
-                   $"{(float)_nrmDeclared / _frames:F0} declared/frame, " +
+                   $"normal maps {(float)Counters._nrmBound / Counters._frames:F0} bound of " +
+                   $"{(float)Counters._nrmDeclared / Counters._frames:F0} declared/frame, " +
                    // #242 (AC3): the whole point of the persistent records, as one number. "written" should
                    // be the MOVER count -- creatures, doors, animated textures, fading tiles -- and not the
                    // owned count. If the two are the same the split has a permanent mover in it and step 2
                    // of ADR 0017 bought nothing, which no frame-time average would ever say out loud.
-                   $"records {(float)_recWritten / _frames:F0}/frame written, " +
-                   $"{(float)_recStable / _frames:F0} stable ({_recOwnCap} slots), " +
+                   $"records {(float)Counters._recWritten / Counters._frames:F0}/frame written, " +
+                   $"{(float)Counters._recStable / Counters._frames:F0} stable ({_recOwnCap} slots), " +
                    StaticNote() + ", " +
                    // #330: how much of the engine chase the view bounded away, and the poll audit.
                    ChaseNote() + ", " +
-                   (_watchEnrolled == 0 ? "" :
-                       $"dumptex {_watchEnrolled} enrolled, {(float)_watchSubmitted / _frames:F1} submitted/frame, " +
+                   (Counters._watchEnrolled == 0 ? "" :
+                       $"dumptex {Counters._watchEnrolled} enrolled, {(float)Counters._watchSubmitted / Counters._frames:F1} submitted/frame, " +
                        "") +
                    // #125: "masked" is the criterion, not "captured" -- it counts the frames the engine's own
                    // sky wrote nothing because the Alloy one had already drawn. Captured but never masked
@@ -1643,27 +1499,27 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // #175: every registered pass's clause, in declaration order. #139's "post 0 resolves"
                    // while the world renders is the whole reason this is a roll-call and not a fixed list --
                    // the frame looks fine, just 8-bit and un-bloomed, and only the clause says so.
-                   PassRegistry.Global.Stats(_frames) + ", " +
-                   $"enrolls={_enrolls} revokes={_revokes}; cycle={CycleTextures.Count} steps={CycleTextures.Steps}" + (CycleTextures.Overflow == 0 ? "" : $" overflow={CycleTextures.Overflow}") + (CycleTextures.OtherClass == 0 ? "" : $" otherctl={CycleTextures.OtherClass}") + "; " +
+                   PassRegistry.Global.Stats(Counters._frames) + ", " +
+                   $"enrolls={Counters._enrolls} revokes={Counters._revokes}; cycle={CycleTextures.Count} steps={CycleTextures.Steps}" + (CycleTextures.Overflow == 0 ? "" : $" overflow={CycleTextures.Overflow}") + (CycleTextures.OtherClass == 0 ? "" : $" otherctl={CycleTextures.OtherClass}") + "; " +
                    // #119: the prepass's own cost, and what it bought. samples/px is the overdraw figure --
                    // run the same scene with /alloy prepass 0 and the difference IS the pass's worth.
                    (!_depthPrepass ? "prepass OFF (/alloy prepass 1 restores it)"
-                    : _progDepth == 0 ? "prepass unavailable"
-                    : $"prepass {(float)_prepassDraws / _frames:F0} draws/frame" +
-                      (_prepassKeyed == 0 ? "" : $" ({(float)_prepassKeyed / _frames:F0} of them dissolving, keyhole stage)") +
-                      (_prepassSkipped == 0 ? "" : $" (+{(float)_prepassSkipped / _frames:F0} excluded, displacing/skinned or cutout)") +
+                    : Programs._progDepth == 0 ? "prepass unavailable"
+                    : $"prepass {(float)Counters._prepassDraws / Counters._frames:F0} draws/frame" +
+                      (Counters._prepassKeyed == 0 ? "" : $" ({(float)Counters._prepassKeyed / Counters._frames:F0} of them dissolving, keyhole stage)") +
+                      (Counters._prepassSkipped == 0 ? "" : $" (+{(float)Counters._prepassSkipped / Counters._frames:F0} excluded, displacing/skinned or cutout)") +
                       // #489 (AC2): the GPU's kept figures under the staged ceiling -- phase one plus phase
                       // two, and phase two's own share -- with phase two's submission as its own term.
                       (CullPass.CullFrames == 0 ? "" : $" (cull kept {(float)CullPass.PrepassKept / CullPass.CullFrames:F0}, of which retest {(float)CullPass.RetestKept / CullPass.CullFrames:F0})") +
                       (_qTerm[(int)GpuTerm.Prepass].Measured ? $" in {GpuMs(GpuTerm.Prepass):F3}ms" : "") +
                       (_qTerm[(int)GpuTerm.PrepassRetest].Measured ? $" + retest {GpuMs(GpuTerm.PrepassRetest):F3}ms" : "") +
                       (_qTerm[(int)GpuTerm.PrepassKey].Measured ? $" + keyhole sweep {GpuMs(GpuTerm.PrepassKey):F3}ms" : "") +
-                      (_qTerm[(int)GpuTerm.PrepassFeat].Measured ? $" + cutout/displaced sweep {GpuMs(GpuTerm.PrepassFeat):F3}ms ({(float)_prepassFeatDraws / _frames:F0} draws)" : "") +
+                      (_qTerm[(int)GpuTerm.PrepassFeat].Measured ? $" + cutout/displaced sweep {GpuMs(GpuTerm.PrepassFeat):F3}ms ({(float)Counters._prepassFeatDraws / Counters._frames:F0} draws)" : "") +
                       (_qTerm[(int)GpuTerm.Ao].Measured ? $" + ao {GpuMs(GpuTerm.Ao):F3}ms" : "") +
                       (!_prepassKey ? " (keyhole sweep OFF -- /alloy prepasskey 1)" : "")) +
-                   (_qSamples.Measured && _lastPixels > 0
-                       ? $", shaded {_qSamples.Avg / 1e6:F2}M samples/frame over {_lastPixels / 1e6f:F2}Mpx " +
-                         $"(overdraw x{_qSamples.Avg / _lastPixels:F2})"
+                   (_qSamples.Measured && Counters._lastPixels > 0
+                       ? $", shaded {_qSamples.Avg / 1e6:F2}M samples/frame over {Counters._lastPixels / 1e6f:F2}Mpx " +
+                         $"(overdraw x{_qSamples.Avg / Counters._lastPixels:F2})"
                        : "") +
                    (_qTerm[(int)GpuTerm.Opaque].Measured
                        ? $", gpu ms: opaque {GpuMs(GpuTerm.Opaque):F2}" +
@@ -1673,7 +1529,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $"grass {GpuMs(GpuTerm.Grass):F2} (+ depth {GpuMs(GpuTerm.GrassDepth):F2}) / sky {GpuMs(GpuTerm.Sky):F2} / blended {GpuMs(GpuTerm.Blended):F2} / " +
                          $"water {GpuMs(GpuTerm.Water):F2} / additive {GpuMs(GpuTerm.Additive):F2} (colour {colourMs:F2}) " +
                          $"/ particles {GpuMs(GpuTerm.Particles):F2}" +
-                         (_qPartSamples.Measured && _lastPixels > 0 ? $" (overdraw x{_qPartSamples.Avg / _lastPixels:F2})" : "") +
+                         (_qPartSamples.Measured && Counters._lastPixels > 0 ? $" (overdraw x{_qPartSamples.Avg / Counters._lastPixels:F2})" : "") +
                          (_qTerm[(int)GpuTerm.Motion].Measured ? $" / motion {GpuMs(GpuTerm.Motion):F2}" : "") +
                          (_qTerm[(int)GpuTerm.Exposure].Measured ? $" / exposure {GpuMs(GpuTerm.Exposure):F3}" : "") +
                          $" / post {GpuMs(GpuTerm.Post):F2}" +
@@ -1691,7 +1547,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // alone, which is what vanilla binds a texture for.
                    $" {(_sceneEnv && EnvProbe.AreaWide ? "area-wide" : "env-mapped parts only")}" +
                    (_sceneEnv && !EnvProbe.AreaWide ? " (area declares one; /light probeareawide 1 honours it)" : "") + "; " +
-                   AlloyLights.Diag(_clusterOverflow) +
+                   AlloyLights.Diag(Counters._clusterOverflow) +
                    // The coverage question -- "what is the engine still drawing, and why?" -- was only
                    // answerable from the one-shot enroll diag, which a healthy session prints once at startup
                    // and never again. It belongs where the numbers it explains are.
@@ -1699,7 +1555,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // Nothing lit means nothing samples the shadow maps -- the whole Alloy lit stage, cascades
                    // and cubes included, is dead code for the session. Loud, because it looks like working
                    // output: parts are owned, cubes render, and the frame is merely fullbright.
-                   (_litCount == 0 && _lastEnrolled > 0
+                   (_litCount == 0 && Counters._lastEnrolled > 0
                        ? "; NOTHING LIT -- no Alloy draw samples the shadow maps"
                        : "") +
                    // Dangling texture pointers AurTex refused. A handful around an area transition is the
@@ -1709,11 +1565,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
         CullPass.ResetStats();
-        _frames = 0; _draws = 0; _batches = 0; _revokes = 0; _enrolls = 0;
-        _twoSidedDraws = 0; _cullCuts = 0; Array.Clear(_cutBy);
-        _drawsGob = 0;
-        _skipTexNone = 0; _skipTexNoId = 0; _skipTexNoHandle = 0; _skipTexNotOwned = 0;
-        _skinDrawn = 0; _skinNoPose = 0; _boneHigh = 0;
+        Counters._frames = 0; Counters._draws = 0; Counters._batches = 0; Counters._revokes = 0; Counters._enrolls = 0;
+        Counters._twoSidedDraws = 0; Counters._cullCuts = 0; Array.Clear(Counters._cutBy);
+        Counters._drawsGob = 0;
+        Counters._skipTexNone = 0; Counters._skipTexNoId = 0; Counters._skipTexNoHandle = 0; Counters._skipTexNotOwned = 0;
+        Counters._skinDrawn = 0; Counters._skinNoPose = 0; Counters._boneHigh = 0;
         SkinPose.NoBind = 0; SkinPose.Overflow = 0;
         SkyBox.ResetPeriod();
         GrassField.ResetPeriod();
@@ -1721,17 +1577,153 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Halos.ResetPeriod();
         Weather.ResetPeriod();
         Particles.ResetPeriod();
-        _watchSubmitted = 0;
-        _skipNoLight = _skipIdentity = _skipNoMdl = _skipTex = _skipRange = _skipVao = 0; _skipLod = 0;
+        Counters._watchSubmitted = 0;
+        Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0;
         ResetChasePeriod();
-        _ownDissolve = 0; _ownFade = 0; _skipFogTile = _skipFogGob = 0;
-        _recWritten = 0; _recStable = 0;
+        Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
+        Counters._recWritten = 0; Counters._recStable = 0;
         ResetStaticPeriod();
-        _nrmDeclared = _nrmBound = 0;
-        Array.Clear(_drawsByClass);
-        _clusterOverflow = 0;
-        _prepassDraws = 0; _prepassSkipped = 0; _prepassKeyed = 0; _prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset();
+        Counters._nrmDeclared = Counters._nrmBound = 0;
+        Array.Clear(Counters._drawsByClass);
+        Counters._clusterOverflow = 0;
+        Counters._prepassDraws = 0; Counters._prepassSkipped = 0; Counters._prepassKeyed = 0; Counters._prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset();
         for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset(); _spanSum = 0; _spanN = 0;
+    }
+
+    /// <summary>The period tallies: every count the [alloy] line prints and its reset zeros, wherever it is
+    /// bumped. Plain static loads, same as before -- grouped so a partial's reader can tell a tally from
+    /// state without knowing all 400 names (CX-699). Constant initialisers only: a runtime cctor would put an
+    /// init check on every hot-path bump.</summary>
+    internal static class Counters
+    {
+        internal static int _frames, _revokes, _enrolls, _lastEnrolled, _lastCandidates;
+        /// <summary>Distinct diffuse textures interned at the last enrollment -- the batch floor (see EndFrame).</summary>
+        internal static int _lastTextures;
+        internal static int _lastPixels;
+        /// <summary>The Alloy draw log counter, counterpart to M0's Alloy cast.</summary>
+        internal static long _draws;
+        /// <summary>#84's measurable form of "draw count decoupled from part count": submitted multidraw batches.
+        /// draws/batches IS the batching ratio the acceptance criterion asks for, straight out of the log.</summary>
+        internal static long _batches;
+        /// <summary>#126: Alloy draws per class this pass, and the batches each class's pass submitted. The
+        /// cutout/blended split is the whole model, so it is reported rather than inferred.</summary>
+        internal static readonly long[] _drawsByClass = new long[AlloyClasses.Count];
+        /// <summary>The INSTANCED half of the draw accounting: gob parts Alloy staged this pass. Every other
+        /// number on the [alloy] line mixes tiles, placeables and creatures into one total, so "are characters
+        /// Alloy's" could only be inferred from the capture-bucket split, which is a CLASSIFICATION and not a
+        /// per-frame fact. This is the fact. #285: read it against <c>{_gobOwned} owned</c> -- a gap between them
+        /// is instanced geometry NOT DRAWN, since #264 left nothing behind an unstaged part.</summary>
+        internal static long _drawsGob;
+        /// <summary>#292 (AC6): staged draws whose material said <c>twosided</c>, and the batches that the
+        /// culling term alone opened. Together they say what reproducing the engine's per-material cull decision
+        /// cost the batch count -- the criterion this ticket asks to be measured, not assumed.</summary>
+        internal static long _twoSidedDraws, _cullCuts;
+        /// <summary>#327: opaque-range batch cuts per cut-key term, in <see cref="CutTerms"/> order. Sized by a
+        /// const, not by the label table: a string array cannot be preinitialised and would give this class a cctor.</summary>
+        internal static readonly long[] _cutBy = new long[CutTermCount];
+        internal const int CutTermCount = 8;
+        /// <summary>Why an Alloy part still did not draw this pass, by term. The single fallback count could not
+        /// separate a camera-dependent bail-out (keyhole, tile fade) from a content one, which is exactly the
+        /// distinction a part that is Alloy head-on and vanilla at the screen edge turns on.</summary>
+        internal static long _skipLod;
+        internal static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
+                             _skipRange, _skipVao;
+        /// <summary>...and the three causes behind the <c>tex</c> fallback, which are three different bugs
+        /// wearing one number. "No diffuse" is content; "no GL id" is the copy path; "no owned handle" is the
+        /// BINDLESS layer, which #220 already caught being wrong once and which a part can fail every frame
+        /// forever -- a steady count here, roughly one creature's worth of parts, is a specific model whose
+        /// texture Alloy declined to own, and that model then renders vanilla for the whole session.</summary>
+        internal static long _skipTexNone, _skipTexNoId, _skipTexNoHandle, _skipTexNotOwned;
+        /// <summary>#546's other half: parts whose tile fog ramp (or a gob part's filed tile) read 0, dropped outright at route.
+        /// Split by gob/tile because a creature part here is a HOLE the fog-of-war never explains.</summary>
+        internal static long _skipFogTile, _skipFogGob;
+        /// <summary>#124's coverage number: Alloy parts the camera dissolves this pass. Before the fold these
+        /// were the keyhole SKIP count -- same population, dropped from the frame; now they are drawn by the
+        /// Alloy program with the dissolve folded in, so the before/after the ticket asks for is this one figure
+        /// read off the period line either side of the change.</summary>
+        internal static long _ownDissolve;
+        /// <summary>#126's counterpart to it: Alloy parts the tile fade moves into the blended run this pass.
+        /// Before the fold these were the tilefade SKIP count -- same population, dropped from the frame.</summary>
+        internal static long _ownFade;
+        /// <summary>Parts whose material declared a normal map, and the subset whose map survived the per-slot
+        /// re-fetch into the mask the lit stage samples on.</summary>
+        internal static long _nrmDeclared, _nrmBound;
+        /// <summary>Lit parts refused at enrollment (no normal stream / lit program down) -- they stay vanilla.</summary>
+        internal static int _litUnownable;
+        /// <summary>#128: parts refused for carrying bone streams, and what the per-instance sweep then cost --
+        /// already-accepted parts revoked because a SIBLING of theirs on the same instance was refused. Together
+        /// with <c>AlloyCensus.RefusedGobs</c> on the same line they are the honest answer to "why is that
+        /// creature still vanilla". Counted as PARTS, which is the figure the sweep actually produces: the gob
+        /// count includes instances that had nothing accepted to revoke.</summary>
+        internal static int _skinUnownable, _gobParts;
+        /// <summary>#128: instanced parts this enrollment took -- placeables, doors and creatures alike. Its only
+        /// job is to say whether the shadow side needs poking, so it counts PARTS and not instances.</summary>
+        internal static int _gobOwned;
+        /// <summary>#126: blended parts dropped from this enrollment because the class could not be Alloy whole.
+        /// #285: dropped means NOT DRAWN -- there is no engine walk behind the class since #264.
+        /// Reported: a class that never lands is the one number that separates "no transparent content here"
+        /// from "one part keeps refusing and takes the class down with it".</summary>
+        internal static int _blendedDropped;
+        /// <summary>#242: the audit AC3 asks for -- record writes should scale with the MOVER count. If
+        /// "written" reads as the owned count, the split has a permanent mover in it.</summary>
+        internal static long _recWritten, _recStable;
+        /// <summary>#262: the per-report bone-slot high-water mark that keeps the ceiling counted rather than silent.</summary>
+        internal static int _boneHigh;
+        internal static long _skinDrawn, _skinNoPose;
+        internal static uint _clusterOverflow;
+        internal static long _prepassDraws;
+        /// <summary>#124: prepass draws that went through the keyhole depth stage. The number that says the fix
+        /// is doing its job -- before it, every one of these was in <see cref="_prepassSkipped"/> instead.</summary>
+        internal static long _prepassKeyed;
+        /// <summary>#123: draws the prepass had to leave out because their feature moves vertices, plus (#124)
+        /// the ones that dissolve, which discard. Reported, not
+        /// hidden -- it is the overdraw the prepass no longer removes, and the number that says whether the wind
+        /// content is big enough for a displacing prepass stage to be worth building.</summary>
+        internal static long _prepassSkipped;
+        internal static long _prepassFeatDraws;
+        /// <summary>#134: how much of the <c>dumptex</c> population we enrolled, and how much of it we actually
+        /// submit each frame. The gap between them, and between both and the engine's own draw count, is the
+        /// only honest answer to "is that thing on screen ours".</summary>
+        internal static int _watchEnrolled;
+        internal static long _watchSubmitted;
+        /// <summary>#244: parts the last census actually keyed, and parts it had to leave out because their
+        /// index range would not resolve. The second number is what stops the first being read as the
+        /// population when the dereference went blind.</summary>
+        internal static int _msParts, _msUnread;
+        internal static int _msMeshes, _msMaxInstances, _msShared, _msSharedMx;
+        /// <summary>#244: the shape tier -- distinct meshes by signature, the largest repeat, how many parts sit
+        /// on a repeated shape and how many of those are gob (placeable/creature) parts. This is the tier the
+        /// range key is blind to: repeated geometry the engine copied per placement.</summary>
+        internal static int _msShapes, _msShapeMax, _msShapeRepeat, _msShapeRepeatGob;
+        /// <summary>#244: how many censused parts belong to a gob at all -- the denominator that says whether a
+        /// placeable-heavy area was even in the population.</summary>
+        internal static int _msGobParts;
+        /// <summary>#244: censused parts that are matrix-class, and the repeated ones among them. If the first is
+        /// near zero the area's geometry is world-space and nothing repeated in it is collapsible whatever the
+        /// shape tier says -- which is the reading that decides whether a repeat count means anything.</summary>
+        internal static int _msMxParts, _msShapeRepeatMx;
+    }
+
+    /// <summary>One-shot diagnostic budgets and "said it once" latches. Cold by construction; grouped for the
+    /// same reason as <see cref="Counters"/> (CX-699).</summary>
+    internal static class Diag
+    {
+        /// <summary>#134: a small budget of watched-part draw-side lines, so following one part through the owned
+        /// loop costs a handful of log lines rather than one per frame forever.</summary>
+        internal static int _watchDrawLeft = 20;
+        internal static int _enrollDiagLeft = EnrollDiagBudget;
+        internal static bool _reportedHit;
+        /// <summary>A small budget of NAMED failures. The counters say which fault; only the resref says which
+        /// CONTENT, and that is what separates "one model's texture" from "a whole class of them". Budgeted
+        /// rather than rate-limited: the population is what matters and it is small, so a handful of distinct
+        /// names is the whole answer.</summary>
+        internal static int _texSkipDiagLeft = 12;
+        internal static readonly System.Collections.Generic.HashSet<string> _texSkipSeen = new();
+        /// <summary>Diagnostic budget for <see cref="HandleDiag"/>. Cold by construction -- the miss path runs
+        /// about once per distinct texture per enrollment, not per draw -- and it stops speaking after this many
+        /// reports, so it costs one branch on a warm cache.</summary>
+        internal static int _handleDiagLeft = HandleDiagBudget;
+        internal static bool _ambientFallbackLogged, _loggedOnce;
     }
 
     /// <summary>The unmatched total, split by the bucket the parts were captured in -- only the buckets that
@@ -1742,26 +1734,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         string s = "";
         for (int b = 0; b < counts.Length; b++)
-            if (counts[b] != 0) s += $" {b}:{(float)counts[b] / _frames:F0}";
+            if (counts[b] != 0) s += $" {b}:{(float)counts[b] / Counters._frames:F0}";
         return s.Length == 0 ? " none" : s;
     }
 
-    private static uint _progWater;
-    private static bool _waterFailed, _waterArmed;
+    internal static bool _waterArmed;
     /// <summary>The engine's water draw bucket (<c>Scene::RenderSinglePass</c> @0x46e5f0's "Water" scope).
     /// One name, read by the ownable-bucket list and by the suppression that has to agree with it.</summary>
     internal const int WaterBucket = 6;
-    private static float* _waterView, _waterProj;
-    private static float _waterNear = 1f, _waterFar = 100f;
-    private static int _watVp, _watBase, _watTex, _watCut, _watAmbient, _watDiffuse, _watDir,
-                       _watGrid, _watTile, _watZ, _watFalloff, _watWrap, _watAtten, _watHot,
-                       _watWrapN, _watSss, _watReach, _watViz, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
-                       _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft, _watCubePcss,
-                       _watCubeDynTex, _watCubeDynPage, _watCubeFade, _watCubeFloor, _watSunDynTex, _watSunDyn,
-                       _watSunFocus, _watSunRadius,
-                       _watCapture, _watSplash, _watFbColor, _watFbDepth, _watNoise, _watEnvMap, _watEnvOk, _watNearFar,
-                       _watView, _watProj;
-    private static FeatLoc _watFeat;
+    internal static float* _waterView, _waterProj;
+    internal static float _waterNear = 1f, _waterFar = 100f;
 
     /// <summary>#341 adds the eye and the four fog-target terms: the fog colour is direction-dependent
     /// now, so every stage that fogs uploads the same five values through <see cref="UploadFog"/>.</summary>
@@ -1778,7 +1760,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         internal fixed int SFloat[ScriptableSlots];
         internal fixed int SVec[ScriptableSlots];
     }
-    private static FeatLoc _locFeat;
     /// <summary>#123: <c>GLRender::m_shaderExposedRuntimeData</c>, the struct the engine's own SetUniforms
     /// uploads these five from. Null (symbol unresolved) leaves the wind still and the roofs wherever they
     /// were authored, which is the pre-#123 look, not a misrender.</summary>

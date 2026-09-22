@@ -197,7 +197,7 @@ public sealed unsafe partial class AlloyRenderer
     /// (<c>uProbeMips</c> 0). Unbinding rather than leaving the cube bound during a capture is not
     /// belt-and-braces: sampling a texture that is an attachment of the framebuffer being written is
     /// undefined, and the capture draws through this very program.</summary>
-    private static void UploadProbe(in LitLoc L) => UploadProbe(L.ProbeMips, L.ProbeGain, L.SceneEnv);
+    internal static void UploadProbe(in LitLoc L) => UploadProbe(L.ProbeMips, L.ProbeGain, L.SceneEnv);
 
     /// <summary>#127: the same terms, into whichever program's locations the caller names -- the Alloy grass
     /// pass runs its own program over the same lights, so the area terms cannot be a property of the lit
@@ -213,9 +213,9 @@ public sealed unsafe partial class AlloyRenderer
             var a = FrameInputs.AreaAmbient * AlloyLights.AmbientScale;
             v[0] = a.X; v[1] = a.Y; v[2] = a.Z;
         }
-        else if (!_ambientFallbackLogged)
+        else if (!Diag._ambientFallbackLogged)
         {
-            _ambientFallbackLogged = true;
+            Diag._ambientFallbackLogged = true;
             _log?.Info("AlloyRenderer: no area ambient captured yet -- Alloy lit parts on the grey stand-in " +
                        "(if this persists, SetLightGL's index -1 path never fired)");
         }

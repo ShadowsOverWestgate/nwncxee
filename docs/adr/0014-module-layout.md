@@ -175,3 +175,17 @@ The audit found 34 calls across three of nine files, and none of them were extra
 
 34 before, 0 after, and no written-reason survivors -- so the boundary was real, and what violated it was
 three files sitting on the wrong side of it rather than extraction reaching through.
+
+## Implementation note (CX-699, 2026-09-22): the same split, applied to `AlloyRenderer`
+
+`AlloyRenderer` had grown to 17 partials and 413 statics under the #173 reason -- the hot path reads the
+tables directly -- which covers the ~100 table columns and not the other 300. The #188 mechanism was applied
+as filed: `Issue` (submit), `Highlight` (the owned highlight) and `Programs` (link) are `internal static`
+classes reaching the columns through `using static AlloyRenderer`; the columns they reach went `internal`
+with their `_name` spelling, as `PartTable`'s did. `Programs` owns the program handles and uniform locations
+(read from seven partials, so they could not go to one file -- they went to the module that mints them). The
+tallies the period line prints and its reset zeros are `AlloyRenderer.Counters`, the one-shot diagnostic
+budgets `AlloyRenderer.Diag`: nested, so the partials read them unqualified-by-namespace, and with constant
+initialisers only, because a runtime cctor would put an init check on every hot-path bump -- which is the
+codegen exit criterion. The tables stay in `Scene/AlloyRenderer.Table.cs`; the three modules stay in
+`Alloy/`, on the GL side of the #206 line.

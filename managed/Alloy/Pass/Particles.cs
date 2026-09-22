@@ -1360,7 +1360,7 @@ internal static unsafe partial class Particles
         _locEye = GlProgram.Loc(_prog, "uEye");
         _locTex = GlProgram.Loc(_prog, "uTex");
         _locCut = GlProgram.Loc(_prog, "uAlphaCut");
-        _fogLoc = AlloyRenderer.FeatLocs(_prog);
+        _fogLoc = Programs.FeatLocs(_prog);
         _locAdditive = GlProgram.Loc(_prog, "uAdditive");
         _locSoftOn = GlProgram.Loc(_prog, "uSoftOn");
         _locDepthTex = GlProgram.Loc(_prog, "uSceneDepth");

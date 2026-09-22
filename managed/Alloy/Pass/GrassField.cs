@@ -1409,7 +1409,7 @@ internal static unsafe partial class GrassField
         else
         {
             _locD = Locate(_progDepth);
-            _featLocD = AlloyRenderer.FeatLocs(_progDepth);
+            _featLocD = Programs.FeatLocs(_progDepth);
             Gl.UseProgram(_progDepth);
             Gl.Uniform1i(_locD.Tex, 0);
             // the per-vertex rig's shadow samplers live in the shared vertex text: unassigned they sit on unit 0
@@ -1417,7 +1417,7 @@ internal static unsafe partial class GrassField
             ShadowUnits(in _locD);
         }
         _loc = Locate(prog);
-        _featLoc = AlloyRenderer.FeatLocs(prog);
+        _featLoc = Programs.FeatLocs(prog);
         // Same reason the lit program does it here: a sampler left at its default points at unit 0, and GL
         // refuses a draw whose samplers of different types share an image unit.
         Gl.UseProgram(prog);

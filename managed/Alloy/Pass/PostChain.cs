@@ -857,7 +857,7 @@ internal static unsafe class PostChain
 
     /// <summary>#161: throw away a post program built from an override that breaks the colour-space contract
     /// and rebuild it from the embedded pair -- the same refuse-and-say-so shape as
-    /// <c>AlloyRenderer.RebuildEmbedded</c>. Both stages come from the embedded text, never a content
+    /// <c>Programs.RebuildEmbedded</c>. Both stages come from the embedded text, never a content
     /// vertex stage over an embedded fragment one: the fall back is to a KNOWN pair.</summary>
     private static uint Rebuild(uint stale, string fs, string what, string why)
     {

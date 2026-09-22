@@ -85,7 +85,7 @@ internal static unsafe class FbPostStage
         if (prog != _prog)
         {
             _prog = prog;
-            _feat = AlloyRenderer.FeatLocs(prog);
+            _feat = Programs.FeatLocs(prog);
             _locView = GlProgram.Loc(prog, "m_view"); _locPixel = GlProgram.Loc(prog, "pixelParams");
             _locClip = GlProgram.Loc(prog, "clipParams"); _locFrame = GlProgram.Loc(prog, "sceneCurrentFrame");
             _locHour = GlProgram.Loc(prog, "moduleHour"); _locMonth = GlProgram.Loc(prog, "moduleMonth");

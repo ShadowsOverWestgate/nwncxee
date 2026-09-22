@@ -11,7 +11,7 @@ public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>#257: where the engine wants this frame's result. Every field is a GL query answer, latched
     /// per generation rather than re-asked per frame.</summary>
-    private struct Target
+    internal struct Target
     {
         internal int Vp0, Vp1, Vp2, Vp3;
         internal bool Srgb;
@@ -69,7 +69,7 @@ public sealed unsafe partial class AlloyRenderer
         return ref _target;
     }
 
-    private static bool Same(in Target a, in Target b)
+    internal static bool Same(in Target a, in Target b)
         => a.Vp0 == b.Vp0 && a.Vp1 == b.Vp1 && a.Vp2 == b.Vp2 && a.Vp3 == b.Vp3 && a.Srgb == b.Srgb;
 
     /// <summary>Where the engine wants the result: viewport and the sRGB encode state. Alloy draws in its own share-listed 4.6 context (GlContextService), so it cannot

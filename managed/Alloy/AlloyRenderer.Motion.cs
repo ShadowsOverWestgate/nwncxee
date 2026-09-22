@@ -35,7 +35,7 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>The mover sweep, inside the motion bracket. Reads the STAGED slot buffer, so it must run
-    /// where <c>BindStagedSlots</c> has (the prepass hands it back). Leaves the framebuffer and viewport as the
+    /// where <c>Issue.BindStagedSlots</c> has (the prepass hands it back). Leaves the framebuffer and viewport as the
     /// caller had them; program, VAO, cull and blend are the next pass's PassState to set.</summary>
     private static void MoverMotionPass(Matrix4x4* vp, float jx, float jy, int* viewport)
     {

@@ -4,15 +4,87 @@ using System.Runtime.InteropServices;
 using CX.Framework;
 using CX.Graphics;
 
+using static CX.Alloy.AlloyRenderer;
+
 namespace CX.Alloy;
 
-/// <summary>#173: PROGRAM BUILD. Linking the Alloy stages -- fullbright, depth, lit and water -- from the embedded text or a content override (#92), and rebuilding from the embedded text whenever an override fails a ShaderContract predicate. Cold: once per program per context.</summary>
-public sealed unsafe partial class AlloyRenderer
+/// <summary>#173: PROGRAM BUILD. Linking the Alloy stages -- fullbright, depth, lit and water -- from the embedded text or a content override (#92), and rebuilding from the embedded text whenever an override fails a ShaderContract predicate. Cold: once per program per context.
+/// An ADR 0014 module, not a partial (CX-699): it owns the program handles and uniform locations, and reaches the
+/// renderer's state through <c>using static</c> -- a compile-time alias, the same static load.</summary>
+internal static unsafe class Programs
 {
+    /// <summary>The program names and uniform locations every submitting partial reads. 4.6-side objects,
+    /// touched only inside the bracket; the Ensure* below mint them, <see cref="AlloyRenderer.ContextLost"/>
+    /// drops them. Constant initialisers only (see <see cref="AlloyRenderer.Counters"/>).</summary>
+    internal static uint _prog46, _progLit46, _progDepth, _progDepthKey;
+    /// <summary>The feature-aware depth stage: the lit program's OWN compiled vertex text (override or
+    /// embedded, so its displacement is the colour pass's character for character) over an alpha-testing
+    /// fragment stage. Takes the cutout class and the wind-displaced batches the plain prepass skips.</summary>
+    internal static uint _progDepthFeat;
+    internal static int _depthFeatVp = -1, _depthFeatBase = -1, _depthFeatTex = -1, _depthFeatCut = -1;
+    internal static FeatLoc _depthFeatFeat;
+    internal static bool _depthFeatFailed;
+    /// <summary>The vertex source the lit / fullbright programs actually compiled with (an override wins).</summary>
+    internal static string? _litVsSrc;
+    /// <summary>#350: the spliced programs were built against a resource chain that is gone. Every program
+    /// carrying a <c>// $VANILLA</c> region (lit, hosted lit, water, grass) is compiled ONCE from whatever
+    /// the chain held at the time -- so a session that logged into SoW first kept SoW's display hooks (the
+    /// racial-vision veil, and a second clustered-light walk per fragment for it) running on Arelith, and a
+    /// session that logged into Arelith first never picked SoW's files up at all. Set on the module-unload
+    /// edge (outside the bracket), acted on by <see cref="DropSpliced"/> inside it.</summary>
+    internal static bool _spliceStale;
+
+    /// <summary>#136: the hosted sky's display-to-linear decode (<see cref="SkyDecodeFs"/>) and its sampler.</summary>
+    internal static uint _progSkyDecode;
+    internal static int _skyDecodeHdr;
+    internal static int _depthVp = -1, _depthBase = -1;
+    /// <summary>#124: the dissolving batches' depth program (<see cref="DepthKeyVs"/>). Zero = it could not
+    /// build, and those batches fall back to being excluded from the prepass -- the pre-fix behaviour, which
+    /// is slower but never wrong.</summary>
+    internal static int _depthKeyVp = -1, _depthKeyBase = -1;
+    internal static FeatLoc _depthKeyFeat;
+    /// <summary>The depth prepass could not build (or glColorMask is missing) -- latched, and the colour pass
+    /// simply shades every fragment as it did before #119.</summary>
+    internal static bool _depthFailed;
+    /// <summary>Every Alloy vertex stage that ran carries <see cref="ClipExpr"/> under an invariant
+    /// qualifier. False = a #92 override rewrote one, and the prepass cannot re-test its depth.</summary>
+    internal static bool _vsDepthSafe = true;
+    internal static int _locVp = -1, _locBase = -1, _locTex = -1;
+    /// <summary>#126: <c>uAlphaCut</c> on each colour program -- the engine's <c>fAlphaDiscardValue</c>, set
+    /// per batch from the batch's class.</summary>
+    internal static int _locCut = -1;
+
+    internal static LitLoc _lit, _litH, _litL;
+    /// <summary>The lit program WITH the OIT append block (OitPass.WithLists), or 0. Bound only for lit batches inside a
+    /// linked-list bracket; every other lit draw keeps early-Z through <see cref="_progLit46"/>.</summary>
+    internal static uint _progLitList;
+    /// <summary>#350: the lit program WITH the hosted content bodies, or 0 (hosting off, no hosted feature, or
+    /// its build failed -- hosted materials then draw the plain lit path through <see cref="_progLit46"/>).</summary>
+    internal static uint _progLitHost;
+    internal static int _locViz = -1;
+    internal static int _locOit = -1, _locOitDim = -1, _locOitBias = -1, _locOitGob = -1;
+    /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
+    /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
+    internal static int _locTint = -1;
+    internal static int _locSkyFog;
+    internal static bool _progFailed, _litFailed;
+    internal static uint _progWater;
+    internal static bool _waterFailed;
+    internal static int _watVp, _watBase, _watTex, _watCut, _watAmbient, _watDiffuse, _watDir,
+                       _watGrid, _watTile, _watZ, _watFalloff, _watWrap, _watAtten, _watHot,
+                       _watWrapN, _watSss, _watReach, _watViz, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
+                       _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft, _watCubePcss,
+                       _watCubeDynTex, _watCubeDynPage, _watCubeFade, _watCubeFloor, _watSunDynTex, _watSunDyn,
+                       _watSunFocus, _watSunRadius,
+                       _watCapture, _watSplash, _watFbColor, _watFbDepth, _watNoise, _watEnvMap, _watEnvOk, _watNearFar,
+                       _watView, _watProj;
+    internal static FeatLoc _watFeat;
+    internal static FeatLoc _locFeat;
+
     /// <summary>Build the water variant -- vertex and fragment only since #339 dropped the tessellated
     /// sea. A failure disarms Alloy water for the session, and since #264 deleted the engine's bucket walk
     /// that means water is simply not drawn (#285).</summary>
-    private static bool EnsureWaterProgram()
+    internal static bool EnsureWaterProgram()
     {
         if (_progWater != 0) return true;
         if (_waterFailed) return false;
@@ -90,7 +162,7 @@ public sealed unsafe partial class AlloyRenderer
     /// record the CPU stages, so the frame is CORRECT here and merely un-restyled -- and the override's
     /// author gets a line naming the file to update rather than a black world to bisect. Cold: once per
     /// program per session.</summary>
-    private static uint RebuildEmbedded(uint stale, string vs, string fs, string what, ref string vsSrc)
+    internal static uint RebuildEmbedded(uint stale, string vs, string fs, string what, ref string vsSrc)
     {
         Gl.DeleteProgram(stale);
         _log?.Info($"AlloyRenderer: a content .shd for the {what} program disagrees with the pass -- either " +
@@ -106,7 +178,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#350: delete every program that splices content and clear its failure latch, so each rebuilds
     /// on its next use from the module now loaded. Inside the bracket, which is why the edge only sets the
     /// flag. The fullbright and depth programs splice nothing and stay.</summary>
-    private static void DropSpliced()
+    internal static void DropSpliced()
     {
         _spliceStale = false;
         if (_progLit46 != 0) Gl.DeleteProgram(_progLit46);
@@ -121,7 +193,7 @@ public sealed unsafe partial class AlloyRenderer
         _log?.Info("AlloyRenderer: module changed -- the spliced programs (lit, hosted lit, water, grass, post) are dropped and rebuild from this module's resource chain");
     }
 
-    private static bool EnsureProgram()
+    internal static bool EnsureProgram()
     {
         if (_spliceStale) DropSpliced();
         if (_prog46 == 0 && !_progFailed)
@@ -161,7 +233,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The feature-aware depth stage (cutout + wind-displaced batches). Built from the vertex text
     /// that actually compiled for the lit (else fullbright) program, so a content override's displacement
     /// is the one the prepass writes. Not fatal: without it those batches stay out, as before.</summary>
-    private static bool EnsureDepthFeatProgram()
+    internal static bool EnsureDepthFeatProgram()
     {
         if (_progDepthFeat != 0) return true;
         if (_depthFeatFailed || !_vsDepthSafe) return false;
@@ -188,7 +260,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>Build the depth-only program. A failure disarms the prepass for the session and the colour
     /// pass keeps its pre-#119 behaviour -- shading every fragment -- which is slower, never wrong.</summary>
-    private static bool EnsureDepthProgram()
+    internal static bool EnsureDepthProgram()
     {
         if (_progDepth != 0) return true;
         if (_depthFailed) return false;

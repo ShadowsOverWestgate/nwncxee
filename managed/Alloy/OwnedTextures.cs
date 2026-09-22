@@ -87,7 +87,7 @@ internal static unsafe partial class OwnedTextures
     private static bool _probedTex;
     private static bool _armed;
     /// <summary>Is the owned-texture path live? Read by the handle cache, which changes its invalidation
-    /// discipline entirely on the answer (see <c>AlloyRenderer.WipeHandles</c>).</summary>
+    /// discipline entirely on the answer (see <c>Issue.WipeHandles</c>).</summary>
     internal static bool Armed => _armed;
 
     /// <summary>Engine textures Alloy samples BORROWED, distinct by GL name. Not a refusal any more --
@@ -1800,6 +1800,6 @@ internal static unsafe partial class OwnedTextures
         _censusLastUpload = 0; _censusReported = false;
         // The refusal ledger was about the OLD context's driver state; the new context answers fresh.
         _bcnFails = 0; _bcn = _bcnWanted && _armed;
-        AlloyRenderer.ForgetHandles();   // the names went with the context; nothing to make non-resident
+        Issue.ForgetHandles();   // the names went with the context; nothing to make non-resident
     }
 }

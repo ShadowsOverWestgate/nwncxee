@@ -137,7 +137,7 @@ internal static class Renderer
         Cull = G.Slider("cull", "cull", CullPass.ModeOff, CullPass.ModeHiZ, 1, CullPass.ModeHiZ, tier: Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         Retest = G.Toggle("retest", "retest", CullPass.DefRetest, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         HlDiag = G.Toggle("hldiag", "hldiag", false, Tier.ChatOnly);
-        HlChan = G.Slider("hlchan", "hlchan", 0, 31, 1, AlloyRenderer.DefHlChannels, tier: Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
+        HlChan = G.Slider("hlchan", "hlchan", 0, 31, 1, CX.Alloy.Highlight.DefHlChannels, tier: Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         HlGlow = G.Toggle("hlglow", "hlglow", true, Tier.ChatOnly);
         Poll = G.Toggle("poll", "poll", false, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         PrepassKey = G.Toggle("prepasskey", "prepasskey", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);

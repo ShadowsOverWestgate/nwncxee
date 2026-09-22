@@ -34,7 +34,7 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _oTexKey = new int[MaxOwned];     // #84: interned diffuse-texture sort key
     /// <summary>#128: the Gob this part instances off, zero for static geometry. The key the all-owned-or-none
     /// sweep groups by -- never dereferenced here, only compared.</summary>
-    private static readonly IntPtr[] _oGob = new IntPtr[MaxOwned];
+    internal static readonly IntPtr[] _oGob = new IntPtr[MaxOwned];
     /// <summary>Is this part's gob a TILE gob (<see cref="EngineLayout.GobTileData"/>)? Sampled at
     /// enrolment because that is the one place the gob is known live. See <c>Dissolves</c>.</summary>
     private static readonly bool[] _oTileGob = new bool[MaxOwned];
@@ -70,7 +70,7 @@ public sealed unsafe partial class AlloyRenderer
     /// classes read it.</summary>
     private static readonly byte[] _oSrc = new byte[MaxOwned], _oDst = new byte[MaxOwned];
     /// <summary><see cref="AlloyCandidate.Wash"/>: blended with the depth mask off. Batch key term.</summary>
-    private static readonly byte[] _oWash = new byte[MaxOwned], _gWash = new byte[MaxOwned];
+    internal static readonly byte[] _oWash = new byte[MaxOwned], _gWash = new byte[MaxOwned];
     /// <summary>#292: this part's material said <c>twosided</c>, so it draws with face culling OFF. The
     /// engine's default -- and what a part with no material gets -- is culling ON, which is why this is the
     /// exception flag rather than a cull flag.</summary>
@@ -103,12 +103,6 @@ public sealed unsafe partial class AlloyRenderer
         for (int i = 0; i < _ownCount; i++) if (_oGob[i] == gob) { n++; if (_oTileGob[i]) t++; }
         return (n, t);
     }
-    /// <summary>#126: blended parts dropped from this enrollment because the class could not be Alloy whole.
-    /// #285: dropped means NOT DRAWN -- there is no engine walk behind the class since #264.
-    /// Reported: a class that never lands is the one number that separates "no transparent content here"
-    /// from "one part keeps refusing and takes the class down with it".</summary>
-    private static int _blendedDropped;
-
     // per-VDO VAO cache: attribute formats harvested in the ENGINE context at enrollment, the 4.6-side VAO
     // built lazily inside the bracket (VAOs don't share across contexts; the buffers they reference do)
     private static readonly IntPtr[] _vVdo = new IntPtr[MaxVdos];
@@ -216,23 +210,6 @@ public sealed unsafe partial class AlloyRenderer
     /// mesh, how many parts sit on a mesh at least two parts share, and how many of THOSE are matrix-class.
     /// The last number is the one the ticket turns on: a world-space part has an identity model matrix, so
     /// "same mesh, different transform" is not even true of it and instancing it collapses nothing.</summary>
-    /// <summary>#244: parts the last census actually keyed, and parts it had to leave out because their
-    /// index range would not resolve. The second number is what stops the first being read as the
-    /// population when the dereference went blind.</summary>
-    private static int _msParts, _msUnread;
-    private static int _msMeshes, _msMaxInstances, _msShared, _msSharedMx;
-    /// <summary>#244: the shape tier -- distinct meshes by signature, the largest repeat, how many parts sit
-    /// on a repeated shape and how many of those are gob (placeable/creature) parts. This is the tier the
-    /// range key is blind to: repeated geometry the engine copied per placement.</summary>
-    private static int _msShapes, _msShapeMax, _msShapeRepeat, _msShapeRepeatGob;
-    /// <summary>#244: how many censused parts belong to a gob at all -- the denominator that says whether a
-    /// placeable-heavy area was even in the population.</summary>
-    private static int _msGobParts;
-    /// <summary>#244: censused parts that are matrix-class, and the repeated ones among them. If the first is
-    /// near zero the area's geometry is world-space and nothing repeated in it is collapsible whatever the
-    /// shape tier says -- which is the reading that decides whether a repeat count means anything.</summary>
-    private static int _msMxParts, _msShapeRepeatMx;
-
     /// <summary>#674: what the lightmap bake keys an instance on -- the slot's VDO slot and item (the chart
     /// lookup) and its record's model matrix (the placement; identity for a world-space tile part). The
     /// bounds come from the chart, not from here: the engine's part bbox is unpopulated on tile parts.
@@ -248,10 +225,10 @@ public sealed unsafe partial class AlloyRenderer
 
     // #84 multidraw submission: one entry per DRAW in _dCount/_dOff/_dBase + one staged SSBO record per draw,
     // sliced into batches by the _g* table. All static -- the hot path stages into them and allocates nothing.
-    private static readonly int[] _dCount = new int[MaxOwned];
-    private static readonly nint[] _dOff = new nint[MaxOwned];
-    private static readonly int[] _dBase = new int[MaxOwned];
-    private static readonly float[] _dData = new float[MaxRecords * DrawFloats];
+    internal static readonly int[] _dCount = new int[MaxOwned];
+    internal static readonly nint[] _dOff = new nint[MaxOwned];
+    internal static readonly int[] _dBase = new int[MaxOwned];
+    internal static readonly float[] _dData = new float[MaxRecords * DrawFloats];
     /// <summary>#243: the world bounding sphere of each RECORD, parallel to <see cref="_dData"/> -- centre
     /// in xyz, radius in w. Written on the same edges the record is (stable once at enrolment, again
     /// whenever the part moves), because the sphere is a function of the same model matrix. A radius of
@@ -264,18 +241,18 @@ public sealed unsafe partial class AlloyRenderer
     internal const float NeverCull = 1e30f;
     /// <summary>#153: per-draw bindless handles, 8 per record (diffuse + material slots 1..7), parallel to
     /// <see cref="_dData"/>. 0 = slot empty; the record's slot mask already forbids sampling those.</summary>
-    private static readonly ulong[] _dTexH = new ulong[MaxRecords * 8];
+    internal static readonly ulong[] _dTexH = new ulong[MaxRecords * 8];
     /// <summary>#242: the per-draw index array -- for draw <c>n</c> of this pass, the RECORD slot it reads.
     /// The records themselves are indexed by ownership slot and persist across frames, while draw order is
     /// per pass (a fading tile joins the blended run, and that run is sorted from this pass's eye), so the
     /// two cannot be the same number. This is the only per-draw array the frame still uploads whole -- four
     /// bytes each rather than a hundred and seventy-six.</summary>
-    private static readonly int[] _dSlot = new int[MaxOwned];
+    internal static readonly int[] _dSlot = new int[MaxOwned];
     /// <summary>#242: which record slots were rewritten this frame, i.e. the movers. Uploaded one
     /// <c>BufferSubData</c> each; past a quarter of the table the whole range goes up in one call instead.
     /// </summary>
-    private static readonly int[] _recDirty = new int[MaxRecords];
-    private static int _recDirtyN;
+    internal static readonly int[] _recDirty = new int[MaxRecords];
+    internal static int _recDirtyN;
     /// <summary>#242: the epoch each slot's record was built under, and the frame it was last verified on.
     /// A slot whose epoch is stale rebuilds unconditionally; one already verified this frame is free for
     /// every pass after the first. Epoch 0 is "never built", so the arrays need no initialisation.</summary>
@@ -437,20 +414,17 @@ public sealed unsafe partial class AlloyRenderer
     internal static long HandlesZeroed, BakeHandleUploads;
     /// <summary>The handle table changed since its last upload. Apart from the shared record dirty list,
     /// which movers touch every frame -- the bake must not pay a handle upload for a matrix write.</summary>
-    private static bool _texHDirty;
+    internal static bool _texHDirty;
     private static readonly byte[] _nameMark = new byte[1 << 20];
     private static readonly int[] _recTidS = new int[MaxOwned * MapSlots];
     private static readonly int[] _recSlotMask = new int[MaxOwned];
     /// <summary>#242: how many record slots the persistent GPU buffer holds for OWNED parts, the sky's
     /// reserved block sitting immediately above them. Grows to the high-water ownership count and never
     /// shrinks; a growth reallocates, so the whole range is re-sent on that frame.</summary>
-    private static int _recOwnCap;
+    internal static int _recOwnCap;
     /// <summary>#242: the dirty list overflowed (or the buffer was just reallocated) -- send the whole
     /// range instead of naming slots. Correct, and merely more expensive than the incremental path.</summary>
-    private static bool _recDirtyAll = true;
-    /// <summary>#242: the audit AC3 asks for -- record writes should scale with the MOVER count. If
-    /// "written" reads as the owned count, the split has a permanent mover in it.</summary>
-    private static long _recWritten, _recStable;
+    internal static bool _recDirtyAll = true;
     /// <summary>#153/#220: GL texture NAME -&gt; resident bindless handle, open-addressed.
     /// <para>#220 was this cache keyed on an ENGINE name. The engine deletes its textures and GL recycles
     /// the names, so a handle could outlive the texture it was made for and a recycled name would hit the
@@ -464,16 +438,16 @@ public sealed unsafe partial class AlloyRenderer
     /// ownedtex is armed. Unarmed, engine names populate this again and the wipe is still the only heal.
     /// </para></summary>
     internal const int HandleHashBits = 15;
-    private static readonly int[] _hTid = new int[1 << HandleHashBits];
-    private static readonly ulong[] _hVal = new ulong[1 << HandleHashBits];
+    internal static readonly int[] _hTid = new int[1 << HandleHashBits];
+    internal static readonly ulong[] _hVal = new ulong[1 << HandleHashBits];
     /// <summary>#220: did WE make <see cref="_hVal"/>[i] resident? The driver cannot be asked, and guessing
     /// produces GL_INVALID_OPERATION in both directions -- residency is only ever ours to know.</summary>
-    private static readonly bool[] _hRes = new bool[1 << HandleHashBits];
+    internal static readonly bool[] _hRes = new bool[1 << HandleHashBits];
     /// <summary>#153: is the bindless path live? Extension present, entry points resolved, not vetoed by
     /// alloy.bindless=off, and the LIT program's actual sources carry the handle block. When false everything
     /// draws exactly as before -- per-batch texture binds.</summary>
-    private static bool _bindless;
-    private static bool _bindlessProbed, _limitsProbed;
+    internal static bool _bindless;
+    internal static bool _bindlessProbed, _limitsProbed;
     /// <summary>#126: this pass's draw order, rebuilt every pass from <see cref="_order"/> -- the opaque set
     /// first, then the blended members sorted back-to-front, then additive. It is a separate array from
     /// _order because the membership is per FRAME (a fading tile joins the blended run for the frames it
@@ -501,24 +475,24 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _blend = new int[MaxOwned];
     private static readonly float[] _blendKey = new float[MaxOwned];
     private static readonly float[] _blendAlpha = new float[MaxOwned];
-    private static readonly int[] _gStart = new int[MaxOwned];
-    private static readonly int[] _gLen = new int[MaxOwned];
-    private static readonly int[] _gVao = new int[MaxOwned];
-    private static readonly int[] _gTex = new int[MaxOwned];
+    internal static readonly int[] _gStart = new int[MaxOwned];
+    internal static readonly int[] _gLen = new int[MaxOwned];
+    internal static readonly int[] _gVao = new int[MaxOwned];
+    internal static readonly int[] _gTex = new int[MaxOwned];
     /// <summary>#120: the live tids of slots 1..5 for this batch (0 = nothing bound there). Part of the batch
     /// KEY, not just of the bind set -- a batch that grouped on the diffuse alone would render every member
     /// under the first member's normal and specular maps.</summary>
-    private static readonly int[] _gTexN = new int[MaxOwned * MapSlots];
-    private static readonly uint[] _gMode = new uint[MaxOwned];
-    private static readonly bool[] _gLit = new bool[MaxOwned];
+    internal static readonly int[] _gTexN = new int[MaxOwned * MapSlots];
+    internal static readonly uint[] _gMode = new uint[MaxOwned];
+    internal static readonly bool[] _gLit = new bool[MaxOwned];
     /// <summary>#123: the batch's <see cref="ShaderFeature"/>. Read by the depth prepass, which skips a batch
     /// whose feature displaces vertices.</summary>
-    private static readonly int[] _gFeat = new int[MaxOwned];
+    internal static readonly int[] _gFeat = new int[MaxOwned];
     /// <summary>#124: does this batch camera-dissolve? A key term for one reason only -- the keyhole
     /// fragment stage <c>discard</c>s, and the depth prepass has no per-draw granularity, so a dissolving
     /// batch has to be droppable whole. Prepass depth for a wall the colour pass punches through would cull
     /// the room behind it.</summary>
-    private static readonly bool[] _gDis = new bool[MaxOwned];
+    internal static readonly bool[] _gDis = new bool[MaxOwned];
     /// <summary>#379 follow-up: did the depth prepass ACTUALLY draw this batch? Set by
     /// <c>DepthPrepassPass</c> as it walks, not predicted from the class -- the SSAO consumer gate was a
     /// second copy of the prepass's skip conditions and drifted from it (a door read "in the depth" while
@@ -526,22 +500,22 @@ public sealed unsafe partial class AlloyRenderer
     internal static readonly bool[] _gPrepassed = new bool[MaxOwned];
     /// <summary>#126: the batch's class and blend pair. In the key because they ARE the GL state a multidraw
     /// cannot vary inside: depth mask, blend function and the alpha-discard threshold.</summary>
-    private static readonly byte[] _gCls = new byte[MaxOwned];
-    private static readonly byte[] _gSrc = new byte[MaxOwned], _gDst = new byte[MaxOwned];
+    internal static readonly byte[] _gCls = new byte[MaxOwned];
+    internal static readonly byte[] _gSrc = new byte[MaxOwned], _gDst = new byte[MaxOwned];
     /// <summary>#292: this batch draws with face culling off. A batch key term rather than a per-draw one:
     /// culling is fixed-function GL state and one multidraw cannot vary it.</summary>
-    private static readonly bool[] _gNoCull = new bool[MaxOwned];
+    internal static readonly bool[] _gNoCull = new bool[MaxOwned];
     /// <summary>The run gob of a blended batch (zero for gobless geometry): consecutive batches with the same
     /// non-zero tag are one creature, prepassed and coloured together so its parts read at one alpha while
     /// two creatures still composite through each other.</summary>
-    private static readonly IntPtr[] _gGob = new IntPtr[MaxOwned];
+    internal static readonly IntPtr[] _gGob = new IntPtr[MaxOwned];
     /// <summary>#126: where the opaque set ends and where the blended run ends, in batch indices. Each pass
     /// draws exactly its own range -- the depth prepass and the probe capture take the opaque prefix.</summary>
-    private static int _gOpaqueEnd, _gBlendEnd, _gWaterEnd;
+    internal static int _gOpaqueEnd, _gBlendEnd, _gWaterEnd;
     /// <summary>#325: where the cutout run begins inside the opaque set, so the opaque pass can time the two
     /// classes apart. Equals <see cref="_gOpaqueEnd"/> when nothing staged as cutout.</summary>
     private static int _gCutoutStart;
-    private static int _drawN;
+    internal static int _drawN;
     // #125: the sky's own draw list, staged after the batch records and issued one draw at a time -- a
     // skybox is a handful of parts and each carries its own captured matrix, so there is nothing to group.
     internal const int MaxSkyDraws = 1024;
@@ -566,26 +540,25 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _seTex = new int[MaxSkyDraws * MaxEngTex];
     private static int _seN;
     private static int _skyFirst, _skyN;
-    private static uint _drawBuf;
+    internal static uint _drawBuf;
     /// <summary>#153: the per-draw texture-handle SSBO (binding <see cref="BindTexH"/>).</summary>
-    private static uint _texHBuf;
+    internal static uint _texHBuf;
     /// <summary>#242: the per-draw index SSBO (binding <see cref="BindDrawIdx"/>), and how many records the
     /// GPU side of <see cref="_drawBuf"/>/<see cref="_texHBuf"/> currently holds. A capacity growth
     /// reallocates both, which is why it forces a wholesale re-send.</summary>
-    private static uint _slotBuf;
-    private static int _recCapGpu;
+    internal static uint _slotBuf;
+    internal static int _recCapGpu;
     /// <summary>#137's bone block and the CPU stage behind it. One region, rewritten every colour pass.
     /// #262: the stage is native and GROWS (<c>EnsureBoneSlots</c>) rather than turning a crowd past the
-    /// budget into dropped creatures; <c>_boneHigh</c> is the per-report high-water mark that keeps the
+    /// budget into dropped creatures; <c>Counters._boneHigh</c> is the per-report high-water mark that keeps the
     /// ceiling counted rather than silent.</summary>
-    private static uint _boneBuf;
-    private static float* _boneStage;
-    private static int _boneSlots, _boneCap, _boneHigh;
+    internal static uint _boneBuf;
+    internal static float* _boneStage;
+    internal static int _boneSlots, _boneCap;
     /// <summary>#137 armed: <c>ownskin</c> not 0. False refuses the skinmesh class at enrollment -- which
     /// since #264 means every cloak, robe and tail is NOT DRAWN, not drawn by the engine (#285).</summary>
-    private static bool _skinning;
+    internal static bool _skinning;
     /// <summary>#262: did <see cref="SkinPose.SelfCheck"/> pass? Checked once at install, ahead of every
     /// engine-symbol stand-down, so the answer is about this BUILD and not about this client.</summary>
     private static bool _skinMathOk;
-    private static long _skinDrawn, _skinNoPose;
 }

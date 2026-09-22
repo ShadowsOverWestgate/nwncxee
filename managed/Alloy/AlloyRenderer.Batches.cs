@@ -56,13 +56,13 @@ public sealed unsafe partial class AlloyRenderer
                 // #546: an unexplored tile (fog-of-war ramp at 0) is not drawn at all, as vanilla skips a
 
                 if (fade <= 0f)
-                { if (_oGob[i] != IntPtr.Zero) _skipFogGob++; else _skipFogTile++; _oFading[i] = true; W(i, "skipped: tile fog ramp at 0"); continue; }
+                { if (_oGob[i] != IntPtr.Zero) Counters._skipFogGob++; else Counters._skipFogTile++; _oFading[i] = true; W(i, "skipped: tile fog ramp at 0"); continue; }
                 _oFading[i] = fade < 1f;
                 float alpha = PartAlphaCached(i, tri) * fade * (_oGob[i] != IntPtr.Zero ? AlloyCensus.GobAlphaMul(tri) : 1f);
                 bool dis = alpha >= 1f && Dissolves(i, tri, ref _stageCounters[0]);
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Fade, tFade, ChaseEvery);
                 if (alpha < 1f)
-                { _ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = BlendKey(i); nb++; continue; }
+                { Counters._ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = BlendKey(i); nb++; continue; }
                 // #537: an occluder rides the keyhole sweep too -- same depth holes, same stage; the sign of
                 // rot.z remembers whether the aperture itself was allowed (StagePart reads _occKey).
                 _occKey[i] = dis;
@@ -145,11 +145,11 @@ public sealed unsafe partial class AlloyRenderer
             return false;
         }
         if (!IdentityOk(i, tri))
-        { _skipIdentity++; W(i, "skipped: identity changed -- revoked"); Revoke(i); return false; }
+        { Counters._skipIdentity++; W(i, "skipped: identity changed -- revoked"); Revoke(i); return false; }
         // #336: a part of a LOD tree the gob is not showing. The engine draws GobPartTree alone; the walk
         // enrols all three trees so a swap is a field read, and this is that read. Casts nothing either.
         if (_oLodRoot[i] != IntPtr.Zero && *(IntPtr*)(_oGob[i] + GobPartTree) != _oLodRoot[i])
-        { _skipLod++; SetCastOk(i, false); W(i, "skipped: inactive LOD alternate"); return false; }
+        { Counters._skipLod++; SetCastOk(i, false); W(i, "skipped: inactive LOD alternate"); return false; }
         if (samp) FrameZones.AddSampled(FrameZones.Zone.Ident, t0, ChaseEvery);
         return true;
     }
@@ -233,7 +233,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The packing <see cref="SortKey"/> applies, spelled without the tables so the check above can
     /// exercise it. LIT is the senior bit: a program switch re-sends the whole lighting rig (cascades, local
-    /// cubes, the probe -- see <see cref="IssueBatchesInner"/>), and face culling is one <c>glEnable</c>. So
+    /// cubes, the probe -- see <see cref="Issue.IssueBatchesInner"/>), and face culling is one <c>glEnable</c>. So
     /// the order inside a class is (unlit culled, unlit two-sided, lit culled, lit two-sided): one program
     /// bind per class as before, and at most two cull toggles.</summary>
     private static int SortKeyOf(bool noCull, bool lit, int vao)
@@ -715,7 +715,7 @@ public sealed unsafe partial class AlloyRenderer
         bool dumping = FrameDump.Begin();
         // #134: routing walks the CLASS RANGES, not the ownership table -- a part whose class range was
         // never built simply never appears, and no skip site can report on it. Say so once.
-        if (_watchDrawLeft > 0)
+        if (Diag._watchDrawLeft > 0)
         {
             bool routedWatch = false;
             for (int k = 0; k < routed && !routedWatch; k++) routedWatch = AlloyCensus.WatchedEntry(_oEntry[_pass[k]]);
@@ -724,7 +724,7 @@ public sealed unsafe partial class AlloyRenderer
                 bool owned = false;
                 for (int i = 0; i < _ownCount && !owned; i++)
                     owned = _oTri[i] != IntPtr.Zero && AlloyCensus.WatchedEntry(_oEntry[i]);
-                if (owned) { _watchDrawLeft--; _log?.Info("[dumpframe] DRAW never routed -- owned, but RouteParts did not include it"); }
+                if (owned) { Diag._watchDrawLeft--; _log?.Info("[dumpframe] DRAW never routed -- owned, but RouteParts did not include it"); }
             }
         }
         _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = 0;
@@ -849,19 +849,19 @@ public sealed unsafe partial class AlloyRenderer
                 // this ticket added rather than the whole batch count, which no baseline would separate.
                 if (groups != 0 && noCull != keyNoCull && sameSlots && lit == keyLit && vKey == keyVao
                     && tidKey == keyTex && mode == keyMode && feat == keyFeat && dis == keyDis
-                    && cls == keyCls && blend == keyBlend) _cullCuts++;
+                    && cls == keyCls && blend == keyBlend) Counters._cullCuts++;
                 // #327: which term opened an opaque-range cut -- one counter per term, a cut that flipped
                 // several charged to each. The instrument the sort above is judged by.
                 if (groups != 0 && cls == keyCls && cls <= (int)AlloyClass.Cutout)
                 {
-                    if (vKey != keyVao) _cutBy[0]++;
-                    if (feat != keyFeat) _cutBy[1]++;
-                    if (dis != keyDis) _cutBy[2]++;
-                    if (blend != keyBlend) _cutBy[3]++;
-                    if (noCull != keyNoCull) _cutBy[4]++;
-                    if (mode != keyMode) _cutBy[5]++;
-                    if (lit != keyLit) _cutBy[6]++;
-                    if (tidKey != keyTex || !sameSlots) _cutBy[7]++;
+                    if (vKey != keyVao) Counters._cutBy[0]++;
+                    if (feat != keyFeat) Counters._cutBy[1]++;
+                    if (dis != keyDis) Counters._cutBy[2]++;
+                    if (blend != keyBlend) Counters._cutBy[3]++;
+                    if (noCull != keyNoCull) Counters._cutBy[4]++;
+                    if (mode != keyMode) Counters._cutBy[5]++;
+                    if (lit != keyLit) Counters._cutBy[6]++;
+                    if (tidKey != keyTex || !sameSlots) Counters._cutBy[7]++;
                 }
                 _gStart[groups] = n; _gLen[groups] = 0;
                 _gLit[groups] = lit; _gVao[groups] = vKey; _gTex[groups] = tid; _gMode[groups] = mode;
@@ -874,7 +874,7 @@ public sealed unsafe partial class AlloyRenderer
                 keyCls = cls; keyBlend = blend; keyNoCull = noCull; keyGob = gobKey;
             }
             W(i, "SUBMITTED");
-            if (AlloyCensus.WatchTex[_oEntry[i]]) _watchSubmitted++;
+            if (AlloyCensus.WatchTex[_oEntry[i]]) Counters._watchSubmitted++;
             _dCount[n] = idxCount;
             _dOff[n] = idxOff;
             _dBase[n] = baseVertex;
@@ -908,8 +908,8 @@ public sealed unsafe partial class AlloyRenderer
                                idxCount, _dOff[n], _dBase[n], r);
             _gLen[groups - 1]++;
             n++;
-            if (noCull) _twoSidedDraws++;
-            if (_oGob[i] != IntPtr.Zero) _drawsGob++;
+            if (noCull) Counters._twoSidedDraws++;
+            if (_oGob[i] != IntPtr.Zero) Counters._drawsGob++;
             // #302: no shadow feed here any more. An instance part IS an ownership slot, and the bake walks
             // the ownership table -- so there is nothing to hand over and nothing that can be double-recorded.
             AlloyCensus.OwnGen[_oEntry[i]] = PassGen;
@@ -947,8 +947,8 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly StageCounters[] _stageCounters = new StageCounters[StagePool.MaxChunks];
     private static void FoldCounters(ref StageCounters c)
     {
-        _ownDissolve += c.OwnDissolve; _nrmDeclared += c.NrmDeclared; _nrmBound += c.NrmBound;
-        _recStable += c.RecStable; _recWritten += c.RecWritten;
+        Counters._ownDissolve += c.OwnDissolve; Counters._nrmDeclared += c.NrmDeclared; Counters._nrmBound += c.NrmBound;
+        Counters._recStable += c.RecStable; Counters._recWritten += c.RecWritten;
         _stFrozen += c.StFrozen; _stSettled += c.StSettled; _stThawed += c.StThawed;
         _mxChased += c.MxChased; _mxCached += c.MxCached; _disAsked += c.DisAsked; _disCached += c.DisCached;
         _disBoxed += c.DisBoxed; _disNoFeat += c.DisNoFeat; _disGobUnpierced += c.DisGobUnpierced; _disNoLit += c.DisNoLit;
@@ -1007,7 +1007,7 @@ public sealed unsafe partial class AlloyRenderer
             // painted flat. #285: that skip is a HOLE, not a hand-back -- see `unlit-pass` on the [alloy]
             // line, which must read 0 on a pass that has a lighting rig at all.
             bool lit = _oLit[i];
-            if (lit && !lightingOn) { Inc(ref _skipNoLight); BreakChaseContinuity(); W(i, "skipped: lighting off this pass"); return Skipped; }
+            if (lit && !lightingOn) { Inc(ref Counters._skipNoLight); BreakChaseContinuity(); W(i, "skipped: lighting off this pass"); return Skipped; }
             // #322: identity was verified (and a mismatch revoked) by RouteParts this pass -- every engine
             // read below sits behind that verdict, not behind a second copy of the same four compares.
             bool samp = main && (k & (ChaseEvery - 1)) == 0;
@@ -1077,7 +1077,7 @@ public sealed unsafe partial class AlloyRenderer
             // nothing draws casts nothing. The stale rebuild on return stamps it a mover (newTenant), so
             // the views it re-enters re-bake. Cadenced with the colour reads -- the mdl is only chased on a
             // colour frame, so its absence is only observable then.
-            if (lit && colour && mdl == IntPtr.Zero) { Inc(ref _skipNoMdl); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no mdl node"); return Skipped; }
+            if (lit && colour && mdl == IntPtr.Zero) { Inc(ref Counters._skipNoMdl); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no mdl node"); return Skipped; }
 
             var mat = new MaterialRef(_oMat[i]);
             int tid, slots;
@@ -1101,7 +1101,7 @@ public sealed unsafe partial class AlloyRenderer
                 // every frame.
                 bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero;
                 var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);
-                if (aur.IsNull) { Inc(ref _skipTex); Inc(ref _skipTexNone); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no diffuse texture"); return Skipped; }
+                if (aur.IsNull) { Inc(ref Counters._skipTex); Inc(ref Counters._skipTexNone); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no diffuse texture"); return Skipped; }
                 texDirty = stale || aur.Ptr != _recAur[i] || _recTexStale[i]
                            || (_recCtl[i] != IntPtr.Zero && CycleTextures.IsDirty(_recCtl[i]));
                 // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
@@ -1130,7 +1130,7 @@ public sealed unsafe partial class AlloyRenderer
                     {
                         if (!main) { c = snap; return Deferred; }
                         OwnedTextures.NoteUnbuilt(aur.Ptr);
-                        Inc(ref _skipTex); Inc(ref _skipTexNoId); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
+                        Inc(ref Counters._skipTex); Inc(ref Counters._skipTexNoId); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
                         W(i, "skipped: diffuse has no GL id"); return Skipped;
                     }
                     // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
@@ -1148,8 +1148,8 @@ public sealed unsafe partial class AlloyRenderer
                         if (!owned || Handle(tid, main) == 0)
                         {
                             if (!main && owned) { c = snap; return Deferred; }   // the main thread may still mint it
-                            Inc(ref _skipTex); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
-                            if (owned) Inc(ref _skipTexNoHandle); else Inc(ref _skipTexNotOwned);
+                            Inc(ref Counters._skipTex); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
+                            if (owned) Inc(ref Counters._skipTexNoHandle); else Inc(ref Counters._skipTexNotOwned);
                             TexSkipDiag(owned, tid, aur);
                             W(i, owned ? "skipped: diffuse has no bindless handle"
                                        : "skipped: diffuse is not an Alloy-owned texture");
@@ -1225,9 +1225,9 @@ public sealed unsafe partial class AlloyRenderer
                 int item = _oItem[src];
                 if (elem == 0 || vert == 0 || item < 0
                     || item >= vdo.ElemCount || item >= vdo.VertCount)
-                { Inc(ref _skipRange); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: item out of range"); return Skipped; }
+                { Inc(ref Counters._skipRange); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: item out of range"); return Skipped; }
                 idxCount = *(int*)(elem + item * 8 + 4);
-                if (idxCount <= 0) { Inc(ref _skipRange); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: empty index range"); return Skipped; }
+                if (idxCount <= 0) { Inc(ref Counters._skipRange); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: empty index range"); return Skipped; }
                 _cIdx[i] = idxCount;
                 _cOff[i] = (nint)((long)(uint)*(int*)(elem + item * 8) * 2);
                 _cBase[i] = *(int*)(vert + item * 8);
@@ -1237,7 +1237,7 @@ public sealed unsafe partial class AlloyRenderer
             if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
             int v = _oVao[src];
             if (!main && !VaoReady(v)) { c = snap; return Deferred; }
-            if (!EnsureVao(v)) { Inc(ref _skipVao); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: no VAO"); return Skipped; }
+            if (!EnsureVao(v)) { Inc(ref Counters._skipVao); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: no VAO"); return Skipped; }
             int feat = _oBone[i] >= 0 ? (int)ShaderFeature.Skin : (int)_oFeat[i * 4];
             bool merge = _bindless && lit && cls != (int)AlloyClass.Water;
 
@@ -1504,7 +1504,7 @@ public sealed unsafe partial class AlloyRenderer
         fixed (nint* offs = _seOff)
         for (int i = 0; i < _seN; i++)
         {
-            uint src = BlendGl(_seSrc[i]), dst = BlendGl(_seDst[i]);
+            uint src = Issue.BlendGl(_seSrc[i]), dst = Issue.BlendGl(_seDst[i]);
             if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
             uint vao = EngineVao(_seVao[i]);
             if (vao == 0) continue;
@@ -1514,7 +1514,7 @@ public sealed unsafe partial class AlloyRenderer
             Gl.BindVertexArray(vao);
             Gl.MultiDrawElementsBaseVertex(_seMode[i], counts + i, GlUnsignedShort,
                                            (void**)(offs + i), 1, bases + i);
-            _batches++; _draws++;
+            Counters._batches++; Counters._draws++;
         }
     }
 
@@ -1539,16 +1539,16 @@ public sealed unsafe partial class AlloyRenderer
     private static void SkyOwnedPass(Matrix4x4* vp, int* viewport, bool hosted = true)
     {
         if ((_skyN == 0 && (_seN == 0 || !hosted)) || Gl.DepthRange == null) return;
-        Gl.UseProgram(_prog46);
-        Gl.Uniform1i(_locTex, 0);
-        Gl.Uniform1i(_locViz, _lightViz);
+        Gl.UseProgram(Programs._prog46);
+        Gl.Uniform1i(Programs._locTex, 0);
+        Gl.Uniform1i(Programs._locViz, _lightViz);
         // uOit is program state and the OIT pass left it at 1: the dome would land as a near-zero weighted
         // accumulation write (gl_FragCoord.z = 1) -- a black sky.
-        Gl.Uniform1i(_locOit, 0);
-        Gl.UniformMatrix4fv(_locVp, 1, 0, (float*)vp);
-        UploadFeatureTerms(_locFeat, viewport);
-        Gl.Uniform1f(_locCut, -1f);          // the engine draws the sky with the discard off
-        Gl.Uniform1f(_locSkyFog, SceneFog.SkyBand);
+        Gl.Uniform1i(Programs._locOit, 0);
+        Gl.UniformMatrix4fv(Programs._locVp, 1, 0, (float*)vp);
+        UploadFeatureTerms(Programs._locFeat, viewport);
+        Gl.Uniform1f(Programs._locCut, -1f);          // the engine draws the sky with the discard off
+        Gl.Uniform1f(Programs._locSkyFog, SceneFog.SkyBand);
         // DEPTH_CLAMP because the composed matrices sit under the ENGINE's sky projection (RenderSkyBoxes
         // replaces it with its own near/far) and are drawn under the world's: the dome can cross the world
         // far plane, and clipped it reads as a hole at the horizon with nothing in the log.
@@ -1572,33 +1572,33 @@ public sealed unsafe partial class AlloyRenderer
         fixed (float* t3 = _skTint)
         for (int i = 0; i < _skyN; i++)
         {
-            uint src = BlendGl(_skSrc[i]), dst = BlendGl(_skDst[i]);
+            uint src = Issue.BlendGl(_skSrc[i]), dst = Issue.BlendGl(_skDst[i]);
             if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
             if (_skVao[i] != boundVao) { Gl.BindVertexArray(SkyVao(_skVao[i])); boundVao = _skVao[i]; }
             if (_skTex[i] != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)_skTex[i]); boundTex = _skTex[i]; }
-            Gl.Uniform3fv(_locTint, 1, t3 + i * 3);
+            Gl.Uniform3fv(Programs._locTint, 1, t3 + i * 3);
             int s = _skyFirst + i;
-            Gl.Uniform1i(_locBase, s);
+            Gl.Uniform1i(Programs._locBase, s);
             Gl.MultiDrawElementsBaseVertex(_skMode[i], counts + s, GlUnsignedShort, (void**)(offs + s), 1, bases + s);
-            _batches++; _draws++;
+            Counters._batches++; Counters._draws++;
         }
-        Gl.Uniform1f(_locSkyFog, 0f);   // program state outlives the pass: no later unlit draw inherits the band
+        Gl.Uniform1f(Programs._locSkyFog, 0f);   // program state outlives the pass: no later unlit draw inherits the band
         // #136: the hosted-program parts last, inside the same depth/cull/blend preamble.
         if (hosted) SkyEnginePass();
-        if (hosted && _seN > 0 && _progSkyDecode != 0 && Gl.TextureBarrier != null && PostChain.HdrTex != 0)
+        if (hosted && _seN > 0 && Programs._progSkyDecode != 0 && Gl.TextureBarrier != null && PostChain.HdrTex != 0)
         {
             // same depth range and test: exactly the pixels the hosted dome could have written
             Gl.TextureBarrier();
             Gl.Disable(Gl.BLEND);
-            Gl.UseProgram(_progSkyDecode);
+            Gl.UseProgram(Programs._progSkyDecode);
             // unit 0, which this pass has already given to engine textures and every later pass rebinds;
             // 10..11 carry the shadow arrays the blended passes still sample
             Gl.BindTextureUnit(0, PostChain.HdrTex);
-            Gl.Uniform1i(_skyDecodeHdr, 0);
+            Gl.Uniform1i(Programs._skyDecodeHdr, 0);
             Gl.BindVertexArray(PostChain.FullscreenVao);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
             Gl.Enable(Gl.BLEND);
-            _draws++;
+            Counters._draws++;
         }
         Gl.Disable(Gl.DEPTH_CLAMP);
         Gl.DepthRange(0.0, 1.0);

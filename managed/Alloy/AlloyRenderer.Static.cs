@@ -86,8 +86,8 @@ public sealed unsafe partial class AlloyRenderer
     internal static string StaticStatus()
         => GpuStatic.StoodDown is string s ? $"Stood down — {s}"
          : !GpuStatic.Enabled.V ? "Off — every part is re-read from the game each frame"
-         : _frames == 0 ? "On"
-         : $"On — {(float)_stFrozen / _frames:F0} of {(float)_stSettled / _frames:F0} static parts frozen per frame";
+         : Counters._frames == 0 ? "On"
+         : $"On — {(float)_stFrozen / Counters._frames:F0} of {(float)_stSettled / Counters._frames:F0} static parts frozen per frame";
 
     /// <summary>Is this slot in the STATIC set this frame? Every term is state Alloy already owns -- no new
     /// engine read, so no new <see cref="EngineLayout"/> row.
@@ -152,7 +152,7 @@ public sealed unsafe partial class AlloyRenderer
     private static string StaticWhy()
     {
         var sb = new System.Text.StringBuilder(" refused/frame:");
-        for (int k = 0; k < _stWhy.Length; k++) sb.Append(' ').Append(StWhyName[k]).Append(' ').Append(((float)_stWhy[k] / Math.Max(1, _frames)).ToString("F0"));
+        for (int k = 0; k < _stWhy.Length; k++) sb.Append(' ').Append(StWhyName[k]).Append(' ').Append(((float)_stWhy[k] / Math.Max(1, Counters._frames)).ToString("F0"));
         return sb.ToString();
     }
 
@@ -171,8 +171,8 @@ public sealed unsafe partial class AlloyRenderer
     private static string StaticNote()
         => GpuStatic.StoodDown is string s ? $"gpu.static stood down ({s})"
          : !GpuStatic.Enabled.V ? "gpu.static off"
-         : $"gpu.static {(float)_stFrozen / _frames:F0} frozen/frame of {(float)_stSettled / _frames:F0} " +
-           $"settled ({_stThawed} thawed this period), {(float)_batches / _frames:F0} indirect calls/frame" + StaticWhy();
+         : $"gpu.static {(float)_stFrozen / Counters._frames:F0} frozen/frame of {(float)_stSettled / Counters._frames:F0} " +
+           $"settled ({_stThawed} thawed this period), {(float)Counters._batches / Counters._frames:F0} indirect calls/frame" + StaticWhy();
 
     private static void ResetStaticPeriod() { _stFrozen = 0; _stSettled = 0; _stThawed = 0; Array.Clear(_stWhy); }
 

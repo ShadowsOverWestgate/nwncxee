@@ -12,7 +12,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The Alloy opaque block (hot, zero-alloc): view*proj off the matrix stacks and the target
     /// block once, then -- inside the #80 bracket -- <see cref="BuildBatches"/> revalidates every Alloy part
     /// and stages its draw (texture id re-fetched every frame per the borrowed-pointer rule, which is also what
-    /// keeps animated textures cycling), and <see cref="IssueBatches"/> submits the result as one multidraw per
+    /// keeps animated textures cycling), and <see cref="Issue.IssueBatches"/> submits the result as one multidraw per
     /// (program, VDO, texture, primitive) group. Anything that fails revalidation falls straight back to the
     /// engine walk.</summary>
     /// <summary>#216/#263: the bail-out a pass takes AFTER the shim has already taken the engine's frame
@@ -25,7 +25,7 @@ public sealed unsafe partial class AlloyRenderer
         if (RspShim.InWindow) AlloyGate.Fail(why);
     }
 
-    private static void DrawOwned()
+    internal static void DrawOwned()
     {
         long tAlloy = FrameZones.Now;
         try { DrawOwnedInner(); } finally { FrameZones.Add(FrameZones.Zone.Alloy, tAlloy); }
@@ -42,7 +42,7 @@ public sealed unsafe partial class AlloyRenderer
         // never reaches PassId.FbCopy leaves Alloy water disarmed -- and BucketGate's bucket-6 gate reads
         // the same flag, so water is simply not drawn on exactly those passes (#285: a hole, not vanilla).
         FrameSnapshot.Revoke();
-        if (_progFailed || _batchUnavailable) return;   // EndFrame revokes + disarms; never pay the bracket for nothing
+        if (Programs._progFailed || _batchUnavailable) return;   // EndFrame revokes + disarms; never pay the bracket for nothing
         // Checked BEFORE anything stamps OwnGen: BuildBatches marks parts as drawn, which is only honest while
         // the issue phase cannot fail. Missing entry points are the one way it could.
         if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null)
@@ -125,7 +125,7 @@ public sealed unsafe partial class AlloyRenderer
         SetPassFrustum((float*)&vp, perspective);   // #330: the route gate's planes, this pass's own
         // Cap 5 is the engine's own lit predicate (Ghidra MatStatic @0x450560 / RenderFlat @0x450eb0): with
         // it off every part gets flat white, so the flat variant IS vanilla for this pass.
-        bool lightingOn = _litCount > 0 && _lighting && !_litFailed && perspective
+        bool lightingOn = _litCount > 0 && _lighting && !Programs._litFailed && perspective
                           && (_isEnabled == null || _isEnabled(CapLighting) != 0);
 
         if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); return; }
@@ -136,7 +136,7 @@ public sealed unsafe partial class AlloyRenderer
         ApplySwaps();   // #386: swapped texture names take their new handles here, in the context that owns residency
         OwnedBuffers.HighWater();    // ...and report the mark the funnel recorded, where a string is affordable
         FrameZones.Add(FrameZones.Zone.Own, tOwn);
-        if (EnsureProgram())
+        if (Programs.EnsureProgram())
         {
             BindTarget();
             // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both
@@ -150,7 +150,7 @@ public sealed unsafe partial class AlloyRenderer
                 // leaves them holding another camera's binning (or, before the first dispatch, undefined
                 // BufferData contents), and a lit part would then sample arbitrary light indices.
                 lightingOn = AlloyLights.Build((float*)&view, p00, p11, near, far)
-                             && _progLit46 != 0;
+                             && Programs._progLit46 != 0;
                 FrameZones.Add(FrameZones.Zone.Lights, tLights);
             }
             Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
@@ -161,7 +161,7 @@ public sealed unsafe partial class AlloyRenderer
             new PassState(depth: true, depthWrite: true, cull: true, srgb: srgb).Apply();
             _blendOn = false;
             Gl.ActiveTexture(Gl.TEXTURE0);
-            _lastPixels = viewport[2] * viewport[3];
+            Counters._lastPixels = viewport[2] * viewport[3];
             // #129: built HERE, not at the pass, because staging has to know. A water part staged for a pass
             // whose program never built would be stamped as owned (and so suppressed in the engine's walk)
             // and then never drawn -- so the decision is made before BuildBatches, which skips the class
@@ -172,7 +172,7 @@ public sealed unsafe partial class AlloyRenderer
             // keyed on its class rather than on _gLit, so without this term /alloy light 0 (or a failed
             // lit program, or a build that refused) would leave the water program reading undefined
             // BufferData contents -- an unbounded per-fragment light loop, not a dim sea.
-            _waterArmed = FrameSnapshot.Usable && lightingOn && EnsureWaterProgram();
+            _waterArmed = FrameSnapshot.Usable && lightingOn && Programs.EnsureWaterProgram();
             // #139/#132: from here to PassId.PostProcess the colour passes draw into an RGBA16F target that
             // shares the engine's depth, and everything they write is LINEAR. Asked BEFORE anything is
             // staged, because a refusal is no longer survivable: there is no display-space variant of the
@@ -197,10 +197,10 @@ public sealed unsafe partial class AlloyRenderer
             {
                 long tUp = FrameZones.Now;
                 StageSky();
-                UploadDraws();
+                Issue.UploadDraws();
                 // #308 follow-up: the shadow bracket already uploaded this frame's block; re-orphaning it
                 // here would throw away the very pose the bake just sampled from.
-                if (!posedByShadow) UploadBones();
+                if (!posedByShadow) Issue.UploadBones();
                 FrameZones.Add(FrameZones.Zone.Upload, tUp);
                 // #243: Alloy's own visibility, dispatched twice -- frustum-only for the depth prepass, then
                 // frustum + hi-Z for the colour pass once the prepass has filled the depth the pyramid is
@@ -306,7 +306,7 @@ public sealed unsafe partial class AlloyRenderer
                             // than after the bracket because the probe capture rebuilds the clusters once per
                             // face, and reading afterwards would report cube face 6's overflow as the frame's.
                             if (_takeOverflow)
-                            { _takeOverflow = false; _clusterOverflow += AlloyLights.TakeClusterOverflow(); }
+                            { _takeOverflow = false; Counters._clusterOverflow += AlloyLights.TakeClusterOverflow(); }
                             break;
                         case PassId.GrassOwned:
                             long tGrassDraw = FrameZones.Now;
@@ -314,7 +314,7 @@ public sealed unsafe partial class AlloyRenderer
                             FrameZones.Add(FrameZones.Zone.Grass, tGrassDraw);
                             // Grass draws unblended by construction and toggles GL_BLEND itself; hand the
                             // tracked state back exactly as it was, or the next pass's own bookkeeping
-                            // (IssueBatches reads _blendOn as "what is already set") starts from a lie.
+                            // (Issue.IssueBatches reads _blendOn as "what is already set") starts from a lie.
                             if (_blendOn) Gl.Enable(Gl.BLEND); else Gl.Disable(Gl.BLEND);
                             break;
                         case PassId.SkyOwned:
@@ -341,18 +341,18 @@ public sealed unsafe partial class AlloyRenderer
                             // /alloy oit 2 (#490) sorts per pixel through linked lists on the same bracket.
                             if (_gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
                             {
-                                _oitOn = true;
-                                TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
-                                _oitOn = false;
+                                Issue._oitOn = true;
+                                Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                                Issue._oitOn = false;
                                 OitPass.End(viewport);
                                 _blendOn = true;
                                 {
-                                    _onlyHosted = true;
-                                    TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
-                                    _onlyHosted = false;
+                                    Issue._onlyHosted = true;
+                                    Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                                    Issue._onlyHosted = false;
                                 }
                             }
-                            else TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far, depthWrite: true);
+                            else Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far, depthWrite: true);
                             GpuEnd(GpuTerm.Blended);
                             break;
                         case PassId.FbCopy:
@@ -362,7 +362,7 @@ public sealed unsafe partial class AlloyRenderer
                             if (_gWaterEnd > _gBlendEnd && !_capturing)
                             {
                                 // The blended class left GL_BLEND on and the depth mask off; the blit does
-                                // not care, but leaving the tracked state honest does -- IssueBatches below
+                                // not care, but leaving the tracked state honest does -- Issue.IssueBatches below
                                 // reads _blendOn as "what is already set".
                                 long tBlit = FrameZones.Now;
                                 GpuBegin(GpuTerm.WaterCopy);
@@ -375,13 +375,13 @@ public sealed unsafe partial class AlloyRenderer
                             break;
                         case PassId.WaterOwned:
                             GpuBegin(GpuTerm.Water);
-                            WaterOwnedPass(_gBlendEnd, _gWaterEnd, &vp, (float*)&view, (float*)&proj,
+                            Issue.WaterOwnedPass(_gBlendEnd, _gWaterEnd, &vp, (float*)&view, (float*)&proj,
                                            viewport, near, far);
                             GpuEnd(GpuTerm.Water);
                             break;
                         case PassId.AdditiveOwned:
                             GpuBegin(GpuTerm.Additive);
-                            TransparentPass(_gWaterEnd, groups, &vp, viewport, near, far);
+                            Issue.TransparentPass(_gWaterEnd, groups, &vp, viewport, near, far);
                             GpuEnd(GpuTerm.Additive);
                             // The blending classes leave the depth mask off and GL_BLEND on; the probe
                             // capture that follows draws the opaque set again and must find neither.
@@ -475,7 +475,7 @@ public sealed unsafe partial class AlloyRenderer
                             // #389: the JITTERED camera for the mask (a biased LEQUAL against the jittered depth;
                             // the clean camera z-fought it, live), and the jitter handed over so the composite
                             // reads the mask back into the accumulated frame's space.
-                            OutlineHighlightPass(groups, &vp, jx, jy, viewport, display);
+                            Highlight.OutlineHighlightPass(groups, &vp, jx, jy, viewport, display);
                             GpuEnd(GpuTerm.Post);
                             FrameZones.Add(FrameZones.Zone.Post, tPost);
                             break;
@@ -578,7 +578,7 @@ public sealed unsafe partial class AlloyRenderer
     /// composites through it. <c>/alloy blendprepass 0</c> stands it down.</para></summary>
     private static void BlendedDepthPrepass(int from, int to, Matrix4x4* vp, int* viewport)
     {
-        if (to <= from || !_blendPrepass || !EnsureDepthProgram()) return;
+        if (to <= from || !_blendPrepass || !Programs.EnsureDepthProgram()) return;
         bool indirect = CullPass.Active;
         if (indirect) CullPass.BindForDraw(CullPass.PhasePrepass);
         Gl.ColorMask(0, 0, 0, 0);
@@ -592,11 +592,11 @@ public sealed unsafe partial class AlloyRenderer
         for (int sweep = 0; sweep < 2; sweep++)
         {
             bool dis = sweep == 1;
-            if (dis && _progDepthKey == 0) break;
+            if (dis && Programs._progDepthKey == 0) break;
             bool bound = false;
             for (int g = from; g < to; g++)
             {
-                if (_onlyGobSet && _gGob[g] != _onlyGob) continue;
+                if (Issue._onlyGobSet && _gGob[g] != Issue._onlyGob) continue;
                 if (ShaderFeatures.OutOfPrepass(_gFeat[g]) || _gDis[g] != dis) continue;
                 // A wash writes no depth in its colour draw, so it takes none here either: a tile's light
                 // shaft is its own run (tile parts carry the tile gob), and this sweep would stamp its solid
@@ -605,12 +605,12 @@ public sealed unsafe partial class AlloyRenderer
                 if (!bound)
                 {
                     bound = true;
-                    Gl.UseProgram(dis ? _progDepthKey : _progDepth);
-                    Gl.UniformMatrix4fv(dis ? _depthKeyVp : _depthVp, 1, 0, (float*)vp);
-                    if (dis) UploadFeatureTerms(_depthKeyFeat, viewport);
+                    Gl.UseProgram(dis ? Programs._progDepthKey : Programs._progDepth);
+                    Gl.UniformMatrix4fv(dis ? Programs._depthKeyVp : Programs._depthVp, 1, 0, (float*)vp);
+                    if (dis) UploadFeatureTerms(Programs._depthKeyFeat, viewport);
                 }
                 int s = _gStart[g];
-                Gl.Uniform1i(dis ? _depthKeyBase : _depthBase, s);
+                Gl.Uniform1i(dis ? Programs._depthKeyBase : Programs._depthBase, s);
                 int wantCull = _gNoCull[g] ? 0 : 1;
                 if (wantCull != boundCull)
                 {
@@ -627,7 +627,7 @@ public sealed unsafe partial class AlloyRenderer
                 _blendPrepassDraws += _gLen[g];
             }
         }
-        if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
+        if (indirect) { CullPass.UnbindForDraw(); Issue.BindStagedSlots(); }
         Gl.ColorMask(1, 1, 1, 1);
         Gl.DepthFunc(Gl.LEQUAL);
     }
@@ -636,17 +636,17 @@ public sealed unsafe partial class AlloyRenderer
     /// staged records; the caster bracket bound the record buffer, this binds the staged slot order it needs.</summary>
     internal static void DrawWaterOccluders(Matrix4x4* vp)
     {
-        if (_gWaterEnd <= _gBlendEnd || !EnsureDepthProgram() || _slotBuf == 0) return;
-        BindStagedSlots();
-        Gl.UseProgram(_progDepth);
-        Gl.UniformMatrix4fv(_depthVp, 1, 0, (float*)vp);
+        if (_gWaterEnd <= _gBlendEnd || !Programs.EnsureDepthProgram() || _slotBuf == 0) return;
+        Issue.BindStagedSlots();
+        Gl.UseProgram(Programs._progDepth);
+        Gl.UniformMatrix4fv(Programs._depthVp, 1, 0, (float*)vp);
         uint boundVao = 0;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
         for (int g = _gBlendEnd; g < _gWaterEnd; g++)
         {
             int s = _gStart[g];
-            Gl.Uniform1i(_depthBase, s);
+            Gl.Uniform1i(Programs._depthBase, s);
             uint vao = VaoName(_gVao[g], _gCls[g]);
             if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
             Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort, (void**)(offs + s), _gLen[g], bases + s);
@@ -681,7 +681,7 @@ public sealed unsafe partial class AlloyRenderer
     /// otherwise double.</summary>
     private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport, int phase)
     {
-        if (!_depthPrepass || !EnsureDepthProgram()) return;
+        if (!_depthPrepass || !Programs.EnsureDepthProgram()) return;
         bool retest = phase == CullPass.PhaseRetest;
         int skipped = 0, drawn = 0;
         bool indirect = CullPass.Active;
@@ -730,7 +730,7 @@ public sealed unsafe partial class AlloyRenderer
                 // pass's LEQUAL would cull whatever stands in its holes -- grass turning the ground behind it
                 // into a rectangle. ADR 0011 leaves cutouts-in-the-prepass a MEASUREMENT question (they cost
                 // a texture fetch per fragment to save shading later); this is the measurement's off side,
-                // and _prepassSkipped is what says how much overdraw it leaves on the table.
+                // and Counters._prepassSkipped is what says how much overdraw it leaves on the table.
                 // ...and the blending classes: prepassed, a blended part's SOLID silhouette lands in the depth
                 // buffer (and the hi-Z pyramid) before any colour pass, and every blended surface behind it
                 // is rejected -- a floor decal under a light shaft, a translucent creature behind a window.
@@ -738,18 +738,18 @@ public sealed unsafe partial class AlloyRenderer
                 // BlendedDepthPrepass's job, and water writes its own depth in its own pass.
                 if (_gCls[g] >= (byte)AlloyClass.Cutout) { if (sweep == 0) skipped += _gLen[g]; continue; }
                 if (_gDis[g] != dis) continue;
-                if (dis && _progDepthKey == 0) { skipped += _gLen[g]; continue; }
+                if (dis && Programs._progDepthKey == 0) { skipped += _gLen[g]; continue; }
                 if (!bound)
                 {
                     bound = true;
-                    Gl.UseProgram(dis ? _progDepthKey : _progDepth);
-                    Gl.UniformMatrix4fv(dis ? _depthKeyVp : _depthVp, 1, 0, (float*)vp);
-                    if (dis) UploadFeatureTerms(_depthKeyFeat, viewport);
+                    Gl.UseProgram(dis ? Programs._progDepthKey : Programs._progDepth);
+                    Gl.UniformMatrix4fv(dis ? Programs._depthKeyVp : Programs._depthVp, 1, 0, (float*)vp);
+                    if (dis) UploadFeatureTerms(Programs._depthKeyFeat, viewport);
                 }
                 int s = _gStart[g];
                 _gPrepassed[g] = true;
-                if (dis && !retest) _prepassKeyed += _gLen[g];
-                Gl.Uniform1i(dis ? _depthKeyBase : _depthBase, s);
+                if (dis && !retest) Counters._prepassKeyed += _gLen[g];
+                Gl.Uniform1i(dis ? Programs._depthKeyBase : Programs._depthBase, s);
                 int wantCull = _gNoCull[g] ? 0 : 1;
                 if (wantCull != boundCull)
                 {
@@ -775,7 +775,7 @@ public sealed unsafe partial class AlloyRenderer
         // flowmap slides its uv; those three stay excluded. Depth-only LESS writes are order-independent, so
         // this runs as its own sweep under one program bind.
         GpuEnd(GpuTerm.PrepassKey);
-        if (_prepassFeat && EnsureDepthFeatProgram())
+        if (_prepassFeat && Programs.EnsureDepthFeatProgram())
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
         {
@@ -789,17 +789,17 @@ public sealed unsafe partial class AlloyRenderer
                 if (!bound)
                 {
                     bound = true;
-                    Gl.UseProgram(_progDepthFeat);
-                    Gl.UniformMatrix4fv(_depthFeatVp, 1, 0, (float*)vp);
-                    Gl.Uniform1i(_depthFeatTex, 0);
+                    Gl.UseProgram(Programs._progDepthFeat);
+                    Gl.UniformMatrix4fv(Programs._depthFeatVp, 1, 0, (float*)vp);
+                    Gl.Uniform1i(Programs._depthFeatTex, 0);
                     Gl.ActiveTexture(Gl.TEXTURE0);
-                    UploadFeatureTerms(_depthFeatFeat, viewport);
+                    UploadFeatureTerms(Programs._depthFeatFeat, viewport);
                 }
                 int s = _gStart[g];
                 _gPrepassed[g] = true;
-                Gl.Uniform1i(_depthFeatBase, s);
+                Gl.Uniform1i(Programs._depthFeatBase, s);
                 float cut = AlloyClasses.Discard(_gCls[g]);
-                if (cut != boundCut) { Gl.Uniform1f(_depthFeatCut, cut); boundCut = cut; }
+                if (cut != boundCut) { Gl.Uniform1f(Programs._depthFeatCut, cut); boundCut = cut; }
                 if (!_bindless && cut >= 0f && _gTex[g] != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)_gTex[g]); boundTex = _gTex[g]; }
                 int wantCull = _gNoCull[g] ? 0 : 1;
                 if (wantCull != boundCull)
@@ -814,11 +814,11 @@ public sealed unsafe partial class AlloyRenderer
                 else
                     Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
                                                    (void**)(offs + s), _gLen[g], bases + s);
-                drawn += _gLen[g]; skipped -= _gLen[g]; if (!retest) _prepassFeatDraws += _gLen[g];
+                drawn += _gLen[g]; skipped -= _gLen[g]; if (!retest) Counters._prepassFeatDraws += _gLen[g];
             }
             GpuEnd(GpuTerm.PrepassFeat);
         }
-        if (indirect) { CullPass.UnbindForDraw(); BindStagedSlots(); }
+        if (indirect) { CullPass.UnbindForDraw(); Issue.BindStagedSlots(); }
         if (idsWanted) IdTarget.End();   // unconditional past Begin: the draw-buffer state is the FBO's
         Gl.ColorMask(1, 1, 1, 1);
         // Counted from what this loop submitted, not from the pass's total draw count: since #126 that total
@@ -826,7 +826,7 @@ public sealed unsafe partial class AlloyRenderer
         // #243: under the cull this is what was STAGED, not what the GPU kept -- the count that decides is in
         // the parameter buffer and does not come back. The period line's cull clause carries the kept figure;
         // this one is the ceiling it culls from, and reading it as "draws" would overstate the pass.
-        if (!retest) { _prepassDraws += drawn; _prepassSkipped += skipped; }
+        if (!retest) { Counters._prepassDraws += drawn; Counters._prepassSkipped += skipped; }
         // #214: OUR depth attachment, not the engine's -- a texture by construction, so consumers get a
         // sampleable name rather than whatever the engine happened to allocate.
         DepthResource.Publish((int)Gl.ATTACHMENT_TEXTURE, (int)PostChain.DepthTex, viewport, PassGen);
@@ -882,11 +882,11 @@ public sealed unsafe partial class AlloyRenderer
         int tail = from;
         while (tail < to && !_gDis[tail]) tail++;
         GpuBegin(plain);
-        IssueColour(from, tail, vp, viewport, near, far);
+        Issue.IssueColour(from, tail, vp, viewport, near, far);
         GpuEnd(plain);
         if (tail >= to) return;
         GpuBegin(keyed);
-        IssueColour(tail, to, vp, viewport, near, far);
+        Issue.IssueColour(tail, to, vp, viewport, near, far);
         GpuEnd(keyed);
     }
 
@@ -902,7 +902,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void CaptureProbe(int groups, float far)
     {
         long tProbe = FrameZones.Now;
-        // The six faces submit through IssueBatches, which books its own zone -- so the parent subtracts it
+        // The six faces submit through Issue.IssueBatches, which books its own zone -- so the parent subtracts it
         // exactly as the shim subtracts the Alloy frame. Without this a capture frame counts the submission
         // twice, and a capture frame is precisely the shape that latches the worst-frame snapshot.
         long issue0 = FrameZones.Ticks(FrameZones.Zone.Issue);
@@ -916,7 +916,7 @@ public sealed unsafe partial class AlloyRenderer
         if (!EnvProbe.Wanted(_eyePos, bsp, _frameSeq)) return;
         if (!EnvProbe.Begin(_eyePos, bsp, _frameSeq, far, ProbeClear())) return;
 
-        long draws = _draws, batches = _batches;
+        long draws = Counters._draws, batches = Counters._batches;
         float buildMs = AlloyLights.LastBuildMs;   // the [alloy] line's cluster timer is the SCREEN's build
         Vector3 eye = _eyePos;
         _capturing = true;
@@ -932,7 +932,7 @@ public sealed unsafe partial class AlloyRenderer
             Matrix4x4 view = EnvProbe.FaceView(f);
             // A cube face is exactly 90deg, so the projection's p00 and p11 are both cot(45) = 1.
             AlloyLights.Build((float*)&view, 1f, 1f, fnear, ffar);
-            IssueBatches(0, groups, (float*)&vp, faceVp, fnear, ffar);
+            Issue.IssueBatches(0, groups, (float*)&vp, faceVp, fnear, ffar);
             // the real sky behind the world, so a wet street mirrors the dome and not the clear colour; the
             // dome is parked at this frame's camera, which is where the probe stands
             SkyOwnedPass(&vp, faceVp, hosted: false);
@@ -941,7 +941,7 @@ public sealed unsafe partial class AlloyRenderer
         if (ok) EnvProbe.End(); else Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         _capturing = false;
         _eyePos = eye;
-        _draws = draws; _batches = batches;
+        Counters._draws = draws; Counters._batches = batches;
         AlloyLights.LastBuildMs = buildMs;
     }
 

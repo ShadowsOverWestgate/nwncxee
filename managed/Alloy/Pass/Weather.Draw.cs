@@ -196,7 +196,7 @@ internal static unsafe partial class Weather
         l.Alpha = GlProgram.Loc(prog, "uAlpha"); l.Soft = GlProgram.Loc(prog, "uSoft"); l.Viz = GlProgram.Loc(prog, "uViz");
         l.Cover = GlProgram.Loc(prog, "uCover"); l.CoverVp = GlProgram.Loc(prog, "uCoverVp"); l.CoverLayer = GlProgram.Loc(prog, "uCoverLayer"); l.CoverSoft = GlProgram.Loc(prog, "uCoverSoft");
         l.Lit = GlProgram.Loc(prog, "uLit"); l.Back = GlProgram.Loc(prog, "uBack");
-        (snow ? ref _litSnow : ref _litRain) = AlloyRenderer.LitLocs(prog);
+        (snow ? ref _litSnow : ref _litRain) = Programs.LitLocs(prog);
         return true;
     }
 

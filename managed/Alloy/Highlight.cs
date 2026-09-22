@@ -5,6 +5,8 @@ using CX.Framework;
 using CX.Graphics;
 using CX.Services.Quickbar;
 
+using static CX.Alloy.AlloyRenderer;
+
 namespace CX.Alloy;
 
 /// <summary>#232's second mode: the OWNED highlight. Instead of replaying the engine's
@@ -21,8 +23,10 @@ namespace CX.Alloy;
 /// this robust where a depth-EQUALITY fill speckles; (2) ONE fullscreen triangle blends the result over
 /// the frame, fill from the mask (bilinear edge = antialiased) and outline from a ring-tap dilation of it
 /// (a coverage ramp = thick AND smooth). Per-frame cost is therefore one geometry re-draw of the
-/// highlighted set plus one fixed 24-tap fullscreen pass, not a pass per object.</para></summary>
-public sealed unsafe partial class AlloyRenderer
+/// highlighted set plus one fixed 24-tap fullscreen pass, not a pass per object.</para>
+/// <para>An ADR 0014 module, not a partial (CX-699): it reaches the renderer's tables and state through
+/// <c>using static</c>, a compile-time alias that emits the same static load the same-class read did.</para></summary>
+internal static unsafe class Highlight
 {
     /// <summary><c>Scene</c>'s highlight state, as <c>Scene::AddHighlightGob</c> @0x462280 lays it out:
     /// a <c>CExoArrayList&lt;Gob*&gt;</c> (data ptr, then count) and a parallel RGB <c>Vector</c> array,
@@ -72,7 +76,7 @@ public sealed unsafe partial class AlloyRenderer
     /// winning channel and published (or withdrawn) the gob, so this reads the result instead of predicting
     /// it -- no duplicated priority rule to drift.</summary>
     [UnmanagedCallersOnly]
-    private static void OnRefreshHilite(IntPtr animBase)
+    internal static void OnRefreshHilite(IntPtr animBase)
     {
         _origRefreshHilite(animBase);
         if (animBase == IntPtr.Zero) return;
@@ -101,7 +105,7 @@ public sealed unsafe partial class AlloyRenderer
                        + $" -> {(claim ? "OWNED outline" : "engine glow")}");
     }
 
-    private static delegate* unmanaged<IntPtr, void> _origRefreshHilite;
+    internal static delegate* unmanaged<IntPtr, void> _origRefreshHilite;
 
     /// <summary>Did the source hook claim this gob? A gob the hook never saw is not ours: the engine can put
     /// a gob in the highlight list by a path that never reaches <c>RefreshHilite</c>, and the safe verdict
@@ -267,7 +271,7 @@ public sealed unsafe partial class AlloyRenderer
     /// against the render-res frame depth; the composite over the finished frame runs at
     /// <paramref name="display"/>, sampling the mask bilinearly. The outline radius is in mask texels, so it
     /// widens by 1/scale on screen -- noted, not corrected.</para></summary>
-    private static void OutlineHighlightPass(int groups, Matrix4x4* vp, float jx, float jy, int* viewport, int* display)
+    internal static void OutlineHighlightPass(int groups, Matrix4x4* vp, float jx, float jy, int* viewport, int* display)
     {
         HandledCount = 0;
         if (!Renderer.OutlineHighlight) return;
@@ -398,7 +402,7 @@ public sealed unsafe partial class AlloyRenderer
     {
         uint boundVao = 0;
         int boundCull = -1, boundColor = -1, boundCut = -1;
-        // The blended class writes depth too now (TransparentPass depthWrite), so a translucent creature matches.
+        // The blended class writes depth too now (Issue.TransparentPass depthWrite), so a translucent creature matches.
         int end = groups < _gBlendEnd ? groups : _gBlendEnd;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
