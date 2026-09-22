@@ -217,6 +217,10 @@ internal static unsafe partial class GrassField
     /// that is not there.</summary>
     private static bool _capped, _patchCapped;
     private static int _samples = 1;
+    /// <summary>The DEFAULT framebuffer's sample count, latched for the life of the context (0 = not yet
+    /// read). It is the only multisampled surface the grass pass can land on, and it is fixed once the
+    /// context exists -- so the query belongs here and not in the frame path (#710).</summary>
+    private static int _fb0Samples;
     private static float _appliedAniso = 1f;
     private static bool _anyFlat;
 
@@ -318,6 +322,7 @@ internal static unsafe partial class GrassField
     internal static void ContextLost()
     {
         _vao = 0; _vboInst = 0; _prog = 0; _progDepth = 0; _sampMip = 0; _sampFlat = 0; _pushTex = 0;
+        _fb0Samples = 0;
         _loc = default;
         _down.Forget();
         Forget();
@@ -771,6 +776,22 @@ internal static unsafe partial class GrassField
 
     private static byte Sat(float v) => (byte)MathF.Round(v < 0f ? 0f : v > 255f ? 255f : v);
 
+    /// <summary>Samples of the surface this pass draws into, without a per-frame <c>glGet</c> (#710).
+    /// Every target Alloy binds -- the post chain's HDR target, the present texture -- is built from plain
+    /// 2D attachments, so only framebuffer 0 can be multisampled, and its count cannot change under a live
+    /// context.</summary>
+    private static int TargetSamples()
+    {
+        if (PostChain.Armed || PresentTarget.Fbo46 != 0) return 1;
+        if (_fb0Samples == 0)
+        {
+            int s = 0;
+            Gl.GetIntegerv(Gl.SAMPLES, &s);
+            _fb0Samples = s < 1 ? 1 : s;
+        }
+        return _fb0Samples;
+    }
+
     /// <summary>Cull, sort, issue. The sort key is (material, distance): materials are a handful and switching
     /// one costs a texture bind, while near-to-far inside a material is what lets early-Z throw away the
     /// overdraw grass is otherwise made of.</summary>
@@ -808,8 +829,7 @@ internal static unsafe partial class GrassField
         }
         if (_dumpMips) { _dumpMips = false; DumpMips(tids, live); }
         EnsureSamplers();
-        int samples = 0;
-        Gl.GetIntegerv(Gl.SAMPLES, &samples);
+        int samples = TargetSamples();
         _samples = samples;
         bool msaa = samples > 1;
 
