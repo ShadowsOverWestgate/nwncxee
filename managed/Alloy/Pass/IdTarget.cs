@@ -45,7 +45,7 @@ internal static unsafe class IdTarget
 
     /// <summary>The GLSL both halves share: the fragment output and the pack. Concatenated into every depth
     /// fragment stage so the three write the identical word.</summary>
-    internal static string OutDecl => ShaderSource.Get("IdTarget.OutDecl.glsl");
+    internal static string OutDecl => ShaderSource.Get("cx_idout.glsl");
 
     /// <summary>C# twin of <c>CxVisId</c>, for the self-check and a later CPU readback.</summary>
     internal static uint Pack(int slot, int prim) => ((uint)(slot + 1) << PrimBits) | ((uint)prim & ((1u << PrimBits) - 1));
@@ -148,7 +148,7 @@ internal static unsafe class IdTarget
 
     /// <summary>Integer hash (lowbias32) of the whole word to rgb: neighbouring triangles land on unrelated
     /// colours, the same triangle on the same colour every frame. Black = no owned opaque draw.</summary>
-    internal static string VizFs => ShaderSource.Get("IdTarget.VizFs.glsl");
+    internal static string VizFs => ShaderSource.Get("cx_idviz_f.glsl");
 
     /// <summary>Off-device: the pack round-trips at the record ceiling, the three depth stages carry the one
     /// output text, and the viz mode is inside <see cref="AlloyRenderer.LightVizMax"/>.</summary>

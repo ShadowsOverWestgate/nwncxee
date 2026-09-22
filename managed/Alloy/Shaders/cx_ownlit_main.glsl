@@ -1,0 +1,5 @@
+#include "cx_ownlit_synth.glsl"
+#include "cx_wx_litsplice.glsl"
+#include "cx_ownlit_light.glsl"
+#include "cx_wx_litprobe.glsl"
+#include "cx_ownlit_tail.glsl"

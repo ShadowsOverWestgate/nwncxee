@@ -30,7 +30,7 @@ internal static unsafe class TaaStage
     /// display space out). A temporal average is softer at an edge than a spatial filter is, which is the one
     /// thing TAA gets held against SMAA for; <c>post.taasharp</c> is a cross-tap unsharp mask that puts the
     /// contrast back. The taps are texel-exact fetches: the history is NEAREST at this stage's own size.</summary>
-    internal static string StageFs => ShaderSource.Get("TaaStage.StageFs.glsl");
+    internal static string StageFs => ShaderSource.Get("cx_taastage_f.glsl");
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
@@ -149,7 +149,7 @@ internal static unsafe class TaaStage
     /// (Karis), so one firefly texel cannot outvote ten frames of history, and a moving pixel takes a little
     /// more of the current frame per pixel of motion, so disocclusions resolve in a few frames instead of the
     /// full history length. An off-screen reprojection takes the current frame whole.</summary>
-    internal static string TaaFs => ShaderSource.Get("TaaStage.TaaFs.glsl");
+    internal static string TaaFs => ShaderSource.Get("cx_taa_f.glsl");
 
     /// <summary>Off-device: the stage composes under the stack's contract, the resolve dilates and reprojects
     /// through the velocity target in ITS units, variance-clips the history in YCoCg, and the gate is one key.</summary>

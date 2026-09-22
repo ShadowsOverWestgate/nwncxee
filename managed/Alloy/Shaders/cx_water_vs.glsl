@@ -1,3 +1,3 @@
-#include "FrameSnapshot.VsHead.glsl"
-#include "AlloyRenderer.DrawBufDecl.glsl"
-#include "FrameSnapshot.VsMain.glsl"
+#include "cx_water_vhead.glsl"
+#include "cx_drawbuf.glsl"
+#include "cx_water_vmain.glsl"

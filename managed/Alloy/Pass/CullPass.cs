@@ -958,7 +958,7 @@ internal static unsafe class CullPass
     /// <para>A radius of infinity is "do not cull me" -- the CPU writes it for anything whose vertices move
     /// under a matrix that does not (skinned, dangly, a displacing feature), and for a degenerate bbox.
     /// Unknown bounds mean visible, always: the failure mode of this pass is invisible geometry.</para></summary>
-    private static string CullCs => ShaderSource.Get("CullPass.CullCs.glsl");
+    private static string CullCs => ShaderSource.Get("cx_cull_c.glsl");
 
     /// <summary>#290: the back-to-front sort, as a RANK rather than a shuffle. One thread per draw; a
     /// survivor of a sorted batch counts how many survivors of the same batch are FARTHER than it, and that
@@ -975,7 +975,7 @@ internal static unsafe class CullPass
     /// needs more dispatches and a scratch list to beat it. If a scene ever lands enough transparents to
     /// show on the <c>[alloy]</c> line, a bitonic sort over these same keys drops in without changing
     /// anything around it.</para></summary>
-    private static string SortCs => ShaderSource.Get("CullPass.SortCs.glsl");
+    private static string SortCs => ShaderSource.Get("cx_cullsort_c.glsl");
 
     /// <summary>One level of the pyramid: the MAX of the source region the destination texel covers.
     /// <para>A 3x3 tap, not a 2x2, and that is a correctness fix rather than a refinement. GL sizes mip
@@ -985,5 +985,5 @@ internal static unsafe class CullPass
     /// MORE readily -- dropping them is the dangerous direction, not the safe one. The third tap folds the
     /// remainder in; where there is no remainder it merely over-covers by one texel, which raises the max
     /// and therefore only ever draws more.</para></summary>
-    private static string HiZFs => ShaderSource.Get("CullPass.HiZFs.glsl");
+    private static string HiZFs => ShaderSource.Get("cx_hiz_f.glsl");
 }

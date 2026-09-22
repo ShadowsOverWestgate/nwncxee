@@ -199,13 +199,13 @@ internal static unsafe class SmaaStage
     }
 
     /// <summary>Pass 2: blend weights from the edges, through the area and search tables.</summary>
-    internal static string WeightFs => ShaderSource.Get("SmaaStage.WeightFs.glsl");
+    internal static string WeightFs => ShaderSource.Get("cx_smaawgt_f.glsl");
 
     /// <summary>Pass 3, the stack stage: the neighbourhood blend of uSrc by the weights. Display space in
     /// and out, like every stage; the incoming <c>c</c> is re-fetched bilinearly by the reference. Carries
     /// the shared defs for the library's sake only -- no preset macro reaches this pass, which is why a
     /// live preset change rebuilds the other two programs and not this one.</summary>
-    internal static string BlendStageFs => ShaderSource.Get("SmaaStage.BlendStageFs.glsl");
+    internal static string BlendStageFs => ShaderSource.Get("cx_smaablend_f.glsl");
 
     /// <summary>Off-device: the option maps to the presets, the three passes compose on the port, and the
     /// tables are in the build at their reference sizes.</summary>

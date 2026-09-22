@@ -1,5 +1,0 @@
-#include "GrassField.GrassVsHead.glsl"
-#include "AlloyLights.LocalShadowLib.glsl"
-#include "AlloyLights.FragmentLib.glsl"
-#include "AlloyLights.SunShadowLib.glsl"
-#include "GrassField.GrassVsMain.glsl"

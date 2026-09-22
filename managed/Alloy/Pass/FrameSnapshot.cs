@@ -515,5 +515,5 @@ internal static unsafe class FrameSnapshot
     /// injects as <c>SHADER_QUALITY_MODE 2</c> (the string is <c>#define SHADER_QUALITY_MODE %d</c> in
     /// nwmain). Only that branch is ported: the two lower tiers are different shaders, and reproducing a look
     /// nobody on this client sees is the kind of ladder that rots.</para></summary>
-    internal static string FsHead => ShaderSource.Get("FrameSnapshot.FsHead.glsl");
+    internal static string FsHead => ShaderSource.Get("cx_water_fhead.glsl");
 }

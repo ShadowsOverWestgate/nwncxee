@@ -96,6 +96,9 @@ module costs a log line rather than the frame.
 
 ## The twenty-nine stages
 
+These are the stage resrefs. The libraries they include are listed by the dump; see
+[Libraries](#libraries).
+
 | resref | stage | what it does |
 | --- | --- | --- |
 | `cx_own_vs` | vertex | Unlit ("fullbright") Alloy geometry: projects the batch, reads the per-draw record. |
@@ -127,10 +130,29 @@ module costs a log line rather than the frame.
 | `cx_rain_fs` | fragment | The rain streak: a tapered core, faded where it meets geometry through `uSceneDepth` (`uSoft` = 1/m). Alpha over the linear frame, so no encode. `uViz` 1 paints the fade. |
 | `cx_snow_fs` | fragment | The snowflake: a soft disc, the same contact fade. Alpha over the linear frame. |
 
-One more file appears in the dump: `cx_ownlit_fs.bindless.shd`. It is **reference
-only** — the lit stage after the extender's own bindless rewrite. The dot makes it
-unloadable as a resref. Override `cx_ownlit_fs` and the rewrite is applied to whatever
+One more file appears in the dump: `cx_ownlit_bl_ref.shd`. It is **reference
+only** — the lit stage after the extender's own bindless rewrite. The extender never asks
+for that resref, so shipping it changes nothing. Override `cx_ownlit_fs` and the rewrite is applied to whatever
 you supply.
+
+## Libraries
+
+A stage is mostly `#include`s. Each library it includes (fog, the local and sun shadow
+receivers, material synthesis, the keyhole, and so on) can be overridden **on its own**, as
+`<resref>.shd`, and the replacement reaches every stage that includes it. The dump writes
+every library next to the stages, unexpanded, under a short banner. Every embedded file is
+named by a `cx_*` resref of at most 16 characters, because that is all a hak or NWSync
+entry can carry. `ShaderSource.SelfCheck` refuses a longer name.
+
+- A dumped stage brackets each library it spliced with `//@cx-lib <resref>` and
+  `//@cx-end <resref>`. Keep the brackets and a library override still reaches your copy
+  of the stage. Delete them and that library is frozen in your copy.
+- A library override's own `#include` lines are expanded, and those libraries can be
+  overridden in turn.
+- A program that a library override breaks (compile or link) rebuilds from the embedded
+  libraries with a log line, the same way a broken stage override does.
+- The guards below read the text that actually ran, library overrides included. A stage
+  they refuse is rebuilt from embedded stages **and** embedded libraries.
 
 ## The guards
 

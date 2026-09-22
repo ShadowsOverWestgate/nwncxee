@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Numerics;
 using CX.Framework;
 using CX.Graphics;
 
@@ -131,7 +132,8 @@ internal static unsafe class PostChain
 
     private static int _dSrc, _dLod, _dTexel, _dFirst, _dThresh;
     private static int _uSrc, _uLod, _uTexel;
-    private static int _cHdr, _cBloom, _cDepth, _cStrength, _cMode, _cKnee, _cDither, _cViz, _cExposure, _cAcesMix, _cSkyRaw;
+    private static int _cHdr, _cBloom, _cDepth, _cStrength, _cMode, _cKnee, _cDither, _cViz, _cExposure, _cAcesMix, _cSkyRaw,
+                       _cSkyBand, _cInvVp, _cEye;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -280,17 +282,17 @@ internal static unsafe class PostChain
     }
 
     /// <summary>#491: the SSBO block the three programs share. Bin 0 is "below the floor" and ignored.</summary>
-    private static string AutoBufLib => ShaderSource.Get("PostChain.AutoBufLib.glsl");
+    private static string AutoBufLib => ShaderSource.Get("cx_autobuf.glsl");
 
     /// <summary>The resolve's view of the same block: it only reads the gain.</summary>
-    private static string AutoBufLibRead => ShaderSource.Get("PostChain.AutoBufLibRead.glsl");
+    private static string AutoBufLibRead => ShaderSource.Get("cx_autobuf_read.glsl");
 
     /// <summary>#491: 16x16 tiles, a shared-memory histogram per tile, 64 atomics per tile into the SSBO.</summary>
-    internal static string AutoHistCs => ShaderSource.Get("PostChain.AutoHistCs.glsl");
+    internal static string AutoHistCs => ShaderSource.Get("cx_autohist_c.glsl");
 
     /// <summary>#491: one thread reduces the bins to a log-average and eases the gain. A zero gain (fresh
     /// buffer, or /post auto just armed) snaps to the target instead of easing from nothing.</summary>
-    internal static string AutoAdaptCs => ShaderSource.Get("PostChain.AutoAdaptCs.glsl");
+    internal static string AutoAdaptCs => ShaderSource.Get("cx_autoadapt_c.glsl");
 
     /// <summary>#132: the refusals that are decidable WITHOUT the 4.6 bracket, asked in ENGINE context
     /// before the Alloy pass pays for its preamble. False stands the whole pass down to vanilla.
@@ -706,6 +708,11 @@ internal static unsafe class PostChain
         Gl.Uniform1i(_cBloom, (int)BloomUnit);
         Gl.Uniform1i(_cDepth, (int)DepthUnit);
         Gl.Uniform1i(_cSkyRaw, Post.SkyRaw.V ? 1 : 0);
+        Matrix4x4 invVp = AlloyRenderer.SkyInvVp;
+        Vector3 eye = AlloyRenderer.EyePos;
+        Gl.Uniform1f(_cSkyBand, FrameInputs.FogOn && invVp != default ? SceneFog.SkyBand : 0f);
+        Gl.UniformMatrix4fv(_cInvVp, 1, 0, (float*)&invVp);
+        Gl.Uniform3f(_cEye, eye.X, eye.Y, eye.Z);
         Gl.Uniform1f(_cStrength, _bloomOk ? Post.Bloom.V : 0f);
         Gl.Uniform1i(_cMode, Post.Tonemap.V);
         Gl.Uniform1f(_cKnee, Post.TmKnee.V);
@@ -805,7 +812,7 @@ internal static unsafe class PostChain
         Gl.DeleteProgram(stale);
         _log?.Info($"PostChain: the {what} override is refused -- {why}. Rebuilding from the embedded "
                  + "default (regenerate the override with /alloy shaderdump to get it back).");
-        return GlProgram.Graphics(FullscreenVs, fs, _log, $"PostChain {what} (embedded)");
+        return GlProgram.Graphics(FullscreenVs, fs, _log, $"PostChain {what} (embedded)", content: false);
     }
 
     private static bool EnsurePrograms()
@@ -844,6 +851,8 @@ internal static unsafe class PostChain
         _uTexel = GlProgram.Loc(_progUp, "uTexel");
         _cHdr = GlProgram.Loc(_progComposite, "uHdr"); _cBloom = GlProgram.Loc(_progComposite, "uBloom");
         _cDepth = GlProgram.Loc(_progComposite, "uDepth"); _cSkyRaw = GlProgram.Loc(_progComposite, "uSkyRaw");
+        _cSkyBand = GlProgram.Loc(_progComposite, "uSkyBand"); _cInvVp = GlProgram.Loc(_progComposite, "uInvVP");
+        _cEye = GlProgram.Loc(_progComposite, "uEyePos");
         _cStrength = GlProgram.Loc(_progComposite, "uStrength"); _cMode = GlProgram.Loc(_progComposite, "uMode");
         _cKnee = GlProgram.Loc(_progComposite, "uKnee");
         _cExposure = GlProgram.Loc(_progComposite, "uExposure");
@@ -865,7 +874,7 @@ internal static unsafe class PostChain
     /// <summary>The full-screen triangle every post stage draws: three vertices, no buffers, no attributes.
     /// A triangle rather than a quad because the diagonal seam of a two-triangle quad costs a second
     /// rasterisation of every pixel along it and buys nothing.</summary>
-    internal static string FullscreenVs => ShaderSource.Get("PostChain.FullscreenVs.glsl");
+    internal static string FullscreenVs => ShaderSource.Get("cx_fullscreen_v.glsl");
 
     /// <summary>#132: the frame's one encode, and the only colour-space conversion left anywhere in the
     /// Alloy pipeline. Its own text rather than a share of <see cref="AlloyLights.FragmentLib"/> because
@@ -874,7 +883,7 @@ internal static unsafe class PostChain
     /// <para>Unconditional, and that is not the pre-#132 sin coming back: the engine's gamma parameter is
     /// asked in <see cref="Precheck"/>, which stands the whole Alloy pass down when it is off. This stage
     /// only ever runs on a frame whose stages linearised, so it always has an encode to undo.</para></summary>
-    private static string PostColorLib => ShaderSource.Get("PostChain.PostColorLib.glsl");
+    private static string PostColorLib => ShaderSource.Get("cx_postcolor.glsl");
 
     /// <summary>The frame's one dither, shared by the resolve and every <see cref="PostStack"/> stage: the
     /// whole Alloy frame is computed in RGBA16F and written ONCE into an 8-bit target, so every gradient in
@@ -882,7 +891,7 @@ internal static unsafe class PostChain
     /// TRIANGULAR PDF, two independent samples summed, not uniform: a uniform dither leaves the noise floor
     /// modulated by where the signal sits inside its step, so bands survive faintly; the triangular sum
     /// decorrelates the error outright. <c>lsb</c> is one LSB of the target, or 0 for an intermediate.</summary>
-    internal static string PostDitherLib => ShaderSource.Get("PostChain.PostDitherLib.glsl");
+    internal static string PostDitherLib => ShaderSource.Get("cx_postdither.glsl");
 
     /// <summary>Progressive downsample, the 13-tap filter with the four-group Karis average (Jimenez'
     /// "Next Generation Post Processing"). The Karis weighting is not decoration: a plain box filter over a
@@ -893,19 +902,19 @@ internal static unsafe class PostChain
     /// the threshold is linear-referred. Its default does not move with it: the threshold is 1.0 and
     /// pow(1, 2.2) is 1, so the boundary is the same number in either space. Only the soft KNEE's width
     /// changes shape below it.</para></summary>
-    internal static string BloomDownFs => ShaderSource.Get("PostChain.BloomDownFs.glsl");
+    internal static string BloomDownFs => ShaderSource.Get("cx_bloomdown_f.glsl");
 
     /// <summary>The 3x3 tent back up the chain, added into the level below with ONE/ONE. Tent rather than
     /// bilinear: the upsample is what turns nine discrete mips into one continuous falloff, and a plain
     /// bilinear read leaves each level's own resolution visible as a ring.</summary>
-    internal static string BloomUpFs => ShaderSource.Get("PostChain.BloomUpFs.glsl");
+    internal static string BloomUpFs => ShaderSource.Get("cx_bloomup_f.glsl");
 
     /// <summary>The resolve: add the bloom, tonemap, and do the frame's ONE encode -- #132's exit step.
     /// <para><c>uMode</c> 1 (the default) is a shoulder: identity below the knee, asymptotic to 1 above it.
     /// That shape is the requirement -- engine-drawn geometry shares this framebuffer and never passes
     /// through here, so a curve that moved the midtones would split the frame in two. 2 is ACES
     /// (Narkowicz' fit), which does move them: a deliberate whole-frame look, not a default.</para></summary>
-    internal static string ResolveFs => ShaderSource.Get("PostChain.ResolveFs.glsl");
+    internal static string ResolveFs => ShaderSource.Get("cx_resolve_f.glsl");
 
     /// <summary>Off-device (run-demo.sh): the knob table has the shape the frame relies on and the shoulder
     /// really is the identity below its knee -- which is the whole parity argument, and the one property no
@@ -991,7 +1000,8 @@ internal static unsafe class PostChain
             // trailing line comment was commented out with it. #707's #include always starts a line, so
             // this now guards the file: a declaration parked on the include's line would read the same way.
             check.Expect(AutoHistCs.Contains("\nlayout(std430") && AutoAdaptCs.Contains("\nlayout(std430")
-              && AutoHistCs.Contains("};\nshared uint") && AutoAdaptCs.Contains("};\nvoid main"),
+              && AutoHistCs.Contains("};\n" + ShaderSource.EndMark + "cx_autobuf\nshared uint")
+              && AutoAdaptCs.Contains("};\n" + ShaderSource.EndMark + "cx_autobuf\nvoid main"),
               "the exposure SSBO block sits on its own line in both compute stages");
             check.Expect(AutoHistCs.Contains("texelFetch(uHdr, p, 0)") && AutoAdaptCs.Contains("uParams.w / avg"),
               "the histogram reads the linear HDR texel and the adapt steers key / average");

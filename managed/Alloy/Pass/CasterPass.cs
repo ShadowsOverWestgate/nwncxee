@@ -1886,7 +1886,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                          + "branch, or its fragment stage is not inert (a discard or a written gl_FragDepth "
                          + "silently removes or displaces every shadow). Rebuilding from the embedded stages "
                          + "(regenerate the override with /alloy shaderdump to get it back).");
-                p = GlProgram.Graphics(CastVs, CastFs, _log, "CasterPass depth program (embedded)");
+                p = GlProgram.Graphics(CastVs, CastFs, _log, "CasterPass depth program (embedded)", content: false);
             }
             if (p == 0) { _progFailed = true; Disarm("the caster depth program failed to build"); return false; }
             _prog = p;
@@ -2829,9 +2829,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// term (<c>CxBoneBase</c> / <c>CxSkinMat</c>, shared source, not a re-spelling), and the rigid arm is
     /// <see cref="AlloyRenderer.ClipExpr"/> character-for-character under <c>invariant gl_Position</c> --
     /// #119's standing constraint, which the depth prepass compares against.</summary>
-    internal static string CastVs => ShaderSource.Get("CasterPass.CastVs.glsl");
+    internal static string CastVs => ShaderSource.Get("cx_cast_v.glsl");
     /// <summary>Depth-only: the fixed-function depth write is the whole output.</summary>
-    internal static string CastFs => ShaderSource.Get("CasterPass.CastFs.glsl");
+    internal static string CastFs => ShaderSource.Get("cx_cast_f.glsl");
 
     /// <summary>The masked caster's depth stage: the same clip position, plus the diffuse UVs, so the
     /// fragment stage can punch the cutout's holes into the shadow map. No skinning -- <see cref="Collect"/>
@@ -2840,8 +2840,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <para>No resref, for <see cref="DepthKeyVs"/>'s reason one level up: a content override that drifted
     /// from the 0.2 threshold would write shadow where the colour pass draws nothing, which reads as dirt on
     /// a wall and points at no file.</para></summary>
-    private static string CastMaskVs => ShaderSource.Get("CasterPass.CastMaskVs.glsl");
-    private static string CastMaskFs => ShaderSource.Get("CasterPass.CastMaskFs.glsl");
+    private static string CastMaskVs => ShaderSource.Get("cx_castmask_v.glsl");
+    private static string CastMaskFs => ShaderSource.Get("cx_castmask_f.glsl");
 
     /// <summary>The handle-sampling pair: <see cref="CastMaskVs"/> carrying the record index out, and
     /// <see cref="CastMaskFs"/> with <c>uTex</c> redirected through the handle block by
@@ -2849,7 +2849,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
     private static readonly string CastMaskHVs = CastMaskVs
         .Replace("out vec2 vUV;", "out vec2 vUV;\n        flat out int vDraw;")
         .Replace("vUV = aUV;", "vUV = aUV;\n            vDraw = gl_BaseInstance;");
-    private static string CastMaskHFsSrc => ShaderSource.Get("CasterPass.CastMaskHFsSrc.glsl");
+    private static string CastMaskHFsSrc => ShaderSource.Get("cx_castmaskh_f.glsl");
     private static readonly string CastMaskHFs = AlloyRenderer.BindlessFs(CastMaskHFsSrc);
     private static readonly string CastLayerMaskHVs = CastLayerMaskVs
         .Replace("out vec2 vUV;", "out vec2 vUV;\n        flat out int vDraw;")
@@ -2861,9 +2861,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// LOCAL so the clip expression stays #119's character for character under the invariant -- the maths is
     /// identical, only where the matrix comes from moved. Embedded only, never overridable: an override here
     /// could only desync the two bake paths the A/B compares.</summary>
-    internal static string CastLayerVs => ShaderSource.Get("CasterPass.CastLayerVs.glsl");
+    internal static string CastLayerVs => ShaderSource.Get("cx_castlayer_v.glsl");
 
     /// <summary>...and the masked twin, <see cref="CastMaskVs"/> with the same routing. No skinning, for
     /// the same bind-pose-cutout reason.</summary>
-    private static string CastLayerMaskVs => ShaderSource.Get("CasterPass.CastLayerMaskVs.glsl");
+    private static string CastLayerMaskVs => ShaderSource.Get("cx_castlaymask_v.glsl");
 }

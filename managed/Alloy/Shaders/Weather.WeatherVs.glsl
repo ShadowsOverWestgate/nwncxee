@@ -1,5 +1,0 @@
-#include "Weather.WeatherVsHead.glsl"
-#include "AlloyLights.LocalShadowLib.glsl"
-#include "AlloyLights.FragmentLib.glsl"
-#include "AlloyLights.SunShadowLib.glsl"
-#include "Weather.WeatherVsMain.glsl"

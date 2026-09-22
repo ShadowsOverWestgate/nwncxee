@@ -1,5 +1,0 @@
-#include "AlloyRenderer.OwnedLitFsMainSynth.glsl"
-#include "Weather.LitSplice.glsl"
-#include "AlloyRenderer.OwnedLitFsMainLight.glsl"
-#include "Weather.LitSpliceProbe.glsl"
-#include "AlloyRenderer.OwnedLitFsMainTail.glsl"

@@ -138,5 +138,5 @@ internal static unsafe partial class Weather
 
     /// <summary>One blur axis of the two moments, a Gaussian over 13 taps at uStep. The first axis reads the
     /// depth view (uFirst: r is the depth, its square is made here); the second reads the moment pair.</summary>
-    internal static string EsmFs => ShaderSource.Get("Weather.EsmFs.glsl");
+    internal static string EsmFs => ShaderSource.Get("cx_esm_f.glsl");
 }

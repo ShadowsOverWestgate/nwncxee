@@ -100,9 +100,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The mover vertex stage. <c>gl_Position</c> is the prepass's exact <see cref="ClipExpr"/> text
     /// under <c>invariant</c>, so LEQUAL against the depth the mover already wrote passes on every fragment;
     /// the previous clip position rides through the record's <c>prev</c> and last frame's view-projection.</summary>
-    internal static string MotionVs => ShaderSource.Get("AlloyRenderer.MotionVs.glsl");
+    internal static string MotionVs => ShaderSource.Get("cx_motion_v.glsl");
 
     /// <summary>The same convention as <see cref="MotionVectors.CameraFs"/>: prev minus current, render pixels,
     /// the current position unjittered, bounded and never NaN.</summary>
-    internal static string MotionFs => ShaderSource.Get("AlloyRenderer.MotionFs.glsl");
+    internal static string MotionFs => ShaderSource.Get("cx_motion_f.glsl");
 }

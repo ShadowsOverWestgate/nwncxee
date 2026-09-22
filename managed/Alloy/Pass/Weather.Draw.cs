@@ -213,12 +213,12 @@ internal static unsafe partial class Weather
     /// <para>The light is taken here, once per vertex at the instance's own centre (the particle pass's
     /// #336 shape): ambient with the sun-facing floor, the sun through its cascades, the clustered lamps.
     /// <c>uLit = 0</c> (rig down, lighting off) falls back to the flat area terms.</para></summary>
-    internal static string WeatherVs => ShaderSource.Get("Weather.WeatherVs.glsl");
+    internal static string WeatherVs => ShaderSource.Get("cx_wx_v.glsl");
 
     /// <summary>A rain streak: a thin bright core tapered at both ends, faded where it meets geometry.
     /// Linear, alpha over. <c>/weather viz 1</c> paints the contact fade alone. The colour is the vertex stage's light times the brightness scalar.</summary>
-    internal static string RainFs => ShaderSource.Get("Weather.RainFs.glsl");
+    internal static string RainFs => ShaderSource.Get("cx_rain_f.glsl");
 
     /// <summary>A snowflake: a soft white disc, faded where it meets geometry. Linear, alpha over.</summary>
-    internal static string SnowFs => ShaderSource.Get("Weather.SnowFs.glsl");
+    internal static string SnowFs => ShaderSource.Get("cx_snow_f.glsl");
 }

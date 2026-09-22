@@ -345,7 +345,7 @@ internal static unsafe class CasterGather
 
     /// <summary>The view table's GLSL declaration, shared by the layered dispatch and both layered depth
     /// stages -- <c>AlloyRenderer.DrawBufDecl</c>'s pattern, so the three cannot drift apart.</summary>
-    internal static string ViewTblDecl => ShaderSource.Get("CasterGather.ViewTblDecl.glsl");
+    internal static string ViewTblDecl => ShaderSource.Get("cx_viewtbl.glsl");
 
     private static uint _layerProg;
     private static bool _layerFailed;
@@ -453,7 +453,7 @@ internal static unsafe class CasterGather
     /// rejecting one it can see deletes a shadow.</para></summary>
     /// <summary>The two culls both dispatches share, <c>@SLOPE@</c> unexpanded: the #488 receiver cull
     /// and the point-light face cull. Spliced, then the slope is interpolated over the whole text.</summary>
-    private static string ReceiverCullLib => ShaderSource.Get("CasterGather.ReceiverCullLib.glsl");
+    private static string ReceiverCullLib => ShaderSource.Get("cx_recvcull.glsl");
 
     private static readonly string GatherCs = ("""
         #version 460 core

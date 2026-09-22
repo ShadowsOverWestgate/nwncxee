@@ -1349,8 +1349,8 @@ internal static unsafe partial class Particles
     {
         if (_prog != 0) return true;
         if (_failed) return false;
-        _prog = GlProgram.Graphics(ShaderSource.Get("Particles.ParticleVs.glsl"),
-            ShaderSource.Get("Particles.ParticleFs.glsl"), _log, "Particles");
+        _prog = GlProgram.Graphics(ShaderSource.Get("cx_part_v.glsl"),
+            ShaderSource.Get("cx_part_f.glsl"), _log, "Particles");
         if (_prog == 0)
         { _failed = true; _log?.Info("Particles: program build failed -- emitters stay vanilla"); return false; }
         _locView = GlProgram.Loc(_prog, "uView");
@@ -1683,7 +1683,7 @@ internal static unsafe partial class Particles
 
     // ---- shaders ---------------------------------------------------------------------------------------
 
-    private static string ParticleCs => ShaderSource.Get("Particles.ParticleCs.glsl");
+    private static string ParticleCs => ShaderSource.Get("cx_part_c.glsl");
 
     /// <summary>The vertex stage. Everything the stock <c>vsparticle</c> does is already done by the time a
     /// vertex exists -- it is <c>VertexColor = vColor; TransformMainCoordinates();</c> and nothing else.
@@ -1704,10 +1704,10 @@ internal static unsafe partial class Particles
     /// 5ms that equipping one cost; a media particle has no detail a per-vertex term loses. The cluster
     /// lookup takes its screen tile from this vertex's own NDC (CX_CLUSTER_XY) since there is no
     /// gl_FragCoord to read; the libraries compose between the head and the main.</para></summary>
-    private static string ParticleVsHead => ShaderSource.Get("Particles.ParticleVsHead.glsl");
+    private static string ParticleVsHead => ShaderSource.Get("cx_part_vhead.glsl");
 
     /// <summary>The vertex main, composed after <see cref="AlloyLights"/>'s three libraries.</summary>
-    private static string ParticleVsMain => ShaderSource.Get("Particles.ParticleVsMain.glsl");
+    private static string ParticleVsMain => ShaderSource.Get("cx_part_vmain.glsl");
 
     /// <summary>The fragment stage, ported from the client's <c>fsparticle</c>: modulate, discard, fog.
     /// <para>The fog split is the stock one -- an additive fragment cannot be lerped towards the fog colour
@@ -1723,8 +1723,8 @@ internal static unsafe partial class Particles
     /// world around them rather than becoming the one coloured thing in a grey frame.</para>
     /// <para>No colour-space encode: since #139 the Alloy colour target holds DISPLAY-SPACE values (RGBA16F
     /// is headroom, not a colour space), so writing what vanilla wrote IS the match.</para></summary>
-    internal static string ParticleFsHead => ShaderSource.Get("Particles.ParticleFsHead.glsl");
+    internal static string ParticleFsHead => ShaderSource.Get("cx_part_fhead.glsl");
 
     /// <summary>The body, composed after <see cref="AlloyLights"/>'s three libraries.</summary>
-    private static string ParticleFsMain => ShaderSource.Get("Particles.ParticleFsMain.glsl");
+    private static string ParticleFsMain => ShaderSource.Get("cx_part_fmain.glsl");
 }

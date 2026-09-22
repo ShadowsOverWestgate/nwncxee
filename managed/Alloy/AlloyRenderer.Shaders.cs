@@ -41,12 +41,12 @@ public sealed unsafe partial class AlloyRenderer
     /// driver may refuse the link; every desktop driver in practice reports >= 8, and the failure is loud
     /// (program build fails -> DISARMED, by name). Upgrade path: probe the limit and put the fullbright
     /// variant's records in a UBO, whose required vertex-stage minimum is 12 blocks.</para></summary>
-    internal static string DrawBufDecl => ShaderSource.Get("AlloyRenderer.DrawBufDecl.glsl");
+    internal static string DrawBufDecl => ShaderSource.Get("cx_drawbuf.glsl");
 
     /// <summary>#123: the feature ids, as GLSL. One contract with <see cref="ShaderFeature"/> -- the C# value
     /// is staged into <c>d.feat.x</c> and compared against these, so <see cref="SelfCheck"/> asserts the two
     /// agree rather than trusting a comment to keep them in step.</summary>
-    internal static string FeatDecl => ShaderSource.Get("AlloyRenderer.FeatDecl.glsl");
+    internal static string FeatDecl => ShaderSource.Get("cx_featdecl.glsl");
 
     /// <summary>The vertex-side half of the feature switches -- the sine sway of the three wind shaders and
     /// the camera-height branch of the two roof toggles, one stage instead of seven forks (#123). The
@@ -71,19 +71,19 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>One blended MATRIX rather than a blended position, because the normal needs it too: skinning the
     /// position and leaving the normal in bind space lights a moving cloak off a stationary surface.</para>
     /// </summary>
-    internal static string BoneVs => ShaderSource.Get("AlloyRenderer.BoneVs.glsl");
+    internal static string BoneVs => ShaderSource.Get("cx_bone_v.glsl");
 
-    internal static string FeatVs => ShaderSource.Get("AlloyRenderer.FeatVs.glsl");
+    internal static string FeatVs => ShaderSource.Get("cx_feat_v.glsl");
     /// <summary>#341: the fog, split out of the keyhole so a stage can have one without the other (the
     /// particle stage fogs and never dissolves; the depth prepass dissolves and never fogs).
     /// <para>The ramp is untouched engine: <c>GetFog</c>'s linear lerp between the area author's start and
     /// end, in view depth. What #341 changes is the two ends of it -- the target colour is built per ray
     /// instead of being one constant, and the factor can be thinned by height.</para></summary>
-    internal static string FogFs => ShaderSource.Get("AlloyRenderer.FogFs.glsl");
+    internal static string FogFs => ShaderSource.Get("cx_fog.glsl");
 
     /// <summary>The keyhole and the fog, in the order every fragment stage wants them. Declared after
     /// both halves: <c>check-shaders.py</c> inlines only constants it has already read.</summary>
-    internal static string KeyFogFs => ShaderSource.Get("AlloyRenderer.KeyFogFs.glsl");
+    internal static string KeyFogFs => ShaderSource.Get("cx_keyfog.glsl");
 
     /// <summary>#347: the VANILLA ENVIRONMENT -- everything a spliced stock include would have got from
     /// the <c>#include</c> lines <see cref="VanillaShader"/> drops, in one block ahead of every marked
@@ -100,7 +100,7 @@ public sealed unsafe partial class AlloyRenderer
     /// (<c>numLights</c>, <c>lightPosition[]</c>) do not exist here -- Alloy's lights are an SSBO the
     /// clustered pass walks -- so every stock block guarded on them compiles out, and where a file wants a
     /// light term anyway it asks <see cref="CxVisionLight"/> for Alloy's.</para></summary>
-    internal static string VanillaEnvDefs => ShaderSource.Get("AlloyRenderer.VanillaEnvDefs.glsl");
+    internal static string VanillaEnvDefs => ShaderSource.Get("cx_vanenv_defs.glsl");
 
     /// <summary>#350: what a hosted stage gets in place of <c>inc_standard</c>. The two calls every stock
     /// fragment stage wraps its own work in are Alloy's: the normal is final before the stage's body runs
@@ -110,11 +110,11 @@ public sealed unsafe partial class AlloyRenderer
     /// so an empty stand-in hands every hosted body a WHITE surface -- the weather ground rendered as a
     /// snowfield with the snow at 0. The scriptable block still has to come from somewhere, and stock gets
     /// it through this include.</summary>
-    internal static string VanillaStandardFs => ShaderSource.Get("AlloyRenderer.VanillaStandardFs.glsl");
+    internal static string VanillaStandardFs => ShaderSource.Get("cx_vanstd_f.glsl");
 
     /// <summary>The declarations half of the environment, after <see cref="VanillaEnvDefs"/>. The macro
     /// half is separate because a hosted stage re-issues it after scoping out its own defines.</summary>
-    internal static string VanillaEnvFs => ShaderSource.Get("AlloyRenderer.VanillaEnvFs.glsl");
+    internal static string VanillaEnvFs => ShaderSource.Get("cx_vanenv_f.glsl");
 
     /// <summary>#347/#348: the CONTENT HOOK. A function the lit stage calls and does not implement, so
     /// that display-space shading a content repo invented -- SoW's noir desaturation and racial vision --
@@ -134,7 +134,7 @@ public sealed unsafe partial class AlloyRenderer
     /// deriving it would mean Alloy naming SoW's functions.</para>
     /// <para>It runs after fog, in DISPLAY space, where <c>inc_standard.shd</c> puts the desaturation and
     /// the vision passes.</para></summary>
-    internal static string HookFs => ShaderSource.Get("AlloyRenderer.HookFs.glsl");
+    internal static string HookFs => ShaderSource.Get("cx_hook_f.glsl");
 
     /// <summary>#350: the HOSTED content stages -- one region per <see cref="ShaderFeature"/> that names a
     /// custom FS (<see cref="ShaderFeatures.FsNames"/>; <c>SelfCheck</c> holds the two lists together). Each
@@ -145,7 +145,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>The dispatcher is what the lit main calls, at the point a stock stage runs its body: after the
     /// texel is sampled and the normal is final, before anything lights either. It returns whether a body
     /// ran, so the read-back costs nothing on the parts that have none.</para></summary>
-    internal static string HostFs => ShaderSource.Get("AlloyRenderer.HostFs.glsl");
+    internal static string HostFs => ShaderSource.Get("cx_host_f.glsl");
 
     /// <summary>The SPELL-TARGETING SHAPE -- the red circle (or cone, or rectangle) a caster sees on the
     /// ground while picking a target. Vanilla draws it as arithmetic in <c>inc_standard.shd</c>'s tail, not as
@@ -161,7 +161,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>Everything the file wants from its own includes is in <see cref="VanillaEnvFs"/>. The uniforms it
     /// declares ITSELF (<c>targetShape</c> and friends) are not repeated there -- <c>UploadTargetShape</c>
     /// writes them under the engine's own names, which is what lets the stock text drop in unedited.</para></summary>
-    internal static string TargetFs => ShaderSource.Get("AlloyRenderer.TargetFs.glsl");
+    internal static string TargetFs => ShaderSource.Get("cx_target.glsl");
 
     /// <summary>The blended class's output stage, shared by every program the class draws through. <c>uOit</c>
     /// 0 = a composited colour; 1 = the weighted-blended accumulation pair (<see cref="OitPass"/>);
@@ -169,7 +169,7 @@ public sealed unsafe partial class AlloyRenderer
     /// test is done here against the opaque depth: an SSBO append is a side effect, and the GL may run
     /// this stage before its own depth test. The node's alpha is the same coverage x rot.w the caster
     /// pass dithers on (#363), so the shadow strength is the same in every mode.</summary>
-    internal static string OitOutFs => ShaderSource.Get("AlloyRenderer.OitOutFs.glsl");
+    internal static string OitOutFs => ShaderSource.Get("cx_oitout.glsl");
 
     /// <summary>#136's known ceiling, closed: the hosted sky program is the ENGINE's and writes DISPLAY space
     /// into Alloy's LINEAR target, so the resolve encoded it a second time and the sky read brighter than
@@ -177,7 +177,7 @@ public sealed unsafe partial class AlloyRenderer
     /// test the sky pass already holds: only where nothing wrote depth), reading each texel back through a
     /// texture barrier and decoding it once. The frame stays linear everywhere, which is the contract the
     /// resolve's own guard enforces -- the fix could not live there.</summary>
-    internal static string SkyDecodeFs => ShaderSource.Get("AlloyRenderer.SkyDecodeFs.glsl");
+    internal static string SkyDecodeFs => ShaderSource.Get("cx_skydecode_f.glsl");
 
     /// <summary>The one clip-space expression EVERY Alloy vertex stage computes, character for character.
     /// #119's prepass writes the depth the colour pass then tests LEQUAL against, and <c>invariant
@@ -187,24 +187,24 @@ public sealed unsafe partial class AlloyRenderer
     /// this expression, or drops the invariant qualifier, reintroduces exactly that.</summary>
     internal const string ClipExpr = "gl_Position = uVP * d.model * vec4(aPos, 1.0);";
 
-    internal static string OwnedVs => ShaderSource.Get("AlloyRenderer.OwnedVs.glsl");
+    internal static string OwnedVs => ShaderSource.Get("cx_owned_v.glsl");
     /// <summary>The unlit variant: the engine draws these parts with lighting disabled (MatStatic's flat-white
     /// branch -- cap 5 off, or a <c>mat+0x98</c> material), so flat texture IS their vanilla appearance.</summary>
-    internal static string OwnedFs => ShaderSource.Get("AlloyRenderer.OwnedFs.glsl");
+    internal static string OwnedFs => ShaderSource.Get("cx_owned_f.glsl");
 
     /// <summary>#119's depth-only stage. Deliberately has NO resref: a stage that writes nothing but depth
     /// has nothing an author could restyle, and an override is one more copy of <see cref="ClipExpr"/> to
     /// keep bit-identical. The fragment stage is empty -- colour writes are masked off, and a program with no
     /// fragment stage at all is a portability gamble for nothing.</summary>
-    internal static string DepthVs => ShaderSource.Get("AlloyRenderer.DepthVs.glsl");
-    internal static string DepthFs => ShaderSource.Get("AlloyRenderer.DepthFs.glsl");
+    internal static string DepthVs => ShaderSource.Get("cx_depth_v.glsl");
+    internal static string DepthFs => ShaderSource.Get("cx_depth_f.glsl");
 
     /// <summary>The feature prepass's fragment stage: the cutout test the colour stages make, and nothing else.
     /// Same texel (unit 0, the batch's diffuse, the lit stage's rotated <c>vUV</c>), same threshold
     /// (<c>AlloyClasses.Discard</c>), same env exemption (an env-mapped material's alpha is reflectivity, not
     /// coverage -- <c>CX_SLOT_ENV</c>). A negative cut (an opaque displaced batch) tests nothing. Flowmap
     /// batches slide their diffuse uv and stay out on the CPU side, so the fetch here is never wrong for them.</summary>
-    internal static string DepthFeatFs => ShaderSource.Get("AlloyRenderer.DepthFeatFs.glsl");
+    internal static string DepthFeatFs => ShaderSource.Get("cx_depthfeat_f.glsl");
 
     /// <summary>#124: the depth stage for a batch the camera dissolves. Without it those batches leave the
     /// prepass entirely, and <c>Camera::GetCanKeyholeDissolve</c> answers "CAN this dissolve" -- a near-static
@@ -215,13 +215,13 @@ public sealed unsafe partial class AlloyRenderer
     /// going to punch. Also has no resref, and for a stronger reason than <see cref="DepthVs"/>: an override
     /// here that drifted from the colour stage's aperture by one constant would write depth over fragments
     /// the colour pass then discards -- the room behind the wall culled, silently.</para></summary>
-    internal static string DepthKeyVs => ShaderSource.Get("AlloyRenderer.DepthKeyVs.glsl");
-    internal static string DepthKeyFs => ShaderSource.Get("AlloyRenderer.DepthKeyFs.glsl");
+    internal static string DepthKeyVs => ShaderSource.Get("cx_depthkey_v.glsl");
+    internal static string DepthKeyFs => ShaderSource.Get("cx_depthkey_f.glsl");
 
     /// <summary>The lit variant's vertex stage. Beyond the fullbright one it carries world position, world
     /// normal and the view depth: <c>gl_Position.w</c> IS the linear view depth under a perspective
     /// projection, so the fragment stage finds its froxel slice without a second matrix.</summary>
-    internal static string OwnedLitVs => ShaderSource.Get("AlloyRenderer.OwnedLitVs.glsl");
+    internal static string OwnedLitVs => ShaderSource.Get("cx_ownlit_v.glsl");
 
     /// <summary>The lit variant's fragment stage: the engine's area ambient + directional diffuse, then every
     /// point light the froxel holds, then the material terms -- the combine order of inc_lighting.shd's
@@ -238,7 +238,7 @@ public sealed unsafe partial class AlloyRenderer
     /// legacy content's reflectivity mask.</para>
     /// <para>ponytail: no synthesis beyond what the stock shaders already do for a declared-nothing material
     /// (#122).</para></summary>
-    internal static string OwnedLitFsHead => ShaderSource.Get("AlloyRenderer.OwnedLitFsHead.glsl");
+    internal static string OwnedLitFsHead => ShaderSource.Get("cx_ownlit_head.glsl");
     /// <summary>#122: material synthesis -- what a part gets for every stock .mtr parameter it does NOT
     /// declare. Lifted out of the fragment main so it is a pure function of already-sampled values: that is
     /// what lets <c>check-shaders.py</c> fold it to constants off-device and check "declared beats
@@ -250,9 +250,9 @@ public sealed unsafe partial class AlloyRenderer
     /// the quality-gated constants are taken at the high setting (the Alloy lobe is GGX + Schlick geometric
     /// shadowing unconditionally, which IS <c>SHADER_QUALITY_MODE &gt; 1</c>), and a map's presence is read
     /// off the live slot mask where stock reads a compile-time <c>#if</c>.</para></summary>
-    internal static string MaterialLib => ShaderSource.Get("AlloyRenderer.MaterialLib.glsl");
+    internal static string MaterialLib => ShaderSource.Get("cx_material.glsl");
 
     /// <summary>The lit main, with the weather splices (#618/#619) folded in at their two seams: the surface
     /// rewrite between material synthesis and the lighting, and the wet reflection after the probe term.</summary>
-    internal static string OwnedLitFsMain => ShaderSource.Get("AlloyRenderer.OwnedLitFsMain.glsl");
+    internal static string OwnedLitFsMain => ShaderSource.Get("cx_ownlit_main.glsl");
 }

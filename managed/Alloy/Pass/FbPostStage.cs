@@ -118,7 +118,7 @@ internal static unsafe class FbPostStage
     /// <c>inc_postpr</c> defines <c>POSTPROCESSING</c>/<c>LIGHTING</c>/<c>FOG</c> for itself, so none of those
     /// are set here; <c>inc_lighting</c>/<c>inc_fog</c>, which it then includes, are the engine's forward
     /// pipeline and are skipped -- no post term reads them.</summary>
-    internal static string FbPostFs => ShaderSource.Get("FbPostStage.FbPostFs.glsl");
+    internal static string FbPostFs => ShaderSource.Get("cx_fbpost_f.glsl");
 
     /// <summary>Off-device: the mask stripping is what the doc says, the gate is effect 2's bit, and the text
     /// neither claims the chain's own defines nor loses its stub.</summary>

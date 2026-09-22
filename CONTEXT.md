@@ -263,7 +263,8 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   (`managed/Alloy/Shaders/`, read through `ShaderSource`; #707 -- it was a C# `const string` before).
   This is the shader that ships: it travels with the renderer it agrees with, so the per-draw record,
   the uniform blocks and the clip expression can never disagree with the CPU side. Every overridable
-  stage has one.
+  stage has one. Every file, stage or library, is named by a `cx_*` resref of at most 16 characters (the
+  hak/NWSync limit), so a library can be overridden on its own too.
 - **Shader override** — a `cx_*.shd` a *user* places where the engine's resman will serve it
   (`development/`, `override/`, a hak), replacing that stage's **embedded stage** at load. A
   first-class customization surface — CX ships defaults and lets them be replaced — and explicitly

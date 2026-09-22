@@ -1534,6 +1534,10 @@ public sealed unsafe partial class AlloyRenderer
     /// </summary>
     /// <para><paramref name="hosted"/> false (the probe capture) draws the owned dome alone: a hosted part runs
     /// the engine's program under the engine's matrices, and its decode reads the frame's HDR target.</para>
+    /// <summary>The main view's inverse view-projection, noted at the sky pass for the resolve's horizon band
+    /// (<see cref="PostChain"/>): a far-depth pixel below the band is fog, not sky. Default = none this view.</summary>
+    internal static Matrix4x4 SkyInvVp;
+
     private static void SkyOwnedPass(Matrix4x4* vp, int* viewport, bool hosted = true)
     {
         if ((_skyN == 0 && (_seN == 0 || !hosted)) || Gl.DepthRange == null) return;
@@ -1593,6 +1597,9 @@ public sealed unsafe partial class AlloyRenderer
             // 10..11 carry the shadow arrays the blended passes still sample
             Gl.BindTextureUnit(0, PostChain.HdrTex);
             Gl.Uniform1i(Programs._skyDecodeHdr, 0);
+            UploadFog(Programs._skyDecodeFeat);
+            Gl.Uniform1f(Programs._skyDecodeSkyFog, Matrix4x4.Invert(*vp, out Matrix4x4 invVp) ? SceneFog.SkyBand : 0f);
+            Gl.UniformMatrix4fv(Programs._skyDecodeInvVp, 1, 0, (float*)&invVp);
             Gl.BindVertexArray(PostChain.FullscreenVao);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
             Gl.Enable(Gl.BLEND);

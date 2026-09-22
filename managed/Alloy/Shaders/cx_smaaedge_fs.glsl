@@ -1,1 +1,1 @@
-#include "SmaaStage.EdgeFs.glsl"
+#include "cx_smaaedge_f.glsl"

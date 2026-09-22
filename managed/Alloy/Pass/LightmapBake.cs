@@ -199,7 +199,7 @@ internal static unsafe partial class LightmapBake
     /// two page arrays and the decode. <c>binding = 6</c> = <see cref="BindChart"/>; the sampler units are
     /// <see cref="UnitA"/>/<see cref="UnitB"/>. A content override that never declares the buffer simply never
     /// reads the lightmap.</summary>
-    internal static string ChartBufDecl => ShaderSource.Get("LightmapBake.ChartBufDecl.glsl");
+    internal static string ChartBufDecl => ShaderSource.Get("cx_chartbuf.glsl");
 
     /// <summary>From the lit program bind: the record buffer, the pages and the two uniforms. Pages 0 when
     /// nothing is resident, so a record that somehow reads a page is ignored rather than sampled.</summary>

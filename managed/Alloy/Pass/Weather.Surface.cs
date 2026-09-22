@@ -133,7 +133,7 @@ internal static unsafe partial class Weather
     /// <summary>The lit main's splice, between material synthesis and the lighting: exposure, then the three
     /// masks, then the surface rewritten under them. A material hosting its own weather body
     /// (<c>td_ground_fs</c>) keeps it. <c>/weather viz 2</c> paints exposure.</summary>
-    internal static string LitSplice => ShaderSource.Get("Weather.LitSplice.glsl");
+    internal static string LitSplice => ShaderSource.Get("cx_wx_litsplice.glsl");
 
     /// <summary>The wet reflection, after the material's own probe term, in the ENGINE's form: the probe sample
     /// tints the light already arriving, behind a Schlick Fresnel. Added radiance was tried first and gave the
@@ -141,7 +141,7 @@ internal static unsafe partial class Weather
     /// and a whole scene mirrored from the wrong place. Tinting cannot exceed the light that is there, so the
     /// sheen ends where the lamp's range ends, with its shadow. The sample is kept blurry (roughness floor)
     /// because one cube cannot mirror a plaza sharply from every point on it.</summary>
-    internal static string LitSpliceProbe => ShaderSource.Get("Weather.LitSpliceProbe.glsl");
+    internal static string LitSpliceProbe => ShaderSource.Get("cx_wx_litprobe.glsl");
 
     internal static void SelfCheck(ExtenderLog log)
     {

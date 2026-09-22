@@ -1,1 +1,1 @@
-#include "SmaaStage.WeightFs.glsl"
+#include "cx_smaawgt_f.glsl"

@@ -1415,7 +1415,7 @@ internal static unsafe partial class GrassField
             _log?.Info("GrassField: grass override still encodes to display space -- rebuilding from the "
                      + "embedded default");
             vs = GrassVs;
-            prog = GlProgram.Graphics(vs, fs, _log, "GrassField instanced grass (embedded)");
+            prog = GlProgram.Graphics(vs, fs, _log, "GrassField instanced grass (embedded)", content: false);
         }
         if (prog == 0)
             return _down.Fail(_log, "the grass program is unavailable",
@@ -1503,22 +1503,22 @@ internal static unsafe partial class GrassField
     /// <c>areaGlobalWind</c> plus the per-blade bend jitter, which is what stops a field moving as one sheet.
     /// <para>This stage DISPLACES, which is exactly why grass is not in the #119 depth prepass and why it does
     /// not compute <c>AlloyRenderer</c>'s invariant clip expression.</para></summary>
-    internal static string GrassVs => ShaderSource.Get("GrassField.GrassVs.glsl");
+    internal static string GrassVs => ShaderSource.Get("cx_grass_v.glsl");
 
-    internal static string GrassFsHead => ShaderSource.Get("GrassField.GrassFsHead.glsl");
+    internal static string GrassFsHead => ShaderSource.Get("cx_grass_fhead.glsl");
 
     /// <summary>The fragment stage. Two discards and no blending at all, which is the whole replacement:
     /// vanilla's fade rides in the alpha channel its cutout reads, so between 15u and ~27.7u every blade is
     /// semi-transparent and depth-writing and deletes whatever stands behind it. Here the fade is a SCREEN-DOOR
     /// dither -- a fragment is either fully opaque or gone -- so the ramp cannot produce a blended fragment,
     /// and because the ramp reaches zero exactly at the engine's own far radius there is no pop either.</summary>
-    internal static string GrassFsMain => ShaderSource.Get("GrassField.GrassFsMain.glsl");
+    internal static string GrassFsMain => ShaderSource.Get("cx_grass_fmain.glsl");
 
     /// <summary>#355: the depth prepass stage. The colour stage's coverage decision -- alpha cutout, distance
     /// dither, keyhole -- and nothing else, so the depth it writes is exactly the set of fragments the colour
     /// pass will keep. Colour writes are masked off by the pass; the alpha output still feeds
     /// alpha-to-coverage where the target is multisampled, with the same coverage the colour pass writes.</summary>
-    internal static string GrassDepthFs => ShaderSource.Get("GrassField.GrassDepthFs.glsl");
+    internal static string GrassDepthFs => ShaderSource.Get("cx_grassdepth_f.glsl");
 
     // ---- live tuning (/grass) ----------------------------------------------------------------
 

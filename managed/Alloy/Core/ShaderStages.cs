@@ -21,7 +21,18 @@ internal static class ShaderStages
         // replace that stage (a hak reaches every player); the extender falls back to the embedded default if
         // it fails to build. Re-dump and diff after each extender update: that diff is your drift.
         // $CAP$ / $SORT$ / $GROUP$ / $SRGB$ / $BAND$ / $AA$ are expanded by the extender on load -- leave them as tokens.
-        // The contract an override has to keep: docs/shader-overrides.md.
+        // `//@cx-lib <resref>` .. `//@cx-end <resref>` bracket each library this stage includes; keep them and a
+        // <resref>.shd library override still reaches this copy. The contract an override has to keep:
+        // docs/shader-overrides.md.
+
+        """;
+
+    internal const string LibBanner = """
+        // Dumped from sow-client-extender's embedded default by /alloy shaderdump: a LIBRARY, spliced into
+        // every stage that #includes it. Drop it in a hak or override as <resref>.shd to replace it in all of
+        // them at once; a program it breaks rebuilds from the embedded libraries. Its own #include lines are
+        // expanded on load, and the sizing tokens too. Re-dump and diff after each extender update.
+        // See docs/shader-overrides.md.
 
         """;
 
@@ -60,8 +71,12 @@ internal static class ShaderStages
 
         """;
 
+    /// <summary>The dump name of the bindless reference copy: a resref that fits a hak like every other dumped
+    /// file, and one the extender never asks for, so shipping it overrides nothing.</summary>
+    internal const string BindlessRef = "cx_ownlit_bl_ref";
+
     internal const string BindlessNote = """
-        // REFERENCE ONLY -- not a starting point for an override, and not loadable under this name. This is
+        // REFERENCE ONLY -- not a starting point for an override; the extender never loads this name. This is
         // the lit fragment stage after the extender's own bindless rewrite (#153), which it applies to
         // whatever cx_ownlit_fs supplies when ARB_bindless_texture is available. Override that instead.
 
@@ -125,9 +140,12 @@ internal static class ShaderStages
                 File.WriteAllText(Path.Combine(dir, r + ".shd"), header + Source(r));
                 n++;
             }
-            // A dot makes this unloadable as a resref, which is the point: it documents the rewrite the
-            // extender performs, and overriding it would be overriding nothing.
-            File.WriteAllText(Path.Combine(dir, "cx_ownlit_fs.bindless.shd"),
+            foreach ((string r, string text) in ShaderSource.Libraries())
+            {
+                File.WriteAllText(Path.Combine(dir, r + ".shd"), LibBanner + text);
+                n++;
+            }
+            File.WriteAllText(Path.Combine(dir, BindlessRef + ".shd"),
                               BindlessNote + AlloyRenderer.BindlessFs(Source(AlloyRenderer.ShdLitFs)));
             n++;
             log?.Info($"ShaderStages: dumped {n} stages to {dir}");
@@ -165,7 +183,7 @@ internal static class ShaderStages
     /// that declares it. A missing switch arm is otherwise invisible until a program builds from "".</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = All.Length == 29;
+        bool ok = All.Length == 29 && BindlessRef.Length <= ShaderResource.ResRefBytes;
         foreach ((string r, string header) in All)
         {
             string src = Source(r);

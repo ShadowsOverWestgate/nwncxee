@@ -369,7 +369,7 @@ internal static unsafe class PostStack
             _log?.Info($"PostStack: the {st.Name} override is refused -- it converts colour space (the stack "
                      + "is display space end to end) or dropped uSrc. Rebuilding from the embedded default.");
             st.Prog = GlProgram.Graphics(PostChain.FullscreenVs, PostStageHead + st.Fs + PostStageMain, _log,
-                                         $"PostStack {st.Name} (embedded)");
+                                         $"PostStack {st.Name} (embedded)", content: false);
         }
         if (st.Prog == 0)
         {
@@ -410,15 +410,15 @@ internal static unsafe class PostStack
 
     /// <summary>What every stack stage sees: the previous output, the frame's depth, and the dither the
     /// last stage owes the 8-bit target. Display space in, display space out -- no stage converts.</summary>
-    internal static string PostStageHead => ShaderSource.Get("PostStack.PostStageHead.glsl");
+    internal static string PostStageHead => ShaderSource.Get("cx_poststg_head.glsl");
 
     /// <summary>The engine's <c>inc_postpr_gam.shd</c>, verbatim in its maths: <c>pow(Color.rgb,
     /// vec3(Gamma/2.2))</c>. Alpha passes through, as the stock stage leaves it.</summary>
-    internal static string GammaStageFs => ShaderSource.Get("PostStack.GammaStageFs.glsl");
+    internal static string GammaStageFs => ShaderSource.Get("cx_gamma_f.glsl");
 
     /// <summary>The shared main: stage, then the dither -- AFTER the stage so the noise lands on the value
     /// that is about to quantise, which is the only place it breaks banding up.</summary>
-    internal static string PostStageMain => ShaderSource.Get("PostStack.PostStageMain.glsl");
+    internal static string PostStageMain => ShaderSource.Get("cx_poststg_main.glsl");
 
     /// <summary>Off-device (run-demo.sh): the stage table composes, the gamma stage IS the engine's maths,
     /// its gate is the engine's mask bit, and the stack's tuning route through <c>/post</c> is reachable.</summary>

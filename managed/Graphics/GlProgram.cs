@@ -11,19 +11,42 @@ internal static unsafe class GlProgram
 {
     private const int LogChars = 1024;
 
-    /// <summary>Link a vertex+fragment program. Returns 0 on failure (already logged).</summary>
-    internal static uint Graphics(string vs, string fs, ExtenderLog? log, string what, bool host = true)
+    /// <summary>Link a vertex+fragment program. Returns 0 on failure (already logged). A library the resource
+    /// chain overrides (<see cref="ShaderSource.Content"/>) is swapped in first, and a build it breaks rebuilds
+    /// from the embedded text; <paramref name="content"/> false is that embedded build outright -- the audit
+    /// fall backs, which must not re-take the override they refused.</summary>
+    internal static uint Graphics(string vs, string fs, ExtenderLog? log, string what, bool host = true, bool content = true)
+    {
+        string cv = content ? ShaderSource.Content(vs, log) : vs, cf = content ? ShaderSource.Content(fs, log) : fs;
+        uint p = Pair(cv, cf, log, what, host);
+        if (p != 0 || (ReferenceEquals(cv, vs) && ReferenceEquals(cf, fs))) return p;
+        log?.Info($"{what}: a library override .shd broke the build -- rebuilding from the embedded libraries");
+        return Pair(vs, fs, log, what, host);
+    }
+
+    private static uint Pair(string vs, string fs, ExtenderLog? log, string what, bool host)
     {
         uint v = Compile(Gl.VERTEX_SHADER, vs, log, what, host), f = Compile(Gl.FRAGMENT_SHADER, fs, log, what, host);
-        if (v == 0 || f == 0) return 0;
+        if (v == 0 || f == 0) { if (v != 0) Gl.DeleteShader(v); if (f != 0) Gl.DeleteShader(f); return 0; }
         return Link(log, what, v, f);
     }
 
-    /// <summary>Link a vertex+geometry+fragment program. Returns 0 on failure (already logged).</summary>
+    /// <summary>Link a vertex+geometry+fragment program. Returns 0 on failure (already logged). Library
+    /// overrides as in <see cref="Graphics(string, string, ExtenderLog?, string, bool, bool)"/>.</summary>
     internal static uint Graphics(string vs, string gs, string fs, ExtenderLog? log, string what)
     {
+        string cv = ShaderSource.Content(vs, log), cg = ShaderSource.Content(gs, log), cf = ShaderSource.Content(fs, log);
+        uint p = Triple(cv, cg, cf, log, what);
+        if (p != 0 || (ReferenceEquals(cv, vs) && ReferenceEquals(cg, gs) && ReferenceEquals(cf, fs))) return p;
+        log?.Info($"{what}: a library override .shd broke the build -- rebuilding from the embedded libraries");
+        return Triple(vs, gs, fs, log, what);
+    }
+
+    private static uint Triple(string vs, string gs, string fs, ExtenderLog? log, string what)
+    {
         uint v = Compile(Gl.VERTEX_SHADER, vs, log, what), g = Compile(Gl.GEOMETRY_SHADER, gs, log, what), f = Compile(Gl.FRAGMENT_SHADER, fs, log, what);
-        if (v == 0 || g == 0 || f == 0) return 0;
+        if (v == 0 || g == 0 || f == 0)
+        { if (v != 0) Gl.DeleteShader(v); if (g != 0) Gl.DeleteShader(g); if (f != 0) Gl.DeleteShader(f); return 0; }
         return Link(log, what, v, g, f);
     }
 
@@ -52,22 +75,33 @@ internal static unsafe class GlProgram
             log?.Info($"{what}: SPIR-V override did not build -- falling back to the embedded default");
             return Graphics(vs, fs, log, what, host);
         }
+        // the stage override first, then the libraries inside whichever text won: a dumped stage keeps its
+        // brackets, so a library override still reaches it
         string? ovs = ShaderResource.Override(vsRef, log), ofs = ShaderResource.Override(fsRef, log);
-        vsSource = ovs ?? vs; fsSource = ofs ?? fs;
-        if (ovs == null && ofs == null) return Graphics(vs, fs, log, what, host);
-        uint prog = Graphics(ovs ?? vs, ofs ?? fs, log, what, host);
-        if (prog != 0) return prog;
+        vsSource = ShaderSource.Content(ovs ?? vs, log); fsSource = ShaderSource.Content(ofs ?? fs, log);
+        uint prog = Pair(vsSource, fsSource, log, what, host);
+        if (prog != 0 || (ReferenceEquals(vsSource, vs) && ReferenceEquals(fsSource, fs))) return prog;
         log?.Info($"{what}: override .shd failed to build -- falling back to the embedded default");
         vsSource = vs; fsSource = fs;
-        return Graphics(vs, fs, log, what, host);
+        return Pair(vs, fs, log, what, host);
     }
 
     /// <summary>The overridable link for callers that do not care where the stages came from.</summary>
     internal static uint Graphics(string vsRef, string vs, string fsRef, string fs, ExtenderLog? log, string what)
         => Graphics(vsRef, vs, fsRef, fs, log, what, out _, out _);
 
-    /// <summary>Link a compute program. Returns 0 on failure (already logged).</summary>
+    /// <summary>Link a compute program. Returns 0 on failure (already logged). Library overrides as in
+    /// <see cref="Graphics(string, string, ExtenderLog?, string, bool, bool)"/>.</summary>
     internal static uint Compute(string cs, ExtenderLog? log, string what)
+    {
+        string cc = ShaderSource.Content(cs, log);
+        uint p = Single(cc, log, what);
+        if (p != 0 || ReferenceEquals(cc, cs)) return p;
+        log?.Info($"{what}: a library override .shd broke the build -- rebuilding from the embedded libraries");
+        return Single(cs, log, what);
+    }
+
+    private static uint Single(string cs, ExtenderLog? log, string what)
     {
         uint c = Compile(Gl.COMPUTE_SHADER, cs, log, what);
         return c == 0 ? 0 : Link(log, what, c);
@@ -86,11 +120,11 @@ internal static unsafe class GlProgram
             return Compute(cs, log, what);
         }
         string? ocs = ShaderResource.Override(csRef, log);
-        if (ocs == null) return Compute(cs, log, what);
-        uint prog = Compute(ocs, log, what);
-        if (prog != 0) return prog;
+        string src = ShaderSource.Content(ocs ?? cs, log);
+        uint prog = Single(src, log, what);
+        if (prog != 0 || ReferenceEquals(src, cs)) return prog;
         log?.Info($"{what}: override .shd failed to build -- falling back to the embedded default");
-        return Compute(cs, log, what);
+        return Single(cs, log, what);
     }
 
     private static uint Link(ExtenderLog? log, string what, uint a, uint b = 0, uint c = 0, uint d = 0)

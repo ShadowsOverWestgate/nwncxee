@@ -614,9 +614,9 @@ internal static unsafe class AlloyLights
     /// shadow by exactly that step.</para>
     /// <para><c>uLocalLight[64]</c> is pinned against <c>CasterPass.MaxCubes</c> by that class's SelfCheck --
     /// GLSL cannot size it from the C# constant, so the check is what keeps the two honest.</para></summary>
-    internal static string LocalShadowLib => ShaderSource.Get("AlloyLights.LocalShadowLib.glsl");
+    internal static string LocalShadowLib => ShaderSource.Get("cx_localshadow.glsl");
 
-    internal static string FragmentLib => ShaderSource.Get("AlloyLights.FragmentLib.glsl");
+    internal static string FragmentLib => ShaderSource.Get("cx_lightfrag.glsl");
 
     /// <summary>The sun cascade receiver (#94), included by the lit fragment stage after
     /// <see cref="FragmentLib"/>. The maps come from <see cref="CasterPass"/>, which renders one
@@ -627,7 +627,7 @@ internal static unsafe class AlloyLights
     /// split distances, no view depth, and nothing that depends on the camera pose.</para>
     /// <para><c>uSunVp[4]</c> is pinned against <c>CasterPass.MaxCascades</c> by that class's SelfCheck --
     /// GLSL cannot size it from the C# constant, so the check is what keeps the two honest.</para></summary>
-    internal static string SunShadowLib => ShaderSource.Get("AlloyLights.SunShadowLib.glsl");
+    internal static string SunShadowLib => ShaderSource.Get("cx_sunshadow.glsl");
 
     /// <summary>Resref the cluster build is looked up under before the embedded stage is used (#92). An override
     /// may carry the same <c>$CAP$</c>/<c>$GROUP$</c> tokens the embedded source does -- see

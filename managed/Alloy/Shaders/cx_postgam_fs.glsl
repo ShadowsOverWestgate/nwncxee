@@ -1,3 +1,3 @@
-#include "PostStack.PostStageHead.glsl"
-#include "PostStack.GammaStageFs.glsl"
-#include "PostStack.PostStageMain.glsl"
+#include "cx_poststg_head.glsl"
+#include "cx_gamma_f.glsl"
+#include "cx_poststg_main.glsl"

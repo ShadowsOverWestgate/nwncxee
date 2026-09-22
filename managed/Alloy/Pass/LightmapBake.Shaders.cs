@@ -8,7 +8,7 @@ namespace CX.Alloy;
 /// page's scratch pair into the resident pair.</summary>
 internal static partial class LightmapBake
 {
-    internal static string BakeVs => ShaderSource.Get("LightmapBake.BakeVs.glsl");
+    internal static string BakeVs => ShaderSource.Get("cx_bake_v.glsl");
 
     /// <summary>Conservative coverage: each triangle's edges are pushed out by <c>CX_LM_PUSH</c> page texels
     /// (mitre-clamped at sharp corners), so a face thinner than a texel still owns the texels it crosses --
@@ -16,12 +16,12 @@ internal static partial class LightmapBake
     /// The pushed vertices carry their barycentrics against the ORIGINAL triangle; the fragment stage clamps
     /// those back inside it, so a pushed texel shades the nearest point ON the face, never a point in the air
     /// or inside the wall behind it.</summary>
-    internal static string BakeGs => ShaderSource.Get("LightmapBake.BakeGs.glsl");
+    internal static string BakeGs => ShaderSource.Get("cx_bake_g.glsl");
 
-    internal static string BakeFs => ShaderSource.Get("LightmapBake.BakeFs.glsl");
+    internal static string BakeFs => ShaderSource.Get("cx_bake_f.glsl");
 
     /// <summary>Per page texel: a covered texel (alpha > 0) converts as is; an uncovered one within two of a
     /// covered one takes its nearest covered neighbour (the dilation that keeps bilinear reads off the
     /// gutter); anything else discards, so cache-hit rects already resident on the page stay untouched.</summary>
-    internal static string FinishFs => ShaderSource.Get("LightmapBake.FinishFs.glsl");
+    internal static string FinishFs => ShaderSource.Get("cx_bakefinish_f.glsl");
 }

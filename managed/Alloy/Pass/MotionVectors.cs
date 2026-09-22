@@ -176,7 +176,7 @@ internal static unsafe class MotionVectors
     /// <summary>Depth to NDC (default depth range, so z = 2d-1), through the inverse of this frame's
     /// view-projection and forward through the previous one. The world point stays homogeneous -- the
     /// previous clip w absorbs whatever w the inverse left -- and one divide gives the previous NDC.</summary>
-    internal static string CameraFs => ShaderSource.Get("MotionVectors.CameraFs.glsl");
+    internal static string CameraFs => ShaderSource.Get("cx_motioncam_f.glsl");
 
     /// <summary>Off-device: the stage text carries its convention and its bounds, and the history edge
     /// resets.</summary>

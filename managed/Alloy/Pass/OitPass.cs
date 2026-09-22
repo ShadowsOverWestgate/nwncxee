@@ -314,7 +314,7 @@ internal static unsafe class OitPass
     /// whose count passed the capacity takes the mode 1 branch: nothing is dropped either way.</summary>
     /// <summary>Zero the head table and the count from the GPU, one texel per pixel. Colour writes are masked
     /// by the caller, so this is a buffer write with a rasteriser for an index generator.</summary>
-    internal static string OitClearFs => ShaderSource.Get("OitPass.OitClearFs.glsl");
+    internal static string OitClearFs => ShaderSource.Get("cx_oitclear_f.glsl");
 
-    internal static string OitResolveFs => ShaderSource.Get("OitPass.OitResolveFs.glsl");
+    internal static string OitResolveFs => ShaderSource.Get("cx_oitresolve_f.glsl");
 }

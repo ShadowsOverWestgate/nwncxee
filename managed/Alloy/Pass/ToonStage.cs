@@ -96,7 +96,7 @@ internal static unsafe class ToonStage
 
     /// <summary>The stage text. Display space in, display space out; the size comes off the depth texture
     /// (the render target's, which is also the ping-pong's under TAA upsampling) so nothing can drift.</summary>
-    internal static string StageFs => ShaderSource.Get("ToonStage.StageFs.glsl");
+    internal static string StageFs => ShaderSource.Get("cx_toon_f.glsl");
 
     /// <summary>Off-device: the maths that makes this better than the stock stage is the maths that is here,
     /// and the three sliders it is the player's copy of.</summary>

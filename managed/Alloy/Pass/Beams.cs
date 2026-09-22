@@ -497,10 +497,10 @@ internal static unsafe class Beams
     /// invisible (ponytail: add the term if a foggy exterior ever shows a shaft standing too proud). And the
     /// stage does NOT carry #119's invariant clip expression, because beams are additive, never enter the
     /// depth prepass, and write no depth -- there is no LEQUAL match to preserve.</para></summary>
-    private static string BeamVs => ShaderSource.Get("Beams.BeamVs.glsl");
+    private static string BeamVs => ShaderSource.Get("cx_beam_v.glsl");
 
     /// <summary>The fragment stage: a flat tint, exactly as <c>fs_beamvol.shd</c> is once its fog term goes.
     /// No encode -- #132 made the Alloy colour target LINEAR and the one whole-frame encode happens at the
     /// resolve; <c>uColor</c> is handed over already linearised.</summary>
-    private static string BeamFs => ShaderSource.Get("Beams.BeamFs.glsl");
+    private static string BeamFs => ShaderSource.Get("cx_beam_f.glsl");
 }

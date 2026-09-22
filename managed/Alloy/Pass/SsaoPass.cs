@@ -304,12 +304,12 @@ internal static unsafe class SsaoPass
     /// <para>The depth is addressed by UV, never by texel: under <c>post.halfres</c> this stage runs at half
     /// the depth target's extent, and a <c>texelFetch</c> at the visibility's own coordinates would read the
     /// top-left quarter of the frame's depth for the whole screen. At equal sizes the two are identical.</para></summary>
-    internal static string SsaoBlurFs => ShaderSource.Get("SsaoPass.SsaoBlurFs.glsl");
+    internal static string SsaoBlurFs => ShaderSource.Get("cx_ssaoblur_f.glsl");
 
     /// <summary>#390: the accumulator. Velocity is <c>prev - cur</c> in this target's pixels, so it is uv
     /// through its own size; the history's stored view distance against this pixel's is the disocclusion test
     /// (10% relative), and an off-screen or sky sample takes the current estimate whole.</summary>
-    internal static string TemporalFs => ShaderSource.Get("SsaoPass.TemporalFs.glsl");
+    internal static string TemporalFs => ShaderSource.Get("cx_ssaotemp_f.glsl");
 
     /// <summary>Off-device: the two stages compose on the shared reconstruction, the gate is the engine's
     /// effect bit, and the lit stage takes the result on the ambient term only.</summary>

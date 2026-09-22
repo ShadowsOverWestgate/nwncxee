@@ -1,1 +1,1 @@
-#include "SsaoPass.SsaoBlurFs.glsl"
+#include "cx_ssaoblur_f.glsl"
