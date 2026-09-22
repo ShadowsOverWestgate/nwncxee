@@ -4,6 +4,7 @@ uniform sampler2D uAccum;
 uniform sampler2D uReveal;
 uniform int uViz;
 uniform int uMode;
+uniform int uNet;        // 1 = the weighted pair was written this frame (mode 2 writes it only after an overflow)
 uniform ivec2 uOitDim;   // (head-table stride, node capacity)
 layout(std430, binding = 22) readonly buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
 layout(std430, binding = 23) readonly buffer CxOitNodes { uvec4 uOitNode[]; };
@@ -17,12 +18,12 @@ void main()
     if (uViz == 1) { frag = vec4(vec3(reveal), 1.0); return; }
     if (uViz == 2) { vec4 a = texelFetch(uAccum, p, 0); frag = vec4(a.rgb / max(a.a, 1e-5), 1.0); return; }
     if (uViz == 3) { frag = vec4(vec3(texelFetch(uAccum, p, 0).a * 0.1), 1.0); return; }
-    bool linked = uMode == 2 && uOitCount <= uint(uOitDim.y);
+    bool linked = uMode == 2 && (uOitCount <= uint(uOitDim.y) || uNet == 0);
     if (uViz == 4)
     {
         // magenta = the list path is off this frame, yellow = the node pool overflowed; black = empty list
         if (uMode != 2) { frag = vec4(1.0, 0.0, 1.0, 1.0); return; }
-        if (!linked) { frag = vec4(1.0, 1.0, 0.0, 1.0); return; }
+        if (uOitCount > uint(uOitDim.y)) { frag = vec4(1.0, 1.0, 0.0, 1.0); return; }
         int n = 0;
         for (uint i = linked ? uOitHead[p.y * uOitDim.x + p.x] : 0u; i != 0u && n < VizWalk; i = uOitNode[i].x) n++;
         frag = vec4(vec3(float(n) / float(K)), 1.0); return;

@@ -11,9 +11,11 @@ namespace CX.Alloy;
 /// combine; nothing a translucent surface draws can hide another. Approximate: stacked layers blur.</para>
 /// <para>Mode 2 (#490, the default): per-pixel linked lists. Every fragment ALSO appends a (colour, depth) node to an
 /// SSBO behind an atomic per-pixel head, and the resolve sorts each pixel's list and composites it exactly.
-/// The pair is still written underneath, so a frame whose node buffer overflows resolves the weighted way
-/// with nothing missing and no CPU readback in the frame; the overflow shows on the Stats line two frames
-/// later. Heads live in a pixel-indexed SSBO rather than an image: same atomics, no image binding to add.</para>
+/// The pair is written underneath only while the net is armed (<see cref="NetFrames"/> after an overflow
+/// reads back, or under a pair viz): an armed frame whose node buffer overflows resolves the weighted way with
+/// nothing missing, an unarmed one resolves its truncated lists. The count reads back two frames late with no
+/// CPU wait, so the first overflowing frames of a burst lose their net (CX-7). Heads live in a pixel-indexed
+/// SSBO rather than an image: same atomics, no image binding to add.</para>
 /// <para>Replaces the sorted, depth-writing blended pass and its per-creature one-layer sweep, whose four
 /// depth decisions (opaque prepass, run sweep, colour draw, hi-Z) each punched a hole in a different
 /// scene -- the floor decal under a light shaft, two ghosted creatures on it. Stands down to the old path
@@ -24,6 +26,9 @@ internal static unsafe class OitPass
     /// <summary>SSBO binding points of the head table (count at 0, then one head per pixel) and the node pool.</summary>
     private const uint BindHeads = 22, BindNodes = 23;   // 21 is CullPass.BindRej (#489)
     private const int NodeBytes = 16;
+    /// <summary>Mode 2 frames the weighted pair stays written after an overflow reads back (CX-7).
+    /// ponytail: a fixed ~2 s at 60 fps, unmeasured; tie it to the overflow rate if bursts outlast it.</summary>
+    private const long NetFrames = 120;
     /// <summary>The depth slack the linked-list append gives a wash batch, standing in for the polygon offset
     /// IssueColour sets for it (which the GL applies after shading, where <c>gl_FragCoord.z</c> cannot see it).
     /// ponytail: one constant in window z, unmeasured; make it slope-scaled if far decals still drop out.</summary>
@@ -73,12 +78,12 @@ internal static unsafe class OitPass
     private static uint _readBuf;
     private static uint* _readMap;
     private static readonly IntPtr[] _fence = new IntPtr[ReadSlots];
-    private static long _skippedReads, _frame;
-    private static int _w, _h, _uAccum, _uReveal, _uViz, _uMode, _uDim, _cap;
+    private static long _skippedReads, _frame, _netUntil, _netRuns;
+    private static int _w, _h, _uAccum, _uReveal, _uViz, _uMode, _uDim, _uNet, _cap;
     /// <summary><c>/alloy oitviz</c>: 1 = revealage as grey, 2 = accumulated mean colour, 3 = accumulated weight/10,
     /// 4 = list length/16 (mode 2), 5 = the nearest node's object id as a colour (mode 2). Unblended.</summary>
     internal static int Viz => Renderer.OitViz.V;
-    private static bool _failed, _listsFailed, _linked, _engagedLogged;
+    private static bool _failed, _listsFailed, _linked, _net, _engagedLogged;
     private static ExtenderLog? _log;
     private static long _runs, _linkedRuns, _overflowFrames, _nodesPeak, _nodesSum, _gobPeak, _gobZero;
 
@@ -106,39 +111,30 @@ internal static unsafe class OitPass
         if (!EnsureTargets(w, h) || !EnsurePrograms()) return false;
         _linked = Mode == 2 && ListsArmed && EnsureLists(w, h);
         _gobN = 0;
+        if (_linked) { _frame++; if (ReadOverflow()) _netUntil = _frame + NetFrames; }
+        _net = !_linked || _frame < _netUntil || Viz is >= 1 and <= 3;
+        if (_linked && _net) _netRuns++;
         int cur; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &cur); _restoreFbo = cur;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         // Mode 2 attaches no depth: the append's own compare is the depth test, and a depth texture that is
         // sampled while attached is decompressed by the driver, which taxed the NEXT frame's opaque pass.
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _linked ? 0 : depthTex, 0);
         uint* bufs = stackalloc uint[2] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1 };
+        if (!_net) { bufs[0] = Gl.NONE; bufs[1] = Gl.NONE; }
         Gl.DrawBuffers(2, bufs);
-        float* zero = stackalloc float[4] { 0f, 0f, 0f, 0f };
-        float* one = stackalloc float[4] { 1f, 1f, 1f, 1f };
-        Gl.ClearBufferfv(Gl.COLOR, 0, zero);
-        Gl.ClearBufferfv(Gl.COLOR, 1, one);
+        if (_net)
+        {
+            float* zero = stackalloc float[4] { 0f, 0f, 0f, 0f };
+            float* one = stackalloc float[4] { 1f, 1f, 1f, 1f };
+            Gl.ClearBufferfv(Gl.COLOR, 0, zero);
+            Gl.ClearBufferfv(Gl.COLOR, 1, one);
+        }
         Gl.Enable(Gl.DEPTH_TEST); Gl.DepthFunc(Gl.LEQUAL); Gl.DepthMask(0);
         Gl.Enable(Gl.BLEND);
         Gl.BlendFunci(0, Gl.ONE, Gl.ONE);
         Gl.BlendFunci(1, Gl.ZERO, Gl.ONE_MINUS_SRC_COLOR);
         if (_linked)
         {
-            _frame++;
-            int slot = (int)((_frame + 1) % ReadSlots);   // the slot End filled two frames ago
-            IntPtr fence = _fence[slot];
-            if (fence != IntPtr.Zero)
-            {
-                uint st = Gl.ClientWaitSync(fence, 0, 0);
-                if (st == Gl.ALREADY_SIGNALED || st == Gl.CONDITION_SATISFIED)
-                {
-                    uint count = _readMap[slot];
-                    if (count > (uint)_cap) _overflowFrames++;
-                    if (count > _nodesPeak) _nodesPeak = count;
-                    _nodesSum += count;
-                }
-                else _skippedReads++;
-                Gl.DeleteSync(fence); _fence[slot] = IntPtr.Zero;
-            }
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindHeads, _heads);
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindNodes, _nodes);
             // last frame's resolve read the table; this frame's clear writes it, then the appends read it
@@ -160,6 +156,27 @@ internal static unsafe class OitPass
         return true;
     }
 
+    /// <summary>Read the node count End copied two frames ago, if its fence has passed. True = it overflowed.</summary>
+    private static bool ReadOverflow()
+    {
+        int slot = (int)((_frame + 1) % ReadSlots);
+        IntPtr fence = _fence[slot];
+        if (fence == IntPtr.Zero) return false;
+        bool over = false;
+        uint st = Gl.ClientWaitSync(fence, 0, 0);
+        if (st == Gl.ALREADY_SIGNALED || st == Gl.CONDITION_SATISFIED)
+        {
+            uint count = _readMap[slot];
+            over = count > (uint)_cap;
+            if (over) _overflowFrames++;
+            if (count > _nodesPeak) _nodesPeak = count;
+            _nodesSum += count;
+        }
+        else _skippedReads++;
+        Gl.DeleteSync(fence); _fence[slot] = IntPtr.Zero;
+        return over;
+    }
+
     /// <summary>Composite the pair (or the lists) over the frame and hand the frame's framebuffer back. Leaves
     /// GL_BLEND on with the depth mask off, the state the passes after the blended class expect to find.</summary>
     internal static void End(int* viewport)
@@ -175,6 +192,7 @@ internal static unsafe class OitPass
         Gl.Uniform1i(_uAccum, (int)TextureSlots.OitAccum); Gl.Uniform1i(_uReveal, (int)TextureSlots.OitReveal);
         Gl.Uniform1i(_uViz, Viz);
         Gl.Uniform1i(_uMode, _linked ? 2 : 1);
+        Gl.Uniform1i(_uNet, _net ? 1 : 0);
         UploadDim(_uDim);
         new PassState(depth: false, depthWrite: false, blend: Viz == 0,
                       blendSrc: _linked ? Gl.ONE : Gl.ONE_MINUS_SRC_ALPHA, blendDst: Gl.SRC_ALPHA).Apply();
@@ -199,12 +217,12 @@ internal static unsafe class OitPass
 
     internal static string Stats(int frames)
     {
-        long n = _runs, l = _linkedRuns, o = _overflowFrames, peak = _nodesPeak, sum = _nodesSum, gp = _gobPeak, gz = _gobZero, sk = _skippedReads;
-        _runs = 0; _linkedRuns = 0; _overflowFrames = 0; _nodesPeak = 0; _nodesSum = 0; _gobPeak = 0; _gobZero = 0; _skippedReads = 0;
+        long n = _runs, l = _linkedRuns, nr = _netRuns, o = _overflowFrames, peak = _nodesPeak, sum = _nodesSum, gp = _gobPeak, gz = _gobZero, sk = _skippedReads;
+        _runs = 0; _linkedRuns = 0; _netRuns = 0; _overflowFrames = 0; _nodesPeak = 0; _nodesSum = 0; _gobPeak = 0; _gobZero = 0; _skippedReads = 0;
         if (_failed) return "oit STOOD DOWN";
         if (n == 0) return "oit idle";
         string s = $"oit {(float)n / System.Math.Max(frames, 1):F2} runs/frame at {_w}x{_h}";
-        if (l > 0) s += $" linked {l} nodes avg {sum / System.Math.Max(l - sk, 1)} peak {peak} ({sk} reads not ready) cap {_cap} overflow {o} frames, objects {gp} peak/frame, {gz} ungrouped batches" + (_listsFailed ? " (lists REFUSED)" : "");
+        if (l > 0) s += $" linked {l} nodes avg {sum / System.Math.Max(l - sk, 1)} peak {peak} ({sk} reads not ready) cap {_cap} overflow {o} frames, net {nr} frames, objects {gp} peak/frame, {gz} ungrouped batches" + (_listsFailed ? " (lists REFUSED)" : "");
         return s;
     }
 
@@ -212,7 +230,7 @@ internal static unsafe class OitPass
     {
         _fbo = 0; _accum = 0; _reveal = 0; _prog = 0; _progClear = 0; _nodes = 0; _heads = 0; _readBuf = 0; _readMap = null;
         for (int i = 0; i < ReadSlots; i++) _fence[i] = IntPtr.Zero;
-        _w = 0; _h = 0; _cap = 0; _failed = false; _listsFailed = false; _linked = false;
+        _w = 0; _h = 0; _cap = 0; _failed = false; _listsFailed = false; _linked = false; _netUntil = 0;
     }
 
     private static bool EnsureTargets(int w, int h)
@@ -304,6 +322,7 @@ internal static unsafe class OitPass
         if (_prog == 0) { _failed = true; return false; }
         _uAccum = GlProgram.Loc(_prog, "uAccum"); _uReveal = GlProgram.Loc(_prog, "uReveal"); _uViz = GlProgram.Loc(_prog, "uViz");
         _uMode = GlProgram.Loc(_prog, "uMode"); _uDim = GlProgram.Loc(_prog, "uOitDim");
+        _uNet = GlProgram.Loc(_prog, "uNet");
         return true;
     }
 
@@ -311,7 +330,8 @@ internal static unsafe class OitPass
     /// ONE_MINUS_SRC_ALPHA / SRC_ALPHA. Mode 2: the pixel's list gathered into a depth-sorted local array and
     /// composited front to back; premultiplied colour plus transmittance under ONE / SRC_ALPHA. A list longer
     /// than the array spills its farthest nodes into an unsorted tail behind the sorted ones, and a frame
-    /// whose count passed the capacity takes the mode 1 branch: nothing is dropped either way.</summary>
+    /// whose count passed the capacity takes the mode 1 branch when the net wrote the pair, else composites
+    /// the truncated lists.</summary>
     /// <summary>Zero the head table and the count from the GPU, one texel per pixel. Colour writes are masked
     /// by the caller, so this is a buffer write with a rasteriser for an index generator.</summary>
     internal static string OitClearFs => ShaderSource.Get("cx_oitclear_f.glsl");
