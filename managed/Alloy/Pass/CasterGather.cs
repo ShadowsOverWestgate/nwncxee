@@ -454,25 +454,9 @@ internal static unsafe class CasterGather
     /// 90deg face pyramid (corners at <c>|perp| = sqrt2 * t</c>) and allows twice the caster radius -- and
     /// that direction is the whole point: admitting a caster the face cannot see costs a depth draw,
     /// rejecting one it can see deletes a shadow.</para></summary>
-    private static readonly string GatherCs = ("""
-        #version 460 core
-        layout(local_size_x = 64) in;   // GroupSize
-
-        layout(std430, binding = 13) readonly buffer CxCullSphere { vec4 uSph[]; };
-        layout(std430, binding = 17) readonly buffer CxGatherSrc  { uint uSrc[]; };
-        layout(std430, binding = 18) writeonly buffer CxGatherCmd { uint uCmd[]; };
-        layout(std430, binding = 19) buffer CxGatherCount         { uint uCnt[]; };
-        uniform int uDrawN;
-        uniform int uPoint;
-        uniform int uCull;
-        uniform int uSet;
-        uniform vec3 uFocus;
-        uniform vec3 uDir;
-        uniform float uReach;
-        uniform float uAlong;
-        uniform int uRx;
-        uniform int uGroups;
-
+    /// <summary>The two culls both dispatches share, <c>@SLOPE@</c> unexpanded: the #488 receiver cull
+    /// and the point-light face cull. Spliced, then the slope is interpolated over the whole text.</summary>
+    private const string ReceiverCullLib = """
         // #488: the receiver cull. The shadow volume is bounded by the hull of two spheres (the caster's own
         // and the extrusion's end) and misses the camera frustum only when BOTH sit wholly outside ONE
         // plane. Conservative: a rejected caster casts on no visible pixel.
@@ -494,6 +478,28 @@ internal static unsafe class CasterGather
             return lim < 0.0 || dSq - t * t > lim * lim;
         }
 
+        """;
+
+    private static readonly string GatherCs = ("""
+        #version 460 core
+        layout(local_size_x = 64) in;   // GroupSize
+
+        layout(std430, binding = 13) readonly buffer CxCullSphere { vec4 uSph[]; };
+        layout(std430, binding = 17) readonly buffer CxGatherSrc  { uint uSrc[]; };
+        layout(std430, binding = 18) writeonly buffer CxGatherCmd { uint uCmd[]; };
+        layout(std430, binding = 19) buffer CxGatherCount         { uint uCnt[]; };
+        uniform int uDrawN;
+        uniform int uPoint;
+        uniform int uCull;
+        uniform int uSet;
+        uniform vec3 uFocus;
+        uniform vec3 uDir;
+        uniform float uReach;
+        uniform float uAlong;
+        uniform int uRx;
+        uniform int uGroups;
+
+        """ + ReceiverCullLib + """
         void main()
         {
             uint i = gl_GlobalInvocationID.x;
@@ -566,27 +572,7 @@ internal static unsafe class CasterGather
         uniform int uRx;
         uniform int uGroups;
 
-        // #488: the receiver cull. The shadow volume is bounded by the hull of two spheres (the caster's own
-        // and the extrusion's end) and misses the camera frustum only when BOTH sit wholly outside ONE
-        // plane. Conservative: a rejected caster casts on no visible pixel.
-        uniform vec4 uPlanes[6];
-        bool CxShadowMisses(vec3 p0, float r0, vec3 p1, float r1)
-        {
-            for (int i = 0; i < 6; i++)
-            {
-                vec4 pl = uPlanes[i];
-                if (dot(pl.xyz, p0) + pl.w < -r0 && dot(pl.xyz, p1) + pl.w < -r1) return true;
-            }
-            return false;
-        }
-
-        bool CxFaceCulls(float dSq, float t, float r)
-        {
-            if (t < -r) return true;
-            float lim = t * @SLOPE@ + 2.0 * r;
-            return lim < 0.0 || dSq - t * t > lim * lim;
-        }
-
+        """ + ReceiverCullLib + """
         void main()
         {
             uint i = gl_GlobalInvocationID.x;

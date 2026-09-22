@@ -2920,21 +2920,31 @@ public sealed unsafe partial class CasterPass : IExtenderService
             const float m[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);
             return (m[(p.y & 3u) * 4u + (p.x & 3u)] + 0.5) / 16.0;
         }
+
         """;
-    private const string CastMaskFs = """
+    private const string CastMaskHead = """
         #version 460 core
         uniform sampler2D uTex;
         uniform float uAlphaCut;
         """ + DitherLib + """
         in vec2 vUV;
         flat in float vAlpha;
-        void main()
-        {
+
+        """;
+    /// <summary>The cutout, then #363's dither: the body every masked depth stage runs.</summary>
+    private const string CastMaskCut = """
             float t = texture(uTex, vUV).a;
             if (t <= uAlphaCut) discard;
             // the colour pass's own blend weight: coverage (1 where the diffuse alpha is reflectivity) x rot.w
             float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;
             if (uDither > 0 && cxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
+
+        """;
+    private const string CastMaskFs = CastMaskHead + """
+        void main()
+        {
+
+        """ + CastMaskCut + """
         }
         """;
 
@@ -2944,13 +2954,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
     private static readonly string CastMaskHVs = CastMaskVs
         .Replace("out vec2 vUV;", "out vec2 vUV;\n        flat out int vDraw;")
         .Replace("vUV = aUV;", "vUV = aUV;\n            vDraw = gl_BaseInstance;");
-    private const string CastMaskHFsSrc = """
-        #version 460 core
-        uniform sampler2D uTex;
-        uniform float uAlphaCut;
-        """ + DitherLib + """
-        in vec2 vUV;
-        flat in float vAlpha;
+    private const string CastMaskHFsSrc = CastMaskHead + """
         flat in int vDraw;
         void main()
         {
@@ -2958,11 +2962,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // a handle zeroed under a dying texture: opaque until the record is re-resolved, never sampled
             if (uTexH[vDraw << 3] == uvec2(0u)) return;
         #endif
-            float t = texture(uTex, vUV).a;
-            if (t <= uAlphaCut) discard;
-            // the colour pass's own blend weight: coverage (1 where the diffuse alpha is reflectivity) x rot.w
-            float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;
-            if (uDither > 0 && cxHash(uvec2(gl_FragCoord.xy) / uDither) > a) discard;
+
+        """ + CastMaskCut + """
         }
         """;
     private static readonly string CastMaskHFs = AlloyRenderer.BindlessFs(CastMaskHFsSrc);

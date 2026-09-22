@@ -1678,6 +1678,23 @@ internal static unsafe partial class GrassField
         }
         """;
 
+    /// <summary>The coverage decision both fragment stages share: the engine's own cutout threshold
+    /// and the distance-fade dither, seeded per blade by <c>vSeed</c>.</summary>
+    internal const string GrassDither = """
+        // The engine's own cutout threshold (fAlphaDiscardValue under RenderInterface::Enable(1)).
+        const float CX_GRASS_CUT = 0.2;
+
+        // Interleaved gradient noise (Jimenez): a hash with no visible tiling and no texture fetch. The
+        // instance seed decorrelates neighbouring blades, so the dither reads as thinning grass rather than
+        // as a screen-space grid crawling over it.
+        float CxGrassDither()
+        {
+            vec2 p = gl_FragCoord.xy + vec2(float(vSeed & 63u), float((vSeed >> 6) & 63u));
+            return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+        }
+
+        """;
+
     internal const string GrassFsHead = """
         #version 460 core
         #define CX_FS 1   // #642: gl_FragCoord is in reach for the shadow lib's dither
@@ -1719,10 +1736,7 @@ internal static unsafe partial class GrassField
         in float vLookDown;
         out vec4 frag;
 
-        // The engine's own cutout threshold (fAlphaDiscardValue under RenderInterface::Enable(1)).
-        const float CX_GRASS_CUT = 0.2;
-
-        """ + GrassFetch;
+        """ + GrassFetch + GrassDither;
 
     /// <summary>The fragment stage. Two discards and no blending at all, which is the whole replacement:
     /// vanilla's fade rides in the alpha channel its cutout reads, so between 15u and ~27.7u every blade is
@@ -1730,15 +1744,6 @@ internal static unsafe partial class GrassField
     /// dither -- a fragment is either fully opaque or gone -- so the ramp cannot produce a blended fragment,
     /// and because the ramp reaches zero exactly at the engine's own far radius there is no pop either.</summary>
     internal const string GrassFsMain = """
-        // Interleaved gradient noise (Jimenez): a hash with no visible tiling and no texture fetch. The
-        // instance seed decorrelates neighbouring blades, so the dither reads as thinning grass rather than
-        // as a screen-space grid crawling over it.
-        float CxGrassDither()
-        {
-            vec2 p = gl_FragCoord.xy + vec2(float(vSeed & 63u), float((vSeed >> 6) & 63u));
-            return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
-        }
-
         void main()
         {
             vec4 texel = CxGrassTexel();
@@ -1837,16 +1842,7 @@ internal static unsafe partial class GrassField
         uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
         out vec4 frag;
 
-        """ + AlloyRenderer.KeyholeFs + GrassFetch + """
-
-        const float CX_GRASS_CUT = 0.2;
-
-        float CxGrassDither()
-        {
-            vec2 p = gl_FragCoord.xy + vec2(float(vSeed & 63u), float((vSeed >> 6) & 63u));
-            return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
-        }
-
+        """ + AlloyRenderer.KeyholeFs + GrassFetch + GrassDither + """
         void main()
         {
             vec4 texel = CxGrassTexel();

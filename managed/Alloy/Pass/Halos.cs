@@ -199,18 +199,8 @@ internal static unsafe class Halos
         in vec3 vColor;
         in float vViewZ;
         in float vRadius;
-        uniform mat4 uProj;
-        uniform sampler2D uSceneDepth;
-        uniform int uViz;
-        out vec4 frag;
 
-        // The scene's view-space DISTANCE (positive) under this fragment, from the depth copy -- the particle pass's own form.
-        float CxSceneViewZ(vec2 uv)
-        {
-            float ndc = texture(uSceneDepth, uv).r * 2.0 - 1.0;
-            return uProj[3].z / (ndc + uProj[2].z);
-        }
-
+        """ + AlloyRenderer.SceneDepthLib + """
         void main()
         {
             float r = length(vUV);

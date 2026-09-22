@@ -341,20 +341,11 @@ internal static unsafe partial class Weather
         in float vViewZ;
         in float vSeed;
         in vec3 vLight;
-        uniform mat4 uProj;
-        uniform sampler2D uSceneDepth;
         uniform vec3 uTint;
         uniform float uAlpha;
         uniform float uSoft;
-        uniform int uViz;
-        out vec4 frag;
 
-        float CxSceneViewZ(vec2 uv)
-        {
-            float ndc = texture(uSceneDepth, uv).r * 2.0 - 1.0;
-            return uProj[3].z / (ndc + uProj[2].z);
-        }
-
+        """ + AlloyRenderer.SceneDepthLib + """
         void main()
         {
             float a = (1.0 - vUV.x * vUV.x) * (1.0 - vUV.y * vUV.y);
@@ -374,20 +365,11 @@ internal static unsafe partial class Weather
         in float vViewZ;
         in float vSeed;
         in vec3 vLight;
-        uniform mat4 uProj;
-        uniform sampler2D uSceneDepth;
         uniform vec3 uTint;
         uniform float uAlpha;
         uniform float uSoft;
-        uniform int uViz;
-        out vec4 frag;
 
-        float CxSceneViewZ(vec2 uv)
-        {
-            float ndc = texture(uSceneDepth, uv).r * 2.0 - 1.0;
-            return uProj[3].z / (ndc + uProj[2].z);
-        }
-
+        """ + AlloyRenderer.SceneDepthLib + """
         void main()
         {
             float r = length(vUV);

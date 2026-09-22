@@ -57,7 +57,7 @@ SOURCES = [
     "managed/Alloy/Pass/ToonStage.cs",
     "managed/Alloy/Pass/FbPostStage.cs",
     "managed/Alloy/AlloyRenderer.Motion.cs",
-    "managed/Alloy/AlloyRenderer.Highlight.cs",
+    "managed/Alloy/Highlight.cs",
     "managed/Alloy/Pass/IdTarget.cs",
 ]
 # ShaderResource.Tokens' three sizing tokens. Any legal value compiles the same shapes.

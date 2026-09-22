@@ -1701,20 +1701,28 @@ internal static unsafe partial class Particles
     /// pairs with <c>i ^ j</c> and only the LOWER of the two swaps, so within one step every element belongs
     /// to exactly one pair and the stride loop cannot race itself. The tail past the particle count is
     /// padded with <c>+inf</c>, which sorts to the end and is never written back.</para></summary>
+    /// <summary>The record and its buffer, as the vertex stage and the sort read it -- one text, so the
+    /// two cannot disagree about the layout <c>RecFloats</c> stages.</summary>
+    private const string ParticleRecDecl = """
+        // #261: one particle. Six vec4, std430 -- see Particles.RecFloats for the C# side of this layout.
+        struct CxParticle
+        {
+            vec4 posCol;      // xyz = near centre (world), w = RGBA8 colour as raw bits
+            vec4 farColFar;   // xyz = far centre (world),  w = the far end's colour
+            vec4 rightSoft;   // xyz = scaled right axis (world), w = particleSoftness
+            vec4 upType;      // xyz = scaled up axis (world),    w = render type
+            vec4 centre;      // xyz = the particle's OWN centre, which the facing direction is taken from
+            vec4 uv;          // u0, u1, v0, v1
+        };
+        layout(std430, binding = 10) readonly buffer CxParticleBuf { CxParticle particles[]; };
+
+        """;
+
     private const string ParticleCs = """
         #version 460 core
         layout(local_size_x = 256) in;
 
-        struct CxParticle
-        {
-            vec4 posCol;
-            vec4 farColFar;
-            vec4 rightSoft;
-            vec4 upType;
-            vec4 centre;
-            vec4 uv;
-        };
-        layout(std430, binding = 10) readonly buffer CxParticleBuf { CxParticle particles[]; };
+        """ + ParticleRecDecl + """
         layout(std430, binding = 11) buffer CxParticleIdx { uint partIdx[]; };
         // (record base, particles, index offset, -), one per emitter the pass placed
         layout(std430, binding = 17) readonly buffer CxSpanBuf { uvec4 spans[]; };
@@ -1806,17 +1814,7 @@ internal static unsafe partial class Particles
     private const string ParticleVsHead = """
         #version 460 core
 
-        // #261: one particle. Six vec4, std430 -- see Particles.RecFloats for the C# side of this layout.
-        struct CxParticle
-        {
-            vec4 posCol;      // xyz = near centre (world), w = RGBA8 colour as raw bits
-            vec4 farColFar;   // xyz = far centre (world),  w = the far end's colour
-            vec4 rightSoft;   // xyz = scaled right axis (world), w = particleSoftness
-            vec4 upType;      // xyz = scaled up axis (world),    w = render type
-            vec4 centre;      // xyz = the particle's OWN centre, which the facing direction is taken from
-            vec4 uv;          // u0, u1, v0, v1
-        };
-        layout(std430, binding = 10) readonly buffer CxParticleBuf { CxParticle particles[]; };
+        """ + ParticleRecDecl + """
         layout(std430, binding = 11) readonly buffer CxParticleIdx { uint partIdx[]; };
 
         uniform mat4 uView;
@@ -1933,34 +1931,16 @@ internal static unsafe partial class Particles
         uniform int uAdditive;
         uniform float uEmissive;    // .mtr fEmissive: >1 pushes the effect into #139's HDR headroom
         uniform int uSoftOn;        // 0 = no depth copy this pass, so no fade
-        uniform sampler2D uSceneDepth;
-        // ...and the projection again: a uniform belongs to the PROGRAM, not to a stage, but it still has to
-        // be declared in every stage that names it, and this stage linearises depth with it.
-        uniform mat4 uProj;
+        // uViz: /particles viz: 1 = tint by render type, 2 = flat, no texture. #336: the light rig's terms
+        // are the VERTEX stage's now; this stage only applies vLight. The libraries still compose in below
+        // for CxLinear.
 
-        // #336: the light rig's terms are the VERTEX stage's now; this stage only applies vLight. The
-        // libraries still compose in below for CxLinear.
-        uniform int uViz;           // /particles viz: 1 = tint by render type, 2 = flat, no texture
-
-        out vec4 frag;
-
-        """ + AlloyRenderer.FogDecl + """
+        """ + AlloyRenderer.SceneDepthLib + AlloyRenderer.FogDecl + """
 
         """;
 
     /// <summary>The body, composed after <see cref="AlloyLights"/>'s three libraries.</summary>
     private const string ParticleFsMain = """
-
-        // View-space distance of the scene behind this fragment, from the depth copy. The two coefficients
-        // come out of the PROJECTION MATRIX rather than from near/far uniforms -- it is the matrix this draw
-        // is actually using, so the linearisation cannot drift from the pass's own frustum the way a pair of
-        // separately-uploaded planes can.
-        float CxSceneViewZ(vec2 uv)
-        {
-            float ndc = texture(uSceneDepth, uv).r * 2.0 - 1.0;
-            return uProj[3].z / (ndc + uProj[2].z);
-        }
-
         void main()
         {
             vec4 c = vColor * texture(uTex, vUv);
