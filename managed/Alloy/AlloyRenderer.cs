@@ -1213,8 +1213,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // single part, so the engine walks every one of them itself -- and would then solve each pose a
         // second time.
         if (!_skinning || Programs._progFailed || _batchUnavailable) { _boneSlots = 0; return; }
-        for (int i = 0; i < _ownCount; i++)
+        for (int k = 0; k < _skinCount; k++)
         {
+            int i = _skinOrder[k];
             int prev = _oBone[i];
             _oBone[i] = -1;
             if (_oTri[i] == IntPtr.Zero || !_vSkin[_oVao[i]]) { FreeBoneSlot(prev); continue; }
@@ -1232,8 +1233,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // #302: no separate shadow feed. The pose lands in _oBone/feat.y and the bake reads it through
             // the same record and the same bone block the colour pass draws from.
         }
-        // Reclaim orphans: an enrollment can retire or re-tenant an ownership slot without this walk seeing
-        // the handover (a fresh tenant starts at _oBone -1), leaving a bone slot whose owner no longer
+        // Reclaim orphans: a table wipe can re-tenant an ownership slot without a FreeSlot
+        // (a fresh tenant starts at _oBone -1), leaving a bone slot whose owner no longer
         // points back. _boneTop is the peak skinned population -- tiny -- so the sweep is a few compares.
         for (int s = 0; s < _boneTop; s++)
             if (_boneOwner[s] >= 0 && _oBone[_boneOwner[s]] != s) FreeBoneSlot(s);
@@ -1279,7 +1280,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Revoke(i);
         if (gob == IntPtr.Zero) return;
         for (int j = 0; j < _ownCount; j++)
-            if (j != i && _oTri[j] != IntPtr.Zero && _oGob[j] == gob) { Revoke(j); _oBone[j] = -1; }
+            if (j != i && _oTri[j] != IntPtr.Zero && _oGob[j] == gob) Revoke(j);
     }
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>

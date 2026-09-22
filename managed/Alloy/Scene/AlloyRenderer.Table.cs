@@ -86,6 +86,10 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly float[] _oR = new float[MaxOwned];
     private static readonly int[] _order = new int[MaxOwned];
     private static readonly int[] _orderTmp = new int[MaxOwned];    // #84: LSD radix intermediate
+    /// <summary>CX-9: every live skinned slot, rebuilt with <see cref="_order"/> -- skin-ness is
+    /// enrollment-static, so <c>PoseSkinned</c> walks this instead of the whole table.</summary>
+    private static readonly int[] _skinOrder = new int[MaxOwned];
+    private static int _skinCount;
     /// <summary>#126: the third radix digit's buckets, and the [start, end) range each class occupies in
     /// <see cref="_order"/> afterwards. A pass draws its class's range and nothing else.</summary>
     private static readonly int[] _clsCount = new int[AlloyClasses.Count],

@@ -30,6 +30,10 @@ public sealed unsafe partial class AlloyRenderer
     {
         if ((uint)_oEntry[i] < (uint)_entrySlot.Length && _entrySlot[_oEntry[i]] == i) _entrySlot[_oEntry[i]] = -1;
         _oTri[i] = IntPtr.Zero;
+        // CX-9: PoseSkinned only walks the skinned list, which drops this slot at the next rebuild
+        int b = _oBone[i];
+        if ((uint)b < (uint)_boneTop && _boneOwner[b] == i) FreeBoneSlot(b);
+        _oBone[i] = -1;
         SetCastOk(i, false);   // #328: a vacated slot casts nothing, and the shadow side re-collects on it
         LightmapBake.Vacate(i);   // #674: its bake record reads unbaked
         _ownLive--;
@@ -171,7 +175,7 @@ public sealed unsafe partial class AlloyRenderer
         _ownCount = 0; _freeCount = 0; _freeAvail = 0; _ownLive = 0;   // #308: the whole slot space is fresh again
         _walkAt = -1;   // #329: a walk in progress was over slots that no longer exist
         // ...and the draw order with it: an empty table must not leave class ranges pointing into it.
-        _orderCount = 0;
+        _orderCount = 0; _skinCount = 0;
         Array.Clear(_clsStart); Array.Clear(_clsEnd);
         _enrollScene = IntPtr.Zero;   // the table is gone; a bucket walk must not match a Scene we no longer hold
         // Re-arm the enrollment report: after a release (module unload, context loss) the NEXT enrollment is
@@ -297,7 +301,7 @@ public sealed unsafe partial class AlloyRenderer
         // the old high-water mark would ratchet the slot space by an area's population per transition. The
         // whole space resets and the scan below repacks densely; the shadow side gets the blanket at the
         // bottom of this pass.
-        if (tableWiped) { _ownCount = 0; _freeCount = 0; _freeAvail = 0; _ownLive = 0; }
+        if (tableWiped) { _ownCount = 0; _freeCount = 0; _freeAvail = 0; _ownLive = 0; _skinCount = 0; }
         Counters._litUnownable = 0; Counters._skinUnownable = 0; Counters._gobOwned = 0;
         // #308: bumped per SCAN as before, but a slot now only ADOPTS the new generation when its tenant
         // changes -- the same-frame shadow bracket runs before the record rebuild, and must not refuse a
@@ -522,7 +526,7 @@ public sealed unsafe partial class AlloyRenderer
     /// O(live) integer passes -- cheap enough to re-run after an incremental enrolment too.</summary>
     private static void RebuildOrder()
     {
-        _litCount = 0;
+        _litCount = 0; _skinCount = 0;
         Array.Clear(_sortCount, 0, MaxVdos * 4);
         Array.Clear(_texSortCount, 0, MaxMats);
         Array.Clear(_featPrimCount);
@@ -535,6 +539,7 @@ public sealed unsafe partial class AlloyRenderer
             _featPrimCount[FeatPrimKey(i)]++;
             _clsCount[_oCls[i]]++;
             if (_oLit[i]) _litCount++;
+            if (_vSkin[_oVao[i]]) _skinOrder[_skinCount++] = i;
         }
         // Four-digit LSD radix into _order, every digit counting-sorted (stable): texture, then #327's
         // (feature, primitive), then (lit, #292's no-cull bit, VDO), then #126's class. The result walks
