@@ -69,13 +69,7 @@ public sealed unsafe partial class AlloyRenderer
             int d = _mvDraw[k], i = _dSlot[d];
             uint vao = VaoName(_oVao[i] | _oLodBit[i], _oCls[i]);
             if (vao == 0) continue;
-            if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
-            int wantCull = _oNoCull[i] ? 0 : 1;
-            if (wantCull != boundCull)
-            {
-                boundCull = wantCull;
-                if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); } else Gl.Disable(Gl.CULL_FACE);
-            }
+            BindBatchState(_oNoCull[i], vao, ref boundCull, ref boundVao);
             Gl.Uniform1i(_mvBase, d);
             Gl.MultiDrawElementsBaseVertex(_primTable[_oPrim[i]], counts + d, GlUnsignedShort, (void**)(offs + d), 1, bases + d);
             _mvDrawn++;

@@ -655,6 +655,26 @@ public sealed unsafe partial class AlloyRenderer
     /// choice -- there is one VAO, over the pool buffers Alloy itself uploads -- so what is left is the
     /// report: which classes drew from pools Alloy owns. A slot whose pools the ENGINE uploaded (everything
     /// resident before the first present) draws correctly and is simply not counted.</summary>
+    /// <summary>CX-704: the per-batch cull + VAO bind every issue loop shares. Cull reproduces the engine's
+    /// per-material decision (#292): sub-list 1 of Scene::RenderDrawBucket @0x46d060 draws under
+    /// Disable(CULL_FACE), everything else under the Enable + CullFace(BACK) it leaves behind; batches sort by
+    /// (lit, no-cull, VDO) so it toggles at most twice per class. The VAO is tracked by GL NAME, not slot
+    /// (#212) -- the SAME name across depth and colour passes keeps #119's invariant-gl_Position match trivial.</summary>
+    internal static void BindBatchState(int g, ref int boundCull, ref uint boundVao)
+        => BindBatchState(_gNoCull[g], VaoName(_gVao[g], _gCls[g]), ref boundCull, ref boundVao);
+
+    internal static void BindBatchState(bool noCull, uint vao, ref int boundCull, ref uint boundVao)
+    {
+        int wantCull = noCull ? 0 : 1;
+        if (wantCull != boundCull)
+        {
+            boundCull = wantCull;
+            if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
+            else Gl.Disable(Gl.CULL_FACE);
+        }
+        if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+    }
+
     internal static uint VaoName(int v, int cls)
     {
         bool lod = (v & LodVaoBit) != 0, chart = (v & ChartVaoBit) != 0;

@@ -426,20 +426,7 @@ internal static unsafe class Issue
                 int gid = OitPass.GobId(_gGob[g]);
                 if (gid != boundOitGob) { Gl.Uniform1i(lit ? litOitGob : Programs._locOitGob, gid); boundOitGob = gid; }
             }
-            // #292: the engine's own per-material decision, reproduced. Sub-list 1 of
-            // Scene::RenderDrawBucket @0x46d060 draws under Disable(CULL_FACE); everything else draws under
-            // the Enable(CULL_FACE) + SetCullFace(BACK) that function leaves behind on every exit. Batches
-            // are sorted by (lit, no-cull, VDO), so this toggles at most twice per class.
-            int wantCull = _gNoCull[g] ? 0 : 1;
-            if (wantCull != boundCull)
-            {
-                boundCull = wantCull;
-                if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
-                else Gl.Disable(Gl.CULL_FACE);
-            }
-            // #212: tracked by GL NAME, not by slot -- a slot now has two VAOs and ownership picks.
-            uint vao = VaoName(_gVao[g], _gCls[g]);
-            if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+            BindBatchState(g, ref boundCull, ref boundVao);
             // #153: a merged lit batch spans many textures; its samplers come off the handle block per draw,
             // and binding here would be dead state. Unlit and water batches still bind.
             bool handles = _bindless && lit && !water;

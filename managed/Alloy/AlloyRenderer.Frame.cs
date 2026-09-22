@@ -611,15 +611,7 @@ public sealed unsafe partial class AlloyRenderer
                 }
                 int s = _gStart[g];
                 Gl.Uniform1i(dis ? Programs._depthKeyBase : Programs._depthBase, s);
-                int wantCull = _gNoCull[g] ? 0 : 1;
-                if (wantCull != boundCull)
-                {
-                    boundCull = wantCull;
-                    if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
-                    else Gl.Disable(Gl.CULL_FACE);
-                }
-                uint vao = VaoName(_gVao[g], _gCls[g]);
-                if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+                BindBatchState(g, ref boundCull, ref boundVao);
                 if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
                 else
                     Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
@@ -750,17 +742,7 @@ public sealed unsafe partial class AlloyRenderer
                 _gPrepassed[g] = true;
                 if (dis && !retest) Counters._prepassKeyed += _gLen[g];
                 Gl.Uniform1i(dis ? Programs._depthKeyBase : Programs._depthBase, s);
-                int wantCull = _gNoCull[g] ? 0 : 1;
-                if (wantCull != boundCull)
-                {
-                    boundCull = wantCull;
-                    if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
-                    else Gl.Disable(Gl.CULL_FACE);
-                }
-                // #212: the SAME VAO the colour pass will bind for this class. Identical buffers through
-                // both passes is what keeps #119's invariant-gl_Position depth match trivially true.
-                uint vao = VaoName(_gVao[g], _gCls[g]);
-                if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+                BindBatchState(g, ref boundCull, ref boundVao);
                 if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
                 else
                     Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
@@ -801,15 +783,7 @@ public sealed unsafe partial class AlloyRenderer
                 float cut = AlloyClasses.Discard(_gCls[g]);
                 if (cut != boundCut) { Gl.Uniform1f(Programs._depthFeatCut, cut); boundCut = cut; }
                 if (!_bindless && cut >= 0f && _gTex[g] != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)_gTex[g]); boundTex = _gTex[g]; }
-                int wantCull = _gNoCull[g] ? 0 : 1;
-                if (wantCull != boundCull)
-                {
-                    boundCull = wantCull;
-                    if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
-                    else Gl.Disable(Gl.CULL_FACE);
-                }
-                uint vao = VaoName(_gVao[g], _gCls[g]);
-                if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+                BindBatchState(g, ref boundCull, ref boundVao);
                 if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
                 else
                     Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,

@@ -438,15 +438,7 @@ internal static unsafe class Highlight
                     else
                     { Gl.Enable(Gl.POLYGON_OFFSET_FILL); Gl.DepthFunc(Gl.LEQUAL); }
                 }
-                int wantCull = _gNoCull[g] ? 0 : 1;
-                if (wantCull != boundCull)
-                {
-                    boundCull = wantCull;
-                    if (wantCull != 0) { Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK); }
-                    else Gl.Disable(Gl.CULL_FACE);
-                }
-                uint vao = VaoName(_gVao[g], _gCls[g]);
-                if (vao != boundVao) { Gl.BindVertexArray(vao); boundVao = vao; }
+                BindBatchState(g, ref boundCull, ref boundVao);
                 Gl.Uniform1i(_hlBase, j);
                 Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + j, GlUnsignedShort,
                                                (void**)(offs + j), 1, bases + j);
