@@ -4,6 +4,23 @@
 float CxWeatherHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 uniform float uSplash;         // the water stage's rain impact rate (0 = none)
 
+// One ring of the train below is about 6 cm across, so a pixel that spans a whole one samples the
+// wave train at random phase and the rings read as chunky sparkle instead of rings. Fade the tilt
+// out between a pixel spanning a third of a ring and three quarters of one -- past the textbook
+// Nyquist cut, which measured far more conservative than the frame looks: rings hold clean to the
+// end of the visible ground. uPixel.y carries the target's height, so a taller target (or a higher
+// render scale) keeps them further out still.
+const float CX_IMPACT_RING_M = 0.06;
+// How far the wave tilts the surface at the crest. A drop's ring is a dent a millimetre deep on
+// water this calm: enough to bend the highlight, not enough to read as a dimple in the stone.
+const float CX_IMPACT_TILT = 0.2;
+float CxWeatherImpactFade(vec3 worldPos, vec3 V)
+{
+    // the footprint stretches as the surface turns away: V.z IS N.V here, the train only rides level ground
+    float px = distance(worldPos, uEyePos) * uPixel.y / max(V.z, 0.15);
+    return 1.0 - smoothstep(CX_IMPACT_RING_M * 0.333, CX_IMPACT_RING_M * 0.75, px);
+}
+
 // Rain impacts: two offset 25 cm lattices, one drop per cell per period (0.4-1 s, hashed per cell), present
 // with probability = the rate, each its own size. Not a circle: a damped wave TRAIN -- three rings
 // behind a front that runs out and spreads, the whole train dying as exp(-3 age) the way a real ripple
@@ -26,11 +43,12 @@ vec2 CxWeatherImpact(vec2 p, float rate)
         vec2 dv = fract(q) - c;
         float d = length(dv);
         // x = cell units from the front, in wavelengths; the packet sin(2x) e^(-0.12 x^2) is three
-        // rings wide, and the slope below is its derivative in x
-        float x = (d - age * 0.45 * size) * (28.0 - 10.0 * age);
+        // rings wide, and the slope below is its derivative in x. The 14 sets the ring at ~6 cm:
+        // fine enough to read as a drop, coarse enough to survive a pixel out at chase distance.
+        float x = (d - age * 0.45 * size) * (14.0 - 5.0 * age);
         float env = exp(-x * x * 0.12);
         float slope = (2.0 * cos(2.0 * x) - 0.24 * x * sin(2.0 * x)) * env;
         r += dv / max(d, 1e-4) * slope * exp(-3.0 * age) * size;
     }
-    return r;
+    return r * CX_IMPACT_TILT;
 }

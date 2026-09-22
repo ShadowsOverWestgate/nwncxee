@@ -87,6 +87,7 @@
                     rough = mix(rough, 0.12, wxPuddle); spec = max(spec, 0.4 * wxPuddle);
                     N = normalize(mix(N, vec3(0.0, 0.0, 1.0), wxPuddle));
                 }
-                if (uCoverLayer.w > 0.0 && wxPuddle > 0.0 && up > 0.9)
-                    N = normalize(N + vec3(CxWeatherImpact(vWorld.xy, uCoverLayer.w) * wxExp * wxPuddle * 0.3, 0.0));
+                float wxRing = uCoverLayer.w > 0.0 && wxPuddle > 0.0 && up > 0.9 ? CxWeatherImpactFade(vWorld, V) : 0.0;
+                if (wxRing > 0.0)
+                    N = normalize(N + vec3(CxWeatherImpact(vWorld.xy, uCoverLayer.w) * (wxExp * wxPuddle * wxRing), 0.0));
             }
