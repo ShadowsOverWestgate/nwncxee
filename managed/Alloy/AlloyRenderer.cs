@@ -1364,6 +1364,39 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (++Counters._frames < period) return;
         Diag._loggedOnce = true;
         MeshCensus();   // #329: off the walk, for the line below alone
+        PeriodReport();
+        CullPass.ResetStats();
+        Counters._frames = 0; Counters._draws = 0; Counters._batches = 0; Counters._revokes = 0; Counters._enrolls = 0;
+        Counters._twoSidedDraws = 0; Counters._cullCuts = 0; Array.Clear(Counters._cutBy);
+        Counters._drawsGob = 0;
+        Counters._skipTexNone = 0; Counters._skipTexNoId = 0; Counters._skipTexNoHandle = 0; Counters._skipTexNotOwned = 0;
+        Counters._skinDrawn = 0; Counters._skinNoPose = 0; Counters._boneHigh = 0;
+        SkinPose.NoBind = 0; SkinPose.Overflow = 0;
+        SkyBox.ResetPeriod();
+        GrassField.ResetPeriod();
+        Beams.ResetPeriod();
+        Halos.ResetPeriod();
+        Weather.ResetPeriod();
+        Particles.ResetPeriod();
+        Counters._watchSubmitted = 0;
+        Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0;
+        ResetChasePeriod();
+        Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
+        Counters._recWritten = 0; Counters._recStable = 0;
+        ResetStaticPeriod();
+        Counters._nrmDeclared = Counters._nrmBound = 0;
+        Array.Clear(Counters._drawsByClass);
+        Counters._clusterOverflow = 0;
+        Counters._prepassDraws = 0; Counters._prepassSkipped = 0; Counters._prepassKeyed = 0; Counters._prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset();
+        for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset(); _spanSum = 0; _spanN = 0;
+    }
+
+    /// <summary>The [alloy] period line: every number the period tallied, in one statement. Its own
+    /// method so <see cref="EndFrame"/> reads as the gate, the census and the reset it is (CX-708).
+    /// The interpolation is the <see cref="ExtenderLog.Line"/> handler's -- with logging off no hole is
+    /// ever formatted, so the shape of this expression is load-bearing; move it, do not restructure it.</summary>
+    private static void PeriodReport()
+    {
         // distinct textures is the BATCH FLOOR: one program + one VDO cannot batch below one call per texture,
         // so batches/frame ~= textures tells you the grouping is optimal and the ratio is scene-bound, while
         // batches >> textures says the sort is failing. Without it the ratio alone cannot distinguish the two.
@@ -1565,30 +1598,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // texture one -- and this line is the only place it would ever be visible.
                    (Framework.AurTex.Refused == 0 ? ""
                        : $"; {Framework.AurTex.Refused} dangling texture pointers refused (session total)"));
-        CullPass.ResetStats();
-        Counters._frames = 0; Counters._draws = 0; Counters._batches = 0; Counters._revokes = 0; Counters._enrolls = 0;
-        Counters._twoSidedDraws = 0; Counters._cullCuts = 0; Array.Clear(Counters._cutBy);
-        Counters._drawsGob = 0;
-        Counters._skipTexNone = 0; Counters._skipTexNoId = 0; Counters._skipTexNoHandle = 0; Counters._skipTexNotOwned = 0;
-        Counters._skinDrawn = 0; Counters._skinNoPose = 0; Counters._boneHigh = 0;
-        SkinPose.NoBind = 0; SkinPose.Overflow = 0;
-        SkyBox.ResetPeriod();
-        GrassField.ResetPeriod();
-        Beams.ResetPeriod();
-        Halos.ResetPeriod();
-        Weather.ResetPeriod();
-        Particles.ResetPeriod();
-        Counters._watchSubmitted = 0;
-        Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0;
-        ResetChasePeriod();
-        Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
-        Counters._recWritten = 0; Counters._recStable = 0;
-        ResetStaticPeriod();
-        Counters._nrmDeclared = Counters._nrmBound = 0;
-        Array.Clear(Counters._drawsByClass);
-        Counters._clusterOverflow = 0;
-        Counters._prepassDraws = 0; Counters._prepassSkipped = 0; Counters._prepassKeyed = 0; Counters._prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset();
-        for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset(); _spanSum = 0; _spanN = 0;
     }
 
     /// <summary>The period tallies: every count the [alloy] line prints and its reset zeros, wherever it is

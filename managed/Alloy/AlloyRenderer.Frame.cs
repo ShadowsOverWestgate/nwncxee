@@ -31,8 +31,24 @@ public sealed unsafe partial class AlloyRenderer
         try { DrawOwnedInner(); } finally { FrameZones.Add(FrameZones.Zone.Alloy, tAlloy); }
     }
 
-    private static void DrawOwnedInner()
+    /// <summary>What <see cref="BeginOwnedFrame"/> hands the pass list: this pass's camera, the
+    /// projection terms every stage fogs and lights from, and the verdicts the setup reached. A plain
+    /// stack struct -- nothing on this path allocates.</summary>
+    private struct OwnedFrame
     {
+        internal Matrix4x4 View, Proj, Vp, VpClean;
+        internal float Jx, Jy, Near, Far, P00, P11;
+        internal int Groups;
+        internal bool Perspective, LightingOn, Srgb;
+    }
+
+    /// <summary>CX-708: everything the pass list needs before its first slot runs -- the snapshot
+    /// revoke, the target and viewport latch, the pose, this pass's camera, the own walk inside the 4.6
+    /// bracket and the batch build. Returns false when the pass is over before it began, having already
+    /// left the bracket; on true the caller owns the bracket and closes it. Hot: allocates nothing.</summary>
+    private static bool BeginOwnedFrame(int* display, int* viewport, out OwnedFrame f)
+    {
+        f = default;
         // #308 follow-up: consumed FIRST, above every early return -- a flag left standing across a refused
         // colour frame would make the NEXT frame's colour pass skip the pose against a shadow bracket that
         // may have sat that frame out, and every skinned part would draw a stale (or bind) pose.
@@ -42,7 +58,7 @@ public sealed unsafe partial class AlloyRenderer
         // never reaches PassId.FbCopy leaves Alloy water disarmed -- and BucketGate's bucket-6 gate reads
         // the same flag, so water is simply not drawn on exactly those passes (#285: a hole, not vanilla).
         FrameSnapshot.Revoke();
-        if (Programs._progFailed || _batchUnavailable) return;   // EndFrame revokes + disarms; never pay the bracket for nothing
+        if (Programs._progFailed || _batchUnavailable) return false;   // EndFrame revokes + disarms; never pay the bracket for nothing
         // Checked BEFORE anything stamps OwnGen: BuildBatches marks parts as drawn, which is only honest while
         // the issue phase cannot fail. Missing entry points are the one way it could.
         if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null)
@@ -51,7 +67,7 @@ public sealed unsafe partial class AlloyRenderer
             // world goes bare with no line at all.
             _batchUnavailable = true;
             AlloyGate.Fail("glMultiDrawElementsBaseVertex or glBindBufferBase is missing");
-            return;
+            return false;
         }
         GpuStatic.Latch();   // the static freeze's own entry points; they do not resolve before a context exists
 
@@ -70,8 +86,9 @@ public sealed unsafe partial class AlloyRenderer
         // depth hand-back go, and what the 2D UI draws at. `viewport` is the RENDER one every owned pass
         // sizes from: the display scaled by alloy.scale, origin 0 (the owned targets are their own
         // allocations, so an offset would only mean drawing into their corner).
-        int* display = stackalloc int[4] { t.Vp0, t.Vp1, t.Vp2, t.Vp3 };
-        int* viewport = stackalloc int[4] { 0, 0, PostChain.RenderSize(t.Vp2), PostChain.RenderSize(t.Vp3) };
+        display[0] = t.Vp0; display[1] = t.Vp1; display[2] = t.Vp2; display[3] = t.Vp3;
+        viewport[0] = 0; viewport[1] = 0;
+        viewport[2] = PostChain.RenderSize(t.Vp2); viewport[3] = PostChain.RenderSize(t.Vp3);
         bool srgb = t.Srgb;
         // #456: sized to the DEFAULT framebuffer, before any pass binds a target.
         PresentTarget.Ensure(display[2], display[3], PostChain.DepthTex);
@@ -79,7 +96,7 @@ public sealed unsafe partial class AlloyRenderer
         float engClearDepth = t.ClearDepth;
         // ...and the refusals that need no bracket at all, ahead of the preamble they would otherwise
         // waste -- PoseSkinned alone solves every Alloy skinmesh's pose.
-        if (!PostChain.Precheck(display)) return;
+        if (!PostChain.Precheck(display)) return false;
         // Only now: a pass about to hand the frame back would have the engine solve each of these poses
         // again on its own walk, so the solve is not worth doing for it. #262: the solve no longer enters
         // engine code at all, but it still reads engine animation state, so it stays on this side.
@@ -128,7 +145,7 @@ public sealed unsafe partial class AlloyRenderer
         bool lightingOn = _litCount > 0 && _lighting && !Programs._litFailed && perspective
                           && (_isEnabled == null || _isEnabled(CapLighting) != 0);
 
-        if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); return; }
+        if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); return false; }
         long tOwn = FrameZones.Now;
         OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
         OwnedBuffers.ClearDirty();   // #260: geometry uploaded itself at the engine's commit; close the window
@@ -136,361 +153,374 @@ public sealed unsafe partial class AlloyRenderer
         ApplySwaps();   // #386: swapped texture names take their new handles here, in the context that owns residency
         OwnedBuffers.HighWater();    // ...and report the mark the funnel recorded, where a string is affordable
         FrameZones.Add(FrameZones.Zone.Own, tOwn);
-        if (Programs.EnsureProgram())
+        if (!Programs.EnsureProgram()) { GlContextService.Leave(); return false; }
+        BindTarget();
+        // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both
+        // colour-bracket passes draw the same staged batches, and building twice would revalidate (and
+        // re-stamp OwnGen for) every Alloy part twice. The passes come off FrameGraph, not off call order.
+        if (lightingOn)
         {
-            BindTarget();
-            // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both
-            // colour-bracket passes draw the same staged batches, and building twice would revalidate (and
-            // re-stamp OwnGen for) every Alloy part twice. The passes come off FrameGraph, not off call order.
-            if (lightingOn)
-            {
-                long tLights = FrameZones.Now;
-                AlloyLights.Upload(_frameSeq);
-                // The cluster buffers are only meaningful once THIS pass's build has run: a skipped build
-                // leaves them holding another camera's binning (or, before the first dispatch, undefined
-                // BufferData contents), and a lit part would then sample arbitrary light indices.
-                lightingOn = AlloyLights.Build((float*)&view, p00, p11, near, far)
-                             && Programs._progLit46 != 0;
-                FrameZones.Add(FrameZones.Zone.Lights, tLights);
-            }
-            Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-            // #292: cull ON is the engine's default -- Scene::RenderDrawBucket @0x46d060 leaves
-            // Enable(CULL_FACE) + SetCullFace(BACK) behind on every exit, and that is the state its
-            // sub-list 0 (everything not marked `twosided`) draws in. The batch loops override it per batch;
-            // this states the default the passes with no batch of their own inherit.
-            new PassState(depth: true, depthWrite: true, cull: true, srgb: srgb).Apply();
-            _blendOn = false;
-            Gl.ActiveTexture(Gl.TEXTURE0);
-            Counters._lastPixels = viewport[2] * viewport[3];
-            // #129: built HERE, not at the pass, because staging has to know. A water part staged for a pass
-            // whose program never built would be stamped as owned (and so suppressed in the engine's walk)
-            // and then never drawn -- so the decision is made before BuildBatches, which skips the class
-            // outright when it is false.
-            // ...and on the LIGHT RIG, for a reason the class check cannot supply: the water stage calls
-            // CxClusteredLight unconditionally, and the cluster buffers are only meaningful once THIS
-            // pass's build has run. BuildBatches skips lit batches on !lightingOn, but a water batch is
-            // keyed on its class rather than on _gLit, so without this term /alloy light 0 (or a failed
-            // lit program, or a build that refused) would leave the water program reading undefined
-            // BufferData contents -- an unbounded per-fragment light loop, not a dim sea.
-            _waterArmed = FrameSnapshot.Usable && lightingOn && Programs.EnsureWaterProgram();
-            // #139/#132: from here to PassId.PostProcess the colour passes draw into an RGBA16F target that
-            // shares the engine's depth, and everything they write is LINEAR. Asked BEFORE anything is
-            // staged, because a refusal is no longer survivable: there is no display-space variant of the
-            // Alloy stages to fall back to, so the whole pass stands down and the engine renders it vanilla.
-            // Staging first would stamp OwnGen on parts the iterator then suppresses and nobody draws.
-            long tPostBegin = FrameZones.Now;
-            bool postOk = PostChain.Begin(viewport, engClear, engClearDepth);
-            FrameZones.Add(FrameZones.Zone.Post, tPostBegin);
-            if (!postOk) { GlContextService.Leave(); return; }
-            GpuFrameStart();
-            TickCycleTextures();
-            // #287's scale, hoisted ahead of the staging walk: the automatic-LOD pick reads it there, and the
-            // cull dispatch below is handed the same figure.
-            _lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
-            MeshLod.Pump();   // the one GL edge of the LOD arena: collect what the worker finished
-            MeshChart.Pump(); // ...and of the chart arenas (#673)
-            DrainChartDeferred();   // #674: the offers the enrolment walk could not queue
-            long tBuild = FrameZones.Now;
-            int groups = BuildBatches(lightingOn);
-            FrameZones.Add(FrameZones.Zone.Build, tBuild);
-            if (groups > 0)
-            {
-                long tUp = FrameZones.Now;
-                StageSky();
-                Issue.UploadDraws();
-                // #308 follow-up: the shadow bracket already uploaded this frame's block; re-orphaning it
-                // here would throw away the very pose the bake just sampled from.
-                if (!posedByShadow) Issue.UploadBones();
-                FrameZones.Add(FrameZones.Zone.Upload, tUp);
-                // #243: Alloy's own visibility, dispatched twice -- frustum-only for the depth prepass, then
-                // frustum + hi-Z for the colour pass once the prepass has filled the depth the pyramid is
-                // built from.
-                // #290: staged from EVERY batch now, not the opaque prefix. _gOpaqueEnd is handed over as
-                // the COMPACTING boundary instead: batches above it are sorted back-to-front by a second
-                // dispatch rather than appended by the atomic.
-                long tCull = FrameZones.Now;
-                // The batch list's draw count, read off the last batch rather than from _drawN -- StageSky
-                // appends to _drawN below and its draws have no source record and no batch of their own.
-                int cullDraws = _gStart[groups - 1] + _gLen[groups - 1];
-                // #287: pixels per unit of world radius at unit depth, the LOD test's one input. Zero when
-                // this pass has no perspective projection, and the test then stands down.
-                float lodScale = _lodScale;
-                // #303: the spheres go up whatever the cull mode -- the shadow gather reads the same buffer.
-                fixed (float* sph = _dSph)
-                    CullPass.UploadSpheres(sph, _recOwnCap + MaxSkyDraws);
-                fixed (uint* src = _dSrc)
-                    // A probe capture draws the same batches six more times from six other cameras, so its
-                    // faces cannot ride a list culled for THIS one -- passing zero groups stands the cull
-                    // down for the whole pass rather than leaving a stale list armed behind it.
-                    if (CullPass.Begin(_capturing ? 0 : groups, cullDraws, src,
-                                       lodScale, _gOpaqueEnd, _eyePos))
-                    {
-                        GpuBegin(GpuTerm.Cull);
-                        // #489: hiZ here means the PRIOR pass's pyramid; Dispatch stands it down when none is resident.
-                        CullPass.Dispatch(CullPass.PhasePrepass, &vp, hiZ: true, PassGen);
-                        GpuEnd(GpuTerm.Cull);
-                    }
-                FrameZones.Add(FrameZones.Zone.Cull, tCull);
-                // #322: the loop's own CPU work, with the brackets that fire inside it (multidraw issue,
-                // the colour cull dispatch, post, the probe capture) subtracted out -- same parent/child
-                // pattern as the Probe bracket below.
-                long issue0 = FrameZones.Ticks(FrameZones.Zone.Issue), cull0 = FrameZones.Ticks(FrameZones.Zone.Cull);
-                long post0 = FrameZones.Ticks(FrameZones.Zone.Post), probe0 = FrameZones.Ticks(FrameZones.Zone.Probe);
-                long lm0 = FrameZones.Ticks(FrameZones.Zone.Lightmap);
-                long tPasses = FrameZones.Now;
-                // #375: the post bracket opens at PostProcess and closes at PostStack, two graph slots.
-                long tPost = 0; bool postOpen = false;
-                // #390: did the velocity pass run at the AO slot this pass? If not, PostProcess runs it.
-                bool motionRan = false;
-                foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
-                {
-                    if (bracket != Bracket.Colour) continue;
-                    switch (id)
-                    {
-                        case PassId.DepthPrepass:
-                            long tPre = FrameZones.Now;
-                            DepthPrepassPass(_gOpaqueEnd, &vp, viewport, CullPass.PhasePrepass);
-                            // #243: the pyramid, from the depth that pass just wrote. Inside the same frame
-                            // on purpose -- the colour cull tests it, and a pyramid carried from last frame
-                            // pops at the silhouette of every moving occluder.
-                            if (DepthResource.Filled(PassGen))
-                            {
-                                long tHiz = FrameZones.Now;
-                                GpuBegin(GpuTerm.HiZ);
-                                CullPass.BuildHiZ(PostChain.DepthTex, viewport[2], viewport[3], viewport,
-                                                  PostChain.Fbo, PassGen, &vp);
-                                GpuEnd(GpuTerm.HiZ);
-                                FrameZones.Add(FrameZones.Zone.Hiz, tHiz);
-                                // #489: phase two -- what phase one's STALE pyramid rejected, re-tested
-                                // against the fresh one and drawn now, so a wrong rejection never reaches
-                                // the screen. Skipped whole when phase one was frustum-only (nothing marked).
-                                if (CullPass.RetestPending)
-                                {
-                                    GpuBegin(GpuTerm.Cull);
-                                    CullPass.Dispatch(CullPass.PhaseRetest, &vp, hiZ: true, PassGen);
-                                    GpuEnd(GpuTerm.Cull);
-                                    GpuBegin(GpuTerm.PrepassRetest);
-                                    DepthPrepassPass(_gOpaqueEnd, &vp, viewport, CullPass.PhaseRetest);
-                                    GpuEnd(GpuTerm.PrepassRetest);
-                                }
-                            }
-                            FrameZones.Add(FrameZones.Zone.Prepass, tPre);
-                            break;
-                        case PassId.AmbientOcclusion:
-                            // #388/#390: the velocity target off the PREPASS depth, ahead of the AO pass that
-                            // reprojects through it. Its own term -- TIME_ELAPSED cannot nest in the AO one.
-                            // A frame with no prepass depth takes the PostProcess site below instead.
-                            if (PostChain.MotionWanted && DepthResource.Filled(PassGen) && !_capturing)
-                            {
-                                GpuBegin(GpuTerm.Motion);
-                                MotionVectors.Run(PostChain.DepthTex, &vp, &vpClean, jx, jy, viewport, PostChain.Fbo, _frameSeq);
-                                MoverMotionPass(&vp, jx, jy, viewport);
-                                GpuEnd(GpuTerm.Motion);
-                                motionRan = true;
-                            }
-                            GpuBegin(GpuTerm.Ao);
-                            SsaoPass.Run(PostChain.DepthTex, DepthResource.Filled(PassGen), &proj, viewport, PostChain.Fbo, _frameSeq);
-                            GpuEnd(GpuTerm.Ao);
-                            break;
-                        case PassId.OpaqueOwned:
-                            // Second dispatch, and it is unconditional rather than folded into the prepass
-                            // case: a frame graph without a prepass in it must still leave the colour pass a
-                            // list to draw, and hi-Z simply stands down when there is no depth to build from.
-                            long tCull2 = FrameZones.Now;
-                            GpuBegin(GpuTerm.Cull);
-                            CullPass.Dispatch(CullPass.PhaseColour, &vp, hiZ: DepthResource.Filled(PassGen), PassGen);
-                            GpuEnd(GpuTerm.Cull);
-                            FrameZones.Add(FrameZones.Zone.Cull, tCull2);
-                            OpaqueOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
-                            // The GPU-side cluster stats belong to the SCREEN's build. Harvested here rather
-                            // than after the bracket because the probe capture rebuilds the clusters once per
-                            // face, and reading afterwards would report cube face 6's overflow as the frame's.
-                            if (_takeOverflow)
-                            { _takeOverflow = false; Counters._clusterOverflow += AlloyLights.TakeClusterOverflow(); }
-                            break;
-                        case PassId.GrassOwned:
-                            long tGrassDraw = FrameZones.Now;
-                            GrassField.Draw(&vp, viewport, near, far, lightingOn);   // brackets its own two GPU terms
-                            FrameZones.Add(FrameZones.Zone.Grass, tGrassDraw);
-                            // Grass draws unblended by construction and toggles GL_BLEND itself; hand the
-                            // tracked state back exactly as it was, or the next pass's own bookkeeping
-                            // (Issue.IssueBatches reads _blendOn as "what is already set") starts from a lie.
-                            if (_blendOn) Gl.Enable(Gl.BLEND); else Gl.Disable(Gl.BLEND);
-                            break;
-                        case PassId.SkyOwned:
-                            if (!_capturing) FrameTap.Take("opaque", viewport);
-                            GpuBegin(GpuTerm.Sky);
-                            SkyOwnedPass(&vp, viewport);
-                            GpuEnd(GpuTerm.Sky);
-                            if (!_capturing) FrameTap.Take("sky", viewport);
-                            break;
-                        case PassId.CutoutOwned:
-                            CutoutOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
-                            break;
-                        case PassId.BlendedOwned:
-                            GpuBegin(GpuTerm.Blended);
-                            // Per CREATURE: every batch tagged with one run gob is prepassed then coloured
-                            // before the next creature's, in order of first appearance in the back-to-front
-                            // range, so a translucent creature behind another still shows through it. The
-                            // batches of one creature need not be contiguous -- the staging order interleaves
-                            // them (see the [blendrun] line) -- so each pass filters on the tag. Gobless batches
-                            // (fading tiles, windows) go first, unfiltered by prepass.
-                            // OIT (OitPass): the whole class in one unsorted, non-depth-writing pass into the
-                            // accumulation pair, composited once. The per-creature run loop and its one-layer
-                            // depth sweep are gone with it: with no depth written, no layer can hide another.
-                            // /alloy oit 2 (#490) sorts per pixel through linked lists on the same bracket.
-                            if (_gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
-                            {
-                                Issue._oitOn = true;
-                                Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
-                                Issue._oitOn = false;
-                                OitPass.End(viewport);
-                                _blendOn = true;
-                                {
-                                    Issue._onlyHosted = true;
-                                    Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
-                                    Issue._onlyHosted = false;
-                                }
-                            }
-                            else Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far, depthWrite: true);
-                            GpuEnd(GpuTerm.Blended);
-                            break;
-                        case PassId.FbCopy:
-                            // Only when there is water to read it. The copy is a full-screen blit of colour
-                            // AND depth -- cheap, but not free, and every frame without a water surface on
-                            // screen would be paying for a texture nothing samples.
-                            if (_gWaterEnd > _gBlendEnd && !_capturing)
-                            {
-                                // The blended class left GL_BLEND on and the depth mask off; the blit does
-                                // not care, but leaving the tracked state honest does -- Issue.IssueBatches below
-                                // reads _blendOn as "what is already set".
-                                long tBlit = FrameZones.Now;
-                                GpuBegin(GpuTerm.WaterCopy);
-                                if (perspective && WaterRect(&vp, viewport, p00, p11, out int rx0, out int ry0, out int rx1, out int ry1))
-                                    FrameSnapshot.Copy(viewport, rx0, ry0, rx1, ry1);
-                                else FrameSnapshot.Copy(viewport);
-                                GpuEnd(GpuTerm.WaterCopy);
-                                FrameZones.Add(FrameZones.Zone.Blit, tBlit);
-                            }
-                            break;
-                        case PassId.WaterOwned:
-                            GpuBegin(GpuTerm.Water);
-                            Issue.WaterOwnedPass(_gBlendEnd, _gWaterEnd, &vp, (float*)&view, (float*)&proj,
-                                           viewport, near, far);
-                            GpuEnd(GpuTerm.Water);
-                            break;
-                        case PassId.AdditiveOwned:
-                            GpuBegin(GpuTerm.Additive);
-                            Issue.TransparentPass(_gWaterEnd, groups, &vp, viewport, near, far);
-                            GpuEnd(GpuTerm.Additive);
-                            // The blending classes leave the depth mask off and GL_BLEND on; the probe
-                            // capture that follows draws the opaque set again and must find neither.
-                            Gl.Disable(Gl.BLEND); _blendOn = false; Gl.DepthMask(1);
-                            break;
-                        case PassId.BeamsOwned:
-                            // Beams bind a program and a VAO of their own and hand the state back exactly as
-                            // the additive arm left it; nothing here tracks _blendOn on their behalf.
-                            GpuBegin(GpuTerm.Beams);
-                            Beams.Draw(&view, &proj);
-                            GpuEnd(GpuTerm.Beams);
-                            break;
-                        case PassId.ParticlesOwned:
-                            // Particles bind a program, a VAO and a buffer of their own and hand the state
-                            // back the way the beams left it -- blend off, depth mask on, culling off.
-                            GpuBegin(GpuTerm.Particles);
-                            // #336: the particle pass's fill -- samples over pixels is its overdraw, the
-                            // number that says whether a half-resolution pass would pay.
-                            bool partCounting = _qPartSamples.Begin(Gl.SAMPLES_PASSED);
-                            long blit0 = FrameZones.Ticks(FrameZones.Zone.Blit);
-                            long tParts = FrameZones.Now;
-                            Particles.Draw(&view, &proj, viewport, near, far, lightingOn);
-                            FrameZones.Add(FrameZones.Zone.Parts, tParts,
-                                           FrameZones.Ticks(FrameZones.Zone.Blit) - blit0);
-                            if (partCounting) _qPartSamples.End(Gl.SAMPLES_PASSED);
-                            GpuEnd(GpuTerm.Particles);
-                            break;
-                        case PassId.HalosOwned:
-                            Halos.Draw(&view, &proj, viewport);
-                            break;
-                        case PassId.WeatherOwned:
-                            GpuBegin(GpuTerm.Weather);
-                            Weather.Draw(&view, &proj, viewport, _eyePos, AreaWind(), near, far, lightingOn);
-                            GpuEnd(GpuTerm.Weather);
-                            break;
-                        case PassId.ProbeCapture:
-                            if (!lightingOn) break;
-                            CaptureProbe(_gOpaqueEnd, far);
-                            long tLm = FrameZones.Now;
-                            LightmapBake.Run(_capturing, _frameSeq);   // #674: its own targets, restored below with the rest
-                            FrameZones.Add(FrameZones.Zone.Lightmap, tLm);
-                            // The capture bound its own framebuffer and viewport; whatever runs after the
-                            // bracket must find the engine's target again, not a 128px cube face.
-                            BindTarget();
-                            Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-                            if (srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
-                            break;
-                        case PassId.PostProcess:
-                            if (!PostChain.Armed) break;
-                            tPost = FrameZones.Now; postOpen = true;
-                            // #388: the camera velocity target, off the finished depth and this pass's
-                            // view-projection. Its own GPU term, ahead of the post one -- TIME_ELAPSED
-                            // queries cannot nest.
-                            if (PostChain.MotionWanted && !motionRan && !_capturing)
-                            {
-                                GpuBegin(GpuTerm.Motion);
-                                MotionVectors.Run(PostChain.DepthTex, &vp, &vpClean, jx, jy, viewport, PostChain.Fbo, _frameSeq);
-                                MoverMotionPass(&vp, jx, jy, viewport);
-                                GpuEnd(GpuTerm.Motion);
-                            }
-                            // #491: its own term ahead of Post (queries cannot nest); world scene only.
-                            if (PostChain.AutoWanted && !_capturing && IsWorldScene(_enrollScene))
-                            {
-                                GpuBegin(GpuTerm.Exposure);
-                                PostChain.Adapt();
-                                GpuEnd(GpuTerm.Exposure);
-                            }
-                            // #493: the vis-ID viz over the finished frame, before the resolve reads it.
-                            if (_lightViz == IdTarget.VizMode && !_capturing) IdTarget.Paint(viewport);
-                            GpuBegin(GpuTerm.Post);
-                            // Bloom runs against the HDR target and binds its own attachments; the engine's
-                            // target has to come back before the composite writes into it, and with it the
-                            // viewport and the sRGB-encode state the pass was entered with.
-                            PostChain.Bloom();
-                            // #375: Begin binds its own framebuffer to attach; the engine's comes back for the depth hand-back
-                            // #391/#389: the stack is told both sizes; when it upsamples, the resolve's
-                            // colour draw lands at the render viewport and the taa stage writes the display.
-                            ToonStage.SetProj(&proj);
-                            FbPostStage.SetCamera(&view, &proj);
-                            uint into = PostStack.Begin(viewport[2], viewport[3], display[2], display[3]);
-                            RebindFrameTarget();
-                            PostChain.Composite(display, into, PostStack.Upsampling ? viewport : display);
-                            break;
-                        case PassId.PostStack:
-                            if (!postOpen) break;
-                            // The last live stage rebinds the engine's target itself; a no-op with none.
-                            PostStack.Run(display, PostStack.Upsampling ? viewport : display);
-                            // #232 second mode: the owned outline+fill highlight, drawn into the finished
-                            // display-space frame with the depth Composite blitted to it. Not a FrameGraph
-                            // slot of its own: it is part of finishing the post output, like Bloom.
-                            // #389: the JITTERED camera for the mask (a biased LEQUAL against the jittered depth;
-                            // the clean camera z-fought it, live), and the jitter handed over so the composite
-                            // reads the mask back into the accumulated frame's space.
-                            Highlight.OutlineHighlightPass(groups, &vp, jx, jy, viewport, display);
-                            GpuEnd(GpuTerm.Post);
-                            FrameZones.Add(FrameZones.Zone.Post, tPost);
-                            break;
-                    }
-                }
-                GpuSpanEnd();
-                FrameZones.Add(FrameZones.Zone.Passes, tPasses,
-                               FrameZones.Ticks(FrameZones.Zone.Issue) - issue0
-                               + FrameZones.Ticks(FrameZones.Zone.Cull) - cull0
-                               + FrameZones.Ticks(FrameZones.Zone.Post) - post0
-                               + FrameZones.Ticks(FrameZones.Zone.Probe) - probe0
-                               + FrameZones.Ticks(FrameZones.Zone.Lightmap) - lm0);
-            }
-            Gl.BindVertexArray(0);
+            long tLights = FrameZones.Now;
+            AlloyLights.Upload(_frameSeq);
+            // The cluster buffers are only meaningful once THIS pass's build has run: a skipped build
+            // leaves them holding another camera's binning (or, before the first dispatch, undefined
+            // BufferData contents), and a lit part would then sample arbitrary light indices.
+            lightingOn = AlloyLights.Build((float*)&view, p00, p11, near, far)
+                         && Programs._progLit46 != 0;
+            FrameZones.Add(FrameZones.Zone.Lights, tLights);
         }
+        Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        // #292: cull ON is the engine's default -- Scene::RenderDrawBucket @0x46d060 leaves
+        // Enable(CULL_FACE) + SetCullFace(BACK) behind on every exit, and that is the state its
+        // sub-list 0 (everything not marked `twosided`) draws in. The batch loops override it per batch;
+        // this states the default the passes with no batch of their own inherit.
+        new PassState(depth: true, depthWrite: true, cull: true, srgb: srgb).Apply();
+        _blendOn = false;
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        Counters._lastPixels = viewport[2] * viewport[3];
+        // #129: built HERE, not at the pass, because staging has to know. A water part staged for a pass
+        // whose program never built would be stamped as owned (and so suppressed in the engine's walk)
+        // and then never drawn -- so the decision is made before BuildBatches, which skips the class
+        // outright when it is false.
+        // ...and on the LIGHT RIG, for a reason the class check cannot supply: the water stage calls
+        // CxClusteredLight unconditionally, and the cluster buffers are only meaningful once THIS
+        // pass's build has run. BuildBatches skips lit batches on !lightingOn, but a water batch is
+        // keyed on its class rather than on _gLit, so without this term /alloy light 0 (or a failed
+        // lit program, or a build that refused) would leave the water program reading undefined
+        // BufferData contents -- an unbounded per-fragment light loop, not a dim sea.
+        _waterArmed = FrameSnapshot.Usable && lightingOn && Programs.EnsureWaterProgram();
+        // #139/#132: from here to PassId.PostProcess the colour passes draw into an RGBA16F target that
+        // shares the engine's depth, and everything they write is LINEAR. Asked BEFORE anything is
+        // staged, because a refusal is no longer survivable: there is no display-space variant of the
+        // Alloy stages to fall back to, so the whole pass stands down and the engine renders it vanilla.
+        // Staging first would stamp OwnGen on parts the iterator then suppresses and nobody draws.
+        long tPostBegin = FrameZones.Now;
+        bool postOk = PostChain.Begin(viewport, engClear, engClearDepth);
+        FrameZones.Add(FrameZones.Zone.Post, tPostBegin);
+        if (!postOk) { GlContextService.Leave(); return false; }
+        GpuFrameStart();
+        TickCycleTextures();
+        // #287's scale, hoisted ahead of the staging walk: the automatic-LOD pick reads it there, and the
+        // cull dispatch below is handed the same figure.
+        _lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
+        MeshLod.Pump();   // the one GL edge of the LOD arena: collect what the worker finished
+        MeshChart.Pump(); // ...and of the chart arenas (#673)
+        DrainChartDeferred();   // #674: the offers the enrolment walk could not queue
+        long tBuild = FrameZones.Now;
+        int groups = BuildBatches(lightingOn);
+        FrameZones.Add(FrameZones.Zone.Build, tBuild);
+        if (groups <= 0) { Gl.BindVertexArray(0); GlContextService.Leave(); return false; }
+        long tUp = FrameZones.Now;
+        StageSky();
+        Issue.UploadDraws();
+        // #308 follow-up: the shadow bracket already uploaded this frame's block; re-orphaning it
+        // here would throw away the very pose the bake just sampled from.
+        if (!posedByShadow) Issue.UploadBones();
+        FrameZones.Add(FrameZones.Zone.Upload, tUp);
+        // #243: Alloy's own visibility, dispatched twice -- frustum-only for the depth prepass, then
+        // frustum + hi-Z for the colour pass once the prepass has filled the depth the pyramid is
+        // built from.
+        // #290: staged from EVERY batch now, not the opaque prefix. _gOpaqueEnd is handed over as
+        // the COMPACTING boundary instead: batches above it are sorted back-to-front by a second
+        // dispatch rather than appended by the atomic.
+        long tCull = FrameZones.Now;
+        // The batch list's draw count, read off the last batch rather than from _drawN -- StageSky
+        // appends to _drawN below and its draws have no source record and no batch of their own.
+        int cullDraws = _gStart[groups - 1] + _gLen[groups - 1];
+        // #287: pixels per unit of world radius at unit depth, the LOD test's one input. Zero when
+        // this pass has no perspective projection, and the test then stands down.
+        float lodScale = _lodScale;
+        // #303: the spheres go up whatever the cull mode -- the shadow gather reads the same buffer.
+        fixed (float* sph = _dSph)
+            CullPass.UploadSpheres(sph, _recOwnCap + MaxSkyDraws);
+        fixed (uint* src = _dSrc)
+            // A probe capture draws the same batches six more times from six other cameras, so its
+            // faces cannot ride a list culled for THIS one -- passing zero groups stands the cull
+            // down for the whole pass rather than leaving a stale list armed behind it.
+            if (CullPass.Begin(_capturing ? 0 : groups, cullDraws, src,
+                               lodScale, _gOpaqueEnd, _eyePos))
+            {
+                GpuBegin(GpuTerm.Cull);
+                // #489: hiZ here means the PRIOR pass's pyramid; Dispatch stands it down when none is resident.
+                CullPass.Dispatch(CullPass.PhasePrepass, &vp, hiZ: true, PassGen);
+                GpuEnd(GpuTerm.Cull);
+            }
+        FrameZones.Add(FrameZones.Zone.Cull, tCull);
+        f.View = view; f.Proj = proj; f.Vp = vp; f.VpClean = vpClean;
+        f.Jx = jx; f.Jy = jy; f.Near = near; f.Far = far; f.P00 = p00; f.P11 = p11;
+        f.Perspective = perspective; f.LightingOn = lightingOn; f.Srgb = srgb; f.Groups = groups;
+        return true;
+    }
+
+    /// <summary>The ADR 0011 slot walk: one case per pass, in FrameGraph order, over the batches
+    /// <see cref="BeginOwnedFrame"/> staged. Inside the 4.6 bracket that method entered.</summary>
+    private static void DrawOwnedInner()
+    {
+        int* display = stackalloc int[4];
+        int* viewport = stackalloc int[4];
+        if (!BeginOwnedFrame(display, viewport, out OwnedFrame f)) return;
+        Matrix4x4 view = f.View, proj = f.Proj, vp = f.Vp, vpClean = f.VpClean;
+        float jx = f.Jx, jy = f.Jy, near = f.Near, far = f.Far, p00 = f.P00, p11 = f.P11;
+        bool perspective = f.Perspective, lightingOn = f.LightingOn, srgb = f.Srgb;
+        int groups = f.Groups;
+        // #322: the loop's own CPU work, with the brackets that fire inside it (multidraw issue,
+        // the colour cull dispatch, post, the probe capture) subtracted out -- same parent/child
+        // pattern as the Probe bracket below.
+        long issue0 = FrameZones.Ticks(FrameZones.Zone.Issue), cull0 = FrameZones.Ticks(FrameZones.Zone.Cull);
+        long post0 = FrameZones.Ticks(FrameZones.Zone.Post), probe0 = FrameZones.Ticks(FrameZones.Zone.Probe);
+        long lm0 = FrameZones.Ticks(FrameZones.Zone.Lightmap);
+        long tPasses = FrameZones.Now;
+        // #375: the post bracket opens at PostProcess and closes at PostStack, two graph slots.
+        long tPost = 0; bool postOpen = false;
+        // #390: did the velocity pass run at the AO slot this pass? If not, PostProcess runs it.
+        bool motionRan = false;
+        foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
+        {
+            if (bracket != Bracket.Colour) continue;
+            switch (id)
+            {
+                case PassId.DepthPrepass:
+                    long tPre = FrameZones.Now;
+                    DepthPrepassPass(_gOpaqueEnd, &vp, viewport, CullPass.PhasePrepass);
+                    // #243: the pyramid, from the depth that pass just wrote. Inside the same frame
+                    // on purpose -- the colour cull tests it, and a pyramid carried from last frame
+                    // pops at the silhouette of every moving occluder.
+                    if (DepthResource.Filled(PassGen))
+                    {
+                        long tHiz = FrameZones.Now;
+                        GpuBegin(GpuTerm.HiZ);
+                        CullPass.BuildHiZ(PostChain.DepthTex, viewport[2], viewport[3], viewport,
+                                          PostChain.Fbo, PassGen, &vp);
+                        GpuEnd(GpuTerm.HiZ);
+                        FrameZones.Add(FrameZones.Zone.Hiz, tHiz);
+                        // #489: phase two -- what phase one's STALE pyramid rejected, re-tested
+                        // against the fresh one and drawn now, so a wrong rejection never reaches
+                        // the screen. Skipped whole when phase one was frustum-only (nothing marked).
+                        if (CullPass.RetestPending)
+                        {
+                            GpuBegin(GpuTerm.Cull);
+                            CullPass.Dispatch(CullPass.PhaseRetest, &vp, hiZ: true, PassGen);
+                            GpuEnd(GpuTerm.Cull);
+                            GpuBegin(GpuTerm.PrepassRetest);
+                            DepthPrepassPass(_gOpaqueEnd, &vp, viewport, CullPass.PhaseRetest);
+                            GpuEnd(GpuTerm.PrepassRetest);
+                        }
+                    }
+                    FrameZones.Add(FrameZones.Zone.Prepass, tPre);
+                    break;
+                case PassId.AmbientOcclusion:
+                    // #388/#390: the velocity target off the PREPASS depth, ahead of the AO pass that
+                    // reprojects through it. Its own term -- TIME_ELAPSED cannot nest in the AO one.
+                    // A frame with no prepass depth takes the PostProcess site below instead.
+                    if (PostChain.MotionWanted && DepthResource.Filled(PassGen) && !_capturing)
+                    {
+                        GpuBegin(GpuTerm.Motion);
+                        MotionVectors.Run(PostChain.DepthTex, &vp, &vpClean, jx, jy, viewport, PostChain.Fbo, _frameSeq);
+                        MoverMotionPass(&vp, jx, jy, viewport);
+                        GpuEnd(GpuTerm.Motion);
+                        motionRan = true;
+                    }
+                    GpuBegin(GpuTerm.Ao);
+                    SsaoPass.Run(PostChain.DepthTex, DepthResource.Filled(PassGen), &proj, viewport, PostChain.Fbo, _frameSeq);
+                    GpuEnd(GpuTerm.Ao);
+                    break;
+                case PassId.OpaqueOwned:
+                    // Second dispatch, and it is unconditional rather than folded into the prepass
+                    // case: a frame graph without a prepass in it must still leave the colour pass a
+                    // list to draw, and hi-Z simply stands down when there is no depth to build from.
+                    long tCull2 = FrameZones.Now;
+                    GpuBegin(GpuTerm.Cull);
+                    CullPass.Dispatch(CullPass.PhaseColour, &vp, hiZ: DepthResource.Filled(PassGen), PassGen);
+                    GpuEnd(GpuTerm.Cull);
+                    FrameZones.Add(FrameZones.Zone.Cull, tCull2);
+                    OpaqueOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
+                    // The GPU-side cluster stats belong to the SCREEN's build. Harvested here rather
+                    // than after the bracket because the probe capture rebuilds the clusters once per
+                    // face, and reading afterwards would report cube face 6's overflow as the frame's.
+                    if (_takeOverflow)
+                    { _takeOverflow = false; Counters._clusterOverflow += AlloyLights.TakeClusterOverflow(); }
+                    break;
+                case PassId.GrassOwned:
+                    long tGrassDraw = FrameZones.Now;
+                    GrassField.Draw(&vp, viewport, near, far, lightingOn);   // brackets its own two GPU terms
+                    FrameZones.Add(FrameZones.Zone.Grass, tGrassDraw);
+                    // Grass draws unblended by construction and toggles GL_BLEND itself; hand the
+                    // tracked state back exactly as it was, or the next pass's own bookkeeping
+                    // (Issue.IssueBatches reads _blendOn as "what is already set") starts from a lie.
+                    if (_blendOn) Gl.Enable(Gl.BLEND); else Gl.Disable(Gl.BLEND);
+                    break;
+                case PassId.SkyOwned:
+                    if (!_capturing) FrameTap.Take("opaque", viewport);
+                    GpuBegin(GpuTerm.Sky);
+                    SkyOwnedPass(&vp, viewport);
+                    GpuEnd(GpuTerm.Sky);
+                    if (!_capturing) FrameTap.Take("sky", viewport);
+                    break;
+                case PassId.CutoutOwned:
+                    CutoutOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
+                    break;
+                case PassId.BlendedOwned:
+                    GpuBegin(GpuTerm.Blended);
+                    // Per CREATURE: every batch tagged with one run gob is prepassed then coloured
+                    // before the next creature's, in order of first appearance in the back-to-front
+                    // range, so a translucent creature behind another still shows through it. The
+                    // batches of one creature need not be contiguous -- the staging order interleaves
+                    // them (see the [blendrun] line) -- so each pass filters on the tag. Gobless batches
+                    // (fading tiles, windows) go first, unfiltered by prepass.
+                    // OIT (OitPass): the whole class in one unsorted, non-depth-writing pass into the
+                    // accumulation pair, composited once. The per-creature run loop and its one-layer
+                    // depth sweep are gone with it: with no depth written, no layer can hide another.
+                    // /alloy oit 2 (#490) sorts per pixel through linked lists on the same bracket.
+                    if (_gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
+                    {
+                        Issue._oitOn = true;
+                        Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                        Issue._oitOn = false;
+                        OitPass.End(viewport);
+                        _blendOn = true;
+                        {
+                            Issue._onlyHosted = true;
+                            Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                            Issue._onlyHosted = false;
+                        }
+                    }
+                    else Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far, depthWrite: true);
+                    GpuEnd(GpuTerm.Blended);
+                    break;
+                case PassId.FbCopy:
+                    // Only when there is water to read it. The copy is a full-screen blit of colour
+                    // AND depth -- cheap, but not free, and every frame without a water surface on
+                    // screen would be paying for a texture nothing samples.
+                    if (_gWaterEnd > _gBlendEnd && !_capturing)
+                    {
+                        // The blended class left GL_BLEND on and the depth mask off; the blit does
+                        // not care, but leaving the tracked state honest does -- Issue.IssueBatches below
+                        // reads _blendOn as "what is already set".
+                        long tBlit = FrameZones.Now;
+                        GpuBegin(GpuTerm.WaterCopy);
+                        if (perspective && WaterRect(&vp, viewport, p00, p11, out int rx0, out int ry0, out int rx1, out int ry1))
+                            FrameSnapshot.Copy(viewport, rx0, ry0, rx1, ry1);
+                        else FrameSnapshot.Copy(viewport);
+                        GpuEnd(GpuTerm.WaterCopy);
+                        FrameZones.Add(FrameZones.Zone.Blit, tBlit);
+                    }
+                    break;
+                case PassId.WaterOwned:
+                    GpuBegin(GpuTerm.Water);
+                    Issue.WaterOwnedPass(_gBlendEnd, _gWaterEnd, &vp, (float*)&view, (float*)&proj,
+                                   viewport, near, far);
+                    GpuEnd(GpuTerm.Water);
+                    break;
+                case PassId.AdditiveOwned:
+                    GpuBegin(GpuTerm.Additive);
+                    Issue.TransparentPass(_gWaterEnd, groups, &vp, viewport, near, far);
+                    GpuEnd(GpuTerm.Additive);
+                    // The blending classes leave the depth mask off and GL_BLEND on; the probe
+                    // capture that follows draws the opaque set again and must find neither.
+                    Gl.Disable(Gl.BLEND); _blendOn = false; Gl.DepthMask(1);
+                    break;
+                case PassId.BeamsOwned:
+                    // Beams bind a program and a VAO of their own and hand the state back exactly as
+                    // the additive arm left it; nothing here tracks _blendOn on their behalf.
+                    GpuBegin(GpuTerm.Beams);
+                    Beams.Draw(&view, &proj);
+                    GpuEnd(GpuTerm.Beams);
+                    break;
+                case PassId.ParticlesOwned:
+                    // Particles bind a program, a VAO and a buffer of their own and hand the state
+                    // back the way the beams left it -- blend off, depth mask on, culling off.
+                    GpuBegin(GpuTerm.Particles);
+                    // #336: the particle pass's fill -- samples over pixels is its overdraw, the
+                    // number that says whether a half-resolution pass would pay.
+                    bool partCounting = _qPartSamples.Begin(Gl.SAMPLES_PASSED);
+                    long blit0 = FrameZones.Ticks(FrameZones.Zone.Blit);
+                    long tParts = FrameZones.Now;
+                    Particles.Draw(&view, &proj, viewport, near, far, lightingOn);
+                    FrameZones.Add(FrameZones.Zone.Parts, tParts,
+                                   FrameZones.Ticks(FrameZones.Zone.Blit) - blit0);
+                    if (partCounting) _qPartSamples.End(Gl.SAMPLES_PASSED);
+                    GpuEnd(GpuTerm.Particles);
+                    break;
+                case PassId.HalosOwned:
+                    Halos.Draw(&view, &proj, viewport);
+                    break;
+                case PassId.WeatherOwned:
+                    GpuBegin(GpuTerm.Weather);
+                    Weather.Draw(&view, &proj, viewport, _eyePos, AreaWind(), near, far, lightingOn);
+                    GpuEnd(GpuTerm.Weather);
+                    break;
+                case PassId.ProbeCapture:
+                    if (!lightingOn) break;
+                    CaptureProbe(_gOpaqueEnd, far);
+                    long tLm = FrameZones.Now;
+                    LightmapBake.Run(_capturing, _frameSeq);   // #674: its own targets, restored below with the rest
+                    FrameZones.Add(FrameZones.Zone.Lightmap, tLm);
+                    // The capture bound its own framebuffer and viewport; whatever runs after the
+                    // bracket must find the engine's target again, not a 128px cube face.
+                    BindTarget();
+                    Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+                    if (srgb) Gl.Enable(Gl.FRAMEBUFFER_SRGB); else Gl.Disable(Gl.FRAMEBUFFER_SRGB);
+                    break;
+                case PassId.PostProcess:
+                    if (!PostChain.Armed) break;
+                    tPost = FrameZones.Now; postOpen = true;
+                    // #388: the camera velocity target, off the finished depth and this pass's
+                    // view-projection. Its own GPU term, ahead of the post one -- TIME_ELAPSED
+                    // queries cannot nest.
+                    if (PostChain.MotionWanted && !motionRan && !_capturing)
+                    {
+                        GpuBegin(GpuTerm.Motion);
+                        MotionVectors.Run(PostChain.DepthTex, &vp, &vpClean, jx, jy, viewport, PostChain.Fbo, _frameSeq);
+                        MoverMotionPass(&vp, jx, jy, viewport);
+                        GpuEnd(GpuTerm.Motion);
+                    }
+                    // #491: its own term ahead of Post (queries cannot nest); world scene only.
+                    if (PostChain.AutoWanted && !_capturing && IsWorldScene(_enrollScene))
+                    {
+                        GpuBegin(GpuTerm.Exposure);
+                        PostChain.Adapt();
+                        GpuEnd(GpuTerm.Exposure);
+                    }
+                    // #493: the vis-ID viz over the finished frame, before the resolve reads it.
+                    if (_lightViz == IdTarget.VizMode && !_capturing) IdTarget.Paint(viewport);
+                    GpuBegin(GpuTerm.Post);
+                    // Bloom runs against the HDR target and binds its own attachments; the engine's
+                    // target has to come back before the composite writes into it, and with it the
+                    // viewport and the sRGB-encode state the pass was entered with.
+                    PostChain.Bloom();
+                    // #375: Begin binds its own framebuffer to attach; the engine's comes back for the depth hand-back
+                    // #391/#389: the stack is told both sizes; when it upsamples, the resolve's
+                    // colour draw lands at the render viewport and the taa stage writes the display.
+                    ToonStage.SetProj(&proj);
+                    FbPostStage.SetCamera(&view, &proj);
+                    uint into = PostStack.Begin(viewport[2], viewport[3], display[2], display[3]);
+                    RebindFrameTarget();
+                    PostChain.Composite(display, into, PostStack.Upsampling ? viewport : display);
+                    break;
+                case PassId.PostStack:
+                    if (!postOpen) break;
+                    // The last live stage rebinds the engine's target itself; a no-op with none.
+                    PostStack.Run(display, PostStack.Upsampling ? viewport : display);
+                    // #232 second mode: the owned outline+fill highlight, drawn into the finished
+                    // display-space frame with the depth Composite blitted to it. Not a FrameGraph
+                    // slot of its own: it is part of finishing the post output, like Bloom.
+                    // #389: the JITTERED camera for the mask (a biased LEQUAL against the jittered depth;
+                    // the clean camera z-fought it, live), and the jitter handed over so the composite
+                    // reads the mask back into the accumulated frame's space.
+                    Highlight.OutlineHighlightPass(groups, &vp, jx, jy, viewport, display);
+                    GpuEnd(GpuTerm.Post);
+                    FrameZones.Add(FrameZones.Zone.Post, tPost);
+                    break;
+            }
+        }
+        GpuSpanEnd();
+        FrameZones.Add(FrameZones.Zone.Passes, tPasses,
+                       FrameZones.Ticks(FrameZones.Zone.Issue) - issue0
+                       + FrameZones.Ticks(FrameZones.Zone.Cull) - cull0
+                       + FrameZones.Ticks(FrameZones.Zone.Post) - post0
+                       + FrameZones.Ticks(FrameZones.Zone.Probe) - probe0
+                       + FrameZones.Ticks(FrameZones.Zone.Lightmap) - lm0);
+        Gl.BindVertexArray(0);
         GlContextService.Leave();
     }
 
