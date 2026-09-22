@@ -720,6 +720,7 @@ internal static unsafe partial class Particles
                 if (cls == ClsPunch)
                 {
                     Gl.Disable(Gl.BLEND); Gl.DepthMask(1);
+                    SceneDepth.Invalidate();   // cutouts write depth: halos/weather must not reuse the pre-particle copy
                     Gl.Uniform1f(_locCut, PunchDiscard); Gl.Uniform1i(_locAdditive, 0);
                 }
                 else

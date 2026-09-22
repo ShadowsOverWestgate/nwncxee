@@ -31,6 +31,9 @@ internal static unsafe class SceneDepth
 
     private static uint _fbo, _tex, _depFormat, _depMask;
     private static int _w, _h;
+    /// <summary>CX-4: the (PassGen, source) the current copy was taken for; a repeat Take with the same key
+    /// and viewport reuses it. -1 = no reusable copy.</summary>
+    private static int _takenGen = -1, _takenSrc;
     private static readonly StandDown _down = new("SceneDepth");
     private static ExtenderLog? _log;
 
@@ -49,7 +52,11 @@ internal static unsafe class SceneDepth
 
     private static bool TakeInner(int* viewport)
     {
+        int src; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &src);
+        if (Ready && _takenGen == AlloyRenderer.PassGen && _takenSrc == src
+            && viewport[0] == 0 && viewport[1] == 0 && viewport[2] == _w && viewport[3] == _h) return true;
         Ready = false;
+        _takenGen = -1;
         if (_down.Failed) return false;
         if (Gl.BlitFramebuffer == null || Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null
             || Gl.GetFramebufferAttachmentParameteriv == null) return Fail("a required GL entry point is missing");
@@ -60,7 +67,6 @@ internal static unsafe class SceneDepth
         int w = viewport[2], h = viewport[3];
         if (w <= 0 || h <= 0) return false;
 
-        int src; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &src);
         if (!Probe((uint)src, w, h) || !Ensure(w, h))
         { Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)src); return false; }
 
@@ -81,8 +87,12 @@ internal static unsafe class SceneDepth
         }
         Takes++;
         Ready = true;
+        _takenGen = AlloyRenderer.PassGen; _takenSrc = src;
         return true;
     }
+
+    /// <summary>Something wrote depth since the last <see cref="Take"/>: the next one blits afresh.</summary>
+    internal static void Invalidate() => _takenGen = -1;
 
     /// <summary>Bind the copy on <see cref="Unit"/> and leave unit 0 current -- the diffuse rebinds there and
     /// every draw after this assumes it.</summary>
@@ -98,7 +108,7 @@ internal static unsafe class SceneDepth
     /// </summary>
     internal static void Forget()
     {
-        _fbo = 0; _tex = 0; _w = 0; _h = 0; _depFormat = 0; Ready = false;
+        _fbo = 0; _tex = 0; _w = 0; _h = 0; _depFormat = 0; Ready = false; _takenGen = -1;
     }
 
     /// <summary>The format the source's depth attachment actually holds. Keyed on SIZE as well as "probed
