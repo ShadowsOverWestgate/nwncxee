@@ -6,6 +6,7 @@ layout(location = 0) in vec3 aPos;      // blade-local: xy in [-0.5,0.5], z 0 (r
 layout(location = 1) in vec2 aUV;       // 0..1 within one atlas cell
 layout(location = 2) in vec4 iPos;      // xyz world root, w rotation about Z
 layout(location = 3) in vec4 iParam;    // x scale (blade height), y atlas cell 0..3, z rank in [0,1), w bend
+layout(location = 4) in vec4 iNrm;      // xyz the normal of the ground face the blade stands on (CX-24)
 #include "cx_featdecl.glsl"
 uniform mat4 uVP;
 uniform vec3 uEyePos;

@@ -32,14 +32,10 @@ void main()
     // #355: a far blade is a few pixels; the cascade and cluster taps (the frame's costliest term)
     // cannot be seen on it and are not taken. Divergent, but blades cluster by distance.
     bool near = vDist <= uShade;
-    vec3 sunpoint;
-    if (uVLit != 0) sunpoint = uAreaDiffuse * (near ? ndl * CxSunShadow(vWorld, N, ndl, ndl) : ndl) + vLight;
-    else
-    {
-        vec3 sun = uAreaDiffuse * (near ? ndl * CxSunShadow(vWorld, N, ndl, ndl) : ndl);
-        vec3 point = (uLit != 0 && near) ? CxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0);
-        sunpoint = sun + point;
-    }
+    // the one cascade tap: the direct sun, the transmitted sun and the glint all take it
+    float sh = near ? CxSunShadow(vWorld, N, ndl, ndl) : 1.0;
+    vec3 sunpoint = uAreaDiffuse * ndl * sh
+                  + (uVLit != 0 ? vLight : ((uLit != 0 && near) ? CxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0)));
     // vanilla (inc_lighting.shd:411/:520): the ground's vertex colour joins the DIFFUSE sum as
     // StaticLight, and the ambient term carries no NdotL factor in the forced-vertex-lighting path
     vec3 ambient = uAreaAmbient * uMatAmbient;
@@ -47,6 +43,12 @@ void main()
     // occlusion is whatever stands behind the blade, and it read as the scene showing through the
     // field; the ground tint is what grounds a blade now. A root ramp on everything.
     vec3 lit = albedo * (ambient + sunpoint * uMatDiffuse) * mix(1.0 - uRootAo, 1.0, vRoot);
+    // CX-24: the sun behind the field shines THROUGH it, tinted by the blade and strongest toward the tips,
+    // and a faint glint rides the rounded normal.
+    vec3 V = normalize(uEyePos - vWorld);
+    float back = pow(clamp(dot(-V, uAreaDir), 0.0, 1.0), 4.0) * uLook.x * (0.35 + 0.65 * vRoot);
+    float sheen = pow(clamp(dot(N, normalize(uAreaDir + V)), 0.0, 1.0), 40.0) * uLook.y * vRoot;
+    lit += uAreaDiffuse * sh * (albedo * uMatDiffuse * back + sheen);
 
     // vanilla grass runs fsgrass, which is the stock lit shader with KEYHOLING 1 and FOG 1 -- so the
     // camera dissolve and the scene fog both apply, and dropping them would fill a low camera shot

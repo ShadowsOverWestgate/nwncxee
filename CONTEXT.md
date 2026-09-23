@@ -341,9 +341,14 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
   should have had. Distinct from *owned*, which only says who submits the same geometry. Grass (#127) is the
   first: its punch-through is not fixed, it is made structurally impossible, because nothing in the owned
   class is ever semi-transparent and depth-writing at once.
-- **Patch** — the Alloy grass unit of culling and drawing: one engine triangle list (a bin's faces sharing one
-  grass material) scattered into a contiguous run of blade instances. Frustum- and distance-culled whole,
-  drawn as one instanced call.
+- **Patch** — the Alloy grass unit of culling: one engine triangle list (a bin's faces sharing one grass
+  material), resident as its faces. Frustum- and distance-culled whole on the CPU; the GPU scatter then
+  regenerates its blades from the faces' seeds each frame, culls them one by one, and appends them to its
+  material's indirect draw (CX-24).
+- **Blade / card** — the two ways a grass atlas cell draws (CX-24). A *blade* is a procedural, opaque, lit triangle
+  strip tinted with the cell's colour ramp (the default `grass.style`); a *card* is the atlas's own alpha-cut
+  crossed quad. Under the blade style each live atlas is classified per cell, biased toward card, so flower
+  cells stay cards; under the texture style every cell is a card.
 - **Screen-door fade** — fading geometry out by discarding a growing share of its fragments against a
   per-pixel dither, instead of ramping its alpha. Every surviving fragment stays fully opaque, so a fade
   cannot introduce a blended fragment — which is what lets a fading class keep writing depth.

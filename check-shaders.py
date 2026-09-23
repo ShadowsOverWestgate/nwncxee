@@ -488,6 +488,9 @@ def programs(g):
         "owned water": (g["cx_water_vs"], g["cx_water_fs"]),
         "instanced grass": (g["cx_grass_vs"], g["cx_grass_fs"]),
         "grass depth prepass": (g["cx_grass_vs"], g["cx_grassdepth_f"]),
+        "grass scatter": (g["cx_grass_c"],),
+        "grass blades": (g["cx_gblade_vs"], g["cx_gblade_fs"]),
+        "grass blade depth": (g["cx_gblade_vs"], g["cx_gblade_df"]),
         "clustered light build": (g["cx_cluster_cs"],),
         "sky decode": (g["cx_fullscreen_v"], g["cx_skydecode_f"]),
         "oit resolve": (g["cx_fullscreen_v"], g["cx_oitresolve_f"]),
@@ -517,7 +520,7 @@ def check_early_z(progs):
             r = subprocess.run(["glslangValidator", "-E", p], capture_output=True, text=True)
             return sorted({m.group(0).split("(")[0].strip() for m in SIDE_EFFECTS.finditer(r.stdout)})
         bad = 0
-        for name, want in (("clustered lit", False), ("clustered lit (OIT lists)", True), ("sky decode", False), ("owned water", False)):
+        for name, want in (("clustered lit", False), ("clustered lit (OIT lists)", True), ("sky decode", False), ("owned water", False), ("grass blades", False)):
             got = effects(name)
             ok = bool(got) == want
             print(f"early-z: {name}: {'ok' if ok else 'FAILED'} ({'side effects: ' + ', '.join(got) if got else 'no side effects'})")

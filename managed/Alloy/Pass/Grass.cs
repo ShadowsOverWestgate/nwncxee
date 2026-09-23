@@ -20,12 +20,16 @@ namespace CX.Alloy;
 /// 173u). <c>softedge</c> = the masked-core-plus-blended-fringe foliage technique, needs the prepass.</para></summary>
 internal static class Grass
 {
+    /// <summary><see cref="Style"/>'s values: CX-24's procedural blades (default), or the atlas cards.</summary>
+    internal const int StyleBlades = 0, StyleTextures = 1;
+
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled;
     internal static readonly Knob<float> Density, Far, Wind, Push, WindSpeed, Lod, LodMin, LodWidth, LodHeight, Shade,
                                          CastWidth, PushRadius, PushExtent, CullShrink, CullMax, Soften, Edge, RootAo, GTint,
-                                         SnowThin, SnowFall, SnowLook;
-    internal static readonly Knob<int> Shadow, Tuft, Aniso, GViz;
+                                         SnowThin, SnowFall, SnowLook, Backlight, Sheen,
+                                         BladeDensity, Width, Clump, BladeLod;
+    internal static readonly Knob<int> Style, Shadow, Tuft, Aniso, GViz;
     internal static readonly Knob<bool> Cull, SoftEdge, VLight, Border, Prepass, PushVis;
     internal static readonly Knob<string> BorderTex;
     internal static readonly KnobButton DumpMips, DumpShadow;
@@ -39,9 +43,16 @@ internal static class Grass
         G.Status = GrassField.Describe;
 
         G.Section("Field");
+        Style = G.Dropdown("style", "Grass style", new[] { StyleBlades, StyleTextures }, StyleBlades,
+                           new[] { "Procedural blades", "Game textures" }, changed: GrassField.Rebake,
+                           help: "Procedural blades: dense, individually shaded 3D blades coloured from the area's grass. "
+                               + "Game textures: the area's own grass pictures, as the stock game draws them. "
+                               + "Grass textures that look like flowers stay as pictures either way.");
+        BladeDensity = G.Slider("bladedensity", "Blade density", 1f, 32f, 1f, 8f, changed: GrassField.Rebake,
+                                help: "Procedural blades per stock grass tuft, on top of Density.");
         Density = G.Slider("density", "Density", 0f, 4f, 0.25f, 2f, help: "Blades per patch relative to the stock game.",
                            changed: GrassField.Rebake);
-        Far = G.Slider("far", "Distance", 0f, 400f, 10f, 0f, "m",
+        Far = G.Slider("far", "Distance", 0f, 1000f, 10f, 0f, "m",
                        help: "How far grass draws. 0 follows the game's Grass Distance option (which stops at 173).");
         G.Section("Wind");
         Wind = G.Slider("wind", "Wind strength", 0f, 4f, 0.1f, 1f, help: "How far the blades sway. 0 stands them still.");
@@ -65,6 +76,8 @@ internal static class Grass
         LodMin = G.Slider("lodmin", "Far density floor", 0.001f, 1f, 0.001f, 0.02f, tier: Tier.Advanced);
         LodWidth = G.Slider("lodwidth", "Far blade widening", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced);
         LodHeight = G.Slider("lodheight", "Far blade growth", 0f, 1f, 0.05f, 0.25f, tier: Tier.Advanced);
+        BladeLod = G.Slider("bladelod", "Full-detail blade radius", 5f, 200f, 1f, 30f, "m", Tier.Advanced,
+                            help: "Procedural blades inside this are smooth curves; past it each is a single triangle.");
         Shade = G.Slider("shade", "Full-shading radius", 5f, 200f, 1f, 40f, "m", Tier.Advanced,
                          help: "Past this blades skip light and shadow taps.");
         G.Section("Shadows");
@@ -86,6 +99,13 @@ internal static class Grass
         RootAo = G.Slider("rootao", "Root darkening", 0f, 1f, 0.05f, 0f, tier: Tier.Advanced);
         GTint = G.Slider("gtint", "Ground tint", 0f, 1f, 0.05f, 0.15f, tier: Tier.Advanced,
                          help: "Blade fades into the ground colour under its root.", changed: GrassField.GroundDiag);
+        Width = G.Slider("width", "Blade width", 0.02f, 0.4f, 0.01f, 0.08f, tier: Tier.Advanced,
+                         help: "Procedural blade width at the root, relative to its height.");
+        Clump = G.Slider("clump", "Clumping", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced,
+                         help: "Neighbouring procedural blades lean together and share a height, so the field grows in tufts.");
+        Backlight = G.Slider("backlight", "Backlit glow", 0f, 2f, 0.05f, 0.5f, tier: Tier.Advanced,
+                             help: "How much low sun shines through the grass when you look toward it.");
+        Sheen = G.Slider("sheen", "Sheen", 0f, 1f, 0.05f, 0.1f, tier: Tier.Advanced, help: "Specular glint on the grass.");
         VLight = G.Toggle("vlight", "Per-vertex lighting", true, Tier.Advanced, help: "Off = per-pixel (costlier).");
         G.Section("Field");
         Border = G.Toggle("border", "Grass past the area edge", true, Tier.Advanced, Effect.Restart);

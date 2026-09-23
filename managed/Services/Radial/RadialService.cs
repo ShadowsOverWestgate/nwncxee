@@ -168,7 +168,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         _orig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.RadialActivateInternal,
             (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnActivateInternal);
         _loadBarSlot = hooks.Chain(SymbolMap.StartLoadBar,
-            (IntPtr)(delegate* unmanaged<IntPtr, int, IntPtr, int, void>)&OnStartLoadBar, LoadBarPriority);
+            (IntPtr)(delegate* unmanaged<IntPtr, int, IntPtr, int, IntPtr>)&OnStartLoadBar, LoadBarPriority);
         log.Info($"RadialService: ActivateInternal hooked (radial.enabled={(RadialKnobs.Enabled.V ? "on" : "off")}, cascade window registered); " +
                  $"StartLoadBar chained={(_loadBarSlot != null ? "yes" : "no")}");
     }
@@ -220,17 +220,18 @@ public sealed unsafe partial class RadialService : IExtenderService
     }
 
     /// <summary>Area edge: a held tree must not outlive the area whose objects its handlers point at. Not while a
-    /// leaf handler is on the stack (its <c>this</c> may be the root): <see cref="Leaf"/> closes the moment it returns.</summary>
+    /// leaf handler is on the stack (its <c>this</c> may be the root): <see cref="Leaf"/> closes the moment it returns.
+    /// Returns the engine's <c>CGuiAreaLoadscreen*</c>: callers deref it (<c>ContentIndex::Play</c> -> <c>+0x2d0</c>).</summary>
     [UnmanagedCallersOnly]
-    private static void OnStartLoadBar(IntPtr app, int state, IntPtr image, int rebuild)
+    private static IntPtr OnStartLoadBar(IntPtr app, int state, IntPtr image, int rebuild)
     {
         if ((_held != IntPtr.Zero || _menu.Open) && !_inInvoke)
         {
             _log?.Info("[radial] area edge with a held tree -- releasing");
             Close(CloseArea);
         }
-        var next = (delegate* unmanaged<IntPtr, int, IntPtr, int, void>)*_loadBarSlot;
-        if (next != null) next(app, state, image, rebuild);
+        var next = (delegate* unmanaged<IntPtr, int, IntPtr, int, IntPtr>)*_loadBarSlot;
+        return next != null ? next(app, state, image, rebuild) : IntPtr.Zero;
     }
 
     private static void Forward(IntPtr menu) { if (_orig != null) _orig(menu); }

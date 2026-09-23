@@ -543,8 +543,10 @@ Renderer itself.
 | key | today | label | kind | range · default | tier | eff | section | help |
 |---|---|---|---|---|---|---|---|---|
 | grass.enabled | /grass on | Enable Alloy grass | T | on | U | L | — | CX's own grass: denser, wind-swayed, lit and shadowed. Off, the stock grass draws. |
+| grass.style | new (CX-24) | Grass style | D | Procedural blades / Game textures · Procedural blades | U | L | Field | Procedural blades: dense, individually shaded 3D blades coloured from the area's grass. Game textures: the area's own grass pictures, as the stock game draws them. Grass textures that look like flowers stay as pictures either way. |
+| grass.bladedensity | new (CX-24) | Blade density | S | 1–32 · 8 | U | L | Field | Procedural blades per stock grass tuft, on top of Density. |
 | grass.density | density | Density | S | 0–4 step 0.25 · 2 | U | L | Field | Blades per patch relative to the stock game. |
-| grass.far | far | Distance | S | 0–400 m step 10 · 0 | U | L | Field | How far grass draws. 0 follows the game's Grass Distance option (which stops at 173). |
+| grass.far | far | Distance | S | 0–1000 m step 10 · 0 | U | L | Field | How far grass draws. 0 follows the game's Grass Distance option (which stops at 173). |
 | grass.wind | wind | Wind strength | S | 0–4 step 0.1 · 1 | U | L | Wind | |
 | grass.shadow | shadow | Grass casts shadows | D | none / 1 / 2 / 3 / 4 cascades · 1 | U | L | Shadows | How many sun cascades the blades are drawn into. More is sharper far away and costlier. |
 | grass.push | push | Parts around characters | S | 0–1 step 0.05 · 0.15 | U | L | Field | Blades bend away from creatures walking through them. 0 is off. |
@@ -553,6 +555,7 @@ Renderer itself.
 | grass.lodmin | lodmin | Far density floor | S | 0.001–1 · 0.02 | A | L | Distance | |
 | grass.lodwidth | lodwidth | Far blade widening | S | 0–1 · 0.5 | A | L | Distance | |
 | grass.lodheight | lodheight | Far blade growth | S | 0–1 · 0.25 | A | L | Distance | |
+| grass.bladelod | new (CX-24) | Full-detail blade radius | S | 5–200 m · 30 | A | L | Distance | Procedural blades inside this are smooth curves; past it each is a single triangle. |
 | grass.shade | shade | Full-shading radius | S | 5–200 m · 40 | A | L | Distance | Past this blades skip light and shadow taps. |
 | grass.castwidth | castwidth | Shadow blade width | S | 0.5–8 · 1 | A | L | Shadows | |
 | grass.pushradius | pushradius | Push radius | S | 0–4 · 1 | A | L | Field | |
@@ -567,6 +570,10 @@ Renderer itself.
 | grass.softedge | softedge | Blended silhouettes | T | on | A | L | Look | |
 | grass.rootao | rootao | Root darkening | S | 0–1 · 0 | A | L | Look | |
 | grass.gtint | gtint | Ground tint | S | 0–1 · 0.15 | A | L | Look | Blade fades into the ground colour under its root. |
+| grass.width | new (CX-24) | Blade width | S | 0.02–0.4 · 0.08 | A | L | Look | Procedural blade width at the root, relative to its height. |
+| grass.clump | new (CX-24) | Clumping | S | 0–1 · 0.5 | A | L | Look | Neighbouring procedural blades lean together and share a height, so the field grows in tufts. |
+| grass.backlight | new (CX-24) | Backlit glow | S | 0–2 · 0.5 | A | L | Look | How much low sun shines through the grass when you look toward it. |
+| grass.sheen | new (CX-24) | Sheen | S | 0–1 · 0.1 | A | L | Look | Specular glint on the grass. |
 | grass.vlight | vlight | Per-vertex lighting | T | on | A | L | Look | Off = per-pixel (costlier). |
 | grass.border | bordergrass | Grass past the area edge | T | on | A | R | Field | |
 | grass.bordertex | bordergrasstex | Border grass textures | X | "grass" | A | R | Field | Comma-separated texture names. |

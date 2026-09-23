@@ -82,8 +82,12 @@ void main()
     gl_Position = uVP * vec4(vWorld, 1.0);
     vDepth = gl_Position.w;
     // Grass shades best off an up-ish normal with a per-blade tilt: a true card normal turns half
-    // the field black whenever the sun is not behind the camera, which is not what a lawn does.
-    vNrm = normalize(vec3(c, s, 0.0) * 0.3 + vec3(0.0, 0.0, 1.0));
+    // the field black whenever the sun is not behind the camera, which is not what a lawn does. CX-24: "up"
+    // is the ground the tuft stands on, and the normal rounds outward across the card (a lit side and a
+    // shaded side to every tuft); far out it is the ground's alone, so a far field shades like its hill.
+    vec2 across = vec2(aPos.x * c - aPos.y * s, aPos.x * s + aPos.y * c);
+    vNrm = normalize(vec3(c, s, 0.0) * 0.3 + vec3(across, 0.0) * 1.2 + iNrm.xyz);
+    vNrm = normalize(mix(vNrm, iNrm.xyz, smoothstep(uLod.x * 0.5, uLod.x, dist)));
     int cell = int(iParam.y + 0.5);
     vCellUv = aUV;
     vCellBase = vec2(float(cell & 1), float(cell >> 1)) * 0.5;

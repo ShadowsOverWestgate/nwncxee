@@ -32,6 +32,7 @@ public static unsafe class Gl
     public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE_MINUS_SRC_COLOR = 0x0301;
     public const uint COLOR_ATTACHMENT1 = 0x8CE1;
     public const uint POLYGON_OFFSET_FILL = 0x8037;
+    public const uint TRIANGLE_STRIP = 0x0005;
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
     public const uint BYTE = 0x1400;
     public const uint ARRAY_BUFFER = 0x8892, STATIC_DRAW = 0x88E4, DYNAMIC_DRAW = 0x88E8;
@@ -178,6 +179,8 @@ public static unsafe class Gl
     /// <summary>#243: the two barrier bits the cull dispatch needs after it -- its writes are consumed as
     /// indirect commands and as a parameter-buffer count, neither of which SHADER_STORAGE alone covers.</summary>
     public const uint COMMAND_BARRIER_BIT = 0x0040, BUFFER_UPDATE_BARRIER_BIT = 0x0200;
+    /// <summary>CX-24: a compute write consumed as a divisor-1 vertex attribute (the grass scatter's stream).</summary>
+    public const uint VERTEX_ATTRIB_ARRAY_BARRIER_BIT = 0x0001;
     /// <summary>Sample counts of an existing attachment: renderbuffer (glGetRenderbufferParameteriv) and
     /// multisample texture (glGetTexLevelParameteriv on TEXTURE_2D_MULTISAMPLE).</summary>
     public const uint NUM_EXTENSIONS = 0x821D, EXTENSIONS = 0x1F03;
@@ -472,6 +475,9 @@ public static unsafe class Gl
     /// <c>gl_InstanceID</c> does NOT include the base -- divisor-1 vertex attributes do, which is why the
     /// per-blade data is an attribute stream and not an SSBO indexed by the id.</summary>
     public static delegate* unmanaged<uint, int, int, int, uint, void> DrawArraysInstancedBaseInstance;
+    /// <summary>glDrawArraysIndirect (GL 4.0): mode, indirect (byte offset into the bound DRAW_INDIRECT_BUFFER).
+    /// CX-24: the grass scatter writes the instance count, so it never reaches the CPU.</summary>
+    public static delegate* unmanaged<uint, void*, void> DrawArraysIndirect;
     public static delegate* unmanaged<uint, uint, IntPtr> FenceSync;
     public static delegate* unmanaged<IntPtr, uint, ulong, uint> ClientWaitSync;
     public static delegate* unmanaged<IntPtr, void> DeleteSync;
@@ -640,6 +646,7 @@ public static unsafe class Gl
         if (MultiDrawElementsIndirectCount == null)
             MultiDrawElementsIndirectCount = (delegate* unmanaged<uint, uint, void*, IntPtr, int, int, void>)P("glMultiDrawElementsIndirectCountARB");
         VertexAttribDivisor = (delegate* unmanaged<uint, uint, void>)P("glVertexAttribDivisor");
+        DrawArraysIndirect = (delegate* unmanaged<uint, void*, void>)P("glDrawArraysIndirect");
         DrawArraysInstancedBaseInstance =
             (delegate* unmanaged<uint, int, int, int, uint, void>)P("glDrawArraysInstancedBaseInstance");
         FenceSync = (delegate* unmanaged<uint, uint, IntPtr>)P("glFenceSync");

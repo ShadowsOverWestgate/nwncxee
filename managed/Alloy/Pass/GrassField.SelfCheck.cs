@@ -18,6 +18,7 @@ internal static unsafe partial class GrassField
     internal static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
+        GrassAtlas.SelfCheck(log);
 
         uint a = 12345u, b = 12345u;
         float first = Rnd(ref a);
@@ -45,23 +46,16 @@ internal static unsafe partial class GrassField
         bool mono = true;
         for (float d = 1f, prev = 1f; d < 400f; d += 1f) { float k = Keep(d); if (k > prev) mono = false; prev = k; }
         check.Expect(mono, "keep never rises with distance");
-        // the shuffle is a permutation of whole records, and deterministic
-        float[] recs = new float[6 * InstFloats];
-        for (int i = 0; i < recs.Length; i++) recs[i] = i;
-        Shuffle(recs, 1, 4, 7u);
-        bool intact = recs[0] == 0f && recs[InstFloats - 1] == InstFloats - 1 && recs[5 * InstFloats] == 5 * InstFloats;
-        float sum = 0f, expect = 0f;
-        for (int i = 0; i < recs.Length; i++) { sum += recs[i]; expect += i; }
-        bool records = true;
-        for (int r = 1; r < 5; r++) for (int k = 1; k < InstFloats; k++)
-            if (recs[r * InstFloats + k] != recs[r * InstFloats] + k) records = false;
-        check.Expect(intact && records && sum == expect, "the shuffle permutes whole records inside the range and touches nothing outside it");
-        float[] again = new float[6 * InstFloats];
-        for (int i = 0; i < again.Length; i++) again[i] = i;
-        Shuffle(again, 1, 4, 7u);
-        bool same = true;
-        for (int i = 0; i < recs.Length; i++) if (recs[i] != again[i]) same = false;
-        check.Expect(same, "and the same seed shuffles the same way");
+        // CX-24: the scatter's record and material strides are C# layouts copied into its GLSL; a drift reads
+        // every card out of its neighbour's record, silently
+        check.Expect(ShaderSource.Get("cx_gbladebuf.glsl").Contains($"const int CX_GRASS_MATV = {MatVec4};") && ScatterCs.Contains($"const uint CX_GRASS_RECV = {InstFloats / 4}u;"),
+          "the scatter's material and record strides match GrassField's");
+        check.Expect(GrassVs.Contains("layout(location = 4) in vec4 iNrm;") && InstFloats == 12,
+          "the card stage reads the scatter's third vec4 as the ground normal");
+        check.Expect(ScatterCs.Contains("return max(uLod.y, r * r);"), "the scatter's keep is GrassField.Keep's");
+        check.Expect(BoxFar(new Vector3(0f), new Vector3(1f), new Vector3(0f)) == MathF.Sqrt(3f)
+                     && BoxFar(new Vector3(0f), new Vector3(1f), new Vector3(2f, 0.5f, 0.5f)) == MathF.Sqrt(4.5f),
+          "the far box distance is to the farthest corner -- a patch straddling the blade radius feeds both blade draws");
 
         // an identity VP: clip == world, so the frustum is the [-1,1] cube
         Matrix4x4 id = Matrix4x4.Identity;

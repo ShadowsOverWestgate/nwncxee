@@ -82,8 +82,8 @@ internal static class ShaderStages
 
         """;
 
-    /// <summary>Every overridable resref with the header its dumped copy carries. All twenty-six: four owned,
-    /// two water, two grass, the cluster build, two caster, four post-chain stages and the post stack's gamma
+    /// <summary>Every overridable resref with the header its dumped copy carries. All thirty-one: four owned,
+    /// two water, two grass cards and two procedural grass blades (CX-24), the cluster build, two caster, four post-chain stages and the post stack's gamma
     /// stage (#375), the taa stage (#389), the cel stage, the hosted post chain (#352) and the halo pair. #261 deleted one with SkyComposite and #339 deleted the water tessellation pair with the
     /// custom sea; <see cref="SelfCheck"/> asserts the count, so this prose and that assert have to move
     /// together.</summary>
@@ -97,6 +97,8 @@ internal static class ShaderStages
         (AlloyRenderer.ShdWaterFs,      Banner + Record),
         (GrassField.ShdGrassVs,            Banner + SelfInvariant),
         (GrassField.ShdGrassFs,            Banner),
+        (GrassField.ShdBladeVs,            Banner),
+        (GrassField.ShdBladeFs,            Banner),
         (AlloyLights.ShdClusterCs,         Banner),
         (CasterPass.ShdCastVs,             Banner + Invariant + Record + CasterRecord),
         (CasterPass.ShdCastFs,             Banner),
@@ -183,7 +185,7 @@ internal static class ShaderStages
     /// that declares it. A missing switch arm is otherwise invisible until a program builds from "".</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = All.Length == 29 && BindlessRef.Length <= ShaderResource.ResRefBytes;
+        bool ok = All.Length == 31 && BindlessRef.Length <= ShaderResource.ResRefBytes;
         foreach ((string r, string header) in All)
         {
             string src = Source(r);
