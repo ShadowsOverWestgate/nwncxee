@@ -24,8 +24,9 @@ from a checkout, on the host, and out of any repository, and none of those
 places wants a dependency set or a development shell to keep in step.
 
 The source is sow-platform's `infra/nixos/scripts/plane.py`. Every other
-repository carries a byte-identical copy at `bin/plane`. Fix a bug at the
-source, then copy it out again (ADR-0060).
+repository carries a byte-identical copy at `bin/plane` (ADR-0060). Fix a bug
+at the source: when it lands on main, the sync-plane-client workflow opens a
+pull request replacing the copy in every other repository (ADR-0062).
 
 Run `bin/plane --help` for the command surface.
 """
@@ -33,6 +34,9 @@ Run `bin/plane --help` for the command surface.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import html
+import html.parser
 import json
 import os
 import re
@@ -59,6 +63,10 @@ NO_PRIORITY = "none"
 # the pair, so the source name is what makes a re-run an update instead of a
 # duplicate.
 EXTERNAL_SOURCE = "gitea"
+
+# The org every repository lives under, so `sow-platform#341` means the same as
+# `ShadowsOverWestgate/sow-platform#341`.
+LEGACY_OWNER = "ShadowsOverWestgate"
 
 # Plane answers 429 with no `Retry-After`, so the wait is ours to choose: five
 # seconds, doubling, capped at a minute. Six tries covers a window of about two
@@ -129,6 +137,8 @@ CLOSING_REFERENCE = re.compile(
 
 WORK_ITEM_REFERENCE = re.compile(r"^([A-Za-z][A-Za-z0-9]*)-(\d+)$")
 
+LEGACY_REFERENCE = re.compile(r"^(?:([\w.-]+)/)?([\w.-]+)#(\d+)$")
+
 
 def priority_for_labels(labels):
     """The Plane priority a Gitea issue's labels map to.
@@ -173,6 +183,35 @@ def legacy_reference(owner, repo, number):
     return f"{owner}/{repo}#{number}"
 
 
+def legacy_external_id(argument):
+    """`sow-platform#341` -> the external id its item was imported under.
+
+    None means it is not a Gitea reference, so it is a `PROJ-N` or nothing.
+    Old tickets, commits and pull requests still cite issues this way, and the
+    number should keep working rather than send someone to an index.
+    """
+    match = LEGACY_REFERENCE.match(argument.strip())
+    if not match:
+        return None
+    owner, repo, number = match.groups()
+    return legacy_reference(owner or LEGACY_OWNER, repo, int(number))
+
+
+def find_items(items, text):
+    """The items whose title contains `text`, ignoring case."""
+    needle = text.lower()
+    return [item for item in items if needle in (item.get("name") or "").lower()]
+
+
+def find_lines(identifier, items, text, states_by_id):
+    """What `find` prints: `PROJ-N  state  title`, one line per match."""
+    lines = []
+    for item in find_items(items, text):
+        state = states_by_id.get(str(item.get("state")), {}).get("name", "")
+        lines.append(f"{identifier}-{item['sequence_id']}  {state}  {item.get('name') or ''}")
+    return lines
+
+
 def is_open(work_item, states_by_id):
     """Open means: its state is not in a completed or cancelled group."""
     state = states_by_id.get(str(work_item.get("state")))
@@ -181,14 +220,17 @@ def is_open(work_item, states_by_id):
     return state.get("group") not in CLOSED_GROUPS
 
 
-def frontier(children, relations_by_item, states_by_id):
+def frontier(children, relations_by_item, states_by_id, open_outside=()):
     """Open children, unassigned, with no open blocker.
 
     This is wayfinder's "what can be picked up right now". It is a pure
-    function of three things the caller has already fetched so that the same
-    rule can be asserted without a live instance.
+    function of what the caller has already fetched so that the same rule can
+    be asserted without a live instance. `open_outside` holds the ids of open
+    blockers that are not children: maps block each other across projects, and
+    a child waiting on one is not ready.
     """
     open_ids = {str(c["id"]) for c in children if is_open(c, states_by_id)}
+    blocking_ids = open_ids | {str(i) for i in open_outside}
     ready = []
     for child in children:
         if str(child["id"]) not in open_ids:
@@ -196,10 +238,560 @@ def frontier(children, relations_by_item, states_by_id):
         if child.get("assignees"):
             continue
         blockers = relations_by_item.get(str(child["id"]), {}).get("blocked_by", [])
-        if any(str(b["issue_id"]) in open_ids for b in blockers):
+        if any(str(b["issue_id"]) in blocking_ids for b in blockers):
             continue
         ready.append(child)
     return ready
+
+
+def child_lines(children, relations_by_item, states_by_id, labels_by_id, members_by_id,
+                reference_by_id):
+    """What `children` and `frontier` print, one line per item, by sequence.
+
+    `PROJ-N  state  type  assignees  title`, then `blocked by ...` naming the
+    open blockers. A blocker among the children counts while it is open. One
+    outside them arrives already judged: the caller fetched it and put its
+    reference in `reference_by_id` only if it was open, since its state lives
+    in a project whose states this function never sees.
+    """
+    child_ids = {str(c["id"]) for c in children}
+    open_ids = {str(c["id"]) for c in children if is_open(c, states_by_id)}
+    lines = []
+    for child in sorted(children, key=lambda c: c.get("sequence_id") or 0):
+        item_id = str(child["id"])
+        state = states_by_id.get(str(child.get("state")), {}).get("name", "")
+        kinds = [
+            labels_by_id.get(str(label), {}).get("name", "") for label in child.get("labels") or []
+        ]
+        kind = next((k.split(":", 1)[1] for k in kinds if k.startswith("wayfinder:")), "-")
+        who = ", ".join(members_by_id.get(str(a), str(a)) for a in child.get("assignees") or [])
+        line = f"{reference_by_id.get(item_id, item_id)}  {state}  {kind}  {who or '-'}  "
+        line += child.get("name") or ""
+        blockers = []
+        for blocker in relations_by_item.get(item_id, {}).get("blocked_by", []):
+            blocker_id = str(blocker["issue_id"])
+            if blocker_id in child_ids:
+                if blocker_id in open_ids:
+                    blockers.append(reference_by_id.get(blocker_id, blocker_id))
+            elif blocker_id in reference_by_id:
+                blockers.append(reference_by_id[blocker_id])
+        lines.append(f"{line}  blocked by {', '.join(blockers)}" if blockers else line)
+    return lines
+
+
+def summary(verb, reference, item, tail=""):
+    """What a write says it did: `closed PLAT-12 Title`, one line.
+
+    The whole object is noise to an agent that only needs to know the write
+    landed and on which item; `--json` still hands it over for a script.
+    """
+    identifier, sequence = parse_reference(reference)
+    line = f"{verb} {identifier}-{sequence} {item.get('name') or ''}".rstrip()
+    return f"{line} {tail}" if tail else line
+
+
+def user_line(user):
+    """A user as `display_name id`. The id is what `file --assignee` takes."""
+    return f"{user.get('display_name')} {user['id']}"
+
+
+# --- reading a thread --------------------------------------------------------
+
+# Tags that live inside a line. Everything else is a block, and a block this
+# converter has no rule for still prints its text: an unknown tag loses its
+# markup, never its words.
+INLINE_TAGS = frozenset({
+    "a", "abbr", "b", "br", "code", "del", "em", "i", "img", "input", "mark", "s",
+    "small", "span", "strike", "strong", "sub", "sup", "u",
+})
+VOID_TAGS = frozenset({"br", "hr", "img", "input", "meta", "link", "col", "wbr"})
+
+
+class _Node:
+    """One element of a parsed body: its tag, attributes and children."""
+
+    def __init__(self, tag, attrs):
+        self.tag, self.attrs, self.children = tag, dict(attrs), []
+
+
+class _Tree(html.parser.HTMLParser):
+    """Stored HTML as a tree. Entities arrive decoded, since `convert_charrefs`
+    is on; a stray close tag is ignored rather than trusted."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _Node("root", [])
+        self.stack = [self.root]
+
+    def handle_starttag(self, tag, attrs):
+        node = _Node(tag, attrs)
+        self.stack[-1].children.append(node)
+        if tag not in VOID_TAGS:
+            self.stack.append(node)
+
+    def handle_endtag(self, tag):
+        for depth in range(len(self.stack) - 1, 0, -1):
+            if self.stack[depth].tag == tag:
+                del self.stack[depth:]
+                return
+
+    def handle_data(self, data):
+        self.stack[-1].children.append(data)
+
+
+def html_to_markdown(html_text, base_url, workspace):
+    """A stored body as the Markdown subset an agent writes (PLAT-272).
+
+    Headings, paragraphs, lists one level deep and deeper, code, bold, italic,
+    links and tables. A link to a work item comes back as `name (PROJ-N)`, or
+    the bare reference when that is its whole text. No wrapping: a line is as
+    long as its paragraph.
+    """
+    item_link = re.compile(
+        re.escape(f"{base_url}/{workspace}/browse/") + r"([A-Za-z][A-Za-z0-9]*-\d+)/?$"
+    )
+
+    def text_of(node):
+        if isinstance(node, str):
+            return node
+        return "".join(text_of(child) for child in node.children)
+
+    def inline(nodes):
+        out = []
+        for node in nodes:
+            if isinstance(node, str):
+                out.append(re.sub(r"\s+", " ", node))
+                continue
+            inner = inline(node.children)
+            if node.tag == "br":
+                out.append("\n")
+            elif node.tag in ("strong", "b"):
+                out.append(f"**{inner}**")
+            elif node.tag in ("em", "i"):
+                out.append(f"*{inner}*")
+            elif node.tag == "code":
+                out.append(f"`{text_of(node)}`")
+            elif node.tag == "a":
+                href = node.attrs.get("href") or ""
+                found = item_link.match(href)
+                if found:
+                    reference = found.group(1)
+                    out.append(reference if inner.strip() == reference else f"{inner} ({reference})")
+                else:
+                    out.append(f"[{inner}]({href})" if href else inner)
+            else:
+                out.append(inner)
+        # A `<br>` keeps its break; the spaces around it are the source's layout.
+        return re.sub(r" *\n *", "\n", "".join(out)).strip(" ")
+
+    def list_lines(node, depth):
+        lines, pad = [], "  " * depth
+        for number, item in enumerate(
+            (c for c in node.children if isinstance(c, _Node) and c.tag == "li"), 1
+        ):
+            marker = f"{number}." if node.tag == "ol" else "-"
+            checked = item.attrs.get("data-checked")
+            if checked is not None:
+                marker += " [x]" if checked == "true" else " [ ]"
+            nested = [c for c in item.children if isinstance(c, _Node) and c.tag in ("ul", "ol")]
+            # Tiptap wraps an item's words in `<p>`; a second paragraph or a
+            # `<br>` continues the item on an indented line.
+            text = "\n".join(blocks([c for c in item.children if c not in nested]))
+            text = text.replace("\n\n", "\n").replace("\n", "\n" + pad + "  ")
+            lines.append(f"{pad}{marker} {text}".rstrip())
+            for child in nested:
+                lines.extend(list_lines(child, depth + 1))
+        return lines
+
+    def table(node):
+        rows = []
+
+        def walk(parent):
+            for child in parent.children:
+                if isinstance(child, _Node):
+                    if child.tag == "tr":
+                        cells = [c for c in child.children if isinstance(c, _Node)]
+                        rows.append(["\n".join(blocks(c.children)).replace("\n", " ") for c in cells])
+                    else:
+                        walk(child)
+
+        walk(node)
+        lines = [f"| {' | '.join(row)} |" for row in rows]
+        if lines:
+            lines.insert(1, f"| {' | '.join('---' for _ in rows[0])} |")
+        return "\n".join(lines)
+
+    def blocks(nodes):
+        out, run = [], []
+
+        def flush():
+            text = inline(run)
+            if text.strip():
+                out.append(text)
+            run.clear()
+
+        for node in nodes:
+            if isinstance(node, str) or node.tag in INLINE_TAGS:
+                run.append(node)
+                continue
+            flush()
+            tag = node.tag
+            if re.fullmatch(r"h[1-6]", tag):
+                out.append("#" * int(tag[1]) + " " + inline(node.children))
+            elif tag in ("ul", "ol"):
+                out.append("\n".join(list_lines(node, 0)))
+            elif tag == "pre":
+                code = next((c for c in node.children if isinstance(c, _Node) and c.tag == "code"), node)
+                language = next(
+                    (k[len("language-"):] for k in (code.attrs.get("class") or "").split()
+                     if k.startswith("language-")),
+                    "",
+                )
+                out.append(f"```{language}\n{text_of(code).rstrip(chr(10))}\n```")
+            elif tag == "hr":
+                out.append("---")
+            elif tag == "table":
+                out.append(table(node))
+            else:
+                out.extend(blocks(node.children))
+        flush()
+        return [block for block in out if block.strip()]
+
+    parser = _Tree()
+    parser.feed(html_text or "")
+    parser.close()
+    return "\n\n".join(blocks(parser.root.children))
+
+
+# --- writing a body ----------------------------------------------------------
+
+# A link may point at the web, somewhere relative, or an address. Anything else
+# -- `javascript:` above all -- is code that runs for whoever clicks it, so the
+# link is written out as the text it was instead.
+LINK_SCHEMES = ("http:", "https:", "mailto:")
+
+# One pass over a line, leftmost match first. Code and links come before a bare
+# reference in the alternation, which is what keeps `GAME-12` a sample inside
+# backticks and plain text inside a link someone already wrote. A reference is
+# not one after a slash, so a URL typed out in prose is left whole; a leading
+# zero rules out `ADR-0054`, which no work item number has.
+INLINE_MARKDOWN = re.compile(
+    r"`(?P<code>[^`]+)`"
+    r"|\[(?P<text>[^\]]+)\]\((?P<href>[^)\s]+)\)"
+    r"|\*\*(?P<bold>.+?)\*\*"
+    r"|\*(?P<em>[^*\s](?:[^*]*[^*\s])?)\*"
+    r"|(?<![\w/-])(?P<ref>[A-Z][A-Z0-9]*-[1-9]\d*)\b"
+)
+FENCE = re.compile(r"^```\s*([\w+#.-]*)\s*$")
+HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
+RULE = re.compile(r"^-{3,}\s*$")
+LIST_ITEM = re.compile(r"^( *)(-|\d+\.)\s+(.*)$")
+TABLE_SEPARATOR = re.compile(r"^\|?(\s*:?-+:?\s*\|)*\s*:?-+:?\s*\|?$")
+
+
+def _safe_href(url):
+    lowered = url.strip().lower()
+    return ":" not in lowered.split("/")[0] or lowered.startswith(LINK_SCHEMES)
+
+
+def markdown_to_html(text, base_url, workspace, identifiers=None):
+    """Markdown in PLAT-272's subset as the HTML Plane's editor stores.
+
+    The tags are the shapes `html_to_markdown` reads, so a body survives the
+    trip out and back. Everything that is not markup this writes is escaped
+    text. A bare `GAME-12` becomes a link to its item; `identifiers` is the
+    workspace's project list, so an `SHA-256` in prose stays prose. Without it
+    any upper-case `WORD-N` counts.
+    """
+    item_url = f"{base_url}/{workspace}/browse/"
+
+    def inline(line, references=True):
+        out, at = [], 0
+        for match in INLINE_MARKDOWN.finditer(line):
+            out.append(html.escape(line[at:match.start()], quote=False))
+            at = match.end()
+            part = match.groupdict()
+            if part["code"] is not None:
+                out.append(f"<code>{html.escape(part['code'], quote=False)}</code>")
+            elif part["href"] is not None:
+                if _safe_href(part["href"]):
+                    words = inline(part["text"], references=False)
+                    out.append(f'<a href="{html.escape(part["href"])}">{words}</a>')
+                else:
+                    out.append(html.escape(match.group(0), quote=False))
+            elif part["bold"] is not None:
+                out.append(f"<strong>{inline(part['bold'], references)}</strong>")
+            elif part["em"] is not None:
+                out.append(f"<em>{inline(part['em'], references)}</em>")
+            else:
+                ref = part["ref"]
+                known = identifiers is None or ref.split("-")[0] in identifiers
+                out.append(f'<a href="{item_url}{ref}/">{ref}</a>' if references and known else ref)
+        out.append(html.escape(line[at:], quote=False))
+        return "".join(out)
+
+    def starts_block(line):
+        return bool(
+            FENCE.match(line) or HEADING.match(line) or RULE.match(line)
+            or LIST_ITEM.match(line) or line.lstrip().startswith("|")
+        )
+
+    def cells(line):
+        return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+    def list_html(entries):
+        out, open_tag = [], None
+        for entry in entries:
+            if entry[0] != open_tag:
+                out.append(f"</{open_tag}><{entry[0]}>" if open_tag else f"<{entry[0]}>")
+                open_tag = entry[0]
+            # Tiptap wraps an item's words in `<p>`, and so does this.
+            nested = list_html(entry[2]) if len(entry) > 2 and entry[2] else ""
+            out.append(f"<li><p>{inline(entry[1])}</p>{nested}</li>")
+        out.append(f"</{open_tag}>")
+        return "".join(out)
+
+    lines = (text or "").replace("\r\n", "\n").split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if not line.strip():
+            i += 1
+            continue
+        fence, heading = FENCE.match(line), HEADING.match(line)
+        if fence:
+            end = i + 1
+            while end < len(lines) and lines[end].strip() != "```":
+                end += 1
+            language = fence.group(1)
+            kind = f' class="language-{html.escape(language)}"' if language else ""
+            code = html.escape("\n".join(lines[i + 1:end]), quote=False)
+            out.append(f"<pre><code{kind}>{code}</code></pre>")
+            i = end + 1
+        elif heading:
+            level = len(heading.group(1))
+            out.append(f"<h{level}>{inline(heading.group(2).strip())}</h{level}>")
+            i += 1
+        elif RULE.match(line):
+            out.append("<hr />")
+            i += 1
+        elif line.lstrip().startswith("|"):
+            rows = []
+            while i < len(lines) and lines[i].lstrip().startswith("|"):
+                rows.append(lines[i])
+                i += 1
+            header = len(rows) > 1 and TABLE_SEPARATOR.match(rows[1].strip())
+            body = []
+            for number, row in enumerate(rows):
+                if header and number == 1:
+                    continue
+                tag = "th" if header and number == 0 else "td"
+                body.append("<tr>" + "".join(
+                    f"<{tag}><p>{inline(cell)}</p></{tag}>" for cell in cells(row)
+                ) + "</tr>")
+            out.append(f"<table><tbody>{''.join(body)}</tbody></table>")
+        elif LIST_ITEM.match(line):
+            # One level of nesting: two spaces or more puts an item under the
+            # one before it. A plain line continues the last item.
+            items = []
+            while i < len(lines) and lines[i].strip():
+                item = LIST_ITEM.match(lines[i])
+                if item:
+                    entry = ["ol" if item.group(2)[0].isdigit() else "ul", item.group(3), []]
+                    if len(item.group(1)) >= 2 and items:
+                        items[-1][2].append(entry)
+                    else:
+                        items.append(entry)
+                elif starts_block(lines[i]):
+                    break
+                else:
+                    last = items[-1][2][-1] if items[-1][2] else items[-1]
+                    last[1] += " " + lines[i].strip()
+                i += 1
+            out.append(list_html(items))
+        else:
+            # A paragraph's lines join until a blank line, or until a list,
+            # heading, fence or table starts: "Steps:" and then a list is one
+            # thought an agent writes without a blank line between.
+            words = [line.strip()]
+            i += 1
+            while i < len(lines) and lines[i].strip() and not starts_block(lines[i]):
+                words.append(lines[i].strip())
+                i += 1
+            out.append(f"<p>{inline(' '.join(words))}</p>")
+    return "".join(out) or "<p></p>"
+
+
+def normalize_html(html_text):
+    """A stored body with the editor's rewrites taken out.
+
+    Plane never hands back what it was given: it wraps the body in a `<div>`,
+    adds `rel` to every link, writes `<hr>` for `<hr />`, and may lay blocks
+    out on lines of their own. None of that is anybody's edit. Only whitespace
+    that spans a line is dropped between tags; a space between two inline
+    tags is a word break.
+    """
+    text = re.sub(r">\s*\n\s*<", "><", (html_text or "").strip())
+    text = re.sub(r'\s+rel="[^"]*"', "", text)
+    text = re.sub(r"<hr\s*/?>", "<hr>", text)
+    if text.startswith("<div>") and text.endswith("</div>"):
+        text = text[len("<div>"):-len("</div>")]
+    return text
+
+
+def body_token(html_text):
+    """What `show` prints as `body:` and `edit --expect` checks: a short hash
+    of the normalised body. Same body, same token, whoever last saved it."""
+    return hashlib.sha256(normalize_html(html_text).encode()).hexdigest()[:12]
+
+
+# --- indexing a decision on its map ----------------------------------------
+
+DECISIONS = "decisions so far"
+
+
+def decision_line(name, item_url, gist, base_url, workspace, identifiers=None):
+    """The `<li>` `resolve` adds to a map: `- [name](url) — gist` (PLAT-273).
+
+    The gist goes through the same inline Markdown as a body. It is written as
+    a list item's text, so a gist that starts with `#` or `-` stays words.
+    """
+    gist = " ".join((gist or "").split())
+    item = markdown_to_html(f"- {gist}", base_url, workspace, identifiers)
+    words = item[len("<ul><li><p>"):-len("</p></li></ul>")]
+    link = f'<a href="{html.escape(item_url)}">{html.escape(name, quote=False)}</a>'
+    return f"<li><p>{link} — {words}</p></li>"
+
+
+class _Tags(html.parser.HTMLParser):
+    """Where each tag of a body starts, as an offset into the text.
+
+    `append_decision` splices a string in at one of these, so the rest of the
+    body goes back byte for byte: the editor's classes and ids included.
+    """
+
+    def __init__(self, text):
+        super().__init__(convert_charrefs=True)
+        self.lines = [0] + [m.end() for m in re.finditer("\n", text)]
+        self.tags, self.text = [], []
+        self.feed(text)
+        self.close()
+
+    def _at(self):
+        line, column = self.getpos()
+        return self.lines[line - 1] + column
+
+    def handle_starttag(self, tag, attrs):
+        self.tags.append([self._at(), tag, True, ""])
+
+    def handle_endtag(self, tag):
+        self.tags.append([self._at(), tag, False, ""])
+
+    def handle_data(self, data):
+        # A heading's words, gathered on the last tag seen before them.
+        if self.tags:
+            self.tags[-1][3] += data
+
+
+def _heading_level(tag):
+    return int(tag[1]) if re.fullmatch(r"h[1-6]", tag) else None
+
+
+def append_decision(map_html, line_html, item_url):
+    """A map body with `line_html` appended under "Decisions so far".
+
+    Only that section is touched: maps still carry ticket lists and other
+    sections in any order. The line goes at the end of the first list after
+    the heading; with no list, a new one starts right after the heading; with
+    no section, one goes in before "Not yet specified", or at the end. A body
+    whose section already links to `item_url` comes back as it was, so a
+    re-run after a failure finishes the job without a second line.
+    """
+    body = map_html or ""
+    tags = _Tags(body).tags
+    # A heading's text is the words after its open tag and every tag inside
+    # it, up to its own close tag. Headings do not nest.
+    headings = []
+    for number, (_, tag, opening, _) in enumerate(tags):
+        level = _heading_level(tag)
+        if opening and level:
+            close = next(
+                (k for k in range(number + 1, len(tags)) if tags[k][1] == tag), len(tags) - 1
+            )
+            words = "".join(t[3] for t in tags[number:close])
+            headings.append((number, close, level, " ".join(words.split()).lower()))
+    section = next((h for h in headings if h[3] == DECISIONS), None)
+    wrapped = body.rstrip().endswith("</div>") and body.lstrip().startswith("<div")
+    end = body.rstrip().rindex("</div>") if wrapped else len(body)
+    if section is None:
+        later = next((h for h in headings if h[3] == "not yet specified"), None)
+        at = tags[later[0]][0] if later else end
+        return body[:at] + f"<h2>Decisions so far</h2><ul>{line_html}</ul>" + body[at:]
+
+    opened, closed, level, _ = section
+    after_heading = body.index(">", tags[closed][0]) + 1
+    stop = next((tags[h[0]][0] for h in headings if h[0] > closed and h[2] <= level), end)
+    if re.search(re.escape(item_url.rstrip("/")) + r"/?[\"']", body[after_heading:stop]):
+        return body
+    # The section's list is the first one that opens inside it; its own close
+    # tag is found by depth, so a list nested in a decision does not end it.
+    depth, start = 0, None
+    for at, tag, opening, _ in tags[closed + 1:]:
+        if at >= stop:
+            break
+        if tag not in ("ul", "ol"):
+            continue
+        if opening:
+            start = at if start is None else start
+            depth += 1
+        elif start is not None:
+            depth -= 1
+            if depth == 0:
+                return body[:at] + line_html + body[at:]
+    return body[:after_heading] + f"<ul>{line_html}</ul>" + body[after_heading:]
+
+
+def show_text(reference, item, comments, relations, states_by_id, labels_by_id, members_by_id,
+              related_by_id, base_url, workspace):
+    """What `show` prints: a header of names, the body, then every comment.
+
+    Pure, like `child_lines`: the caller fetches, this only formats.
+    `related_by_id` holds `PROJ-N title` for the parent and every blocker in
+    either direction. An id with no name prints as the id, so a lookup that
+    missed is visible instead of silently dropped.
+    """
+    def names(ids, lookup):
+        return ", ".join(lookup(str(i)) for i in ids or [])
+
+    header = [
+        f"{reference} {item.get('name') or ''}".rstrip(),
+        "state: " + states_by_id.get(str(item.get("state")), {}).get("name", ""),
+        "labels: " + names(item.get("labels"), lambda i: labels_by_id.get(i, {}).get("name", i)),
+        "assignees: " + names(item.get("assignees"), lambda i: members_by_id.get(i, i)),
+    ]
+    if item.get("parent"):
+        header.append("parent: " + related_by_id.get(str(item["parent"]), str(item["parent"])))
+    for kind, label in (("blocked_by", "blocked by"), ("blocking", "blocking")):
+        for other in (relations or {}).get(kind, []):
+            other_id = str(other["issue_id"])
+            header.append(f"{label}: {related_by_id.get(other_id, other_id)}")
+    # What `edit --expect` wants: proof the caller read the body it replaces.
+    header.append("body: " + body_token(item.get("description_html")))
+    # A header line with nothing after its colon says nothing.
+    sections = ["\n".join(line for line in header if not line.endswith(": "))]
+    body = html_to_markdown(item.get("description_html"), base_url, workspace)
+    if body:
+        sections.append(body)
+    # The API answers newest first; a thread reads oldest first. The API
+    # writes every date in one zone, so the strings sort as the times do.
+    for comment in sorted(comments, key=lambda c: c.get("created_at") or ""):
+        author = members_by_id.get(str(comment.get("actor")), str(comment.get("actor")))
+        when = (comment.get("created_at") or "")[:16].replace("T", " ")
+        sections.append(f"--- {author}, {when}")
+        text = html_to_markdown(comment.get("comment_html"), base_url, workspace)
+        if text:
+            sections.append(text)
+    return "\n\n".join(sections) + "\n"
 
 
 # --- client ----------------------------------------------------------------
@@ -243,7 +835,7 @@ class Plane:
                 f"{CONFIG_FILE}. Mint a key from your tracker profile's API "
                 "tokens after signing in with Gitea."
             )
-        self._project_cache = {}
+        self._projects = None
         self._legacy_index = {}
 
     # -- transport
@@ -268,7 +860,7 @@ class Plane:
             return True
         return bool(body and body.get("external_id"))
 
-    def request(self, method, path, body=None, query=None):
+    def request(self, method, path, body=None, query=None, workspace=True):
         """One call, waiting out a refusal that says nothing about the work.
 
         Plane throttles the public API per key. A migration makes tens of
@@ -276,10 +868,13 @@ class Plane:
         would mean restarting an hour of work. A gateway error is waited out
         the same way when the call is safe to repeat. Everything else is
         raised.
+
+        Almost every endpoint lives under the workspace. `workspace=False` is
+        for the few that do not, such as `users/me/`.
         """
         for attempt in range(RATE_LIMIT_RETRIES):
             try:
-                return self._request(method, path, body, query)
+                return self._request(method, path, body, query, workspace)
             except PlaneError as error:
                 last = attempt == RATE_LIMIT_RETRIES - 1
                 if last or not self.repeatable(method, body, error.status):
@@ -287,8 +882,9 @@ class Plane:
                 time.sleep(min(RATE_LIMIT_BACKOFF * (2 ** attempt), RATE_LIMIT_CEILING))
         raise AssertionError("unreachable")
 
-    def _request(self, method, path, body=None, query=None):
-        url = f"{self.base_url}/api/v1/workspaces/{self.workspace}/{path.lstrip('/')}"
+    def _request(self, method, path, body=None, query=None, workspace=True):
+        prefix = f"workspaces/{self.workspace}/" if workspace else ""
+        url = f"{self.base_url}/api/v1/{prefix}{path.lstrip('/')}"
         if query:
             url = f"{url}?{urllib.parse.urlencode(query)}"
         data = None if body is None else json.dumps(body).encode()
@@ -332,16 +928,28 @@ class Plane:
     # -- projects, states, labels
 
     def projects(self):
-        return list(self.paged("projects/"))
+        """Every project, fetched once: one command asks several times."""
+        if self._projects is None:
+            self._projects = list(self.paged("projects/"))
+        return self._projects
 
     def project(self, identifier):
-        """A project by its short identifier, e.g. SOW."""
-        if identifier not in self._project_cache:
+        """A project by its short identifier, e.g. SOW.
+
+        A miss fetches the list again before it fails. The bridge keeps one
+        client for as long as it runs, and a project created after it started
+        has to be found without a restart.
+        """
+        for _ in range(2):
             for project in self.projects():
-                self._project_cache[project["identifier"]] = project
-        if identifier not in self._project_cache:
-            raise PlaneError(f"no project with identifier {identifier!r}")
-        return self._project_cache[identifier]
+                if project["identifier"] == identifier:
+                    return project
+            self._projects = None
+        raise PlaneError(f"no project with identifier {identifier!r}")
+
+    def me(self):
+        """The user who owns the API key."""
+        return self.request("GET", "users/me/", workspace=False)
 
     def members(self):
         return list(self.paged("members/"))
@@ -409,6 +1017,28 @@ class Plane:
             if found:
                 return found
         return None
+
+    def work_item_by_legacy(self, external_id):
+        """The project and item imported from `owner/repo#n`, looked up by filter.
+
+        The repository does not say which project the item went to -- twelve
+        repositories share three -- so each project is asked. A hit comes back
+        as the item itself and a miss as 404, which makes this a handful of
+        requests where `find_by_legacy` reads every item in the workspace. The
+        answer is checked against the id asked for, because a filter Plane
+        ignored would hand back a page of everything instead.
+        """
+        query = {"external_id": external_id, "external_source": EXTERNAL_SOURCE}
+        for project in self.projects():
+            try:
+                item = self.request("GET", f"projects/{project['id']}/work-items/", query=query)
+            except PlaneError as error:
+                if error.status == 404:
+                    continue
+                raise
+            if isinstance(item, dict) and item.get("external_id") == external_id:
+                return project, item
+        raise PlaneError(f"no work item was imported from {external_id}")
 
     def states(self, project_id):
         return {str(s["id"]): s for s in self.paged(f"projects/{project_id}/states/")}
@@ -504,12 +1134,21 @@ class Plane:
         )
 
     def comment(self, project_id, item_id, html, external_id=None):
-        """Add a comment. With an external id, a redelivery updates in place."""
+        """Add a comment. With an external id, a repeat is a no-op.
+
+        Plane answers a taken external id with 409 and the id of the comment
+        that holds it. That comment is the one this call would have made.
+        """
         body = {"comment_html": html}
         if external_id:
             body["external_id"] = external_id
             body["external_source"] = EXTERNAL_SOURCE
-        return self.request("POST", f"projects/{project_id}/work-items/{item_id}/comments/", body)
+        try:
+            return self.request("POST", f"projects/{project_id}/work-items/{item_id}/comments/", body)
+        except PlaneError as error:
+            if external_id and error.status == 409 and error.payload.get("id"):
+                return {"id": error.payload["id"]}
+            raise
 
     def links(self, project_id, item_id):
         return list(self.paged(f"projects/{project_id}/work-items/{item_id}/links/"))
@@ -540,8 +1179,13 @@ class Plane:
 
     # -- wayfinder
 
-    def frontier(self, project_id, parent_id):
-        """Open, unassigned children of a map with no open blocker."""
+    def children(self, project_id, parent_id):
+        """A map's children, their relations by id, and the project's states.
+
+        Every item in the project is read and filtered here, because the list
+        endpoint ignores `parent=` and hands back the whole project. Move to the
+        server when Plane's public API grows a filter that narrows.
+        """
         states = self.states(project_id)
         children = [
             item
@@ -551,69 +1195,220 @@ class Plane:
         relations = {
             str(child["id"]): self.relations(project_id, child["id"]) for child in children
         }
-        return frontier(children, relations, states)
+        return children, relations, states
+
+    def child_references(self, project_id, children, relations):
+        """`PROJ-N` for every child, and for every open blocker outside them.
+
+        A child's reference is already in hand. A blocker outside the list --
+        often in another project, since maps depend on each other across
+        repositories -- costs one fetch, and its project's states one more per
+        project. A closed one is left out, which is how `child_lines` knows not
+        to name it.
+        """
+        identifiers = {str(p["id"]): p["identifier"] for p in self.projects()}
+        references = {
+            str(c["id"]): f"{identifiers[str(project_id)]}-{c['sequence_id']}" for c in children
+        }
+        states, seen = {}, set(references)
+        for relation in relations.values():
+            for blocker in relation.get("blocked_by", []):
+                blocker_id = str(blocker["issue_id"])
+                if blocker_id in seen:
+                    continue
+                seen.add(blocker_id)
+                home = str(blocker.get("project_id") or project_id)
+                if home not in states:
+                    states[home] = self.states(home)
+                item = self.work_item_detail(home, blocker_id)
+                if is_open(item, states[home]):
+                    references[blocker_id] = f"{identifiers[home]}-{item['sequence_id']}"
+        return references
+
+    def child_lines(self, project_id, children, relations, states, references):
+        """The lines `children` and `frontier` print, with names looked up."""
+        labels_by_id = {str(label["id"]): label for label in self.labels(project_id).values()}
+        members_by_id = {
+            str(m["id"]): m.get("display_name") or str(m["id"]) for m in self.members()
+        }
+        return child_lines(children, relations, states, labels_by_id, members_by_id, references)
+
+    def show_text(self, project_id, item, reference, comments, relations):
+        """The text `show` prints, with every UUID looked up as a name.
+
+        The parent and each blocker cost one fetch apiece; a relation carries
+        its own project, since blocking crosses projects.
+        """
+        labels_by_id = {str(label["id"]): label for label in self.labels(project_id).values()}
+        members_by_id = {
+            str(m["id"]): m.get("display_name") or str(m["id"]) for m in self.members()
+        }
+        identifiers = {str(p["id"]): p["identifier"] for p in self.projects()}
+        wanted = [(str(project_id), str(item["parent"]))] if item.get("parent") else []
+        for kind in ("blocked_by", "blocking"):
+            for other in (relations or {}).get(kind, []):
+                wanted.append((str(other.get("project_id") or project_id), str(other["issue_id"])))
+        # Each line carries the other item's state: a blocker that closed long
+        # ago otherwise reads exactly like one still in the way.
+        states = {str(project_id): self.states(project_id)}
+        related = {}
+        for home, other_id in wanted:
+            if other_id not in related:
+                other = self.work_item_detail(home, other_id)
+                if home not in states:
+                    states[home] = self.states(home)
+                state = states[home].get(str(other.get("state")), {}).get("name", "")
+                related[other_id] = (
+                    f"{identifiers.get(home, home)}-{other['sequence_id']} "
+                    f"{other.get('name') or ''} ({state})"
+                )
+        return show_text(
+            reference, item, comments, relations, states[str(project_id)], labels_by_id,
+            members_by_id, related, self.base_url, self.workspace,
+        )
 
 
 # --- command surface -------------------------------------------------------
 
 
 def _resolve(client, reference):
-    identifier, _ = parse_reference(reference)
-    project = client.project(identifier)
-    item = client.work_item(reference)
-    return project["id"], item
+    """A reference from the command line: its project id, the item, and `PROJ-N`.
+
+    Every command routes through here, so an old Gitea reference works
+    anywhere a `PROJ-N` does. What comes back is always the `PROJ-N`, so a
+    line printed afterwards names the item as it is called now.
+    """
+    legacy = legacy_external_id(reference)
+    if legacy:
+        project, item = client.work_item_by_legacy(legacy)
+    else:
+        identifier, _ = parse_reference(reference)
+        project = client.project(identifier)
+        item = client.work_item(reference)
+    return project["id"], item, f"{project['identifier']}-{item['sequence_id']}"
+
+
+def _body_html(client, args):
+    """The body a write was given, as HTML: a file, `--body`, or `comment`'s
+    positional text, all read as Markdown. Never stdin: an agent's shell
+    sends no EOF, so a read from it waits forever."""
+    if getattr(args, "body_file", None):
+        try:
+            with open(args.body_file, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError as error:
+            raise SystemExit(f"cannot read --body-file: {error.strerror}: {args.body_file}")
+    else:
+        text = getattr(args, "body", None) or getattr(args, "text", None) or ""
+    identifiers = {project["identifier"] for project in client.projects()}
+    return markdown_to_html(text, client.base_url, client.workspace, identifiers)
 
 
 def _print(value):
     print(json.dumps(value, indent=2, sort_keys=True, default=str))
 
 
+def _report(args, raw, line):
+    """A write's answer: its one line, or the raw object under `--json`."""
+    if args.json:
+        _print(raw)
+    else:
+        print(line)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Tracker operations against Plane (ADR-0054)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("file", help="create a work item")
+    # `--json` hands a script the raw object instead of the printed lines.
+    raw = argparse.ArgumentParser(add_help=False)
+    raw.add_argument("--json", action="store_true", help="print the raw object instead")
+
+    p = sub.add_parser("file", help="create a work item", parents=[raw])
     p.add_argument("project", help="project identifier, e.g. SOW")
     p.add_argument("title")
-    p.add_argument("--body", default="")
+    body = p.add_mutually_exclusive_group()
+    body.add_argument("--body", help="the body, as Markdown")
+    body.add_argument("--body-file", help="a file holding the body, as Markdown")
     p.add_argument("--label", action="append", default=[], dest="labels")
     p.add_argument("--priority", default=None, help="override the label-derived priority")
     p.add_argument("--assignee", action="append", default=[], dest="assignees")
     p.add_argument("--parent", default=None, help="parent work item reference")
 
-    p = sub.add_parser("show", help="a whole thread: the item plus every comment")
-    p.add_argument("reference")
+    p = sub.add_parser(
+        "show", help="a whole thread as text: header, body, every comment", parents=[raw]
+    )
+    p.add_argument("reference", help="PROJ-N, or an old Gitea reference such as repo#N")
 
-    p = sub.add_parser("comment", help="add a comment")
-    p.add_argument("reference")
+    p = sub.add_parser("find", help="work items whose title contains the text", parents=[raw])
+    p.add_argument("project", help="project identifier, e.g. PLAT")
     p.add_argument("text")
 
-    p = sub.add_parser("close", help="move a work item to a completed state")
+    sub.add_parser("whoami", help="the user who owns the API key, and their id")
+
+    p = sub.add_parser("comment", help="add a comment, written in Markdown", parents=[raw])
+    p.add_argument("reference")
+    body = p.add_mutually_exclusive_group(required=True)
+    body.add_argument("text", nargs="?")
+    body.add_argument("--body", help="the comment, as Markdown")
+    body.add_argument("--body-file", help="a file holding the comment, as Markdown")
+
+    p = sub.add_parser(
+        "edit", help="replace a body whole, if it is still the one you read", parents=[raw]
+    )
+    p.add_argument("reference")
+    body = p.add_mutually_exclusive_group(required=True)
+    body.add_argument("--body", help="the new body, as Markdown")
+    body.add_argument("--body-file", help="a file holding the new body, as Markdown")
+    p.add_argument("--expect", required=True, help="the `body:` token `show` printed")
+
+    p = sub.add_parser("close", help="move a work item to a completed state", parents=[raw])
     p.add_argument("reference")
 
-    p = sub.add_parser("claim", help="assign a work item to a user")
+    p = sub.add_parser(
+        "resolve", help="comment the answer, index it on the parent map, and close",
+        parents=[raw],
+    )
     p.add_argument("reference")
-    p.add_argument("user_id")
+    body = p.add_mutually_exclusive_group(required=True)
+    body.add_argument("--body", help="the resolution, as Markdown")
+    body.add_argument("--body-file", help="a file holding the resolution, as Markdown")
+    p.add_argument("--gist", required=True, help="one line for the map's Decisions so far")
 
-    p = sub.add_parser("block", help="record that one item is blocked by others")
+    p = sub.add_parser(
+        "claim", help="assign a work item to a user, by default yourself", parents=[raw]
+    )
+    p.add_argument("reference")
+    p.add_argument("user_id", nargs="?", help="a user id; omitted, the key's owner")
+
+    p = sub.add_parser(
+        "block", help="record that one item is blocked by others", parents=[raw]
+    )
     p.add_argument("reference")
     p.add_argument("blocker", nargs="+")
 
-    p = sub.add_parser("parent", help="make a work item a child of another")
+    p = sub.add_parser("parent", help="make a work item a child of another", parents=[raw])
     p.add_argument("reference")
     p.add_argument("parent")
 
-    p = sub.add_parser("frontier", help="open, unassigned children of a map with no open blocker")
+    p = sub.add_parser(
+        "children", help="every child of a map, one line each, closed ones too", parents=[raw]
+    )
+    p.add_argument("map_reference")
+
+    p = sub.add_parser(
+        "frontier", help="open, unassigned children of a map with no open blocker", parents=[raw]
+    )
     p.add_argument("map_reference")
 
     args = parser.parse_args(argv)
     client = Plane()
 
     if args.command == "file":
-        project = client.project(args.project)
+        project = client.project(args.project.upper())
         fields = {
             "name": args.title,
-            "description_html": f"<p>{args.body}</p>" if args.body else "<p></p>",
+            "description_html": _body_html(client, args),
             "priority": args.priority or priority_for_labels(args.labels),
         }
         if args.labels:
@@ -621,48 +1416,159 @@ def main(argv=None):
         if args.assignees:
             fields["assignees"] = args.assignees
         if args.parent:
-            _, parent = _resolve(client, args.parent)
+            _, parent, _ = _resolve(client, args.parent)
             fields["parent"] = parent["id"]
-        _print(client.create_work_item(project["id"], fields))
+        created = client.create_work_item(project["id"], fields)
+        reference = f"{project['identifier']}-{created.get('sequence_id')}"
+        _report(args, created, summary("filed", reference, created))
         return 0
 
     if args.command == "show":
-        project_id, item = _resolve(client, args.reference)
-        item["comments"] = client.comments(project_id, item["id"])
-        item["relations"] = client.relations(project_id, item["id"])
-        _print(item)
+        project_id, item, reference = _resolve(client, args.reference)
+        comments = client.comments(project_id, item["id"])
+        relations = client.relations(project_id, item["id"])
+        if args.json:
+            _print({**item, "comments": comments, "relations": relations})
+        else:
+            print(client.show_text(project_id, item, reference, comments, relations), end="")
+        return 0
+
+    if args.command == "find":
+        project = client.project(args.project.upper())
+        # Every item is read and matched here, because the list
+        # endpoint ignores `search=` and every other text filter tried. Move to
+        # the server when Plane's public API grows one that filters.
+        items = client.work_items(project["id"])
+        if args.json:
+            _print(find_items(items, args.text))
+        else:
+            states = client.states(project["id"])
+            for line in find_lines(project["identifier"], items, args.text, states):
+                print(line)
+        return 0
+
+    if args.command == "whoami":
+        print(user_line(client.me()))
         return 0
 
     if args.command == "comment":
-        project_id, item = _resolve(client, args.reference)
-        _print(client.comment(project_id, item["id"], f"<p>{args.text}</p>"))
+        project_id, item, reference = _resolve(client, args.reference)
+        posted = client.comment(project_id, item["id"], _body_html(client, args))
+        _report(args, posted, summary("commented on", reference, item))
+        return 0
+
+    if args.command == "edit":
+        project_id, item, reference = _resolve(client, args.reference)
+        new_body = _body_html(client, args)
+        # Read again right before the write: the token compares against what
+        # is stored now, not what `_resolve` saw a few requests ago. A body
+        # replaced by someone who never read it is the lost edit this refuses.
+        stored = client.work_item_detail(project_id, item["id"])
+        current = body_token(stored.get("description_html"))
+        if current != args.expect:
+            raise SystemExit(
+                f"refused: {reference} body is {current}, not {args.expect}; "
+                f"it changed since it was read, so show it again"
+            )
+        edited = client.update_work_item(project_id, item["id"], {"description_html": new_body})
+        _report(args, edited, summary("edited", reference, stored))
         return 0
 
     if args.command == "close":
-        project_id, item = _resolve(client, args.reference)
-        _print(client.close_work_item(project_id, item["id"]))
+        project_id, item, reference = _resolve(client, args.reference)
+        closed = client.close_work_item(project_id, item["id"])
+        _report(args, closed, summary("closed", reference, item))
+        return 0
+
+    if args.command == "resolve":
+        project_id, item, reference = _resolve(client, args.reference)
+        identifier, _ = parse_reference(reference)
+        # A re-run after a failure finishes the job; it does not post the
+        # answer twice. Compared normalised, since the editor rewrites it.
+        answer = _body_html(client, args)
+        posted = next(
+            (c for c in client.comments(project_id, item["id"])
+             if normalize_html(c.get("comment_html")) == normalize_html(answer)),
+            None,
+        )
+        if posted:
+            lines = [summary("already commented on", reference, item)]
+        else:
+            posted = client.comment(project_id, item["id"], answer)
+            lines = [summary("commented on", reference, item)]
+        # The map is read right before it is written, as `edit` does: the line
+        # goes into the body as it is now, not as it was a few requests ago.
+        indexed, parent = None, item.get("parent")
+        if parent:
+            parent = client.work_item_detail(project_id, parent)
+            # A map and its tickets share a project, so the child's is the map's.
+            label = client.labels(project_id).get("wayfinder:map")
+            if not label or str(label["id"]) not in {str(i) for i in parent.get("labels") or []}:
+                parent = None
+        if parent:
+            map_reference = f"{identifier}-{parent['sequence_id']}"
+            item_url = f"{client.base_url}/{client.workspace}/browse/{reference}/"
+            identifiers = {project["identifier"] for project in client.projects()}
+            line = decision_line(item.get("name") or reference, item_url, args.gist,
+                                 client.base_url, client.workspace, identifiers)
+            stored = parent.get("description_html") or ""
+            updated = append_decision(stored, line, item_url)
+            if updated == stored:
+                lines.append(f"already indexed {reference} on {map_reference}")
+            else:
+                indexed = client.update_work_item(
+                    project_id, parent["id"], {"description_html": updated}
+                )
+                lines.append(f"indexed {reference} on {map_reference}")
+        else:
+            lines.append(f"not indexed: {reference} has no parent map")
+        closed = client.close_work_item(project_id, item["id"])
+        lines.append(summary("closed", reference, item))
+        _report(args, [posted, indexed, closed], "\n".join(lines))
         return 0
 
     if args.command == "claim":
-        project_id, item = _resolve(client, args.reference)
-        _print(client.assign(project_id, item["id"], [args.user_id]))
+        project_id, item, reference = _resolve(client, args.reference)
+        # No user means the caller: an agent holds a key, not a UUID.
+        if args.user_id:
+            user_id, who = args.user_id, args.user_id
+        else:
+            me = client.me()
+            user_id, who = me["id"], me.get("display_name") or me["id"]
+        claimed = client.assign(project_id, item["id"], [user_id])
+        _report(args, claimed, summary("claimed", reference, item, f"for {who}"))
         return 0
 
     if args.command == "block":
-        project_id, item = _resolve(client, args.reference)
-        blockers = [_resolve(client, reference)[1]["id"] for reference in args.blocker]
-        _print(client.block(project_id, item["id"], blockers))
+        project_id, item, reference = _resolve(client, args.reference)
+        blockers = [_resolve(client, blocker) for blocker in args.blocker]
+        blocked = client.block(project_id, item["id"], [b[1]["id"] for b in blockers])
+        by = "by " + ", ".join(b[2] for b in blockers)
+        _report(args, blocked, summary("blocked", reference, item, by))
         return 0
 
     if args.command == "parent":
-        project_id, item = _resolve(client, args.reference)
-        _, parent = _resolve(client, args.parent)
-        _print(client.set_parent(project_id, item["id"], parent["id"]))
+        project_id, item, reference = _resolve(client, args.reference)
+        _, parent, parent_reference = _resolve(client, args.parent)
+        moved = client.set_parent(project_id, item["id"], parent["id"])
+        under = f"under {parent_reference}"
+        _report(args, moved, summary("parented", reference, item, under))
         return 0
 
-    if args.command == "frontier":
-        project_id, item = _resolve(client, args.map_reference)
-        _print(client.frontier(project_id, item["id"]))
+    if args.command in ("children", "frontier"):
+        project_id, item, _ = _resolve(client, args.map_reference)
+        children, relations, states = client.children(project_id, item["id"])
+        references = client.child_references(project_id, children, relations)
+        if args.command == "frontier":
+            outside = set(references) - {str(c["id"]) for c in children}
+            children = frontier(children, relations, states, outside)
+            # A ready item has no open blocker, so there is no tail to print.
+            relations = {}
+        if args.json:
+            _print(children)
+        else:
+            for line in client.child_lines(project_id, children, relations, states, references):
+                print(line)
         return 0
 
     raise SystemExit(f"unknown command {args.command}")

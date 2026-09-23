@@ -12,17 +12,43 @@ for live once in `sow-platform/docs/agents/plane-tracker.md`.
 
 ## The client
 
-`plane` is `bin/plane`, a byte-identical copy of sow-platform's
-`infra/nixos/scripts/plane.py` (fix bugs at the source, then copy it out again). It
-needs Python 3 and your own `PLANE_API_KEY`, set in the environment or in
-`~/.config/sow/plane.env`; base URL and workspace default correctly. `bin/plane --help`
-lists the surface: `file CX "..."`, `show CX-12`, `comment`, `close`, `claim`, `parent`,
-`block`, `frontier`.
+`plane` is `bin/plane`, a copy of sow-platform's `infra/nixos/scripts/plane.py`. Fix a
+bug at the source, never here: a change to the source opens a pull request on the branch
+`chore/plane-client-sync` that replaces this copy (sow-platform ADR-0062).
+
+It needs Python 3 and your own `PLANE_API_KEY`, nothing else. Create the key in Plane
+(sign in with Gitea, then profile -> API tokens) and put it in the environment or in
+`~/.config/sow/plane.env` as `PLANE_API_KEY=<key>`. Base URL and workspace are baked in.
+`bin/plane whoami` confirms the key.
+
+| Task | Command |
+| --- | --- |
+| Read a whole thread | `bin/plane show CX-12` |
+| Search titles | `bin/plane find CX "<text>"` |
+| File work | `bin/plane file CX "<title>" --body-file body.md --label Kind/Bug` |
+| Comment | `bin/plane comment CX-12 "<text>"`, or `--body-file comment.md` |
+| Replace a body | `bin/plane edit CX-12 --body-file body.md --expect <token>` (the `body:` line `show` printed) |
+| Take an item | `bin/plane claim CX-12` |
+| Close | `bin/plane close CX-12` |
+| Answer, index on the map, close | `bin/plane resolve CX-12 --body-file answer.md --gist "<one line>"` |
+| Nest / block | `bin/plane parent CX-12 CX-1`, `bin/plane block CX-12 CX-9` |
+| A map's children / frontier | `bin/plane children CX-1`, `bin/plane frontier CX-1` |
+
+Bodies and comments are Markdown; a bare `GAME-12` becomes a link. Every command takes
+`--json` for the raw object. `bin/plane <command> --help` has the flags. The full
+reference is `docs/agents/plane-tracker.md` in sow-platform.
 
 The Plane MCP server (`.mcp.json`, `uvx plane-mcp-server`) points at the same instance
-for ad-hoc reads and edits the CLI doesn't cover. It reads `PLANE_API_KEY` from the shell
-environment only, not from `plane.env`. The CLI stays the path for wayfinding, since
-`frontier` and the rules below live in it.
+for reads and edits the CLI doesn't cover. It reads `PLANE_API_KEY` from the shell
+environment only, not from `plane.env`.
+
+## Closing a work item from a pull request
+
+A merged pull request closes the work items its **body** names, one per line:
+`Closes CX-12`, `Fixes CX-12`, `Resolves: CX-12`. An org-wide webhook does this for every
+repository, this one included. The title and commit messages close nothing, and a bare
+`Part of CX-12` closes nothing. Do not also `bin/plane close` an item the pull request
+closes.
 
 ## Old `CX-<n>` and `#<n>` references
 
@@ -30,6 +56,8 @@ Numbering restarted at `CX-1` on 2026-09-22. Every `CX-<n>` / `#<n>` in commits,
 docs and memories written before then points at the retired local Plane (Gitea numbers
 were preserved there) and was **not** migrated. Treat such a reference as history, not
 as a live item on the new instance: a low `CX-<n>` there is a different, newer item.
+For the same reason `bin/plane show sow-client-extender#700` finds nothing: that lookup
+works only for issues the org-wide importer carried over, and this repository's were not.
 
 ## Wayfinding
 
