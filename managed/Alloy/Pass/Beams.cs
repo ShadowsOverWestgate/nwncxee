@@ -329,16 +329,16 @@ internal static unsafe class Beams
         new PassState(depth: true, depthWrite: false, blend: true,
                       blendSrc: GlSrcAlpha, blendDst: GlOne).Apply();
 
-        int boundVao = -1;
+        fixed (Matrix4x4* m = &_model) Gl.UniformMatrix4fv(_locModel, 1, 0, (float*)m);
         fixed (int* counts = _sCount, bases = _sBase)
         fixed (nint* offs = _sOff)
-        for (int k = 0; k < staged; k++)
+        for (int k = 0, run; k < staged; k += run)
         {
-            ref Beam b = ref _beams[_sBeam[k]];
-            if (b.Vao != boundVao) { Gl.BindVertexArray(Vao(b.Vao)); boundVao = b.Vao; }
-            fixed (Matrix4x4* m = &_model) Gl.UniformMatrix4fv(_locModel, 1, 0, (float*)m);
+            int vao = _beams[_sBeam[k]].Vao;
+            for (run = 1; k + run < staged && _beams[_sBeam[k + run]].Vao == vao; run++) { }
+            Gl.BindVertexArray(Vao(vao));
             Gl.MultiDrawElementsBaseVertex(_primTable[BeamPrim], counts + k, GlUnsignedShort,
-                                           (void**)(offs + k), 1, bases + k);
+                                           (void**)(offs + k), run, bases + k);
         }
         Gl.BindVertexArray(0);
         Gl.Disable(Gl.BLEND);

@@ -289,7 +289,8 @@ public sealed unsafe partial class AlloyRenderer
         _walkBudget = tableWiped || newScene || _orderCount == 0 || _enrollBudget == 0 ? int.MaxValue : _enrollBudget;
         _walkAt = 0; _walkCandidates = 0; _walkOrderBefore = _orderCount; _freeAvail = _freeCount;
         Counters._watchEnrolled = 0;
-        System.Array.Clear(AlloyCensus.WatchTex);
+        // WatchTex is only ever set while dumptex (boot-latched) is on, so off it is already all-false
+        if (AlloyCensus._dumpTex != null) System.Array.Clear(AlloyCensus.WatchTex);
         for (int i = 0; i < _ownCount; i++)
             if (_oTri[i] != IntPtr.Zero)
             {

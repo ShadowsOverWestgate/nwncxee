@@ -2619,16 +2619,18 @@ public sealed unsafe partial class CasterPass : IExtenderService
     {
         if (_gCollectSeq == _collectSeq && _gListVer == _listVer)
         {   // #328: the list stood, so the staging stands. The set flag is the one word that moves per frame
-            // (a caster starting or stopping); the gather's own hash then skips the upload when nothing did.
+            // (a caster starting or stopping); the gather skips the upload when nothing did.
             fixed (uint* src = _gSrc)
             {
+                bool changed = false;
                 for (int d = 0; d < _gN; d++)
                 {
                     int i = _gLive[d];
-                    src[(long)d * CasterGather.SrcUints] = _liveOff[i] ? 0u : (uint)_liveIdxCount[i];
-                    src[(long)d * CasterGather.SrcUints + CasterGather.SetFlagWord] = _liveDyn[i] ? 1u : 0u;
+                    uint* r = src + (long)d * CasterGather.SrcUints;
+                    uint cnt = _liveOff[i] ? 0u : (uint)_liveIdxCount[i], set = _liveDyn[i] ? 1u : 0u;
+                    if (r[0] != cnt || r[CasterGather.SetFlagWord] != set) { r[0] = cnt; r[CasterGather.SetFlagWord] = set; changed = true; }
                 }
-                bool stood = _gN == 0 || CasterGather.Begin(_gN, _gGroups, src);
+                bool stood = _gN == 0 || CasterGather.Begin(_gN, _gGroups, src, changed);
                 _gDrawN = stood ? _gN : 0;
                 if (stood) _submitMasked += _gMasked;
                 return stood;
@@ -2693,7 +2695,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         _gGroups = g + 1; _gCreatures = creatures; _gN = n; _gMasked = maskedN;
         bool ok;
         fixed (uint* src = _gSrc)
-            ok = CasterGather.Begin(n, _gGroups, src);
+            ok = CasterGather.Begin(n, _gGroups, src, true);
         if (ok) { _gDrawN = n; _submitMasked += maskedN; }
         return ok;
     }

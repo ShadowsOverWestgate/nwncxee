@@ -88,7 +88,8 @@ internal static unsafe class CasterGather
 
     private static uint _srcBuf;
     private static int _srcCap;
-    private static ulong _srcHash;
+    /// <summary>A caller reported changed bytes that have not reached the buffer yet (a refused Begin keeps it).</summary>
+    private static bool _srcDirty;
     private static readonly uint[] _cmdBuf = new uint[Rotation], _cntBuf = new uint[Rotation];
     private static int _cmdCap, _cntCap, _at;
     private static int _drawN, _groups;
@@ -132,7 +133,7 @@ internal static unsafe class CasterGather
     internal static void ContextLost()
     {
         _prog = 0; _failed = false;
-        _srcBuf = 0; _srcCap = 0; _srcHash = 0; _cmdCap = 0; _cntCap = 0; _at = 0;
+        _srcBuf = 0; _srcCap = 0; _srcDirty = false; _cmdCap = 0; _cntCap = 0; _at = 0;
         Array.Clear(_cmdBuf); Array.Clear(_cntBuf);
         _layerProg = 0; _layerFailed = false; _viewBuf = 0; _viewCap = 0;
         _lyCmdCap = 0; _lyCntCap = 0; _lyAt = 0;
@@ -181,29 +182,27 @@ internal static unsafe class CasterGather
     /// PREVIOUS frame's staging into this frame's views.</summary>
     internal static void Stand() => _drawN = 0;
 
-    /// <summary>Publish one frame's staging. #303: the source buffer is persistent -- FNV-hashed against the
-    /// last upload, and a frame whose staged bytes match sends nothing at all. The bounds live in
-    /// <see cref="CullPass"/>'s sphere buffer, which the colour build maintains; nothing per-draw is uploaded
-    /// here on a settled frame.</summary>
-    internal static bool Begin(int drawN, int groups, uint* src)
+    /// <summary>Publish one frame's staging. #303: the source buffer is persistent, and a frame whose caller
+    /// reports no <paramref name="changed"/> bytes sends nothing at all (CX-14: the caller knows, no hash).
+    /// The bounds live in <see cref="CullPass"/>'s sphere buffer, which the colour build maintains; nothing
+    /// per-draw is uploaded here on a settled frame.</summary>
+    internal static bool Begin(int drawN, int groups, uint* src, bool changed)
     {
         _drawN = 0;
+        _srcDirty |= changed;
         if (drawN <= 0 || groups <= 0 || !Ensure()) return false;
         if (CullPass.SphereBuf == 0) return false;   // no colour build yet: no bounds to cull against
 
         long srcWords = (long)drawN * SrcUints;
-        ulong h = 1469598103934665603ul;
-        for (long i = 0; i < srcWords; i++) h = (h ^ src[i]) * 1099511628211ul;
-        h = (h ^ (uint)drawN) * 1099511628211ul ^ (uint)groups;
         bool grow = drawN > _srcCap;
         if (_srcBuf == 0) { uint b; Gl.GenBuffers(1, &b); _srcBuf = b; grow = true; }
-        if (grow || h != _srcHash)
+        if (grow || _srcDirty)
         {
             Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _srcBuf);
             if (grow)
             { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)drawN * SrcUints * sizeof(uint)), null, Gl.DYNAMIC_DRAW); _srcCap = drawN; }
             Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(srcWords * sizeof(uint)), src);
-            _srcHash = h;
+            _srcDirty = false;
             Uploads++;
         }
         else UploadsSkipped++;

@@ -715,7 +715,7 @@ public sealed unsafe partial class AlloyRenderer
         bool dumping = FrameDump.Begin();
         // #134: routing walks the CLASS RANGES, not the ownership table -- a part whose class range was
         // never built simply never appears, and no skip site can report on it. Say so once.
-        if (Diag._watchDrawLeft > 0)
+        if (Diag._watchDrawLeft > 0 && AlloyCensus._watchEntry >= 0)
         {
             bool routedWatch = false;
             for (int k = 0; k < routed && !routedWatch; k++) routedWatch = AlloyCensus.WatchedEntry(_oEntry[_pass[k]]);
