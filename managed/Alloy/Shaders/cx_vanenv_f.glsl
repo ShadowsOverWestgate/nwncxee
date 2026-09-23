@@ -55,7 +55,7 @@ vec3 vViewToSurface_n;
 float CxVisionLight()
 {
     uint cl = CxCluster(vDepth);
-    uint n = uClCount[cl];
+    uint n = CxClusterN(cl);
     uint base = cl * CX_CLUSTER_CAP;
     vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
     float lit = 0.0;

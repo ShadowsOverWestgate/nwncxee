@@ -418,6 +418,7 @@ public sealed unsafe class GlContextService : IExtenderService
     private static void OnDebugMessage(uint source, uint type, uint id, uint severity, int length, byte* msg, void* user)
     {
         _dbgTotal++;
+        if (id == NvShadowSamplerUb) DescribeShadowSamplers();   // its own once-per-program budget
         bool always = type == GL_DEBUG_TYPE_ERROR || type == GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR;
         if (!always)
         {
@@ -434,6 +435,50 @@ public sealed unsafe class GlContextService : IExtenderService
             GL_DEBUG_TYPE_PERFORMANCE => "performance", _ => "other",
         };
         _log?.Info($"GlContextService: [gldebug] {kind} id {id} (source 0x{source:x}, severity 0x{severity:x}): {CStr(msg, 1024)}");
+    }
+
+    /// <summary>NVIDIA's "shadow sampler on a texture that is not a compare-on depth texture" warning.</summary>
+    private const uint NvShadowSamplerUb = 131222;
+    private const uint SamplerShadow2D = 0x8B62, Sampler2DArrayShadow = 0x8DC4, SamplerCubeShadow = 0x8DC5,
+                       SamplerCubeArrayShadow = 0x900D;
+    private static readonly uint[] _shadowDescribed = new uint[8];
+    private static int _shadowDescribedN;
+
+    /// <summary>alloy.gldebug only: the warning names no program or unit, so say which. Runs inside the
+    /// synchronous callback -- i.e. inside the offending draw -- once per program: its label and, per shadow
+    /// sampler, the unit and the texture bound there for the sampler's target.
+    /// ponytail: GL queries (and an ActiveTexture round trip) from a KHR_debug callback are outside the spec's
+    /// promises; NVIDIA tolerates them, and this is debug-context-only.</summary>
+    private static void DescribeShadowSamplers()
+    {
+        if (Gl.GetIntegerv == null || Gl.GetProgramiv == null || Gl.GetActiveUniform == null || Gl.GetUniformiv == null) return;
+        int prog = 0; Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &prog);
+        for (int i = 0; i < _shadowDescribedN; i++) if (_shadowDescribed[i] == (uint)prog) return;
+        if (_shadowDescribedN >= _shadowDescribed.Length) return;
+        _shadowDescribed[_shadowDescribedN++] = (uint)prog;
+        GlProgram.Labels.TryGetValue((uint)prog, out string? label);
+        int active = 0, count = 0; Gl.GetProgramiv((uint)prog, 0x8B86 /* ACTIVE_UNIFORMS */, &count);
+        Gl.GetIntegerv(0x84E0 /* ACTIVE_TEXTURE */, &active);
+        var sb = new System.Text.StringBuilder($"GlContextService: [gldebug] shadow samplers of program {prog} ({label ?? "unlabelled"}):");
+        byte* name = stackalloc byte[128];
+        for (uint u = 0; u < (uint)count; u++)
+        {
+            int len, size; uint type;
+            Gl.GetActiveUniform((uint)prog, u, 128, &len, &size, &type, name);
+            uint bindingQuery = type switch
+            {
+                Sampler2DArrayShadow => Gl.TEXTURE_BINDING_2D_ARRAY, SamplerCubeArrayShadow => Gl.TEXTURE_BINDING_CUBE_MAP_ARRAY,
+                SamplerShadow2D => 0x8069 /* TEXTURE_BINDING_2D */, SamplerCubeShadow => 0x8514 /* TEXTURE_BINDING_CUBE_MAP */, _ => 0,
+            };
+            if (bindingQuery == 0) continue;
+            int unit = -1, tex = 0;
+            Gl.GetUniformiv((uint)prog, GlProgram.Loc((uint)prog, CStr(name)), &unit);
+            Gl.ActiveTexture(Gl.TEXTURE0 + (uint)unit);
+            Gl.GetIntegerv(bindingQuery, &tex);
+            sb.Append($" {CStr(name)}@unit{unit}=tex{tex}");
+        }
+        Gl.ActiveTexture((uint)active);
+        _log?.Info(sb.ToString());
     }
 
     private static string CStr(byte* p, int max)

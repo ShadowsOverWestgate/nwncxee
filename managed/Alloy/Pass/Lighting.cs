@@ -65,7 +65,7 @@ internal static class Lighting
         G.Section("");
         BinReach = G.Slider("binreach", "Light reach", 0.1f, 4f, 0.05f, 0.8f, tier: Tier.Advanced,
                             help: "Fraction of each light's authored radius that lights the scene. 1 is the stock radius; lower is cheaper.");
-        BinCap = G.Slider("bincap", "Lights per pixel", 0, AlloyLights.SortCap, 1, 16, tier: Tier.Advanced,
+        BinCap = G.Slider("bincap", "Lights per pixel", 0, AlloyLights.SortCap, 1, 12, tier: Tier.Advanced,
                           help: "The strongest N lights a pixel keeps. 0 keeps every light; lower is cheaper but can draw a grid edge where lights overlap.");
         ReachFade = G.Toggle("reachfade", "reachfade", true, Tier.ChatOnly);
     }

@@ -15,7 +15,7 @@ void main()
     if (uViz == 1) { frag = vec4(CxClusteredDiffuse(vWorld, N, vDepth), 1.0); return; }
     if (uViz == 2)
     {
-        float n = float(uClCount[CxCluster(vDepth)]) / float(CX_CLUSTER_CAP);
+        float n = float(CxClusterN(CxCluster(vDepth))) / float(CX_CLUSTER_CAP);
         frag = vec4(n, 1.0 - n, 0.0, 1.0);
         return;
     }
@@ -136,7 +136,7 @@ void main()
     if (uViz == 8) { frag = vec4(vec3(occl), 1.0); return; }
     if (uViz == 38)
     {   // lights per pixel, from the froxel this fragment reads: black 0, blue 8, green 16, yellow 24, red 32+
-        float t = clamp(float(uClCount[CxCluster(vDepth)]) / 32.0, 0.0, 1.0);
+        float t = clamp(float(CxClusterN(CxCluster(vDepth))) / 32.0, 0.0, 1.0);
         vec3 h = t < 0.25 ? mix(vec3(0.0), vec3(0.0, 0.0, 1.0), t * 4.0)
                : t < 0.5 ? mix(vec3(0.0, 0.0, 1.0), vec3(0.0, 1.0, 0.0), (t - 0.25) * 4.0)
                : t < 0.75 ? mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), (t - 0.5) * 4.0)

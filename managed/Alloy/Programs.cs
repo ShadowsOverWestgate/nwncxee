@@ -145,6 +145,7 @@ internal static unsafe class Programs
         _watFeat = FeatLocs(prog);
         // Sampler units, bound once: a sampler left at its default points at unit 0, and two sampler types
         // on one image unit is INVALID_OPERATION -- the draw is dropped, silently as far as the frame knows.
+        int prevProg; Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &prevProg);
         Gl.UseProgram(prog);
         Gl.Uniform1i(_watTex, 0);
         Gl.Uniform1i(_watSunTex, (int)SunUnit);
@@ -155,6 +156,8 @@ internal static unsafe class Programs
         Gl.Uniform1i(_watFbDepth, (int)FrameSnapshot.DepthUnit);
         Gl.Uniform1i(_watNoise, (int)FrameSnapshot.NoiseUnit);
         Gl.Uniform1i(_watEnvMap, (int)FrameSnapshot.EnvUnit);
+        // linked mid-frame: left current, the frame's next validation runs against its empty shadow units (131222)
+        Gl.UseProgram((uint)prevProg);
         _log?.Info("AlloyRenderer: water program ready, vanilla fswater (/water enabled 0 disables) -- " + FrameSnapshot.Describe());
         return true;
     }
@@ -455,7 +458,7 @@ internal static unsafe class Programs
         L.ProbeGain = GlProgram.Loc(prog, "uProbeGain");
         L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
         L.Capture = GlProgram.Loc(prog, "uCapture");
-        L.LmPages = GlProgram.Loc(prog, "uLmPages"); L.LmMovers = GlProgram.Loc(prog, "uLmMovers"); L.CubeDynSphere = GlProgram.Loc(prog, "uLocalDynSphere");
+        L.LmPages = GlProgram.Loc(prog, "uLmPages"); L.LmMovers = GlProgram.Loc(prog, "uLmMovers");
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
         L.SsaoHalf = GlProgram.Loc(prog, "uSsaoHalf");
         L.LightOcc = GlProgram.Loc(prog, "uLightOcc");

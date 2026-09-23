@@ -15,8 +15,14 @@ const float CX_KH_FLOOR = 1.0, CX_KH_BLACK = 0.8, CX_KH_NOISE = 0.35,
 // #537: the occlusion fade's height cut, below which an occluder's fragments stay solid -- the floor a
 // CombineParts-merged wall shares a draw with must not dither under the player's feet.
 const float CX_OCC_FLOOR = 0.25;
-const int CX_BAYER4[16] = int[16](0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5);
-float CxDither4(vec2 px) { ivec2 p = ivec2(px) & 3; return (float(CX_BAYER4[p.y * 4 + p.x]) + 0.5) / 16.0; }
+// The 4x4 Bayer matrix (0 8 2 10 / 12 4 14 6 / 3 11 1 9 / 15 7 13 5) by bit interleave: a const table indexed
+// at run time is what NVIDIA materialises in local memory, per fragment, on every lit fragment's entry.
+float CxDither4(vec2 px)
+{
+    ivec2 p = ivec2(px) & 3;
+    int a = p.x ^ p.y;
+    return (float(((a & 1) << 3) | ((p.y & 1) << 2) | (a & 2) | ((p.y >> 1) & 1)) + 0.5) / 16.0;
+}
 
 /// Returns the LINEAR colour multiplier the dissolve border wants, or a negative value meaning
 /// "punch through" -- the caller discards. 1.0 = this fragment is not in the aperture at all.

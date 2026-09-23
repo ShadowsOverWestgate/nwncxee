@@ -260,7 +260,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubePcss, CubeDynTex, CubeDynPage, CubeFade, CubeFloor,
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach,
                    Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm,
-                   LmPages, LmMovers, CubeDynSphere,   // #674
+                   LmPages, LmMovers,                  // #674
                    LightOcc;                           // light.hidden
         public FeatLoc Feat;
     }
@@ -1331,6 +1331,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         DepthResource.Revoke();
         CullPass.ContextLost();
         PresentTarget.ContextLost();   // #456: names only -- the images died with the context
+        _nullSunShadow = 0; _nullCubeShadow = 0;
     }
 
     /// <summary>Frame tick from the present (after the bucket walks). Module unload, a PartTable

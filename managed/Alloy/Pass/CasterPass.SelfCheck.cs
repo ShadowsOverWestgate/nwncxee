@@ -286,6 +286,30 @@ public sealed unsafe partial class CasterPass
         if (ok && (FacesOf(Vector3.Zero, 10f, 20f, 0f, 0f, 1f) != 0 || FacesOf(Vector3.Zero, 10f, 5f, 0f, 0f, 0.1f) != 1
                    || FacesOf(Vector3.Zero, 10f, 0f, -5f, 0f, 0.1f) != 8 || FacesOf(Vector3.Zero, 10f, 0f, 0f, 0f, 1f) != AllFaces))
         { ok = false; log.Info("CasterPass.SelfCheck FAIL: the per-face event mask names the wrong faces"); }
+        // the hot path's mover spheres: six movers folded into DynSpheres, every mover inside one of them. A
+        // mover outside every sphere is a creature shadow missing from the baked ground.
+        if (ok)
+        {
+            float* box = stackalloc float[DynSpheres * 6];
+            float* mv = stackalloc float[] { 0, 0, 0, 1,  30, 0, 0, 0.5f,  0, 30, 0, 2,  -20, -20, 5, 1,  1, 1, 0, 0.5f,  29, 2, 0, 12 };
+            int n = 0;
+            for (int i = 0; i < 6; i++) n = AddMoverBox(box, n, mv[i * 4], mv[i * 4 + 1], mv[i * 4 + 2], mv[i * 4 + 3]);
+            WriteDynSpheres(0, n, box, Vector3.Zero, 40f);
+            bool held = n == DynSpheres;
+            for (int i = 0; i < 6 && held; i++)
+            {
+                bool inOne = false;
+                for (int s = 0; s < DynSpheres && !inOne; s++)
+                {
+                    float sx = CubeDynSphere[s * 4], sy = CubeDynSphere[s * 4 + 1], sz = CubeDynSphere[s * 4 + 2], sr = CubeDynSphere[s * 4 + 3];
+                    float dx = mv[i * 4] - sx, dy = mv[i * 4 + 1] - sy, dz = mv[i * 4 + 2] - sz;
+                    inOne = sr >= 0f && MathF.Sqrt(dx * dx + dy * dy + dz * dz) + mv[i * 4 + 3] <= sr + 1e-3f;
+                }
+                held = inOne;
+            }
+            WriteDynSpheres(0, 0, box, Vector3.Zero, 40f);
+            if (!held) { ok = false; log.Info("CasterPass.SelfCheck FAIL: a mover falls outside every hot-path sphere"); }
+        }
 
         log.Info(ok
             ? "CasterPass.SelfCheck: passed"

@@ -23,7 +23,6 @@ uniform samplerCubeArrayShadow uLocalDynShadow;
 layout(binding = 16) uniform samplerCubeArray uLocalShadowRaw;
 layout(binding = 17) uniform samplerCubeArray uLocalDynShadowRaw;
 uniform float uLocalDynPage[64];
-uniform vec4 uLocalDynSphere[64];   // the movers a page holds (xyz, r): a hot light owes nothing outside their shadow cone
 uniform float uLocalFade[64];   // per-slot shadow strength: a slot fading in after its bake or out after its light left the budget
 
 // Shadow-accuracy pass: every offset/bias below is HALF its #308 value (the stacked push reached 8
@@ -81,14 +80,13 @@ float CxShadowNoise(vec3 worldPos) { return fract(52.9829189 * fract(0.06711056 
 float CxShadowNoise(vec3 worldPos) { return fract(sin(dot(floor(worldPos * 64.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453); }
 #endif
 // A Vogel disc of up to CX_VOGEL_MAX taps before its 1/sqrt(n) scale: tap i is
-// sqrt(i + 0.5) * (cos, sin)(i * golden angle). The per-light trig lives in CxSpin, once.
+// sqrt(i + 0.5) * (cos, sin)(i * golden angle). The per-light trig lives in CxSpin, once; the per-tap
+// direction turns by CX_GOLDEN (CxVogelTurn) rather than reading a table -- a const array indexed in a
+// loop is what NVIDIA materialises in local memory, per fragment, on every lit fragment's entry.
 const int CX_VOGEL_MAX = 16;
-const vec2 CX_VOGEL[CX_VOGEL_MAX] = vec2[](
-    vec2(0.707107, 0.000000), vec2(-0.903089, 0.827303), vec2(0.138231, -1.575085), vec2(1.138286, 1.484690),
-    vec2(-2.088893, -0.369494), vec2(1.978780, -1.258741), vec2(-0.661860, 2.462101), vec2(-1.262250, -2.430376),
-    vec2(2.738570, 1.000116), vec2(-2.849022, 1.176042), vec2(1.373411, -2.934918), vec2(1.014929, 3.235725),
-    vec2(-3.058988, -1.772735), vec2(3.588534, -0.788940), vec2(-2.190018, 3.115096), vec2(-0.505961, -3.904357));
-// The disc of n taps at `radius`, spun by `rot` turns: tap i is CxSpin(...) * CX_VOGEL[i].
+const vec2 CX_GOLDEN = vec2(-0.737368878, 0.675490294);   // (cos, sin) of the golden angle
+vec2 CxVogelTurn(vec2 v) { return vec2(v.x * CX_GOLDEN.x - v.y * CX_GOLDEN.y, v.x * CX_GOLDEN.y + v.y * CX_GOLDEN.x); }
+// The disc of n taps at `radius`, spun by `rot` turns: tap i is CxSpin(...) * sqrt(i + 0.5) * dir_i.
 mat2 CxSpin(int n, float rot, float radius)
 {
     float a = rot * 6.283185, s = radius * inversesqrt(float(n));
@@ -112,9 +110,11 @@ float CxPenumbra(samplerCubeArray raw, float layer, vec3 d, vec3 u1, vec3 v1,
     float sum = 0.0, n = 0.0;
     if (mc < m) { sum += mc; n += 1.0; }
     mat2 ring = CxSpin(CX_LOCAL_SEARCH, 0.0, texel * uLocalSoft.x);
+    vec2 dir = vec2(1.0, 0.0);
     for (int k = 0; k < CX_LOCAL_SEARCH; k++)
     {
-        vec2 o = ring * CX_VOGEL[k];
+        vec2 o = ring * (sqrt(float(k) + 0.5) * dir);
+        dir = CxVogelTurn(dir);
         float mk = CxCubeDist(texture(raw, vec4(d + u1 * o.x + v1 * o.y, layer)).r, near, far);
         if (mk < m) { sum += mk; n += 1.0; }
     }
@@ -130,7 +130,8 @@ float CxPenumbra(samplerCubeArray raw, float layer, vec3 d, vec3 u1, vec3 v1,
 // ShadowMath's SelfCheck welds that round-trip headless, so a convention slip fails there, not here.
 // `ndlRaw` is the caller's geometric dot(N, L) -- already in hand at every lit call site -- for the
 // slope terms; recomputing it here cost a normalize per fragment per shadowing light.
-float CxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover, float viewDepth)
+// `soft` false = the hardware tap alone, no blocker search and no disc (a mirror highlight's shadow).
+float CxLocalShadowQ(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover, float viewDepth, bool soft)
 {
     if (uLocalCubes <= 0 || slot < 0 || slot >= uLocalCubes) return 1.0;
     vec4 L = uLocalLight[slot];
@@ -175,7 +176,7 @@ float CxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover
     float v = min(vs, vd);
     // #326: one tap when the disc is under its pixel budget on screen (z = px / lod scale) -- four of
     // every five cube fetches
-    if (uLocalSoft.x <= 0.0 || (uLocalSoft.z > 0.0 && texel * uLocalSoft.x < viewDepth * uLocalSoft.z)) return mix(1.0, v, uLocalFade[slot]);
+    if (!soft || uLocalSoft.x <= 0.0 || (uLocalSoft.z > 0.0 && texel * uLocalSoft.x < viewDepth * uLocalSoft.z)) return mix(1.0, v, uLocalFade[slot]);
     // #642: the centre's raw depth, the blocker search's first sample
     float mc = uLocalPcss.x > 0.0 ? CxCubeDist(texture(uLocalShadowRaw, vec4(d, float(slot))).r, near, far) : m;
     // #642: contact-hardening. The disc radius is not uLocalSoft.x but a per-fragment penumbra
@@ -207,9 +208,11 @@ float CxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover
     if (rs >= CX_LOCAL_DISC_MIN && taps > 0)
     {
         mat2 disc = CxSpin(taps, rot, texel * rs);
+        vec2 dir = vec2(1.0, 0.0);
         for (int i = 0; i < taps; i++)
         {
-            vec2 o = disc * CX_VOGEL[i];
+            vec2 o = disc * (sqrt(float(i) + 0.5) * dir);
+            dir = CxVogelTurn(dir);
             vec3 dt = d + u1 * o.x + v1 * o.y;
             float rt = ref;
             if (uLocalSoftWorld > 0.0)
@@ -228,21 +231,28 @@ float CxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover
     if (dyn && rd >= CX_LOCAL_DISC_MIN && taps > 0)
     {
         mat2 disc = CxSpin(taps, rot, dtex * rd);
+        vec2 dir = vec2(1.0, 0.0);
         for (int i = 0; i < taps; i++)
         {
-            vec2 o = disc * CX_VOGEL[i];
+            vec2 o = disc * (sqrt(float(i) + 0.5) * dir);
+            dir = CxVogelTurn(dir);
             vd += texture(uLocalDynShadow, vec4(d + u1 * o.x + v1 * o.y, pg - 1.0), ref);
         }
         vd /= float(taps + 1);
     }
     return mix(1.0, min(vs, vd), uLocalFade[slot]);
 }
+float CxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover, float viewDepth)
+{
+    return CxLocalShadowQ(slot, worldPos, N, ndlRaw, onMover, viewDepth, true);
+}
 
 // #674: the visibility a baked receiver still owes a hot static light: the mover's occlusion off the
 // DYNAMIC page, scaled by the STATIC cube's visibility -- where the bake already holds this light's
 // shadow (a fence's) the mover adds nothing, else the creature's shadow stacked on the fence's from
 // the same light. Same offset and bias as the full receiver; 1.0 where the light holds no page.
-float CxLocalDynShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw)
+// `soft` false = one centre tap per map, for a hot light past the fragment's cap (shadow.cap).
+float CxLocalDynShadowQ(int slot, vec3 worldPos, vec3 N, float ndlRaw, bool soft)
 {
     if (uLocalCubes <= 0 || slot < 0 || slot >= uLocalCubes) return 1.0;
     float pg = uLocalDynPage[slot];
@@ -258,6 +268,11 @@ float CxLocalDynShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw)
     d += N * (biasTexel * (CX_LOCAL_NORMAL_OFFSET + CX_LOCAL_SLOPE_OFFSET * slope));
     m = clamp(max(max(abs(d.x), abs(d.y)), abs(d.z)) - CX_LOCAL_BIAS * (1.0 + slope), near, far);
     float ref = far / (far - near) * (1.0 - near / m);
+    if (!soft)
+    {
+        float vc = texture(uLocalDynShadow, vec4(d, pg - 1.0), ref);
+        return mix(1.0, 1.0 - texture(uLocalShadow, vec4(d, float(slot)), ref) * (1.0 - vc), uLocalFade[slot]);
+    }
     // a baked receiver has no static cube to min() this against, so the one hardware tap the live
     // path gets away with shows its texel here: a 4-tap disc one dyn texel wide
     float t = 2.0 * m / float(textureSize(uLocalDynShadow, 0).x);
@@ -270,4 +285,8 @@ float CxLocalDynShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw)
     float vs = texture(uLocalShadow, vec4(d + u1 + v1, float(slot)), ref) + texture(uLocalShadow, vec4(d - u1 + v1, float(slot)), ref)
              + texture(uLocalShadow, vec4(d + u1 - v1, float(slot)), ref) + texture(uLocalShadow, vec4(d - u1 - v1, float(slot)), ref);
     return mix(1.0, 1.0 - vs * 0.25 * (1.0 - v * 0.25), uLocalFade[slot]);
+}
+float CxLocalDynShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw)
+{
+    return CxLocalDynShadowQ(slot, worldPos, N, ndlRaw, true);
 }

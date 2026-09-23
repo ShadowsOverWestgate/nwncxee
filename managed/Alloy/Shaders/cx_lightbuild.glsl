@@ -82,6 +82,15 @@ void main()
         }
         sc[j] = s; uClIdx[base + j] = uint(i);
     }
-    uClCount[id] = n;
+    // Cold statics to the back: a static light with no cube (w = 255, the static bit over slot -1) is in
+    // the pages and can never go hot, so a baked matte receiver stops at the live count in the high half.
+    uint live = 0u, tail = n;
+    while (live < tail)
+    {
+        if (int(uLights[uClIdx[base + live] * 2u + 1u].w) != 255) { live++; continue; }
+        tail--;
+        uint t = uClIdx[base + live]; uClIdx[base + live] = uClIdx[base + tail]; uClIdx[base + tail] = t;
+    }
+    uClCount[id] = n | (live << 16u);
     if (dropped != 0u && uBinCap <= 0) atomicAdd(uOverflow, 1u);
 }

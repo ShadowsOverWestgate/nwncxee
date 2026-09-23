@@ -63,7 +63,7 @@ internal static class Shadows
                           help: "Below this screen radius the blur stands down. 0 = never (consistent softness at every distance).");
         Taps = G.Slider("taps", "Shadow blur taps", 0, 16, 1, 8, tier: Tier.Advanced,
                         help: "Disc taps per shadowing light. 0 = no blur.");
-        Cap = G.Slider("cap", "Shadow taps per pixel", 0, 2, 1, 2, tier: Tier.Advanced, help: "0 = every light.");
+        Cap = G.Slider("cap", "Shadow taps per pixel", 0, 2, 1, 2, tier: Tier.Advanced, help: "0 = every light, each at a single hardware tap.");
         Near = G.Slider("near", "Self-shadow skip", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced,
                         help: "Carried lights don't shadow their bearer inside this radius.");
         G.Section("Sun");

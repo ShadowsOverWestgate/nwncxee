@@ -66,14 +66,23 @@ public static unsafe class RenderTarget
     /// nothing and a packed D24S8 would read as a plain 24-bit one -- after which a blit mismatches and is
     /// thrown away whole. The default framebuffer (<paramref name="fbo"/> 0) has no object to ask and answers
     /// under GL_DEPTH/GL_STENCIL, so it falls back to the bit widths; a wrong guess there is the blit's to
-    /// catch. Probing an absent attachment raises rather than answers, so the error queue is drained.</summary>
+    /// catch. An absent attachment is asked only its type (<see cref="AttachmentParam"/>).</summary>
+    /// <summary>One parameter of the bound FRAMEBUFFER's attachment, or 0 when nothing is attached there: any
+    /// pname but OBJECT_TYPE/NAME on a NONE attachment raises INVALID_OPERATION (GL 4.6 9.2.3), which the old
+    /// probe drained -- along with whatever unrelated error was queued ahead of it.</summary>
+    public static int AttachmentParam(uint attachment, uint pname)
+    {
+        int type = 0, v = 0;
+        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, attachment, Gl.FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &type);
+        if (type != 0) Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, attachment, pname, &v);
+        return v;
+    }
+
     public static uint ProbeDepthFormat(uint fbo)
     {
-        int bits = 0, stencil = 0, type = 0, name = 0, fmt = 0;
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
-            fbo == 0 ? Gl.DEPTH : Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
-        Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER,
-            fbo == 0 ? Gl.STENCIL : Gl.STENCIL_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &stencil);
+        int type = 0, name = 0, fmt = 0;
+        int bits = AttachmentParam(fbo == 0 ? Gl.DEPTH : Gl.DEPTH_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE);
+        int stencil = AttachmentParam(fbo == 0 ? Gl.STENCIL : Gl.STENCIL_ATTACHMENT, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE);
         if (fbo != 0)
         {
             Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT,
@@ -95,7 +104,6 @@ public static unsafe class RenderTarget
                 Gl.BindTexture(Gl.TEXTURE_2D, 0);
             }
         }
-        Gl.DrainErrors(4);
         if (bits <= 0 && fmt == 0) return 0;
         return (uint)fmt switch
         {

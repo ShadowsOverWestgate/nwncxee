@@ -37,7 +37,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 SHADERS = os.path.join(ROOT, "managed/Alloy/Shaders")
 MANAGED = os.path.join(ROOT, "managed")
 # ShaderResource.Tokens' sizing tokens. Any legal value compiles the same shapes.
-TOKENS = {"$CAP$": "128", "$SORT$": "32", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3",
+TOKENS = {"$CAP$": "128", "$SORT$": "32", "$DYNSPH$": "4", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3",
           # #352: the hosted post chain built with sharpen + vibrance on (the two hosted option bits), high quality
           "$POSTMASK$": "9", "$SQM$": "2"}
 INCLUDE = re.compile(r'^\s*#include\s+"([^"]+\.glsl)"\s*$')

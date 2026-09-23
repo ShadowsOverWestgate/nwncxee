@@ -752,6 +752,7 @@ internal static unsafe partial class LightmapBake
         Gl.DepthMask(1); Gl.ClearBufferfv(Gl.DEPTH, 0, zero); Gl.DepthMask(0);
         Gl.UseProgram(_progBake);
         Gl.Uniform1i(_bMode, 0);
+        BindNullCubes();
         Gl.Uniform1f(_bDepth, -1f);
         Gl.BindVertexArray(MeshChart.Vao);
         for (int k = 0; k < _bakeRects.Count; k++) DrawRect(_bakeRects[k]);
@@ -787,6 +788,16 @@ internal static unsafe partial class LightmapBake
         _log?.Info($"LightmapBake: [diag] page {page} nearest rect {r.W}x{r.H} at ({r.C.X:F1},{r.C.Y:F1},{r.C.Z:F1}) r={r.R:F1} slot {r.Slot}: "
                    + $"{n} static lights reach it" + (nl >= 0 ? $", nearest light {nd:F1}u away with reach {_setPosR[nl].W:F1}" : "")
                    + $", {(cam - r.C).Length():F1}u from the camera");
+    }
+
+    /// <summary>Compare-on stand-ins on both cube units: the bake's shadow samplers are validated on every
+    /// draw, sampled or not, and a unit a lit pass left empty is undefined behaviour (NVIDIA 131222).</summary>
+    private static void BindNullCubes()
+    {
+        uint n = AlloyRenderer.CubeShadowOr(0);
+        Gl.ActiveTexture(Gl.TEXTURE0 + AlloyRenderer.CubeUnit); Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, n);
+        Gl.ActiveTexture(Gl.TEXTURE0 + AlloyRenderer.CubeDynUnit); Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, n);
+        Gl.ActiveTexture(Gl.TEXTURE0);
     }
 
     private static void BindScratch()
@@ -846,10 +857,9 @@ internal static unsafe partial class LightmapBake
         Gl.Uniform3f(_bColor, c.X, c.Y, c.Z);
         int* vp = stackalloc int[4] { 0, 0, PageSize, PageSize };
         AlloyLights.SetDrawUniforms(_bGrid, _bTile, _bZ, _bFalloff, _bWrap, _bAtten, _bHot, _bWrapN, _bSss, vp, 1f, 100f, _bReach);
+        BindNullCubes();
         Gl.ActiveTexture(Gl.TEXTURE0 + AlloyRenderer.CubeUnit); Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, _cube);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.Uniform1i(_bCubeTex, (int)AlloyRenderer.CubeUnit);
-        Gl.Uniform1i(_bDynTex, (int)AlloyRenderer.CubeDynUnit);
         Gl.Uniform4f(_bCubeLight, pos.X, pos.Y, pos.Z, far);
         Gl.Uniform2f(_bCubePlane, MathF.Max(BakeNear, CasterPass.CubeNearPlane), 1f / _cubeSize);
         Gl.Uniform1i(_bCubeCount, 1);
@@ -1148,6 +1158,11 @@ internal static unsafe partial class LightmapBake
         _bHot = GlProgram.Loc(_progBake, "uHot"); _bWrapN = GlProgram.Loc(_progBake, "uWrapN"); _bSss = GlProgram.Loc(_progBake, "uSss");
         _bReach = GlProgram.Loc(_progBake, "uReach"); _bGrid = GlProgram.Loc(_progBake, "uGrid"); _bTile = GlProgram.Loc(_progBake, "uTile"); _bZ = GlProgram.Loc(_progBake, "uZ");
         _fA = GlProgram.Loc(_progFinish, "uScrA"); _fB = GlProgram.Loc(_progFinish, "uScrB");
+        int prevProg; Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &prevProg);
+        Gl.UseProgram(_progBake);
+        Gl.Uniform1i(_bCubeTex, (int)AlloyRenderer.CubeUnit);
+        Gl.Uniform1i(_bDynTex, (int)AlloyRenderer.CubeDynUnit);
+        Gl.UseProgram((uint)prevProg);
         uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
         _scrA = Scratch(); _scrB = Scratch(); _scrZ = ScratchDepth();
         _cubeSize = Math.Max(CasterPass.CubeFaceSize, 64);

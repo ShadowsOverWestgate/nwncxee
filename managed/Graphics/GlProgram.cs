@@ -127,6 +127,10 @@ internal static unsafe class GlProgram
         return Single(cs, log, what);
     }
 
+    /// <summary>Program name -> the <c>what</c> it was linked under, so an alloy.gldebug report can say which
+    /// pass drew. Written at link (cold); names recycle after a context loss, which only misnames a debug line.</summary>
+    internal static readonly System.Collections.Generic.Dictionary<uint, string> Labels = new();
+
     private static uint Link(ExtenderLog? log, string what, uint a, uint b = 0, uint c = 0, uint d = 0)
     {
         uint prog = Gl.CreateProgram();
@@ -140,7 +144,7 @@ internal static unsafe class GlProgram
         if (b != 0) Gl.DeleteShader(b);
         if (c != 0) Gl.DeleteShader(c);
         if (d != 0) Gl.DeleteShader(d);
-        if (ok != 0) { Notes(prog, false, log, what); return prog; }
+        if (ok != 0) { Notes(prog, false, log, what); Labels[prog] = what; return prog; }
         log?.Info($"{what}: link failed -- {InfoLog(prog, false)}");
         Gl.DeleteProgram(prog);
         return 0;

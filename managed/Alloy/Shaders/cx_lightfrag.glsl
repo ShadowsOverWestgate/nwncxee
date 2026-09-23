@@ -1,6 +1,12 @@
 layout(std430, binding = 0) readonly buffer CxLightBuf { vec4 uLights[]; };
+// low 16 bits = lights binned, high 16 = how many of them lead the list before the cold statics
+// (cx_lightbuild). Read through CxClusterN / CxClusterLive, never raw.
 layout(std430, binding = 1) readonly buffer CxClusterCount { uint uClCount[]; };
 layout(std430, binding = 2) readonly buffer CxClusterIdx { uint uClIdx[]; };
+// CasterPass.CubeDynSphere: CX_DYN_SPHERES spheres (xyz, r; r < 0 unused) per cube slot round the movers
+// its dyn page holds -- a hot light owes nothing outside their shadow cones
+layout(std430, binding = 25) readonly buffer CxDynMovers { vec4 uDynMovers[]; };
+const int CX_DYN_SPHERES = $DYNSPH$;
 uniform ivec3 uGrid;
 uniform vec4 uTile;            // xy = viewport origin in window pixels, zw = pixels per tile
 uniform vec2 uZ;
@@ -74,6 +80,8 @@ float CxWrap(float ndl, float w)
 #ifndef CX_CLUSTER_XY
 #define CX_CLUSTER_XY ((gl_FragCoord.xy - uTile.xy) / uTile.zw)
 #endif
+uint CxClusterN(uint cl) { return min(uClCount[cl] & 0xffffu, CX_CLUSTER_CAP); }
+uint CxClusterLive(uint cl) { return min(uClCount[cl] >> 16u, CX_CLUSTER_CAP); }
 uint CxCluster(float viewDepth)
 {
     vec2 tile = CX_CLUSTER_XY;
@@ -227,7 +235,9 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
 {
     spec = vec3(0.0); lmSub = vec3(0.0);
     uint cl = CxCluster(viewDepth);
-    uint n = min(uClCount[cl], CX_CLUSTER_CAP);
+    bool glossy = CxGlossy(rough);
+    // a baked receiver with no mirror to take skips every cold static outright -- they trail the list
+    uint n = baked > 0.5 && !glossy ? CxClusterLive(cl) : CxClusterN(cl);
     uint base = cl * CX_CLUSTER_CAP;
     vec3 acc = vec3(0.0);
     // #336: /shadow cap -- the cube taps a fragment may pay, chosen PER FRAGMENT by reach
@@ -246,10 +256,12 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     // the MIRROR candidate (light.hidden): the strongest lobe on a glossy fragment with a cube to tap.
     // ONE extra tap per fragment, after the loop, and only when the cap did not shadow it already --
     // a tap per lobe over the floor was the frame (rain = every ground fragment x every light).
-    bool glossy = CxGlossy(rough);
     float mLum = CX_MIRROR_FLOOR; int mSlot = -1; float mNdl = 0.0; vec3 mSpc = vec3(0.0);
     vec3 R = reflect(-V, N);
     vec3 aLit = vec3(0.0), aSpc = vec3(0.0), bLit = vec3(0.0), bSpc = vec3(0.0);
+    // the same cap over HOT lights, ranked by the luminance they would take back: the capN strongest
+    // get the soft dyn shadow, the rest one tap per map (uncapped, 15 hot lights x 8 taps was the frame)
+    float hA = 0.0, hB = 0.0; int hASlot = -1, hBSlot = -1; float hANdl = 0.0, hBNdl = 0.0;
     for (uint k = 0u; k < n; k++)
     {
         uint li = uClIdx[base + k];
@@ -277,14 +289,20 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         // The cone widens with roughness: 40 deg at a puddle's 0.12, the hemisphere at the 0.5 ceiling.
         if (mirror && !hot && dot(R, normalize(pr.xyz - worldPos)) < 1.0 - 2.0 * rough) continue;
         if (hot)
-        {   // the light-to-fragment ray misses the movers' sphere: nothing on the page can shadow here,
+        {   // the light-to-fragment ray misses every mover sphere: nothing on the page can shadow here,
             // and the eight taps below are the opaque pass on a plaza (run 20: 15 hot lights, 7-8 ms)
-            vec4 ms = uLocalDynSphere[slot];
             vec3 lp = uLocalLight[slot].xyz;
             vec3 dp = worldPos - lp; float dl = max(length(dp), 1e-4);
-            vec3 dc = ms.xyz - lp; float t = dot(dc, dp) / dl;
-            float rr = ms.w + 0.3;
-            if (t > dl + rr || dot(dc, dc) - t * t > rr * rr) { if (!mirror) continue; hot = false; }
+            bool near = false;
+            for (int q = 0; q < CX_DYN_SPHERES && !near; q++)
+            {
+                vec4 ms = uDynMovers[slot * CX_DYN_SPHERES + q];
+                if (ms.w < 0.0) continue;
+                vec3 dc = ms.xyz - lp; float t = dot(dc, dp) / dl;
+                float rr = ms.w + 0.3;
+                near = t > -rr && t < dl + rr && dot(dc, dc) - t * t <= rr * rr;
+            }
+            if (!near) { if (!mirror) continue; hot = false; }
         }
         vec3 c, L; float att, f2, ndlRaw, ndl;
         if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;
@@ -299,7 +317,19 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
             // shadowed that light at this texel the subtraction overshoots (clamped at the caller);
             // the exact total needs every static light evaluated live, which was the opaque pass.
             float lum = dot(CxPointDiffuse(c, att, ndlRaw, ndl), vec3(0.2126, 0.7152, 0.0722));
-            lmSub.x += lum * dfade * (1.0 - CxLocalDynShadow(slot, worldPos, N, ndlRaw));
+            int eSlot = slot; float eNdl = ndlRaw, eLum = lum;   // the light this one displaces: itself by default; hard tap, as above
+            if (capN > 0 && lum > hA)
+            {
+                if (capN >= 2) { eSlot = hBSlot; eNdl = hBNdl; eLum = hB; hB = hA; hBSlot = hASlot; hBNdl = hANdl; }
+                else { eSlot = hASlot; eNdl = hANdl; eLum = hA; }
+                hA = lum; hASlot = slot; hANdl = ndlRaw;
+            }
+            else if (capN >= 2 && lum > hB)
+            {
+                eSlot = hBSlot; eNdl = hBNdl; eLum = hB;
+                hB = lum; hBSlot = slot; hBNdl = ndlRaw;
+            }
+            if (eSlot >= 0 && eLum > 0.0) lmSub.x += eLum * dfade * (1.0 - CxLocalDynShadowQ(eSlot, worldPos, N, eNdl, false));
             if (!mirror) continue;
         }
         vec3 dif = c * (att * ndl);
@@ -319,9 +349,11 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         // rather than being fetched unshadowed; stock has no shadow to lose there, Alloy does
         vec3 unsh = CxPointDiffuse(c, att, ndlRaw, ndl);
         if (slot < 0 || farSh) { acc += unsh; spec += spc; continue; }
+        // cap 0 = every light, at the hardware tap: a soft shadow INSIDE the loop is inlined per light
+        // and its registers are the loop's (lightbench: -23% on the lit stage with only hard taps here)
         if (capN <= 0)
         {
-            float sh = mix(1.0, CxLocalShadow(slot, worldPos, N, ndlRaw, onMover, viewDepth), dfade);
+            float sh = mix(1.0, CxLocalShadowQ(slot, worldPos, N, ndlRaw, onMover, viewDepth, false), dfade);
             acc += unsh * mix(uLocalFloor, 1.0, sh); spec += spc * sh;   // floor on diffuse only: a floored highlight is a wrong highlight
             if (mSlot == slot) mSlot = -1;   // shadowed here: no mirror tap owed
             continue;
@@ -350,9 +382,12 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         float sh = mix(1.0, CxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth), dfade);
         acc += bLit * mix(uLocalFloor, 1.0, sh); spec += bSpc * sh;
     }
-    // the mirror tap: the strongest lobe's shadow, taken back out of the unshadowed sum it went into
+    if (hASlot >= 0) lmSub.x += hA * dfade * (1.0 - CxLocalDynShadow(hASlot, worldPos, N, hANdl));
+    if (hBSlot >= 0) lmSub.x += hB * dfade * (1.0 - CxLocalDynShadow(hBSlot, worldPos, N, hBNdl));
+    // the mirror tap: the strongest lobe's shadow, taken back out of the unshadowed sum it went into. The
+    // hardware tap alone -- a highlight has no penumbra worth a blocker search
     if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)
-        spec -= mSpc * (1.0 - mix(1.0, CxLocalShadow(mSlot, worldPos, N, mNdl, onMover, viewDepth), dfade));
+        spec -= mSpc * (1.0 - mix(1.0, CxLocalShadowQ(mSlot, worldPos, N, mNdl, onMover, viewDepth, false), dfade));
     return acc;
 }
 // The pre-#674 signature: an unbaked receiver, every light live.
@@ -376,7 +411,7 @@ vec3 CxClusteredDiffuse(vec3 worldPos, vec3 N, float viewDepth)
 float CxLocalShadowViz(vec3 worldPos, vec3 N, float viewDepth)
 {
     uint cl = CxCluster(viewDepth);
-    uint n = min(uClCount[cl], CX_CLUSTER_CAP);
+    uint n = CxClusterN(cl);
     uint base = cl * CX_CLUSTER_CAP;
     float vis = 1.0;
     for (uint k = 0u; k < n; k++)

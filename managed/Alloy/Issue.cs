@@ -357,7 +357,6 @@ internal static unsafe class Issue
                     OitPass.Upload(L.Oit, L.OitDim, _oitOn);
                     Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
                     LightmapBake.BindForDraw(L.LmPages, L.LmMovers);
-                    if (L.CubeDynSphere >= 0) fixed (float* sp = CasterPass.CubeDynSphere) Gl.Uniform4fv(L.CubeDynSphere, CasterPass.MaxCubes, sp);
                     UploadFeatureTerms(L.Feat, viewport);
                     UploadAreaTerms(L);
                     UploadSunCascades(L);

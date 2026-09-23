@@ -526,11 +526,10 @@ internal static unsafe class PostChain
         {
             int prev; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &prev);
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE, &bits);
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.STENCIL, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE, &sbits);
-            Gl.GetFramebufferAttachmentParameteriv(Gl.FRAMEBUFFER, Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &comp);
+            bits = RenderTarget.AttachmentParam(Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE);
+            sbits = RenderTarget.AttachmentParam(Gl.STENCIL, Gl.FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE);
+            comp = RenderTarget.AttachmentParam(Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE);
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
-            Gl.DrainErrors(4);
         }
         _defaultHasStencil = sbits > 0;
         _defaultFormat = bits <= 0 ? 0

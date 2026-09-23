@@ -236,18 +236,22 @@ public sealed unsafe partial class AlloyRenderer
                                            int locDyn, int locFocus = -1, int locRadius = -1)
     {
         if (locCount < 0) return;
-        if (!CasterPass.CascadesFresh) { Gl.Uniform1i(locCount, 0); return; }
-        int n = CasterPass.CascadeCount;
+        // Bound whether or not the cascades are fresh: the shader skips the fetch at count 0, but the draw
+        // still validates every shadow sampler against its unit (see NullShadow).
+        bool fresh = CasterPass.CascadesFresh;
         Gl.ActiveTexture(Gl.TEXTURE0 + SunUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, CasterPass.CascadeTex);
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, fresh ? SunShadowOr(CasterPass.CascadeTex) : SunShadowOr(0));
         // #306: the dynamic half rides the same publish, on BOTH units the table assigns it (the grass
         // program's unit 10 is its displacement field, so grass reads the array off unit 13 instead).
+        uint dyn = SunShadowOr(fresh ? CasterPass.SunDynTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + SunDynUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, CasterPass.SunDynTex);
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, dyn);
         Gl.ActiveTexture(Gl.TEXTURE0 + SunDynUnitGrass);
-        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, CasterPass.SunDynTex);
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, dyn);
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
         Gl.Uniform1i(locTex, (int)SunUnit);
+        if (!fresh) { Gl.Uniform1i(locCount, 0); return; }
+        int n = CasterPass.CascadeCount;
         if (locDyn >= 0)
             fixed (float* dm = CasterPass.SunDynMask) Gl.Uniform4fv(locDyn, 1, dm);
         fixed (float* vp = CasterPass.CascadeVp) Gl.UniformMatrix4fv(locVp, n, 0, vp);
@@ -275,6 +279,32 @@ public sealed unsafe partial class AlloyRenderer
             Gl.Uniform4fv(locRadius, 1, pack);
         }
         Gl.Uniform1i(locCount, n);
+    }
+
+    /// <summary>1x1 depth-1 (lit) stand-ins with compare on, bound on a shadow unit whenever its map is absent
+    /// or stale. A shadow sampler validated against an empty unit or a colour texture is undefined behaviour
+    /// even when the shader never takes the fetch (NVIDIA debug id 131222, ~4 per frame); Mesa owes it
+    /// nothing. Names die with the context (<see cref="ContextLost"/>).</summary>
+    private static uint _nullSunShadow, _nullCubeShadow;
+    internal static uint SunShadowOr(uint tex) => tex != 0 ? tex : NullShadow(Gl.TEXTURE_2D_ARRAY, 1, ref _nullSunShadow);
+    internal static uint CubeShadowOr(uint tex) => tex != 0 ? tex : NullShadow(Gl.TEXTURE_CUBE_MAP_ARRAY, 6, ref _nullCubeShadow);
+    private static uint NullShadow(uint target, int layers, ref uint name)
+    {
+        if (name != 0) return name;
+        // made on whatever unit is active, so that unit's binding is put back: a caller may hold a live map there
+        int prev = 0;
+        Gl.GetIntegerv(target == Gl.TEXTURE_2D_ARRAY ? Gl.TEXTURE_BINDING_2D_ARRAY : Gl.TEXTURE_BINDING_CUBE_MAP_ARRAY, &prev);
+        uint t; Gl.GenTextures(1, &t);
+        Gl.BindTexture(target, t);
+        Gl.TexStorage3D(target, 1, Gl.DEPTH_COMPONENT32F, 1, 1, layers);
+        float* one = stackalloc float[6] { 1f, 1f, 1f, 1f, 1f, 1f };
+        Gl.TexSubImage3D(target, 0, 0, 0, 0, 1, 1, layers, Gl.DEPTH_COMPONENT, Gl.FLOAT, one);
+        Gl.TexParameteri(target, Gl.TEXTURE_COMPARE_MODE, (int)Gl.COMPARE_REF_TO_TEXTURE);
+        Gl.TexParameteri(target, Gl.TEXTURE_COMPARE_FUNC, (int)Gl.LEQUAL);
+        Gl.TexParameteri(target, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
+        Gl.TexParameteri(target, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
+        Gl.BindTexture(target, (uint)prev);
+        return name = t;
     }
 
     /// <summary>#642: the no-compare sampler the receiver's blocker search reads the cube arrays through
@@ -315,23 +345,26 @@ public sealed unsafe partial class AlloyRenderer
         // screen without knowing the projection. 0 (no perspective this pass) = the disc everywhere.
         float discZ = _lodScale > 0f ? AlloyLights.ShadowDiscPx / _lodScale : 0f;
         if (locSoft >= 0) Gl.Uniform4f(locSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, discZ, AlloyLights.ShadowCap);
-        if (!CasterPass.CubesFresh) { Gl.Uniform1i(locCount, 0); return; }
-        int n = CasterPass.CubeCount;
+        // Bound whether or not the cubes are fresh, as the cascades are (see NullShadow).
+        bool fresh = CasterPass.CubesFresh;
+        uint st = CubeShadowOr(fresh ? CasterPass.CubeTex : 0), dy = CubeShadowOr(fresh ? CasterPass.CubeDynTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeUnit);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeTex);
+        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, st);
         // #305: the dynamic pool rides the same publish -- the per-slot page indices carry PAGE+1, so a slot
         // with no movers (or a session with no pool) reads 0 and the receiver stays static-only there.
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeDynUnit);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeDynTex);
+        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, dy);
         if (_rawSampler != 0)
         {   // #642: the same two arrays on the raw units; the sampler object bound there strips the compare
             Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.LocalShadowRaw);
-            Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeTex);
+            Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, st);
             Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.LocalShadowDynRaw);
-            Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, CasterPass.CubeDynTex);
+            Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, dy);
         }
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
         Gl.Uniform1i(locTex, (int)CubeUnit);
+        if (!fresh) { Gl.Uniform1i(locCount, 0); return; }
+        int n = CasterPass.CubeCount;
         fixed (float* l = CasterPass.CubeLight) Gl.Uniform4fv(locLight, n, l);
         if (locDynPage >= 0)
             fixed (float* p = CasterPass.CubeDynPage) Gl.Uniform1fv(locDynPage, n, p);

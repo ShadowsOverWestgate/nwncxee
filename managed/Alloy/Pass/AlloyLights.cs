@@ -49,7 +49,7 @@ internal static unsafe class AlloyLights
     /// <summary>Compute workgroup size; the dispatch is 1D over clusters and decodes (x,y,z) from the id.</summary>
     internal const int GroupSize = 64;
     /// <summary>SSBO binding points, shared by the compute and the lit fragment program.</summary>
-    private const uint BindLights = 0, BindCounts = 1, BindIndices = 2, BindStats = 3;
+    private const uint BindLights = 0, BindCounts = 1, BindIndices = 2, BindStats = 3, BindMovers = 25;
     /// <summary>Point-light attenuation, as the ENGINE computes it (#140). Verified against
     /// <c>inc_lighting.shd</c>'s <c>ComputePointLightSource</c> at <c>GAMMA_CORRECTION == 1</c> and against
     /// the two constants <c>GLRender::SetUniforms</c> @0x4cd341 feeds it:
@@ -257,7 +257,8 @@ internal static unsafe class AlloyLights
     private const float MinNear = 0.1f;
 
     private static ExtenderLog? _log;
-    private static uint _prog, _bufLights, _bufCounts, _bufIndices, _bufStats;
+    private static uint _prog, _bufLights, _bufCounts, _bufIndices, _bufStats, _bufMovers;
+    private static int _moversGen = -1;
     private static bool _failed;
     private static int _locView = -1, _locProjXY = -1, _locZ = -1, _locCount = -1, _locGrid = -1, _locReach = -1, _locBinCap = -1, _locBinAtten = -1;
     private static readonly uint[] _query = new uint[2];
@@ -293,7 +294,7 @@ internal static unsafe class AlloyLights
     /// context is already gone -- the ids are then meaningless anyway.</summary>
     internal static void Forget()
     {
-        _prog = 0; _bufLights = 0; _bufCounts = 0; _bufIndices = 0; _bufStats = 0;
+        _prog = 0; _bufLights = 0; _bufCounts = 0; _bufIndices = 0; _bufStats = 0; _bufMovers = 0; _moversGen = -1;
         _query[0] = 0; _query[1] = 0; _queryPending0 = false; _queryPending1 = false;
         _uploadFrame = -1; _uploaded = 0;
     }
@@ -432,6 +433,15 @@ internal static unsafe class AlloyLights
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindLights, _bufLights);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, _bufCounts);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIndices, _bufIndices);
+        if (_moversGen != CasterPass.CubeDynSphereGen)
+        {
+            _moversGen = CasterPass.CubeDynSphereGen;
+            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufMovers);
+            fixed (float* sp = CasterPass.CubeDynSphere)
+                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(CasterPass.CubeDynSphere.Length * sizeof(float)), sp);
+            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        }
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindMovers, _bufMovers);
     }
 
     /// <summary>Grid + depth-range uniforms the lit fragment shader needs to find its own cluster. Called once
@@ -577,6 +587,10 @@ internal static unsafe class AlloyLights
         Gl.GenBuffers(1, &b); _bufIndices = b;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufIndices);
         Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)ClusterCount * ClusterCap * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+        Gl.GenBuffers(1, &b); _bufMovers = b;
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufMovers);
+        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(CasterPass.CubeDynSphere.Length * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        _moversGen = -1;
         Gl.GenBuffers(1, &b); _bufStats = b;
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufStats);
         uint zero = 0;

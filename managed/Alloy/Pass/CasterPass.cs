@@ -202,11 +202,16 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// override degrades to static-only rather than to sampling page zero. Published fresh each frame the
     /// page bakes.</summary>
     internal static readonly float[] CubeDynPage = new float[MaxCubes];
-    /// <summary>Per slot: the sphere (xyz, r) round the dynamic movers in the light's reach -- the only thing
-    /// its page can shadow. The lit stage skips the hot path (eight taps a light) wherever the light-to-fragment
-    /// ray misses it: run 20 had 15 hot lights on every baked fragment of the plaza (opaque 7.3-8.2 ms).
-    /// r = the light's reach while it roams (the page then holds everything).</summary>
-    internal static readonly float[] CubeDynSphere = new float[MaxCubes * 4];
+    /// <summary>Spheres per slot in <see cref="CubeDynSphere"/>. One union sphere round every mover in a
+    /// 36u reach covered the whole plaza, so the hot path's ray test rejected nothing.</summary>
+    internal const int DynSpheres = 4;
+    /// <summary>Per slot: <see cref="DynSpheres"/> spheres (xyz, r; r &lt; 0 = unused) round the dynamic movers
+    /// in the light's reach -- the only thing its page can shadow. The lit stage skips the hot path wherever the
+    /// light-to-fragment ray misses all of them. Sphere 0 = the light's reach while it roams (the page then
+    /// holds everything).</summary>
+    internal static readonly float[] CubeDynSphere = new float[MaxCubes * DynSpheres * 4];
+    /// <summary>Bumped whenever <see cref="CubeDynSphere"/> is rewritten, so the upload runs once per frame.</summary>
+    internal static int CubeDynSphereGen;
     /// <summary>Face size of the dynamic pool as rendered.</summary>
     internal static int CubeDynFaceSize => _cubeDynSize;
     /// <summary>Slot -&gt; claimed pool page (-1 none) and page -&gt; owning slot (-1 free). Sticky, like the
@@ -1337,6 +1342,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // as visible shadow pop-in; with it the churn is paid gradually while hidden, which is what the
         // pre-cull behaviour paid continuously.
         int warmBudget = 1;
+        float* dynBox = stackalloc float[DynSpheres * 6];
+        CubeDynSphereGen++;
         for (int rank = 0; rank < have; rank++)
         {
             int slot = slotOf[rank];
@@ -1386,7 +1393,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // #305: is a DYNAMIC caster inside this light's reach? That is what claims (and keeps) a pool
             // page -- and, when the pool is dry, what forces the combined fallback below.
             bool hasDyn = roam;
-            float bx0 = float.MaxValue, by0 = float.MaxValue, bz0 = float.MaxValue, bx1 = float.MinValue, by1 = float.MinValue, bz1 = float.MinValue;
+            int boxes = 0;
             if (split && !off && rank < _dynRanks)
                 for (int q = 0; q < _dMoverCount; q++)
                 {
@@ -1398,18 +1405,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
                     float mr = far + _liveR[m];
                     if (mx * mx + my * my + mz * mz > mr * mr) continue;
                     hasDyn = true;
-                    float r = _liveR[m];
-                    bx0 = MathF.Min(bx0, _liveCx[m] - r); by0 = MathF.Min(by0, _liveCy[m] - r); bz0 = MathF.Min(bz0, _liveCz[m] - r);
-                    bx1 = MathF.Max(bx1, _liveCx[m] + r); by1 = MathF.Max(by1, _liveCy[m] + r); bz1 = MathF.Max(bz1, _liveCz[m] + r);
+                    boxes = AddMoverBox(dynBox, boxes, _liveCx[m], _liveCy[m], _liveCz[m], _liveR[m]);
                 }
-            if (roam || bx0 > bx1)
-            { CubeDynSphere[slot * 4] = pos.X; CubeDynSphere[slot * 4 + 1] = pos.Y; CubeDynSphere[slot * 4 + 2] = pos.Z; CubeDynSphere[slot * 4 + 3] = far; }
-            else
-            {
-                float hx = (bx1 - bx0) * 0.5f, hy = (by1 - by0) * 0.5f, hz = (bz1 - bz0) * 0.5f;
-                CubeDynSphere[slot * 4] = bx0 + hx; CubeDynSphere[slot * 4 + 1] = by0 + hy; CubeDynSphere[slot * 4 + 2] = bz0 + hz;
-                CubeDynSphere[slot * 4 + 3] = MathF.Sqrt(hx * hx + hy * hy + hz * hz);
-            }
+            WriteDynSpheres(slot, roam ? 0 : boxes, dynBox, pos, far);
             int page = _dynPageOf[slot];
             if (off && page >= 0)
             {   // hidden: the page returns to the pool now; re-entry reclaims one
@@ -1769,6 +1767,52 @@ public sealed unsafe partial class CasterPass : IExtenderService
         int used = 0;
         for (int p = 0; p < _cubeDynPages && p < _dynPageSlot.Length; p++) if (_dynPageSlot[p] >= 0) used++;
         return used;
+    }
+
+    /// <summary>Fold one mover's box into at most <see cref="DynSpheres"/> AABBs (min xyz, max xyz): a new box
+    /// while there is room, else the one whose centre is nearest. Returns the box count.</summary>
+    private static int AddMoverBox(float* b, int n, float x, float y, float z, float r)
+    {
+        int at = n;
+        if (n == DynSpheres)
+        {
+            float best = float.MaxValue;
+            for (int i = 0; i < n; i++)
+            {
+                float* e = b + i * 6;
+                float dx = (e[0] + e[3]) * 0.5f - x, dy = (e[1] + e[4]) * 0.5f - y, dz = (e[2] + e[5]) * 0.5f - z;
+                float d = dx * dx + dy * dy + dz * dz;
+                if (d < best) { best = d; at = i; }
+            }
+            float* t = b + at * 6;
+            t[0] = MathF.Min(t[0], x - r); t[1] = MathF.Min(t[1], y - r); t[2] = MathF.Min(t[2], z - r);
+            t[3] = MathF.Max(t[3], x + r); t[4] = MathF.Max(t[4], y + r); t[5] = MathF.Max(t[5], z + r);
+            return n;
+        }
+        float* w = b + at * 6;
+        w[0] = x - r; w[1] = y - r; w[2] = z - r; w[3] = x + r; w[4] = y + r; w[5] = z + r;
+        return n + 1;
+    }
+
+    /// <summary>Publish a slot's mover spheres: the boxes' bounding spheres, or -- with no box (roaming, or no
+    /// mover found) -- the light's whole reach in sphere 0, which is the conservative answer.</summary>
+    private static void WriteDynSpheres(int slot, int boxes, float* b, Vector3 pos, float far)
+    {
+        for (int i = 0; i < DynSpheres; i++)
+        {
+            int k = (slot * DynSpheres + i) * 4;
+            if (boxes == 0)
+            {
+                CubeDynSphere[k] = pos.X; CubeDynSphere[k + 1] = pos.Y; CubeDynSphere[k + 2] = pos.Z;
+                CubeDynSphere[k + 3] = i == 0 ? far : -1f;
+                continue;
+            }
+            if (i >= boxes) { CubeDynSphere[k + 3] = -1f; continue; }
+            float* e = b + i * 6;
+            float hx = (e[3] - e[0]) * 0.5f, hy = (e[4] - e[1]) * 0.5f, hz = (e[5] - e[2]) * 0.5f;
+            CubeDynSphere[k] = e[0] + hx; CubeDynSphere[k + 1] = e[1] + hy; CubeDynSphere[k + 2] = e[2] + hz;
+            CubeDynSphere[k + 3] = MathF.Sqrt(hx * hx + hy * hy + hz * hz);
+        }
     }
 
     private static void Release(string why)
