@@ -206,6 +206,7 @@ public sealed unsafe partial class AlloyRenderer
         MeshLod.Pump();   // the one GL edge of the LOD arena: collect what the worker finished
         MeshChart.Pump(); // ...and of the chart arenas (#673)
         DrainChartDeferred();   // #674: the offers the enrolment walk could not queue
+        DebugChartAudit();   // [DEBUG-cx25]
         long tBuild = FrameZones.Now;
         int groups = BuildBatches(lightingOn);
         FrameZones.Add(FrameZones.Zone.Build, tBuild);
