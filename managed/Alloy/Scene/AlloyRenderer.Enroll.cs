@@ -240,7 +240,7 @@ public sealed unsafe partial class AlloyRenderer
         HashLiveSlots();
         bool canLight = _lighting && !Programs._litFailed;
         var c = default(AlloyCandidate);
-        float* keep = stackalloc float[12];
+        float* keep = stackalloc float[ParamFloats + 4];
         int orderBefore = _orderCount;
         bool refused = false, collect = false;
         _freeAvail = _freeCount;
@@ -330,9 +330,9 @@ public sealed unsafe partial class AlloyRenderer
         // fallback that holds "Alloy parts lit at least as well as vanilla". Fullbright is not.
         bool canLight = _lighting && !Programs._litFailed;
         var c = default(AlloyCandidate);
-        // #308 follow-up: scratch for the kept-slot stable-half content compare below -- 8 PBR params + 4
-        // feature floats. Outside the loop: a stackalloc inside it would stack a copy per candidate.
-        float* keep = stackalloc float[12];
+        // #308 follow-up: scratch for the kept-slot stable-half content compare below -- the staged material
+        // params + 4 feature floats. Outside the loop: a stackalloc inside it would stack a copy per candidate.
+        float* keep = stackalloc float[ParamFloats + 4];
         int stepped = 0;
         for (; _walkAt < PartTable.EntryCount; _walkAt++)
         {
@@ -494,11 +494,11 @@ public sealed unsafe partial class AlloyRenderer
         // rewrites the CPU arrays either way; snapshot them first and unstamp on any drift, which is
         // the per-slot form of the heal the deleted whole-table epoch bump used to provide.
         bool stableHalf = kept;
-        int po = i * 8, fo = i * 4, oldSlots = _oSlots[i];
+        int po = i * ParamFloats, fo = i * 4, oldSlots = _oSlots[i];
         if (stableHalf)
         {
-            for (int k = 0; k < 8; k++) keep[k] = _oParam[po + k];
-            for (int k = 0; k < 4; k++) keep[8 + k] = _oFeat[fo + k];
+            for (int k = 0; k < ParamFloats; k++) keep[k] = _oParam[po + k];
+            for (int k = 0; k < 4; k++) keep[ParamFloats + k] = _oFeat[fo + k];
         }
         ReadMaterial(c.Mat, i, c.Feat);
         // #121: bit 5 of the slot mask, and the one slot with no texture behind it -- the probe replaces
@@ -507,8 +507,8 @@ public sealed unsafe partial class AlloyRenderer
         if (stableHalf)
         {
             bool moved = oldSlots != _oSlots[i];
-            for (int k = 0; k < 8 && !moved; k++) moved = keep[k] != _oParam[po + k];
-            for (int k = 0; k < 4 && !moved; k++) moved = keep[8 + k] != _oFeat[fo + k];
+            for (int k = 0; k < ParamFloats && !moved; k++) moved = keep[k] != _oParam[po + k];
+            for (int k = 0; k < 4 && !moved; k++) moved = keep[ParamFloats + k] != _oFeat[fo + k];
             if (moved) { UnstampRecord(i); CasterGen++; }   // #328: the env-alpha bit rides _oSlots
         }
         float rad = BitConverter.Int32BitsToSingle(c.RotBits) * DegToRad;
@@ -824,9 +824,10 @@ public sealed unsafe partial class AlloyRenderer
         int f = i * 4;
         _oFeat[f] = feat; _oFeat[f + 1] = _oFeat[f + 2] = _oFeat[f + 3] = 0f;
 
-        int o = i * 8;
+        int o = i * ParamFloats;
         _oParam[o] = _oParam[o + 1] = _oParam[o + 2] = 0f;
         _oParam[o + 4] = _oParam[o + 5] = _oParam[o + 6] = _oParam[o + 7] = 0f;
+        ResetExt(o + ParamExt);
         // TWO lists, shared first. The .mtr's declared values are parsed onto the SHARED material's own list
         // (shared+0x1d0 / count +0x1d8) -- Material::SetMaterialParam @0x4c5d70 copies whole 100-byte records
         // out of exactly that list into the instance one. The instance list at mat+0x118 is only SIZED to the
@@ -866,6 +867,8 @@ public sealed unsafe partial class AlloyRenderer
             {
                 if (feat == (int)ShaderFeature.RoofKn || feat == (int)ShaderFeature.RoofKnM)
                     if (NameIs(rec, "iRoofInterior") && comps >= 1) _oFeat[f + 3] = *(int*)p;
+                // ADR 0026: CxOrm is a flag, and a flag is naturally written `parameter int`
+                if (NameIs(rec, "CxOrm") && comps >= 1) _oParam[o + ParamExt + 9] = *(int*)p != 0 ? 1f : 0f;
                 continue;                                     // otherwise: 1 = int-valued, none of ours are
             }
             // #123: the feature parameters, by the names the seven community shaders declare. Which three
@@ -888,6 +891,11 @@ public sealed unsafe partial class AlloyRenderer
                     if (NameIs(rec, "fSlideSpeed") && comps >= 1) { _oFeat[f + 1] = p[0]; continue; }
                     break;
             }
+            // ADR 0026: the Alloy vocabulary -- glTF's metal/rough core and its clearcoat, sheen and
+            // emissive-strength extensions under Cx names. Vanilla parses these, fails to link each to a
+            // uniform once at load (one log line) and never binds them: the stock parameters stay the
+            // material's vanilla view, these its Alloy one.
+            if (ReadExt(rec, p, comps, o + ParamExt)) continue;
             if (NameIs(rec, "Specularity") && comps >= 1) _oParam[o] = p[0];
             else if (NameIs(rec, "Roughness") && comps >= 1) _oParam[o + 1] = p[0];
             else if (NameIs(rec, "Metallicness") && comps >= 1) _oParam[o + 2] = p[0];
@@ -900,6 +908,85 @@ public sealed unsafe partial class AlloyRenderer
             }
         }
     }
+
+    /// <summary>ADR 0026: one MaterialParameter against the Cx vocabulary, into the three extension vec4s at
+    /// <paramref name="x"/>: (CxMetallic, CxRoughness, CxClearcoat, CxClearcoatRoughness), (CxSheenColor.rgb,
+    /// CxSheenRoughness), (CxEmissiveStrength, CxOrm, _, _). Values are clamped to their legal range here, so
+    /// a typo'd 50 reads as the maximum rather than as an HDR blow-out. True = the name was one of ours.</summary>
+    private static bool ReadExt(byte* rec, float* p, int comps, int x)
+    {
+        if (comps < 1) return false;
+        float v = Math.Clamp(p[0], 0f, 1f);
+        if (NameIs(rec, "CxMetallic")) _oParam[x] = v;
+        else if (NameIs(rec, "CxRoughness")) _oParam[x + 1] = v;
+        else if (NameIs(rec, "CxClearcoat")) _oParam[x + 2] = v;
+        else if (NameIs(rec, "CxClearcoatRoughness")) _oParam[x + 3] = v;
+        else if (NameIs(rec, "CxSheenColor") && comps >= 3)
+        { _oParam[x + 4] = v; _oParam[x + 5] = Math.Clamp(p[1], 0f, 1f); _oParam[x + 6] = Math.Clamp(p[2], 0f, 1f); }
+        else if (NameIs(rec, "CxSheenRoughness")) _oParam[x + 7] = v;
+        else if (NameIs(rec, "CxEmissiveStrength")) _oParam[x + 8] = Math.Clamp(p[0], 0f, MaxEmissiveStrength);
+        else if (NameIs(rec, "CxOrm")) _oParam[x + 9] = p[0] > 0.5f ? 1f : 0f;
+        else return false;
+        return true;
+    }
+
+    /// <summary>ADR 0026: the extension floats at <paramref name="x"/> before a material is read. -1 = "not
+    /// declared" for every value a 0 is legal for (a dielectric, a mirror); the layer weights and the sheen
+    /// colour are 0 = absent, which is also their default.</summary>
+    private static void ResetExt(int x)
+    {
+        for (int k = 0; k < ParamFloats - ParamExt; k++) _oParam[x + k] = 0f;
+        _oParam[x] = _oParam[x + 1] = _oParam[x + 3] = -1f;   // CxMetallic, CxRoughness, CxClearcoatRoughness
+        _oParam[x + 7] = _oParam[x + 8] = -1f;                // CxSheenRoughness, CxEmissiveStrength
+    }
+
+    /// <summary>ADR 0026, off-device: a forged <c>MaterialParameter</c> list through <see cref="Apply"/> -- a
+    /// declared 0 stays 0 (a dielectric is not "undeclared"), an absent name keeps its -1, an int-typed
+    /// <c>CxOrm</c> counts, an out-of-range value clamps, and the stock names still land where they did.
+    /// Uses slot 0 as scratch, so it runs before anything enrolls.</summary>
+    internal static bool MaterialExtSelfCheck(ExtenderLog log)
+    {
+        var check = new Checker(log, "AlloyRenderer.MaterialExtSelfCheck");
+        const int n = 6;
+        byte* list = stackalloc byte[n * ParamStride];
+        new Span<byte>(list, n * ParamStride).Clear();
+        PutParam(list, 0, "CxMetallic", 0, 1, 0f);
+        PutParam(list, 1, "cxclearcoat", 0, 1, 2f);
+        PutParam(list, 2, "CxSheenColor", 0, 3, 0.2f, 0.3f, 0.4f);
+        PutParam(list, 3, "CxOrm", 1, 1, 0f);
+        *(int*)(list + 3 * ParamStride + ParamValue) = 1;
+        PutParam(list, 4, "Specularity", 0, 1, 0.5f);
+        PutParam(list, 5, "CxEmissiveStrengthX", 0, 1, 7f);
+        int o = 0, x = ParamExt;
+        _oFeat[0] = 0f;
+        _oParam[0] = _oParam[1] = _oParam[2] = 0f;
+        ResetExt(x);
+        Apply((IntPtr)list, n, o, 0);
+        check.Expect(_oParam[x] == 0f, "a declared CxMetallic 0 reads as undeclared");
+        check.Expect(_oParam[x + 1] == -1f, "an absent CxRoughness lost its -1");
+        check.Expect(_oParam[x + 2] == 1f, "CxClearcoat is not case-folded and clamped to 1");
+        check.Expect(_oParam[x + 4] == 0.2f && _oParam[x + 5] == 0.3f && _oParam[x + 6] == 0.4f, "CxSheenColor's three components");
+        check.Expect(_oParam[x + 9] == 1f, "an int-typed CxOrm 1 is not read");
+        check.Expect(_oParam[x + 8] == -1f, "a name that only starts with CxEmissiveStrength matched it");
+        check.Expect(_oParam[o] == 0.5f, "the stock Specularity no longer lands in pbr.x");
+        for (int k = 0; k < ParamFloats; k++) _oParam[k] = 0f;
+        return check.Ok;
+    }
+
+    /// <summary>One forged float/int record for <see cref="MaterialExtSelfCheck"/>.</summary>
+    private static void PutParam(byte* list, int k, string name, int type, int comps, float a, float b = 0f, float c = 0f)
+    {
+        byte* rec = list + k * ParamStride;
+        for (int i = 0; i < name.Length; i++) rec[i] = (byte)name[i];
+        float* v = (float*)(rec + ParamValue);
+        v[0] = a; v[1] = b; v[2] = c;
+        *(int*)(rec + ParamType) = type;
+        *(ushort*)(rec + ParamComps) = (ushort)comps;
+    }
+
+    /// <summary>The ceiling on <c>CxEmissiveStrength</c>: well into bloom territory, short of the RGBA16F
+    /// target's 65504 once an 8-bit illumination texel of 1.0 is multiplied through.</summary>
+    private const float MaxEmissiveStrength = 100f;
 
     /// <summary>Case-insensitive ASCII compare of a MaterialParameter's name field against a literal, over
     /// the 0x40 bytes the engine's own <c>strncasecmp</c> compares. Allocation-free, and cold anyway.

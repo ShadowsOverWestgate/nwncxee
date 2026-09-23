@@ -105,6 +105,26 @@ float CxFresnel(float c)
     return clamp(f * sq * sq, 0.0, 1.0);
 }
 
+// light.brdf (ADR 0026): x = 1 runs the modern material model, 0 the engine's own lobe exactly. A program
+// that never uploads it (water, grass, particles) reads 0 and keeps the engine's lobe.
+// y = directional ambient strength, z = specular anti-aliasing on.
+uniform vec3 uMaterial;
+
+// The Schlick-Smith k. The engine takes k = alpha, which over-shadows a rough lobe at grazing angles;
+// the modern model takes Karis' k = alpha / 2 (the Schlick fit to Smith-GGX). Both are separable into
+// a light half and a view half, which is what keeps the per-light / once-per-fragment split below.
+float CxSmithK(float rough) { return uMaterial.x > 0.5 ? rough * 0.5 : rough; }
+
+#ifdef CX_LIT_MATERIAL
+// ADR 0026: one light's full specular radiance per unit irradiance, from the engine lobe `lobe` -- the
+// view-side normalisation, the specular colour and the clear-coat and sheen layers folded in. Defined
+// by cx_material.glsl from the fragment's own material; only the lit stage defines CX_LIT_MATERIAL.
+vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L);
+#define CX_LOOP_SPEC(lobe, N, V, L) CxLoopSpec(lobe, N, V, L)
+#else
+#define CX_LOOP_SPEC(lobe, N, V, L) vec3(lobe)
+#endif
+
 // #120, corrected by the live A/B on #121: the specular lobe every lit term goes through, as the
 // ENGINE computes it (inc_lighting.shd:150-265 at the ship quality mode -- inc_config.shd's
 // SPECULAR_DISTRIBUTION_MODEL 1 = GGX, SPECULAR_GEOMETRIC_SHADOWING 2 = Schlick, SPECULAR_FRESNEL 1
@@ -131,14 +151,14 @@ float CxSpecLobe(vec3 N, vec3 V, vec3 L, float rough, float spec)
     // GGX distribution minus its alpha^2 numerator, which lives in CxSpecBase
     float den = 1.0 - NdotH * NdotH * (1.0 - a2);
     float d = 1.0 / max(den * den, 1e-8);
-    d *= 1.0 / mix(NdotL, 1.0, rough);          // geometric shadowing, light side
+    d *= 1.0 / mix(NdotL, 1.0, CxSmithK(rough));   // geometric shadowing, light side
     return d * mix(spec, 1.0, CxFresnel(VdotH));
 }
 
 // The half that does not vary per light: alpha^2/4 and the view-side shadowing term.
 float CxSpecBase(float NdotV, float rough)
 {
-    return rough * rough * 0.25 / mix(max(NdotV, CX_ANGLE_MIN), 1.0, rough);
+    return rough * rough * 0.25 / mix(max(NdotV, CX_ANGLE_MIN), 1.0, CxSmithK(rough));
 }
 
 // #674: one light's colour, attenuation and geometry -- the per-light body, shared by the cluster loop
@@ -333,7 +353,8 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
             if (!mirror) continue;
         }
         vec3 dif = c * (att * ndl);
-        vec3 spc = dif * CxSpecLobe(N, V, L, rough, specularity);
+        float lobe = CxSpecLobe(N, V, L, rough, specularity);
+        vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L);
         // a glossy surface's lobe is the mirror image of the source, and the source must be in view of
         // the FRAGMENT: a lamp on a terrace mirrors in the street from where the ground first sees over
         // the parapet, not from the wall's foot. That is the light's own shadow, so the strongest lobe
@@ -341,7 +362,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         // untouched: too broad to be an image of anything. (light.hidden)
         if (glossy && slot >= 0 && !farSh)
         {
-            float l = dot(spc, vec3(0.2126, 0.7152, 0.0722));
+            float l = dot(dif, vec3(0.2126, 0.7152, 0.0722)) * lobe;   // engine units: the floor is tuned in them
             if (l > mLum) { mLum = l; mSlot = slot; mNdl = ndlRaw; mSpc = spc; }
         }
         if (mirror) { spec += spc; continue; }

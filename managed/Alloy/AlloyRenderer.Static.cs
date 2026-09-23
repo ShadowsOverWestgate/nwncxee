@@ -179,7 +179,9 @@ public sealed unsafe partial class AlloyRenderer
 
         // The instance record the static path submits from IS CxDraw: assert its size and its std430 declaration
         // rather than shipping a second layout that could drift from the first.
-        check.Expect(DrawFloats == 60 && DrawFloats * sizeof(float) == 240, "the per-draw record is not the 240-byte CxDraw block");
+        check.Expect(DrawFloats == 72 && DrawFloats * sizeof(float) == 288, "the per-draw record is not the 288-byte CxDraw block");
+        check.Expect(ExtFloat == PrevFloat + 16 && ExtFloat + ParamFloats - ParamExt == DrawFloats,
+          "ADR 0026's ext0..ext2 do not sit between prev and the record's end");
         check.Expect(ShaderContract.RecordSafe(DrawBufDecl), "the GLSL CxDraw declaration does not add up to DrawFloats");
         check.Expect(DrawBufDecl.Contains($"binding = {BindDraw}"), $"CxDrawBuf is not declared at binding {BindDraw}");
         check.Expect(DrawBufDecl.Contains($"binding = {BindDrawIdx}"), $"CxDrawIdxBuf is not declared at binding {BindDrawIdx}");

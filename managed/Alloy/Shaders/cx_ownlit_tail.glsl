@@ -4,7 +4,9 @@
     if (uViz == 6) { frag = vec4(specLight, 1.0); return; }
     // energy split: what the specular lobe reflects, the diffuse does not -- inc_lighting.shd's own
     // `DiffuseLight * (1.0 - fSpecularity)` and `AmbientLight * (1.0 - fSpecularity)`
-    vec3 total = (ambient + diffuse * matDiffuse) * (1.0 - spec) + d.emi.rgb;
+    // ponytail: the sheen takes no ambient term (Filament's needs a DFG table of its own); cloth reads by
+    // its direct rim, and a sheen that wants presence in shade is the table's cue.
+    vec3 total = (ambient + diffuse * matDiffuse) * (kd * coatT) + d.emi.rgb;
     // 9 = the LIGHT arriving here, with no albedo on it: vanilla's TotalLight, the value
     //     inc_lighting.shd multiplies ColorIO by. Paired with 31 it splits "the light is short"
     //     from "the surface is dark", which no composite frame can do.
@@ -17,7 +19,10 @@
     float partA = coverage * d.rot.w;
     if (partA < 1.0 && partA > 0.001) specLight /= max(partA, 0.1);
     vec3 lit = albedo * total + specLight;
-    if ((slots & CX_SLOT_ILLUM) != 0) lit += CxLinear(texture(uIllumTex, uv, uLodBias).rgb);
+    // ADR 0026: CxEmissiveStrength (KHR_materials_emissive_strength) scales the map into HDR, where the
+    // bloom can see it; undeclared (-1) and the engine model take it at 1.
+    if ((slots & CX_SLOT_ILLUM) != 0)
+        lit += CxLinear(texture(uIllumTex, uv, uLodBias).rgb) * (uMaterial.x > 0.5 && d.ext2.x >= 0.0 ? d.ext2.x : 1.0);
     // #132: everything from here down stays LINEAR -- the screen and the probe want the same values
     // now, and PostChain's resolve does the frame's one encode. The probe never wanted anything else
     // (#121: glGenerateMipmap filters what is STORED, and filtering display-space values darkens

@@ -462,6 +462,7 @@ internal static unsafe class Programs
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
         L.SsaoHalf = GlProgram.Loc(prog, "uSsaoHalf");
         L.LightOcc = GlProgram.Loc(prog, "uLightOcc");
+        L.Material = GlProgram.Loc(prog, "uMaterial");
         L.AoDirect = GlProgram.Loc(prog, "uAoDirect"); L.AoCutout = GlProgram.Loc(prog, "uAoCutout");
         L.Weather = GlProgram.Loc(prog, "uWeather"); L.WeatherLook = GlProgram.Loc(prog, "uWeatherLook");
         L.CoverVp = GlProgram.Loc(prog, "uCoverVp"); L.CoverLayer = GlProgram.Loc(prog, "uCoverLayer");

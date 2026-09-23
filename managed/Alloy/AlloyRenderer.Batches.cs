@@ -551,9 +551,10 @@ public sealed unsafe partial class AlloyRenderer
         r[31] = _oGob[i] == IntPtr.Zero || _oTileGob[i] ? 1f
               : CreaturePart(i) ? -1f : 0f;
         if (r[31] < 0f) RecCreature++; else if (r[31] > 0f) RecTile++; else RecObject++;
-        int o = i * 8;
+        int o = i * ParamFloats;
         r[32] = _oParam[o]; r[33] = _oParam[o + 1]; r[34] = _oParam[o + 2];
         r[36] = _oParam[o + 4]; r[37] = _oParam[o + 5]; r[38] = _oParam[o + 6]; r[39] = _oParam[o + 7];
+        for (int k = 0; k < ParamFloats - ParamExt; k++) r[ExtFloat + k] = _oParam[o + ParamExt + k];
     }
 
     /// <summary>#242 (AC5): off-device, the split itself. Every field of

@@ -283,6 +283,8 @@ public sealed unsafe class FreeCameraService : IExtenderService
         IntPtr gui = Gui();
         if (gui != IntPtr.Zero && *(int*)(gui + ToggledOff) == 0) { _toggleOff(gui); _weHidUi = true; }
         Active = true; _entries++;
+        // The open panel owns the keyboard: the move keys would never reach the engine's drive key table.
+        KnobPanelService.Close();
         AlloyRenderer.CameraCut();
         float serverMax = *(float*)(module + MaxDistOff);
         Notice.Show(_log, FormattableString.Invariant($"[camera] free camera on: move keys fly, Space/C up/down, Z/X roll, Shift fast, wheel = speed, right-drag looks; leash {(serverMax >= 0f ? serverMax : FreeCam.Leash.V):0.#} m; Escape or /free enter returns"));

@@ -498,6 +498,9 @@ Renderer itself.
 | light.probeareawide | /probe areawide | Reflect on every surface | T | off | A | L | Reflections | On, every material reflects the probe, not just those with an env map. |
 | light.probesize | probe_size | Reflection capture size | D | 64 / 128 / 256 / 512 px · 128 | A | R | Reflections | |
 | light.hidden | — | Hidden lights do not reflect | T | on | U | L | Reflections | A wet or glossy surface mirrors a light only where that light's shadow lets it -- a lamp on a terrace reflects in the street from where the ground sees over the parapet, not from the wall's foot. |
+| light.brdf | — | Modern materials | T | on | U | L | Materials | Energy-conserving highlights, reflections that brighten at grazing angles and fade in crevices, and the extra material layers (metal, clear coat, sheen, glow) a .mtr can declare for Alloy. Off is the stock shading exactly. (ADR 0026) |
+| light.ambientdir | — | Directional ambient | S | 0–1 step 0.05 · 0.5 | U | L | Materials | Ambient light takes its direction from the surroundings (sky above, ground below) at the area's own brightness. 0 is the stock sun-facing shading. Needs Modern materials and Reflections from the scene. |
+| light.specaa | — | Smooth highlights | T | on | A | L | Materials | Widens a highlight that is narrower than a pixel, so glossy and normal-mapped surfaces do not sparkle or crawl in motion. Needs Modern materials. |
 | light.binreach / bincap / reachfade | same | — | S | as today | C | L | | cluster-build experiments |
 
 **Shadows** — group `shadow`.

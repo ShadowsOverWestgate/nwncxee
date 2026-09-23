@@ -64,7 +64,11 @@ void main()
     // #146: outside the normal/height branch below -- a material may declare an AO map and nothing
     // else, and the engine's screen-space SSAO (an FB effect, downstream of this pass entirely) does
     // not see the contact detail a baked map carries.
-    if ((slots & CX_SLOT_AO) != 0) occl *= texture(uAoTex, uv, uLodBias).r;
+    // ADR 0026: ...and on a CxOrm material the same texel is glTF's packed occlusion/roughness/metallic,
+    // R still the occlusion, so the one fetch serves both readings.
+    vec3 orm = (slots & CX_SLOT_AO) != 0 ? texture(uAoTex, uv, uLodBias).rgb : vec3(1.0);
+    occl *= orm.r;
+    float ormOn = d.ext2.y > 0.5 && (slots & CX_SLOT_AO) != 0 ? 1.0 : 0.0;
     // #379: ...and the screen-space term beside it, a lighting input like the map (ADR 0021)
     // ...and only where the visibility at this pixel was computed from THIS surface. The buffer comes
     // from the depth prepass, so a fragment the prepass never drew -- a blended door, anything the
@@ -75,6 +79,7 @@ void main()
     float aoDz = abs(aoDepth - gl_FragCoord.z);
     // outside every branch: fwidth in non-uniform control flow has no defined neighbourhood
     float aoSlope = fwidth(gl_FragCoord.z);
+    float aaKernel = CxSpecAAKernel(normalize(vNrm));
     bool aoMine = uSsaoOn > 0 && aoDz < CX_AO_DEPTH_EPS;
     if (aoMine) occl *= mix(1.0, CxSsaoAt(ivec2(gl_FragCoord.xy), aoDepth, aoSlope), uAlphaCut >= 0.0 ? uAoCutout : 1.0);
     if ((slots & (CX_SLOT_NORMAL | CX_SLOT_HEIGHT)) != 0)
@@ -225,6 +230,17 @@ void main()
     vViewToSurface_n = normalize(vWorld - uEyePos);
     fSpecularity = pbr.x; fRoughness = pbr.y; fMetallicness = pbr.z;
     SpecularColor = CxSpecColor(d.spc, albedo * matDiffuse, pbr.z, slots);
+    // ADR 0026: a material that declares the glTF vocabulary is shaded by it under the modern model -- the
+    // stock parameters above are its vanilla view, these its Alloy one. Ahead of the hosted body, which
+    // edits the result in the engine's units like any other material's.
+    bool physical = uMaterial.x > 0.5 && CxPhysical(d.ext0, ormOn);
+    if (physical)
+    {
+        vec3 sc;
+        pbr = CxPhysicalPbr(d.ext0, ormOn, orm, pbr, albedo * matDiffuse, sc);
+        fSpecularity = pbr.x; fRoughness = pbr.y; fMetallicness = pbr.z;
+        SpecularColor = sc;
+    }
     // 30 = the hosted body BYPASSED: the plain lit path for every hosted material, the A/B for
     //      "the look is wrong" vs "the handoff is wrong".
     if (uViz != 30 && CxHostSurface(feat))
@@ -242,3 +258,4 @@ void main()
     if (uViz == 32) { frag = vec4(N * 0.5 + 0.5, 1.0); return; }
     if (uViz == 33) { frag = vec4(pbr, 1.0); return; }
     float spec = pbr.x, rough = pbr.y, metal = pbr.z;
+

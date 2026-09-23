@@ -366,6 +366,7 @@ internal static unsafe class Issue
                     SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
                     Gl.Uniform1i(L.SsaoHalf, SsaoPass.Half ? 1 : 0);
                     Gl.Uniform2f(L.LightOcc, Lighting.HiddenLights.V ? 1f : 0f, GlossyRough);
+                    UploadMaterialModel(L.Material);
                     Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, L.SnowLook, L.SnowLight, L.SnowPom, _capturing);
                     Weather.BindEsm(L.CoverEsm, _oitOn || lists);
                     litBase = L.Base; litCut = L.Cut; litOitBias = L.OitBias; litOitGob = L.OitGob; boundOitBias = -1f; boundOitGob = -1;

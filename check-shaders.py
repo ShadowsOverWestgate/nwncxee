@@ -124,7 +124,7 @@ SKIP = re.compile(r"^[ \t]*// \$VANILLA-SKIP (.*)$", re.M)
 SUPPLIED = {"inc_common", "inc_uniforms"}
 # ...and VanillaShader.Substituted: the one include a HOSTED stage gets a stand-in for (#350). The text is
 # the embedded stand-in itself, so the two cannot drift.
-SUBSTITUTED = {"inc_standard": "AlloyRenderer.VanillaStandardFs"}
+SUBSTITUTED = {"inc_standard": "cx_vanstd_f"}
 
 
 def find_shd(name):
@@ -178,7 +178,7 @@ def host(stock, resref, done, g):
         return None
     text = MAIN_FN.sub(f"void CxHostMain_{resref}()", text, count=1)
     text = re.sub(r"\bgl_FragColor\b", "FragmentColor", text)
-    env = OWN_DEFINE.findall(g["AlloyRenderer.VanillaEnvDefs"])
+    env = OWN_DEFINE.findall(g["cx_vanenv_defs"])
     text = re.sub(r"^[ \t]*uniform\b[^;\n]*\b(?:" + "|".join(env) + r")[ \t]*;[^\n]*\n?", "", text, flags=re.M)
     own = list(dict.fromkeys(OWN_DEFINE.findall(stock)))
     undef = "".join(f"#undef {n}\n" for n in own)
@@ -186,7 +186,7 @@ def host(stock, resref, done, g):
             + f"void CxHost_{resref}()\n{{\n    CxHostMain_{resref}();\n"
             + "    fSpecularity = MATERIAL_SPECULARITY_VALUE;\n    fRoughness = MATERIAL_ROUGHNESS_VALUE;\n"
             + "    fMetallicness = MATERIAL_METALLICNESS_VALUE;\n    SpecularColor = MATERIAL_SPECULAR_COLOR_VALUE;\n}\n"
-            + undef + g["AlloyRenderer.VanillaEnvDefs"])
+            + undef + g["cx_vanenv_defs"])
 
 
 def splice(src, seen, g):
@@ -318,12 +318,74 @@ def material_cases():
     want = "CxLinear(vec3(0.3, 0.6, 0.9))"
     cases.append(("declared CustomSpecularColor wins",
                   " + ".join(f"float({got}.{ch} == {want}.{ch})" for ch in "rgb"), 3.0))
+    return cases + physical_cases()
+
+
+# --- ADR 0026 the glTF view ----------------------------------------------------
+# glTF's metal/rough rules, transcribed independently of cx_material.glsl: the factor multiplies the map,
+# a factor alone stands, a map alone is taken whole; no metal at all is a dielectric; no roughness at all
+# keeps the legacy value; perceptual roughness squares into the engine's alpha, floored at 0.02.
+def gltf_pbr(m0, orm_on, orm, legacy, base):
+    metal = min(max((m0[0] if m0[0] >= 0 else (1.0 if orm_on else 0.0)) * (orm[2] if orm_on else 1.0), 0.0), 1.0)
+    rough = legacy[1]
+    if m0[1] >= 0 or orm_on:
+        p = min(max((m0[1] if m0[1] >= 0 else 1.0) * (orm[1] if orm_on else 1.0), 0.0), 1.0)
+        rough = max(p * p, 0.02)
+    f0 = 0.04 + (base - 0.04) * metal
+    return (f0, rough, metal)
+
+
+def env_brdf(nov, perceptual):
+    """Karis' published fit, (A, B)."""
+    c0, c1 = (-1.0, -0.0275, -0.572, 0.022), (1.0, 0.0425, 1.04, -0.04)
+    r = [perceptual * a + b for a, b in zip(c0, c1)]
+    a004 = min(r[0] * r[0], 2 ** (-9.28 * nov)) * r[0] + r[1]
+    return (-1.04 * a004 + r[2], 1.04 * a004 + r[3])
+
+
+def physical_cases():
+    cases = []
+    legacy = (0.1, 0.6, 0.2)
+    for label, m0, orm_on, orm, base in [
+        ("gltf: declared metal + roughness", (1.0, 0.5, 0.0, 0.0), 0.0, (1.0, 1.0, 1.0), 0.8),
+        ("gltf: roughness alone is a dielectric", (-1.0, 0.3, 0.0, 0.0), 0.0, (1.0, 1.0, 1.0), 0.8),
+        ("gltf: metal alone keeps the legacy roughness", (0.7, -1.0, 0.0, 0.0), 0.0, (1.0, 1.0, 1.0), 0.5),
+        ("gltf: ORM map taken whole", (-1.0, -1.0, 0.0, 0.0), 1.0, (1.0, 0.5, 1.0), 0.5),
+        ("gltf: factors multiply the ORM map", (0.5, 0.8, 0.0, 0.0), 1.0, (1.0, 0.5, 0.6), 0.5),
+        ("gltf: a mirror is floored", (0.0, 0.0, 0.0, 0.0), 0.0, (1.0, 1.0, 1.0), 0.5),
+    ]:
+        want = gltf_pbr(m0, orm_on, orm, legacy, base)
+        call = (f"CxPhysicalPbr(vec4{m0}, {orm_on}, vec3{orm}, vec3{legacy}, vec3({base}), cxScratch)")
+        for k, comp in enumerate("xyz"):
+            cases.append((f"{label} [{'spec rough metal'.split()[k]}]", f"{call}.{comp}", want[k]))
+    # F0's hue lives in the specular colour: a grey dielectric's is white
+    cases.append(("gltf: dielectric specular colour is white",
+                  "CxPhysicalColour(vec4(-1.0, 0.3, 0.0, 0.0), 0.0, vec3(1.0), vec3(0.1, 0.6, 0.2), vec3(0.8, 0.2, 0.1)).g", 1.0))
+    cases.append(("gltf: nothing declared is not physical",
+                  "float(CxPhysical(vec4(-1.0, -1.0, 0.0, -1.0), 0.0))", 0.0))
+    cases.append(("gltf: an ORM map alone is physical",
+                  "float(CxPhysical(vec4(-1.0, -1.0, 0.0, -1.0), 1.0))", 1.0))
+    for nov, pr in [(1.0, 0.0), (0.5, 0.3), (0.1, 0.8)]:
+        a, b = env_brdf(nov, pr)
+        cases.append((f"env brdf fit A (NoV {nov}, rough {pr})", f"CxEnvBrdf({nov}, {pr}).x", a))
+        cases.append((f"env brdf fit B (NoV {nov}, rough {pr})", f"CxEnvBrdf({nov}, {pr}).y", b))
+        cases.append((f"multiscatter (F0 1, NoV {nov}, rough {pr})", f"CxMultiScatter(1.0, {nov}, {pr})",
+                      1.0 + (1.0 / max(a + b, 0.05) - 1.0)))
+    # a dielectric-free lobe gains nothing, and a fully open, head-on view is never specular-occluded
+    cases.append(("multiscatter is 1 at F0 0", "CxMultiScatter(0.0, 0.5, 0.7)", 1.0))
+    cases.append(("specular occlusion is 1 unoccluded", "CxSpecOcclusion(1.0, 1.0, 0.3)", 1.0))
     return cases
+
+
+# CxPhysicalPbr returns its colour through an out parameter; these give a fold an lvalue and a way to read it.
+FOLD_HELPERS = ("vec3 cxScratch;\n"
+                "vec3 CxPhysicalColour(vec4 m0, float o, vec3 orm, vec3 l, vec3 b)\n"
+                "{ vec3 c; CxPhysicalPbr(m0, o, orm, l, b, c); return c; }\n")
 
 
 def fold(prelude, expr, tmp):
     """Compile a fragment stage whose only output is `expr` and read the constant it folds to."""
-    src = (prelude + "\nlayout(location = 0) out vec4 cxProbe;\n"
+    src = (prelude + "\n" + FOLD_HELPERS + "layout(location = 0) out vec4 cxProbe;\n"
            "void main() { cxProbe = vec4(" + expr + "); }\n")
     frag, spv = os.path.join(tmp, "fold.frag"), os.path.join(tmp, "fold.spv")
     open(frag, "w").write(src)
@@ -353,10 +415,13 @@ def check_material(g):
         print(f"material synthesis: SKIPPED -- no {', '.join(missing)} (Arch: spirv-tools)")
         return 0
     # The real lit stage minus its main, so the folds see whatever C# actually splices into the chain.
-    prelude, main = g["cx_ownlit_fs"], g["AlloyRenderer.OwnedLitFsMain"]
-    if not prelude.endswith(main):
-        sys.exit("cx_ownlit_fs no longer ends with OwnedLitFsMain -- the material prelude broke")
-    prelude = prelude[: -len(main)]
+    # The cut is the stage's own `void main()` -- wherever in the #include chain it comes from -- because
+    # every declaration the folds need is above it and the whole body below it belongs to that one function.
+    lit = g["cx_ownlit_fs"]
+    m = MAIN_FN.search(lit)
+    if m is None:
+        sys.exit("cx_ownlit_fs has no void main() -- the material prelude broke")
+    prelude = lit[: m.start()]
     for tok, val in TOKENS.items():
         prelude = prelude.replace(tok, val)
     prelude = prelude.replace("out vec4 frag;", "")     # our own probe output replaces it
@@ -394,10 +459,10 @@ def check_material(g):
 def programs(g):
     return {
         "fullbright": (g["cx_own_vs"], g["cx_own_fs"]),
-        "depth prepass": (g["AlloyRenderer.DepthVs"], g["AlloyRenderer.DepthFs"]),
-        "keyhole depth prepass": (g["AlloyRenderer.DepthKeyVs"], g["AlloyRenderer.DepthKeyFs"]),
+        "depth prepass": (g["cx_depth_v"], g["cx_depth_f"]),
+        "keyhole depth prepass": (g["cx_depthkey_v"], g["cx_depthkey_f"]),
         "caster depth": (g["cx_cast_vs"], g["cx_cast_fs"]),
-        "caster depth (alpha-tested)": (g["CasterPass.CastMaskVs"], g["CasterPass.CastMaskFs"]),
+        "caster depth (alpha-tested)": (g["cx_castmask_v"], g["cx_castmask_f"]),
         "clustered lit": (g["cx_ownlit_vs"], g["cx_ownlit_fs"]),
         "clustered lit (OIT lists)": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_OIT_LISTS 1\n", 1)),
         "post bloom downsample": (g["cx_post_vs"], g["cx_bloomdn_fs"]),
@@ -414,21 +479,21 @@ def programs(g):
         "halos": (g["cx_halo_vs"], g["cx_halo_fs"]),
         "weather rain": (g["cx_weather_vs"], g["cx_rain_fs"]),
         "weather snow": (g["cx_weather_vs"], g["cx_snow_fs"]),
-        "ssao temporal": (g["PostChain.FullscreenVs"], g["SsaoPass.TemporalFs"]),
-        "motion vectors": (g["PostChain.FullscreenVs"], g["MotionVectors.CameraFs"]),
-        "mover motion": (g["AlloyRenderer.MotionVs"], g["AlloyRenderer.MotionFs"]),
-        "taa resolve": (g["PostChain.FullscreenVs"], g["TaaStage.TaaFs"]),
+        "ssao temporal": (g["cx_fullscreen_v"], g["cx_ssaotemp_f"]),
+        "motion vectors": (g["cx_fullscreen_v"], g["cx_motioncam_f"]),
+        "mover motion": (g["cx_motion_v"], g["cx_motion_f"]),
+        "taa resolve": (g["cx_fullscreen_v"], g["cx_taa_f"]),
         "post stack taa": (g["cx_post_vs"], g["cx_taa_fs"]),
-        "highlight composite": (g["PostChain.FullscreenVs"], g["Highlight.HighlightCompFs"]),
+        "highlight composite": (g["cx_fullscreen_v"], g["cx_hilitecomp_f"]),
         "owned water": (g["cx_water_vs"], g["cx_water_fs"]),
         "instanced grass": (g["cx_grass_vs"], g["cx_grass_fs"]),
-        "grass depth prepass": (g["cx_grass_vs"], g["GrassField.GrassDepthFs"]),
+        "grass depth prepass": (g["cx_grass_vs"], g["cx_grassdepth_f"]),
         "clustered light build": (g["cx_cluster_cs"],),
-        "sky decode": (g["PostChain.FullscreenVs"], g["AlloyRenderer.SkyDecodeFs"]),
-        "oit resolve": (g["PostChain.FullscreenVs"], g["OitPass.OitResolveFs"]),
-        "oit clear": (g["PostChain.FullscreenVs"], g["OitPass.OitClearFs"]),
-        "lightmap bake": (g["LightmapBake.BakeVs"], g["LightmapBake.BakeFs"]),
-        "lightmap finish": (g["PostChain.FullscreenVs"], g["LightmapBake.FinishFs"]),
+        "sky decode": (g["cx_fullscreen_v"], g["cx_skydecode_f"]),
+        "oit resolve": (g["cx_fullscreen_v"], g["cx_oitresolve_f"]),
+        "oit clear": (g["cx_fullscreen_v"], g["cx_oitclear_f"]),
+        "lightmap bake": (g["cx_bake_v"], g["cx_bake_f"]),
+        "lightmap finish": (g["cx_fullscreen_v"], g["cx_bakefinish_f"]),
     }
 
 

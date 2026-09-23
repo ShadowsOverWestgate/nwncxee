@@ -166,9 +166,9 @@ internal static class ShaderContract
         // #208: run FIRST and unconditionally -- it names the slot that disagreed, which the && chain below
         // would swallow.
         bool slots = TextureSlots.Check(log);
-        // the record's field list, counted by field size: the 240-byte stride staged above (#392 grew it)
-        bool ok = slots && DrawBufDecl.Contains($"binding = {BindDraw}") && DrawFloats * sizeof(float) == 240
-                  && RecordSafe(DrawBufDecl) && DrawBufDecl.Contains("vec4 feat; mat4 prev; }")
+        // the record's field list, counted by field size: the 288-byte stride staged above (#392 and ADR 0026 grew it)
+        bool ok = slots && DrawBufDecl.Contains($"binding = {BindDraw}") && DrawFloats * sizeof(float) == 288
+                  && RecordSafe(DrawBufDecl) && DrawBufDecl.Contains("vec4 feat; mat4 prev; vec4 ext0; vec4 ext1; vec4 ext2; }")
                   && DrawBufDecl.Contains("vec4 emi") && DrawBufDecl.Contains("vec4 spc")
                   && DrawBufDecl.Contains("vec4 feat")
                   // #123: the feature ids are a contract between the ShaderFeature enum (staged into
@@ -260,8 +260,10 @@ internal static class ShaderContract
                   // which is what shipped content looks like today, so nothing would look wrong.
                   && OwnedLitFsHead.Contains($"CX_SLOT_AO = {AoBit};")
                   && OwnedLitFsHead.Contains($"CX_SLOT_ENV = {EnvSlot};")
-                  && OwnedLitFsMain.Contains("if ((slots & CX_SLOT_AO) != 0) occl *= texture(uAoTex, uv, uLodBias).r;")
-                  && OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl")
+                  && OwnedLitFsMain.Contains("vec3 orm = (slots & CX_SLOT_AO) != 0 ? texture(uAoTex, uv, uLodBias).rgb : vec3(1.0);")
+                  && OwnedLitFsMain.Contains("occl *= orm.r;")
+                  && OwnedLitFsMain.Contains("float ambDir = mix(0.15, 1.0, sunRaw);")
+                  && OwnedLitFsMain.Contains("* ambDir * occl")
                   && OwnedVs.Contains("uDrawBase + gl_DrawID") && OwnedLitVs.Contains("uDrawBase + gl_DrawID")
                   // #242: ...and every one of them reaches its record THROUGH the draw-to-slot index. The
                   // records are persistent and indexed by ownership slot now; a stage that still indexed by
@@ -301,14 +303,19 @@ internal static class ShaderContract
                   // it did before.
                   && AlloyLights.FragmentLib.Contains("float CxSpecLobe(")
                   && AlloyLights.FragmentLib.Contains("float CxSpecBase(")
-                  && OwnedLitFsMain.Contains("sunSpec * CxSpecLobe(N, V, uAreaDir")
+                  && OwnedLitFsMain.Contains("sunSpec * CxLoopSpec(CxSpecLobe(N, V, uAreaDir")
                   // ...fed the RAW dot. #143's wrap is diffuse-only; a lobe on the wrapped dot lights the
                   // side of a glossy surface the sun cannot reach, and only at uWrapN > 0 -- invisible at
                   // the default.
                   && OwnedLitFsMain.Contains("vec3 sunSpec = uAreaDiffuse * (sunRaw * sunVis);")
-                  // ...and the base modifier really is applied to the SUM, once. Folding it per light is
-                  // silent and wrong by exactly the light count.
-                  && OwnedLitFsMain.Contains("* (specColor * CxSpecBase(")
+                  // ...and the base modifier is applied exactly once per lobe: ADR 0026 moved it INTO
+                  // CxLoopSpec (distributed over the sum, the same product), so a second copy outside is
+                  // silent and wrong by exactly itself.
+                  && OwnedLitFsMain.Contains("cxSpecScale = specColor * CxSpecBase(NoV, rough)")
+                  && !OwnedLitFsMain.Contains("* (specColor * CxSpecBase(")
+                  && AlloyLights.FragmentLib.Contains("vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L);")
+                  && MaterialLib.Contains("vec3 s = lobe * cxSpecScale;")
+                  && OwnedLitFsHead.Contains("#define CX_LIT_MATERIAL 1")
                   && AlloyLights.FragmentLib.Contains("vec3 CxClusteredLight(")
                   // #143: the wrapped-diffuse helper, and the sun actually going THROUGH it --
                   // a lit tail that keeps the raw dot is the punctual terminator back with no other sign.
@@ -331,8 +338,8 @@ internal static class ShaderContract
                   && OwnedLitFsMain.Contains("if (uCapture != 0) { frag = vec4(lit, 1.0); return; }")
                   // ...and the weighting itself: the engine tints the light that is already there. Dropping
                   // the (ambient + diffuse) factor is what made every stone surface read as wet.
-                  && OwnedLitFsMain.Contains("(ambient + diffuse) * env * F0 * uProbeGain")
-                  // ...and the gate that keeps it off the parts the engine binds no env texture for at all.
+                  && OwnedLitFsMain.Contains("(ambient + diffuse) * env * F0 * (uProbeGain * envW)")
+                  // ...and the gate that keeps it off the parts the engine binds no env texture for (legacy metal aside, ADR 0026).
                   && OwnedLitFsMain.Contains("uSceneEnv != 0 || (slots & CX_SLOT_ENV) != 0")
                   // #124/#132: the dissolve and the fog, and the order they apply in. Both are LINEAR now --
                   // #124 welded the engine's keyhole-then-encode-then-fog order and #132 unwelded it, so the

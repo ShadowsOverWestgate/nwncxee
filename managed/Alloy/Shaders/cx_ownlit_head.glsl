@@ -1,5 +1,6 @@
 #version 460 core
 #define CX_FS 1   // #642: gl_FragCoord is in reach for the shadow lib's dither
+#define CX_LIT_MATERIAL 1   // ADR 0026: the light loop folds the material's own lobe in (CxLoopSpec)
 in vec2 vUV;
 in vec3 vWorld;
 in vec3 vNrm;

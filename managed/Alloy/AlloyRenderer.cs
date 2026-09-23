@@ -85,9 +85,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// point. Cheap to fix -- the tables are one int and one short per slot.</para></summary>
     internal const int MaxMats = 16384, MatHashBits = 15, MatHash = 1 << MatHashBits;
     /// <summary>Floats per CxDraw record: std430 <c>mat4 + vec4 rot + vec4 amb + vec4 dif + vec4 emi
-    /// + vec4 pbr + vec4 spc + vec4 feat + mat4 prev</c> = 240 bytes (#392 grew it from 176), whose alignment
-    /// (16) already divides the size, so the array stride is 240 with no padding.</summary>
-    internal const int DrawFloats = 60;
+    /// + vec4 pbr + vec4 spc + vec4 feat + mat4 prev + vec4 ext0..ext2</c> = 288 bytes (#392 grew it from 176,
+    /// ADR 0026 from 240), whose alignment (16) already divides the size, so the array stride is 288 with no
+    /// padding.</summary>
+    internal const int DrawFloats = 72;
+    /// <summary>ADR 0026: where the three material-extension vec4s (<c>ext0..ext2</c>) start -- after
+    /// <c>prev</c>, so no older field moved.</summary>
+    internal const int ExtFloat = 60;
     /// <summary>#392: where <c>prev</c>, the previous frame's model matrix, starts in the record.</summary>
     internal const int PrevFloat = 44;
     /// <summary>#242: record slots the persistent buffer can hold -- one per ownership slot, plus the sky's
@@ -264,7 +268,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach,
                    Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm,
                    LmPages, LmMovers,                  // #674
-                   LightOcc;                           // light.hidden
+                   LightOcc,                           // light.hidden
+                   Material;                           // ADR 0026: light.brdf / ambientdir / specaa
         public FeatLoc Feat;
     }
     /// <summary>light.hidden: the roughness under which a surface's highlight is a mirror image of the source
@@ -822,7 +827,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #571: the stock-settings reader forges a std::string for the engine; a header packed wrong is a
         // crash on the first world frame, not a misrender, so it joins the gating chain.
         StockConfig.Attach(log);
-        if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
+        if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !MaterialExtSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
             || !Issue.RunsSelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
             || !ShaderContract.SelfCheck(log)

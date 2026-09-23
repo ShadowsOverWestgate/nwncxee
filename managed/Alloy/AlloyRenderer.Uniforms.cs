@@ -201,6 +201,14 @@ public sealed unsafe partial class AlloyRenderer
     /// undefined, and the capture draws through this very program.</summary>
     internal static void UploadProbe(in LitLoc L) => UploadProbe(L.ProbeMips, L.ProbeGain, L.SceneEnv);
 
+    /// <summary>ADR 0026: the lit stage's <c>uMaterial</c> -- (modern model, directional ambient, specular AA).
+    /// The two refinements ride on the model: off is the stock shading exactly, whatever they are set to.</summary>
+    internal static void UploadMaterialModel(int loc)
+    {
+        bool modern = Lighting.Brdf.V;
+        Gl.Uniform3f(loc, modern ? 1f : 0f, modern ? Lighting.AmbientDir.V : 0f, modern && Lighting.SpecAa.V ? 1f : 0f);
+    }
+
     /// <summary>#127: the same terms, into whichever program's locations the caller names -- the Alloy grass
     /// pass runs its own program over the same lights, so the area terms cannot be a property of the lit
     /// program's uniform cache.</summary>

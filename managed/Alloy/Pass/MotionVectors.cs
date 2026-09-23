@@ -187,8 +187,8 @@ internal static unsafe class MotionVectors
         check.Expect(AlloyRenderer.MotionFs.Contains("vPrev.xy / vPrev.w - (vCur.xy / vCur.w - uJitter)") && AlloyRenderer.MotionVs.Contains(AlloyRenderer.ClipExpr)
           && AlloyRenderer.MotionVs.Contains("invariant gl_Position;") && AlloyRenderer.MotionVs.Contains("uPrevVP * d.prev * vec4(aPos, 1.0)"),
           "the mover sweep (#392) shares the convention, and its clip position is the prepass's exact text");
-        check.Expect(ShaderContract.RecordSafe(AlloyRenderer.MotionVs) && AlloyRenderer.PrevFloat == 44 && AlloyRenderer.DrawFloats == 60,
-          "the mover stage declares the 60-float record, prev at float 44");
+        check.Expect(ShaderContract.RecordSafe(AlloyRenderer.MotionVs) && AlloyRenderer.PrevFloat == 44 && AlloyRenderer.DrawFloats == 72,
+          "the mover stage declares the 72-float record, prev at float 44");
         _pendingPrev = Matrix4x4.CreateTranslation(1f, 0f, 0f); _pendingSeq = 3; _lastSeq = 2;
         RollHistory();
         check.Expect(_prevVp.M41 == 1f && _lastSeq == 3, "the history rolls once the frame's consumers are done");

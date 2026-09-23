@@ -325,7 +325,7 @@ internal static unsafe class SsaoPass
             check.Expect(ShaderContract.SlotSafe(fs, "uDepth") && ShaderContract.SlotSafe(bl, "uSrc", "uDepth"), "the samplers the C# side binds are declared");
             check.Expect(EffectSsao == 1u, "FramebufferEffect 0 is SSAO (CClientOptions::SetEnableFBEffectSSAO -> SetFBEffectEnabled(0, on))");
             check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("occl *= mix(1.0, CxSsaoAt(ivec2(gl_FragCoord.xy), aoDepth, aoSlope), uAlphaCut >= 0.0 ? uAoCutout : 1.0);")
-              && AlloyRenderer.OwnedLitFsMain.Contains("* mix(0.15, 1.0, sunRaw) * occl"), "the lit stage folds it into occl, which scales the AMBIENT term");
+              && AlloyRenderer.OwnedLitFsMain.Contains("* ambDir * occl"), "the lit stage folds it into occl, which scales the AMBIENT term");
             // post.halfres: the pass is a quarter of the pixels and the LIT stage is the upsampler -- there
             // is no apply pass to put a bilateral filter in, the consumer fetches per fragment.
             check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("float CxSsaoAt(ivec2 pix, float myDepth, float slope)")

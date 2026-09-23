@@ -11,9 +11,9 @@ internal static class Lighting
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<float> Gain, Ambient, Sun, Overbright, Sss, Wrap, WrapNdl, Hot, HotSize, Radius, Falloff,
-                                         ProbeGain, BinReach, Flicker, FlickerSpeed;
+                                         ProbeGain, BinReach, Flicker, FlickerSpeed, AmbientDir;
     internal static readonly Knob<int> Fadeout, ProbeSize, BinCap;
-    internal static readonly Knob<bool> Probe, ProbeAreaWide, ReachFade, HiddenLights;
+    internal static readonly Knob<bool> Probe, ProbeAreaWide, ReachFade, HiddenLights, Brdf, SpecAa;
 
     static Lighting()
     {
@@ -62,6 +62,16 @@ internal static class Lighting
                                effect: Effect.Restart);
         HiddenLights = G.Toggle("hidden", "Hidden lights do not reflect", true,
                                 help: "A wet or glossy surface mirrors a light only where that light's shadow lets it -- a lamp on a terrace reflects in the street from where the ground sees over the parapet, not from the wall's foot.");
+        G.Section("Materials");
+        Brdf = G.Toggle("brdf", "Modern materials", true,
+                        help: "Energy-conserving highlights, reflections that brighten at grazing angles and fade in crevices, and the "
+                            + "extra material layers (metal, clear coat, sheen, glow) a .mtr can declare for Alloy. Off is the stock shading exactly.");
+        AmbientDir = G.Slider("ambientdir", "Directional ambient", 0f, 1f, 0.05f, 0.5f,
+                              help: "Ambient light takes its direction from the surroundings (sky above, ground below) at the area's own "
+                                  + "brightness. 0 is the stock sun-facing shading. Needs Modern materials and Reflections from the scene.");
+        SpecAa = G.Toggle("specaa", "Smooth highlights", true, Tier.Advanced,
+                          help: "Widens a highlight that is narrower than a pixel, so glossy and normal-mapped surfaces do not sparkle "
+                              + "or crawl in motion. Needs Modern materials.");
         G.Section("");
         BinReach = G.Slider("binreach", "Light reach", 0.1f, 4f, 0.05f, 0.8f, tier: Tier.Advanced,
                             help: "Fraction of each light's authored radius that lights the scene. 1 is the stock radius; lower is cheaper.");

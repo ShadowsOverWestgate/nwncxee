@@ -1,6 +1,36 @@
     vec3 base = albedo * matDiffuse;
     vec3 specColor = SpecularColor;
     vec3 F0 = specColor * spec;
+    // ADR 0026: the loop's per-fragment material state. Under light.brdf 0 this is the engine's split
+    // exactly -- the view-side normalisation and the specular colour, applied per light instead of once
+    // over the sum, which is the same product. Under 1 it adds multiple scattering and the two layers.
+    float NoV = max(dot(N, V), 0.0);
+    // after the weather splice, so a puddle's 0.12 is widened too
+    if (uMaterial.z > 0.5) rough = sqrt(min(rough * rough + aaKernel, 1.0));
+    cxCoat = 0.0; cxCoatRough = 0.0; cxSheen = vec3(0.0); cxSheenRough = 0.0;
+    float coatT = 1.0, msc = 1.0;
+    if (uMaterial.x > 0.5)
+    {
+        msc = CxMultiScatter(spec, NoV, sqrt(rough));
+        cxCoat = clamp(d.ext0.z, 0.0, 1.0);
+        if (cxCoat > 0.0)
+        {
+            float cp = d.ext0.w >= 0.0 ? d.ext0.w : CX_COAT_ROUGH_DEFAULT;
+            cxCoatRough = max(cp * cp, CX_ALPHA_MIN);
+            // what the coat reflects never reaches the layer under it
+            coatT = 1.0 - cxCoat * mix(CX_DIELECTRIC_F0, 1.0, CxFresnel(NoV));
+        }
+        if (max(d.ext1.r, max(d.ext1.g, d.ext1.b)) > 0.0)
+        {
+            cxSheen = d.ext1.rgb;
+            float sp = d.ext1.w >= 0.0 ? d.ext1.w : CX_SHEEN_ROUGH_DEFAULT;
+            cxSheenRough = max(sp * sp, CX_ALPHA_MIN);
+        }
+    }
+    cxSpecScale = specColor * CxSpecBase(NoV, rough) * msc * coatT;
+    // the diffuse share: the engine's (1 - fSpecularity); a physical metal has none at all. The max()
+    // keeps a dielectric at 0.96 and still lets the wet splice's raised specularity take its share.
+    float kd = physical ? (1.0 - metal) * (1.0 - max(spec * (1.0 - metal), CX_DIELECTRIC_F0)) : 1.0 - spec;
 
     vec3 sun = uAreaDiffuse * (sunNdl * sunVis);
     // #143's wrap is a DIFFUSE fix -- it stands in for light bleeding across a low-poly terminator,
@@ -28,7 +58,7 @@
         lm *= 1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0);
         point += lm;
         // a glossy receiver took each static light's own lobe in the loop instead (light.hidden)
-        if (!CxGlossy(rough)) pointSpec += lm * CxSpecLobe(N, V, lmDir, rough, spec);
+        if (!CxGlossy(rough)) pointSpec += lm * CxLoopSpec(CxSpecLobe(N, V, lmDir, rough, spec), N, V, lmDir);
     }
     // 43 = the lightmap term alone: the baked light on a baked surface, MAGENTA on an unbaked one.
     // 44 = the pages' texel grid over baked surfaces (chart seams and density), magenta unbaked.
@@ -49,12 +79,17 @@
     // 0 is ADR 0021 untouched, 1 occludes the direct terms outright. The probe term below picks it
     // up through `diffuse` at no extra cost.
     float dirOcc = mix(1.0, occl, uAoDirect);
-    vec3 specLight = (sunSpec * CxSpecLobe(N, V, uAreaDir, rough, spec) + pointSpec)
-                     * (specColor * CxSpecBase(max(dot(N, V), 0.0), rough)) * dirOcc;
+    vec3 specLight = (sunSpec * CxLoopSpec(CxSpecLobe(N, V, uAreaDir, rough, spec), N, V, uAreaDir) + pointSpec)
+                     * dirOcc;
     vec3 diffuse = (sun + sunSss + point) * dirOcc;
     // the 0.15 ambient floor and the sun-facing wrap are inc_lighting.shd:679 verbatim; the height
     // map's occlusion scales the AMBIENT, which is the term it is actually occluding
-    vec3 ambient = uAreaAmbient * matAmbient * mix(0.15, 1.0, sunRaw) * occl;
+    // ADR 0026 (light.ambientdir): the probe gives that ambient a direction -- sky above, ground below --
+    // at the authored level; the stock wrap's 0.15 stays the floor. Never during the capture itself.
+    float ambDir = mix(0.15, 1.0, sunRaw);
+    if (uMaterial.y > 0.0 && uCapture == 0 && uProbeMips > 0.0)
+        ambDir = mix(ambDir, max(CxAmbientShape(N), 0.15), uMaterial.y);
+    vec3 ambient = uAreaAmbient * matAmbient * ambDir * occl;
     // 34 = the ONLY term occlusion can move inside `total` (the (1-spec) share of the ambient).
     //      Black at both /ao on 0 and /ao on 1 means AO has nothing to scale here, however bright
     //      viz 8 reads -- which no other view in the ladder can say.
@@ -74,8 +109,31 @@
     // city cobblestone, which vanilla plainly does not do: its authored spheremap is a dim texel,
     // while the probe carries real scene radiance. /light probeareawide 1 opts back into the engine's
     // rule (uSceneEnv); the default is the case the reflection exists for.
-    if (uCapture == 0 && uProbeMips > 0.0 && (uSceneEnv != 0 || (slots & CX_SLOT_ENV) != 0))
+    // ADR 0026: a physical material reflects whether or not it names an env map -- a metal that reflects
+    // nothing is black -- and under the modern model the weight is the split-sum DFG fit with Lagarde's
+    // specular occlusion instead of the bare F0: the grazing reflection vanilla never had, and none of it
+    // inside a crevice. A legacy texel the engine itself derives as metal (3s - 0.6 off its spec map, or
+    // a stated Metallicness) reflects too, weighted by that metalness: a metal pixel of a spec-mapped
+    // part is real metal with no asset work, while matte stone (s <= 0.2, metal 0) stays out.
+    float envW = uSceneEnv != 0 || (slots & CX_SLOT_ENV) != 0 || physical ? 1.0
+               : uMaterial.x > 0.5 ? metal : 0.0;
+    if (uCapture == 0 && uProbeMips > 0.0 && envW > 0.0)
     {
         vec3 env = textureLod(uProbe, reflect(-V, N), rough * (uProbeMips - 1.0)).rgb;
-        specLight += (ambient + diffuse) * env * F0 * uProbeGain;
+        if (uMaterial.x > 0.5)
+        {
+            vec2 ab = CxEnvBrdf(NoV, sqrt(rough));
+            // Karis' bias is achromatic -- a metal whitens at grazing -- and the product never exceeds 1:
+            // the tint form's promise is that the reflection is at most the light already there
+            F0 = min((F0 * ab.x + ab.y) * msc, vec3(1.0)) * coatT * CxSpecOcclusion(NoV, occl, rough);
+        }
+        specLight += (ambient + diffuse) * env * F0 * (uProbeGain * envW);
+    }
+    // ...and the clear coat reflects on its own lobe, on every material that declares one
+    if (cxCoat > 0.0 && uCapture == 0 && uProbeMips > 0.0)
+    {
+        vec2 cab = CxEnvBrdf(NoV, sqrt(cxCoatRough));
+        vec3 cenv = textureLod(uProbe, reflect(-V, N), cxCoatRough * (uProbeMips - 1.0)).rgb;
+        specLight += (ambient + diffuse) * cenv * (cxCoat * (CX_DIELECTRIC_F0 * cab.x + cab.y)
+                     * CxSpecOcclusion(NoV, occl, cxCoatRough)) * uProbeGain;
     }

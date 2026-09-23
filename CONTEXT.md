@@ -297,6 +297,12 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Material synthesis** — deriving material parameters for content that declares none, rather
   than requiring every model to be re-authored. Content that *does* declare parameters is
   always honoured over synthesised ones.
+- **Vanilla view** / **Alloy view** (of a material) — one `.mtr` carries both. The *vanilla view* is
+  the stock parameters and texture slots, which both clients read with the engine's meaning; the
+  *Alloy view* is the `Cx`-prefixed parameters (glTF's metal/rough vocabulary) and `texture11`+,
+  which vanilla parses and ignores. Where both speak, the Alloy view wins in Alloy (ADR 0026). A
+  **physical material** is one whose Alloy view declares metalness or roughness: shaded as glTF
+  shades it, metal with no diffuse.
 - **Shader generation** — which vintage of the engine's stock shader set a `.shd` belongs to.
   Two exist and they are not interchangeable: an older set where the transform and fog live
   inline, and a newer split-include set where they are separate headers. A shader claim is
