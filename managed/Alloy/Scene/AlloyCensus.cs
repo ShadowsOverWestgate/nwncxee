@@ -785,11 +785,14 @@ internal static unsafe partial class AlloyCensus
     /// AVERAGE of texture 0, so which texture that is decides the whole body colour of a body of water --
     /// and the two routes into bucket 6 (bumpy-shiny versus <c>sample_framebuffer 2</c>) are different
     /// content with different conventions. Cheap: a set lookup on the handful of water materials an area has.
-    /// ponytail: never cleared, so a session that visits many areas keeps a few dozen strings.</summary>
+    /// Deduped on the texture pointer first so a frame-path repeat resolves no name (CX-18).
+    /// ponytail: never cleared, so a session that visits many areas keeps a few dozen entries; a recycled
+    /// pointer may skip one diagnostic line.</summary>
     internal static void NoteWaterMaterial(IntPtr mat, IntPtr shared)
     {
         var m = new MaterialRef(mat);
         TextureRef t0 = m.Texture(0);
+        if (!_waterTex.Add(t0.Ptr)) return;
         string name = t0.ResolveName();
         if (!_waterMats.Add(name)) return;
         bool bumpy = _bumpyWater != null && *_bumpyWater != 0 && Engine.HasBumpyShiny(m);
@@ -802,6 +805,7 @@ internal static unsafe partial class AlloyCensus
     }
 
     internal static readonly HashSet<string> _waterMats = new();
+    private static readonly HashSet<IntPtr> _waterTex = new();
 
     /// <summary>Every bound material slot as <c>n:name</c>, for the class diagnostic.</summary>
     private static string SlotNames(MaterialRef m)
