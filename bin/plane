@@ -1575,4 +1575,8 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # A refusal from the API is an answer for the reader, not a crash to debug.
+    try:
+        sys.exit(main())
+    except PlaneError as error:
+        sys.exit(f"plane: {error}")
