@@ -1101,11 +1101,12 @@ public sealed unsafe partial class AlloyRenderer
                 // term below. What the compare does catch is a material re-bind (a re-skin, an equip: cold),
                 // which can wait eight frames. A slot with no record yet, or under /alloy poll 1, still reads
                 // every frame.
-                bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero;
+                // CX-25: a re-resolve reads a FRESH ref; the cached one may be a freed block re-used by a new texture
+                bool cycled = _recCtl[i] != IntPtr.Zero && CycleTextures.IsDirty(_recCtl[i]);
+                bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero || _recTexStale[i] || cycled;
                 var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);
                 if (aur.IsNull) { Inc(ref Counters._skipTex); Inc(ref Counters._skipTexNone); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no diffuse texture"); return Skipped; }
-                texDirty = stale || aur.Ptr != _recAur[i] || _recTexStale[i]
-                           || (_recCtl[i] != IntPtr.Zero && CycleTextures.IsDirty(_recCtl[i]));
+                texDirty = stale || aur.Ptr != _recAur[i] || _recTexStale[i] || cycled;
                 // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
                 // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
                 // frame. The DIFFUSE compare above stays per frame; it is the animated one.

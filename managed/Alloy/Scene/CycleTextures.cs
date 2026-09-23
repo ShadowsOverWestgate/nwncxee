@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 
@@ -13,10 +14,11 @@ namespace CX.Alloy;
 /// <c>texcurrentframe</c> itself, so a second tick in the same frame (the engine's overlay replay) is a no-op.
 /// <para>Only the CycleTID class is ticked: the other controllers (wave, perlin, water, life, arturo)
 /// allocate and re-upload pixels, which is not a name rewrite and not this table's business.</para>
-/// <para>Lifetime: a controller dies with its basic on the area edge. Every entry is re-guarded per tick --
-/// the texture ref's vtable (<see cref="AurTex.IsLive"/>), then the controller re-read through the engine's
-/// own <c>AurTextureGetController</c> and compared against the CycleTID vtable -- and the table is cleared
-/// with the ownership table.</para></summary>
+/// <para>Lifetime (CX-25): an entry dies with its texture ref, told by the <c>~CAurTexture</c> death notice --
+/// a vtable guard cannot see a freed block the next texture re-used. A live ref holds a reference on its
+/// basic (the dtor releases <c>+0x18</c>), so the basic and its controller outlive the entry. The per-tick
+/// re-guard stays for a controller swapped under a live ref, and the table is cleared with the ownership
+/// table.</para></summary>
 internal static unsafe class CycleTextures
 {
     /// <summary>ponytail: a fixed table; an area has a handful of cycle textures (torches, waterfalls).
@@ -29,26 +31,50 @@ internal static unsafe class CycleTextures
     private static delegate* unmanaged<IntPtr, IntPtr> _getController;
     private static IntPtr _vtbl;
     private static int* _enabled;
+    private static delegate* unmanaged<IntPtr, void> _origDtor;
     /// <summary>Name steps observed (the live-confirm number), registrations refused by the cap, and
     /// controllers of another class seen on an owned diffuse (the hole this table does not fill).</summary>
     internal static long Steps, Overflow, OtherClass;
 
-    internal static bool Ready => _getController != null && _vtbl != IntPtr.Zero;
+    internal static bool Ready => _getController != null && _vtbl != IntPtr.Zero && _origDtor != null;
 
     /// <summary>#456: the controller layout probe's one-shot latch, and the log it reports through.</summary>
     private static bool _probedCtl;
     private static ExtenderLog? _log;
 
-    internal static void Attach(ExtenderLog log)
+    internal static void Attach(ExtenderLog log, HookService hooks)
     {
         _log = log;
         if (Ready) return;
+        // CX-25: no death notice, no table -- a ref kept without one is the crash this hook exists for.
+        _origDtor = (delegate* unmanaged<IntPtr, void>)hooks.Install(
+            SymbolMap.AurTextureDtor, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnTextureDtor);
         _getController = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.AurTextureGetController);
         IntPtr v = Native.Sym(SymbolMap.CycleTidControllerVtbl);
         // Itanium ABI: an object's first word is the vtable symbol + 0x10.
         _vtbl = v == IntPtr.Zero ? IntPtr.Zero : v + EngineLayout.VtblSymbolHeader;
         _enabled = (int*)Native.Sym(SymbolMap.EnableTextureControllers);
-        if (!Ready) log.Info("CycleTextures: AurTextureGetController or the CycleTID vtable unresolved -- cycle textures stay frozen on Alloy parts");
+        if (!Ready) log.Info("CycleTextures: AurTextureGetController, the CycleTID vtable or ~CAurTexture unresolved -- cycle textures stay frozen on Alloy parts");
+    }
+
+    /// <summary>CX-25: the death notice. Compares the dying pointer, never dereferences it. Any thread;
+    /// allocation-free (it fires in bulk on the area edge).</summary>
+    [UnmanagedCallersOnly]
+    private static void OnTextureDtor(IntPtr tex)
+    {
+        Forget(tex);
+        _origDtor(tex);
+    }
+
+    /// <summary>Null the ref of every entry on <paramref name="tex"/>. A tombstone, not a removal: the next
+    /// <see cref="Tick"/> drops a null ref through its own guard and reports the controller in
+    /// <see cref="Dropped"/>, and a notice fired from inside Tick (an engine call freeing a texture on the
+    /// same thread, the lock is re-entrant) cannot reshuffle the table under the loop.</summary>
+    private static void Forget(IntPtr tex)
+    {
+        lock (_lock)
+            for (int i = 0; i < _n; i++)
+                if (_ref[i] == tex) _ref[i] = IntPtr.Zero;
     }
 
     /// <summary>The CycleTID controller behind this texture ref, registered for ticking, or zero when it has
@@ -91,7 +117,7 @@ internal static unsafe class CycleTextures
                 AlloyProbe.Once(ref _probedCtl, "CycleTIDTextureController", ctl, _log);
                 int old = AurTex.Tid(r);
                 ((delegate* unmanaged<IntPtr, void>)*(IntPtr*)(*(IntPtr*)ctl + CX.Framework.EngineLayout.CycleControlSlot))(ctl);
-                if (AurTex.Tid(r) != old) { _dirty[_dirtyN++] = ctl; Steps++; }
+                if (_ref[i] == r && AurTex.Tid(r) != old) { _dirty[_dirtyN++] = ctl; Steps++; }   // r may have died inside Control
             }
         }
         return _dirtyN;
@@ -112,4 +138,22 @@ internal static unsafe class CycleTextures
     internal static int Count => _n;
 
     internal static void Clear() { lock (_lock) { _n = 0; _dirtyN = 0; _droppedN = 0; Overflow = 0; } }
+
+    /// <summary>CX-25, off-device: a freed ref is tombstoned (which Tick's guard drops) and a ref that did
+    /// not die stays. Synthetic pointers, nothing dereferenced; runs at init on the empty table.</summary>
+    internal static bool SelfCheck(ExtenderLog log)
+    {
+        bool ok;
+        lock (_lock)
+        {
+            if (_n + 2 > Cap) return true;
+            int n = _n;
+            _ctl[n] = 0x1000; _ref[n] = 0x2000; _ctl[n + 1] = 0x3000; _ref[n + 1] = 0x4000; _n = n + 2;
+            Forget(0x2000);
+            ok = _ref[n] == IntPtr.Zero && _ctl[n] == 0x1000 && _ref[n + 1] == 0x4000;
+            _n = n;
+        }
+        log.Info(ok ? "CycleTextures.SelfCheck: passed" : "CycleTextures.SelfCheck: FAILED");
+        return ok;
+    }
 }

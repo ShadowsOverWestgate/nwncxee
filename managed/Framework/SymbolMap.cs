@@ -1170,6 +1170,10 @@ internal static unsafe class SymbolMap
     /// <summary>#331: <c>AurTextureGetController(CAurTexture*)</c> @0x485350 -- resolves ref -> basic and returns
     /// <c>basic+0x38</c>, the texture's animation controller (or null).</summary>
     public const string AurTextureGetController = "_Z23AurTextureGetControllerP11CAurTexture";
+    /// <summary>CX-25: <c>CAurTexture::~CAurTexture()</c> @0x486080 (D1 = D2), the death notice for every
+    /// texture. <c>CAurTextureBasic</c>'s D1 tail-jumps here and both deleting dtors call it, on Linux and
+    /// Windows alike (verified in both disassemblies).</summary>
+    public const string AurTextureDtor = "_ZN11CAurTextureD2Ev";
     /// <summary>#331: the one controller class whose Control() (vtable slot +0x10) only rewrites a GL name.</summary>
     public const string CycleTidControllerVtbl = "_ZTV25CycleTIDTextureController";
     /// <summary>#331: the engine's int gate on every controller tick (the Bind tail reads it).</summary>
@@ -1573,6 +1577,7 @@ internal static unsafe class SymbolMap
         [AurTextureBuildAndStoreTexture] = Nm("?BuildAndStoreTexture@CAurTextureBasic@@QEAAXXZ"),
         [AurTextureConstructImage] = Nm("?ConstructImage@CAurTextureBasic@@QEAAXXZ"),
         [AurTextureGetController] = Nm("?AurTextureGetController@@YAPEAVTextureController@@PEAVCAurTexture@@@Z"),
+        [AurTextureDtor] = Nm("??1CAurTexture@@UEAA@XZ"),
         [AurTextureGlImageBasic] = Nm("?glImageBasic@CAurTextureBasic@@QEAAH_N@Z"),
         [OperatorNewArray] = Nm("??2MaxTree@@SAPEAX_K@Z"),
         [AurTextureNullPtr] = Nm("?m_pNullTexture@CAurTextureBasic@@2V?$SafePointer@VCAurTexture@@@@A"),

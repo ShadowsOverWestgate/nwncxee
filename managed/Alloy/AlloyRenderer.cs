@@ -835,7 +835,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (!AlloyCensus.GobSelfCheck(log)) return;
         _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
-        CycleTextures.Attach(log);   // #331
+        if (CycleTextures.SelfCheck(log)) CycleTextures.Attach(log, hooks);   // #331; a failed check freezes cycles, not Alloy
         ResolveChase(log);   // #330: the three engine sets the chase is bounded by; unresolved = unbounded
         _mtxStacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
         _runtime = (byte*)Native.Sym(SymbolMap.GlShaderRuntimeData);
