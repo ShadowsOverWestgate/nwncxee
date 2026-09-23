@@ -883,6 +883,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _commitSlot = hooks.Chain(SymbolMap.VdoCommitItemDynamicData,   // the item-level vertex-dirty signal
             (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, void>)&OnCommitItemDynamicData, CommitPriority);
         if (_commitSlot == null) log.Info("AlloyRenderer: CommitItemDynamicData unhooked -- vertex-dirty stays per pool buffer");
+        // CX-19: the area edge that is NOT a Scene change (a server hop reuses the Scene object). Chained
+        // above the lightmap hold's own subscriber, which sits at 0 and may swallow the send.
+        _areaLoadedSlot = hooks.Chain(SymbolMap.SendAreaLoaded,
+            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSendAreaLoaded, AreaLoadedPriority);
+        if (_areaLoadedSlot == null)
+            log.Info("AlloyRenderer: the AreaLoaded send did not resolve -- an in-module area change keeps the "
+                     + "previous area's VDO slots, charts and draw-arg ranges until the Scene pointer changes");
         // #137: the skinmesh class. Config bucket (ADR 0013): a capability gate that decides what the vertex
         // stages are BUILT from, so it cannot move mid-session and is not a command. #262 dropped its second
         // term -- the pose no longer comes out of GLRender::m_bones, so that symbol resolving proves nothing.
@@ -963,6 +970,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         PassGen++;   // unconditionally: a stale generation would keep the iterator skipping parts nobody draws
         bool world = IsWorldScene(scene);
+        // CX-19: the deferred area edge is consumed HERE -- on the render thread, ahead of the world walk
+        // and the enrolment that refill every table it drops. The send itself arrives mid-message.
+        if (world) TakeAreaEdge();
         // #571: the stock graphics snapshot is retaken on a new world Scene (boot, every area edge), ahead of
         // and regardless of the verdict -- the verdict reads it. A toggle the player flips off AFTER the
         // decision froze has nothing behind it (exclusive residency), so it is the gamma precedent's Fail.
@@ -1375,6 +1385,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Counters._twoSidedDraws = 0; Counters._cullCuts = 0; Array.Clear(Counters._cutBy);
         Counters._drawsGob = 0;
         Counters._skipTexNone = 0; Counters._skipTexNoId = 0; Counters._skipTexNoHandle = 0; Counters._skipTexNotOwned = 0;
+        Counters._nullTexDraws = 0;
         Counters._skinDrawn = 0; Counters._skinNoPose = 0; Counters._boneHigh = 0;
         SkinPose.NoBind = 0; SkinPose.Overflow = 0;
         SkyBox.ResetPeriod();
@@ -1384,7 +1395,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Weather.ResetPeriod();
         Particles.ResetPeriod();
         Counters._watchSubmitted = 0;
-        Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0;
+        Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0; Counters._skipUnplaced = 0;
         ResetChasePeriod();
         Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
         Counters._recWritten = 0; Counters._recStable = 0;
@@ -1483,6 +1494,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // #285: every reason on this list is a HOLE -- geometry that nothing renders this frame.
                    $"NOT DRAWN this frame: unlit-pass {(float)Counters._skipNoLight / Counters._frames:F0} identity {(float)Counters._skipIdentity / Counters._frames:F0} " +
                    $"inactive-LOD {(float)Counters._skipLod / Counters._frames:F0} " +
+                   $"unplaced {(float)Counters._skipUnplaced / Counters._frames:F0} " +
                    $"dissolve {(float)Counters._ownDissolve / Counters._frames:F0} owned, fade {(float)Counters._ownFade / Counters._frames:F0} owned " +
                    $"fog-out {(float)Counters._skipFogTile / Counters._frames:F0} tile + {(float)Counters._skipFogGob / Counters._frames:F0} gob " +
                    $"no-mdl {(float)Counters._skipNoMdl / Counters._frames:F0} tex {(float)Counters._skipTex / Counters._frames:F0}" +
@@ -1491,6 +1503,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                        $" not-owned {(float)Counters._skipTexNotOwned / Counters._frames:F0}" +
                        $" no-handle {(float)Counters._skipTexNoHandle / Counters._frames:F0}) ") +
                    $"range {(float)Counters._skipRange / Counters._frames:F0} vao {(float)Counters._skipVao / Counters._frames:F0}), " +
+                   // Drawn, not dropped: the divergence-A population. It sits outside the NOT DRAWN list on
+                   // purpose -- a part on the white stand-in is on screen exactly as vanilla puts it there.
+                   (Counters._nullTexDraws == 0 ? ""
+                      : $"null-tex {(float)Counters._nullTexDraws / Counters._frames:F0} drawn white/frame, ") +
                    // The one split that answers "are characters Alloy's" without inference. Drawn ~0 with
                    // owned nonzero means every creature and placeable in view is a HOLE (#285): since #264
                    // there is no engine walk behind the skip, so nothing renders them at all.
@@ -1641,6 +1657,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         /// separate a camera-dependent bail-out (keyhole, tile fade) from a content one, which is exactly the
         /// distinction a part that is Alloy head-on and vanilla at the screen edge turns on.</summary>
         internal static long _skipLod;
+        /// <summary>Fault 1: gob-tree parts held back because the engine has not once placed their gob since
+        /// the slot was tenanted (<see cref="PartPlaced"/>). A steady nonzero count is the gate doing its job
+        /// -- those parts were being drawn at the area's (0,0) corner; a count that rises with the owned
+        /// total instead means the gobbucket sample has stopped agreeing with the walk.</summary>
+        internal static long _skipUnplaced;
         internal static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
                              _skipRange, _skipVao;
         /// <summary>...and the three causes behind the <c>tex</c> fallback, which are three different bugs
@@ -1649,6 +1670,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         /// forever -- a steady count here, roughly one creature's worth of parts, is a specific model whose
         /// texture Alloy declined to own, and that model then renders vanilla for the whole session.</summary>
         internal static long _skipTexNone, _skipTexNoId, _skipTexNoHandle, _skipTexNotOwned;
+        /// <summary>Draws that took the white null-texture stand-in because the diffuse resolved to GL id 0.
+        /// These are DRAWN, not skipped -- vanilla renders such a part blank white and so does Alloy now -- so
+        /// they are counted apart from the tex fallback rather than inside it. A steady count names content
+        /// whose texture resource is genuinely absent; `no-gl-id` beside it can only be a mint that failed.</summary>
+        internal static long _nullTexDraws;
         /// <summary>#546's other half: parts whose tile fog ramp (or a gob part's filed tile) read 0, dropped outright at route.
         /// Split by gob/tile because a creature part here is a HOLE the fog-of-war never explains.</summary>
         internal static long _skipFogTile, _skipFogGob;

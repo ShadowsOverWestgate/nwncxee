@@ -146,6 +146,10 @@ public sealed unsafe partial class AlloyRenderer
         }
         if (!IdentityOk(i, tri))
         { Counters._skipIdentity++; W(i, "skipped: identity changed -- revoked"); Revoke(i); return false; }
+        // Fault 1: the engine has never composed this gob's world matrix, so vp+0x18 is still the identity
+        // the VertexPrimitive ctor left and the part would draw at the area's (0,0) corner. See PartPlaced.
+        if (!PartPlaced(i))
+        { Counters._skipUnplaced++; SetCastOk(i, false); W(i, "skipped: gob never placed -- identity matrix"); return false; }
         // #336: a part of a LOD tree the gob is not showing. The engine draws GobPartTree alone; the walk
         // enrols all three trees so a swap is a field read, and this is that read. Casts nothing either.
         if (_oLodRoot[i] != IntPtr.Zero && *(IntPtr*)(_oGob[i] + GobPartTree) != _oLodRoot[i])
@@ -1079,7 +1083,7 @@ public sealed unsafe partial class AlloyRenderer
 
             var mat = new MaterialRef(_oMat[i]);
             int tid, slots;
-            bool texDirty = false;
+            bool texDirty = false, nullTex = false;
             if (verified) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
             else
             {
@@ -1120,16 +1124,27 @@ public sealed unsafe partial class AlloyRenderer
                     // that notices" -- but enrollment is edge-triggered (#256), so a part that enrolls once
                     // and is skipped here every frame after is never re-asked, and one whose tid was FINE at
                     // enrollment and went to 0 later (an area transition retiring the owned copy) is never
-                    // asked at all. Both read as "0 queued" beside a nonzero no-gl-id: an empty queue
+                    // asked at all. Both read as "0 queued" beside a nonzero null-tex: an empty queue
                     // because nothing is asking, not because nothing is waiting. NoteUnbuilt is a dictionary
                     // probe that dedups and self-caps (attempts, re-arm, Never), so the per-frame cost of
-                    // asking from the skip is the skip's own count -- and that count is the bug.
+                    // asking here is that count -- and that count is the bug.
                     if (tid == 0)
                     {
                         if (!main) { c = snap; return Deferred; }
                         OwnedTextures.NoteUnbuilt(aur.Ptr);
-                        Inc(ref Counters._skipTex); Inc(ref Counters._skipTexNoId); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
-                        W(i, "skipped: diffuse has no GL id"); return Skipped;
+                        // ...and DRAW it meanwhile, on the white texel vanilla would draw it on (see
+                        // OwnedTextures.WhiteTid). The skip here was the structural analysis's divergence A:
+                        // since #264 nothing renders an unowned part, so refusing tid 0 deleted from the
+                        // frame a part the engine would merely have rendered blank.
+                        tid = OwnedTextures.WhiteTid();
+                        if (tid == 0)
+                        {
+                            Inc(ref Counters._skipTex); Inc(ref Counters._skipTexNoId); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
+                            W(i, "skipped: diffuse has no GL id and no white stand-in"); return Skipped;
+                        }
+                        Inc(ref Counters._nullTexDraws);
+                        nullTex = true;
+                        W(i, "diffuse has no GL id -- drawn on the white stand-in");
                     }
                     // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
                     // engine texture is a handle on an object the engine may delete or re-upload under us,
@@ -1200,7 +1215,12 @@ public sealed unsafe partial class AlloyRenderer
                     // #331: registered on a pointer change only -- a cycle STEP re-resolves every record on
                     // the sheet, and re-asking the engine for a controller already on file would cost that
                     if (aur.Ptr != _recAur[i] || _recCtl[i] == IntPtr.Zero) _recCtl[i] = CycleTextures.Register(aur.Ptr);
-                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _recTexStale[i] = false;
+                    // A record holding the white stand-in stays STALE: the engine writes a late GL name
+                    // INSIDE the CAurTexture (basic+0x6c) without touching the pointer this cadence compares,
+                    // so a cached stand-in would never re-resolve and the part would stay white for the life
+                    // of the record. The cost is one re-resolve per frame per affected part, which is the
+                    // null-tex count.
+                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _recTexStale[i] = nullTex;
                     for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
                 }
             }

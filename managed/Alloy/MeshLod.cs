@@ -137,6 +137,9 @@ internal static unsafe class MeshLod
 
     private static long KeyOf(int slot, int item) => SlotJobTable<Job, Entry>.KeyOf(slot, item);
 
+    /// <summary>LOD runs on file, claimed or landed -- the area edge's tally (CX-19).</summary>
+    internal static int TableCount => _table.Count;
+
     /// <summary>Should the enrollment walk copy this range out for the worker? Asked before anything is read,
     /// so a mesh already on file, already queued, or past a budget costs one dictionary probe.</summary>
     internal static bool Wanted(int slot, int item, int idxCount, ulong sig)

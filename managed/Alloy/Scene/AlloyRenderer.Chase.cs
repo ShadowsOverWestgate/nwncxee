@@ -35,6 +35,14 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly IntPtr[] _visGob = new IntPtr[1 << VisBits];
     /// <summary>The sample each slot was filled on; a stale stamp is an empty slot, so no clear per frame.</summary>
     private static readonly int[] _visStamp = new int[1 << VisBits];
+    /// <summary>Per visited entry: did the engine WRITE this gob's parts a world matrix this frame -- in
+    /// <c>gobbucket</c> and past the two field tests <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 makes
+    /// before it walks the tree. Carried beside the entry so the placement gate costs one probe and no
+    /// dereference of a gob the route walk has not proved live.</summary>
+    private static readonly bool[] _visPlaced = new bool[1 << VisBits];
+    /// <summary>The visited set faithfully holds this frame's <c>gobbucket</c> -- the list read sane and the
+    /// set did not overflow. False stands the placement gate down: an unreadable list may not hide the world.</summary>
+    private static bool _visSetOk;
     /// <summary>The sample counter (one per anchor) and this sample's gob count.</summary>
     private static int _visSeq, _visCount;
     /// <summary>Chase every matrix this frame: the set overflowed, the symbol never resolved, or the previous
@@ -62,6 +70,16 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The part was filed in the BSP (mesh-bucket loop territory) rather than reached through a gob
     /// tree. Its matrix rewrite does not depend on <c>gobbucket</c>, so it is chased every frame.</summary>
     private static readonly bool[] _oBsp = new bool[MaxOwned];
+    /// <summary>Fault 1 (<c>docs/research/alloy-visibility-structural.md</c>): the engine has placed this
+    /// slot's gob at least once since the slot was tenanted. <c>VertexPrimitive::VertexPrimitive</c>
+    /// @0x45a9f0 leaves vp+0x18 -- the matrix Alloy reads -- at IDENTITY, and the only writer of a gob
+    /// part's is <c>AddPartsTreeToDrawBuckets</c> @0x460880 over <c>gobbucket</c>. So a gob the engine has
+    /// never composed a matrix for (a far city-window tile gob, a placeable added before its placement
+    /// lands) would draw at world (0,0,0), the outer corner of tile (0,0). A LATCH and not a per-frame
+    /// gate: once placed, an off-camera part keeps drawing and casting from the matrix it holds, which is
+    /// the whole point of the bounded chase. Cleared on every re-tenanting, so a recycled gob address
+    /// cannot inherit the previous tenant's answer.</summary>
+    private static readonly bool[] _oPlaced = new bool[MaxOwned];
     /// <summary>Moving-tile set: tiles whose factor moves next frame, stamped with the sample they were seen
     /// on; a tile is moving if seen this sample or the last (the commit lands the frame after the step).</summary>
     private const int MovBits = 10, MovMask = (1 << MovBits) - 1;
@@ -277,15 +295,10 @@ public sealed unsafe partial class AlloyRenderer
         _lastSampleFrame = _frameSeq;
         _visSeq++;
         _visCount = 0;
-        _visAll = !continuous || _gobBucket == null;
-        if (!_visAll)
-        {
-            int n = *(int*)(_gobBucket + BucketCount);
-            IntPtr* items = *(IntPtr**)(_gobBucket + BucketItems);
-            // an EMPTY CExoArrayList keeps a null items pointer: nothing in view, not an unreadable list
-            if (n < 0 || n > VisLoadCap || (n > 0 && items == null)) _visAll = true;
-            else for (int k = 0; k < n && !_visAll; k++) if (!VisSlot(items[k], true)) _visAll = true;
-        }
+        // The set is filled whenever the list reads sane, continuous frame or not: the placement latch
+        // needs this frame's membership even on a resume frame, where the chase caches serve nothing.
+        _visSetOk = SampleVisibleGobs(_gobBucket);
+        _visAll = !continuous || !_visSetOk;
         _visGobsLast = _visCount;
         fixed (ulong* key = _camKey)
             if (PartTable.KeyholeCameraMoved(PartTable.CurrentCamera, key)) _camGen++;
@@ -294,28 +307,79 @@ public sealed unsafe partial class AlloyRenderer
         _fadeAll = !continuous || !MarkPendingTiles(_fadeOutBucket) || !MarkPendingTiles(_fadeInBucket);
     }
 
-    /// <summary>Probe the visited set for <paramref name="gob"/>; with <paramref name="insert"/> an absent gob
-    /// is added. Returns membership after the call, or false on a full table with insert set.</summary>
-    private static bool VisSlot(IntPtr gob, bool insert)
+    /// <summary>Stamp every gob in <paramref name="bucket"/> into the visited set, each carrying the engine's
+    /// own placement verdict. False = the list read insane, an entry was null, or the set overflowed, and the
+    /// set then describes nothing this frame. Allocates nothing; two loads per visible gob on top of the
+    /// store the set already cost, off gobs the engine dereferenced moments earlier in the same walk.</summary>
+    private static bool SampleVisibleGobs(byte* bucket)
     {
-        if (gob == IntPtr.Zero) return false;
+        if (bucket == null) return false;
+        int n = *(int*)(bucket + BucketCount);
+        IntPtr* items = *(IntPtr**)(bucket + BucketItems);
+        // an EMPTY CExoArrayList keeps a null items pointer: nothing in view, not an unreadable list
+        if (n < 0 || n > VisLoadCap || (n > 0 && items == null)) return false;
+        for (int k = 0; k < n; k++)
+        {
+            IntPtr gob = items[k];
+            int h = VisIndex(gob, true);
+            if (h < 0) return false;
+            // the two tests Scene::AddPartsToDrawBuckets @0x4751d0 makes on a gobbucket entry before it
+            // walks the tree: everything it skips keeps the identity matrix the VertexPrimitive ctor left
+            _visPlaced[h] = *(byte*)(gob + EngineLayout.GobVisible) != 0
+                            && *(float*)(gob + EngineLayout.GobAlpha) > 0f;
+        }
+        return true;
+    }
+
+    /// <summary>The visited set's entry for <paramref name="gob"/>, or -1 when it is absent (and
+    /// <paramref name="insert"/> is clear), null, or the table is full.</summary>
+    private static int VisIndex(IntPtr gob, bool insert)
+    {
+        if (gob == IntPtr.Zero) return -1;
         int h = (int)((ulong)gob >> 4) & VisMask;
         for (int probe = 0; probe <= VisMask; probe++, h = (h + 1) & VisMask)
         {
             if (_visStamp[h] != _visSeq)
             {
-                if (!insert) return false;
-                _visStamp[h] = _visSeq; _visGob[h] = gob; _visCount++;
-                return true;
+                if (!insert) return -1;
+                _visStamp[h] = _visSeq; _visGob[h] = gob; _visPlaced[h] = false; _visCount++;
+                return h;
             }
-            if (_visGob[h] == gob) return true;
+            if (_visGob[h] == gob) return h;
         }
-        return false;
+        return -1;
     }
+
+    /// <summary>Probe the visited set for <paramref name="gob"/>; with <paramref name="insert"/> an absent gob
+    /// is added. Returns membership after the call, or false on a full table with insert set.</summary>
+    private static bool VisSlot(IntPtr gob, bool insert) => VisIndex(gob, insert) >= 0;
 
     /// <summary>Was this gob in the engine's in-view list this frame -- i.e. may its parts' matrices have
     /// been rewritten? True for everything on an overflow or resume frame.</summary>
     private static bool GobVisited(IntPtr gob) => _visAll || VisSlot(gob, false);
+
+    /// <summary>Fault 1: may this slot be drawn at all -- has the engine ever written the matrix Alloy reads
+    /// off it? A gob-tree part whose gob has not once reached <see cref="_visPlaced"/> since the slot was
+    /// tenanted holds the identity vp+0x18 its VertexPrimitive was constructed with, and drawing it puts the
+    /// asset at the area's (0,0) corner. Sets the latch on the first sighting, so the answer costs one probe
+    /// until then and nothing after.
+    /// <para>Not gated: a part with no gob and a BSP-filed one, whose matrices the mesh-bucket loop writes in
+    /// world space; and every part on a frame whose <c>gobbucket</c> read did not stand up, since an
+    /// instrument that cannot see may not hide the world.</para>
+    /// <para>ponytail: per GOB, where the engine decides per PART -- <c>AddPartsTreeToDrawBuckets</c> also
+    /// returns on <c>part+0x34 == 0</c>, so a subtree under a switched-off part is placed by this gate and
+    /// was not by the engine. Upgrade path is a per-part read of +0x34 at route, which costs a dereference
+    /// per slot per frame; the gob answer covers the whole reported symptom (#2).</para></summary>
+    private static bool PartPlaced(int i)
+    {
+        if (_oPlaced[i]) return true;
+        IntPtr gob = _oGob[i];
+        if (gob == IntPtr.Zero || _oBsp[i] || !_visSetOk) return true;
+        int h = VisIndex(gob, false);
+        if (h < 0 || !_visPlaced[h]) return false;
+        _oPlaced[i] = true;
+        return true;
+    }
 
     /// <summary>Stamp every tile in this bucket whose pending factor differs from its live one into the
     /// moving set. False = the bucket is unresolved or the set overflowed, so every factor may move.</summary>
@@ -509,6 +573,37 @@ public sealed unsafe partial class AlloyRenderer
         bool full = true;
         for (long g = 1; g <= (1 << VisBits) + 1 && full; g++) full = VisSlot((IntPtr)(g << 4), true);
         check.Expect(!full, "a full set reports the overflow");
+
+        // Fault 1: the placement gate. A gobbucket entry is placed only if it also passes the two field
+        // tests AddPartsToDrawBuckets makes; a part whose gob fails them holds the identity matrix.
+        byte* pGob = stackalloc byte[EngineLayout.GobVisible + 1];
+        new Span<byte>(pGob, EngineLayout.GobVisible + 1).Clear();
+        IntPtr* pItems = stackalloc IntPtr[1];
+        pItems[0] = (IntPtr)pGob;
+        byte* pBucket = stackalloc byte[BucketBytes];
+        *(IntPtr**)(pBucket + BucketItems) = pItems; *(int*)(pBucket + BucketCount) = 1;
+        int ps = MaxOwned - 1;
+        IntPtr wasGob = _oGob[ps]; bool wasBsp = _oBsp[ps], wasPlaced = _oPlaced[ps];
+        _oGob[ps] = (IntPtr)pGob; _oBsp[ps] = false; _oPlaced[ps] = false;
+        *(byte*)(pGob + EngineLayout.GobVisible) = 1; *(float*)(pGob + EngineLayout.GobAlpha) = 0f;
+        _visSeq++; _visCount = 0;
+        _visSetOk = SampleVisibleGobs(pBucket);
+        check.Expect(_visSetOk && !PartPlaced(ps), "a gobbucket gob at zero alpha is unplaced (no matrix was written)");
+        *(float*)(pGob + EngineLayout.GobAlpha) = 1f; *(byte*)(pGob + EngineLayout.GobVisible) = 0;
+        _visSeq++; _visCount = 0; _visSetOk = SampleVisibleGobs(pBucket);
+        check.Expect(!PartPlaced(ps), "an invisible gobbucket gob is unplaced");
+        *(byte*)(pGob + EngineLayout.GobVisible) = 1;
+        _visSeq++; _visCount = 0; _visSetOk = SampleVisibleGobs(pBucket);
+        check.Expect(PartPlaced(ps) && _oPlaced[ps], "a visible, opaque gob in gobbucket places the slot");
+        _visSeq++; _visCount = 0;   // the set now holds nothing: the gob left the engine's view volume
+        check.Expect(PartPlaced(ps), "the latch holds after the gob leaves the engine's set");
+        _oPlaced[ps] = false; _visSetOk = false;
+        check.Expect(PartPlaced(ps), "an unreadable gobbucket stands the gate down");
+        _oPlaced[ps] = false; _visSetOk = true; _oBsp[ps] = true;
+        check.Expect(PartPlaced(ps), "a BSP-filed part is not gated -- its matrix is the mesh-bucket loop's");
+        _oBsp[ps] = false; _oGob[ps] = IntPtr.Zero;
+        check.Expect(PartPlaced(ps), "a gobless part is not gated");
+        _oGob[ps] = wasGob; _oBsp[ps] = wasBsp; _oPlaced[ps] = wasPlaced; _visSetOk = false;
 
         ulong* key = stackalloc ulong[PartTable.CamKeyholeWords + 1];
         int camBytes = EngineLayout.CamKeyholeState + PartTable.CamKeyholeWords * 8;

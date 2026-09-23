@@ -177,8 +177,13 @@ vanilla. There is no walk. A decline is geometry that nothing renders, so each b
   classifying" could not be attributed without a Ghidra session. The census line now carries the cross:
   `[by gate: vdo/Water=87 item/Cutout=87 …]`, printed only where a cell is nonzero, over the five gates that
   refuse a classified part (`vdo`, `scene-tint`, `item`, `table-full`, `no-vao-slot`).
-- **Unbuilt diffuse textures** (`no-gl-id` on the `[alloy]` line). Not a decline any more — see #284 and the
-  retry drip in `docs/owned-resource-lifetimes.md`. The count is the acceptance instrument and must reach 0.
+- **Unbuilt diffuse textures** (`null-tex … drawn white/frame` on the `[alloy]` line). Not a refusal at all
+  any more: `AurTextureGetTID` @0x48e080 returns 0 for the engine's shared `m_pNullTexture`, `CAurTexture::Bind`'s
+  IsNull branch binds 0 and the draw is still issued, so vanilla renders such a part blank white. Alloy now
+  draws it on a 1x1 white owned texture (`OwnedTextures.WhiteTid`) instead of deleting it from the frame, and
+  the record stays stale so a late GL id is picked up the frame it arrives. The retry drip (#284, see
+  `docs/owned-resource-lifetimes.md`) is unchanged and still the repair. `no-gl-id` survives for the one case
+  that is still a hole — the stand-in itself could not be minted.
 
 ### Accepted in writing: `sample_framebuffer 1` / draw bucket 5
 

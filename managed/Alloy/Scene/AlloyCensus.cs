@@ -199,9 +199,19 @@ internal static unsafe partial class AlloyCensus
             // already found unreachable. Its record-set equivalent is the walk generation: an entry the last
             // walk still reached is one whose part is genuinely in the scene, which is what "still drawing"
             // was standing in for. A swept-unreachable entry says nothing about its gob and must not veto it.
+            // ...and NOT for a primitive the engine's own totals call empty. That entry is unbound because
+            // VertexPrimitiveFlat::SetupArrays @0x458920 took its zero-totals exit (item -1, VDO null), and
+            // RenderFlat @0x450eb0 opens with `if (vp+0x58 == 0) return;` -- so vanilla draws nothing for it
+            // and every sibling on the gob still draws. There is no second renderer to interleave, nothing
+            // was lost to own, and refusing the instance turns a part that costs nothing into the whole
+            // object missing. Its healing condition is the object being re-created, which is why the symptom
+            // reads as permanent.
             if (!_ownDry && _pGob[e] != IntPtr.Zero && _pWalkGen[e] == SceneWalk.Gen
                 && _pPart[e] != IntPtr.Zero && new PartRef(_pPart[e]).Gob.Ptr == _pGob[e])
-            { NoteInstRefusing(e); OwnRefuse(0, _pGob[e]); }
+            {
+                if (_pState[e] == StUnbound && SceneWalk.RecordHasNoGeometry(e)) _ownInstNoGeom++;
+                else { NoteInstRefusing(e); OwnRefuse(0, _pGob[e]); }
+            }
             return Gate("state");
         }
         if (OwnFlag[e] != 0) return Gate("OWNED");
@@ -304,8 +314,8 @@ internal static unsafe partial class AlloyCensus
         if (!_ownDry) _ownByClass[c.Cls]++;
         if (v == IntPtr.Zero || vd.Mode != 1 || _pTex0[e] == IntPtr.Zero)
         { Refuse(ref _ownRejVdo, c, RejVdo); return Gate("vdo"); }
-        // #284: a diffuse that is a live texture with no GL id is a part the draw loop will skip (no-gl-id),
-        // and the engine has no retry -- its build queue is one-shot and drains whether or not the build
+        // #284: a diffuse that is a live texture with no GL id is a part the draw loop will draw on the white
+        // stand-in (null-tex), and the engine has no retry -- its queue is one-shot and drains whether or not the build
         // found a decoded image. Enrolment is the Alloy-owned edge that notices; OwnedTextures owns the
         // retry, and the budget. Enrolled anyway: the id may well be there by the time the draw runs.
         if (!_ownDry)
@@ -571,6 +581,10 @@ internal static unsafe partial class AlloyCensus
     /// whole instance vanilla through the all-owned-or-none sweep. Reporting the two as one number reads as
     /// "creatures die a lot" when the question is "does anything a creature is DRAWING fail to bind".</summary>
     internal static int _ownInstRefusing;
+    /// <summary>...and the part of that population held BACK from refusing: an unbound entry whose primitive
+    /// the engine's own totals call empty. Vanilla draws nothing for it and keeps its siblings, so neither
+    /// does this. A number that tracks a missing object is the one that says this exemption is what saved it.</summary>
+    internal static int _ownInstNoGeom;
     /// <summary>Which gate killed the parts in <see cref="_ownInstRefusing"/>. The one thing the #128
     /// coverage line could not say, and the only thing that separates "the sweep is doing its job" from a
     /// class the binder cannot take -- <c>_pDeath</c> has held the answer per entry all along, unaggregated.
@@ -716,7 +730,7 @@ internal static unsafe partial class AlloyCensus
         _ownScene = scene;
         _ownSeen = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
-            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing =
+            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing = _ownInstNoGeom =
             _ownRejUnrenderable = _ownRejDupSibling = 0;
         Array.Clear(_instWhy); Array.Clear(_instWhyN);
         Array.Clear(_ownByClass); Array.Clear(OwnRefusedByClass); Array.Clear(OwnRejByReason);
@@ -747,6 +761,7 @@ internal static unsafe partial class AlloyCensus
         // "creatures are not in the table"; these three tell them apart without another round trip.
         $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan " +
         $"({_ownInstRefusing} of them DRAWING, i.e. taking their whole creature OUT OF THE FRAME{InstWhyNote()}), " +
+        $"{_ownInstNoGeom} geometry-less parts left on their instance, " +
         $"{_pInstRecorded} recorded ever, " +
         $"fb-sampling/volumetric={_ownRejFbSample}, " +
         // #126: the classification, as coverage. Cutout-vs-blended is the split the whole transparency

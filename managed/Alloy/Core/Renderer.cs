@@ -25,7 +25,7 @@ internal static class Renderer
     internal static readonly Knob<int> Border, Oit, OitLayers, TexCache, Bindless, BcnDrip, TexPrefetch, TexDelete, MaxElements,
                                        EnrollBudget, ClusterCap, SwapProbe, GlSync, SkipBuckets;
     internal static readonly Knob<bool> Light, Prepass, AoTest, Retest, HlDiag, HlGlow, Poll, PrepassKey, PrepassFeat, IdTarget,
-                                        BlendPrepass, BlendDiag, GpuMeter, VisList, WashTest, DepthEqual;
+                                        BlendDepth, GpuMeter, VisList, WashTest, DepthEqual;
     internal static readonly Knob<int> Viz, Threads, Cull, HlChan, OitViz;
     internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap;
 
@@ -144,8 +144,7 @@ internal static class Renderer
         PrepassFeat = G.Toggle("prepassfeat", "prepassfeat", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         DepthEqual = G.Toggle("depthequal", "depthequal", true, Tier.ChatOnly);
         IdTarget = G.Toggle("idtarget", "idtarget", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
-        BlendPrepass = G.Toggle("blendprepass", "blendprepass", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
-        BlendDiag = G.Toggle("blenddiag", "blenddiag", true, Tier.ChatOnly);
+        BlendDepth = G.Toggle("blenddepth", "blenddepth", true, Tier.ChatOnly);
         GpuMeter = G.Toggle("gpumeter", "gpumeter", true, Tier.ChatOnly, changed: () => GpuQuery.Enabled = GpuMeter!.V);
         GpuQuery.Enabled = GpuMeter.V;
         VisList = G.Toggle("vislist", "vislist", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);

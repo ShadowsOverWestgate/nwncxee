@@ -17,6 +17,10 @@ void main()
     if (CxKeyhole(uDraw[vDraw].rot.z, vWorld, vDepth) < 0.0) discard;
     oVisId = CxVisId(vDraw, gl_PrimitiveID);
     if (uAlphaCut < 0.0) return;
+    // the per-draw multiplier (material alpha, gob fade) is 1 on every opaque/cutout draw, so this only
+    // bites the blended sweep: a draw faded to nothing must not lay depth
+    float mul = uDraw[vDraw].rot.w;
+    if (mul <= uAlphaCut) discard;
     if ((int(uDraw[vDraw].pbr.w) & 64) != 0) return;
-    if (texture(uTex, vUV, uLodBias).a <= uAlphaCut) discard;
+    if (texture(uTex, vUV, uLodBias).a * mul <= uAlphaCut) discard;
 }

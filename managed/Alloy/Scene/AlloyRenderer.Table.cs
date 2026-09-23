@@ -71,7 +71,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#126: the material's Aurora blend pair, translated to GL at bind time. Only the blending
     /// classes read it.</summary>
     private static readonly byte[] _oSrc = new byte[MaxOwned], _oDst = new byte[MaxOwned];
-    /// <summary><see cref="AlloyCandidate.Wash"/>: blended with the depth mask off. Batch key term.</summary>
+    /// <summary><see cref="AlloyCandidate.Wash"/>: a cutout rerouted into the blended class for its graded
+    /// fringe, and so drawn under a polygon offset (it is routinely a decal lying on an opaque surface).
+    /// Batch key term. Its DEPTH is the class's own -- see <c>BlendLaysDepth</c>.</summary>
     internal static readonly byte[] _oWash = new byte[MaxOwned], _gWash = new byte[MaxOwned];
     /// <summary>#292: this part's material said <c>twosided</c>, so it draws with face culling OFF. The
     /// engine's default -- and what a part with no material gets -- is culling ON, which is why this is the

@@ -160,7 +160,9 @@ internal static unsafe class SceneWalk
         // A NEW Scene pays for all of it at once, deliberately. An area load is already a hitch -- the
         // player is on a loading screen -- and dripping the setup through the frames after it is what the
         // first live run showed as tiles arriving in front of you. The budget is for the steady state: a
-        // spawned placeable, a door swapping its model, a gob whose LOD subtree rotated in.
+        // spawned placeable, a door swapping its model, a gob whose LOD subtree rotated in. Since the retry
+        // condition is the totals moving and not an attempt count, a record that fails on the load frame
+        // loses nothing by being asked there.
         _setupLeft = sceneChanged ? int.MaxValue : SetupBudget;
         if (bumped || sceneChanged || _walkPending || _staleQueued)
         { _walkPending = false; _staleQueued = false; Walk(scene); }
@@ -194,11 +196,15 @@ internal static unsafe class SceneWalk
     private const int SetupBudget = 512;
     private static int _setupLeft;
     private static long _setups;
-    /// <summary>#264: records whose <c>SetupArrays</c> came back with no drawable geometry. They are asked
-    /// once and then left alone, so this is a POPULATION and not a rate -- it is how much of the enumerated
-    /// world is permanently not geometry, and the number that says whether the walk is enumerating things it
-    /// should not be reaching at all.</summary>
-    private static long _noGeom;
+    /// <summary>Unbound records whose <see cref="GeomSig"/> says their primitive carries no geometry at all.
+    /// A POPULATION, counted with the other period gauges: how much of the enumerated world is not geometry
+    /// YET, and the number that says whether the walk is enumerating things it should not be reaching. None
+    /// of them costs a <c>SetupArrays</c> call while it reads the same, and each is re-asked the moment it
+    /// does not -- so this number falling without an area load is residency arriving.</summary>
+    private static int _waitingGeom;
+    /// <summary>Records re-asked this period because their geometry totals moved. The rate that pairs with
+    /// <see cref="_waitingGeom"/>: the old eight-attempt window could only ever count down.</summary>
+    private static long _reasks;
     /// <summary>#264: parts the engine classified into the <c>sample_framebuffer</c> bucket at the last
     /// cross-check. That class is the one thing the walk's deletion dropped outright -- Alloy has no program
     /// for it, so nothing draws it now -- and this is the number that says whether the hole is three
@@ -207,8 +213,11 @@ internal static unsafe class SceneWalk
 
     /// <summary>A new Scene invalidates every record wholesale: the old Scene's parts are being torn down
     /// (<c>Scene::~Scene</c> @0x472e40 walks its gobs out one by one) and their addresses will be recycled.
-    /// Cheaper and safer than letting the sweep discover it one entry at a time.</summary>
-    private static void Reset() => WipeTables("scene changed -- re-enumerating");
+    /// Cheaper and safer than letting the sweep discover it one entry at a time.
+    /// <para>CX-19: through <c>AlloyRenderer.AreaEdge</c>, not <c>WipeTables</c> alone. This is Path A of an
+    /// area change and the AreaLoaded send is Path B; one edge, one revoke list, or the tables one of the two
+    /// shapes forgets are exactly the ones nobody notices.</para></summary>
+    private static void Reset() => AlloyRenderer.AreaEdge("scene changed -- re-enumerating");
 
     private static void Walk(IntPtr scene)
     {
@@ -364,22 +373,65 @@ internal static unsafe class SceneWalk
         if (vp == IntPtr.Zero || mat == IntPtr.Zero)
         { Release(e, vp == IntPtr.Zero ? "no-node" : "no-material"); return e; }
         _pState[e] = StUnbound;
-        if (!TryBind(e) && _pState[e] == StUnbound && _pSetupTries[e] < SetupAttempts) Enqueue(e);
+        if (!TryBind(e) && _pState[e] == StUnbound) Enqueue(e);
         return e;
     }
+
+    /// <summary>The vertex and index totals <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 sums over this
+    /// primitive's <c>MdlNodeTriMesh</c> list, packed into one comparable value: zero in either half is
+    /// exactly its no-geometry exit, so "the signature moved" is "the answer can have changed" and nothing
+    /// else is. Summed the engine's way -- this node first, then the <see cref="EngineLayout.VpCombineList"/>
+    /// siblings -- with its <c>CalculateTangentSpaceBasis</c> and <c>SetupProjectionArrays</c> side trips
+    /// left out: they write tangent and projection arrays, never a count.
+    /// <para>Allocation-free and read-only; three loads per node, and the empty tiles this exists to stop
+    /// re-asking have one node and no groups.</para></summary>
+    internal static long GeomSig(IntPtr vp)
+    {
+        IntPtr node = *(IntPtr*)(vp + EngineLayout.VpNode);
+        int count = *(int*)(vp + EngineLayout.VpCombineCount);
+        IntPtr list = *(IntPtr*)(vp + EngineLayout.VpCombineList);
+        uint verts = 0, idx = 0;
+        // A negative count skips the engine's loop entirely -- including this node -- and leaves both totals
+        // zero, so it is a no-geometry verdict rather than a one-node walk.
+        for (int i = 0; count >= 0 && node != IntPtr.Zero; i++)
+        {
+            unchecked
+            {
+                verts += *(ushort*)(node + EngineLayout.MdlVertexCount);
+                int groups = *(int*)(node + EngineLayout.MdlIndexGroups);
+                IntPtr counts = *(IntPtr*)(node + EngineLayout.MdlIndexGroupCounts);
+                if (counts != IntPtr.Zero)
+                    for (int g = 0; g < groups; g++) idx += *(uint*)(counts + g * sizeof(int));
+                idx += *(uint*)(node + EngineLayout.MdlIndexCount);
+            }
+            if (i >= count || list == IntPtr.Zero) break;
+            IntPtr sib = *(IntPtr*)(list + i * sizeof(IntPtr));
+            node = sib == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(sib + EngineLayout.PartNodeLink);
+            // MdlNode::AsMdlNodeTriMesh, inlined: the engine dereferences its result unguarded, so a node
+            // that fails the cast never reaches here in a client that is not already crashing.
+            if (node != IntPtr.Zero && (*(byte*)(node + EngineLayout.MdlNodeKind) & EngineLayout.MdlNodeKindTriMesh) != EngineLayout.MdlNodeKindTriMesh)
+                node = IntPtr.Zero;
+        }
+        return ((long)(verts & 0x7fffffff) << 32) | idx;
+    }
+
+    /// <summary>Does <paramref name="sig"/> say the primitive has no geometry at all? The population of
+    /// records sitting on one is what the period line reports as waiting.</summary>
+    internal static bool NoGeometry(long sig) => (sig >> 32) == 0 || (uint)sig == 0;
+
+    /// <summary>Has this record been told, by the engine's own totals, that its primitive carries no geometry
+    /// at all? <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 answers zero totals by setting the item to -1
+    /// and leaving the VDO null, and <c>RenderFlat</c> @0x450eb0 opens with
+    /// <c>if (vp+0x58 == 0) return;</c> -- so vanilla draws nothing for it either and its siblings are
+    /// untouched. False while the signature is still <see cref="PartTable.GeomSigNever"/>: never asked is not
+    /// the same answer as asked and empty.</summary>
+    internal static bool RecordHasNoGeometry(int e)
+        => _pGeomSig[e] != PartTable.GeomSigNever && NoGeometry(_pGeomSig[e]);
 
     /// <summary>Read the draw arguments off the VertexPrimitive and intern the group. Null VDO or item -1 is
     /// not a failure -- <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 has not run for this part yet, so
     /// the record simply stays unbound and is retried by <see cref="Rebind"/>. See
     /// <see cref="EngineLayout.VpVdo"/> for why this is a field read at all.</summary>
-    /// <summary>#317: may this record spend a <c>SetupArrays</c> attempt in this generation? Untried
-    /// records go straight through -- the load frame must still bind the world in one pass -- and a retry
-    /// waits <see cref="PartTable.SetupRearmGens"/> generations so the empty tiles do not re-ask in a
-    /// tight loop.</summary>
-    private static bool SetupDue(int e)
-        => _pSetupTries[e] == 0
-           || (_pSetupTries[e] < SetupAttempts && Gen - _pSetupGen[e] >= SetupRearmGens);
-
     private static bool TryBind(int e)
     {
         IntPtr part = _pPart[e], vp = _pNode[e];
@@ -398,17 +450,20 @@ internal static unsafe class SceneWalk
         // walk makes the call itself, at the same frame anchor the engine's draw used to run from.
         if (vdo == IntPtr.Zero || item < 0)
         {
-            // ONCE per record, and the flag is why. SetupArrays latches its own verdict, so a primitive that
-            // comes back with item -1 has no drawable geometry and will answer the same for ever. The first
-            // live run re-asked every frame and spent 512 calls a frame on 1899 tiles that never bound --
-            // which is a rendering system doing nothing, expensively, in perpetuity.
-            if (!SetupDue(e) || _setupLeft <= 0) { _pState[e] = StUnbound; if (wasBound) NoteChanged(e); return false; }
-            _pSetupTries[e]++; _pSetupGen[e] = Gen;
+            // THE ENGINE'S OWN CONDITION, not an attempt budget. SetupArrays' verdict is a pure function of
+            // the totals GeomSig reads, so totals unchanged since the last ask cannot answer differently and
+            // the call is skipped -- which is what stops the first live run's 512 calls a frame on 1899 tiles
+            // that were never going to bind. Totals that moved mean the model became resident, and that
+            // re-ask is never spent: there is no ceiling to run out of.
+            long sig = GeomSig(vp);
+            if (sig == _pGeomSig[e] || _setupLeft <= 0) { _pState[e] = StUnbound; if (wasBound) NoteChanged(e); return false; }
+            if (_pGeomSig[e] != PartTable.GeomSigNever) _reasks++;
+            _pGeomSig[e] = sig;
             _setupLeft--; _setups++;
             ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)vp + VpSetupArraysSlot)))(vp);
             vdo = *(IntPtr*)(vp + VpVdo);
             item = *(int*)(vp + VpItem);
-            if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; _noGeom++; if (wasBound) NoteChanged(e); return false; }
+            if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; if (wasBound) NoteChanged(e); return false; }
         }
         // Only mode 1 (indexed static) can be drawn from our own tables; the capture killed the rest as
         // "multidraw-or-unindexed" and that verdict is unchanged, it is just reached without a draw.
@@ -447,10 +502,10 @@ internal static unsafe class SceneWalk
         _pVdo[e] = IntPtr.Zero;
         _pMx[e] = _pNode[e] != IntPtr.Zero && (new NodeRef(_pNode[e]).MatrixClass || live.IsInstance);
         AlloyCensus.OwnFlag[e] = 0;
-        // #264: a new VertexPrimitive has its own setup state, so the latched "nothing here" verdict does
-        // not carry across the swap -- clearing it is what lets a re-modelled part bind at all.
+        // #264: the remembered geometry totals belong to the OLD VertexPrimitive, so they cannot stand in
+        // for the new one's -- forgetting them is what lets a re-modelled part be asked again at all.
         // #284: and a new MdlNode is a new bind-array question, so the pose attempt clears with it.
-        _pSetupTries[e] = 0; _pPoseTried[e] = false;
+        _pGeomSig[e] = PartTable.GeomSigNever; _pPoseTried[e] = false;
         _pState[e] = _pNode[e] == IntPtr.Zero || _pMat[e] == IntPtr.Zero ? Die(e, "no-node") : StUnbound;
         if (_pState[e] == StUnbound) Enqueue(e);
         Dirty = true; NoteChanged(e);
@@ -470,10 +525,10 @@ internal static unsafe class SceneWalk
             byte st = _pState[e];
             if (st != StUnbound && st != StStale) continue;   // bound, released or swept since
             if (_pWalkGen[e] != Gen) continue;                // not in the scene any more
-            // ...and a record whose setup was tried and produced nothing does NOT go back in the queue.
-            // It is not waiting for anything: nothing else in the frame will make its primitive drawable,
-            // and re-queueing it is what made the drain never drain.
-            if (!TryBind(e) && _pState[e] == StUnbound && _pSetupTries[e] < SetupAttempts) _unbound[left++] = e;
+            // A record that produced nothing STAYS queued -- what it is waiting for is its model becoming
+            // resident, which nothing in this frame announces. It costs one GeomSig read per tick and no
+            // SetupArrays call until the totals move, so the drain drains without the verdict being final.
+            if (!TryBind(e) && _pState[e] == StUnbound) _unbound[left++] = e;
         }
         _unboundCount = left;
     }
@@ -486,7 +541,11 @@ internal static unsafe class SceneWalk
     /// part the engine has never drawn has no VDO to read and enumeration alone cannot give it one. The
     /// count therefore never reaches zero, and the full-table scan this replaced ran all 262144 slots every
     /// frame for the life of the session to service those 1330. The queue makes it O(unbound), which is what
-    /// #256 asked for; making the 1330 bind at all is strand 1 step 5's (residency: geometry).</para></summary>
+    /// #256 asked for; making the 1330 bind at all is strand 1 step 5's (residency: geometry).</para>
+    /// <para>A record that answered "no geometry" is NOT dropped from the queue: that answer is the engine's
+    /// verdict on the totals it read at the time, and re-reading them is what notices the model arriving.
+    /// The queue is therefore a standing population rather than a draining one, and what bounds its cost is
+    /// <see cref="PartTable._pGeomSig"/> (no call while the totals hold) and not its length.</para></summary>
     private static readonly int[] _unbound = new int[MaxParts];
     private static int _unboundCount;
 
@@ -593,12 +652,14 @@ internal static unsafe class SceneWalk
         // per-period rates below (added/swept/bound) say what MOVED; these say where the table stands, and
         // reading a rate as a state is how "bound=270" came to look like "270 records are usable".
         int active = 0, unboundGob = 0, unboundTile = 0;
+        _waitingGeom = 0;
         for (int e = 0; e < MaxParts; e++)
         {
             byte st = _pState[e];
             if (st == StActive) { active++; continue; }
             if (st != StUnbound && st != StStale) continue;
             if (_pGob[e] != IntPtr.Zero) unboundGob++; else unboundTile++;
+            if (NoGeometry(_pGeomSig[e])) _waitingGeom++;
         }
         string s = $"[enum] walks={_walks} ({_walksSinceLog} this period) epoch moved on {_bumps} frames ({perFrame:0.000}/frame) walk={ms:0.00}ms "
                  + $"roots={_lastRoots} ({_lastLodAltGobs} gobs with LOD alternates) parts walked={_lastWalked} records={_partCount} active={active} "
@@ -609,13 +670,15 @@ internal static unsafe class SceneWalk
                  // never binds is world geometry the camera has not reached, which is the residency gap.
                  + $"unbound={_unboundCount} (gob={unboundGob} tile={unboundTile}) "
                  + $"+{_added} added/-{_swept} swept/{_bound} bound/{_setups} set-up this period "
-                 + $"no-geometry={_noGeom} "
+                 // Waiting is a population and re-asked is a rate: waiting-on-geometry records cost a totals
+                 // read and no call, and each moves to re-asked the tick its model becomes resident.
+                 + $"waiting-on-geometry={_waitingGeom} re-asked={_reasks} this period "
                  + $"non-mesh={_nonMesh} hidden={_hidden} table-full={_spill} stack-overflow={_overflow} "
                  // The two validators. countpart is an UPPER bound, never an equality: it counts every Part
                  // in every scene, GUI 3D panels included. bucket-miss is the sharp one -- it must be 0.
                  + $"countpart={cp} bucket-miss={_lastMiss} sample-class={_lastSample}";
         _bumpsSinceLog = 0; _framesSinceLog = 0;
-        _walksSinceLog = 0; _walkTicks = 0; _added = 0; _swept = 0; _bound = 0; _setups = 0;
+        _walksSinceLog = 0; _walkTicks = 0; _added = 0; _swept = 0; _bound = 0; _setups = 0; _reasks = 0;
         return s;
     }
 
@@ -682,6 +745,18 @@ internal static unsafe class SceneWalk
             _pFreed[ea] = true;
             ok &= Find(a) < 0;
             ok &= Insert(a) == ea && !_pFreed[ea];
+            // The "the engine draws nothing for it either" answer the instance sweep is exempted on: only a
+            // record that has ASKED and been told zero. Never-asked must not read as empty.
+            long savedSig = _pGeomSig[ea];
+            _pGeomSig[ea] = PartTable.GeomSigNever;
+            ok &= !RecordHasNoGeometry(ea);
+            _pGeomSig[ea] = 0;
+            ok &= RecordHasNoGeometry(ea);
+            _pGeomSig[ea] = 12L << 32;                 // vertices but no indices is still nothing to draw
+            ok &= RecordHasNoGeometry(ea);
+            _pGeomSig[ea] = (12L << 32) | 18;
+            ok &= !RecordHasNoGeometry(ea);
+            _pGeomSig[ea] = savedSig;
             _pState[ea] = StEmpty; _pState[eb] = StEmpty;
             _pPart[ea] = IntPtr.Zero; _pPart[eb] = IntPtr.Zero;
             _pWalkGen[ea] = 0; _pWalkGen[eb] = 0;

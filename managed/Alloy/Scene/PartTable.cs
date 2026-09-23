@@ -139,34 +139,25 @@ internal static unsafe class PartTable
     /// an area transition healed).</summary>
     internal static readonly bool[] _pFreed = new bool[MaxParts];
 
-    /// <summary>How many times <see cref="SceneWalk"/> has asked this record's VertexPrimitive to set its
-    /// arrays up. The call fills the VDO/item fields; a primitive whose MdlNode carries no drawable geometry
-    /// comes back with item -1, and without a ceiling the drain queue re-asks every such record every frame
-    /// (512 calls a frame, for ever, on 1899 tiles that were never going to bind; #264). An attempt COUNT
-    /// rather than a latch because the engine does not latch: <c>VertexPrimitiveFlat::SetupArrays</c>
-    /// @0x458920 takes its no-geometry exit when the vertex or index totals summed off the
-    /// <c>MdlNodeTriMesh</c> list are zero, and that exit leaves <see cref="EngineLayout.VpVdo"/> NULL, so its
-    /// own entry guard (<c>vp+0x64 &amp;&amp; vp+0x58 &amp;&amp; !vp+0x84</c>) fails next call and the ENGINE
-    /// redoes the work. A part whose model geometry is not resident yet answers zero once -- at the worst
-    /// moment, since a scene change lifts the budget and drains the whole queue on the load frame -- and
-    /// vanilla re-asks and draws it later (#317). A record still empty after <see cref="SetupAttempts"/> is
-    /// taken at its word.
-    /// ponytail: a fixed attempt count on a wait, not a signal that the model became resident. The exact
-    /// condition is "the MdlNodeTriMesh totals changed since last ask", which is most of SetupArrays' own
-    /// prefix re-walked per record; do that if streamed content ever outlives the window.
+    /// <summary>The geometry totals (<see cref="SceneWalk.GeomSig"/>) this record's VertexPrimitive carried
+    /// the last time <see cref="SceneWalk"/> asked it to set its arrays up, or <see cref="GeomSigNever"/>
+    /// before the first ask. It is the ENGINE's own condition, not a retry budget:
+    /// <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 takes its no-geometry exit exactly when the vertex
+    /// or index totals summed off the <c>MdlNodeTriMesh</c> list are zero, so totals unchanged since the last
+    /// failed ask means the same exit and the call is skipped -- and totals that MOVED mean the model became
+    /// resident, which is the one thing worth re-asking on. That exit leaves <see cref="EngineLayout.VpVdo"/>
+    /// NULL, so the engine's own entry guard (<c>vp+0x64 &amp;&amp; vp+0x58 &amp;&amp; !vp+0x84</c>) fails
+    /// next call and vanilla redoes the work every draw, for ever (#317); this is the same "no verdict is
+    /// ever final" with one cheap read standing in for the call.
     /// <para>Cleared wherever the primitive underneath may have changed -- a slot reclaimed by
     /// <see cref="Insert"/>, and a record whose node or material moved (<c>SceneWalk.Rebind</c>).</para></summary>
-    internal static readonly byte[] _pSetupTries = new byte[MaxParts];
-    /// <summary>#317: the walk generation each record last spent an attempt in, so the retries are spaced
-    /// over the load rather than burned in one frame.</summary>
-    internal static readonly int[] _pSetupGen = new int[MaxParts];
-    /// <summary>#317: how many <c>SetupArrays</c> calls one record is worth, and how many walk generations
-    /// it waits between them. The walk runs about once every ten frames, so eight attempts four generations
-    /// apart is roughly half a minute of load -- long enough for NWSync to land content the first attempt
-    /// missed, and a real ceiling rather than a timer that never terminates.</summary>
-    internal const int SetupAttempts = 8, SetupRearmGens = 4;
+    internal static readonly long[] _pGeomSig = new long[MaxParts];
+    /// <summary>The <see cref="_pGeomSig"/> value meaning "never asked", distinct from every real signature
+    /// (which <see cref="SceneWalk.GeomSig"/> keeps non-negative). Zero would collide with the empty totals
+    /// that are the common case, and the first ask must happen whatever the totals read.</summary>
+    internal const long GeomSigNever = -1;
     /// <summary>#284: has <see cref="SkinPose"/> already spent this record's one <c>PartSkin::PostProcess</c>
-    /// @0x483120 on it? Same shape and same reason as <see cref="_pSetupTries"/> -- the engine call latches
+    /// @0x483120 on it? A genuine one-shot, unlike <see cref="_pGeomSig"/> -- the engine call latches
     /// its own verdict (it deletes the temporary arrays its entry guard tests), so a second call can only
     /// return immediately, and a node that comes back still unprepared will come back unprepared for ever.
     /// <para>A record column rather than a set of part pointers on purpose: it clears exactly where the part
@@ -409,11 +400,11 @@ internal static unsafe class PartTable
                 // and live entries can sit beyond it -- so Record must write a non-empty state before
                 // anything that can re-enter Find (a nested Vanilla draw, a diagnostic).
                 _pFreed[s] = false; _pState[s] = StEmpty; AlloyCensus.OwnFlag[s] = 0;
-                _pSetupTries[s] = 0; _pPoseTried[s] = false;
+                _pGeomSig[s] = GeomSigNever; _pPoseTried[s] = false;
                 _pPart[s] = part; _reclaims++; return s;
             }
             if (_pState[s] == StEmpty)
-            { if (!room) return -1; _pPart[s] = part; _pSetupTries[s] = 0; _pPoseTried[s] = false; _partCount++; return s; }
+            { if (!room) return -1; _pPart[s] = part; _pGeomSig[s] = GeomSigNever; _pPoseTried[s] = false; _partCount++; return s; }
         }
         return -1;
     }
@@ -468,8 +459,8 @@ internal static unsafe class PartTable
     internal static void WipeTables(string why)
     {
         _wipeFrame = _frame;
-        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed); Array.Clear(_pSetupTries);
-        Array.Clear(_pPoseTried);
+        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed);
+        Array.Fill(_pGeomSig, GeomSigNever); Array.Clear(_pPoseTried);
         SkinPose.Forget();
         Array.Clear(AlloyCensus.OwnFlag);
         _partCount = 0; TableGen++;

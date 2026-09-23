@@ -53,7 +53,10 @@ internal enum PassId
     /// <summary>#126: the blended class -- genuine alpha, sorted back-to-front per part, depth writes off.
     /// Sits here because ADR 0011 puts blended after the opaque set and BEFORE the framebuffer copy the
     /// FB-sampling and water classes will read (#128): fade is a blended-class member, and moving it ahead
-    /// of the copy is what lets one copy serve both classes instead of the engine's two.</summary>
+    /// of the copy is what lets one copy serve both classes instead of the engine's two.
+    /// <para>Its colour draw writes no depth under OIT, so the pass closes with a depth-only sweep over the
+    /// same range (<c>BlendedDepthSweep</c>) -- vanilla writes this depth in the draw itself, and the copy
+    /// taken next is what water refracts and tests against.</para></summary>
     BlendedOwned,
     /// <summary>#129: the ONE framebuffer copy of the Alloy frame -- colour and depth of everything drawn so
     /// far, snapshotted into <see cref="FrameSnapshot"/>'s own pair of textures so the water stage can march them.

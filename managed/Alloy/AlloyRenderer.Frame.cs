@@ -362,15 +362,10 @@ public sealed unsafe partial class AlloyRenderer
                     break;
                 case PassId.BlendedOwned:
                     GpuBegin(GpuTerm.Blended);
-                    // Per CREATURE: every batch tagged with one run gob is prepassed then coloured
-                    // before the next creature's, in order of first appearance in the back-to-front
-                    // range, so a translucent creature behind another still shows through it. The
-                    // batches of one creature need not be contiguous -- the staging order interleaves
-                    // them (see the [blendrun] line) -- so each pass filters on the tag. Gobless batches
-                    // (fading tiles, windows) go first, unfiltered by prepass.
                     // OIT (OitPass): the whole class in one unsorted, non-depth-writing pass into the
-                    // accumulation pair, composited once. The per-creature run loop and its one-layer
-                    // depth sweep are gone with it: with no depth written, no layer can hide another.
+                    // accumulation pair, composited once -- the per-creature run loop #490 replaced. With
+                    // no depth written during it, no layer can hide another; the depth vanilla writes for
+                    // this class is laid once the composite is down.
                     // /alloy oit 2 (#490) sorts per pixel through linked lists on the same bracket.
                     if (_gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
                     {
@@ -384,6 +379,9 @@ public sealed unsafe partial class AlloyRenderer
                             Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
                             Issue._onlyHosted = false;
                         }
+                        // ...and then the depth vanilla writes for this class, which the copy below and the
+                        // water pass reading it both need. Last, so nothing here occluded the composite.
+                        BlendedDepthSweep(_gOpaqueEnd, _gBlendEnd, &vp, viewport);
                     }
                     else Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far, depthWrite: true);
                     GpuEnd(GpuTerm.Blended);
@@ -599,60 +597,81 @@ public sealed unsafe partial class AlloyRenderer
         return ok;
     }
 
-    /// <summary>Uniform transparency for the blended class: a depth-only sweep over its range BEFORE the
-    /// colour draw, so the colour pass's LEQUAL keeps exactly ONE layer per pixel -- the nearest. Without it
-    /// the back-to-front sort composites a creature's body, armour and cloak on top of one another, and a
-    /// torso under three layers reads near-opaque while a leg under one stays see-through. Vanilla's
-    /// unsorted, depth-writing bucket lands on the nearest layer by accident; this lands on it by
-    /// construction. Two sweeps as the opaque prepass: plain, then keyhole-dissolving under its own program.
-    /// <para>Scoped to one creature's run of batches by the caller, so a creature behind another still
-    /// composites through it. <c>/alloy blendprepass 0</c> stands it down.</para></summary>
-    private static void BlendedDepthPrepass(int from, int to, Matrix4x4* vp, int* viewport)
+    /// <summary>The blended class's DEPTH, laid after its colour draw and before the frame copy water reads.
+    /// Vanilla's <c>Material::SetBlendingMode</c> @0x4c5c50 clears the depth mask for the ADDITIVE pair alone,
+    /// so an ordinary alpha-blended part -- a creature's head gob, a fading tile -- writes depth in the engine
+    /// and the bucket-6 surface behind it is rejected. Under <see cref="OitPass"/> nothing in the class writes
+    /// depth at all, and water saw the lake bed through a head that had already been shaded: it went opaque
+    /// there and painted over it.
+    /// <para>Depth only (colour writes off) at the same LEQUAL the colour draw tested, through the opaque
+    /// prepass's alpha-testing feature stage alone (see <see cref="BlendLaysDepth"/>). AFTER the composite,
+    /// never before: laid first it would occlude the very surfaces OIT accumulates, which is the hole #490
+    /// removed. Mode 0 writes this depth in its own colour draw and never comes here.
+    /// <c>/alloy blenddepth 0</c> stands it down.</para></summary>
+    private static void BlendedDepthSweep(int from, int to, Matrix4x4* vp, int* viewport)
     {
-        if (to <= from || !_blendPrepass || !Programs.EnsureDepthProgram()) return;
+        if (to <= from || !_blendDepth || !_prepassFeat || !Programs.EnsureDepthFeatProgram()) return;
         bool indirect = CullPass.Active;
-        if (indirect) CullPass.BindForDraw(CullPass.PhasePrepass);
+        // The COLOUR phase's commands, not the prepass phase's: this lays depth for exactly the batches the
+        // blended colour draw kept, and the two phases test against different pyramids (#489).
+        if (indirect) CullPass.BindForDraw(CullPass.PhaseColour);
         Gl.ColorMask(0, 0, 0, 0);
         Gl.DepthMask(1);
-        Gl.DepthFunc(Gl.LESS);
+        Gl.DepthFunc(Gl.LEQUAL);
         Gl.Disable(Gl.BLEND); _blendOn = false;
+        Gl.UseProgram(Programs._progDepthFeat);
+        Gl.UniformMatrix4fv(Programs._depthFeatVp, 1, 0, (float*)vp);
+        Gl.Uniform1i(Programs._depthFeatTex, 0);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        UploadFeatureTerms(Programs._depthFeatFeat, viewport);
         uint boundVao = 0;
-        int boundCull = -1;
+        int boundCull = -1, boundTex = -1;
+        float boundCut = float.NaN;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
-        for (int sweep = 0; sweep < 2; sweep++)
+        for (int g = from; g < to; g++)
         {
-            bool dis = sweep == 1;
-            if (dis && Programs._progDepthKey == 0) break;
-            bool bound = false;
-            for (int g = from; g < to; g++)
-            {
-                if (Issue._onlyGobSet && _gGob[g] != Issue._onlyGob) continue;
-                if (ShaderFeatures.OutOfPrepass(_gFeat[g]) || _gDis[g] != dis) continue;
-                // A wash writes no depth in its colour draw, so it takes none here either: a tile's light
-                // shaft is its own run (tile parts carry the tile gob), and this sweep would stamp its solid
-                // silhouette over every wash run that follows -- the floor decal under it.
-                if (_gWash[g] != 0) continue;
-                if (!bound)
-                {
-                    bound = true;
-                    Gl.UseProgram(dis ? Programs._progDepthKey : Programs._progDepth);
-                    Gl.UniformMatrix4fv(dis ? Programs._depthKeyVp : Programs._depthVp, 1, 0, (float*)vp);
-                    if (dis) UploadFeatureTerms(Programs._depthKeyFeat, viewport);
-                }
-                int s = _gStart[g];
-                Gl.Uniform1i(dis ? Programs._depthKeyBase : Programs._depthBase, s);
-                BindBatchState(g, ref boundCull, ref boundVao);
-                if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
-                else
-                    Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
-                                                   (void**)(offs + s), _gLen[g], bases + s);
-                _blendPrepassDraws += _gLen[g];
-            }
+            if (Issue._onlyGobSet && _gGob[g] != Issue._onlyGob) continue;
+            if (!BlendLaysDepth(g)) continue;
+            int s = _gStart[g];
+            Gl.Uniform1i(Programs._depthFeatBase, s);
+            float cut = AlloyClasses.Discard(_gCls[g]);
+            if (cut != boundCut) { Gl.Uniform1f(Programs._depthFeatCut, cut); boundCut = cut; }
+            if (!_bindless && cut >= 0f && _gTex[g] != boundTex)
+            { Gl.BindTexture(Gl.TEXTURE_2D, (uint)_gTex[g]); boundTex = _gTex[g]; }
+            BindBatchState(g, ref boundCull, ref boundVao);
+            if (indirect) CullPass.Draw(_gMode[g], g, s, _gLen[g]);
+            else
+                Gl.MultiDrawElementsBaseVertex(_gMode[g], counts + s, GlUnsignedShort,
+                                               (void**)(offs + s), _gLen[g], bases + s);
         }
         if (indirect) { CullPass.UnbindForDraw(); Issue.BindStagedSlots(); }
         Gl.ColorMask(1, 1, 1, 1);
-        Gl.DepthFunc(Gl.LEQUAL);
+        // Hand back what the blended class left and the copy, water and additive passes read as already set.
+        Gl.DepthMask(0);
+        Gl.Enable(Gl.BLEND); _blendOn = true;
+    }
+
+    /// <summary>Does <see cref="BlendedDepthSweep"/> lay this batch's depth? Only through the alpha-testing
+    /// feature stage (texture alpha times the per-draw multiplier against the class's 0.2): without that test
+    /// a faded-out or fully transparent surface would stamp solid depth over everything drawn after it.
+    /// <para>A WASH is in, and that is the one carve-out this sweep does not inherit from the dead
+    /// <c>BlendedDepthPrepass</c>. That prepass ran BEFORE the blended colour draws, where a light shaft's
+    /// depth would have rejected the floor decal under it; this sweep runs after the composite, so nothing in
+    /// the class can be occluded by it. Out, a wash was the one part of the frame with no depth ANYWHERE --
+    /// never prepassed (it is in the blended class), depth mask off in its colour draw -- and a creature's
+    /// head, whose graded diffuse is exactly what the wash reroute catches
+    /// (<c>AlloyCensus</c>'s <c>gradedblend</c>), was painted over by the water and the particles behind it.
+    /// Vanilla draws that same part alpha-tested and depth-writing in bucket 1, which is what the 0.2 stage
+    /// below reproduces.</para>
+    /// <para>The roof pair and flowmap are out for the reason the prepass keeps them out -- their colour draw
+    /// discards or slides what the stage does not reproduce. Under bindless only lit records carry the handle
+    /// the stage samples (#153).</para></summary>
+    private static bool BlendLaysDepth(int g)
+    {
+        int f = _gFeat[g];
+        if (f == (int)ShaderFeature.Flowmap || f == (int)ShaderFeature.RoofKn || f == (int)ShaderFeature.RoofKnM) return false;
+        return !_bindless || _gLit[g];
     }
     /// <summary>#617 follow-up: the frame's water batches, depth only, under <paramref name="vp"/> into whatever
     /// target the caller attached -- the cover map's roof over a pool's bed. The prepass program on the
@@ -677,24 +696,9 @@ public sealed unsafe partial class AlloyRenderer
         Gl.BindVertexArray(0);
     }
 
-    /// <summary><c>/alloy blendprepass</c>: the blended class's one-layer depth sweep (default on).</summary>
-    private static bool _blendPrepass => Renderer.BlendPrepass.V;
-    /// <summary><c>/alloy blenddiag</c>: once per 300 frames, one log line per blended run -- its gob tag and
-    /// every batch's feature, length and cull -- so a creature that composites in pieces names the batch
-    /// that fell out of its run.</summary>
-    private static bool _blendDiag => Renderer.BlendDiag.V;
-    private static void BlendRunDiag(IntPtr tag, int rs, int re)
-    {
-        var sb = new System.Text.StringBuilder();
-        sb.Append($"[blendrun] gob={tag:x}:");
-        for (int g = rs; g < re; g++)
-        {
-            if (_gGob[g] != tag) continue;
-            sb.Append($" [{g} feat={(ShaderFeature)_gFeat[g]} n={_gLen[g]} dis={(_gDis[g] ? 1 : 0)} nocull={(_gNoCull[g] ? 1 : 0)} vao={_gVao[g]}]");
-        }
-        _log?.Info(sb.ToString());
-    }
-    private static int _blendPrepassDraws;
+    /// <summary><c>/alloy blenddepth</c>: the blended class's depth sweep (default on) -- the A/B for a
+    /// translucent surface water or an additive effect draws over.</summary>
+    private static bool _blendDepth => Renderer.BlendDepth.V;
 
     /// <summary>The depth prepass over the opaque range, submitting cull output set <paramref name="phase"/>.
     /// #489: called twice under the cull -- <see cref="CullPass.PhasePrepass"/> for phase one's survivors,

@@ -206,6 +206,12 @@ public static unsafe class EngineLayout
     /// <summary>MdlNode -&gt; the node name (<c>char[]</c>) <c>FindPart</c> @0x43c5b0 strcasecmp-s through
     /// <see cref="PartNodeLink"/>. #397 forensics only.</summary>
     public static readonly int MdlNodeName = Same("MdlNode", "name", 0x38);
+    /// <summary>The class-kind bits <c>MdlNode::AsMdlNodeTriMesh</c> tests: the cast succeeds iff
+    /// <c>(byte &amp; 0x21) == 0x21</c>. The whole function is that one test on both builds -- Linux
+    /// @0x43adf0 reads it as a dword, Windows (rva 0x8c360) as a byte, same offset, same mask.</summary>
+    public static readonly int MdlNodeKind = Same("MdlNode", "kind", 0x98);
+    /// <summary><see cref="MdlNodeKind"/>'s mask AND its expected value -- both bits must be set.</summary>
+    public const int MdlNodeKindTriMesh = 0x21;
     /// <summary>#659: MdlNode -&gt; its <c>NewController</c> array (data +0x78, count +0x80, stride
     /// <see cref="NewControllerStride"/>). <c>MdlNode::InternalControl</c> @0x4990c0 is the loop, byte-for-byte
     /// the same on both builds. NOTE: +0x80 is the same word <see cref="NodeFlags"/> reads as a matrix gate.</summary>
@@ -243,6 +249,18 @@ public static unsafe class EngineLayout
     public static readonly int MdlRestPool = Same("MdlNodeTriMesh", "restPool", 0x280);
     /// <summary>Vertex count beside <see cref="MdlRestPool"/>.</summary>
     public static readonly int MdlVertexCount = Same("MdlNodeTriMesh", "vertexCount", 0x284);
+    /// <summary>The per-group index counts (<c>int[]</c>) and how many groups there are. With
+    /// <see cref="MdlIndexCount"/> and <see cref="MdlVertexCount"/> these are the ONLY inputs to
+    /// <c>VertexPrimitiveFlat::SetupArrays</c>' no-geometry exit, which is why they are read at all
+    /// (<see cref="MdlIndexCount"/> carries the anchor).</summary>
+    public static readonly int MdlIndexGroupCounts = Same("MdlNodeTriMesh", "indexGroupCounts", 0x248);
+    /// <inheritdoc cref="MdlIndexGroupCounts"/>
+    public static readonly int MdlIndexGroups = Same("MdlNodeTriMesh", "indexGroups", 0x260);
+    /// <summary>The ungrouped index count, the last term of the index total. Anchored on the function pair
+    /// <c>VertexPrimitiveFlat::SetupArrays</c> (Linux @0x458920, Windows
+    /// <c>?SetupArrays@VertexPrimitiveFlat@@UEAAXXZ</c> rva 0xabca0): its summing prefix reads
+    /// <c>0x248</c>, <c>0x260</c>, <c>0x26c</c> and <c>0x284</c> at the same offsets on both builds.</summary>
+    public static readonly int MdlIndexCount = Same("MdlNodeTriMesh", "indexCount", 0x26c);
 
     /// <summary>#284: the MdlNode's <c>MdlNodeTriMesh_PostProcess*</c> -- the TEMPORARY load-time data
     /// <c>PartSkin::PostProcess</c> @0x483120 reads to build the bind arrays. Null with a zero bone count
@@ -538,6 +556,16 @@ public static unsafe class EngineLayout
     public static readonly int VpVdo = Same("VertexPrimitive", "vdo", 0x58);
     /// <inheritdoc cref="VpVdo"/>
     public static readonly int VpItem = Same("VertexPrimitive", "item", 0x60);
+    /// <summary>VertexPrimitive -&gt; the <c>MdlNodeTriMesh</c> it draws, and the <c>Part*</c> list of the
+    /// siblings merged into it (<c>CombineParts</c>) with its count. <c>SetupArrays</c> sums its geometry
+    /// totals over this node first and then over <c>*(list[i] + </c><see cref="PartNodeLink"/><c>)</c> for
+    /// <c>i &lt; count</c>; a NEGATIVE count skips the walk outright and the totals stay zero. Same function
+    /// pair as <see cref="MdlIndexCount"/>, same offsets on both builds.</summary>
+    public static readonly int VpNode = Same("VertexPrimitive", "node", 0x08);
+    /// <inheritdoc cref="VpNode"/>
+    public static readonly int VpCombineList = Same("VertexPrimitive", "combineList", 0x88);
+    /// <inheritdoc cref="VpNode"/>
+    public static readonly int VpCombineCount = Same("VertexPrimitive", "combineCount", 0x90);
     /// <summary>VertexPrimitive vtable slot 5 -- returns the <c>VertexPrimitiveDangly</c> view whose
     /// <see cref="VpdVelocity"/> is the velocity array, NOT the VertexPrimitive itself (verified at
     /// 0x49bd85: the engine calls this and indexes +0xa0 off the RESULT). Both tables printed by

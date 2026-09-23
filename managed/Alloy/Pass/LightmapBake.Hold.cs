@@ -99,8 +99,17 @@ internal static unsafe partial class LightmapBake
     }
 
     /// <summary>The world edge under a hold (a part-table wipe is one, and an area transition's debris can trip
-    /// it): the send still goes out -- a swallowed send is a player the server never places.</summary>
-    private static void DropHold() { if (Held) Release("world edge"); }
+    /// it): the send still goes out -- a swallowed send is a player the server never places. The one exception
+    /// is CX-19's area edge, which IS the edge this hold was raised for.</summary>
+    private static void DropHold() { if (Held && !_areaEdge) Release("world edge"); }
+
+    /// <summary>CX-19: <c>AlloyRenderer.AreaEdge</c> runs <see cref="Revoke"/> as part of the one area-edge
+    /// revoke list. Bracketed by these two, that revoke neither forwards the held send nor loses the edge
+    /// marks the static set closes against -- <see cref="EndAreaEdge"/> re-arms them, so the bake restarts on
+    /// the new area's inputs rather than falling back to the 600-walk close.</summary>
+    private static bool _areaEdge;
+    internal static void BeginAreaEdge() => _areaEdge = true;
+    internal static void EndAreaEdge() { _areaEdge = false; OnAreaLoaded(); }
 
     /// <summary>The window is the input side only (Escape, the clicks it eats); the draw is at the present,
     /// after the GL bracket hands the engine's context back -- the window roll-call sits under the engine's

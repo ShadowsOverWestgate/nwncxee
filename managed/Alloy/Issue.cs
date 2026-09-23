@@ -419,7 +419,11 @@ internal static unsafe class Issue
             }
             bool wash = blend && _gWash[g] != 0;
             bool equal = _matchDepth && _gPrepassed[g];
-            byte mask = wash || equal ? (byte)0 : _passDepthMask;
+            // A wash takes the pass's own depth rule, like any other blended draw: it is a cutout Alloy chose
+            // to BLEND for its fringe, and vanilla writes that part's depth in bucket 1. Holding the mask off
+            // here left it with no depth anywhere -- the blended class is never prepassed -- and water and
+            // particles painted over the creature heads the reroute catches.
+            byte mask = equal ? (byte)0 : _passDepthMask;
             if (mask != boundMask) { Gl.DepthMask(mask); boundMask = mask; }
             if (equal != boundEqual) { Gl.DepthFunc(equal ? Gl.EQUAL : Gl.LEQUAL); boundEqual = equal; }
             bool test = !(wash && !_washTest);

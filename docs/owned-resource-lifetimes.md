@@ -98,9 +98,38 @@ part-table wipe        |-> AlloyRenderer.RevokeAll      (AlloyRenderer.cs:1003-1
                               -> CasterPass.Lifecycle -> Release              (CasterPass.cs:1003-1008)
 4.6 context lost      -> PassRegistry.Global.ContextLost()                    (AlloyRenderer.cs:1003)
 table pressure        -> PartTable.OnTablePressure -> WipeTables              (PartTable.cs:453)
-Scene changed         -> SceneWalk.Reset -> WipeTables                        (SceneWalk.cs)
+Scene changed         \                                                       (SceneWalk.Reset)
+AreaLoaded send        |-> AlloyRenderer.AreaEdge  (AlloyRenderer.AreaEdge.cs) CX-19
+                              -> RevokeAll + WipeTables + OwnedTextures.AreaEdge
+                                 + InvalidateRecords, inside the lightmap-hold bracket
 scene walk sweep      -> SceneWalk.Sweep -> Die(e, "unreachable")             (SceneWalk.cs)
 ```
+
+**The area edge has two shapes and one revoke list (CX-19).** Path A is a Scene pointer change, which
+`SceneWalk.Tick` sees. Path B is a server hop or an in-module transition where the engine reuses the Scene
+object (EE 1.89.8193.37 keeps the tileset in memory) — `SceneWalk` sees nothing at all, and before CX-19
+nothing else did either, so every table keyed on an identity the engine recycles (pool tokens are
+LIFO-recycled, GL buffer names are recycled, VDO *items* churn, `CAurTexture*` addresses come back) kept
+serving the previous area's data to the next area's parts. `CNWCMessage::SendPlayerToServerArea_AreaLoaded`
+@0x7fa0c0 is the edge the engine does give us; `AlloyRenderer` chains it above the lightmap hold, raises a
+flag on the game thread and runs the revoke at the next render-thread frame anchor
+(`OnRenderSinglePass`), ahead of the walk and the enrolment that refill everything it drops. The
+`[areaedge]` line names which path fired and what each table dropped.
+
+Two orderings are load-bearing and are stated where they live. The revoke runs **through**
+`LightmapBake.Revoke`, whose `DropHold` would forward the very send the hold is sitting on and whose
+`Reopen` clears the edge marks the static set closes against — so `BeginAreaEdge`/`EndAreaEdge` bracket the
+list, standing the drop down and re-arming the edge afterwards. And it runs **before** the enrolment rather
+than at the present: `EnrollBegin` consumes the `TableGen` edge, so a revoke fired after it would be aimed
+at slots that are already current.
+
+**Content-keyed tables are deliberately outside that list.** `OwnedTextures._res` keys on the resref hash
+plus the decode schemes, the bake blob cache on the bake key, and `OwnedBuffers._byToken/_byName` ride the
+engine's own `DeleteBuffer` funnel (`DeletePool` @0x4d1d80 routes every named pool through it). Each of
+those describes what it names whichever area is up, so dropping them at a transition would only cost the
+re-upload. What *is* in the list is everything keyed on an address or a slot index: the ownership table,
+the VDO slots and their chart/LOD arenas, the beam VAO slots, the draw-arg range cache, and the #284
+texture-rebuild verdicts.
 
 **#256 adds a second death edge for a record, and it is not a destruction.** `Part::~Part` covers parts
 that are *freed*; the sweep covers parts that are merely *no longer in the scene* --
@@ -122,6 +151,8 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Ownership table `_oTri/_oGob/_oVdo/_oEntry` | `AlloyRenderer.Enroll` | `RevokeAll` | `AlloyRenderer.cs:995,1003,1005,1007` + per-part `Revoke(i)` on repack (`:951`) and identity change (`Batches.cs:234`) | via `RevokeAll` |
 | Part table (`PartTable`) | `SceneWalk.Enrol` + `SceneWalk.TryBind` (#256; #258 folded the group intern into the record) | `WipeTables` / `Die` / `SceneWalk.Sweep` | `PartTable.cs`, `OnPartDtor`, `SceneWalk.cs` | none — CPU only |
 | VAO cache `_vVdo/_vStale` | `EnsureVao` | `RevokeAll` retires the slots | `Enroll.cs` | GL names zeroed by `AlloyRenderer.ContextLost` |
+| Draw-arg range cache `_cIdx/_cOff/_cBase` | `BuildBatches`, from the VDO item tables (`Batches.cs:1212`) | per slot by `UnstampRecord` (re-tenant, drifted keep, transient range failure); wholesale by `InvalidateRecords` | `AreaEdge` (CX-19), `Issue.WipeHandles`, `AlloyRenderer.ContextLost` | via `InvalidateRecords` |
+| Texture rebuild verdicts `OwnedTextures._rebuildTried` (#284) | `NoteUnbuilt`, keyed on the raw `CAurTexture*` | `OwnedTextures.AreaEdge` (CX-19), the census settle, `ContextLost` | `AreaEdge` | dropped with the names |
 | Bindless handle cache `_hTid` | `Issue` staging | `WipeHandles` — **only while `alloy.ownedtex=0`** (#220); armed, see the row below | `Enroll.cs:26` (release) and `:62` (enrollment) | `Issue.ForgetHandles` |
 | Water planes (`WaterBodies`) | plane measurement during enrollment | `WaterBodies.Clear` | registry `Revoke` slot | none — CPU only |
 | Sky parts (`SkyBox`) | `OnPartDraw` capture window | `SkyBox.Forget`; per-part `SkyBox.Revoke` | registry `Revoke`; `DrawFunnelService.cs:371`; scene change `SkyBox.cs:136` | none — holds no GL |
@@ -192,6 +223,7 @@ frame and re-mints handles on a changed `CAurTexture*`, which is what makes thos
 | Caster depth program, FBO, depth array, persistent-mapped buffers, VAOs | `CasterPass.EnsureGl` | **nothing** — kept | see below |
 | Lightmap page pair (`sampler2DArray` x2, grown a layer at a time), scratch pair, scratch cube, readback PBO, record SSBO (`LightmapBake`, #674) | `LightmapBake.Ensure` / `AddLayer` inside the colour bracket | **nothing** — kept across areas; only the packing rewinds | `LightmapBake.ContextLost` |
 | Owned textures (`OwnedTextures`) | `OwnedTextures.Adopt`, or `OwnedTextures.Copy` for a GPU-PLT composite (#360) | `OwnedTextures.ContextLost` | registry `ContextLost` |
+| White null-texture stand-in (`OwnedTextures._white`) | `OwnedTextures.WhiteTid`, lazily, on the first draw whose diffuse resolves to GL id 0 | `OwnedTextures.ContextLost` zeroes `_white` with the rest of the names — nothing is deleted, and the next such draw re-mints it | registry `ContextLost`. Registered in `_owned` so #220's handle discipline holds; it is in no index, so no `Retire`/`Drain` path reaches it |
 | Owned pool buffers (`OwnedBuffers`) | `OwnedBuffers.Take`, in the ENGINE's context (buffers share, #70) | `OwnedBuffers.ContextLost` — names dropped, nothing deleted | registry `ContextLost` |
 | Chart vertex + element arenas and their one VAO (`MeshChart._vbo/_ebo/_vao`, #673) | `MeshChart.Pump` (upload through `COPY_WRITE_BUFFER`; the VAO once both names exist) | `MeshChart.ContextLost` — names forgotten, mirrors kept and re-sent on the next `Pump` | registry `ContextLost` |
 
@@ -355,7 +387,9 @@ gob — exactly what the engine's own first draw did.
 clears exactly where the part underneath can have changed — a slot reclaimed by `Insert`, a re-bound
 record (`SceneWalk.Rebind`) and `WipeTables`. That is deliberately *not* the `OwnedTextures` ceiling: a
 recycled address is never denied its attempt. `WipeTables` also calls `SkinPose.Forget`, because every
-queued entry index names a record that no longer exists.
+queued entry index names a record that no longer exists. CX-19 closed the gap the other way round:
+`OwnedTextures._rebuildTried` IS keyed on a recycled address, so it is now dropped whole on the area edge
+(`OwnedTextures.AreaEdge`) as well as on context loss and at the census settle.
 
 Reported on the `[alloy]` period line as `unprepared skinmeshes:`, session totals — beside the skinmesh
 pose counters it belongs with, not on `[rspshim]` where the texture drip reports.
@@ -378,8 +412,10 @@ image at `basic+0x58` is still null it never reaches `glImageBasic` @0x48bcf0, s
 exists anywhere**. The one-shot queue can lose its race with residency, permanently.
 
 Vanilla survived it because the engine's own draw bound id 0 and drew a texture-less part nobody
-looked at twice. Under #264 an Alloy part with no diffuse id is *skipped*, which reads live as a
-player character with no head.
+looked at twice. Under #264 an Alloy part with no diffuse id used to be *skipped*, which read live as a
+player character with no head; it now draws on the white stand-in (`OwnedTextures.WhiteTid`), which is
+what vanilla does, while the retry below still runs. The retry is therefore a repair, no longer the
+only thing standing between the part and invisibility.
 
 **Alloy-side driver**: `AlloyCensus.TryOwnCandidate` notes a live-but-idless diffuse at enrollment
 (cold, once per candidate per scan) into `OwnedTextures.NoteUnbuilt`; `OwnedTextures.DripRebuilds`

@@ -35,6 +35,7 @@ public sealed unsafe partial class AlloyRenderer
         if ((uint)b < (uint)_boneTop && _boneOwner[b] == i) FreeBoneSlot(b);
         _oBone[i] = -1;
         SetCastOk(i, false);   // #328: a vacated slot casts nothing, and the shadow side re-collects on it
+        _oPlaced[i] = false;   // Fault 1: the next tenant re-proves that the engine wrote its matrix
         LightmapBake.Vacate(i);   // #674: its bake record reads unbaked
         _ownLive--;
         _freeSlots[_freeCount++] = i;
@@ -424,6 +425,10 @@ public sealed unsafe partial class AlloyRenderer
         if (!kept) UnstampRecord(i);
         // #328: a new tenant has no record the bake may trust until the next write lands one.
         if (!kept) SetCastOk(i, false);
+        // Fault 1: the placement latch is per-TENANT. A slot re-seated on another part -- or a kept part
+        // re-pointed at another gob -- may not inherit "the engine has placed this", which a recycled gob
+        // address would otherwise hand it.
+        if (!kept || _oGob[i] != c.Gob) _oPlaced[i] = false;
         // A kept tenant whose identity fields drifted may not be the same part at all -- a freed
         // PartTriMesh recycled at the same address inside one frame window would otherwise inherit the
         // dead part's record with no vanish, appear, or move ever reaching the shadow side. Drift is

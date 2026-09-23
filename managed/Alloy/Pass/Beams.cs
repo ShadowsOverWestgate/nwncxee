@@ -411,6 +411,9 @@ internal static unsafe class Beams
         Forget();
     }
 
+    /// <summary>VAO-cache slots the harvest has taken -- the area edge's tally (CX-19).</summary>
+    internal static int VdoSlots => _vdoCount;
+
     internal static void Forget()
     {
         _count = 0;

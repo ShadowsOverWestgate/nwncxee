@@ -731,6 +731,17 @@ internal static unsafe partial class OwnedTextures
         _meta.Clear();
         _flushAll = true; _evictDue = true; _cacheFlushes++;
     }
+
+    /// <summary>CX-19, the AREA edge: the #284 rebuild ledger and its queue are keyed on the raw
+    /// <c>CAurTexture*</c> and the engine recycles those addresses across a transition, so both go whole.
+    /// The resource cache below them does NOT -- it keys on the resref hash and schemes, which mean the same
+    /// thing in any area (the module edge is <see cref="ModuleUnloaded"/>'s). Returns the verdicts dropped.</summary>
+    internal static int AreaEdge()
+    {
+        int n = _rebuildTried.Count;
+        _rebuildTried.Clear(); Array.Clear(_rebuildQ); _rebuildN = 0;
+        return n;
+    }
     private static bool _flushAll;
     private static long _cacheFlushes;
 
@@ -1091,7 +1102,7 @@ internal static unsafe partial class OwnedTextures
             return;
         _censusReported = true;
         // #284 ledger keyed on raw CAurTexture*: the area edge recycles addresses, so a fresh texture
-        // inherited a dead one's Never/spent verdict and was skipped for the session (no-gl-id 31/frame).
+        // inherited a dead one's Never/spent verdict and was never re-asked for the session (no-gl-id 31/frame).
         _rebuildTried.Clear();
         int total = _censusRaw + _censusBcn;
         long totalBytes = _censusRawBytes + _censusBcnBytes;
@@ -1177,16 +1188,16 @@ internal static unsafe partial class OwnedTextures
     /// removed comes straight back. Re-armed every <see cref="RebuildRearm"/> drip frames up to
     /// <see cref="RebuildAttempts"/> times instead: bounded, self-terminating, and it converges on the one
     /// answer that matters, which is whether waiting was all it needed.</para>
-    /// <para>ponytail: still keyed on the raw <c>CAurTexture*</c>, which the engine frees on an area
-    /// transition -- so a NEW texture at a recycled address inherits the old one's ledger, and a
-    /// <c>Never</c> verdict makes that inheritance permanent rather than merely early. Cleared only on
-    /// <see cref="ContextLost"/>. Upgrade path unchanged: clear it on the first <see cref="Retire"/> batch
-    /// after a world edge, where the pointer population turns over anyway.</para></summary>
+    /// <para>Still keyed on the raw <c>CAurTexture*</c>, which the engine frees on an area transition -- so a
+    /// NEW texture at a recycled address would inherit the old one's ledger, and a <c>Never</c> verdict would
+    /// make that inheritance permanent rather than merely early. CX-19 closed that: the ledger is dropped
+    /// whole on the area edge (<see cref="AreaEdge"/>), where the pointer population turns over anyway, as
+    /// well as on <see cref="ContextLost"/> and at the census settle.</para></summary>
     private struct Try { internal int Tries, Frame; internal bool Never; }
     private static readonly Dictionary<IntPtr, Try> _rebuildTried = new();
     private static int _dripFrame;
     private static long _rebuilds, _rebuildWon, _rebuildDead, _rebuildDropped;
-    /// <summary>Skips the ledger refused to re-ask about (verdict already final). Nonzero beside a no-gl-id count is the ledger, not a race.</summary>
+    /// <summary>Asks the ledger refused to re-ask about (verdict already final). Nonzero beside a null-tex count is the ledger, not a race.</summary>
     private static long _rebuildRefused;
     /// <summary>The residual, split by the reason a build cannot help -- see <see cref="Rebuild"/> for what
     /// each one is in the binary. These are POPULATIONS of distinct textures, not attempt counts: a texture
@@ -1214,6 +1225,39 @@ internal static unsafe partial class OwnedTextures
         for (int i = 0; i < _rebuildN; i++) if (_rebuildQ[i] == tex) return;
         _rebuildQ[_rebuildN++] = tex;
     }
+
+    /// <summary>The one opaque white texel a part draws on when its diffuse resolves to GL id 0. Vanilla
+    /// parity, not a paint-over: <c>AurTextureGetTID</c> @0x48e080 returns 0 for the engine's shared
+    /// <c>m_pNullTexture</c>, <c>CAurTexture::Bind</c>'s IsNull branch binds 0, and the draw is still issued
+    /// -- the part renders blank white. Alloy's own skip made the whole part INVISIBLE instead.
+    /// <para>Minted lazily on the render thread inside the 4.6 bracket and registered OWNED so #220's
+    /// bindless-handle discipline holds for it like any adopted name; nothing indexes it, so no retire path
+    /// reaches it. 0 out means no mint was possible and the caller keeps its skip.</para></summary>
+    internal static int WhiteTid()
+    {
+        if (_white != 0) return (int)_white;
+        if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.TexImage2D == null
+            || Gl.TexParameteri == null || Gl.GetIntegerv == null) return 0;
+        uint t;
+        Gl.GenTextures(1, &t);
+        if (t == 0) return 0;
+        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
+        // Raw glBindTexture, never AurTextureBindTID: the engine caches what it thinks is bound and this
+        // name is not the engine's.
+        Gl.BindTexture(Gl.TEXTURE_2D, t);
+        uint white = 0xFFFFFFFF;
+        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.RGBA8, 1, 1, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, &white);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
+        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
+        _owned.Add(t);
+        _white = t;
+        _log?.Info($"OwnedTextures: minted the white null-texture stand-in (tid {t}) -- a diffuse with no GL id now draws as vanilla draws it");
+        return (int)t;
+    }
+    /// <summary>The <see cref="WhiteTid"/> name, 0 until minted. Dropped (never deleted) on
+    /// <see cref="ContextLost"/> with every other name, and re-minted on the next draw that needs it.</summary>
+    private static uint _white;
 
     /// <summary>Spend at most <see cref="RebuildBudget"/> engine texture builds, on the frame anchor where
     /// <c>Beams.Enroll</c> and <c>SkyBox.Enroll</c> already run: once a frame, before the Alloy bracket, with
@@ -1791,6 +1835,7 @@ internal static unsafe partial class OwnedTextures
         // ledger has to go with the names it was a ledger about -- keeping it would refuse the whole world
         // its single retry. The queue holds pointers into a world that may not survive either.
         _rebuildTried.Clear(); Array.Clear(_rebuildQ); _rebuildN = 0; _dripFrame = 0;
+        _white = 0;   // its name went with the context too; the next null-texture draw re-mints it
         _censusRaw = _censusBcn = _censusTrans = 0;
         _censusRawBytes = _censusBcnBytes = _censusSaved = 0;
         _censusLastUpload = 0; _censusReported = false;

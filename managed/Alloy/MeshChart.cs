@@ -203,6 +203,9 @@ internal static unsafe partial class MeshChart
 
     internal static long KeyOf(int slot, int item) => SlotJobTable<Job, Entry>.KeyOf(slot, item);
 
+    /// <summary>Charts on file, claimed or landed -- the area edge's tally (CX-19).</summary>
+    internal static int TableCount => _table.Count;
+
     /// <summary>Asked before anything is read: a mesh on file, queued or past a budget costs one probe.
     /// <paramref name="later"/> = not now but not refused either: the worker's queue is full (an area's
     /// whole tile set enrols in one walk), and the caller re-offers when it drains -- an offer that fell
