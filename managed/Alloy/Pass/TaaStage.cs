@@ -95,9 +95,6 @@ internal static unsafe class TaaStage
     /// (<paramref name="src"/>) against the reprojected, clamped history into the other history texture, which
     /// is then left on <see cref="TextureSlots.AaEdges"/> for the stage program. The caller rebinds its own
     /// target and viewport after. Hot: allocates nothing.</summary>
-    /// <summary>The current frame's (render) size, read off the texture each Prepare for the jitter scale.</summary>
-    private static int _curW, _curH;
-
     internal static void Prepare(uint src, uint stageProg, int* viewport)
     {
         uint read = _cur == 0 ? _hist0 : _hist1, write = _cur == 0 ? _hist1 : _hist0;
@@ -105,9 +102,6 @@ internal static unsafe class TaaStage
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, write, 0);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.PostHdr); Gl.BindTexture(Gl.TEXTURE_2D, src);
-        // on the unit that already holds it -- any other unit's binding is a stage's input
-        fixed (int* w = &_curW) Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, w);
-        fixed (int* h = &_curH) Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, h);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaEdges); Gl.BindTexture(Gl.TEXTURE_2D, read);
         Gl.BindSampler(TextureSlots.AaEdges, _sampler);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.AaArea); Gl.BindTexture(Gl.TEXTURE_2D, MotionVectors.Tex);
@@ -126,7 +120,7 @@ internal static unsafe class TaaStage
         if (up) Gl.BindSampler(TextureSlots.PostHdr, _sampler);
         Gl.Uniform1i(_locUpsample, up ? 1 : 0);
         // NDC jitter to render pixels: +j in NDC moved the image +j * size/2 pixels (Frame.cs, proj.M31)
-        Gl.Uniform2f(_locJitterPx, PostChain.JitterX * 0.5f * _curW, PostChain.JitterY * 0.5f * _curH);
+        Gl.Uniform2f(_locJitterPx, PostChain.JitterX * 0.5f * PostStack.Width, PostChain.JitterY * 0.5f * PostStack.Height);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.BindSampler(TextureSlots.AaEdges, 0);
         Gl.BindSampler(TextureSlots.AaArea, 0);

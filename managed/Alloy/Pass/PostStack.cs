@@ -122,6 +122,11 @@ internal static unsafe class PostStack
     private static int _w, _h;
     private static int _pending;
 
+    /// <summary>The ping-pong pair's size: every stage's source (render size when <see cref="Upsampling"/>).</summary>
+    internal static int Width => _w;
+    /// <inheritdoc cref="Width"/>
+    internal static int Height => _h;
+
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
