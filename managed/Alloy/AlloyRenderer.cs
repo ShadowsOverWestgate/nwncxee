@@ -247,6 +247,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static bool _prepassFeat => Renderer.PrepassFeat.V;
     /// <summary><c>/alloy prepass 0</c>: skip the prepass, which is the A/B for its own acceptance number.</summary>
     private static bool _depthPrepass => Renderer.Prepass.V;
+    /// <summary><c>/alloy depthequal 0</c>: prepassed opaque/cutout batches draw LEQUAL with depth writes, as
+    /// before -- the A/B for <see cref="Issue._matchDepth"/>.</summary>
+    private static bool _depthEqual => Renderer.DepthEqual.V;
     /// <summary>The clustered lit program's uniform locations, ONE struct per program: #350 builds the lit
     /// stage twice -- <see cref="Programs._progLit46"/> from the hosted regions' stubs, which every ordinary lit batch
     /// draws with, and <see cref="Programs._progLitHost"/> with the content bodies in, bound only for a batch whose

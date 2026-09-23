@@ -704,12 +704,12 @@ public sealed unsafe partial class AlloyRenderer
     /// otherwise double.</summary>
     private static void DepthPrepassPass(int groups, Matrix4x4* vp, int* viewport, int phase)
     {
-        if (!_depthPrepass || !Programs.EnsureDepthProgram()) return;
         bool retest = phase == CullPass.PhaseRetest;
+        if (!retest) Array.Clear(_gPrepassed, 0, groups);
+        if (!_depthPrepass || !Programs.EnsureDepthProgram()) return;
         int skipped = 0, drawn = 0;
         bool indirect = CullPass.Active;
         if (!indirect && retest) return;
-        if (!retest) Array.Clear(_gPrepassed, 0, groups);
         GpuBegin(GpuTerm.Prepass);
         // #243: a list the pyramid did not produce. The prepass is what the hi-Z pyramid is built from, so
         // it cannot be culled against the pyramid it produces; #489 tests phase one against the PRIOR
@@ -886,14 +886,18 @@ public sealed unsafe partial class AlloyRenderer
     {
         int tail = from;
         while (tail < to && !_gDis[tail]) tail++;
+        Issue._matchDepth = _depthEqual;
         GpuBegin(plain);
         Issue.IssueColour(from, tail, vp, viewport, near, far);
         GpuEnd(plain);
-        if (tail >= to) return;
-        Issue._holdProg = true;
-        GpuBegin(keyed);
-        Issue.IssueColour(tail, to, vp, viewport, near, far);
-        GpuEnd(keyed);
+        if (tail < to)
+        {
+            Issue._holdProg = true;
+            GpuBegin(keyed);
+            Issue.IssueColour(tail, to, vp, viewport, near, far);
+            GpuEnd(keyed);
+        }
+        Issue._matchDepth = false;
     }
 
     /// <summary>#121: capture the area's IBL probe -- the same staged batches, drawn six more times into a

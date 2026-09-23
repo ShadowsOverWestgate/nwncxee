@@ -268,6 +268,7 @@ internal static unsafe class Issue
         // before its own range, so the first batch of either kind agrees with the state already set.
         bool boundBlend = _blendOn;
         byte boundMask = _passDepthMask;
+        bool boundEqual = false;
         bool boundTest = true;
         bool boundOffset = false;
         float boundOitBias = -1f;   // per program: reset on bind, so a wash batch's bias never leaks across
@@ -417,8 +418,10 @@ internal static unsafe class Issue
                 if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
             }
             bool wash = blend && _gWash[g] != 0;
-            byte mask = wash ? (byte)0 : _passDepthMask;
+            bool equal = _matchDepth && _gPrepassed[g];
+            byte mask = wash || equal ? (byte)0 : _passDepthMask;
             if (mask != boundMask) { Gl.DepthMask(mask); boundMask = mask; }
+            if (equal != boundEqual) { Gl.DepthFunc(equal ? Gl.EQUAL : Gl.LEQUAL); boundEqual = equal; }
             bool test = !(wash && !_washTest);
             if (test != boundTest) { if (test) Gl.Enable(Gl.DEPTH_TEST); else Gl.Disable(Gl.DEPTH_TEST); boundTest = test; }
             // A wash is routinely a decal lying ON an opaque surface (a floor lattice at +0.005), and its
@@ -478,6 +481,7 @@ internal static unsafe class Issue
         _blendOn = boundBlend;
         _heldProg = boundProg;
         if (boundMask != _passDepthMask) Gl.DepthMask(_passDepthMask);
+        if (boundEqual) Gl.DepthFunc(Gl.LEQUAL);
         if (!boundTest) Gl.Enable(Gl.DEPTH_TEST);
         if (boundOffset) Gl.Disable(Gl.POLYGON_OFFSET_FILL);
     }
@@ -491,6 +495,11 @@ internal static unsafe class Issue
     /// <summary>The depth mask the current pass set before <see cref="IssueColour"/>; a wash batch drops it
     /// to 0 for its own draws and the loop restores it. 1 everywhere but the transparent passes.</summary>
     private static byte _passDepthMask = 1;
+    /// <summary>The opaque and cutout passes only: a batch the prepass laid depth for draws at <c>GL_EQUAL</c>
+    /// with the mask off. Its keyhole and alpha discards already shaped that depth, so every hidden or holed
+    /// fragment fails the test before shading, and with no depth write the driver keeps early-Z despite the
+    /// stage's <c>discard</c>. Callers set it around the pass and must restore false.</summary>
+    internal static bool _matchDepth;
     /// <summary>The blended range is being drawn into OitPass's accumulation pair: programs write the pair,
     /// and the per-batch blend pair stays off the state.</summary>
     internal static bool _oitOn;
