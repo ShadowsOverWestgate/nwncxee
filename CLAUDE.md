@@ -127,6 +127,16 @@ no registration:
 See `docs/hook-pattern.md` for the hook + trampoline mechanics. Everything else --
 loading, discovery, install ordering -- is done for you.
 
+## Engine memory reads
+
+Outside Alloy, read engine fields through the typed views in `CX.Engine`
+(`new CNWCCreature(obj).Stats.FirstName`), not `*(T*)(ptr + EngineLayout.X)`.
+A view member exists once its row is typed: `Field<T>` in `EngineLayout.cs`, where `T` is
+the primitive, or the target's view for a pointer to a class. `build.sh` regenerates
+`Framework/Engine/Views.g.cs` (`tools/engine/views.py`); never edit it by hand, and settle a
+merge conflict in it by rerunning the script. **Touch a file, port its reads** -- no backlog
+beyond that (CX-30). Alloy's hot loops stay on raw pointers.
+
 ## Comment rule
 
 Every declaration that needs explaining gets a concise XML `<summary>` (one--three

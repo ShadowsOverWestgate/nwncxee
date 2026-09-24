@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using CX.Engine;
 
 namespace CX.Framework;
 
@@ -29,15 +30,20 @@ public static unsafe class PlayerIdentity
         return mgr != IntPtr.Zero ? *(IntPtr*)mgr : IntPtr.Zero;
     }
 
+    /// <summary>The live app's internals, or a null view before the app exists.</summary>
+    private static CClientExoAppInternal Internal()
+    {
+        IntPtr app = App();
+        return app == IntPtr.Zero ? default : new CClientExoApp(app).Internal;
+    }
+
     /// <summary>"a.b.c.d:port" of the connected server, "" when not connected (the main menu returns an empty
     /// string; through the master-server relay it is the relay's address).</summary>
     public static string ServerAddress()
     {
-        IntPtr app = App();
-        if (app == IntPtr.Zero || _serverAddress == null) return "";
-        IntPtr intern = *(IntPtr*)(app + EngineLayout.ExoAppInternal);
-        if (intern == IntPtr.Zero) return "";
-        IntPtr net = *(IntPtr*)(intern + EngineLayout.InternalNetLayer);
+        CClientExoAppInternal intern = Internal();
+        if (intern.IsNull || _serverAddress == null) return "";
+        IntPtr net = intern.NetLayer;
         if (net == IntPtr.Zero) return "";
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;   // the dtor below frees whatever buffer lands here
@@ -51,19 +57,17 @@ public static unsafe class PlayerIdentity
     /// Zero when there is no local creature (not in a module). Chat's tell resolver and the radial key share it.</summary>
     public static IntPtr LocalPlayer()
     {
-        IntPtr app = App();
-        if (app == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr intern = *(IntPtr*)(app + EngineLayout.ExoAppInternal);
-        if (intern == IntPtr.Zero) return IntPtr.Zero;
-        uint localObj = *(uint*)(intern + EngineLayout.InternalPlayerCreatureId);
+        CClientExoAppInternal intern = Internal();
+        if (intern.IsNull) return IntPtr.Zero;
+        uint localObj = intern.PlayerCreatureId;
         if (localObj == 0) return IntPtr.Zero;
-        IntPtr listBase = *(IntPtr*)(intern + EngineLayout.InternalPlayers);
-        int count = *(int*)(intern + EngineLayout.InternalPlayerCount);
+        IntPtr listBase = intern.Players;
+        int count = intern.PlayerCount;
         if (listBase == IntPtr.Zero || count <= 0 || count > MaxPlayers) return IntPtr.Zero;
         for (int i = 0; i < count; i++)
         {
-            IntPtr player = *(IntPtr*)(listBase + i * 8);
-            if (player != IntPtr.Zero && *(uint*)(player + EngineLayout.PlayerCreatureId) == localObj) return player;
+            var player = new CNWCPlayer(*(IntPtr*)(listBase + i * 8));
+            if (!player.IsNull && player.CreatureId == localObj) return player.Ptr;
         }
         return IntPtr.Zero;
     }
@@ -74,13 +78,13 @@ public static unsafe class PlayerIdentity
     {
         IntPtr app = App();
         if (app == IntPtr.Zero || _getGameObject == null) return IntPtr.Zero;
-        IntPtr intern = *(IntPtr*)(app + EngineLayout.ExoAppInternal);
-        if (intern == IntPtr.Zero) return IntPtr.Zero;
-        uint localObj = *(uint*)(intern + EngineLayout.InternalPlayerCreatureId);
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal;
+        if (intern.IsNull) return IntPtr.Zero;
+        uint localObj = intern.PlayerCreatureId;
         if (localObj == 0) return IntPtr.Zero;
-        IntPtr obj = _getGameObject(app, localObj);
-        if (obj == IntPtr.Zero || *(byte*)(obj + EngineLayout.ObjType) != TypeCreature) return IntPtr.Zero;
-        return *(IntPtr*)(obj + EngineLayout.CreatureStats) == IntPtr.Zero ? IntPtr.Zero : obj;
+        var obj = new CNWCObject(_getGameObject(app, localObj));
+        if (obj.IsNull || obj.Type != TypeCreature) return IntPtr.Zero;
+        return new CNWCCreature(obj.Ptr).Stats.IsNull ? IntPtr.Zero : obj.Ptr;
     }
 
     /// <summary>The local creature's "First Last" (either half alone when the other is empty), "" when there is
@@ -89,9 +93,9 @@ public static unsafe class PlayerIdentity
     {
         IntPtr obj = Creature();
         if (obj == IntPtr.Zero) return "";
-        IntPtr stats = *(IntPtr*)(obj + EngineLayout.CreatureStats);
-        string first = Text(*(byte**)(stats + EngineLayout.StatsFirstName), *(uint*)(stats + EngineLayout.StatsFirstNameLen)).Trim();
-        string last = Text(*(byte**)(stats + EngineLayout.StatsLastName), *(uint*)(stats + EngineLayout.StatsLastNameLen)).Trim();
+        CNWCCreatureStats stats = new CNWCCreature(obj).Stats;
+        string first = Text((byte*)stats.FirstName, stats.FirstNameLen).Trim();
+        string last = Text((byte*)stats.LastName, stats.LastNameLen).Trim();
         return first.Length == 0 ? last : last.Length == 0 ? first : first + " " + last;
     }
 

@@ -19,7 +19,7 @@ from rvamatch import same
 #: How far a moved field is looked for around its old displacement.
 NEAR = 0x40
 
-DECL = re.compile(r'public static readonly int (\w+) =\s*Field\(\s*"([^"]+)",\s*"([^"]+)"')
+DECL = re.compile(r'public static readonly int (\w+) =\s*Field(?:<[^>]+>)?\(\s*"([^"]+)",\s*"([^"]+)"')
 QUAL = re.compile(r'\b([A-Za-z_]\w*)::(~?[A-Za-z_]\w*)')
 BARE = re.compile(r'<c>([A-Za-z_]\w*)</c>')
 INHERIT = re.compile(r'<inheritdoc cref="(\w+)"')

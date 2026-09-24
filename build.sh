@@ -63,6 +63,10 @@ if [ ! -f build/libcxatlas.a ] || [ native/xatlas/xatlas.cpp -nt build/libcxatla
   rm -f build/libcxatlas.a && ar rcs build/libcxatlas.a build/xatlas.o build/cxatlas.o
 fi
 
+# The typed engine views (managed/Framework/Engine/Views.g.cs) are generated from EngineLayout's rows;
+# checked in because the Windows builds compile it without running python.
+python3 tools/engine/views.py
+
 echo ">> building managed lib (C# NativeAOT -> cx_managed.so)..."
 CX_VERSION=$(git describe --tags --always 2>/dev/null || echo dev)
 # Quiet on success, but NEVER swallow a failure: discarding stderr here once hid a compile error behind a
