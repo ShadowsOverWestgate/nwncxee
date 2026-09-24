@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.CombatText;
 
@@ -35,15 +36,11 @@ public sealed unsafe class StepGuardService : IExtenderService
 #endif
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
 
-    private static readonly int IdOff = EngineLayout.ObjId;
-    private static readonly int InternalOff = EngineLayout.ExoAppInternal;
-    private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
-    private static readonly int AreaOff = EngineLayout.ModuleCurrentArea;
+    /// <summary>The desired-position Vector and the pathfind block's personal-space pair: both are embedded
+    /// floats taken by address -- one written back through, one passed positionally -- so they stay raw.</summary>
     private static readonly int DesiredOff = EngineLayout.CreatureDesiredPos;
-    private static readonly int DrivingOff = EngineLayout.CreatureDriving;
-    private static readonly int PathfindOff = EngineLayout.CreaturePathfind;
+    /// <inheritdoc cref="DesiredOff"/>
     private static readonly int SpaceArgsOff = EngineLayout.PathfindSpaceArgs;
-    private static readonly int SetPositionSlot = EngineLayout.CreatureSetPositionSlot;
 
     /// <summary>The update handler snaps rather than lerps from 4 m; a desired-position jump past it is not a step.</summary>
     private const float MaxStep = 4f;
@@ -80,8 +77,9 @@ public sealed unsafe class StepGuardService : IExtenderService
         if (!Walk.Enabled.V) return _orig(cre);
         IntPtr mgr = *(IntPtr*)_appMgr;
         IntPtr app = mgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)mgr;
-        IntPtr intern = app == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(app + InternalOff);
-        if (intern == IntPtr.Zero || *(uint*)(cre + IdOff) != *(uint*)(intern + PlayerIdOff)) return _orig(cre);
+        CClientExoAppInternal intern = app == IntPtr.Zero ? default : new CClientExoApp(app).Internal;
+        var creature = new CNWCCreature(cre);
+        if (intern.IsNull || new CNWCObject(cre).Id != intern.PlayerCreatureId) return _orig(cre);
         if (!_live)
         {
             _live = true;
@@ -89,25 +87,25 @@ public sealed unsafe class StepGuardService : IExtenderService
             _log?.Info(_probeOk ? "StepGuard: first player step -- hook is LIVE" : "StepGuard: layout probe failed -- engine walk untouched");
         }
         IntPtr module = CameraService.Module();
-        IntPtr area = module == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(module + AreaOff);
-        IntPtr pathfind = *(IntPtr*)(cre + PathfindOff);
-        if (!_probeOk || area == IntPtr.Zero || pathfind == IntPtr.Zero) return _orig(cre);
+        CNWCArea area = module == IntPtr.Zero ? default : new CNWCModule(module).CurrentArea;
+        CPathfindInformation pathfind = creature.Pathfind;
+        if (!_probeOk || area.IsNull || pathfind.IsNull) return _orig(cre);
 
         CombatTextService.Vec3* desired = (CombatTextService.Vec3*)(cre + DesiredOff);
         CombatTextService.Vec3 before = *desired;
         int r = _orig(cre);
         CombatTextService.Vec3 after = *desired;
-        if (!IsStep(before, after) || *(IntPtr*)(module + AreaOff) != area) return r;
-        float* space = (float*)(pathfind + SpaceArgsOff);
+        if (!IsStep(before, after) || new CNWCModule(module).CurrentArea.Ptr != area.Ptr) return r;
+        float* space = (float*)(pathfind.Ptr + SpaceArgsOff);
 #if WINDOWS
-        int clear = _testLine(area, cre, &before, &after, space[0], space[1], NoCreatures);
+        int clear = _testLine(area.Ptr, cre, &before, &after, space[0], space[1], NoCreatures);
 #else
-        int clear = _testLine(area, cre, before, after, space[0], space[1], NoCreatures);
+        int clear = _testLine(area.Ptr, cre, before, after, space[0], space[1], NoCreatures);
 #endif
         if (clear == 1) { _steps++; return r; }
         *desired = before;
         SetPosition(cre, before);
-        if (*(int*)(cre + DrivingOff) != 0) _driveRefusals++; else _walkRefusals++;
+        if (creature.Driving != 0) _driveRefusals++; else _walkRefusals++;
         return r;
     }
 
@@ -121,7 +119,7 @@ public sealed unsafe class StepGuardService : IExtenderService
 
     private static void SetPosition(IntPtr cre, CombatTextService.Vec3 pos)
     {
-        IntPtr fn = *(IntPtr*)(*(IntPtr*)cre + SetPositionSlot);
+        IntPtr fn = new CNWCCreature(cre).SetPositionFn;
 #if WINDOWS
         ((delegate* unmanaged<IntPtr, CombatTextService.Vec3*, void>)fn)(cre, &pos);
 #else

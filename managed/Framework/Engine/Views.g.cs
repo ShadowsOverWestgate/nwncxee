@@ -4,6 +4,19 @@ using CX.Framework;
 
 namespace CX.Engine;
 
+/// <summary>Typed view of an engine <c>CActionTarget*</c>.</summary>
+public readonly unsafe struct CActionTarget(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ActionTargetAllowed"/>
+    public ref IntPtr Allowed => ref *(IntPtr*)(Ptr + EngineLayout.ActionTargetAllowed);
+    /// <inheritdoc cref="EngineLayout.ActionTargetAllowedCount"/>
+    public ref int AllowedCount => ref *(int*)(Ptr + EngineLayout.ActionTargetAllowedCount);
+}
+
 /// <summary>Typed view of an engine <c>CArmorIcon*</c>.</summary>
 public readonly unsafe struct CArmorIcon(IntPtr ptr)
 {
@@ -28,8 +41,41 @@ public readonly unsafe struct CAurBehavior(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.BehaviorAsFollowSlot"/>
     public IntPtr AsBehaviorCameraFollowFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.BehaviorAsFollowSlot);
+    /// <inheritdoc cref="EngineLayout.BehaviorOwner"/>
+    public ref IntPtr Owner => ref *(IntPtr*)(Ptr + EngineLayout.BehaviorOwner);
     /// <inheritdoc cref="EngineLayout.BehaviorTarget"/>
     public ref IntPtr Target => ref *(IntPtr*)(Ptr + EngineLayout.BehaviorTarget);
+}
+
+/// <summary>Typed view of an engine <c>CAurBehaviorCameraFollow*</c>.</summary>
+public readonly unsafe struct CAurBehaviorCameraFollow(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.FollowDist"/>
+    public ref float Dist => ref *(float*)(Ptr + EngineLayout.FollowDist);
+    /// <inheritdoc cref="EngineLayout.FollowFocus"/>
+    public ref System.Numerics.Vector3 Focus => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.FollowFocus);
+    /// <inheritdoc cref="EngineLayout.FollowPitch"/>
+    public ref float Pitch => ref *(float*)(Ptr + EngineLayout.FollowPitch);
+    /// <inheritdoc cref="EngineLayout.FollowPitchClamp"/>
+    public ref float PitchClamp => ref *(float*)(Ptr + EngineLayout.FollowPitchClamp);
+    /// <inheritdoc cref="EngineLayout.FollowPitchImpulse"/>
+    public ref float PitchImpulse => ref *(float*)(Ptr + EngineLayout.FollowPitchImpulse);
+    /// <inheritdoc cref="EngineLayout.FollowPitchVel"/>
+    public ref float PitchVel => ref *(float*)(Ptr + EngineLayout.FollowPitchVel);
+    /// <inheritdoc cref="EngineLayout.BehaviorTargetObj"/>
+    public ref IntPtr Target => ref *(IntPtr*)(Ptr + EngineLayout.BehaviorTargetObj);
+    /// <inheritdoc cref="EngineLayout.FollowYaw"/>
+    public ref float Yaw => ref *(float*)(Ptr + EngineLayout.FollowYaw);
+    /// <inheritdoc cref="EngineLayout.FollowYawImpulse"/>
+    public ref float YawImpulse => ref *(float*)(Ptr + EngineLayout.FollowYawImpulse);
+    /// <inheritdoc cref="EngineLayout.FollowYawVel"/>
+    public ref float YawVel => ref *(float*)(Ptr + EngineLayout.FollowYawVel);
+    /// <inheritdoc cref="EngineLayout.FollowZoomVel"/>
+    public ref float ZoomVel => ref *(float*)(Ptr + EngineLayout.FollowZoomVel);
 }
 
 /// <summary>Typed view of an engine <c>CAurString*</c>.</summary>
@@ -76,6 +122,17 @@ public readonly unsafe struct CAurTexture(IntPtr ptr)
     public IntPtr GetWidthFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.TexGetWidthSlot);
 }
 
+/// <summary>Typed view of an engine <c>CCachedMouseCursorManager*</c>.</summary>
+public readonly unsafe struct CCachedMouseCursorManager(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.CursorCurrentId"/>
+    public ref int CurrentCursor => ref *(int*)(Ptr + EngineLayout.CursorCurrentId);
+}
+
 /// <summary>Typed view of an engine <c>CClientExoApp*</c>.</summary>
 public readonly unsafe struct CClientExoApp(IntPtr ptr)
 {
@@ -94,8 +151,20 @@ public readonly unsafe struct CClientExoAppInternal(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.InternalActionTarget"/>
+    public ref CActionTarget ActionTarget => ref *(CActionTarget*)(Ptr + EngineLayout.InternalActionTarget);
+    /// <inheritdoc cref="EngineLayout.InternalClientOptions"/>
+    public ref CClientOptions ClientOptions => ref *(CClientOptions*)(Ptr + EngineLayout.InternalClientOptions);
+    /// <inheritdoc cref="EngineLayout.InternalCursorManager"/>
+    public ref CCachedMouseCursorManager CursorManager => ref *(CCachedMouseCursorManager*)(Ptr + EngineLayout.InternalCursorManager);
+    /// <inheritdoc cref="EngineLayout.InternalDriveChanged"/>
+    public ref int DriveChanged => ref *(int*)(Ptr + EngineLayout.InternalDriveChanged);
+    /// <inheritdoc cref="EngineLayout.InternalDriveLastSend"/>
+    public ref long DriveLastSend => ref *(long*)(Ptr + EngineLayout.InternalDriveLastSend);
+    /// <inheritdoc cref="EngineLayout.InternalDriveWalk"/>
+    public ref int DriveWalk => ref *(int*)(Ptr + EngineLayout.InternalDriveWalk);
     /// <inheritdoc cref="EngineLayout.InternalInGameGui"/>
-    public ref IntPtr InGameGui => ref *(IntPtr*)(Ptr + EngineLayout.InternalInGameGui);
+    public ref CGuiInGame InGameGui => ref *(CGuiInGame*)(Ptr + EngineLayout.InternalInGameGui);
     /// <inheritdoc cref="EngineLayout.InternalMainMenuPanel"/>
     public ref IntPtr MainMenuPanel => ref *(IntPtr*)(Ptr + EngineLayout.InternalMainMenuPanel);
     /// <inheritdoc cref="EngineLayout.InternalNetLayer"/>
@@ -110,6 +179,17 @@ public readonly unsafe struct CClientExoAppInternal(IntPtr ptr)
     public ref IntPtr Players => ref *(IntPtr*)(Ptr + EngineLayout.InternalPlayers);
     /// <inheritdoc cref="EngineLayout.InternalReachedMainMenu"/>
     public ref int ReachedMainMenu => ref *(int*)(Ptr + EngineLayout.InternalReachedMainMenu);
+}
+
+/// <summary>Typed view of an engine <c>CClientOptions*</c>.</summary>
+public readonly unsafe struct CClientOptions(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.OptionsCameraMode"/>
+    public ref byte CameraMode => ref *(byte*)(Ptr + EngineLayout.OptionsCameraMode);
 }
 
 /// <summary>Typed view of an engine <c>CClientSpellMenu*</c>.</summary>
@@ -131,7 +211,7 @@ public readonly unsafe struct CExoBase(IntPtr ptr)
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.ExoBaseConfig"/>
-    public ref IntPtr Config => ref *(IntPtr*)(Ptr + EngineLayout.ExoBaseConfig);
+    public ref CExoConfig Config => ref *(CExoConfig*)(Ptr + EngineLayout.ExoBaseConfig);
 }
 
 /// <summary>Typed view of an engine <c>CExoConfig*</c>.</summary>
@@ -164,6 +244,17 @@ public readonly unsafe struct CGameObject(IntPtr ptr)
     public ref byte Type => ref *(byte*)(Ptr + EngineLayout.GameObjType);
 }
 
+/// <summary>Typed view of an engine <c>CGuiEdit*</c>.</summary>
+public readonly unsafe struct CGuiEdit(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.GuiEditString"/>
+    public ref CAurString String => ref *(CAurString*)(Ptr + EngineLayout.GuiEditString);
+}
+
 /// <summary>Typed view of an engine <c>CGuiIcon*</c>.</summary>
 public readonly unsafe struct CGuiIcon(IntPtr ptr)
 {
@@ -182,12 +273,29 @@ public readonly unsafe struct CGuiInGame(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.GuiInGameActionQueue"/>
+    public ref CPanelActionQueue ActionQueuePanel => ref *(CPanelActionQueue*)(Ptr + EngineLayout.GuiInGameActionQueue);
     /// <inheritdoc cref="EngineLayout.InGameGuiChatWindow"/>
     public ref IntPtr ChatWindow => ref *(IntPtr*)(Ptr + EngineLayout.InGameGuiChatWindow);
+    /// <inheritdoc cref="EngineLayout.InGameGuiDialog"/>
+    public ref IntPtr Dialog => ref *(IntPtr*)(Ptr + EngineLayout.InGameGuiDialog);
     /// <inheritdoc cref="EngineLayout.InGameGuiOptionsPanel"/>
     public ref IntPtr OptionsPanel => ref *(IntPtr*)(Ptr + EngineLayout.InGameGuiOptionsPanel);
+    /// <inheritdoc cref="EngineLayout.InGameGuiQuickbar"/>
+    public ref IntPtr Quickbar => ref *(IntPtr*)(Ptr + EngineLayout.InGameGuiQuickbar);
     /// <inheritdoc cref="EngineLayout.GuiInGameToggledOff"/>
     public ref int ToggledOff => ref *(int*)(Ptr + EngineLayout.GuiInGameToggledOff);
+}
+
+/// <summary>Typed view of an engine <c>CGuiInGameChatPrompt*</c>.</summary>
+public readonly unsafe struct CGuiInGameChatPrompt(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ChatPromptShown"/>
+    public ref int Shown => ref *(int*)(Ptr + EngineLayout.ChatPromptShown);
 }
 
 /// <summary>Typed view of an engine <c>CGuiMan*</c>.</summary>
@@ -242,6 +350,19 @@ public readonly unsafe struct CLayeredIcon(IntPtr ptr)
     public ref int SchemeCount => ref *(int*)(Ptr + EngineLayout.LayeredIconSchemeCount);
 }
 
+/// <summary>Typed view of an engine <c>CNWCArea*</c>.</summary>
+public readonly unsafe struct CNWCArea(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.AreaObjectCount"/>
+    public ref int ObjectCount => ref *(int*)(Ptr + EngineLayout.AreaObjectCount);
+    /// <inheritdoc cref="EngineLayout.AreaObjectIds"/>
+    public ref IntPtr ObjectIds => ref *(IntPtr*)(Ptr + EngineLayout.AreaObjectIds);
+}
+
 /// <summary>Typed view of an engine <c>CNWCCreature*</c>.</summary>
 public readonly unsafe struct CNWCCreature(IntPtr ptr)
 {
@@ -249,8 +370,32 @@ public readonly unsafe struct CNWCCreature(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.CreatureAiFlags"/>
+    public ref short AiFlags => ref *(short*)(Ptr + EngineLayout.CreatureAiFlags);
+    /// <inheritdoc cref="EngineLayout.CreatureAiState"/>
+    public ref byte AiState => ref *(byte*)(Ptr + EngineLayout.CreatureAiState);
+    /// <inheritdoc cref="EngineLayout.CreatureAiTarget"/>
+    public ref uint AiTarget => ref *(uint*)(Ptr + EngineLayout.CreatureAiTarget);
+    /// <inheritdoc cref="EngineLayout.CreatureAttitude"/>
+    public ref byte Attitude => ref *(byte*)(Ptr + EngineLayout.CreatureAttitude);
+    /// <inheritdoc cref="EngineLayout.CreatureCombatState"/>
+    public ref int CombatState => ref *(int*)(Ptr + EngineLayout.CreatureCombatState);
+    /// <inheritdoc cref="EngineLayout.CreatureDriveEnabled"/>
+    public ref int DriveEnabled => ref *(int*)(Ptr + EngineLayout.CreatureDriveEnabled);
+    /// <inheritdoc cref="EngineLayout.CreatureDriving"/>
+    public ref int Driving => ref *(int*)(Ptr + EngineLayout.CreatureDriving);
+    /// <inheritdoc cref="EngineLayout.CreatureFacingTarget"/>
+    public ref System.Numerics.Vector3 FacingTarget => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.CreatureFacingTarget);
+    /// <inheritdoc cref="EngineLayout.CreatureFacingTargetB"/>
+    public ref System.Numerics.Vector3 FacingTargetB => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.CreatureFacingTargetB);
     /// <inheritdoc cref="EngineLayout.CreatureGetModelSlot"/>
     public IntPtr GetModelFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.CreatureGetModelSlot);
+    /// <inheritdoc cref="EngineLayout.CreatureHoveredOid"/>
+    public ref uint HoveredOid => ref *(uint*)(Ptr + EngineLayout.CreatureHoveredOid);
+    /// <inheritdoc cref="EngineLayout.CreaturePathfind"/>
+    public ref CPathfindInformation Pathfind => ref *(CPathfindInformation*)(Ptr + EngineLayout.CreaturePathfind);
+    /// <inheritdoc cref="EngineLayout.CreaturePlated"/>
+    public ref int Plated => ref *(int*)(Ptr + EngineLayout.CreaturePlated);
     /// <inheritdoc cref="EngineLayout.CreatureSetPositionSlot"/>
     public IntPtr SetPositionFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.CreatureSetPositionSlot);
     /// <inheritdoc cref="EngineLayout.CreatureStats"/>
@@ -285,6 +430,39 @@ public readonly unsafe struct CNWCItem(IntPtr ptr)
     public ref IntPtr GuiIcon => ref *(IntPtr*)(Ptr + EngineLayout.ItemGuiIcon);
 }
 
+/// <summary>Typed view of an engine <c>CNWCModule*</c>.</summary>
+public readonly unsafe struct CNWCModule(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ModuleCamera"/>
+    public ref Camera Camera => ref *(Camera*)(Ptr + EngineLayout.ModuleCamera);
+    /// <inheritdoc cref="EngineLayout.ModuleCameraAttached"/>
+    public ref uint CameraAttached => ref *(uint*)(Ptr + EngineLayout.ModuleCameraAttached);
+    /// <inheritdoc cref="EngineLayout.ModuleCameraFlags"/>
+    public ref int CameraFlags => ref *(int*)(Ptr + EngineLayout.ModuleCameraFlags);
+    /// <inheritdoc cref="EngineLayout.ModuleCameraMaxDist"/>
+    public ref float CameraMaxDist => ref *(float*)(Ptr + EngineLayout.ModuleCameraMaxDist);
+    /// <inheritdoc cref="EngineLayout.ModuleChaseSuppressed"/>
+    public ref int ChaseSuppressed => ref *(int*)(Ptr + EngineLayout.ModuleChaseSuppressed);
+    /// <inheritdoc cref="EngineLayout.ModuleChaseWasIdle"/>
+    public ref int ChaseWasIdle => ref *(int*)(Ptr + EngineLayout.ModuleChaseWasIdle);
+    /// <inheritdoc cref="EngineLayout.ModuleCurrentArea"/>
+    public ref CNWCArea CurrentArea => ref *(CNWCArea*)(Ptr + EngineLayout.ModuleCurrentArea);
+    /// <inheritdoc cref="EngineLayout.ModuleCutsceneRate"/>
+    public ref float CutsceneRate => ref *(float*)(Ptr + EngineLayout.ModuleCutsceneRate);
+    /// <inheritdoc cref="EngineLayout.ModuleDialogCamera"/>
+    public ref byte DialogCamera => ref *(byte*)(Ptr + EngineLayout.ModuleDialogCamera);
+    /// <inheritdoc cref="EngineLayout.ModuleFindClearView"/>
+    public ref int FindClearView => ref *(int*)(Ptr + EngineLayout.ModuleFindClearView);
+    /// <inheritdoc cref="EngineLayout.ModuleHour"/>
+    public ref int Hour => ref *(int*)(Ptr + EngineLayout.ModuleHour);
+    /// <inheritdoc cref="EngineLayout.ModuleMinutesPerHour"/>
+    public ref byte MinutesPerHour => ref *(byte*)(Ptr + EngineLayout.ModuleMinutesPerHour);
+}
+
 /// <summary>Typed view of an engine <c>CNWCObject*</c>.</summary>
 public readonly unsafe struct CNWCObject(IntPtr ptr)
 {
@@ -292,8 +470,12 @@ public readonly unsafe struct CNWCObject(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ObjAnimation"/>
+    public ref short Animation => ref *(short*)(Ptr + EngineLayout.ObjAnimation);
     /// <inheritdoc cref="EngineLayout.GetPortraitSlot"/>
     public IntPtr GetPortraitFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GetPortraitSlot);
+    /// <inheritdoc cref="EngineLayout.ObjHighlightable"/>
+    public ref int Highlightable => ref *(int*)(Ptr + EngineLayout.ObjHighlightable);
     /// <inheritdoc cref="EngineLayout.ObjHiliteSlot"/>
     public IntPtr HiliteFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.ObjHiliteSlot);
     /// <inheritdoc cref="EngineLayout.ObjId"/>
@@ -302,10 +484,27 @@ public readonly unsafe struct CNWCObject(IntPtr ptr)
     public IntPtr MouseOffFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.ObjMouseOffSlot);
     /// <inheritdoc cref="EngineLayout.ObjMouseOverSlot"/>
     public IntPtr MouseOverFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.ObjMouseOverSlot);
+    /// <inheritdoc cref="EngineLayout.ObjOrientation"/>
+    public ref System.Numerics.Vector3 Orientation => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.ObjOrientation);
+    /// <inheritdoc cref="EngineLayout.ObjPosition"/>
+    public ref System.Numerics.Vector3 Position => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.ObjPosition);
     /// <inheritdoc cref="EngineLayout.ObjType"/>
     public ref byte Type => ref *(byte*)(Ptr + EngineLayout.ObjType);
     /// <inheritdoc cref="EngineLayout.ObjUnHiliteSlot"/>
     public IntPtr UnHiliteFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.ObjUnHiliteSlot);
+    /// <inheritdoc cref="EngineLayout.ObjVisible"/>
+    public ref byte Visible => ref *(byte*)(Ptr + EngineLayout.ObjVisible);
+}
+
+/// <summary>Typed view of an engine <c>CNWCPlaceable*</c>.</summary>
+public readonly unsafe struct CNWCPlaceable(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.PlaceablePlated"/>
+    public ref int Plated => ref *(int*)(Ptr + EngineLayout.PlaceablePlated);
 }
 
 /// <summary>Typed view of an engine <c>CNWCPlayer*</c>.</summary>
@@ -325,6 +524,28 @@ public readonly unsafe struct CNWCPlayer(IntPtr ptr)
     public ref uint PlayerId => ref *(uint*)(Ptr + EngineLayout.PlayerId);
 }
 
+/// <summary>Typed view of an engine <c>CPanelActionQueue*</c>.</summary>
+public readonly unsafe struct CPanelActionQueue(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ActionQueueCurrent"/>
+    public ref IntPtr Current => ref *(IntPtr*)(Ptr + EngineLayout.ActionQueueCurrent);
+    /// <inheritdoc cref="EngineLayout.ActionQueueCount"/>
+    public ref int QueuedCount => ref *(int*)(Ptr + EngineLayout.ActionQueueCount);
+}
+
+/// <summary>Typed view of an engine <c>CPathfindInformation*</c>.</summary>
+public readonly unsafe struct CPathfindInformation(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+}
+
 /// <summary>Typed view of an engine <c>CRadialMenu*</c>.</summary>
 public readonly unsafe struct CRadialMenu(IntPtr ptr)
 {
@@ -334,6 +555,8 @@ public readonly unsafe struct CRadialMenu(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.RadialAutoDelete"/>
     public ref byte AutoDelete => ref *(byte*)(Ptr + EngineLayout.RadialAutoDelete);
+    /// <inheritdoc cref="EngineLayout.RadialFlags"/>
+    public ref uint Flags => ref *(uint*)(Ptr + EngineLayout.RadialFlags);
     /// <inheritdoc cref="EngineLayout.RadialIcon"/>
     public ref IntPtr Icon => ref *(IntPtr*)(Ptr + EngineLayout.RadialIcon);
     /// <inheritdoc cref="EngineLayout.RadialMenuX"/>
@@ -346,6 +569,8 @@ public readonly unsafe struct CRadialMenu(IntPtr ptr)
     public ref IntPtr Parent => ref *(IntPtr*)(Ptr + EngineLayout.RadialParent);
     /// <inheritdoc cref="EngineLayout.RadialRefCount"/>
     public ref int RefCount => ref *(int*)(Ptr + EngineLayout.RadialRefCount);
+    /// <inheritdoc cref="EngineLayout.RadialSubMenu"/>
+    public ref CRadialMenu SubMenu => ref *(CRadialMenu*)(Ptr + EngineLayout.RadialSubMenu);
     /// <inheritdoc cref="EngineLayout.RadialTargetId"/>
     public ref uint TargetId => ref *(uint*)(Ptr + EngineLayout.RadialTargetId);
     /// <inheritdoc cref="EngineLayout.RadialText"/>
@@ -363,6 +588,8 @@ public readonly unsafe struct Camera(IntPtr ptr)
     public ref byte KeyholeState => ref *(byte*)(Ptr + EngineLayout.CamKeyholeState);
     /// <inheritdoc cref="EngineLayout.CamNear"/>
     public ref float Near => ref *(float*)(Ptr + EngineLayout.CamNear);
+    /// <inheritdoc cref="EngineLayout.CamPos"/>
+    public ref System.Numerics.Vector3 Pos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.CamPos);
     /// <inheritdoc cref="EngineLayout.CamViewAngle"/>
     public ref float ViewAngle => ref *(float*)(Ptr + EngineLayout.CamViewAngle);
     /// <inheritdoc cref="EngineLayout.CamViewH"/>
@@ -430,6 +657,23 @@ public readonly unsafe struct LightManager(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.LightMgrEnableLightsSlot"/>
     public IntPtr EnableLightsFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.LightMgrEnableLightsSlot);
+}
+
+/// <summary>Typed view of an engine <c>LookAtAnimation*</c>.</summary>
+public readonly unsafe struct LookAtAnimation(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.LookAtFinished"/>
+    public ref byte Finished => ref *(byte*)(Ptr + EngineLayout.LookAtFinished);
+    /// <inheritdoc cref="EngineLayout.LookAtGob"/>
+    public ref Gob Gob => ref *(Gob*)(Ptr + EngineLayout.LookAtGob);
+    /// <inheritdoc cref="EngineLayout.LookAtHeadPart"/>
+    public ref Part HeadPart => ref *(Part*)(Ptr + EngineLayout.LookAtHeadPart);
+    /// <inheritdoc cref="EngineLayout.LookAtTargetKey"/>
+    public ref IntPtr TargetKey => ref *(IntPtr*)(Ptr + EngineLayout.LookAtTargetKey);
 }
 
 /// <summary>Typed view of an engine <c>Material*</c>.</summary>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Ui;
@@ -325,7 +326,8 @@ public sealed unsafe class UiInputService : IExtenderService
         if (_guiManGlobal == IntPtr.Zero || _guiHitCheck == null) return IntPtr.Zero;
         IntPtr gm = *(IntPtr*)_guiManGlobal;
         if (gm == IntPtr.Zero) return IntPtr.Zero;
-        return _guiHitCheck(gm, *(int*)(gm + EngineLayout.GuiManMouseX), *(int*)(gm + EngineLayout.GuiManMouseY), 0, mask);
+        var man = new CGuiMan(gm);
+        return _guiHitCheck(gm, man.MouseX, man.MouseY, 0, mask);
     }
 
     private static bool NuiEditFocused()

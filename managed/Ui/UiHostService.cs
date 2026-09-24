@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -303,17 +304,17 @@ public sealed unsafe class UiHostService : IExtenderService
     {
         IntPtr mgr = _appMgr != IntPtr.Zero ? *(IntPtr*)_appMgr : IntPtr.Zero;
         IntPtr app = mgr != IntPtr.Zero ? *(IntPtr*)mgr : IntPtr.Zero;
-        IntPtr intern = app != IntPtr.Zero ? *(IntPtr*)(app + EngineLayout.ExoAppInternal) : IntPtr.Zero;
-        IntPtr gui = intern != IntPtr.Zero ? *(IntPtr*)(intern + EngineLayout.InternalInGameGui) : IntPtr.Zero;
-        IntPtr win = gui != IntPtr.Zero ? *(IntPtr*)(gui + EngineLayout.InGameGuiChatWindow) : IntPtr.Zero;
-        bool opt = intern != IntPtr.Zero && *(int*)(intern + EngineLayout.InternalOptionsPanelOpen) != 0;   // ESC/game menu up
-        bool hud = gui != IntPtr.Zero && *(int*)(gui + EngineLayout.GuiInGameToggledOff) != 0;              // H: HUD toggled off
+        CClientExoAppInternal intern = app != IntPtr.Zero ? new CClientExoApp(app).Internal : default;
+        CGuiInGame gui = intern.IsNull ? default : intern.InGameGui;
+        IntPtr win = gui.IsNull ? IntPtr.Zero : gui.ChatWindow;
+        bool opt = !intern.IsNull && intern.OptionsPanelOpen != 0;   // ESC/game menu up
+        bool hud = !gui.IsNull && gui.ToggledOff != 0;               // H: HUD toggled off
         bool show = win != IntPtr.Zero && !opt && !hud;
-        bool menu = win == IntPtr.Zero && intern != IntPtr.Zero && *(IntPtr*)(intern + EngineLayout.InternalMainMenuPanel) != IntPtr.Zero;
-        IntPtr pnl = win != IntPtr.Zero ? *(IntPtr*)(gui + EngineLayout.InGameGuiOptionsPanel) : IntPtr.Zero;
-        bool options = pnl != IntPtr.Zero && *(uint*)(pnl + EngineLayout.GuiPanelState) == GuiPanelShown;
+        bool menu = win == IntPtr.Zero && !intern.IsNull && intern.MainMenuPanel != IntPtr.Zero;
+        IntPtr pnl = win != IntPtr.Zero ? gui.OptionsPanel : IntPtr.Zero;
+        bool options = pnl != IntPtr.Zero && new CGuiPanel(pnl).State == GuiPanelShown;
 
-        GameGate.InGameGui = gui;
+        GameGate.InGameGui = gui.Ptr;
         GameGate.InModule = win != IntPtr.Zero;
         GameGate.InGame = show;
         GameGate.AtMainMenu = menu;
@@ -323,7 +324,7 @@ public sealed unsafe class UiHostService : IExtenderService
         if (sig != _gateSig)
         {
             _gateSig = sig;
-            bool reached = intern != IntPtr.Zero && *(int*)(intern + EngineLayout.InternalReachedMainMenu) != 0;
+            bool reached = !intern.IsNull && intern.ReachedMainMenu != 0;
             _log?.Info($"[uigate] win=0x{win:x} opt={opt} hud={hud} menu={menu} options={options} reached={reached} -> inGame={show} inModule={win != IntPtr.Zero}");
         }
     }

@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Services.Camera;
@@ -56,11 +57,8 @@ public sealed unsafe class HeadTrackService : IExtenderService
     private static bool _armed, _probed, _rot;
     private static int _drives, _writes;
 
-    private static readonly int GetModelSlot = EngineLayout.CreatureGetModelSlot;
-    private static readonly int AnimFinished = EngineLayout.LookAtFinished;
-    private static readonly int AnimGob = EngineLayout.LookAtGob;
-    private static readonly int AnimHeadPart = EngineLayout.LookAtHeadPart;
-    private static readonly int AnimTargetKey = EngineLayout.LookAtTargetKey;
+    /// <summary>The head part's LOCAL orientation: an embedded quaternion stored (w, x, y, z), which the aim
+    /// reads component-wise into System.Numerics' (x, y, z, w), so the offset stays raw.</summary>
     private static readonly int PartRot = EngineLayout.PartRot;
 
     private const float Deg = MathF.PI / 180f;
@@ -125,7 +123,7 @@ public sealed unsafe class HeadTrackService : IExtenderService
     {
         IntPtr vtbl = *(IntPtr*)creature;
         if (vtbl == IntPtr.Zero) return IntPtr.Zero;
-        return ((delegate* unmanaged<IntPtr, byte, int, IntPtr>)(*(IntPtr*)(vtbl + GetModelSlot)))(creature, 0xff, 1);
+        return ((delegate* unmanaged<IntPtr, byte, int, IntPtr>)new CNWCCreature(creature).GetModelFn)(creature, 0xff, 1);
     }
 
     /// <summary>After the engine's own aim step: ours is the animation whose looker is the gob we drove, and
@@ -137,11 +135,12 @@ public sealed unsafe class HeadTrackService : IExtenderService
         IntPtr gob = _gob;
         // Wanted as well as the gob: the camera dropping is what stops us driving, and a gob freed after it
         // dropped could otherwise be matched by an address the engine has handed to something else.
-        if (gob == IntPtr.Zero || self == IntPtr.Zero || !Wanted || *(IntPtr*)(self + AnimGob) != gob) return;
-        if (*(byte*)(self + AnimFinished) != 0) return;
-        float* key = *(float**)(self + AnimTargetKey);
-        IntPtr head = *(IntPtr*)(self + AnimHeadPart);
-        if (key == null || head == IntPtr.Zero) return;
+        var anim = new LookAtAnimation(self);
+        if (gob == IntPtr.Zero || self == IntPtr.Zero || !Wanted || anim.Gob.Ptr != gob) return;
+        if (anim.Finished != 0) return;
+        float* key = (float*)anim.TargetKey;
+        Part head = anim.HeadPart;
+        if (key == null || head.IsNull) return;
         Aim(head, key);
         _writes++;
     }
@@ -154,16 +153,16 @@ public sealed unsafe class HeadTrackService : IExtenderService
     /// <para>Past the yaw limit by <see cref="ReleaseOver"/> the head lets go and settles level rather than
     /// straining at the clamp, and re-engages a hysteresis band below that. The release is yaw-only: pitch keeps
     /// its own clamp either way, and a <c>headyaw</c> of 0 never releases -- the yaw is simply 0.</para></summary>
-    private static void Aim(IntPtr head, float* key)
+    private static void Aim(Part head, float* key)
     {
         CameraService.Rendered(out _, out float camYaw, out float camPitch, out _);
         Vector3 dir = -CameraService.Forward(CameraService.Pose(camYaw, camPitch));
         Vector3 pos;
         float* world = stackalloc float[4];
-        _getWorld(head, &pos, world);
+        _getWorld(head.Ptr, &pos, world);
         // Engine quaternions are (w, x, y, z); System.Numerics is (x, y, z, w).
         Quaternion wq = new(world[1], world[2], world[3], world[0]);
-        float* local = (float*)(head + PartRot);
+        float* local = (float*)(head.Ptr + PartRot);
         Quaternion lq = new(local[1], local[2], local[3], local[0]);
         Vector3 fwd = YAxis(wq);
         if (fwd.LengthSquared() < 1e-12f) return;

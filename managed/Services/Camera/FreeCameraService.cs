@@ -2,9 +2,11 @@ using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Alloy;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat;
 using CX.Ui;
+using EngCamera = CX.Engine.Camera;
 
 namespace CX.Services.Camera;
 
@@ -46,19 +48,9 @@ public sealed unsafe class FreeCameraService : IExtenderService
     private const int Fwd = 0, Back = 1, TurnL = 2, TurnR = 3, StrafeL = 4, StrafeR = 5;
     private const float Deg = MathF.PI / 180f, PitchFloor = 1f, PitchCeil = 179f, FastMul = 4f, RollRate = 60f;
 
-    private static readonly int CombatOff = EngineLayout.CreatureCombatState;
-    private static readonly int PosOff = EngineLayout.ObjPosition;
-    private static readonly int MaxDistOff = EngineLayout.ModuleCameraMaxDist;
-    private static readonly int ModCameraOff = EngineLayout.ModuleCamera;
-    private static readonly int ModChaseOffOff = EngineLayout.ModuleChaseSuppressed;
-    private static readonly int ModWasIdleOff = EngineLayout.ModuleChaseWasIdle;
-    private static readonly int CamPosOff = EngineLayout.CamPos;
     private static readonly int CamRotOff = EngineLayout.CamRot;
-    private static readonly int CamFovOff = EngineLayout.CamViewAngle;
-    private static readonly int InternalOff = EngineLayout.ExoAppInternal;
+    /// <summary>The six drive-key slots are an int array read by index, so this one stays a raw offset.</summary>
     private static readonly int KeysOff = EngineLayout.InternalDriveKeys;
-    private static readonly int GuiOff = EngineLayout.InternalInGameGui;
-    private static readonly int ToggledOff = EngineLayout.GuiInGameToggledOff;
 
     /// <summary>Why the free camera left (or refused), for the frame-end notice.</summary>
     private enum Why { None, User, Gate, Combat, NoCreature, Leash }
@@ -108,12 +100,12 @@ public sealed unsafe class FreeCameraService : IExtenderService
         if (g is not (CameraService.Gate.Active or CameraService.Gate.Off)) { _exitGate = g; Leave(Why.Gate); return; }
         IntPtr cre = CameraService.PlayerCreature();
         if (cre == IntPtr.Zero) { Leave(Why.NoCreature); return; }
-        if (*(int*)(cre + CombatOff) != 0) { Leave(Why.Combat); return; }
-        IntPtr module = CameraService.Module();
-        *(int*)(module + ModChaseOffOff) = 1;
-        *(int*)(module + ModWasIdleOff) = 0;
+        if (new CNWCCreature(cre).CombatState != 0) { Leave(Why.Combat); return; }
+        var mod = new CNWCModule(CameraService.Module());
+        mod.ChaseSuppressed = 1;
+        mod.ChaseWasIdle = 0;
 
-        int* keys = (int*)(*(IntPtr*)(CameraService.App() + InternalOff) + KeysOff);
+        int* keys = (int*)(new CClientExoApp(CameraService.App()).Internal.Ptr + KeysOff);
         float f = (keys[Fwd] != 0 ? 1f : 0f) - (keys[Back] != 0 ? 1f : 0f);
         float s = (keys[StrafeR] != 0 ? 1f : 0f) - (keys[StrafeL] != 0 ? 1f : 0f);
         float t = (keys[TurnL] != 0 ? 1f : 0f) - (keys[TurnR] != 0 ? 1f : 0f);
@@ -124,9 +116,9 @@ public sealed unsafe class FreeCameraService : IExtenderService
         Quaternion flat = CameraService.Pose(_yaw, _pitch);
         // Forward(q) points from the focus TO the camera; the view looks the other way. Up is the world's.
         Vector3 want = _pos + (-CameraService.Forward(flat) * f + CameraService.Right(flat) * s + Vector3.UnitZ * v) * (FreeCam.Speed.V * (_fast ? FastMul : 1f) * dt);
-        float serverMax = *(float*)(module + MaxDistOff);
+        float serverMax = mod.CameraMaxDist;
         _leashR = serverMax >= 0f ? serverMax : FreeCam.Leash.V;
-        Vector3 anchor = *(Vector3*)(cre + PosOff);
+        Vector3 anchor = new CNWCObject(cre).Position;
         Vector3 d = want - anchor;
         float len = d.Length();
         if (len > _leashR)
@@ -140,8 +132,9 @@ public sealed unsafe class FreeCameraService : IExtenderService
         Quaternion q = PoseRoll(_yaw, _pitch, _roll);
         float* rot = (float*)(cam + CamRotOff);
         rot[0] = q.W; rot[1] = q.X; rot[2] = q.Y; rot[3] = q.Z;
-        *(Vector3*)(cam + CamPosOff) = _pos;
-        *(float*)(cam + CamFovOff) = _fov;
+        var c = new EngCamera(cam);
+        c.Pos = _pos;
+        c.ViewAngle = _fov;
     }
 
     /// <summary>The pose rolled about its own view axis: <c>qZ(yaw) * qX(pitch) * qZ(roll)</c>, Hamilton (System.Numerics'
@@ -166,8 +159,8 @@ public sealed unsafe class FreeCameraService : IExtenderService
         Active = false;
         StopLook();
         IntPtr module = CameraService.Module();
-        IntPtr cam = module == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(module + ModCameraOff);
-        if (cam != IntPtr.Zero) *(float*)(cam + CamFovOff) = _fovEntry;
+        EngCamera cam = module == IntPtr.Zero ? default : new CNWCModule(module).Camera;
+        if (!cam.IsNull) cam.ViewAngle = _fovEntry;
         _up = _down = _rollL = _rollR = false; _ate = 0;
         if (_weHidUi) { IntPtr gui = Gui(); if (gui != IntPtr.Zero) _unToggleOff(gui); _weHidUi = false; }
         if (why != Why.User) _pending = why;
@@ -177,7 +170,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
     private static IntPtr Gui()
     {
         IntPtr app = CameraService.App();
-        return app == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(*(IntPtr*)(app + InternalOff) + GuiOff);
+        return app == IntPtr.Zero ? IntPtr.Zero : new CClientExoApp(app).Internal.InGameGui.Ptr;
     }
 
     // ---- the cold half: input -----------------------------------------------------------------
@@ -255,7 +248,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
         Why w = _pending; _pending = Why.None;
         string why = w == Why.Gate ? CameraService.GateName : WhyNames[(int)w];
         Notice.Show(_log, w == Why.Leash
-            ? FormattableString.Invariant($"[camera] free camera at the leash: {_leashR:0.#} m from your character ({(*(float*)(CameraService.Module() + MaxDistOff) >= 0f ? "the server's camera limit" : "free.leash")})")
+            ? FormattableString.Invariant($"[camera] free camera at the leash: {_leashR:0.#} m from your character ({(new CNWCModule(CameraService.Module()).CameraMaxDist >= 0f ? "the server's camera limit" : "free.leash")})")
             : $"[camera] free camera off: {why}");
     }
 
@@ -281,12 +274,12 @@ public sealed unsafe class FreeCameraService : IExtenderService
         _roll = FreeCam.Roll.V;
         _leashed = false; _pending = Why.None; _ate = 0;
         IntPtr gui = Gui();
-        if (gui != IntPtr.Zero && *(int*)(gui + ToggledOff) == 0) { _toggleOff(gui); _weHidUi = true; }
+        if (gui != IntPtr.Zero && new CGuiInGame(gui).ToggledOff == 0) { _toggleOff(gui); _weHidUi = true; }
         Active = true; _entries++;
         // The open panel owns the keyboard: the move keys would never reach the engine's drive key table.
         KnobPanelService.Close();
         AlloyRenderer.CameraCut();
-        float serverMax = *(float*)(module + MaxDistOff);
+        float serverMax = new CNWCModule(module).CameraMaxDist;
         Notice.Show(_log, FormattableString.Invariant($"[camera] free camera on: move keys fly, Space/C up/down, Z/X roll, Shift fast, wheel = speed, right-drag looks; leash {(serverMax >= 0f ? serverMax : FreeCam.Leash.V):0.#} m; Escape or /free enter returns"));
     }
 
@@ -298,9 +291,9 @@ public sealed unsafe class FreeCameraService : IExtenderService
         if (CameraService.GateUp) return CameraService.GateName;
         IntPtr cre = CameraService.PlayerCreature();
         if (cre == IntPtr.Zero) return "no player creature";
-        if (*(int*)(cre + CombatOff) != 0) return "in combat - try again after the fight";
+        if (new CNWCCreature(cre).CombatState != 0) return "in combat - try again after the fight";
         IntPtr module = CameraService.Module();
-        if (module == IntPtr.Zero || *(IntPtr*)(module + ModCameraOff) == IntPtr.Zero) return "no world camera";
+        if (module == IntPtr.Zero || new CNWCModule(module).Camera.IsNull) return "no world camera";
         return null;
     }
 

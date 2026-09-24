@@ -1,6 +1,8 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Ui;
 
@@ -106,43 +108,47 @@ internal static unsafe partial class RadialTree
     }
 
     /// <summary>Menu position (<c>Activate</c> copies the mouse there; the keybind opener centres it first).</summary>
-    public static (int X, int Y) Position(IntPtr menu) =>
-        (*(int*)(menu + EngineLayout.RadialMenuX), *(int*)(menu + EngineLayout.RadialMenuY));
+    public static (int X, int Y) Position(IntPtr menu)
+    {
+        var m = new CRadialMenu(menu);
+        return (m.MenuX, m.MenuY);
+    }
 
     /// <summary>The root's target object id where the kind carries one (creature/item/placeable/door at
     /// <see cref="EngineLayout.RadialTargetId"/>, the cast menu at <see cref="EngineLayout.SpellMenuTargetId"/>);
     /// 0 for the rest.</summary>
     public static uint TargetId(IntPtr menu, RootKind kind) => kind switch
     {
-        RootKind.Creature or RootKind.Item or RootKind.Placeable or RootKind.Door => *(uint*)(menu + EngineLayout.RadialTargetId),
-        RootKind.Spell => *(uint*)(menu + EngineLayout.SpellMenuTargetId),
+        RootKind.Creature or RootKind.Item or RootKind.Placeable or RootKind.Door => new CRadialMenu(menu).TargetId,
+        RootKind.Spell => new CClientSpellMenu(menu).TargetId,
         _ => 0,
     };
 
     public static RadialSlot ReadSlot(IntPtr menu, int i)
     {
+        var m = new CRadialMenu(menu);
         int stride = EngineLayout.RadialCallbackStride;
         IntPtr entry = menu + EngineLayout.RadialEntry + i * stride;
         IntPtr creator = menu + EngineLayout.RadialCreator + i * stride;
         bool hasEntry = *(IntPtr*)entry != entry;
         bool hasCreator = *(IntPtr*)creator != creator;
-        IntPtr child = *(IntPtr*)(menu + EngineLayout.RadialSubMenu + i * 8);
+        IntPtr child = Unsafe.Add(ref m.SubMenu, i).Ptr;
         SlotKind kind = hasCreator || child != IntPtr.Zero ? SlotKind.Creator : hasEntry ? SlotKind.Entry : SlotKind.Empty;
         IntPtr obj = hasEntry ? *(IntPtr*)entry : IntPtr.Zero;
         IntPtr fn = hasEntry ? *(IntPtr*)(entry + 8) : IntPtr.Zero;
         IntPtr adj = hasEntry && !OperatingSystem.IsWindows() ? *(IntPtr*)(entry + 16) : IntPtr.Zero;
-        IntPtr icon = *(IntPtr*)(menu + EngineLayout.RadialIcon + i * 8);
+        var icon = new CGuiIcon(Unsafe.Add(ref m.Icon, i));
         return new RadialSlot(i, kind,
-            ReadLabel(*(IntPtr*)(menu + EngineLayout.RadialText + i * 8)),
-            ReadIcon(icon),
-            icon == IntPtr.Zero ? "" : ReadAur(*(IntPtr*)(icon + EngineLayout.GuiIconCountLabel)),
-            (*(uint*)(menu + EngineLayout.RadialFlags + i * 4) & 1) != 0,
-            *(long*)(menu + EngineLayout.RadialParam + i * 8),
+            ReadLabel(Unsafe.Add(ref m.Text, i)),
+            ReadIcon(icon.Ptr),
+            icon.IsNull ? "" : ReadAur(icon.CountLabel),
+            (Unsafe.Add(ref m.Flags, i) & 1) != 0,
+            Unsafe.Add(ref m.Param, i),
             obj, fn, adj, child);
     }
 
     private static string ReadLabel(IntPtr bubble) =>
-        bubble == IntPtr.Zero ? "" : ReadAur(*(IntPtr*)(bubble + EngineLayout.TextBubbleString));
+        bubble == IntPtr.Zero ? "" : ReadAur(new CGuiTextBubble(bubble).AurString);
 
     /// <summary>Rejoin a <c>CAurString</c>'s wrapped lines (the bubble label and the icon's count label are both
     /// <c>NewCAurString</c> gobs): <c>StringGob::WrapLines</c> @0x494d80 keeps the break space (and any newline) on
@@ -184,9 +190,10 @@ internal static unsafe partial class RadialTree
     {
         if (_createSubMenu == null || (uint)i >= SlotCount) return IntPtr.Zero;
         _createSubMenu(menu, i);
-        IntPtr child = *(IntPtr*)(menu + EngineLayout.RadialSubMenu + i * 8);
-        if (child != IntPtr.Zero) *(IntPtr*)(child + EngineLayout.RadialParent) = menu;
-        return child;
+        var m = new CRadialMenu(menu);
+        CRadialMenu child = Unsafe.Add(ref m.SubMenu, i);
+        if (!child.IsNull) child.Parent = menu;
+        return child.Ptr;
     }
 
     /// <summary>The cascade rows of one engine menu (CX-690): vanilla slot order with the empty slots left out, the
@@ -221,7 +228,8 @@ internal static unsafe partial class RadialTree
         IntPtr obj = *(IntPtr*)entry;
         if (obj == entry) return false;
         IntPtr fn = *(IntPtr*)(entry + 8);
-        long param = *(long*)(menu + EngineLayout.RadialParam + i * 8);
+        var m = new CRadialMenu(menu);
+        long param = Unsafe.Add(ref m.Param, i);
         IntPtr self = obj;
         if (!OperatingSystem.IsWindows())
         {

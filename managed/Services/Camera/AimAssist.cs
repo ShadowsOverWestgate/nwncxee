@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Threading;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 
@@ -37,24 +38,6 @@ internal static unsafe class AimAssist
     private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
         (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
     private static delegate* unmanaged<IntPtr, void> _activateOrig, _lmouse;
-
-    private static readonly int ModuleCameraOff = EngineLayout.ModuleCamera;
-    private static readonly int ModuleAreaOff = EngineLayout.ModuleCurrentArea;
-    private static readonly int AreaIdsOff = EngineLayout.AreaObjectIds;
-    private static readonly int AreaCountOff = EngineLayout.AreaObjectCount;
-    private static readonly int AsObjSlot = EngineLayout.GameObjAsNWCObjectSlot;
-    private static readonly int ObjTypeOff = EngineLayout.ObjType;
-    private static readonly int ObjPosOff = EngineLayout.ObjPosition;
-    private static readonly int ObjVisibleOff = EngineLayout.ObjVisible;
-    private static readonly int ObjHiliteOff = EngineLayout.ObjHighlightable;
-    private static readonly int AsPlaceableSlot = EngineLayout.GameObjAsNWCPlaceableSlot;
-    private static readonly int InternalOff = EngineLayout.ExoAppInternal;
-    private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
-    private static readonly int HoveredOff = EngineLayout.CreatureHoveredOid;
-    private static readonly int CursorMgrOff = EngineLayout.InternalCursorManager;
-    private static readonly int CursorIdOff = EngineLayout.CursorCurrentId;
-    private static readonly int AllowedOff = EngineLayout.ActionTargetAllowed;
-    private static readonly int AllowedCountOff = EngineLayout.ActionTargetAllowedCount;
 
     /// <summary>Object type bytes worth aiming at. The walk's fourth type, item (6, the loose-loot class the
     /// pickup cursor is for), has no constant on purpose: loot is picked by pointing, not by aiming.</summary>
@@ -131,10 +114,10 @@ internal static unsafe class AimAssist
         if (!_cursorReady) return 0;
         IntPtr app = CameraService.App();
         if (app == IntPtr.Zero) return 0;
-        IntPtr intern = *(IntPtr*)(app + InternalOff);
-        if (intern == IntPtr.Zero) return 0;
-        IntPtr mgr = *(IntPtr*)(intern + CursorMgrOff);
-        return mgr == IntPtr.Zero ? 0 : *(int*)(mgr + CursorIdOff);
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal;
+        if (intern.IsNull) return 0;
+        CCachedMouseCursorManager mgr = intern.CursorManager;
+        return mgr.IsNull ? 0 : mgr.CurrentCursor;
     }
 
     // ---- the per-frame walk ----
@@ -155,19 +138,20 @@ internal static unsafe class AimAssist
         IntPtr module = CameraService.Module();
         IntPtr app = CameraService.App();
         if (module == IntPtr.Zero || app == IntPtr.Zero) { Clear(); return; }
-        IntPtr cam = *(IntPtr*)(module + ModuleCameraOff);
-        IntPtr area = *(IntPtr*)(module + ModuleAreaOff);
-        IntPtr intern = *(IntPtr*)(app + InternalOff);
-        if (cam == IntPtr.Zero || area == IntPtr.Zero || intern == IntPtr.Zero) { Clear(); return; }
+        var mod = new CNWCModule(module);
+        CX.Engine.Camera cam = mod.Camera;
+        CNWCArea area = mod.CurrentArea;
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal;
+        if (cam.IsNull || area.IsNull || intern.IsNull) { Clear(); return; }
 
         MouseLookService.Centre(out int cx, out int cy);
         if (!Projector.Read(cam, cx, cy, out Projector view)) { Clear(); return; }
 
-        int n = *(int*)(area + AreaCountOff);
-        uint* ids = *(uint**)(area + AreaIdsOff);
+        int n = area.ObjectCount;
+        uint* ids = (uint*)area.ObjectIds;
         if (n <= 0 || ids == null) { Clear(); return; }
 
-        uint playerId = *(uint*)(intern + PlayerIdOff);
+        uint playerId = intern.PlayerCreatureId;
         float radius2 = MouseLook.AssistPx.V * MouseLook.AssistPx.V;
         float best = float.MaxValue;
         long bestPoint = NoPoint;
@@ -179,9 +163,9 @@ internal static unsafe class AimAssist
             if (id == playerId || id == TypingSignal.ObjectInvalid) continue;
             IntPtr go = _getGameObject(app, id);
             if (go == IntPtr.Zero) continue;
-            IntPtr obj = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)go + AsObjSlot)))(go);
-            if (obj == IntPtr.Zero || *(byte*)(obj + ObjVisibleOff) == 0) continue;
-            byte type = *(byte*)(obj + ObjTypeOff);
+            var obj = new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(go).AsNWCObjectFn)(go));
+            if (obj.IsNull || obj.Visible == 0) continue;
+            byte type = obj.Type;
             float lift;
             switch (type)
             {
@@ -190,11 +174,11 @@ internal static unsafe class AimAssist
                 case TypeDoor: lift = DoorLift; break;
                 default: continue;
             }
-            IntPtr hil = type != TypePlaceable ? obj
-                : ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)obj + AsPlaceableSlot)))(obj);
-            if (hil == IntPtr.Zero || *(int*)(hil + ObjHiliteOff) == 0) continue;
-            float* w = (float*)(obj + ObjPosOff);
-            if (!view.Screen(new Vector3(w[0], w[1], w[2] + lift), out float sx, out float sy, out float ez)) continue;
+            CNWCObject hil = type != TypePlaceable ? obj
+                : new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(obj.Ptr).AsNWCPlaceableFn)(obj.Ptr));
+            if (hil.IsNull || hil.Highlightable == 0) continue;
+            Vector3 w = obj.Position;
+            if (!view.Screen(new Vector3(w.X, w.Y, w.Z + lift), out float sx, out float sy, out float ez)) continue;
             float dx = sx - cx, dy = sy - cy, d2 = dx * dx + dy * dy;
             if (d2 >= radius2) continue;
             float score = MathF.Sqrt(d2) + ez * AssistDepthPxPerM;
@@ -241,8 +225,9 @@ internal static unsafe class AimAssist
     /// target is the synthetic type 2 is an AoE that wants aiming, so it is left up.</summary>
     internal static bool TakesAnObject(IntPtr self)
     {
-        int n = *(int*)(self + AllowedCountOff);
-        int* a = *(int**)(self + AllowedOff);
+        var mode = new CActionTarget(self);
+        int n = mode.AllowedCount;
+        int* a = (int*)mode.Allowed;
         if (a == null) return false;
         for (int i = 0; i < n; i++) if (a[i * 2] != GroundTargetType) return true;   // stride 8: {type, cursor}
         return false;
@@ -255,7 +240,7 @@ internal static unsafe class AimAssist
     private static uint HoveredOid()
     {
         IntPtr cre = CameraService.PlayerCreature();
-        return cre == IntPtr.Zero ? TypingSignal.ObjectInvalid : *(uint*)(cre + HoveredOff);
+        return cre == IntPtr.Zero ? TypingSignal.ObjectInvalid : new CNWCCreature(cre).HoveredOid;
     }
 
     /// <summary>The mode status fragment.</summary>
@@ -278,23 +263,23 @@ internal unsafe struct Projector
     private const float FovRadianCeiling = 3.2f;
 
     /// <summary>False when the camera or the centre is not usable this frame.</summary>
-    internal static bool Read(IntPtr cam, int cx, int cy, out Projector p)
+    internal static bool Read(CX.Engine.Camera cam, int cx, int cy, out Projector p)
     {
         p = default;
-        if (cam == IntPtr.Zero || cx <= 0 || cy <= 0) return false;
-        float fov = *(float*)(cam + EngineLayout.CamViewAngle);
+        if (cam.IsNull || cx <= 0 || cy <= 0) return false;
+        float fov = cam.ViewAngle;
         if (!(fov > 0f)) return false;
-        float* pos = (float*)(cam + EngineLayout.CamPos);
-        float* q = (float*)(cam + EngineLayout.CamRot);
+        float* pos = (float*)(cam.Ptr + EngineLayout.CamPos);
+        float* q = (float*)(cam.Ptr + EngineLayout.CamRot);
         Quaternion rot = new(q[1], q[2], q[3], q[0]);
         p._eye = new Vector3(pos[0], pos[1], pos[2]);
         p._fwd = Vector3.Transform(new Vector3(0f, 0f, -1f), rot);
         p._right = Vector3.Transform(new Vector3(1f, 0f, 0f), rot);
         p._up = Vector3.Transform(new Vector3(0f, 1f, 0f), rot);
-        float vw = *(float*)(cam + EngineLayout.CamViewW), vh = *(float*)(cam + EngineLayout.CamViewH);
+        float vw = cam.ViewW, vh = cam.ViewH;
         p._aspect = vh > 0f ? vw / vh : (float)cx / cy;
         p._tanHalf = MathF.Tan(fov * (fov > FovRadianCeiling ? MathF.PI / 360f : 0.5f));
-        p._near = *(float*)(cam + EngineLayout.CamNear);
+        p._near = cam.Near;
         if (!(p._near > 0f)) p._near = 0.1f;
         p._cx = cx; p._cy = cy;
         return true;

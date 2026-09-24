@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat;
 using CX.Services.Chat.Render;
@@ -28,11 +29,6 @@ public sealed unsafe class QuickbarService : IExtenderService
 
     private const int QuickbarModelW = 800;
     private const int QuickbarBaseH = 36;
-
-    private static readonly int GuiManVpWOff = EngineLayout.GuiManVpW, GuiManVpHOff = EngineLayout.GuiManVpH;
-    private static readonly int InGameGuiOff = EngineLayout.InternalInGameGui;
-    private static readonly int QuickbarPanelOff = EngineLayout.InGameGuiQuickbar;
-    private static readonly int ExoAppInternalOff = EngineLayout.ExoAppInternal;
 
     private static volatile int _vpW, _vpH;
     private static float _guiScale = 1f;
@@ -100,7 +96,7 @@ public sealed unsafe class QuickbarService : IExtenderService
         if (_guiMan != IntPtr.Zero)
         {
             IntPtr gm = *(IntPtr*)_guiMan;
-            if (gm != IntPtr.Zero) { vpW = *(int*)(gm + GuiManVpWOff); _vpH = *(int*)(gm + GuiManVpHOff); }
+            if (gm != IntPtr.Zero) { var man = new CGuiMan(gm); vpW = man.VpWidth; _vpH = man.VpHeight; }
         }
         _vpW = vpW;
 
@@ -132,7 +128,7 @@ public sealed unsafe class QuickbarService : IExtenderService
         if (_guiMan != IntPtr.Zero)
         {
             IntPtr gm = *(IntPtr*)_guiMan;
-            if (gm != IntPtr.Zero) { vpW = *(int*)(gm + GuiManVpWOff); vpH = *(int*)(gm + GuiManVpHOff); }
+            if (gm != IntPtr.Zero) { var man = new CGuiMan(gm); vpW = man.VpWidth; vpH = man.VpHeight; }
         }
         if (vpW != _vpW || vpH != _vpH) { _vpW = vpW; _vpH = vpH; _dirty = true; }
 
@@ -192,11 +188,11 @@ public sealed unsafe class QuickbarService : IExtenderService
     {
         bool want = QuickbarKnobs.Compass.V || !QuickbarKnobs.Enabled.V;
         if (want == _compassApplied) return;
-        IntPtr gui = LiveGuiInGame();
-        if (gui == IntPtr.Zero) return;
+        CGuiInGame gui = LiveGuiInGame();
+        if (gui.IsNull) return;
         _compassApplied = want;
-        if (!want && _hideCompass != null) _hideCompass(gui);
-        else if (want && _showCompass != null) _showCompass(gui);
+        if (!want && _hideCompass != null) _hideCompass(gui.Ptr);
+        else if (want && _showCompass != null) _showCompass(gui.Ptr);
     }
 
     /// <summary>Rebuild the chrome vertex batch: full-width band (if bars on and quickbar visible) and the
@@ -259,21 +255,21 @@ public sealed unsafe class QuickbarService : IExtenderService
 
     private static IntPtr LiveQuickbar()
     {
-        IntPtr gui = LiveGuiInGame();
-        if (gui == IntPtr.Zero) return IntPtr.Zero;
-        return *(IntPtr*)(gui + QuickbarPanelOff);
+        CGuiInGame gui = LiveGuiInGame();
+        if (gui.IsNull) return IntPtr.Zero;
+        return gui.Quickbar;
     }
 
     /// <summary>Walk to CGuiInGame* (the in-game GUI container). Used for quickbar + compass.</summary>
-    private static IntPtr LiveGuiInGame()
+    private static CGuiInGame LiveGuiInGame()
     {
-        if (_appMgr == IntPtr.Zero) return IntPtr.Zero;
+        if (_appMgr == IntPtr.Zero) return default;
         IntPtr mgr = *(IntPtr*)_appMgr;
-        if (mgr == IntPtr.Zero) return IntPtr.Zero;
+        if (mgr == IntPtr.Zero) return default;
         IntPtr app = *(IntPtr*)mgr;
-        if (app == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr intern = *(IntPtr*)(app + ExoAppInternalOff);
-        if (intern == IntPtr.Zero) return IntPtr.Zero;
-        return *(IntPtr*)(intern + InGameGuiOff);
+        if (app == IntPtr.Zero) return default;
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal;
+        if (intern.IsNull) return default;
+        return intern.InGameGui;
     }
 }

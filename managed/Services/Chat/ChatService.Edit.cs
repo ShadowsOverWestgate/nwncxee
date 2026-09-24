@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 using CX.Services.Chat.Render;
@@ -83,14 +84,15 @@ public sealed unsafe partial class ChatService
     {
         if (player != IntPtr.Zero)
         {
-            IntPtr buf = *(IntPtr*)(player + EngineLayout.PlayerCreatureName);
-            uint len = *(uint*)(player + EngineLayout.PlayerCreatureNameLen);
+            var plr = new CNWCPlayer(player);
+            IntPtr buf = plr.CreatureName;
+            uint len = plr.CreatureNameLen;
             if (buf != IntPtr.Zero && len > 0 && len <= 128)
             {
                 var sb = new StringBuilder((int)len);
                 for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
                 string name = sb.ToString();
-                uint ingestId = *(uint*)(player + EngineLayout.PlayerId);
+                uint ingestId = plr.PlayerId;
                 StartTellTo(name, ingestId);
                 return;
             }

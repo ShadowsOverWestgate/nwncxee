@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 using CX.Services.Chat.Render;
@@ -23,8 +24,6 @@ public sealed unsafe partial class ChatService
     // hour edge (PollGameClock, per frame) and interpolate a sub-hour minute at ingest.
     private static readonly delegate* unmanaged<IntPtr, IntPtr> _getModule =
         (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
-    private static readonly int ModuleHourOff = EngineLayout.ModuleHour;
-    private static readonly int ModuleMinutesPerHourOff = EngineLayout.ModuleMinutesPerHour;
 
     private static int _gmHour = -1;    // last polled server game hour (0..23); -1 = none seen -> local fallback
     private static long _gmHourMs;      // TickCount64 when _gmHour last changed (sub-hour interpolation anchor)
@@ -47,9 +46,10 @@ public sealed unsafe partial class ChatService
     {
         IntPtr module = GameModule();
         if (module == IntPtr.Zero) { _gmHour = -1; return; }
-        int hour = *(int*)(module + ModuleHourOff);
+        var mod = new CNWCModule(module);
+        int hour = mod.Hour;
         if ((uint)hour > 23u) { _gmHour = -1; return; }   // guards a bad offset -> local fallback
-        int mph = *(byte*)(module + ModuleMinutesPerHourOff);
+        int mph = mod.MinutesPerHour;
         _gmMph = mph > 0 ? mph : 2;
         if (hour != _gmHour) { _gmHour = hour; _gmHourMs = Environment.TickCount64; }   // hour edge -> re-anchor
     }

@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Ui;
 using CX.Graphics;
@@ -360,15 +361,15 @@ public sealed unsafe class MouseLookService : IExtenderService
     /// <summary>The viewport centre in SDL window pixels, whether or not the action camera is up.</summary>
     internal static void ViewportCentre(out int x, out int y)
     {
-        IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
-        x = gm != IntPtr.Zero ? *(int*)(gm + EngineLayout.GuiManVpW) / 2 : 960;
-        y = gm != IntPtr.Zero ? *(int*)(gm + EngineLayout.GuiManVpH) / 2 : 540;
+        var gm = new CGuiMan(_guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero);
+        x = !gm.IsNull ? gm.VpWidth / 2 : 960;
+        y = !gm.IsNull ? gm.VpHeight / 2 : 540;
     }
 
     internal static float ViewportWidth()
     {
-        IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
-        int w = gm != IntPtr.Zero ? *(int*)(gm + EngineLayout.GuiManVpW) : 0;
+        var gm = new CGuiMan(_guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero);
+        int w = !gm.IsNull ? gm.VpWidth : 0;
         return w > 0 ? w : 1920f;
     }
 

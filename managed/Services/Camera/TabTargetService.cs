@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using System.Threading;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 using CX.Ui;
@@ -83,26 +84,9 @@ public sealed unsafe class TabTargetService : IExtenderService
     /// <summary>The world pick's "an object" verdict (PerformLButtonDownAction's <c>== 2</c> branch).</summary>
     private const int PickObject = 2;
 
-    private static readonly int ModuleCameraOff = EngineLayout.ModuleCamera;
-    private static readonly int ModuleAreaOff = EngineLayout.ModuleCurrentArea;
-    private static readonly int AreaIdsOff = EngineLayout.AreaObjectIds;
-    private static readonly int AreaCountOff = EngineLayout.AreaObjectCount;
-    private static readonly int AsObjSlot = EngineLayout.GameObjAsNWCObjectSlot;
-    private static readonly int AsPlaceableSlot = EngineLayout.GameObjAsNWCPlaceableSlot;
-    private static readonly int ObjTypeOff = EngineLayout.ObjType;
-    private static readonly int ObjPosOff = EngineLayout.ObjPosition;
-    private static readonly int ObjVisibleOff = EngineLayout.ObjVisible;
-    private static readonly int ObjHiliteOff = EngineLayout.ObjHighlightable;
+    /// <summary>The object's script highlight colour: a Vector read through a <c>float*</c> that is then rebased
+    /// onto one of the engine's own colour globals, so the offset stays raw rather than becoming a view row.</summary>
     private static readonly int ObjColourOff = EngineLayout.ObjHiliteColour;
-    private static readonly int HiliteSlot = EngineLayout.ObjHiliteSlot;
-    private static readonly int UnHiliteSlot = EngineLayout.ObjUnHiliteSlot;
-    private static readonly int MouseOverSlot = EngineLayout.ObjMouseOverSlot;
-    private static readonly int MouseOffSlot = EngineLayout.ObjMouseOffSlot;
-    private static readonly int AttitudeOff = EngineLayout.CreatureAttitude;
-    private static readonly int AiStateOff = EngineLayout.CreatureAiFlags;
-    private static readonly int InternalOff = EngineLayout.ExoAppInternal;
-    private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
-    private static readonly int ActionTargetOff = EngineLayout.InternalActionTarget;
 
     /// <summary>The engine's by-value <c>Vector</c> into <c>Hilite</c>: the house shape (<c>CombatTextService</c>, #420,
     /// live on both) -- SysV xmm0 (x, y) + xmm1 (z), Win64 a pointer to a caller-made copy.</summary>
@@ -240,29 +224,29 @@ public sealed unsafe class TabTargetService : IExtenderService
         IntPtr module = CameraService.Module();
         IntPtr app = CameraService.App();
         if (module == IntPtr.Zero || app == IntPtr.Zero) return held;
-        IntPtr cam = *(IntPtr*)(module + ModuleCameraOff);
-        area = *(IntPtr*)(module + ModuleAreaOff);
-        IntPtr intern = *(IntPtr*)(app + InternalOff);
+        var mod = new CNWCModule(module);
+        CX.Engine.Camera cam = mod.Camera;
+        area = mod.CurrentArea.Ptr;
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal;
         IntPtr player = CameraService.PlayerCreature();
-        if (cam == IntPtr.Zero || area == IntPtr.Zero || intern == IntPtr.Zero || player == IntPtr.Zero) return held;
+        if (cam.IsNull || area == IntPtr.Zero || intern.IsNull || player == IntPtr.Zero) return held;
         MouseLookService.ViewportCentre(out int cx, out int cy);
         if (!Projector.Read(cam, cx, cy, out Projector view)) return held;
-        int n = *(int*)(area + AreaCountOff);
-        uint* ids = *(uint**)(area + AreaIdsOff);
+        var areaView = new CNWCArea(area);
+        int n = areaView.ObjectCount;
+        uint* ids = (uint*)areaView.ObjectIds;
         if (n <= 0 || ids == null) return held;
-        uint playerId = *(uint*)(intern + PlayerIdOff);
-        float* pp = (float*)(player + ObjPosOff);
-        Vector3 me = new(pp[0], pp[1], pp[2]);
+        uint playerId = intern.PlayerCreatureId;
+        Vector3 me = new CNWCObject(player).Position;
 
         int count = 0;
         for (int i = 0; i < n && count < _live.Length; i++)
         {
             uint id = ids[i];
             if (id == playerId || id == TypingSignal.ObjectInvalid) continue;
-            IntPtr obj = Object(app, id, out byte kind);
-            if (obj == IntPtr.Zero || (kind == TabTargetCore.TypeCreature && Dead(obj))) continue;
-            float* w = (float*)(obj + ObjPosOff);
-            Vector3 pos = new(w[0], w[1], w[2]);
+            CNWCObject obj = Object(app, id, out byte kind);
+            if (obj.IsNull || (kind == TabTargetCore.TypeCreature && Dead(obj))) continue;
+            Vector3 pos = obj.Position;
             if (!view.Screen(pos, out float sx, out float sy, out _)) continue;
             if (sx < 0f || sy < 0f || sx > 2 * cx || sy > 2 * cy) continue;   // in view only
             float dx = sx - cx, dy = sy - cy;
@@ -278,30 +262,30 @@ public sealed unsafe class TabTargetService : IExtenderService
 
     /// <summary>The creature / placeable / door behind <paramref name="id"/>, or Zero: the lock's liveness read
     /// (a faded or invisible target stays locked; only a gone one clears).</summary>
-    private static IntPtr Resolve(IntPtr app, uint id, out byte kind)
+    private static CNWCObject Resolve(IntPtr app, uint id, out byte kind)
     {
         kind = 0;
         IntPtr go = _getGameObject(app, id);
-        if (go == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr obj = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)go + AsObjSlot)))(go);
-        if (obj == IntPtr.Zero) return IntPtr.Zero;
-        kind = *(byte*)(obj + ObjTypeOff);
-        return kind is TabTargetCore.TypeCreature or TabTargetCore.TypePlaceable or TabTargetCore.TypeDoor ? obj : IntPtr.Zero;
+        if (go == IntPtr.Zero) return default;
+        var obj = new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(go).AsNWCObjectFn)(go));
+        if (obj.IsNull) return default;
+        kind = obj.Type;
+        return kind is TabTargetCore.TypeCreature or TabTargetCore.TypePlaceable or TabTargetCore.TypeDoor ? obj : default;
     }
 
     /// <summary><see cref="Resolve"/> narrowed to what Tab may land on: visible and highlightable, the same reads
     /// as the aim assist's walk (the placeable's hilite flag sits on what <c>AsNWCPlaceable</c> answers).</summary>
-    private static IntPtr Object(IntPtr app, uint id, out byte kind)
+    private static CNWCObject Object(IntPtr app, uint id, out byte kind)
     {
-        IntPtr obj = Resolve(app, id, out kind);
-        if (obj == IntPtr.Zero || *(byte*)(obj + ObjVisibleOff) == 0) return IntPtr.Zero;
-        IntPtr hil = kind != TabTargetCore.TypePlaceable ? obj
-            : ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)obj + AsPlaceableSlot)))(obj);
-        return hil == IntPtr.Zero || *(int*)(hil + ObjHiliteOff) == 0 ? IntPtr.Zero : obj;
+        CNWCObject obj = Resolve(app, id, out kind);
+        if (obj.IsNull || obj.Visible == 0) return default;
+        CNWCObject hil = kind != TabTargetCore.TypePlaceable ? obj
+            : new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(obj.Ptr).AsNWCPlaceableFn)(obj.Ptr));
+        return hil.IsNull || hil.Highlightable == 0 ? default : obj;
     }
 
-    private static bool Hostile(IntPtr creature) => *(byte*)(creature + AttitudeOff) is not (AttitudeNeutral or AttitudeFriend);
-    private static bool Dead(IntPtr creature) => *(short*)(creature + AiStateOff) == 0;
+    private static bool Hostile(CNWCObject creature) => new CNWCCreature(creature.Ptr).Attitude is not (AttitudeNeutral or AttitudeFriend);
+    private static bool Dead(CNWCObject creature) => new CNWCCreature(creature.Ptr).AiFlags == 0;
 
     private static void SetLock(uint id, IntPtr area)
     {
@@ -321,10 +305,10 @@ public sealed unsafe class TabTargetService : IExtenderService
         x = y = z = 0f;
         if (_aim == Aim.None || !On) return false;
         IntPtr app = CameraService.App();
-        IntPtr obj = app != IntPtr.Zero ? Resolve(app, Lock, out _) : IntPtr.Zero;
-        if (obj == IntPtr.Zero) return false;
-        float* w = (float*)(obj + ObjPosOff);
-        x = w[0]; y = w[1]; z = w[2];
+        CNWCObject obj = app != IntPtr.Zero ? Resolve(app, Lock, out _) : default;
+        if (obj.IsNull) return false;
+        Vector3 w = obj.Position;
+        x = w.X; y = w.Y; z = w.Z;
         return true;
     }
 
@@ -345,36 +329,35 @@ public sealed unsafe class TabTargetService : IExtenderService
         if (id == 0) return;
         IntPtr module = CameraService.Module();
         IntPtr app = CameraService.App();
-        if (!On || module == IntPtr.Zero || app == IntPtr.Zero || *(IntPtr*)(module + ModuleAreaOff) != _lockArea) { Clear(); return; }
-        IntPtr obj = Resolve(app, id, out byte kind);
-        if (obj == IntPtr.Zero || (kind == TabTargetCore.TypeCreature && Dead(obj))) { Clear(); return; }
+        if (!On || module == IntPtr.Zero || app == IntPtr.Zero || new CNWCModule(module).CurrentArea.Ptr != _lockArea) { Clear(); return; }
+        CNWCObject obj = Resolve(app, id, out byte kind);
+        if (obj.IsNull || (kind == TabTargetCore.TypeCreature && Dead(obj))) { Clear(); return; }
         if (!InView(module, obj)) { Clear(); _drops++; return; }
         Hilite(obj, kind);
         // The Tab plate: MouseOver(1) is a no-op while the plate is already up, so per frame is free.
-        ((delegate* unmanaged<IntPtr, int, void>)(*(IntPtr*)(*(IntPtr*)obj + MouseOverSlot)))(obj, 1);
+        ((delegate* unmanaged<IntPtr, int, void>)obj.MouseOverFn)(obj.Ptr, 1);
     }
 
     /// <summary>Is the object's ground point inside the viewport? A target that left the screen (the player turned
     /// away, or walked past it) drops its lock; a one-shot turn keeps it in view by construction, a lock-on by force.</summary>
-    private static bool InView(IntPtr module, IntPtr obj)
+    private static bool InView(IntPtr module, CNWCObject obj)
     {
-        IntPtr cam = *(IntPtr*)(module + ModuleCameraOff);
+        CX.Engine.Camera cam = new CNWCModule(module).Camera;
         MouseLookService.ViewportCentre(out int cx, out int cy);
-        if (cam == IntPtr.Zero || !Projector.Read(cam, cx, cy, out Projector view)) return true;   // no camera to judge by: keep
-        float* w = (float*)(obj + ObjPosOff);
-        return view.Screen(new Vector3(w[0], w[1], w[2]), out float sx, out float sy, out _)
+        if (cam.IsNull || !Projector.Read(cam, cx, cy, out Projector view)) return true;   // no camera to judge by: keep
+        return view.Screen(obj.Position, out float sx, out float sy, out _)
                && sx >= 0f && sy >= 0f && sx <= 2 * cx && sy <= 2 * cy;
     }
 
     /// <summary>The engine's own Tab look: the object's script colour when set (x &gt;= 0), else the type's /
     /// attitude's global. Virtual: CNWCCreature overrides Hilite to reach its equipped items too.</summary>
-    private static void Hilite(IntPtr obj, byte kind)
+    private static void Hilite(CNWCObject obj, byte kind)
     {
-        float* c = (float*)(obj + ObjColourOff);
+        float* c = (float*)(obj.Ptr + ObjColourOff);
         if (!(c[0] >= 0f))
         {
             IntPtr g = kind == TabTargetCore.TypePlaceable ? _colPlaceable : kind == TabTargetCore.TypeDoor ? _colDoor
-                : *(byte*)(obj + AttitudeOff) switch { AttitudeFriend => _colFriend, AttitudeNeutral => _colNeutral, _ => _colEnemy };
+                : new CNWCCreature(obj.Ptr).Attitude switch { AttitudeFriend => _colFriend, AttitudeNeutral => _colNeutral, _ => _colEnemy };
             c = (float*)g;
         }
         CombatText.CombatTextService.Vec3 colour = new() { X = c[0], Y = c[1], Z = c[2] };
@@ -383,7 +366,7 @@ public sealed unsafe class TabTargetService : IExtenderService
 #else
         ColourArg arg = new() { V = colour };
 #endif
-        ((delegate* unmanaged<IntPtr, ColourArg, byte, float, int, void>)(*(IntPtr*)(*(IntPtr*)obj + HiliteSlot)))(obj, arg, LockChannel, 0f, Glow);
+        ((delegate* unmanaged<IntPtr, ColourArg, byte, float, int, void>)obj.HiliteFn)(obj.Ptr, arg, LockChannel, 0f, Glow);
     }
 
     private static void UnHilite()
@@ -393,10 +376,10 @@ public sealed unsafe class TabTargetService : IExtenderService
         if (id == 0 || app == IntPtr.Zero) return;
         IntPtr go = _getGameObject(app, id);
         if (go == IntPtr.Zero) return;
-        IntPtr obj = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)go + AsObjSlot)))(go);
-        if (obj == IntPtr.Zero) return;
-        ((delegate* unmanaged<IntPtr, byte, int>)(*(IntPtr*)(*(IntPtr*)obj + UnHiliteSlot)))(obj, LockChannel);
-        ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)obj + MouseOffSlot)))(obj);
+        var obj = new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(go).AsNWCObjectFn)(go));
+        if (obj.IsNull) return;
+        ((delegate* unmanaged<IntPtr, byte, int>)obj.UnHiliteFn)(obj.Ptr, LockChannel);
+        ((delegate* unmanaged<IntPtr, void>)obj.MouseOffFn)(obj.Ptr);
     }
 
     // ---- click-to-lock ----
@@ -406,16 +389,17 @@ public sealed unsafe class TabTargetService : IExtenderService
     {
         if (!On || obj == IntPtr.Zero || _fireAt != IntPtr.Zero) return _defaultActionOrig(self, obj);
         IntPtr app = CameraService.App();
-        IntPtr intern = app != IntPtr.Zero ? *(IntPtr*)(app + InternalOff) : IntPtr.Zero;
-        uint id = *(uint*)(obj + EngineLayout.ObjId);
-        if (intern == IntPtr.Zero || id == *(uint*)(intern + PlayerIdOff)) return _defaultActionOrig(self, obj);
-        byte kind = *(byte*)(obj + ObjTypeOff);
+        CClientExoAppInternal intern = app != IntPtr.Zero ? new CClientExoApp(app).Internal : default;
+        var target = new CNWCObject(obj);
+        uint id = target.Id;
+        if (intern.IsNull || id == intern.PlayerCreatureId) return _defaultActionOrig(self, obj);
+        byte kind = target.Type;
         // A corpse is loot, not a target: its click keeps the vanilla UseObject.
-        bool lockable = (kind == TabTargetCore.TypeCreature && !Dead(obj))
+        bool lockable = (kind == TabTargetCore.TypeCreature && !Dead(target))
                         || (TabTarget.Objects.V && kind is TabTargetCore.TypePlaceable or TabTargetCore.TypeDoor);
         if (!lockable) return _defaultActionOrig(self, obj);
         IntPtr module = CameraService.Module();
-        SetLock(id, module != IntPtr.Zero ? *(IntPtr*)(module + ModuleAreaOff) : IntPtr.Zero);
+        SetLock(id, module != IntPtr.Zero ? new CNWCModule(module).CurrentArea.Ptr : IntPtr.Zero);
         _clicks++;
         // The crosshair wins while the action camera is held: the click keeps its vanilla action as well.
         return MouseLookService.ActionHeld ? _defaultActionOrig(self, obj) : 1;
@@ -463,8 +447,8 @@ public sealed unsafe class TabTargetService : IExtenderService
         _pending = IntPtr.Zero;
         IntPtr app = CameraService.App();
         if (self == IntPtr.Zero || app == IntPtr.Zero) return;
-        IntPtr intern = *(IntPtr*)(app + InternalOff);
-        if (intern == IntPtr.Zero || *(IntPtr*)(intern + ActionTargetOff) != self) return;
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal;
+        if (intern.IsNull || intern.ActionTarget.Ptr != self) return;
         bool hasLock = Lock != 0 && !MouseLookService.ActionHeld;
         _releaseFires++;
         switch (TabTargetCore.Decide(TabTargetCore.CastMode.Preview, hasLock, AimAssist.TakesAnObject(self), TabTargetCore.CastEvent.Release))
@@ -479,9 +463,9 @@ public sealed unsafe class TabTargetService : IExtenderService
     private static void FireAtLock(IntPtr self)
     {
         IntPtr app = CameraService.App();
-        IntPtr obj = app != IntPtr.Zero ? Resolve(app, Lock, out _) : IntPtr.Zero;
-        if (obj == IntPtr.Zero) { _cursorFires++; AimAssist.Resolve(self); return; }
-        _fireAt = obj; _lockFires++;
+        CNWCObject obj = app != IntPtr.Zero ? Resolve(app, Lock, out _) : default;
+        if (obj.IsNull) { _cursorFires++; AimAssist.Resolve(self); return; }
+        _fireAt = obj.Ptr; _lockFires++;
         try { AimAssist.Resolve(self); }
         finally { _fireAt = IntPtr.Zero; }
     }
@@ -495,7 +479,7 @@ public sealed unsafe class TabTargetService : IExtenderService
         verdict = 0;
         if (at == IntPtr.Zero) return false;
         if (obj != null) *obj = at;
-        if (point != IntPtr.Zero) { float* w = (float*)(at + ObjPosOff); float* p = (float*)point; p[0] = w[0]; p[1] = w[1]; p[2] = w[2]; }
+        if (point != IntPtr.Zero) { Vector3 w = new CNWCObject(at).Position; float* p = (float*)point; p[0] = w.X; p[1] = w.Y; p[2] = w.Z; }
         verdict = PickObject;
         return true;
     }

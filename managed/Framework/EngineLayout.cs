@@ -43,7 +43,7 @@ public static unsafe class EngineLayout
 
     /// <summary>CNWCCreature: "the feedback plate is currently shown for me", set at the top of
     /// ShowFeedbackBubbleText (Linux disasm @0x71a81e, Windows @0x80b240).</summary>
-    public static readonly int CreaturePlated = Field("CNWCCreature", "plated", Expect.Byte01);
+    public static readonly int CreaturePlated = Field<int>("CNWCCreature", "plated", Expect.Byte01);
     /// <summary>CNWCCreature -&gt; CNWCCreatureStats* (docs/re/nameplate.md §7.1; Windows via <c>ShowFeedbackBubbleText</c>
     /// @0x80b240, docs/windows-symbols.md).</summary>
     public static readonly int CreatureStats = Field<CX.Engine.CNWCCreatureStats>("CNWCCreature", "stats");
@@ -55,7 +55,7 @@ public static unsafe class EngineLayout
     public static readonly int StatsLastNameLen = Field<uint>("CNWCCreatureStats", "lastNameLen");
 
     /// <summary>CNWCPlaceable, same flag (Linux disasm @0x7ea8b8, Windows @0x871b60).</summary>
-    public static readonly int PlaceablePlated = Field("CNWCPlaceable", "plated", Expect.Byte01);
+    public static readonly int PlaceablePlated = Field<int>("CNWCPlaceable", "plated", Expect.Byte01);
 
     /// <summary>Virtual slot of <c>GetPortrait(unsigned char)</c> on CNWCObject -- MSVC orders the table
     /// differently, so this is a vtable index, not a field (#420).</summary>
@@ -414,7 +414,7 @@ public static unsafe class EngineLayout
     /// reads +0xbc and @0x4aa640 reads +0xb4 -- and Windows folds each pair into one function that reads
     /// the SAME offsets this side does (+0xb0 as 8+4 bytes, +0xbc as 8+8). So these are measured on
     /// Camera's own accessors; they are NOT Gob's position/orientation, which sit 8 bytes lower.</summary>
-    public static readonly int CamPos = Field("Camera", "pos");
+    public static readonly int CamPos = Field<System.Numerics.Vector3>("Camera", "pos");
     /// <inheritdoc cref="CamPos"/>
     public static readonly int CamRot = Field("Camera", "rot");
     /// <summary>CAurCamera -&gt; current behavior host, a <c>CAurBehavior*</c>; its
@@ -616,7 +616,7 @@ public static unsafe class EngineLayout
     /// HandleServerToPlayerArea chain). #446: <c>CNWCCreature::UpdatePopUpBubble</c> (Linux @0x72e600,
     /// Windows rva 0x8107a0) dereferences it and compares the area's id at +0x118 against the creature's
     /// own area id -- a pointer deref, not a position guess, and the same offset on both.</summary>
-    public static readonly int ModuleCurrentArea = Field("CNWCModule", "currentArea");
+    public static readonly int ModuleCurrentArea = Field<CX.Engine.CNWCArea>("CNWCModule", "currentArea");
     /// <summary>CNWCArea -&gt; the ARE Flags DWORD, bit 0 = interior (<c>CNWSArea::PackAreaIntoMessage</c>
     /// writes <c>m_nFlags</c>@+8 -&gt; <c>CNWCArea::LoadArea</c> reads it into +8). #446: the role is pinned
     /// by the WIRE ORDER, which no compiler may reorder -- <c>LoadArea</c> (Linux @0x70e010, Windows rva
@@ -627,44 +627,44 @@ public static unsafe class EngineLayout
     /// (the PC); raw pointer at +0. Its <see cref="GobPosition"/> is what GetTargetWorldPosition returns --
     /// and that accessor (@0x4a03a0 / rva 0x56540) is the whole measurement: one line on each build reading
     /// <c>*(this+0x20) + 0xa8</c> (#448; the Windows half returns the Vector through the sret pointer).</summary>
-    public static readonly int BehaviorTargetObj = Field("CAurBehaviorCameraFollow", "target");
+    public static readonly int BehaviorTargetObj = Field<IntPtr>("CAurBehaviorCameraFollow", "target");
 
     // ---- the camera solve (#536): CAurBehaviorCameraFollow::Control decompiled on both builds (Linux
     //      @0x4a2290, Windows @0x140055100, name-exported) reads every field below at the same offset ----
 
     /// <summary>CAurBehavior -&gt; owner <c>CAurObject*</c> (= <c>Camera+8</c>). Both ctors store it at +0x18.</summary>
-    public static readonly int BehaviorOwner = Field("CAurBehavior", "owner");
+    public static readonly int BehaviorOwner = Field<IntPtr>("CAurBehavior", "owner");
     /// <summary>CAurBehaviorCameraFollow -&gt; smoothed focus Vector (+0x30..+0x38), written back at the end of Control.</summary>
-    public static readonly int FollowFocus = Field("CAurBehaviorCameraFollow", "focus");
+    public static readonly int FollowFocus = Field<System.Numerics.Vector3>("CAurBehaviorCameraFollow", "focus");
     /// <summary>CAurBehaviorCameraFollow -&gt; orbit distance (float). The engine's pull-in
     /// (<c>UpdateNormalCameraCollision</c> @0x7daf80) writes it DIRECTLY at its tail (<c>+0x48 = dist</c>,
     /// <c>+0x7c = 1</c>), before Control runs -- it is not a zoom velocity (#538).</summary>
-    public static readonly int FollowDist = Field("CAurBehaviorCameraFollow", "dist");
+    public static readonly int FollowDist = Field<float>("CAurBehaviorCameraFollow", "dist");
     /// <summary>CAurBehaviorCameraFollow -&gt; zoom velocity: Control reads it as <c>dist *= 2^(-v*dt*0.5)</c>
     /// and zeroes it; +0x50 next to it is the focus spring (750). Same body on both builds (§9.4).</summary>
-    public static readonly int FollowZoomVel = Field("CAurBehaviorCameraFollow", "zoomVel");
+    public static readonly int FollowZoomVel = Field<float>("CAurBehaviorCameraFollow", "zoomVel");
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw, degrees, 0 = looking along +Y.</summary>
-    public static readonly int FollowYaw = Field("CAurBehaviorCameraFollow", "yaw");
+    public static readonly int FollowYaw = Field<float>("CAurBehaviorCameraFollow", "yaw");
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw velocity, deg/s: Control adds <c>v*dt</c> and zeroes it. The
     /// engine's chase drivers (Linux @0x7dddd0 / @0x7de660, Windows rva 0x7d0d00 / 0x7d1c90) and
     /// <c>TurnCamera(deg, 0)</c> (Linux @0x7d8960, Windows 0x7cfe60) write it at +0x58 on both builds (#541).</summary>
-    public static readonly int FollowYawVel = Field("CAurBehaviorCameraFollow", "yawVel");
+    public static readonly int FollowYawVel = Field<float>("CAurBehaviorCameraFollow", "yawVel");
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw impulse, degrees added once: <c>TurnCamera(deg, 1)</c> (the drag
     /// paths) accumulates it at +0x88 on both builds; Control consumes and zeroes it.</summary>
-    public static readonly int FollowYawImpulse = Field("CAurBehaviorCameraFollow", "yawImpulse");
+    public static readonly int FollowYawImpulse = Field<float>("CAurBehaviorCameraFollow", "yawImpulse");
     /// <summary>CAurBehaviorCameraFollow -&gt; pitch, degrees from vertical (1 = top-down, 89 = horizontal).</summary>
-    public static readonly int FollowPitch = Field("CAurBehaviorCameraFollow", "pitch");
+    public static readonly int FollowPitch = Field<float>("CAurBehaviorCameraFollow", "pitch");
     /// <summary>CAurBehaviorCameraFollow -&gt; pitch velocity, deg/s, and pitch impulse, degrees added once: the
     /// yaw pair's twins; Control integrates <c>+0x60*dt + +0x8c</c> into +0x5c and zeroes both, same offsets on
     /// both builds (Linux @0x4a2290, Windows @0x140055100; CX-636).</summary>
-    public static readonly int FollowPitchVel = Field("CAurBehaviorCameraFollow", "pitchVel");
+    public static readonly int FollowPitchVel = Field<float>("CAurBehaviorCameraFollow", "pitchVel");
     /// <inheritdoc cref="FollowPitchVel"/>
-    public static readonly int FollowPitchImpulse = Field("CAurBehaviorCameraFollow", "pitchImpulse");
+    public static readonly int FollowPitchImpulse = Field<float>("CAurBehaviorCameraFollow", "pitchImpulse");
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw / pitch / dist clamp-enabled flags (floats, 0 or 1). Set by
     /// the server's LockCamera* and the lockcamera console var; the same words the photo mode locks with.</summary>
     public static readonly int FollowYawClamp = Field("CAurBehaviorCameraFollow", "yawClamp");
     /// <inheritdoc cref="FollowYawClamp"/>
-    public static readonly int FollowPitchClamp = Field("CAurBehaviorCameraFollow", "pitchClamp");
+    public static readonly int FollowPitchClamp = Field<float>("CAurBehaviorCameraFollow", "pitchClamp");
     /// <inheritdoc cref="FollowYawClamp"/>
     public static readonly int FollowDistClamp = Field("CAurBehaviorCameraFollow", "distClamp");
     /// <summary>The clamp ranges: yaw +0x68/+0x6c, pitch +0x74/+0x78, dist +0x80/+0x84 (min, max). The mode
@@ -678,32 +678,32 @@ public static unsafe class EngineLayout
 
     /// <summary>CNWCModule -&gt; the module <c>Camera*</c>. <c>GetModuleCamera</c> (Linux @0x63a930) and the
     /// Windows camera message handler (rva 0x77a7f0) both read <c>GetModule()+0xe8</c>.</summary>
-    public static readonly int ModuleCamera = Field("CNWCModule", "camera");
+    public static readonly int ModuleCamera = Field<CX.Engine.Camera>("CNWCModule", "camera");
     /// <summary>CNWCModule -&gt; attached object id (<c>SetCameraFollow</c>: Linux @0x7d8540, Windows rva
     /// 0x7cf6f0, reached from the camera message's AttachCamera arm; both write +0x124 and +0x140).</summary>
-    public static readonly int ModuleCameraAttached = Field("CNWCModule", "cameraAttached");
+    public static readonly int ModuleCameraAttached = Field<uint>("CNWCModule", "cameraAttached");
     /// <summary>CNWCModule -&gt; find-clear-view pending (int 0/1). See <see cref="ModuleCameraAttached"/>.</summary>
-    public static readonly int ModuleFindClearView = Field("CNWCModule", "findClearView", Expect.Byte01);
+    public static readonly int ModuleFindClearView = Field<int>("CNWCModule", "findClearView", Expect.Byte01);
     /// <summary>CNWCModule -&gt; dialog camera state byte: 0 none, 1 framing, 2 returning (<c>SetDialogCamera</c>:
     /// Linux @0x7da240, Windows rva 0x7cfa90, reached from the dialog message handler).</summary>
-    public static readonly int ModuleDialogCamera = Field("CNWCModule", "dialogCamera");
+    public static readonly int ModuleDialogCamera = Field<byte>("CNWCModule", "dialogCamera");
     /// <summary>CNWCModule -&gt; cutscene transition rate (float; 0 = no cutscene interpolation running).
     /// <c>SetCutsceneCamera</c>: Linux @0x7dd370, Windows rva 0x7cfa00, the camera message's SetCameraFacing tail.</summary>
-    public static readonly int ModuleCutsceneRate = Field("CNWCModule", "cutsceneRate");
+    public static readonly int ModuleCutsceneRate = Field<float>("CNWCModule", "cutsceneRate");
     /// <summary>CClientExoAppInternal -&gt; <c>CClientOptions*</c> (first word). <c>CClientExoApp::GetClientOptions</c>
     /// is <c>*(*(this+8))</c> on both builds (Linux @0x637ea0, Windows rva 0x6ab9b0).</summary>
-    public static readonly int InternalClientOptions = Field("CClientExoAppInternal", "clientOptions");
+    public static readonly int InternalClientOptions = Field<CX.Engine.CClientOptions>("CClientExoAppInternal", "clientOptions");
     /// <summary>CClientOptions -&gt; camera mode byte: 0 chase, 1 top-down, 2 driving (nwscript STIFF_CHASE_CAMERA). Read at +0x1d by
     /// <c>SetCameraFollow</c>/<c>UpdateCameraFollow</c> on Linux and by the Windows camera message handler's
     /// lock arms (<c>*(byte*)(opts+0x1d) &lt; 3</c>).</summary>
-    public static readonly int OptionsCameraMode = Field("CClientOptions", "cameraMode");
+    public static readonly int OptionsCameraMode = Field<byte>("CClientOptions", "cameraMode");
 
     // ---- #571: the stock settings.tml reader (StockConfig) ----
     /// <summary>CExoBase -&gt; <c>CExoConfig*</c> (first word). Both ctors store the freshly constructed config
     /// there (Linux <c>CExoBase::CExoBase</c> @0x4dd1c0 region, Windows @0x140114b00 <c>*(this) = new CExoConfig</c>),
     /// and every engine <c>Get</c> caller loads <c>**g_pExoBase</c> for <c>this</c> (Linux
     /// <c>CGuiInGame::InitializeUserOptions</c> @0x66e24a, Windows <c>CAurora::ComputeDesiredGUIScale</c> @0x140074f70).</summary>
-    public static readonly int ExoBaseConfig = Field<IntPtr>("CExoBase", "config");
+    public static readonly int ExoBaseConfig = Field<CX.Engine.CExoConfig>("CExoBase", "config");
     /// <summary>CExoConfig -&gt; the "initializing" byte. <c>Initialize</c> (Linux @0x4e2800) sets it for its own
     /// duration and clears it at the end; while set, <c>Get</c> reads the committed table regardless of its
     /// bool. Same test at <c>*this</c> in both builds' <c>Get&lt;bool&gt;</c> (@0x4efce0 / @0x140119650).</summary>
@@ -719,7 +719,7 @@ public static unsafe class EngineLayout
     /// @0x737c70, Windows rva 0x6abbc0) is one line on both builds, <c>*(*(this+8) + 0x90)</c>.</summary>
     public static readonly int ExoAppInternal = Field<CX.Engine.CClientExoAppInternal>("CClientExoApp", "internal");
     /// <summary>CClientExoAppInternal -&gt; CGuiInGame*. Same one-line getter as <see cref="ExoAppInternal"/>.</summary>
-    public static readonly int InternalInGameGui = Field<IntPtr>("CClientExoAppInternal", "inGameGui");
+    public static readonly int InternalInGameGui = Field<CX.Engine.CGuiInGame>("CClientExoAppInternal", "inGameGui");
     /// <summary>CClientExoAppInternal -&gt; the live <c>CMainMenuPanel*</c> (#593). <c>DisplayMainMenu</c> (Linux nm
     /// 0x63c320, Windows rva 0x6d74f0) returns when it is non-null, else news the panel and stores it here;
     /// <c>DestroyMainMenuPanel</c> (Linux nm 0x63a650) deactivates, deletes and nulls it. Non-null = the main menu is
@@ -761,19 +761,19 @@ public static unsafe class EngineLayout
     public static readonly int InternalNetLayer = Field<IntPtr>("CClientExoAppInternal", "netLayer");
     /// <summary>CNWCModule -&gt; server-synced game hour (u32). <c>CNWCMessage::HandleServerToPlayerModuleUpdate_Time</c>
     /// (Linux nm 0x76c630, Windows rva 0x7a58e0) stores the flag-2 byte at <c>module+0x16c</c> on both builds.</summary>
-    public static readonly int ModuleHour = Field("CNWCModule", "hour");
+    public static readonly int ModuleHour = Field<int>("CNWCModule", "hour");
     /// <summary>CNWCModule -&gt; real minutes per game hour (byte). <c>CNWCModule::SetTimeOfDayState</c> (Linux nm
     /// 0x7d96e0, Windows rva 0x7cfbb0) computes <c>+0x178 = byte[+0x15c] * 60.0</c> on both builds.</summary>
-    public static readonly int ModuleMinutesPerHour = Field("CNWCModule", "minutesPerHour");
+    public static readonly int ModuleMinutesPerHour = Field<byte>("CNWCModule", "minutesPerHour");
     /// <summary>CGuiInGameChatPrompt -&gt; shown flag (int). <c>CGuiInGameChatPrompt::Show</c> tests-then-sets it:
     /// Linux nm 0x6779b0 at +0x230, Windows rva 0x87cc00 at +0x200 (the ctor zeroes the same slot).</summary>
-    public static readonly int ChatPromptShown = Field("CGuiInGameChatPrompt", "shown");
+    public static readonly int ChatPromptShown = Field<int>("CGuiInGameChatPrompt", "shown");
     /// <summary>CGuiInGameChatPrompt -&gt; the embedded CGuiEdit (#580). <c>HandleEnter</c> (Linux nm 0x679c50, Windows
     /// rva 0x87b0d0) hands <c>this+off</c> to <c>CGuiEdit::GetText</c>, <c>SetCaretPos</c> and <c>LoseFocus</c> on both.</summary>
     public static readonly int ChatPromptEdit = Field("CGuiInGameChatPrompt", "edit");
     /// <summary>CGuiEdit -&gt; <c>CAurString* m_pString</c>, the text object <c>CGuiEdit::GetText</c> (exported on both,
     /// Linux nm 0x592680 / Windows 0x1e93b0) reads its lines from; HandleEnter clears it through the same pointer.</summary>
-    public static readonly int GuiEditString = Field("CGuiEdit", "string");
+    public static readonly int GuiEditString = Field<CX.Engine.CAurString>("CGuiEdit", "string");
     /// <summary>Virtual slot of <c>CAurString::SetText(const char*)</c> -- the clear HandleEnter runs on the edit's string
     /// (Linux <c>*vtbl+0xd8</c> = the <c>StringGob</c> thunk <c>_ZThn1216_N9StringGob7SetTextEPKc</c>; Windows <c>+0xd0</c>,
     /// MSVC's single-slot virtual destructor). Both read off the HandleEnter bodies.</summary>
@@ -781,12 +781,12 @@ public static unsafe class EngineLayout
     /// <summary>CGuiInGame -&gt; CPanelQuickBar*. #439: <c>CGuiInGame::Initialize</c> (Linux @0x772600) and its
     /// Windows twin (rva 0x6f9190, the one caller of the CPanelQuickBar ctor) both store the freshly built
     /// panel to +0x60 and then write <c>+0x28 = 1</c>.</summary>
-    public static readonly int InGameGuiQuickbar = Field("CGuiInGame", "quickbar");
+    public static readonly int InGameGuiQuickbar = Field<IntPtr>("CGuiInGame", "quickbar");
     /// <summary>CGuiInGame -&gt; the stock <c>CGuiInGameChatDialog*</c>, null while no engine conversation panel is
     /// up (#591). <c>ShowDialogEntry</c> news it into +0x70 when null, <c>ShowDialogReplies</c> (Linux @0x770c30,
     /// Windows rva 0x6fb8e0) is a no-op on null +0x70, and <c>CloseDialog</c> (Linux @0x770320, rva 0x6f6d80)
     /// virtual-deletes it, nulls +0x70 and runs <c>ResetGuiState(0x298)</c> -- all on both builds.</summary>
-    public static readonly int InGameGuiDialog = Field("CGuiInGame", "dialog");
+    public static readonly int InGameGuiDialog = Field<IntPtr>("CGuiInGame", "dialog");
     /// <summary>CGuiInGame -&gt; the primary <c>CGuiInGameChatWindow*</c>, null until a module loads (the in-module
     /// signal the frame gate reads). <c>AppendToMsgBuffer</c> (Linux @0x76d550, Windows rva 0x6f68d0) loads it as
     /// <c>this[1]</c> first thing on both builds; <c>PrimaryMsgWindowIsVisible</c> (Linux @0x76e380) forwards it.</summary>
@@ -1524,7 +1524,7 @@ public static unsafe class EngineLayout
     /// bit <see cref="CameraFlagDisableCollision"/> is what <c>UpdateCameraCollision</c> tests. Paired on
     /// that function: Linux @0x7dce30 and Windows rva 0x7d07d0 both read <c>+0x140 == 0 &amp;&amp;
     /// (byte)+0x2bc &amp; 2</c> before dispatching on <c>CClientOptions+0x1d</c> (#537).</summary>
-    public static readonly int ModuleCameraFlags = Field("CNWCModule", "cameraFlags");
+    public static readonly int ModuleCameraFlags = Field<int>("CNWCModule", "cameraFlags");
 
     // ---- camera-relative drive (#540): UpdateDriveMode's own fields. Linux @0x65f780 and Windows rva 0x6f1e40
     //      read every one of these at the SAME offsets (one decompile per build, tools/ghidra/DecompOne.java);
@@ -1534,25 +1534,25 @@ public static unsafe class EngineLayout
     /// any drive key edge, UpdateDriveMode sends <c>DriveControl</c> while it is up and clears it. No Byte01
     /// probe: the ctor zeroes +0x1b4.. but never +0x1b0, so before the first UpdateDriveMode returns it holds heap
     /// garbage and a probe there fails at random (the "camera drive stopped working" of 2026-09-16).</summary>
-    public static readonly int InternalDriveChanged = Field("CClientExoAppInternal", "driveChanged");
+    public static readonly int InternalDriveChanged = Field<int>("CClientExoAppInternal", "driveChanged");
     /// <summary>CClientExoAppInternal -&gt; the walk-forward key (int 0/1): keymap action 0x59 "Drive Mode Forward",
     /// held like the six below (press/release, release aborts). UpdateDriveMode reads it only while
     /// <see cref="InternalDriveKeys"/>[0] is clear and then flags walk (0x01), or run (0x03) when
     /// <c>CClientOptions::m_bAlwaysRun</c> (<c>[[app]+4]</c>) is set. Not an auto-run toggle (#637).</summary>
-    public static readonly int InternalDriveWalk = Field("CClientExoAppInternal", "driveWalk", Expect.Byte01);
+    public static readonly int InternalDriveWalk = Field<int>("CClientExoAppInternal", "driveWalk", Expect.Byte01);
     /// <summary>CClientExoAppInternal -&gt; six int key booleans in a row: forward run (action 0x5a "Drive Mode Forward
     /// Run"; flags run 0x03, or walk 0x01 under the Shift walk modifier <c>creature+0x2b0</c>), backward, turn left,
     /// turn right, strafe left, strafe right (+0x1b8..+0x1cc). <c>ClearDriveMode</c> zeroes +0x1b4..+0x1cf in one go.</summary>
     public static readonly int InternalDriveKeys = Field("CClientExoAppInternal", "driveKeys", Expect.Byte01);
     /// <summary>CClientExoAppInternal -&gt; microsecond stamp of the last drive packet (the 500 ms keep-alive
     /// compares against it); rewritten on every send, so a change across the call means a packet went out.</summary>
-    public static readonly int InternalDriveLastSend = Field("CClientExoAppInternal", "driveLastSend");
+    public static readonly int InternalDriveLastSend = Field<long>("CClientExoAppInternal", "driveLastSend");
     /// <summary>CNWCObject -&gt; orientation Vector (x, y, z); position is the Vector at +0x38. UpdateDriveMode reads
     /// +0x44/+0x48 for the wire angle and TurnOnSpot rotates +0x44..+0x4c on both builds.</summary>
-    public static readonly int ObjOrientation = Field("CNWCObject", "orientation");
+    public static readonly int ObjOrientation = Field<System.Numerics.Vector3>("CNWCObject", "orientation");
     /// <summary>CNWCObject -&gt; position Vector, the 12 bytes before <see cref="ObjOrientation"/> (<c>SetPosition</c>
     /// Linux @0x7e9180 writes +0x38..+0x40; the Windows orientation row at the same +0x44 pins it).</summary>
-    public static readonly int ObjPosition = Field("CNWCObject", "position");
+    public static readonly int ObjPosition = Field<System.Numerics.Vector3>("CNWCObject", "position");
     // ---- action-camera aim assist / auto-target / contextual crosshair (docs/research/action-camera-targeting.md) ----
     // Every row below was read off ONE function pair: CNWCArea::HiliteAreaObjects (Linux @0x7119f0, Windows rva
     // 0x7db2f0), CClientExoAppInternal::UpdateMouseCursorAppearance (Linux @0x6629b0, Windows rva 0x6f2830),
@@ -1566,16 +1566,16 @@ public static unsafe class EngineLayout
     /// <c>+0xa9</c> and stores 0/1 here when it arrives) and <c>SetDesiredFadeState</c>. Read it as a byte: the
     /// three bytes above it are the desired state and padding, not a pointer's tail (which is also why it takes
     /// no <c>Byte01</c> probe: that one reads a dword, and <c>+0xa9</c> would fail it).</summary>
-    public static readonly int ObjVisible = Field("CNWCObject", "visible");
+    public static readonly int ObjVisible = Field<byte>("CNWCObject", "visible");
     /// <summary>CNWCObject -&gt; "may be highlighted right now" (int). Same walk: zero and the engine un-hilites
     /// instead of hiliting. Identical offset on both builds. <b>Placeables carry it elsewhere</b> -- the type-9
     /// branch reads it through <see cref="GameObjAsNWCPlaceableSlot"/>, not on the CNWCObject.</summary>
-    public static readonly int ObjHighlightable = Field("CNWCObject", "highlightable");
+    public static readonly int ObjHighlightable = Field<int>("CNWCObject", "highlightable");
     /// <summary>CNWCArea -&gt; the area's object-id array (<c>uint*</c>) and its count. <c>HiliteAreaObjects</c>
     /// walks <c>*(uint*)(*(area+0x318) + i*4)</c> for <c>*(int*)(area+0x320)</c> entries on both builds.</summary>
-    public static readonly int AreaObjectIds = Field("CNWCArea", "objectIds");
+    public static readonly int AreaObjectIds = Field<IntPtr>("CNWCArea", "objectIds");
     /// <inheritdoc cref="AreaObjectIds"/>
-    public static readonly int AreaObjectCount = Field("CNWCArea", "objectCount");
+    public static readonly int AreaObjectCount = Field<int>("CNWCArea", "objectCount");
     /// <summary>#659/#664: CNWCArea -&gt; the placeable-light registry: an array of pointers (stride 8) to
     /// 16-byte <c>CNWCPlaceableObjectLight</c> records {uint object id @+0, Gob* @+8}, count at +0x330.
     /// <c>CNWCArea::AddPlaceableObjectLight</c> @0x705120 / <c>GetPlaceableObjectLight</c> @0x7057e0 walk
@@ -1600,32 +1600,32 @@ public static unsafe class EngineLayout
     /// <c>UpdateMouseCursorAppearance</c> is the only writer: it stores the newly picked id there and clears it to
     /// 0x7f000000 when the hover drops. Linux +0x448, Windows +0x428 -- the same -0x20 CNWCCreature delta
     /// <see cref="CreaturePlated"/> and the nameplate rows carry.</summary>
-    public static readonly int CreatureHoveredOid = Field("CNWCCreature", "hoveredOid");
+    public static readonly int CreatureHoveredOid = Field<uint>("CNWCCreature", "hoveredOid");
     /// <summary>CClientExoAppInternal -&gt; CCachedMouseCursorManager*. Every <c>SetMouseCursor</c> call site in
     /// <c>UpdateMouseCursorAppearance</c> passes <c>*(internal + 0xc8)</c> on both builds.</summary>
-    public static readonly int InternalCursorManager = Field("CClientExoAppInternal", "cursorManager");
+    public static readonly int InternalCursorManager = Field<CX.Engine.CCachedMouseCursorManager>("CClientExoAppInternal", "cursorManager");
     /// <summary>CCachedMouseCursorManager -&gt; the live cursor id (int), the one <c>SetMouseCursor</c> early-outs on
     /// and then stores. 1 default, 3 walk, 7 attack, 0x1d magic, 0x5b pickup... (the id table is in the research
     /// doc); 0x125 is the ceiling the setter enforces. Same offset on both builds.</summary>
-    public static readonly int CursorCurrentId = Field("CCachedMouseCursorManager", "currentCursor");
+    public static readonly int CursorCurrentId = Field<int>("CCachedMouseCursorManager", "currentCursor");
     /// <summary>CActionTarget -&gt; the allowed-target array: pairs of int {objectType, cursorId}, stride 8, count
     /// at <see cref="ActionTargetAllowedCount"/>. Type 2 is the synthetic "ground point" (AoE); the rest are the
     /// engine object types. Read off both <c>HandleLMouseDown</c> bodies -- Linux scans <c>+0x148</c> for
     /// <c>+0x150</c> entries, Windows <c>+0x108</c> for <c>+0x110</c> (MSVC packs the CGuiCallback members in 16
     /// bytes where Itanium needs 24, so everything past +0x80 shifts).</summary>
-    public static readonly int ActionTargetAllowed = Field("CActionTarget", "allowed");
+    public static readonly int ActionTargetAllowed = Field<IntPtr>("CActionTarget", "allowed");
     /// <inheritdoc cref="ActionTargetAllowed"/>
-    public static readonly int ActionTargetAllowedCount = Field("CActionTarget", "allowedCount");
+    public static readonly int ActionTargetAllowedCount = Field<int>("CActionTarget", "allowedCount");
     /// <summary>CClientExoAppInternal -&gt; the live <c>CActionTarget*</c>: <c>RegisterActionTargetGUI</c> (Linux
     /// @0x645530, Windows rva 0x6de8e0) is a one-line store to +0x108 on both, called with <c>this</c> from
     /// <c>ActivateTargetMode</c> and with null from <c>Cleanup</c> (both the fire and the cancel path), so it is
     /// the "is this mode still up" read a deferred cast checks before touching the pointer again (CX-636).</summary>
-    public static readonly int InternalActionTarget = Field("CClientExoAppInternal", "actionTarget");
+    public static readonly int InternalActionTarget = Field<CX.Engine.CActionTarget>("CClientExoAppInternal", "actionTarget");
     /// <summary>CNWCCreature -&gt; the server-sent attitude byte: 1 friend, 0 neutral, anything else (2) hostile.
     /// <c>HiliteAreaObjects</c> picks the enemy/friend/neutral colour on it and <c>PerformDefaultActionOnCreature</c>
     /// talks below 2 and attacks at 2. Linux +0x3a8, Windows +0x388 (the Windows HiliteAreaObjects, rva 0x7db2f0,
     /// same three-way branch).</summary>
-    public static readonly int CreatureAttitude = Field("CNWCCreature", "attitude");
+    public static readonly int CreatureAttitude = Field<byte>("CNWCCreature", "attitude");
     /// <summary>CNWCObject -&gt; the script highlight colour override (Vector; x &lt; 0 = none), the first thing every
     /// <c>HiliteAreaObjects</c> branch tests before falling back to the type's global. Same offset on both.</summary>
     public static readonly int ObjHiliteColour = Field("CNWCObject", "hiliteColour");
@@ -1662,51 +1662,51 @@ public static unsafe class EngineLayout
     /// <summary>CGuiInGame -&gt; CPanelActionQueue*, the client's mirror of the player's action queue. Both
     /// <c>HandleServerToPlayerUpdate_PlayerInfo</c> bodies (Linux @0x8a9f90, Windows rva 0x7b4f70) null-check
     /// <c>GetInGameGui()+0xa8</c> and hand exactly that to <c>ClearAllActions</c> / <c>AddAction</c>.</summary>
-    public static readonly int GuiInGameActionQueue = Field("CGuiInGame", "actionQueuePanel");
+    public static readonly int GuiInGameActionQueue = Field<CX.Engine.CPanelActionQueue>("CGuiInGame", "actionQueuePanel");
 
     /// <summary>CPanelActionQueue -&gt; the "Current" button slot (<c>CPanelActionQueueButton*</c>, null = idle).
     /// <c>AddAction</c> fills it first and only overflows into the queued list, so "an action is pending" is this
     /// plus <see cref="ActionQueueCount"/>. Linux @0x7761b0 stores to <c>+0x158</c>, Windows rva 0x873df0 to
     /// <c>+0x150</c>.</summary>
-    public static readonly int ActionQueueCurrent = Field("CPanelActionQueue", "current");
+    public static readonly int ActionQueueCurrent = Field<IntPtr>("CPanelActionQueue", "current");
 
     /// <summary>CPanelActionQueue -&gt; the queued-button count (int), the list at <c>current-8</c>'s array.
     /// <c>ClearAllActions</c> drains <c>while (0 &lt; count)</c> and <c>DeleteAction</c> early-outs on
     /// <c>count &lt; 1</c> on both builds (Linux @0x776100 / @0x776020, Windows rva 0x874670 / 0x8748b0).</summary>
-    public static readonly int ActionQueueCount = Field("CPanelActionQueue", "queuedCount");
+    public static readonly int ActionQueueCount = Field<int>("CPanelActionQueue", "queuedCount");
 
     /// <summary>CNWCCreature -&gt; the server-sent AI state byte; <b>2 = attacking</b> and nothing else in the
     /// enumeration is established. Two independent call sites on each build:
     /// <c>WalkPlayerToPoint</c> (Linux @0x763950, Windows rva 0x6f3650) gates its "already close to my target"
     /// test on <c>== 2</c>, and <c>CPanelQuickBar::UpdateAttackButtons</c> paints IR_DISENGAGE on it.</summary>
-    public static readonly int CreatureAiState = Field("CNWCCreature", "aiState");
+    public static readonly int CreatureAiState = Field<byte>("CNWCCreature", "aiState");
 
     /// <summary>CNWCCreature -&gt; whom that creature is attacking (object id), written by
     /// <c>CreatureUpdate_Update</c> only while <see cref="CreatureAiState"/> is 2. Both
     /// <c>WalkPlayerToPoint</c> bodies resolve <c>GetGameObject(*(uint*)(creature + this))</c> inside the
     /// <c>== 2</c> branch.</summary>
-    public static readonly int CreatureAiTarget = Field("CNWCCreature", "aiTarget");
+    public static readonly int CreatureAiTarget = Field<uint>("CNWCCreature", "aiTarget");
 
     /// <summary>CNWCObject -&gt; current animation (short): <c>GetCurrentAnimation</c> is <c>*(short*)(this+0x5c)</c> on
     /// both builds (Linux @0x7e3f70, Windows rva 0x7630d0, the chase driver's own callee). Locomotion = 2, 3, 4,
     /// 0x4e, 0x4f, 0x54..0x57 (the chase drivers' test).</summary>
-    public static readonly int ObjAnimation = Field("CNWCObject", "animation");
+    public static readonly int ObjAnimation = Field<short>("CNWCObject", "animation");
     /// <summary>CNWCCreature -&gt; the server's <c>m_nAIState</c> WORD (docs/research/action-camera-feedback.md §2.1):
     /// UpdateDriveMode and DrivePlayer both refuse unless bit 2 is set. <b>0 = inert</b>: the creature update
     /// handler puts a creature whose word is 0 (and has no loot) on the hit-check ignore list and the click
     /// default treats <c>== 0</c> as a corpse to loot, so the tab-target lock reads 0 as "dead" (CX-636).
     /// Linux +0x39c, Windows +0x37c.</summary>
-    public static readonly int CreatureAiFlags = Field("CNWCCreature", "aiFlags");
+    public static readonly int CreatureAiFlags = Field<short>("CNWCCreature", "aiFlags");
     /// <summary>CNWCCreature -&gt; int that must be non-zero for drive input to act at all (UpdateDriveMode's second
     /// gate). Linux +0x43c, Windows +0x41c.</summary>
-    public static readonly int CreatureDriveEnabled = Field("CNWCCreature", "driveEnabled");
+    public static readonly int CreatureDriveEnabled = Field<int>("CNWCCreature", "driveEnabled");
     /// <summary>CNWCCreature -&gt; the local facing target Vector the model turns toward: DrivePlayer's ±30° turn arm
     /// writes it alone, and UpdateDriveMode writes it together with <see cref="CreatureFacingTargetB"/> right after
     /// every drive packet. Linux +0x2c8, Windows +0x2a8.</summary>
-    public static readonly int CreatureFacingTarget = Field("CNWCCreature", "facingTarget");
+    public static readonly int CreatureFacingTarget = Field<System.Numerics.Vector3>("CNWCCreature", "facingTarget");
     /// <summary>CNWCCreature -&gt; the second Vector of that pair (+0x2d4 / +0x2b4), written with the same direction on
     /// the send path and by TurnOnSpot; its own reader is not identified.</summary>
-    public static readonly int CreatureFacingTargetB = Field("CNWCCreature", "facingTargetB");
+    public static readonly int CreatureFacingTargetB = Field<System.Numerics.Vector3>("CNWCCreature", "facingTargetB");
     /// <summary>CNWCCreature -&gt; the desired position Vector: <c>WalkUpdateLocation</c> steps it along the waypoints each
     /// frame (WalkUpdateLocationDistance starts from it) and <c>MoveCreatureToPosition</c> lerps the displayed +0x38
     /// toward it; the update handler and EvaluateNewWayPoints overwrite it from the server. Every drive line test
@@ -1715,10 +1715,10 @@ public static unsafe class EngineLayout
     /// <summary>CNWCCreature -&gt; int 0/1 "I am driving": set by ClientSideWalkCommand in drive mode and by a server
     /// update that says so, cleared when the walk ends. Linux +0x318, Windows +0x2f8. No Byte01 probe: the ctor
     /// is not known to zero it.</summary>
-    public static readonly int CreatureDriving = Field("CNWCCreature", "driving");
+    public static readonly int CreatureDriving = Field<int>("CNWCCreature", "driving");
     /// <summary>CNWCCreature -&gt; pointer to the creature's pathfind block (the object whose +0xcc ushort indexes
     /// creaturespeed.2da). Linux +0x320, Windows +0x300.</summary>
-    public static readonly int CreaturePathfind = Field("CNWCCreature", "pathfind");
+    public static readonly int CreaturePathfind = Field<CX.Engine.CPathfindInformation>("CNWCCreature", "pathfind");
     /// <summary>Pathfind block -&gt; two consecutive floats (+0xe0, +0xe4) that ClientSideWalkCommand, WalkPlayerToPoint
     /// and EvaluateNewWayPoints hand <c>CNWCArea::TestDirectLine</c> as its 4th and 5th arguments (personal space and
     /// height, order as the engine passes them). Same on both builds (WalkPlayerToPoint rva 0x6f3650).</summary>
@@ -1731,18 +1731,18 @@ public static unsafe class EngineLayout
     /// user moved the camera (+0x134) and skip the chase while it holds; cleared on the creature's next
     /// idle-to-locomotion edge, which <see cref="ModuleChaseWasIdle"/> records. Same on Windows (rva 0x7d0d00 /
     /// 0x7d1c90 read all four).</summary>
-    public static readonly int ModuleChaseSuppressed = Field("CNWCModule", "chaseSuppressed", Expect.Byte01);
+    public static readonly int ModuleChaseSuppressed = Field<int>("CNWCModule", "chaseSuppressed", Expect.Byte01);
     /// <summary>CNWCModule -&gt; "creature was idle" (int 0/1) the chase drivers set on a non-locomotion animation and
     /// consume (clearing <see cref="ModuleChaseSuppressed"/>) on the first locomotion frame after.</summary>
-    public static readonly int ModuleChaseWasIdle = Field("CNWCModule", "chaseWasIdle", Expect.Byte01);
+    public static readonly int ModuleChaseWasIdle = Field<int>("CNWCModule", "chaseWasIdle", Expect.Byte01);
     /// <summary>CNWCModule -&gt; the server's <c>SetCameraLimits</c> max distance (float; -1 = not set, use the client
     /// config). Linux @0x7def00 writes +0x2ac..+0x2b8 (min pitch, max pitch, min dist, max dist); Windows rva
     /// 0x7cf9d0 the same four. #543's leash radius when set.</summary>
-    public static readonly int ModuleCameraMaxDist = Field("CNWCModule", "cameraMaxDist");
+    public static readonly int ModuleCameraMaxDist = Field<float>("CNWCModule", "cameraMaxDist");
     /// <summary>CNWCCreature -&gt; combat state int, server-fed: <c>SetCombatState(int)</c> (Linux @0x722160, Windows
     /// rva 0x80a230, the callee right after the +0x39c/+0x37c cluster in HandleServerToPlayerCreatureUpdate_Update)
     /// stores it first thing. #543 stands the free camera down on it.</summary>
-    public static readonly int CreatureCombatState = Field("CNWCCreature", "combatState");
+    public static readonly int CreatureCombatState = Field<int>("CNWCCreature", "combatState");
     /// <summary>CGuiInGame -&gt; "toggled off" int: <c>ToggleOff</c> returns early when set, <c>UnToggleOff</c> when
     /// clear, and <c>SetCutsceneMode</c> reads it to know whether the exit should un-toggle. Linux +0x3d4, Windows +0x374.</summary>
     public static readonly int GuiInGameToggledOff = Field<int>("CGuiInGame", "toggledOff", Expect.Byte01);
@@ -1761,18 +1761,18 @@ public static unsafe class EngineLayout
 
     /// <summary>LookAtAnimation -&gt; the "finished" byte <c>Deactivate</c> sets and <c>Gob::Animate</c> deletes
     /// the object on. Control's own gate: set, the aim block is skipped for the release latch at +0x68.</summary>
-    public static readonly int LookAtFinished = Field("LookAtAnimation", "finished");
+    public static readonly int LookAtFinished = Field<byte>("LookAtAnimation", "finished");
     /// <summary>LookAtAnimation -&gt; the looker's <c>Gob*</c>: the distance check reads its position at +0xa8 on
     /// both builds, and the ctor stores its third argument here.</summary>
-    public static readonly int LookAtGob = Field("LookAtAnimation", "gob");
+    public static readonly int LookAtGob = Field<CX.Engine.Gob>("LookAtAnimation", "gob");
     /// <summary>LookAtAnimation -&gt; the looker's head <c>Part*</c> (HEAD_NAME's node). Control calls
     /// <c>Part::GetWorld</c> through it and copies its local rotation (<see cref="PartRot"/>) into the first
     /// keyframe.</summary>
-    public static readonly int LookAtHeadPart = Field("LookAtAnimation", "headPart");
+    public static readonly int LookAtHeadPart = Field<CX.Engine.Part>("LookAtAnimation", "headPart");
     /// <summary>LookAtAnimation -&gt; <c>float*</c> into the synthetic animation's second keyframe: the four
     /// floats Control writes as <c>(x, y, z, w)</c>, which <c>AnimateHierarchy</c> then blends onto the head
     /// part. This is the seam the head aim is overwritten at.</summary>
-    public static readonly int LookAtTargetKey = Field("LookAtAnimation", "targetKey");
+    public static readonly int LookAtTargetKey = Field<IntPtr>("LookAtAnimation", "targetKey");
 
     /// <summary>Gob -&gt; the kind of game object behind <c>SetExternalData</c>: 5 creature
     /// (<c>CNWCCreature::LoadModel</c> @0x72a4b0), 9 placeable (@0x7ec500), 10 door (@0x755ec0), through
@@ -1880,11 +1880,11 @@ public static unsafe class EngineLayout
     /// <summary>CRadialMenu: <c>long m_nParam[8]</c> -- shared by the entry and the creator of a slot.</summary>
     public static readonly int RadialParam = Field<long>("CRadialMenu", "param");
     /// <summary>CRadialMenu: <c>uint flags[8]</c>; bit 0 = disabled (<c>DisableEntry</c>).</summary>
-    public static readonly int RadialFlags = Field("CRadialMenu", "flags");
+    public static readonly int RadialFlags = Field<uint>("CRadialMenu", "flags");
     /// <summary>CRadialMenu: creator callback[8], same stride and sentinel as <see cref="RadialEntry"/>.</summary>
     public static readonly int RadialCreator = Field("CRadialMenu", "creator");
     /// <summary>CRadialMenu: <c>CRadialMenu* m_pSubMenu[8]</c> -- the materialized child, null until CreateSubMenu.</summary>
-    public static readonly int RadialSubMenu = Field("CRadialMenu", "subMenu");
+    public static readonly int RadialSubMenu = Field<CX.Engine.CRadialMenu>("CRadialMenu", "subMenu");
     /// <summary>CRadialMenu: <c>CRadialMenu* m_pParent</c>, set by HandleMenuAction on descent.</summary>
     public static readonly int RadialParent = Field<IntPtr>("CRadialMenu", "parent");
     /// <summary>CRadialMenu: <c>CGuiIcon* m_pIcon[8]</c>; the resref is the CResRef at CGuiIcon+0x8.</summary>

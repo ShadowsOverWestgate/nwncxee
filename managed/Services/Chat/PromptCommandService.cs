@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Services.Chat;
@@ -32,9 +33,9 @@ public sealed unsafe class PromptCommandService : IExtenderService
 
     private static ExtenderLog? _log;
     private static IntPtr* _slot;
+    /// <summary>Not a pointer field: the CGuiEdit is EMBEDDED in the prompt, so this is the address of a
+    /// subobject, which no view accessor can hand out.</summary>
     private static readonly int EditOff = EngineLayout.ChatPromptEdit;
-    private static readonly int StringOff = EngineLayout.GuiEditString;
-    private static readonly int SetTextSlot = EngineLayout.AurStringSetTextSlot;
     private static delegate* unmanaged<IntPtr, IntPtr, void> _getText;
     private static delegate* unmanaged<IntPtr, void> _exoDtor;
     private static IntPtr _appMgr;
@@ -115,12 +116,12 @@ public sealed unsafe class PromptCommandService : IExtenderService
     /// Returns false when the slot failed its probe, so the line is forwarded as chat rather than dispatched half-way.</summary>
     private static bool Clear(IntPtr edit)
     {
-        IntPtr str = *(IntPtr*)(edit + StringOff);
-        if (str == IntPtr.Zero) return false;
-        _probeOk ??= EngineLayout.Probe("CAurString", str, _log);
+        CAurString str = new CGuiEdit(edit).String;
+        if (str.IsNull) return false;
+        _probeOk ??= EngineLayout.Probe("CAurString", str.Ptr, _log);
         if (_probeOk == false) return false;
-        var setText = (delegate* unmanaged<IntPtr, IntPtr, void>)*(IntPtr*)(*(IntPtr*)str + SetTextSlot);
-        setText(str, _empty);
+        var setText = (delegate* unmanaged<IntPtr, IntPtr, void>)str.SetTextFn;
+        setText(str.Ptr, _empty);
         return true;
     }
 
@@ -130,8 +131,8 @@ public sealed unsafe class PromptCommandService : IExtenderService
     {
         IntPtr mgr = *(IntPtr*)_appMgr; if (mgr == IntPtr.Zero) return;
         IntPtr app = *(IntPtr*)mgr;     if (app == IntPtr.Zero) return;
-        IntPtr intern = *(IntPtr*)(app + EngineLayout.ExoAppInternal); if (intern == IntPtr.Zero) return;
-        IntPtr gui = *(IntPtr*)(intern + EngineLayout.InternalInGameGui); if (gui == IntPtr.Zero) return;
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal; if (intern.IsNull) return;
+        CGuiInGame gui = intern.InGameGui; if (gui.IsNull) return;
 #if WINDOWS
         byte* resref = stackalloc byte[32];
         for (int i = 0; i < 32; i++) resref[i] = 0;
@@ -140,10 +141,10 @@ public sealed unsafe class PromptCommandService : IExtenderService
         {
             IntPtr exo = Native.NewExoString(line);
 #if WINDOWS
-            _append(gui, exo, ConsoleChannel, 0, 0, (IntPtr)resref);
+            _append(gui.Ptr, exo, ConsoleChannel, 0, 0, (IntPtr)resref);
             *(long*)exo = 0; *(long*)(exo + 8) = 0;   // Win64: the callee destroyed its by-value CExoString copy
 #else
-            _append(gui, exo, ConsoleChannel, 0, 0, default);
+            _append(gui.Ptr, exo, ConsoleChannel, 0, 0, default);
 #endif
             Native.FreeExoString(exo);
         }

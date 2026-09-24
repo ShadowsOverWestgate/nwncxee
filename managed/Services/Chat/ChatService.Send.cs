@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 using CX.Services.Chat.Render;
@@ -24,15 +25,6 @@ public sealed unsafe partial class ChatService
         private readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _getByName;
         private readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _getByCreatureName;
 
-        // CNWCPlayer field offsets (verified via Ghidra decompilation).
-        // +0x8  = the player ID: what vanilla ParseChatString reads (-1 = invalid) and passes to
-        //         SendPlayerToServerChat_Tell, and what AppendToMsgBuffer passes as playerId.
-        // +0x40/+0x48 = character name (the one GetPlayerByCreatureName compares); +0x10/+0x18 is the
-        // player/account name, which is NOT what the player list, nameplates or the roster show.
-        private static readonly int IngestPlayerIdOff = EngineLayout.PlayerId;
-        private static readonly int PlayerNameOff = EngineLayout.PlayerCreatureName;
-        private static readonly int PlayerNameLenOff = EngineLayout.PlayerCreatureNameLen;
-
         public NativePlayerResolver(delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByName,
                                     delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByCreatureName)
         { _getByName = getByName; _getByCreatureName = getByCreatureName; }
@@ -50,34 +42,30 @@ public sealed unsafe partial class ChatService
                 if (_getByCreatureName != null) player = _getByCreatureName(app, exo);
                 if (player == IntPtr.Zero && _getByName != null) player = _getByName(app, exo);
                 if (player == IntPtr.Zero) return null;
-                uint id = *(uint*)(player + IngestPlayerIdOff);
+                uint id = new CNWCPlayer(player).PlayerId;
                 return id == 0xffffffff ? null : id;
             }
             finally { Native.FreeExoString(exo); }
         }
-
-        private static readonly int InternalOff = EngineLayout.ExoAppInternal;
-        private static readonly int ListPtrOff = EngineLayout.InternalPlayers;
-        private static readonly int ListCountOff = EngineLayout.InternalPlayerCount;
 
         /// <summary>Read the character name for an ingest PlayerId (+0x8), or null if the player is gone.</summary>
         public string? NameOf(uint playerId)
         {
             IntPtr app = App();
             if (app == IntPtr.Zero) return null;
-            IntPtr intern = *(IntPtr*)(app + InternalOff);
-            if (intern == IntPtr.Zero) return null;
-            IntPtr listBase = *(IntPtr*)(intern + ListPtrOff);
-            int count = *(int*)(intern + ListCountOff);
+            CClientExoAppInternal intern = new CClientExoApp(app).Internal;
+            if (intern.IsNull) return null;
+            IntPtr listBase = intern.Players;
+            int count = intern.PlayerCount;
             if (listBase == IntPtr.Zero || count <= 0 || count > 64) return null;
             for (int i = 0; i < count; i++)
             {
-                IntPtr player = *(IntPtr*)(listBase + i * 8);
-                if (player == IntPtr.Zero) continue;
-                if (*(uint*)(player + IngestPlayerIdOff) != playerId) continue;
-                IntPtr buf = *(IntPtr*)(player + PlayerNameOff);
+                var player = new CNWCPlayer(*(IntPtr*)(listBase + i * 8));
+                if (player.IsNull) continue;
+                if (player.PlayerId != playerId) continue;
+                IntPtr buf = player.CreatureName;
                 if (buf == IntPtr.Zero) return null;
-                uint len = *(uint*)(player + PlayerNameLenOff);
+                uint len = player.CreatureNameLen;
                 if (len == 0 || len > 128) return null;
                 var sb = new StringBuilder((int)len);
                 for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
@@ -90,7 +78,7 @@ public sealed unsafe partial class ChatService
         public uint? LocalIngestId()
         {
             IntPtr player = PlayerIdentity.LocalPlayer();
-            return player == IntPtr.Zero ? null : *(uint*)(player + IngestPlayerIdOff);
+            return player == IntPtr.Zero ? null : new CNWCPlayer(player).PlayerId;
         }
     }
 

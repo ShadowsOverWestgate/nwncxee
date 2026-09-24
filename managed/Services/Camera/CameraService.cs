@@ -2,7 +2,9 @@ using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Alloy;
+using CX.Engine;
 using CX.Framework;
+using EngCamera = CX.Engine.Camera;
 
 namespace CX.Services.Camera;
 
@@ -83,42 +85,14 @@ public sealed unsafe class CameraService : IExtenderService
     private static float _fovWritten = float.NaN, _fovFirst = float.NaN;
     private static bool _live, _probeOk;
 
-    private static readonly int OwnerOff = EngineLayout.BehaviorOwner;
-    private static readonly int TargetOff = EngineLayout.BehaviorTargetObj;
-    private static readonly int FocusOff = EngineLayout.FollowFocus;
-    private static readonly int DistOff = EngineLayout.FollowDist;
-    private static readonly int ZoomVelOff = EngineLayout.FollowZoomVel;
-    private static readonly int YawOff = EngineLayout.FollowYaw;
-    private static readonly int YawVelOff = EngineLayout.FollowYawVel;
-    private static readonly int YawImpulseOff = EngineLayout.FollowYawImpulse;
-    private static readonly int PitchOff = EngineLayout.FollowPitch;
-    private static readonly int PitchVelOff = EngineLayout.FollowPitchVel;
-    private static readonly int PitchImpulseOff = EngineLayout.FollowPitchImpulse;
+    // The clamp triples are read as (enabled, min, max) at the row and the row + 4, so they stay raw offsets.
     private static readonly int YawClampOff = EngineLayout.FollowYawClamp;
     private static readonly int PitchClampOff = EngineLayout.FollowPitchClamp;
     private static readonly int DistClampOff = EngineLayout.FollowDistClamp;
     private static readonly int YawMinOff = EngineLayout.FollowYawMin;
     private static readonly int PitchMinOff = EngineLayout.FollowPitchMin;
     private static readonly int DistMinOff = EngineLayout.FollowDistMin;
-    private static readonly int CamPosOff = EngineLayout.CamPos;
     private static readonly int CamRotOff = EngineLayout.CamRot;
-    private static readonly int CamFovOff = EngineLayout.CamViewAngle;
-    private static readonly int ModCameraOff = EngineLayout.ModuleCamera;
-    private static readonly int ModAttachedOff = EngineLayout.ModuleCameraAttached;
-    private static readonly int ModClearViewOff = EngineLayout.ModuleFindClearView;
-    private static readonly int ModDialogOff = EngineLayout.ModuleDialogCamera;
-    private static readonly int ModCutsceneOff = EngineLayout.ModuleCutsceneRate;
-    private static readonly int ModFlagsOff = EngineLayout.ModuleCameraFlags;
-    private static readonly int ModChaseOffOff = EngineLayout.ModuleChaseSuppressed;
-    private static readonly int ModWasIdleOff = EngineLayout.ModuleChaseWasIdle;
-    private static readonly int ObjTypeOff = EngineLayout.ObjType;
-    private static readonly int OriOff = EngineLayout.ObjOrientation;
-    private static readonly int PosOff = EngineLayout.ObjPosition;
-    private static readonly int AnimOff = EngineLayout.ObjAnimation;
-    private static readonly int InternalOff = EngineLayout.ExoAppInternal;
-    private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
-    private static readonly int OptionsOff = EngineLayout.InternalClientOptions;
-    private static readonly int ModeOff = EngineLayout.OptionsCameraMode;
 
     /// <summary>The Camera object sits 8 bytes before the CAurObject the behavior owns (<c>Camera::SetFollow</c>
     /// passes <c>this+8</c> on both builds).</summary>
@@ -159,16 +133,17 @@ public sealed unsafe class CameraService : IExtenderService
     [UnmanagedCallersOnly]
     private static int OnControl(IntPtr self, float dt)
     {
+        var b = new CAurBehaviorCameraFollow(self);
         // Read BEFORE the call: with no target the engine detaches (owner->SetBehavior(0)) and `self` is freed.
-        IntPtr target = *(IntPtr*)(self + TargetOff);
-        if (target != IntPtr.Zero && !float.IsNaN(_distAfter) && *(float*)(self + ZoomVelOff) == 0f
-            && *(float*)(self + DistOff) < _distAfter - 1e-4f) { if (_offsetOn) _pullInsOffset++; else _pullIns++; }
+        IntPtr target = b.Target;
+        if (target != IntPtr.Zero && !float.IsNaN(_distAfter) && b.ZoomVel == 0f
+            && b.Dist < _distAfter - 1e-4f) { if (_offsetOn) _pullInsOffset++; else _pullIns++; }
         // Before the solve: the velocity is consumed by this call (the engine's chase writes it in the same slot).
         if (target != IntPtr.Zero && _probeOk && !FreeCameraService.Active) Recenter(self, dt);
         int r = ((delegate* unmanaged<IntPtr, float, int>)(*_next))(self, dt);
         _calls++;
         if (target == IntPtr.Zero) { _distAfter = float.NaN; return r; }
-        _distAfter = *(float*)(self + DistOff);
+        _distAfter = b.Dist;
         if (!_live)
         {
             // One-shot boot probe of the module rows (#536 AC: Windows offsets get a probe, not a hope).
@@ -186,22 +161,25 @@ public sealed unsafe class CameraService : IExtenderService
     public static void SettleCollision(IntPtr module)
     {
         if (module == IntPtr.Zero) return;
-        int* flags = (int*)(module + ModFlagsOff);
+        var mod = new CNWCModule(module);
+        ref int flags = ref mod.CameraFlags;
         if (_wantNoCollision || AlloyRenderer.OccludeFadeWanted)
         {
-            if ((*flags & EngineLayout.CameraFlagDisableCollision) == 0) { *flags |= EngineLayout.CameraFlagDisableCollision; _weSetFlag = true; }
+            if ((flags & EngineLayout.CameraFlagDisableCollision) == 0) { flags |= EngineLayout.CameraFlagDisableCollision; _weSetFlag = true; }
         }
-        else if (_weSetFlag) { *flags &= ~EngineLayout.CameraFlagDisableCollision; _weSetFlag = false; }
+        else if (_weSetFlag) { flags &= ~EngineLayout.CameraFlagDisableCollision; _weSetFlag = false; }
     }
 
     private static void Adjust(IntPtr self, float dt)
     {
-        IntPtr cam = *(IntPtr*)(self + OwnerOff) - CameraFromOwner;
+        var b = new CAurBehaviorCameraFollow(self);
+        IntPtr cam = new CAurBehavior(self).Owner - CameraFromOwner;
         Gate g = Check(self, cam, out int mode);
         _gate = g; _mode = mode;
-        _yaw = *(float*)(self + YawOff); _pitch = *(float*)(self + PitchOff); _dist = *(float*)(self + DistOff);
-        _fovRead = *(float*)(cam + CamFovOff);
-        _pos = *(Vector3*)(cam + CamPosOff);
+        _yaw = b.Yaw; _pitch = b.Pitch; _dist = b.Dist;
+        var c = new EngCamera(cam);
+        _fovRead = c.ViewAngle;
+        _pos = c.Pos;
         if (FreeCameraService.Active)
         {
             // #543: the free camera owns the pose; the frame it lets go is a weld (snap + cut) like any gate's.
@@ -221,7 +199,7 @@ public sealed unsafe class CameraService : IExtenderService
         if (float.IsNaN(_fovFirst)) _fovFirst = _fovRead;
 
         CameraModeKnobs m = CameraModes.ByMode[mode];
-        Vector3 focus = *(Vector3*)(self + FocusOff);
+        Vector3 focus = b.Focus;
         // A mode switch resets the engine's dist/pitch (+0x25c): that frame is a cut, not something to lag through.
         if (mode != _lastMode) { _lastMode = mode; _welded = true; }
         if (self != _lastSelf || _welded)
@@ -244,7 +222,7 @@ public sealed unsafe class CameraService : IExtenderService
         // The curve stays inside the behavior's own pitch range (settings.tml [camera.limits] lands there), not a
         // range of ours: a max past 90 is the player's to have.
         float lo = PitchFloor, hi = PitchCeil;
-        if (*(float*)(self + PitchClampOff) != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
+        if (b.PitchClamp != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
         float pitch = Math.Clamp(_sPitch + m.PitchCurve.V * (_sDist - m.PitchRef.V), lo, hi);
         _outPitch = pitch;
         Quaternion q = Pose(_sYaw, pitch);
@@ -257,11 +235,11 @@ public sealed unsafe class CameraService : IExtenderService
         // Camera+0xbc holds (w, x, y, z): Control's own position formula reads it in that order.
         float* rot = (float*)(cam + CamRotOff);
         rot[0] = q.W; rot[1] = q.X; rot[2] = q.Y; rot[3] = q.Z;
-        *(Vector3*)(cam + CamPosOff) = pos;
+        c.Pos = pos;
         _pos = pos;
         // No magic zero (ADR 0025): the slider is written whenever the layer drives the mode.
         float fov = m.Fov.V;
-        *(float*)(cam + CamFovOff) = fov; _fovWritten = fov;
+        c.ViewAngle = fov; _fovWritten = fov;
     }
 
     /// <summary>#584: the mode's master went off, or the mode changed into one whose master is off, with the layer's
@@ -271,7 +249,7 @@ public sealed unsafe class CameraService : IExtenderService
     private static void RestoreFov(IntPtr cam)
     {
         if (float.IsNaN(_fovWritten)) return;
-        *(float*)(cam + CamFovOff) = _fovFirst;
+        new EngCamera(cam).ViewAngle = _fovFirst;
         _fovWritten = float.NaN;
         AlloyRenderer.CameraCut();
     }
@@ -291,7 +269,8 @@ public sealed unsafe class CameraService : IExtenderService
     /// the chase flags are not held either, so the engine's own chase runs (#584).</summary>
     private static void Recenter(IntPtr self, float dt)
     {
-        Gate g = Check(self, *(IntPtr*)(self + OwnerOff) - CameraFromOwner, out int mode);
+        var b = new CAurBehaviorCameraFollow(self);
+        Gate g = Check(self, new CAurBehavior(self).Owner - CameraFromOwner, out int mode);
         if (g != Gate.Active)
         {
             if (g != Gate.NotWorldCamera) { _pursuing = false; _recenterVel = 0f; }
@@ -302,13 +281,13 @@ public sealed unsafe class CameraService : IExtenderService
         bool aim = TabTargetService.AimPoint(out float ax, out float ay, out float az);
         if (!aim) _aimBase = float.NaN;
         if (!aim && !m.Recenter.V) { _hold = Hold.Off; _pursuing = false; return; }
-        IntPtr module = Module();
-        *(int*)(module + ModChaseOffOff) = 1;
-        *(int*)(module + ModWasIdleOff) = 0;
-        float* vel = (float*)(self + YawVelOff);
+        var mod = new CNWCModule(Module());
+        mod.ChaseSuppressed = 1;
+        mod.ChaseWasIdle = 0;
+        ref float vel = ref b.YawVel;
         // Face mode: the turn keys are a keyboard orbit (yaw + is left, facing north = 0, east = -90).
-        if (CameraDriveService.TurnAxis != 0) *vel += CameraDriveService.TurnAxis * m.KeyTurn.V;
-        bool orbiting = *vel != 0f || *(float*)(self + YawImpulseOff) != 0f;
+        if (CameraDriveService.TurnAxis != 0) vel += CameraDriveService.TurnAxis * m.KeyTurn.V;
+        bool orbiting = vel != 0f || b.YawImpulse != 0f;
         if (aim)
         {
             // The tab-target's aim (CX-636): the camera looks from behind the player toward the target, fast and
@@ -316,12 +295,12 @@ public sealed unsafe class CameraService : IExtenderService
             // velocity pulls the view back. The lock key (or a cleared lock) is what ends a lock-on.
             IntPtr me = PlayerCreature();
             if (me == IntPtr.Zero) { _hold = Hold.NoCreature; return; }
-            float* pp = (float*)(me + PosOff);
-            float dx = ax - pp[0], dy = ay - pp[1];
+            Vector3 pp = new CNWCObject(me).Position;
+            float dx = ax - pp.X, dy = ay - pp.Y;
             Pursue(self, FacingYaw(dx, dy), AimRate, 0f, AimGain, out bool settled);
-            if (float.IsNaN(_aimBase)) _aimBase = *(float*)(self + PitchOff);
-            _aimBase += *(float*)(self + PitchImpulseOff);
-            bool tilted = PursuePitch(self, AimPitch(self, MathF.Sqrt(dx * dx + dy * dy), az - pp[2], TabTarget.Tilt.V, ref _aimBase));
+            if (float.IsNaN(_aimBase)) _aimBase = b.Pitch;
+            _aimBase += b.PitchImpulse;
+            bool tilted = PursuePitch(self, AimPitch(self, MathF.Sqrt(dx * dx + dy * dy), az - pp.Z, TabTarget.Tilt.V, ref _aimBase));
             if (settled && tilted) TabTargetService.AimSettled();
             return;
         }
@@ -333,7 +312,7 @@ public sealed unsafe class CameraService : IExtenderService
         IntPtr cre = PlayerCreature();
         if (cre == IntPtr.Zero) { _hold = Hold.NoCreature; return; }
         float rate;
-        if (Locomotion(*(short*)(cre + AnimOff)))
+        if (Locomotion(new CNWCObject(cre).Animation))
         {
             _idle = 0f;
             if (CameraDriveService.NoForward) { _pursuing = false; _hold = Hold.Lateral; return; }
@@ -346,8 +325,8 @@ public sealed unsafe class CameraService : IExtenderService
             if (idle <= 0f || _idle < idle) { _pursuing = false; _hold = Hold.Idle; return; }
             rate = m.IdleRate.V;
         }
-        float* ori = (float*)(cre + OriOff);
-        Pursue(self, FacingYaw(ori[0], ori[1]), rate, rate == m.Rate.V ? m.DeadZone.V : 0f, EaseGain, out _);
+        Vector3 ori = new CNWCObject(cre).Orientation;
+        Pursue(self, FacingYaw(ori.X, ori.Y), rate, rate == m.Rate.V ? m.DeadZone.V : 0f, EaseGain, out _);
     }
 
     /// <summary>The tab-target aim's swing: twice the default recenter ceiling and a stiffer ease, so a 90°
@@ -363,9 +342,10 @@ public sealed unsafe class CameraService : IExtenderService
     /// inside the behavior's own clamp range (the engine clamps the same way after Control).</summary>
     private static float AimPitch(IntPtr self, float r, float h, float band, ref float basePitch)
     {
-        float d = *(float*)(self + DistOff);
+        var b = new CAurBehaviorCameraFollow(self);
+        float d = b.Dist;
         float lo = PitchFloor, hi = PitchCeil;
-        if (*(float*)(self + PitchClampOff) != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
+        if (b.PitchClamp != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
         basePitch = Math.Clamp(basePitch, lo, hi);
         float e = Elevation(basePitch);
         if (MathF.Abs(e) <= band) return basePitch;
@@ -395,9 +375,10 @@ public sealed unsafe class CameraService : IExtenderService
     /// <see cref="Settled"/>. No tie-break: pitch never wraps.</summary>
     private static bool PursuePitch(IntPtr self, float targetPitch)
     {
-        float delta = targetPitch - *(float*)(self + PitchOff);
+        var b = new CAurBehaviorCameraFollow(self);
+        float delta = targetPitch - b.Pitch;
         if (MathF.Abs(delta) <= Settled) return true;
-        *(float*)(self + PitchVelOff) = Math.Clamp(delta * AimGain, -AimRate, AimRate);
+        b.PitchVel = Math.Clamp(delta * AimGain, -AimRate, AimRate);
         return false;
     }
 
@@ -407,7 +388,8 @@ public sealed unsafe class CameraService : IExtenderService
     private static void Pursue(IntPtr self, float targetYaw, float rate, float deadZone, float gain, out bool settled)
     {
         settled = false;
-        float delta = Wrap(targetYaw - *(float*)(self + YawOff));
+        var b = new CAurBehaviorCameraFollow(self);
+        float delta = Wrap(targetYaw - b.Yaw);
         float abs = MathF.Abs(delta);
         // Near 180 the short way flips sign frame to frame; once swinging, keep the side already taken.
         if (abs > TieZone && _recenterVel != 0f) delta = MathF.CopySign(abs, _recenterVel);
@@ -415,7 +397,7 @@ public sealed unsafe class CameraService : IExtenderService
         if (!_pursuing && abs < deadZone) { _hold = Hold.DeadZone; return; }
         _pursuing = true;
         _recenterVel = Math.Clamp(delta * gain, -rate, rate);
-        *(float*)(self + YawVelOff) = _recenterVel;
+        b.YawVel = _recenterVel;
         _hold = Hold.Recentering;
     }
 
@@ -430,8 +412,8 @@ public sealed unsafe class CameraService : IExtenderService
     {
         IntPtr app = App();
         if (app == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr cre = _getGameObject(app, *(uint*)(*(IntPtr*)(app + InternalOff) + PlayerIdOff));
-        return cre != IntPtr.Zero && *(byte*)(cre + ObjTypeOff) == TypeCreature ? cre : IntPtr.Zero;
+        IntPtr cre = _getGameObject(app, new CClientExoApp(app).Internal.PlayerCreatureId);
+        return cre != IntPtr.Zero && new CNWCObject(cre).Type == TypeCreature ? cre : IntPtr.Zero;
     }
 
     private static Gate Check(IntPtr self, IntPtr cam, out int mode)
@@ -439,14 +421,15 @@ public sealed unsafe class CameraService : IExtenderService
         mode = -1;
         IntPtr module = Module();
         if (module == IntPtr.Zero) return Gate.NoModule;
-        IntPtr intern = *(IntPtr*)(App() + InternalOff);
-        IntPtr opts = *(IntPtr*)(intern + OptionsOff);
-        if (opts != IntPtr.Zero) mode = *(byte*)(opts + ModeOff);   // before the gates: the drive needs it held down too
-        if (*(IntPtr*)(module + ModCameraOff) != cam) return Gate.NotWorldCamera;
-        if (*(byte*)(module + ModDialogOff) != 0) return Gate.Dialog;
-        if (*(float*)(module + ModCutsceneOff) != 0f) return Gate.Cutscene;
-        if (*(int*)(module + ModClearViewOff) != 0) return Gate.ClearView;
-        if (*(uint*)(module + ModAttachedOff) != *(uint*)(intern + PlayerIdOff)) return Gate.Attached;
+        var mod = new CNWCModule(module);
+        CClientExoAppInternal intern = new CClientExoApp(App()).Internal;
+        CClientOptions opts = intern.ClientOptions;
+        if (!opts.IsNull) mode = opts.CameraMode;   // before the gates: the drive needs it held down too
+        if (mod.Camera.Ptr != cam) return Gate.NotWorldCamera;
+        if (mod.DialogCamera != 0) return Gate.Dialog;
+        if (mod.CutsceneRate != 0f) return Gate.Cutscene;
+        if (mod.FindClearView != 0) return Gate.ClearView;
+        if (mod.CameraAttached != intern.PlayerCreatureId) return Gate.Attached;
         // Clamps are ENABLED in normal play (the mode reset pushes [camera.limits] in); a lock is min == max.
         if (Locked(self, YawClampOff, YawMinOff) || Locked(self, PitchClampOff, PitchMinOff)
             || Locked(self, DistClampOff, DistMinOff)) return Gate.Locked;
@@ -530,7 +513,7 @@ public sealed unsafe class CameraService : IExtenderService
             Vector3 right = Vector3.Cross(d, Vector3.UnitZ);
             right = right.LengthSquared() < 1e-6f ? Vector3.UnitX : Vector3.Normalize(right);
             Vector3 up = Vector3.Cross(right, d);
-            IntPtr player = *(IntPtr*)(self + TargetOff);
+            IntPtr player = new CAurBehaviorCameraFollow(self).Target;
             float nearest = len;
             for (int r = 0; r < ArmRays; r++)
             {

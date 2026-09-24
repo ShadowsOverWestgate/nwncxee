@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Services.Radial;
@@ -144,15 +145,15 @@ internal static unsafe class SelfActions
 #if WINDOWS
         float* vec = stackalloc float[3];
         vec[0] = pos[0]; vec[1] = pos[1]; vec[2] = pos[2];
-        if (spell) _spellCtor(m, (IntPtr)vec, *(uint*)(creature + EngineLayout.ObjId), IntPtr.Zero, 0);
+        if (spell) _spellCtor(m, (IntPtr)vec, new CNWCObject(creature).Id, IntPtr.Zero, 0);
         else _creatureCtor(m, creature, (IntPtr)vec);
 #else
         double xy = BitConverter.Int64BitsToDouble(*(long*)pos);   // SysV: a 3-float aggregate rides xmm0 (x|y) + xmm1 (z)
-        if (spell) _spellCtor(xy, pos[2], m, *(uint*)(creature + EngineLayout.ObjId), IntPtr.Zero, 0);
+        if (spell) _spellCtor(xy, pos[2], m, new CNWCObject(creature).Id, IntPtr.Zero, 0);
         else _creatureCtor(xy, pos[2], m, creature);
 #endif
-        *(byte*)(m + EngineLayout.RadialAutoDelete) = 1;
-        _log?.Info($"[radial] self stand-in {(spell ? "spell" : "creature")}=0x{(long)m:x} target=0x{*(uint*)(creature + EngineLayout.ObjId):x}");
+        new CRadialMenu(m).AutoDelete = 1;
+        _log?.Info($"[radial] self stand-in {(spell ? "spell" : "creature")}=0x{(long)m:x} target=0x{new CNWCObject(creature).Id:x}");
         if (spell) _spell = m; else _creature = m;
         return m;
     }

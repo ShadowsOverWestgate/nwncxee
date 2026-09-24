@@ -1,6 +1,8 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Ui;
 
@@ -33,7 +35,8 @@ internal static unsafe partial class RadialTree
     private static int FakeCreate(IntPtr menu, int i)
     {
         if (i != 1) return 0;
-        *(IntPtr*)(menu + EngineLayout.RadialSubMenu + i * 8) = _fakeChild;
+        var m = new CRadialMenu(menu);
+        Unsafe.Add(ref m.SubMenu, i) = new CRadialMenu(_fakeChild);
         return 1;
     }
 
@@ -79,25 +82,26 @@ internal static unsafe partial class RadialTree
             // vptr: Itanium points 0x10 into the _ZTV blob, MSVC at the vftable label -- plant the resolved form.
             *(IntPtr*)menu = (IntPtr)fakeVt + VtableToVptr;
             _vptr[(int)RootKind.Door] = (IntPtr)fakeVt + VtableToVptr;
-            *(int*)(menu + EngineLayout.RadialMenuX) = 640;
-            *(int*)(menu + EngineLayout.RadialMenuY) = 360;
-            *(uint*)(menu + EngineLayout.RadialTargetId) = 0x7f01;
+            var root = new CRadialMenu((IntPtr)menu);
+            root.MenuX = 640;
+            root.MenuY = 360;
+            root.TargetId = 0x7f01;
 
             // slot 0: a direct entry leaf, labelled + iconed, param 0x123456789.
             IntPtr e0 = (IntPtr)(menu + EngineLayout.RadialEntry);
             *(IntPtr*)e0 = (IntPtr)handlerObj;
             *(IntPtr*)(e0 + 8) = (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler;
-            *(long*)(menu + EngineLayout.RadialParam) = 0x123456789L;
-            *(IntPtr*)(menu + EngineLayout.RadialText) = (IntPtr)bubble;
-            *(IntPtr*)(menu + EngineLayout.RadialIcon) = (IntPtr)icon;
+            root.Param = 0x123456789L;
+            root.Text = (IntPtr)bubble;
+            root.Icon = (IntPtr)icon;
             "IR_CAST\0"u8.CopyTo(new Span<byte>(icon + EngineLayout.GuiIconResRef, ResRefLen));
             "Cast "u8.CopyTo(new Span<byte>(line0, 32));
             "Spell"u8.CopyTo(new Span<byte>(line1, 32));
             _line0 = (IntPtr)line0; _line1 = (IntPtr)line1; _fakeGob = (IntPtr)gob;
-            *(IntPtr*)(bubble + EngineLayout.TextBubbleString) = (IntPtr)gob + EngineLayout.StringGobReaderAdjust;
+            new CGuiTextBubble((IntPtr)bubble).AurString = (IntPtr)gob + EngineLayout.StringGobReaderAdjust;
             "3"u8.CopyTo(new Span<byte>(countLine, 32));
             _countLine = (IntPtr)countLine; _fakeCountGob = (IntPtr)countGob;
-            *(IntPtr*)(icon + EngineLayout.GuiIconCountLabel) = (IntPtr)countGob + EngineLayout.StringGobReaderAdjust;
+            new CGuiIcon((IntPtr)icon).CountLabel = (IntPtr)countGob + EngineLayout.StringGobReaderAdjust;
             _getTextLineCount = &FakeLineCount;
             _getTextLine = &FakeLine;
             _createSubMenu = &FakeCreate;
@@ -106,8 +110,8 @@ internal static unsafe partial class RadialTree
             // slot 1: a creator (submenu), disabled; slot 2: a materialized child with no creator.
             IntPtr c1 = (IntPtr)(menu + EngineLayout.RadialCreator + stride);
             *(IntPtr*)c1 = (IntPtr)handlerObj;
-            *(uint*)(menu + EngineLayout.RadialFlags + 4) = 1;
-            *(IntPtr*)(menu + EngineLayout.RadialSubMenu + 2 * 8) = (IntPtr)fakeVt;
+            Unsafe.Add(ref root.Flags, 1) = 1;
+            Unsafe.Add(ref root.SubMenu, 2) = new CRadialMenu((IntPtr)fakeVt);
 
             // slot 3 (Itanium only): a virtual entry -- odd fn = vtable byte offset 0x28 + 1, adj 0x10, so this =
             // obj + 0x10 and the vtable is read from there.
@@ -124,7 +128,7 @@ internal static unsafe partial class RadialTree
                 *(IntPtr*)(handlerObj + ObjAdj) = (IntPtr)handlerVt;
                 *(IntPtr*)(handlerVt + 0x28) = (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler;
             }
-            *(long*)(menu + EngineLayout.RadialParam + 3 * 8) = -7;
+            Unsafe.Add(ref root.Param, 3) = -7;
 
             check.Expect(Classify((IntPtr)menu) == RootKind.Door, "a planted vptr classifies as the kind it was planted for");
             *(IntPtr*)menu = (IntPtr)handlerVt;
@@ -173,7 +177,7 @@ internal static unsafe partial class RadialTree
                 "creator + child rows carry the mark, the disabled flag follows the slot, no icon = no count");
 
             // Materialize through the faked CreateSubMenu: slot 1 yields the child with its parent linked; slot 3 declines.
-            check.Expect(Materialize((IntPtr)menu, 1) == (IntPtr)child && *(IntPtr*)(child + EngineLayout.RadialParent) == (IntPtr)menu,
+            check.Expect(Materialize((IntPtr)menu, 1) == (IntPtr)child && new CRadialMenu((IntPtr)child).Parent == (IntPtr)menu,
                 "Materialize returns m_pSubMenu[i] and links the child's m_pParent");
             check.Expect(Materialize((IntPtr)menu, 3) == IntPtr.Zero, "a declined creator yields null");
         }

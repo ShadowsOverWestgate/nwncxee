@@ -1,5 +1,6 @@
 using System;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Services.Nameplate;
@@ -59,14 +60,10 @@ public static unsafe class NameplateNative
     // ---- creature ----
     /// <summary>Reaction byte: 1 friend, 2 enemy, else neutral.</summary>
     private static readonly int CreatureReaction = Win ? 0x388 : 0x3a8;
-    /// <summary>CNWCCreatureStats*.</summary>
-    private static readonly int CreatureStats = EngineLayout.CreatureStats;
     /// <summary>Area id; hidden when it differs from the player's area.</summary>
     private static readonly int CreatureArea = Win ? 0x458 : 0x478;
 
     // ---- CNWCCreatureStats ----
-    private static readonly int StatsFirstName = EngineLayout.StatsFirstName, StatsFirstLen = EngineLayout.StatsFirstNameLen;
-    private static readonly int StatsLastName = EngineLayout.StatsLastName, StatsLastLen = EngineLayout.StatsLastNameLen;
     private const int StatsOverride = 0x40, StatsOverrideLen = 0x48;
     /// <summary>Damage-level byte, 0..5 -- a server-sent enum, not a client HP division.</summary>
     private const int StatsDamage = 0x8e;
@@ -151,7 +148,7 @@ public static unsafe class NameplateNative
     }
 
     public static uint IdOf(IntPtr obj) => obj == IntPtr.Zero ? 0u : *(uint*)(obj + ObjId);
-    public static byte TypeOf(IntPtr obj) => obj == IntPtr.Zero ? (byte)0 : *(byte*)(obj + EngineLayout.ObjType);
+    public static byte TypeOf(IntPtr obj) => obj == IntPtr.Zero ? (byte)0 : new CNWCObject(obj).Type;
 
     /// <summary>Object type bytes we care about.</summary>
     public const byte TypeCreature = 5, TypeItem = 6, TypePlaceable = 9, TypeDoor = 0xa;
@@ -228,14 +225,13 @@ public static unsafe class NameplateNative
             }
         }
         if (_layoutRot) return false;
-        int off = type switch
+        return type switch
         {
-            TypeCreature => EngineLayout.CreaturePlated,
-            TypePlaceable => EngineLayout.PlaceablePlated,
-            TypeItem => ItemPlated,
-            _ => 0,
+            TypeCreature => new CNWCCreature(obj).Plated != 0,
+            TypePlaceable => new CNWCPlaceable(obj).Plated != 0,
+            TypeItem => *(int*)(obj + ItemPlated) != 0,
+            _ => false,
         };
-        return off != 0 && *(int*)(obj + off) != 0;
     }
 
     /// <summary>The object's <c>ObjectTextBubbleOverride</c> mode: 1 replace, 2 prepend, 3 append, 0 (or any
@@ -391,9 +387,9 @@ public static unsafe class NameplateNative
     public static int DamageLevel(IntPtr obj, byte type)
     {
         if (obj == IntPtr.Zero || type != TypeCreature) return -1;
-        IntPtr stats = *(IntPtr*)(obj + CreatureStats);
-        if (stats == IntPtr.Zero) return -1;
-        int lvl = *(byte*)(stats + StatsDamage);
+        CNWCCreatureStats stats = new CNWCCreature(obj).Stats;
+        if (stats.IsNull) return -1;
+        int lvl = *(byte*)(stats.Ptr + StatsDamage);
         return lvl > 5 ? 5 : lvl;
     }
 
@@ -407,12 +403,12 @@ public static unsafe class NameplateNative
     public static string CreatureName(IntPtr obj, byte type)
     {
         if (obj == IntPtr.Zero || type != TypeCreature) return "";
-        IntPtr stats = *(IntPtr*)(obj + CreatureStats);
-        if (stats == IntPtr.Zero) return "";
-        string over = Str(stats, StatsOverride, StatsOverrideLen);
+        CNWCCreatureStats stats = new CNWCCreature(obj).Stats;
+        if (stats.IsNull) return "";
+        string over = Str(stats.Ptr, StatsOverride, StatsOverrideLen);
         if (over.Length != 0) return over;
-        string first = Str(stats, StatsFirstName, StatsFirstLen);
-        string last = Str(stats, StatsLastName, StatsLastLen);
+        string first = Chars((byte*)stats.FirstName, (int)stats.FirstNameLen, MaxNameLen).Trim();
+        string last = Chars((byte*)stats.LastName, (int)stats.LastNameLen, MaxNameLen).Trim();
         if (first.Length == 0) return last;
         if (last.Length == 0) return first;
         return first + " " + last;
@@ -428,9 +424,12 @@ public static unsafe class NameplateNative
     /// <summary>An engine <c>char* / len</c> pair copied out verbatim -- no trim. <see cref="Str"/> is the
     /// trimming form; anything whose leading or trailing whitespace is load-bearing must use this.</summary>
     private static string RawStr(IntPtr owner, int ptrOff, int lenOff, int maxLen)
+        => Chars(*(byte**)(owner + ptrOff), *(int*)(owner + lenOff), maxLen);
+
+    /// <summary>The same pair already loaded -- what a typed view hands out. "" when the length says the
+    /// pointer is not what we think it is.</summary>
+    private static string Chars(byte* p, int len, int maxLen)
     {
-        byte* p = *(byte**)(owner + ptrOff);
-        int len = *(int*)(owner + lenOff);
         if (p == null || len <= 0 || len > maxLen) return "";
         var sb = new StringBuilder(len);
         for (int i = 0; i < len; i++) sb.Append((char)p[i]);   // Latin1: char == source byte
@@ -465,7 +464,7 @@ public static unsafe class NameplateNative
         if (obj == IntPtr.Zero || _layoutRot) return "";
         IntPtr vtbl = *(IntPtr*)obj;
         if (vtbl == IntPtr.Zero) return "";
-        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)*(IntPtr*)(vtbl + EngineLayout.GetPortraitSlot);
+        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)new CNWCObject(obj).GetPortraitFn;
         if (getPortrait == null) return "";
         byte* buf = stackalloc byte[ResRefScratch];
         for (int i = 0; i < ResRefScratch; i++) buf[i] = 0;

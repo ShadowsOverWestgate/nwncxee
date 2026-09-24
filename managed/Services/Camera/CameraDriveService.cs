@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Nameplate;
 
@@ -44,19 +45,8 @@ public sealed unsafe class CameraDriveService : IExtenderService
     private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
         (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
 
-    private static readonly int ChangedOff = EngineLayout.InternalDriveChanged;
-    private static readonly int WalkOff = EngineLayout.InternalDriveWalk;
+    /// <summary>The six key slots are an int array read by index, so they stay a raw offset.</summary>
     private static readonly int KeysOff = EngineLayout.InternalDriveKeys;
-    private static readonly int LastSendOff = EngineLayout.InternalDriveLastSend;
-    private static readonly int PlayerIdOff = EngineLayout.InternalPlayerCreatureId;
-    private static readonly int OriOff = EngineLayout.ObjOrientation;
-    private static readonly int DriveFlagsOff = EngineLayout.CreatureAiFlags;
-    private static readonly int DriveEnabledOff = EngineLayout.CreatureDriveEnabled;
-    private static readonly int FacingTargetOff = EngineLayout.CreatureFacingTarget;
-    private static readonly int FacingTargetBOff = EngineLayout.CreatureFacingTargetB;
-    private static readonly int ModCameraOff = EngineLayout.ModuleCamera;
-    private static readonly int ModChaseOffOff = EngineLayout.ModuleChaseSuppressed;
-    private static readonly int ModWasIdleOff = EngineLayout.ModuleChaseWasIdle;
     private static readonly int CamRotOff = EngineLayout.CamRot;
 
     /// <summary>Key slots at <see cref="EngineLayout.InternalDriveKeys"/>, in the engine's order.</summary>
@@ -115,23 +105,24 @@ public sealed unsafe class CameraDriveService : IExtenderService
             _probeOk = EngineLayout.Probe("CClientExoAppInternal", app, _log);
             _log?.Info(_probeOk ? "CameraDrive: first UpdateDriveMode -- hook is LIVE" : "CameraDrive: layout probe failed -- engine drive untouched");
         }
+        var a = new CClientExoAppInternal(app);
         int* keys = (int*)(app + KeysOff);
         if (FreeCameraService.Active)
         {
             // #543: the keys fly the camera; the engine sees none held (a drive under way is aborted, once).
             _why = Why.Free; NoForward = false;
             if (_active) { _active = false; ClientApi.Send(MajorInput, MinorAbortDrive, null, 0); _aborts++; }
-            int walk0 = *(int*)(app + WalkOff), s0 = keys[0], s1 = keys[1], s2 = keys[2], s3 = keys[3], s4 = keys[4], s5 = keys[5];
-            *(int*)(app + WalkOff) = 0; keys[0] = keys[1] = keys[2] = keys[3] = keys[4] = keys[5] = 0;
+            int walk0 = a.DriveWalk, s0 = keys[0], s1 = keys[1], s2 = keys[2], s3 = keys[3], s4 = keys[4], s5 = keys[5];
+            a.DriveWalk = 0; keys[0] = keys[1] = keys[2] = keys[3] = keys[4] = keys[5] = 0;
             _orig(app);
-            *(int*)(app + WalkOff) = walk0; keys[0] = s0; keys[1] = s1; keys[2] = s2; keys[3] = s3; keys[4] = s4; keys[5] = s5;
+            a.DriveWalk = walk0; keys[0] = s0; keys[1] = s1; keys[2] = s2; keys[3] = s3; keys[4] = s4; keys[5] = s5;
             return;
         }
-        int* walk = (int*)(app + WalkOff);
-        bool held = *walk != 0;
+        ref int walk = ref a.DriveWalk;
+        bool held = walk != 0;
         for (int k = 0; k < KeyCount; k++) held |= keys[k] != 0;
         // The engine's own key-up aborts the drive for these; a turn key's release is ours to abort.
-        bool engineKey = (*walk | keys[Fwd] | keys[Back] | keys[StrafeL] | keys[StrafeR]) != 0;
+        bool engineKey = (walk | keys[Fwd] | keys[Back] | keys[StrafeL] | keys[StrafeR]) != 0;
         IntPtr cre = IntPtr.Zero, cam = IntPtr.Zero;
         Why why = !held ? Why.Idle : !_probeOk ? Why.Probe : Wanted(app, out cre, out cam);
         float f = 0f, s = 0f;
@@ -150,7 +141,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         TurnAxis = 0;
         if (why == Why.Active)
         {
-            f = (keys[Fwd] | *walk) != 0 ? 1f : 0f; f -= keys[Back] != 0 ? 1f : 0f;
+            f = (keys[Fwd] | walk) != 0 ? 1f : 0f; f -= keys[Back] != 0 ? 1f : 0f;
             if (face)
             {
                 s = keys[StrafeR] != 0 ? 1f : 0f; s -= keys[StrafeL] != 0 ? 1f : 0f;
@@ -188,7 +179,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         // and forward-on-the-ground is up x right = (-right.y, right.x).
         float* rot = (float*)(cam + CamRotOff);
         Vector3 r = CameraService.Right(new Quaternion(rot[1], rot[2], rot[3], rot[0]));
-        float* ori = (float*)(cre + OriOff);
+        var obj = new CNWCObject(cre);
         long now = Environment.TickCount64;
         // Face mode: the creature faces the camera and the engine's own back/strafe bits carry the direction.
         float want = face ? Heading(r.X, r.Y, 1f, 0f) : Heading(r.X, r.Y, f, s);
@@ -204,29 +195,29 @@ public sealed unsafe class CameraDriveService : IExtenderService
         int tenths = Tenths(_heading);
         _tenths = tenths;
         (float sn, float cs) = MathF.SinCos(tenths * 0.1f * Deg);
-        ori[0] = cs; ori[1] = sn; ori[2] = 0f;
-        float* tgt = (float*)(cre + FacingTargetOff);
-        tgt[0] = cs; tgt[1] = sn; tgt[2] = 0f;
-        tgt = (float*)(cre + FacingTargetBOff);
-        tgt[0] = cs; tgt[1] = sn; tgt[2] = 0f;
+        var dir = new Vector3(cs, sn, 0f);
+        obj.Orientation = dir;
+        var creature = new CNWCCreature(cre);
+        creature.FacingTarget = dir;
+        creature.FacingTargetB = dir;
         // The chase cam reads these in UpdateCamera, later this frame: no swing behind a strafing creature.
-        IntPtr module = CameraService.Module();
-        *(int*)(module + ModChaseOffOff) = 1;
-        *(int*)(module + ModWasIdleOff) = 0;
+        var mod = new CNWCModule(CameraService.Module());
+        mod.ChaseSuppressed = 1;
+        mod.ChaseWasIdle = 0;
 
         // move.hz throttles camera-driven drift only; a key change is sent this frame.
-        if (tenths != _sentTenths && *(int*)(app + ChangedOff) == 0
-            && (keysChanged || now - _lastSendTick >= (long)(1000f / mk.Hz.V))) { *(int*)(app + ChangedOff) = 1; _latches++; }
+        if (tenths != _sentTenths && a.DriveChanged == 0
+            && (keysChanged || now - _lastSendTick >= (long)(1000f / mk.Hz.V))) { a.DriveChanged = 1; _latches++; }
 
-        long sendBefore = *(long*)(app + LastSendOff);
-        int w0 = *walk, k0 = keys[0], k1 = keys[1], k2 = keys[2], k3 = keys[3], k4 = keys[4], k5 = keys[5];
+        long sendBefore = a.DriveLastSend;
+        int w0 = walk, k0 = keys[0], k1 = keys[1], k2 = keys[2], k3 = keys[3], k4 = keys[4], k5 = keys[5];
         keys[TurnL] = keys[TurnR] = 0;
-        (keys[Fwd], *walk) = ForwardSlots(face, f, k0, w0);
+        (keys[Fwd], walk) = ForwardSlots(face, f, k0, w0);
         if (face) { keys[Back] = f < 0f ? 1 : 0; keys[StrafeL] = s < 0f ? 1 : 0; keys[StrafeR] = s > 0f ? 1 : 0; }
         else keys[Back] = keys[StrafeL] = keys[StrafeR] = 0;
         _orig(app);
-        *walk = w0; keys[0] = k0; keys[1] = k1; keys[2] = k2; keys[3] = k3; keys[4] = k4; keys[5] = k5;
-        if (*(long*)(app + LastSendOff) != sendBefore) { _sentTenths = tenths; _lastSendTick = now; _sends++; }
+        walk = w0; keys[0] = k0; keys[1] = k1; keys[2] = k2; keys[3] = k3; keys[4] = k4; keys[5] = k5;
+        if (a.DriveLastSend != sendBefore) { _sentTenths = tenths; _lastSendTick = now; _sends++; }
         _active = true; _engineAborts = engineKey;
     }
 
@@ -269,13 +260,13 @@ public sealed unsafe class CameraDriveService : IExtenderService
         if (!m.Drive.V) return Why.Off;
         if (CameraService.GateUp) return Why.Gate;
         IntPtr module = CameraService.Module();
-        cam = module == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(module + ModCameraOff);
+        cam = module == IntPtr.Zero ? IntPtr.Zero : new CNWCModule(module).Camera.Ptr;
         if (cam == IntPtr.Zero) return Why.NoCamera;
         IntPtr mgr = *(IntPtr*)_appMgr;
         IntPtr exo = mgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)mgr;
-        cre = exo == IntPtr.Zero ? IntPtr.Zero : _getGameObject(exo, *(uint*)(app + PlayerIdOff));
-        if (cre == IntPtr.Zero || *(byte*)(cre + EngineLayout.ObjType) != NameplateNative.TypeCreature) return Why.NoCreature;
-        if ((*(byte*)(cre + DriveFlagsOff) & PlayerControlled) == 0 || *(int*)(cre + DriveEnabledOff) == 0) return Why.NotDrivable;
+        cre = exo == IntPtr.Zero ? IntPtr.Zero : _getGameObject(exo, new CClientExoAppInternal(app).PlayerCreatureId);
+        if (cre == IntPtr.Zero || new CNWCObject(cre).Type != NameplateNative.TypeCreature) return Why.NoCreature;
+        if ((new CNWCCreature(cre).AiFlags & PlayerControlled) == 0 || new CNWCCreature(cre).DriveEnabled == 0) return Why.NotDrivable;
         return Why.Active;
     }
 

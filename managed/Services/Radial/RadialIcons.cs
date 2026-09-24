@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Nameplate;
 using CX.Ui;
@@ -133,9 +134,11 @@ internal static unsafe class RadialIcons
         switch (Classify(icon))
         {
             case IconKind.Layered:
-                tids[0] = TidPlt(p + EngineLayout.GuiIconResRef, *(ushort**)(p + EngineLayout.LayeredIconScheme),
-                                 *(int*)(p + EngineLayout.LayeredIconSchemeCount));
+            {
+                var layered = new CLayeredIcon(icon);
+                tids[0] = TidPlt(p + EngineLayout.GuiIconResRef, (ushort*)layered.Scheme, layered.SchemeCount);
                 return 1;
+            }
             case IconKind.Composite:
                 tids[0] = TidPlain(p + EngineLayout.GuiIconResRef);
                 tids[1] = TidPlain(p + EngineLayout.CompositeIconResRef2);
@@ -143,9 +146,10 @@ internal static unsafe class RadialIcons
                 return 3;
             case IconKind.Armor:
             {
-                int count = *(int*)(p + EngineLayout.ArmorIconSchemeCount);
-                ushort* shared = *(ushort**)(p + EngineLayout.ArmorIconScheme);
-                ushort* perLayer = *(ushort**)(p + EngineLayout.ArmorIconLayerSchemes);
+                var armor = new CArmorIcon(icon);
+                int count = armor.SchemeCount;
+                ushort* shared = (ushort*)armor.Scheme;
+                ushort* perLayer = (ushort*)armor.LayerSchemes;
                 int n = 0;
                 for (int slot = 0; slot < EngineLayout.ArmorIconLayers; slot++)
                 {
@@ -172,10 +176,10 @@ internal static unsafe class RadialIcons
         if (mgr == IntPtr.Zero) return IntPtr.Zero;
         IntPtr app = *(IntPtr*)mgr;
         if (app == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr go = _getGameObject(app, (uint)(long)handle);
-        if (go == IntPtr.Zero || *(byte*)(go + EngineLayout.GameObjType) != GameObjTypeItem) return IntPtr.Zero;
-        IntPtr item = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)go + EngineLayout.GameObjAsNWCItemSlot)))(go);
-        return item == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(item + EngineLayout.ItemGuiIcon);
+        var obj = new CGameObject(_getGameObject(app, (uint)(long)handle));
+        if (obj.IsNull || obj.Type != GameObjTypeItem) return IntPtr.Zero;
+        IntPtr item = ((delegate* unmanaged<IntPtr, IntPtr>)obj.AsNWCItemFn)(obj.Ptr);
+        return item == IntPtr.Zero ? IntPtr.Zero : new CNWCItem(item).GuiIcon;
     }
 
     /// <summary>A plain layer: <c>AurTextureGet(name, 0, 0, 0, 0, false)</c>, the resman's find-or-create by resref
@@ -291,12 +295,13 @@ internal static unsafe class RadialIcons
 
             *(IntPtr*)icon = _vtLayered;
             for (int i = 0; i < 10; i++) scheme[i] = (ushort)(i * 17);
-            *(int*)(icon + EngineLayout.LayeredIconSchemeCount) = 10;
-            *(ushort**)(icon + EngineLayout.LayeredIconScheme) = scheme;
+            var layered = new CLayeredIcon((IntPtr)icon);
+            layered.SchemeCount = 10;
+            layered.Scheme = (IntPtr)scheme;
             _fakeGets = _fakeFinds = 0;
             check.Expect(Classify((IntPtr)icon) == IconKind.Layered && Layers((IntPtr)icon, tids) == 1 && _fakeFinds == 1 && _fakeGets == 0
               && _fakeLastCount == 10 && _fakeLastScheme[9] == 153 && LastName() == "isk_pocket", "layered = one hashed find, scheme widened");
-            *(int*)(icon + EngineLayout.LayeredIconSchemeCount) = MaxScheme + 1;
+            layered.SchemeCount = MaxScheme + 1;
             _fakeFinds = 0;
             check.Expect(Layers((IntPtr)icon, tids) == 1 && _fakeFinds == 0 && tids[0] == 0, "an over-long scheme is refused, not truncated");
 
@@ -312,16 +317,17 @@ internal static unsafe class RadialIcons
             Put(icon + EngineLayout.ArmorIconResRefs + 0 * EngineLayout.ArmorIconResRefStride, "arm_a");
             Put(icon + EngineLayout.ArmorIconResRefs + 2 * EngineLayout.ArmorIconResRefStride, "no_such_plt");
             Put(icon + EngineLayout.ArmorIconResRefs + 3 * EngineLayout.ArmorIconResRefStride, "arm_d");
-            *(int*)(icon + EngineLayout.ArmorIconSchemeCount) = 10;
-            *(ushort**)(icon + EngineLayout.ArmorIconScheme) = scheme;
+            var armor = new CArmorIcon((IntPtr)icon);
+            armor.SchemeCount = 10;
+            armor.Scheme = (IntPtr)scheme;
             for (int i = 0; i < 30; i++) perLayer[i] = (ushort)(100 + i);
-            *(ushort**)(icon + EngineLayout.ArmorIconLayerSchemes) = perLayer;
+            armor.LayerSchemes = (IntPtr)perLayer;
             _fakeGets = _fakeFinds = 0;
             int n = Layers((IntPtr)icon, tids);
             check.Expect(Classify((IntPtr)icon) == IconKind.Armor && n == 2 && _fakeFinds == 3 && _fakeGets == 0,
               $"armour: empty slot skipped, three finds, two layers ({n}, finds={_fakeFinds})");
             check.Expect(LastName() == "arm_d" && _fakeLastScheme[0] == 110, $"the miss did not advance the per-layer scheme index (row {_fakeLastScheme[0] - 100})");
-            *(ushort**)(icon + EngineLayout.ArmorIconLayerSchemes) = null;
+            armor.LayerSchemes = IntPtr.Zero;
             Layers((IntPtr)icon, tids);
             check.Expect(_fakeLastScheme[9] == 153, "no per-layer table: every layer takes the shared scheme");
         }

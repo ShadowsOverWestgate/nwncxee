@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Ui;
 
@@ -241,10 +242,11 @@ public sealed unsafe partial class RadialService : IExtenderService
     /// hold instead: every root sets <c>m_bAutoDelete = 1</c> before <c>Activate</c>, and <c>m_pParent</c> (+0x358) /
     /// the refcount (+0x874) are zeroed by the ctor @0x583460 and written only by <c>HandleMenuAction</c> /
     /// <c>CreateSubMenu</c> on a descent, which never happened.</summary>
-    private static bool RootLooksRight(IntPtr menu) =>
-        *(byte*)(menu + EngineLayout.RadialAutoDelete) == 1
-        && *(IntPtr*)(menu + EngineLayout.RadialParent) == IntPtr.Zero
-        && *(int*)(menu + EngineLayout.RadialRefCount) == 0;
+    private static bool RootLooksRight(IntPtr menu)
+    {
+        var m = new CRadialMenu(menu);
+        return m.AutoDelete == 1 && m.Parent == IntPtr.Zero && m.RefCount == 0;
+    }
 
     // ---- open / close ---------------------------------------------------------------------------
 
@@ -264,7 +266,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         var (mx, my) = RadialTree.Position(menu);
         int vpW = TextRig.ViewportW, vpH = TextRig.ViewportH;
         IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
-        if (gm != IntPtr.Zero) { vpW = *(int*)(gm + EngineLayout.GuiManVpW); vpH = *(int*)(gm + EngineLayout.GuiManVpH); }
+        if (gm != IntPtr.Zero) { vpW = new CGuiMan(gm).VpWidth; vpH = new CGuiMan(gm).VpHeight; }
         _atlas = atlas; _vpW = vpW; _vpH = vpH;
         _epoch = TextRig.AtlasEpoch;
         _pressOwned = false; _deferLevel = _deferRow = -1; _deferClose = null;

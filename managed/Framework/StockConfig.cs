@@ -1,4 +1,5 @@
 using System;
+using CX.Engine;
 
 namespace CX.Framework;
 
@@ -49,11 +50,11 @@ public static unsafe class StockConfig
         if (_exoBaseSym == IntPtr.Zero) return IntPtr.Zero;
         IntPtr exoBase = *(IntPtr*)_exoBaseSym;
         if (exoBase == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr cfg = *(IntPtr*)(exoBase + EngineLayout.ExoBaseConfig);
-        if (cfg == IntPtr.Zero) return IntPtr.Zero;
-        bool initializing = *(byte*)(cfg + EngineLayout.ExoConfigInitializing) != 0;
-        if (!initializing && *(IntPtr*)(cfg + EngineLayout.ExoConfigWorkingTable) == IntPtr.Zero) return IntPtr.Zero;
-        return cfg;
+        CExoConfig cfg = new CExoBase(exoBase).Config;
+        if (cfg.IsNull) return IntPtr.Zero;
+        bool initializing = cfg.Initializing != 0;
+        if (!initializing && cfg.WorkingTable == IntPtr.Zero) return IntPtr.Zero;
+        return cfg.Ptr;
     }
 
     /// <summary>Write a <c>std::string</c> header for <paramref name="key"/> into <paramref name="hdr"/>

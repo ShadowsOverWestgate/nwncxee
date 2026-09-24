@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 using CX.Ui;
@@ -26,12 +27,6 @@ internal static unsafe class ActionFeedback
 {
     private static bool _ready;
     private static IntPtr* _next;
-
-    private static readonly int GuiQueueOff = EngineLayout.GuiInGameActionQueue;
-    private static readonly int QueueCurrentOff = EngineLayout.ActionQueueCurrent;
-    private static readonly int QueueCountOff = EngineLayout.ActionQueueCount;
-    private static readonly int AiStateOff = EngineLayout.CreatureAiState;
-    private static readonly int AiTargetOff = EngineLayout.CreatureAiTarget;
 
     // ---- the wire frame (docs/research/action-camera-feedback.md §1) ----
 
@@ -152,10 +147,11 @@ internal static unsafe class ActionFeedback
         if (!_ready || !MouseLook.Feedback.V) return;
         int queued = Pending();
         IntPtr cre = CameraService.PlayerCreature();
-        bool attacking = cre != IntPtr.Zero && *(byte*)(cre + AiStateOff) == AiStateAttacking;
+        var creature = new CNWCCreature(cre);
+        bool attacking = cre != IntPtr.Zero && creature.AiState == AiStateAttacking;
         _queued = queued;
         _attacking = attacking;
-        _aiTarget = attacking ? *(uint*)(cre + AiTargetOff) : 0u;
+        _aiTarget = attacking ? creature.AiTarget : 0u;
 
         long age = Environment.TickCount64 - _at;
         if (_at != 0 && (ulong)age < PulseMs)
@@ -181,10 +177,10 @@ internal static unsafe class ActionFeedback
     {
         IntPtr gui = GameGate.InGameGui;
         if (gui == IntPtr.Zero) return 0;
-        IntPtr panel = *(IntPtr*)(gui + GuiQueueOff);
-        if (panel == IntPtr.Zero) return 0;
-        int n = *(int*)(panel + QueueCountOff);
-        return (*(IntPtr*)(panel + QueueCurrentOff) != IntPtr.Zero ? 1 : 0) + (n > 0 ? n : 0);
+        CPanelActionQueue panel = new CGuiInGame(gui).ActionQueuePanel;
+        if (panel.IsNull) return 0;
+        int n = panel.QueuedCount;
+        return (panel.Current != IntPtr.Zero ? 1 : 0) + (n > 0 ? n : 0);
     }
 
     /// <summary>A square outline of half-size <paramref name="k"/> from four thin rects.</summary>

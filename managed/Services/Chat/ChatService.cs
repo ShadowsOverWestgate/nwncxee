@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 using CX.Services.Chat.Render;
@@ -255,16 +256,16 @@ public sealed unsafe partial class ChatService : IExtenderService
 
     private static delegate* unmanaged<IntPtr, IntPtr> _promptCtorOrig;
     private static delegate* unmanaged<IntPtr, int, void> _panelDeactivate;
-    private static readonly int WinPromptShownOff = EngineLayout.ChatPromptShown;
 
     [UnmanagedCallersOnly]
     private static IntPtr OnPromptCtor(IntPtr self)
     {
         IntPtr r = _promptCtorOrig != null ? _promptCtorOrig(self) : self;
-        if (_panelDeactivate != null && *(int*)(self + WinPromptShownOff) != 0)
+        var prompt = new CGuiInGameChatPrompt(self);
+        if (_panelDeactivate != null && prompt.Shown != 0)
         {
             _panelDeactivate(self, 0);
-            *(int*)(self + WinPromptShownOff) = 0;
+            prompt.Shown = 0;
         }
         return r;
     }

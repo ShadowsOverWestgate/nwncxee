@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat;
 using CX.Services.Chat.Core;
@@ -126,7 +127,6 @@ public sealed unsafe class DialogService : IExtenderService
     /// <summary>The current node is the stock panel's: decided at <see cref="OnShowEntry"/> from
     /// <c>dialog.enabled</c>, followed by the replies / chosen / force hooks until the next entry.</summary>
     private static volatile bool _engineOwns;
-    private static readonly int InGameGuiDialogOff = EngineLayout.InGameGuiDialog;
     private static delegate* unmanaged<IntPtr, uint, uint, byte, uint, void> _sendReply;
     private static Window? _window;   // the framework Window Dialog draws through (#63)
 
@@ -193,7 +193,7 @@ public sealed unsafe class DialogService : IExtenderService
         if (_engineOwns)
         {
             _engineOwns = false;
-            if (*(IntPtr*)(self + InGameGuiDialogOff) != IntPtr.Zero && _closeOrig != null) _closeOrig(self);
+            if (new CGuiInGame(self).Dialog != IntPtr.Zero && _closeOrig != null) _closeOrig(self);
         }
         try
         {
@@ -1076,7 +1076,7 @@ public sealed unsafe class DialogService : IExtenderService
 
         // CResRef is 17 bytes (char[16] + a length byte at +0x10); a 16-byte buffer smashes the stack canary
         // (the SIGABRT that once crashed the client). Over-allocate to 32.
-        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)*(IntPtr*)(vtbl + EngineLayout.GetPortraitSlot);
+        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)new CNWCObject(obj).GetPortraitFn;
         if (getPortrait == null) return "";
         byte* buf = stackalloc byte[32];
         for (int i = 0; i < 32; i++) buf[i] = 0;
