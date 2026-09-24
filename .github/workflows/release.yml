@@ -7,9 +7,7 @@
 #
 # Windows is a NATIVE build on windows-latest (#504, build-win-native.sh); the Linux cross-build
 # (build-win.sh) is a dev tool and never ships. Both zips are published together by the publish job.
-# The release body comes from packaging/RELEASE-BODY.md and names the pinned
-# client build (SymbolMap.WindowsBuildStamp), since the Windows artifact is
-# locked to one client build (#421).
+# The release body comes from packaging/RELEASE-BODY.md.
 #
 # Gitea Actions reads .github/workflows/ too, so this file is fenced to GitHub:
 # Gitea has no ubuntu-latest runner and a waiting job must not block its own
@@ -127,8 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           ( cd dist && sha256sum *.zip > SHA256SUMS )
-          stamp=$(grep -oE "WindowsBuildStamp = 0x[0-9a-f]+" managed/Framework/SymbolMap.cs | grep -oE "0x[0-9a-f]+")
-          sed "s/@VERSION@/${TAG}/g; s/@STAMP@/${stamp}/g" packaging/RELEASE-BODY.md > body.md
+          sed "s/@VERSION@/${TAG}/g" packaging/RELEASE-BODY.md > body.md
           pre=false; [[ "$TAG" == *-rc* ]] && pre=true
           api() { curl -sSf -H "Authorization: token $GITEA_TOKEN" "$@"; }
           payload=$(jq -n --arg tag "$TAG" --argjson pre "$pre" --rawfile body body.md \
