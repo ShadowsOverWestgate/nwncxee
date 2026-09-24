@@ -454,6 +454,16 @@ offset	Gob	animRuns	0xe0	0xe0	# GobAnimRuns
 offset	Gob	animRunCount	0xe8	0xe8	# GobAnimRunCount
 offset	AnimRun	animation	0x0	0x0	# AnimRunAnimation
 offset	Animation	name	0x10	0x10	# AnimationName
+offset	AnimRun	rate	0x8	0x8	# AnimRunRate
+offset	AnimRun	blend	0x18	0x18	# AnimRunBlend
+offset	AnimRun	flags	0xc	0xc	# AnimRunFlags
+offset	AnimRun	time	0x14	0x14	# AnimRunTime
+offset	AnimRun	blendTime	0x1c	0x1c	# AnimRunBlendTime
+offset	Gob	externalData	0x490	0x490	# GobExternalData
+offset	CNWCCreature	lockTarget	0x3c8	0x3a8	# CreatureLockTarget
+offset	CNWCCombatAttackData	attacker	0x4	0x4	# AtkAttacker
+offset	CNWCCombatAttackData	damage	0xa	0xa	# AtkDamage
+offset	CNWCCombatAttackData	result	0xc	0xc	# AtkResult
 offset	CHitInfo	mode	0x0	0x0	# HitInfoMode
 offset	CHitInfo	ignoreList	0x10	0x10	# HitInfoIgnoreList
 offset	CHitInfo	ignoreCount	0x18	0x18	# HitInfoIgnoreCount
@@ -609,3 +619,4 @@ rva	_ZN16CClientSpellMenuC1E6VectorjP15CGuiQuickButtoni	0x9a10e0	# SpellMenuCtor
 rva	_ZTV12CLayeredIcon	0xdaf750	# VtCLayeredIcon
 rva	_ZTV14CCompositeIcon	0xdaf708	# VtCCompositeIcon
 rva	_ZTV10CArmorIcon	0xdaf6c0	# VtCArmorIcon
+rva	_ZN12CNWCCreature15SpawnHitVisualsEhP20CNWCCombatAttackData6Vector10CExoString	0x80bb10	# SpawnHitVisuals

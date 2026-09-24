@@ -1163,6 +1163,14 @@ internal static unsafe class SymbolMap
     /// local written after it reaches every draw. Chained. ABI: <c>(Gob* /*rdi*/, float dt /*xmm0*/)</c>.</summary>
     public const string GobAnimate = "_ZN3Gob7AnimateEf";
 
+    /// <summary><c>CNWCCreature::SpawnHitVisuals(uchar flag, CNWCCombatAttackData*, Vector, CExoString)</c>: the one
+    /// funnel a landed melee swing (<c>SwingHitEvent</c>) and a projectile impact (<c>CNWCProjectile::AIUpdate</c>)
+    /// both call on the TARGET, flag 1; a parry calls it on the attacker with flag 0. Chained cold by the pose
+    /// layer's hit reactions. ABI: <c>(this /*rdi*/, flag /*esi*/, ad /*rdx*/, Vector /*xmm0 = (x,y), xmm1 = z*/,
+    /// CExoString* /*rcx, invisible reference*/)</c>; Win64 passes both aggregates as pointers. Returns nothing,
+    /// so no sret order (docs/research/procedural-anim-combat.md §3.1).</summary>
+    public const string SpawnHitVisuals = "_ZN12CNWCCreature15SpawnHitVisualsEhP20CNWCCombatAttackData6Vector10CExoString";
+
     /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
     /// being previewed in isolation. <c>Scene::DoFog</c> @0x45f1b0 reads it: with a gob set, the fog colour
     /// it pushes is black rather than the area's, which #257 replicates when it reads the fog block direct.</summary>
@@ -1455,6 +1463,7 @@ internal static unsafe class SymbolMap
         [UpdateLookAt]       = At(),
         [BeginLookAtAnimate] = Nm("?BeginLookAtAnimate@Gob@@UEAAXPEAVCAurObject@@PEBD1MMMM@Z"),
         [GobAnimate] = Nm("?Animate@Gob@@UEAAXM@Z"),
+        [SpawnHitVisuals] = At(),   // anchor: its own "SpawnHitVisuals" log tag, 5 refs all inside it
         [LookAtControl]      = Nm("?Control@LookAtAnimation@@UEAAXXZ"),
         // auto-target: CActionTarget is client-side (not name-exported on Windows). Both anchored by the
         // 'AcTg' GetGuiObjType tag cluster and confirmed by decompile -- ActivateTargetMode is the same

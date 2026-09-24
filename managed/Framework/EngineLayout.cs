@@ -1799,6 +1799,41 @@ public static unsafe class EngineLayout
     public static readonly int AnimRunAnimation = Field("AnimRun", "animation");
     /// <inheritdoc cref="AnimRunAnimation"/>
     public static readonly int AnimationName = Field("Animation", "name");
+    /// <summary>AnimRun -&gt; its playback rate (float, signed): <c>Gob::Animate</c> advances <c>+0x14</c> by
+    /// <c>dt * rate</c>; <c>Gob::PlayAnimation</c> writes it, and <c>CNWCCreature::WalkUpdateLocation</c> re-paces
+    /// walk/run through it every AI update. Same offset on both builds
+    /// (docs/research/procedural-anim-locomotion.md, Q1).</summary>
+    public static readonly int AnimRunRate = Field("AnimRun", "rate");
+    /// <summary>AnimRun -&gt; its blend weight, 0..1 while fading in, counting down while fading out
+    /// (<c>Gob::Animate</c>, both builds; same research, Q1).</summary>
+    public static readonly int AnimRunBlend = Field("AnimRun", "blend");
+    /// <summary>AnimRun -&gt; flags (bit <c>0x1</c> = fading out), the current time in seconds, and the blend
+    /// duration in seconds (<c>Gob::Animate</c> / <c>Gob::PlayAnimation</c>, the same offsets on both builds;
+    /// docs/research/procedural-anim-locomotion.md, Q1).</summary>
+    public static readonly int AnimRunFlags = Field("AnimRun", "flags");
+    /// <inheritdoc cref="AnimRunFlags"/>
+    public static readonly int AnimRunTime = Field("AnimRun", "time");
+    /// <inheritdoc cref="AnimRunFlags"/>
+    public static readonly int AnimRunBlendTime = Field("AnimRun", "blendTime");
+    /// <summary>Gob -&gt; the <c>CNWCObject*</c> behind <c>SetExternalData</c>, the pointer just before
+    /// <see cref="GobExternalType"/>: <c>Gob::GetExternalData</c> reads <c>+0x490</c> on both builds (Linux
+    /// @0x444700, Windows rva 0x58d00; docs/research/procedural-anim-combat.md §4).</summary>
+    public static readonly int GobExternalData = Field("Gob", "externalData");
+
+    /// <summary>CNWCCreature -&gt; the object id it is locked onto in combat (<c>0x7f000000</c> = none), written by
+    /// every creature update and read by <c>SetDesiredOrientationForLock</c> to face the victim. Linux +0x3c8,
+    /// Windows +0x3a8 (docs/research/procedural-anim-combat.md §1.1).</summary>
+    public static readonly int CreatureLockTarget = Field("CNWCCreature", "lockTarget");
+
+    /// <summary>CNWCCombatAttackData -&gt; the attacker's object id (<c>0x7f000000</c> on a projectile's synthetic
+    /// record), the damage (i16), and the result byte (1 hit, 3 critical on the projectile path). The class is
+    /// identical on both builds; the rows rest on the wire order the creature update handler reads it in
+    /// (docs/research/procedural-anim-combat.md §2.1).</summary>
+    public static readonly int AtkAttacker = Field("CNWCCombatAttackData", "attacker");
+    /// <inheritdoc cref="AtkAttacker"/>
+    public static readonly int AtkDamage = Field("CNWCCombatAttackData", "damage");
+    /// <inheritdoc cref="AtkAttacker"/>
+    public static readonly int AtkResult = Field("CNWCCombatAttackData", "result");
 
     /// <summary>CHitInfo, the record <c>Scene::HitCheck</c> fills. <c>Reset</c> (@0x45fa90 / rva 0xd3090)
     /// writes the mode at +0 and zeroes the ignore count at +0x18; <c>ClearOutput</c> (@0x45fa20 / rva

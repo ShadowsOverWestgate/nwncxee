@@ -712,3 +712,17 @@ research §4) is not a row: CX never calls it.
 | `Animation` | `name 0x10` (inline `char[]`) | the `"start%s"`, `"loop%s"`, `"done%s"` arguments, both builds |
 
 **No probes.** Pointers, a count and a string; `Expect.Byte01` fits none.
+
+### The pose-layer rows (stride, aim, hit reactions)
+
+Read from the decompiles in `docs/research/procedural-anim-locomotion.md` and `procedural-anim-combat.md`.
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `AnimRun` | `rate 0x8`, `flags 0xc`, `time 0x14`, `blend 0x18`, `blendTime 0x1c` (both builds) | `Gob::Animate`: `time += dt * rate`, `blend += dt / blendDur`; `Gob::PlayAnimation` writes `rate` = `Lerped(Gob+0x400) * param2` on both |
+| `Gob` | `externalData 0x490 / 0x490` | `Gob::GetExternalData` (Linux @`0x444700`, Windows rva `0x58d00`) is one read of `+0x490`, beside `externalType` |
+| `CNWCCreature` | `lockTarget 0x3c8 / 0x3a8` | the id `SetDesiredOrientationForLock` resolves to face the victim; the usual `-0x20` above `0x300` |
+| `CNWCCombatAttackData` | `attacker 0x4`, `damage 0xa`, `result 0xc` (both builds) | the creature update handler's wire order; `SpawnHitVisuals` compares `+0xa` against max HP / 10, `SwingHitEvent` resolves `+0x4` as the attacker |
+
+**No probes.** An id, a signed short, a byte and two floats; the attack-data class has no field with a known
+ctor value, so its rows rest on the wire order alone.

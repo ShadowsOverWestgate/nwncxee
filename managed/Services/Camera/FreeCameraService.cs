@@ -298,7 +298,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
         if (CameraService.GateUp) return CameraService.GateName;
         IntPtr cre = CameraService.PlayerCreature();
         if (cre == IntPtr.Zero) return "no player creature";
-        if (*(int*)(cre + CombatOff) != 0) return "in combat (the limit set by the cheating research; try again after the fight)";
+        if (*(int*)(cre + CombatOff) != 0) return "in combat - try again after the fight";
         IntPtr module = CameraService.Module();
         if (module == IntPtr.Zero || *(IntPtr*)(module + ModCameraOff) == IntPtr.Zero) return "no world camera";
         return null;
