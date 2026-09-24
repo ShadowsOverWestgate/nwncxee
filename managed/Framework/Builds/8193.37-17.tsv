@@ -449,6 +449,11 @@ offset	LookAtAnimation	gob	0x30	0x30	# LookAtGob
 offset	LookAtAnimation	headPart	0x40	0x40	# LookAtHeadPart
 offset	LookAtAnimation	targetKey	0x58	0x58	# LookAtTargetKey
 offset	Gob	externalType	0x498	0x498	# GobExternalType
+offset	Gob	scene	0x88	0x88	# GobScene
+offset	Gob	animRuns	0xe0	0xe0	# GobAnimRuns
+offset	Gob	animRunCount	0xe8	0xe8	# GobAnimRunCount
+offset	AnimRun	animation	0x0	0x0	# AnimRunAnimation
+offset	Animation	name	0x10	0x10	# AnimationName
 offset	CHitInfo	mode	0x0	0x0	# HitInfoMode
 offset	CHitInfo	ignoreList	0x10	0x10	# HitInfoIgnoreList
 offset	CHitInfo	ignoreCount	0x18	0x18	# HitInfoIgnoreCount

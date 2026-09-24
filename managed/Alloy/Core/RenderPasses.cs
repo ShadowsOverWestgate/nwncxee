@@ -1,4 +1,5 @@
 using CX.Framework;
+using CX.Services.Anim;
 
 namespace CX.Alloy;
 
@@ -103,6 +104,9 @@ internal static class RenderPasses
             SelfCheck = DanglyPhysics.SelfCheck,
             Stats = DanglyPhysics.Stats,
         }, log);
+        // CX-29: not a pass and not Alloy's -- foot placement runs under either renderer. Registered for its
+        // clause on the [alloy] period line only.
+        r.Register(new PassLifecycle { Name = "footik", Stats = FootIkService.Stats }, log);
         r.Register(new PassLifecycle
         {
             Name = "sky",

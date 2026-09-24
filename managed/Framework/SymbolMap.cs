@@ -676,6 +676,12 @@ internal static unsafe class SymbolMap
     /// for the tint at <c>*currentscene + 0x158</c>. Read live at build time for the same reason
     /// <see cref="Beams"/> reads its own Scene: an area transition frees the list.</summary>
     public const string CurrentScene = "currentscene";
+    /// <summary>CX-29: <c>int hitcheck_static_trimesh_parts</c> @0x19abaf8 -- while non-zero,
+    /// <c>HitPartOnBSPNode</c> @0x47b790 also tests the static placeables' parts baked into the scene BSP (node
+    /// +0x20); they are in no gob list, so <c>Scene::HitCheck</c> misses them otherwise. Zero by default; the
+    /// engine sets it to 1 around its own floor casts and restores it (<c>CNWCCreature::DoFootstepVisual</c>
+    /// @0x72fb19, <c>CNWCItem::UpdatePosition</c> @0x7d001a). Data symbol; written only around a cast.</summary>
+    public const string HitcheckStaticTrimesh = "hitcheck_static_trimesh_parts";
     /// <summary>#148: CAurTexture::BindInUnit(unsigned int, int) @0x48e1e0 -- the engine's OWN texture bind,
     /// and the reason a raw <c>glBindTexture</c> of <c>AurTextureGetTID</c>'s answer is not equivalent.
     /// <para>It resolves the object TWICE before taking an id: vtable+0x18 hands back a REFERENCED texture
@@ -1150,6 +1156,12 @@ internal static unsafe class SymbolMap
     /// head's current local rotation into the first (+0x60), so every frame is a fresh 0.25 s ease. Chained, not
     /// installed: the aim is overwritten after the original runs.</summary>
     public const string LookAtControl = "_ZN15LookAtAnimation7ControlEv";
+    /// <summary>CX-29: <c>Gob::Animate(float dt)</c> @0x49d8c0 -- one gob's whole animation step, called for
+    /// every gob in the scene every frame by <c>Scene::Animate</c> (vtable slot +0x30 over <c>Scene+0x130</c>,
+    /// with <c>currentscene</c> set to that scene for the duration). Advances the AnimRun list at
+    /// <c>Gob+0xe0</c> and writes every part's local pos/rot; nothing composes world transforms here, so a
+    /// local written after it reaches every draw. Chained. ABI: <c>(Gob* /*rdi*/, float dt /*xmm0*/)</c>.</summary>
+    public const string GobAnimate = "_ZN3Gob7AnimateEf";
 
     /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
     /// being previewed in isolation. <c>Scene::DoFog</c> @0x45f1b0 reads it: with a gob set, the fog colour
@@ -1442,6 +1454,7 @@ internal static unsafe class SymbolMap
         // CNWC* chooser needs an anchor (its Windows caller-of-"HEADTRACK" chain, docs/windows-symbols.md).
         [UpdateLookAt]       = At(),
         [BeginLookAtAnimate] = Nm("?BeginLookAtAnimate@Gob@@UEAAXPEAVCAurObject@@PEBD1MMMM@Z"),
+        [GobAnimate] = Nm("?Animate@Gob@@UEAAXM@Z"),
         [LookAtControl]      = Nm("?Control@LookAtAnimation@@UEAAXXZ"),
         // auto-target: CActionTarget is client-side (not name-exported on Windows). Both anchored by the
         // 'AcTg' GetGuiObjType tag cluster and confirmed by decompile -- ActivateTargetMode is the same
@@ -1604,6 +1617,7 @@ internal static unsafe class SymbolMap
         [GuiInGameToggleOff] = At(),
         [GuiInGameUnToggleOff] = At(),
         [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),
+        [HitcheckStaticTrimesh] = Nm("?hitcheck_static_trimesh_parts@@3HA"),
         [CycleTidControllerVtbl] = At(),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [DoBinBucket] = Nm("?DoBinBucket@Scene@@EEAAXXZ"),
         [DoDynamicMeshProjections] = Nm("?DoDynamicMeshProjections@Scene@@EEAAXPEAVPartLight@@@Z"),

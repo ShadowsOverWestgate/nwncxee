@@ -699,3 +699,16 @@ the same pair `docs/windows-symbols.md` already lists.
 garbage -- `RadialService` asserts the byte itself on the first root instead. An object id and
 a `CResRef` fit neither predicate. The `CNWCObject` slot `+0x150` (`ActivateRadialMenu`,
 research §4) is not a row: CX never calls it.
+
+### The foot-placement rows (CX-29)
+
+`Gob::Animate` decompiled on both builds (Linux @`0x49d8c0`, Windows @`0x14004dbd0`) and read side by side.
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `Gob` | `scene 0x88 / 0x88` | `this+0x88` then `+0x160` (the wind manager) before `AddPointSourceWind`, both builds; `Scene::Animate` animates every gob of `Scene+0x130` with `currentscene` set to that scene |
+| `Gob` | `animRuns 0xe0`, `animRunCount 0xe8` (both builds) | the `CExoArrayList<AnimRun*>` whose last entry gets `sprintf("start%s", ...)`; `DelIndex` on `this+0xe0` for the look-at run |
+| `AnimRun` | `animation 0x0` | `**(runs + (n-1)*8) + 0x10` is the name argument, i.e. the run's first word is the `Animation*` |
+| `Animation` | `name 0x10` (inline `char[]`) | the `"start%s"`, `"loop%s"`, `"done%s"` arguments, both builds |
+
+**No probes.** Pointers, a count and a string; `Expect.Byte01` fits none.

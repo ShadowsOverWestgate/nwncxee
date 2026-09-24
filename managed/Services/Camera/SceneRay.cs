@@ -7,8 +7,8 @@ using static CX.Framework.EngineLayout;
 namespace CX.Services.Camera;
 
 /// <summary>One segment test through the engine's own <c>Scene::HitCheck</c> -- tile BSP parts then gobs,
-/// nearest hit wins -- with the one <c>CHitInfo</c> both camera users share (#537 occlusion fade, #538
-/// spring arm). The record is allocated once and never moves: a hit links it into the gob's SafePointer
+/// nearest hit wins -- with the one <c>CHitInfo</c> its users share (#537 occlusion fade, #538
+/// spring arm, CX-29 foot placement from inside <c>Gob::Animate</c>). The record is allocated once and never moves: a hit links it into the gob's SafePointer
 /// list, so <see cref="Release"/> must unlink it before the frame ends. Hot: no allocation per cast.</summary>
 public static unsafe class SceneRay
 {
@@ -18,6 +18,7 @@ public static unsafe class SceneRay
     private static delegate* unmanaged<IntPtr, HitVec, HitVec, HitVec*, IntPtr, int> _hitCheck;
     private static delegate* unmanaged<IntPtr, int, long, int, void> _reset;
     private static IntPtr* _scene;
+    private static int* _statics;
     /// <summary>The CHitInfo, then one ignore-list slot after it.</summary>
     private static byte* _info;
 
@@ -32,6 +33,7 @@ public static unsafe class SceneRay
         _hitCheck = (delegate* unmanaged<IntPtr, HitVec, HitVec, HitVec*, IntPtr, int>)Native.Sym(SymbolMap.SceneHitCheck);
         _reset = (delegate* unmanaged<IntPtr, int, long, int, void>)Native.Sym(SymbolMap.HitInfoReset);
         _scene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
+        _statics = (int*)Native.Sym(SymbolMap.HitcheckStaticTrimesh);
         if (_hitCheck == null || _reset == null || _scene == null) return;
         _info = (byte*)NativeMemory.AllocZeroed(SizeOfHitInfo + 8);
     }
@@ -44,8 +46,10 @@ public static unsafe class SceneRay
     }
 
     /// <summary>Nearest hit on <paramref name="from"/>-&gt;<paramref name="to"/>, skipping <paramref name="ignore"/>
-    /// (the followed gob). <paramref name="gob"/> is the gob hit, zero for a tile part.</summary>
-    public static bool Cast(IntPtr scene, Vector3 from, Vector3 to, IntPtr ignore, out Vector3 hit, out IntPtr gob)
+    /// (the followed gob). <paramref name="gob"/> is the gob hit, zero for a tile part or a static placeable.
+    /// <paramref name="statics"/> also tests static placeables (a boardwalk, a rug), as the engine's own
+    /// footstep cast does -- a no-op on a client where the switch did not resolve.</summary>
+    public static bool Cast(IntPtr scene, Vector3 from, Vector3 to, IntPtr ignore, out Vector3 hit, out IntPtr gob, bool statics = false)
     {
         // mode 0 = BSP parts then gobs; -0x40000001 and box 0 are the camera's own arguments
         _reset((IntPtr)_info, 0, -0x40000001L, 0);
@@ -53,7 +57,11 @@ public static unsafe class SceneRay
         *(IntPtr**)(_info + HitInfoIgnoreList) = (IntPtr*)(_info + SizeOfHitInfo);
         *(int*)(_info + HitInfoIgnoreCount) = 1;
         HitVec h;
+        int* sw = statics ? _statics : null;
+        int was = sw == null ? 0 : *sw;
+        if (sw != null) *sw = 1;
         int r = _hitCheck(scene, new HitVec { X = from.X, Y = from.Y, Z = from.Z }, new HitVec { X = to.X, Y = to.Y, Z = to.Z }, &h, (IntPtr)_info);
+        if (sw != null) *sw = was;
         hit = new Vector3(h.X, h.Y, h.Z);
         gob = r == 0 ? IntPtr.Zero : *(IntPtr*)(_info + HitInfoGob);
         return r != 0;

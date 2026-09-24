@@ -1784,6 +1784,22 @@ public static unsafe class EngineLayout
     /// <summary>The <see cref="GobExternalType"/> a placeable's gob carries.</summary>
     public const int GobKindPlaceable = 9;
 
+    /// <summary>CX-29: Gob -&gt; the Scene it animates in. <c>Gob::Animate</c> reads it for the wind manager at
+    /// <c>scene+0x160</c> (Linux @0x49d8c0, Windows @0x14004dbd0, both <c>this+0x88</c>).</summary>
+    public static readonly int GobScene = Field("Gob", "scene");
+    /// <summary>CX-29: Gob -&gt; its <c>CExoArrayList&lt;AnimRun*&gt;</c> (items +0xe0, count +0xe8), newest last:
+    /// <c>Gob::Animate</c> fires <c>"start%s"</c> on the LAST entry's animation name on both builds (Linux
+    /// @0x49d8c0, Windows @0x14004dbd0), so the last run is the animation being blended TO.</summary>
+    public static readonly int GobAnimRuns = Field("Gob", "animRuns");
+    /// <inheritdoc cref="GobAnimRuns"/>
+    public static readonly int GobAnimRunCount = Field("Gob", "animRunCount");
+    /// <summary>CX-29: AnimRun -&gt; its <c>Animation*</c> (first word), and Animation -&gt; the name
+    /// (<c>char[]</c>, inline): <c>sprintf("start%s", *run + 0x10)</c> and the <c>"loop%s"</c>/<c>"done%s"</c>
+    /// events read it there in <c>Gob::Animate</c> on both builds.</summary>
+    public static readonly int AnimRunAnimation = Field("AnimRun", "animation");
+    /// <inheritdoc cref="AnimRunAnimation"/>
+    public static readonly int AnimationName = Field("Animation", "name");
+
     /// <summary>CHitInfo, the record <c>Scene::HitCheck</c> fills. <c>Reset</c> (@0x45fa90 / rva 0xd3090)
     /// writes the mode at +0 and zeroes the ignore count at +0x18; <c>ClearOutput</c> (@0x45fa20 / rva
     /// 0xc5a90) clears the kind at +0x24, the hit point at +0x28 and the SafePointer'd gob at +0x48;
