@@ -167,7 +167,7 @@ what "`CPanelQuickBar` overrides it and they do not" looks like.
 | `CycleTIDTextureController` | `Control()` | `0x10` | `0x08` | `CycleTextures` |
 | `CNWCObject` | `GetPortrait(uchar)` | `0x1d8` | `0x1d0` | `NameplateNative`, `DialogService` (#420) |
 
-All eight Alloy slots are now `Diverges(..., Expect.VtblSlot)` rows in `EngineLayout`, and
+All eight Alloy slots are now `Field(..., Expect.VtblSlot)` rows in `EngineLayout` (values diverging per OS in the build file), and
 the files that read them read a named field. The `Expect.VtblSlot` tag is **declared but not
 yet armed**: the predicate exists and would catch a slot that does not point into the image,
 but nothing calls `EngineLayout.Probe` for `Part`, `CAurTexture`, `VertexPrimitive`,

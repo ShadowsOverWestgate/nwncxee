@@ -13,9 +13,11 @@ how to regenerate them when Beamdog patches the client.
 
 ## Build lock
 
-RVAs are only valid for the exact build they were read from. `SymbolMap` pins the
-PE `TimeDateStamp` and refuses RVA-based hooks if the loaded client differs
-(fail-loud, degrade to no-op — never corrupt).
+RVAs are only valid for the exact build they were read from. `SymbolMap` checks the
+PE `TimeDateStamp` against the running build's file (`managed/Framework/Builds/`) and
+refuses RVA-based hooks if they differ (fail-loud, degrade to no-op — never corrupt).
+The RVAs in the tables below are `8193.37-17`'s, and so is its build file; a later build's file
+carries all of them anew, re-anchored by `tools/update/rvamatch.py` (`docs/update-day.md`).
 
 | | |
 |---|---|
@@ -434,8 +436,9 @@ has to answer "which symbol is wrong" on its own. `cx.cfg` goes beside `nwn.ini`
 Both binaries are analyzed in the one Ghidra project `~/ghidra/nwn-linux.rep`
 (programs `nwmain-linux`, `nwmain.exe`). The tables above ARE the regen path: each RVA
 row's "How anchored" column is the recipe for that symbol, and each offset row names
-the function it was read from. There is no automation (decision, #3: Beamdog patches
-about once every three years). The Ghidra scripts used (`~/ghidra_scripts`: TracyFn
+the function it was read from. `tools/update/` now does the first pass
+(`docs/update-day.md`): it re-anchors every RVA it can prove and hands the rest over
+as `# TODO` lines, and those are what the method below is for. The Ghidra scripts used (`~/ghidra_scripts`: TracyFn
 = tracy string -> srcloc struct -> function, Qwords = MSVC vtable dump, GrepDecomp =
 regex over a decompiled name range) run via `analyzeHeadless … -process nwmain.exe
 -postScript`; the method is:
@@ -449,7 +452,7 @@ regex over a decompiled name range) run via `analyzeHeadless … -process nwmain
    enum/major they pass (e.g. the chat handlers' `NotifyServerAboutGuiEvent(…,1/2,…)`).
 5. **Decompile-diff** — confirm each candidate against the named Linux original.
 
-6. Update `WindowsBuildStamp`, then the boot log under Proton (`./build-win.sh &&
+6. Put the RVA in the build file (`docs/update-day.md`), then the boot log under Proton (`./build-win.sh &&
    ./run-proton.sh`) must show every unit `armed` and none standing down.
 
 Names resolve directly on the Windows side after Ghidra applies the ~16k exports;

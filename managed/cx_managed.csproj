@@ -42,6 +42,12 @@
     <EmbeddedResource Include="Alloy/ChartFixture.bin.gz" LogicalName="ChartFixture" />
   </ItemGroup>
 
+  <!-- The client builds CX is measured against (ClientBuilds): a new client build is a new file here,
+       written by tools/update/, read through the "builds/" resource prefix. -->
+  <ItemGroup>
+    <EmbeddedResource Include="Framework/Builds/*.tsv" LogicalName="builds/%(Filename)%(Extension)" />
+  </ItemGroup>
+
   <!-- #707: the Alloy pipeline's GLSL, one .glsl per stage or library, read through ShaderSource by file
        name (which is what an `#include "Other.glsl"` line inside one names too). Embedded rather than
        shipped as content (ADR 0012): a stage is overridden as a .shd through the resource chain, never by

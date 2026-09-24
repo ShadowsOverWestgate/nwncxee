@@ -24,9 +24,9 @@ LOG="$DEMOHOME/cx.log"
 # #457: rot stands the WHOLE extender down, before discovery, keyed on the host's .note.gnu.build-id.
 # /usr/bin/env is by definition a wrong build, so a demo that ran in it would prove the refusal and nothing
 # else -- and every SelfCheck suite lives inside a service's Initialize. So the demo links a do-nothing host
-# carrying the client's build-id and runs in that. The key comes from EngineLayout, never a second copy.
-BID=$(grep -oP 'LinuxBuildId = "\K[0-9a-f]+' managed/Framework/EngineLayout.cs)
-[ -n "$BID" ] || { echo ">> FAIL: no LinuxBuildId in managed/Framework/EngineLayout.cs"; exit 1; }
+# carrying a known build's id and runs in that. The key comes from the build files, never a second copy.
+BID=$(awk -F'\t' '$1 == "linux" { print $2; exit }' managed/Framework/Builds/*.tsv)
+[ -n "$BID" ] || { echo ">> FAIL: no linux key in managed/Framework/Builds/*.tsv"; exit 1; }
 # Named nwmain-*: the bootstrap loads into nothing else (the Steam runtime preloads its helpers too).
 STUB="$DEMOHOME/nwmain-demo"
 echo 'int main(void){return 0;}' | cc -x c - -o "$STUB" -Wl,--build-id=0x"$BID"

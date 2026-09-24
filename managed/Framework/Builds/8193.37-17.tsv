@@ -1,0 +1,606 @@
+# NWN:EE 8193.37-17, revision 26c6e57364a45246e3b58e4f2c49366df72d15db (Mon Oct 6 2025).
+# Every EngineLayout row and every SymbolMap At() address, measured on this build (provenance: the row's
+# doc, docs/engine-layout.md, docs/windows-symbols.md). Format: ClientBuilds.cs.
+name	8193.37-17
+linux	3e2500a82e0c32008d24c3e74bbff3021da5e1b7
+windows	29431F05E0F2461A8BECCFC9E80D8F271
+stamp	0x68e408bc
+
+# offset	class	field	linux	windows	# EngineLayout row
+offset	CNWCObject	type	0xc	0xc	# ObjType
+offset	CNWCObject	id	0x8	0x8	# ObjId
+offset	CNWCCreature	plated	0x468	0x448	# CreaturePlated
+offset	CNWCCreature	stats	0x3d0	0x3b0	# CreatureStats
+offset	CNWCCreatureStats	firstName	0x20	0x20	# StatsFirstName
+offset	CNWCCreatureStats	firstNameLen	0x28	0x28	# StatsFirstNameLen
+offset	CNWCCreatureStats	lastName	0x30	0x30	# StatsLastName
+offset	CNWCCreatureStats	lastNameLen	0x38	0x38	# StatsLastNameLen
+offset	CNWCPlaceable	plated	0x218	0x1f8	# PlaceablePlated
+offset	CNWCObject	vtbl.GetPortrait	0x1d8	0x1d0	# GetPortraitSlot
+offset	Part	vtbl.AsPartTriMesh	0x60	0x58	# PartAsTriMeshSlot
+offset	Part	vtbl.AsPartBeam	0x90	0x88	# PartAsPartBeamSlot
+offset	Part	vtbl.PostProcess	0xe0	0xd8	# PartPostProcessSlot
+offset	CAurTexture	vtbl.AsCAurTextureBasic	0x10	0x8	# TexAsBasicSlot
+offset	CAurTexture	vtbl.GetReferencedTexture	0x18	0x10	# TexReferencedSlot
+offset	VertexPrimitive	vtbl.SetupArrays	0x38	0x30	# VpSetupArraysSlot
+offset	CAurBehavior	vtbl.AsBehaviorCameraFollow	0x48	0x40	# BehaviorAsFollowSlot
+offset	CycleTIDTextureController	vtbl.Control	0x10	0x8	# CycleControlSlot
+offset	Scene	gobs	0x130	0x130	# SceneGobs
+offset	Scene	gobCount	0x138	0x138	# SceneGobCount
+offset	Scene	bspRoot	0x188	0x188	# SceneBspRoot
+offset	Scene	fogEnable	0x140	0x140	# SceneFogEnable
+offset	Scene	fogStart	0x144	0x144	# SceneFogStart
+offset	Scene	fogEnd	0x148	0x148	# SceneFogEnd
+offset	Scene	fogColor	0x14c	0x14c	# SceneFogColor
+offset	Scene	lightManager	0x158	0x158	# SceneLightManager
+offset	Scene	drawBuckets	0x208	0x208	# SceneDrawBuckets
+offset	Scene	vtbl.IsAnimating	0x288	0x280	# SceneIsAnimatingSlot
+offset	Gob	highlight	0x18	0x18	# GobHighlight
+offset	Gob	sceneTint	0x19	0x19	# GobSceneTint
+offset	Gob	node	0x68	0x68	# GobNode
+offset	Gob	partTree	0x90	0x90	# GobPartTree
+offset	Gob	lodRoot1	0x98	0x98	# GobLodRoot1
+offset	Gob	lodRoot2	0xa0	0xa0	# GobLodRoot2
+offset	Gob	position	0xa8	0xa8	# GobPosition
+offset	Gob	colourMul	0xf6	0xf6	# GobColourMul
+offset	Gob	selfIllum	0xf8	0xf8	# GobSelfIllum
+offset	Gob	colour	0xfc	0xfc	# GobColour
+offset	Gob	alpha	0x108	0x108	# GobAlpha
+offset	Gob	fadeAlpha	0x10c	0x10c	# GobFadeAlpha
+offset	Gob	emissive	0x110	0x110	# GobEmissive
+offset	Gob	appendRoots	0x130	0x130	# GobAppendRoots
+offset	Gob	appendCount	0x138	0x138	# GobAppendCount
+offset	Gob	tileData	0x1a8	0x1a8	# GobTileData
+offset	Gob	envOverride	0x480	0x480	# GobEnvOverride
+offset	Model	ownerFlags	0x8e	0x92	# NodeOwnerFlags
+offset	MdlNode	parent	0x60	0x60	# MdlNodeParent
+offset	MdlNode	name	0x38	0x38	# MdlNodeName
+offset	MdlNode	kind	0x98	0x98	# MdlNodeKind
+offset	MdlNode	controllers	0x78	0x78	# MdlNodeControllers
+offset	MdlNode	controllerCount	0x80	0x80	# MdlNodeControllerCount
+offset	NewController	keyCount	0x4	0x4	# NewControllerKeyCount
+offset	MdlNode	matrix	0x18	0x18	# NodeMatrix
+offset	MdlNode	flags	0x80	0x80	# NodeFlags
+offset	MdlNode	primType	0x270	0x270	# MdlPrimType
+offset	MdlNodeTriMesh	renderGate	0x118	0x118	# MdlRenderGate
+offset	MdlNodeTriMesh	renderGeom	0x278	0x278	# MdlRenderGeom
+offset	MdlNodeTriMesh	renderKind	0x284	0x284	# MdlRenderKind
+offset	MdlNodeTriMesh	restPool	0x280	0x280	# MdlRestPool
+offset	MdlNodeTriMesh	vertexCount	0x284	0x284	# MdlVertexCount
+offset	MdlNodeTriMesh	indexGroupCounts	0x248	0x248	# MdlIndexGroupCounts
+offset	MdlNodeTriMesh	indexGroups	0x260	0x260	# MdlIndexGroups
+offset	MdlNodeTriMesh	indexCount	0x26c	0x26c	# MdlIndexCount
+offset	MdlNodeSkin	tempArrays	0x278	0x278	# SkinTempArrays
+offset	MdlNodeSkin	boneCount	0x284	0x284	# SkinBoneCount
+offset	MdlNodeSkin	bindRot	0x2f0	0x2f0	# SkinBindRot
+offset	MdlNodeSkin	bindPos	0x300	0x300	# SkinBindPos
+offset	MdlNodeSkin	boneMap	0x320	0x320	# SkinBoneMap
+offset	MdlNodeDanglyMesh	constraints	0x2c8	0x2c8	# MdlConstraints
+offset	MdlNodeDanglyMesh	constraintCount	0x2d0	0x2d0	# MdlConstraintCount
+offset	MdlNodeDanglyMesh	displacement	0x2d8	0x2d8	# MdlDisplacement
+offset	MdlNodeDanglyMesh	tightness	0x2dc	0x2dc	# MdlTightness
+offset	MdlNodeDanglyMesh	period	0x2e0	0x2e0	# MdlPeriod
+offset	Part	pos	0x10	0x10	# PartPos
+offset	Part	rot	0x1c	0x1c	# PartRot
+offset	Part	children	0x38	0x38	# PartChildren
+offset	Part	childCount	0x40	0x40	# PartChildCount
+offset	Part	parent	0x48	0x48	# PartParent
+offset	Part	gob	0x50	0x50	# PartGob
+offset	Part	material	0x58	0x58	# PartMaterial
+offset	PartTriMesh	bboxMin	0x64	0x68	# PartBboxMin
+offset	PartTriMesh	bboxMax	0x70	0x74	# PartBboxMax
+offset	PartTriMesh	vertexPrimitive	0x88	0x90	# PartNode
+offset	PartTriMesh	tile	0x98	0xa0	# PartTile
+offset	PartTriMesh	renderFlag	0x96	0x9e	# PartRenderFlag
+offset	PartTriMesh	alpha	0xa0	0xa8	# PartAlpha
+offset	PartTriMesh	texRotate	0xb0	0xb8	# PartTexRotate
+offset	PartDanglyMesh	prevPos	0xb4	0xc0	# PartPrevPos
+offset	PartDanglyMesh	prevRot	0xc0	0xcc	# PartPrevRot
+offset	PartLight	colour	0x64	0x68	# LightColour
+offset	PartLight	range	0x70	0x74	# LightRange
+offset	PartLight	castShadows	0x74	0x78	# LightCastShadows
+offset	PartLight	rangeAlt	0x78	0x7c	# LightRangeAlt
+offset	PartLight	kind	0x80	0x84	# LightKind
+offset	PartLight	flagA	0x84	0x88	# LightFlagA
+offset	PartLight	flagB	0x88	0x8c	# LightFlagB
+offset	PartLight	fade	0x90	0x94	# LightFade
+offset	PartLight	intensity	0xa4	0xa8	# LightIntensity
+offset	PartLight	pos	0xac	0xb0	# LightDir
+offset	LightManager	masterData	0x10	0x10	# LmMasterData
+offset	LightManager	masterCount	0x18	0x18	# LmMasterCount
+offset	LightManager	areaDiffuse	0x98	0x98	# LmAreaDiffuse
+offset	LightManager	areaAmbient	0xa0	0xa0	# LmAreaAmbient
+offset	Camera	pos	0xb0	0xb0	# CamPos
+offset	Camera	rot	0xbc	0xbc	# CamRot
+offset	Camera	behaviorHost	0x458	0x458	# CameraBehaviorHost
+offset	Camera	viewAngle	0x4c4	0x4c8	# CamViewAngle
+offset	Camera	near	0x4cc	0x4d0	# CamNear
+offset	Camera	far	0x4d0	0x4d4	# CamFar
+offset	Camera	viewW	0x4dc	0x4e0	# CamViewW
+offset	Camera	viewH	0x4e0	0x4e4	# CamViewH
+offset	Camera	keyholeState	0xe50	0xe58	# CamKeyholeState
+offset	Material	srcBlend	0x90	0x90	# MatSrcBlend
+offset	Material	dstBlend	0x94	0x94	# MatDstBlend
+offset	Material	blendFlag	0x98	0x98	# MatBlendFlag
+offset	Material	envMap	0x40	0x40	# MatEnvMap
+offset	Material	shared	0xd0	0xd0	# MatShared
+offset	SharedMaterial	vsName	0x188	0x188	# SharedVsName
+offset	SharedMaterial	fsName	0x199	0x199	# SharedFsName
+offset	SharedMaterial	transparency	0x1f0	0x1f0	# SharedTransparency
+offset	SharedMaterial	sampleFb	0x1f4	0x1f4	# SharedSampleFb
+offset	SharedMaterial	volumetric	0x1f8	0x1f8	# SharedVolumetric
+offset	SharedMaterial	twoSided	0x1f1	0x1f1	# SharedTwoSided
+offset	CAurTextureBasic	name	0x88	0x88	# TexBasicName
+offset	VertexDataObject	indexed	0x8	0x8	# VdoIndexed
+offset	VertexDataObject	vao	0xc	0xc	# VdoVao
+offset	VertexDataObject	mode	0x14	0x18	# VdoMode
+offset	VertexDataObject	elemToken	0x18	0x1c	# VdoElemToken
+offset	VertexDataObject	vertToken	0x24	0x28	# VdoVertToken
+offset	VertexDataObject	vertMask	0x28	0x2c	# VdoVertMask
+offset	VertexDataObject	dynToken	0x30	0x34	# VdoDynToken
+offset	VertexDataObject	dynMask	0x34	0x38	# VdoDynMask
+offset	VertexDataObject	vertItems	0x48	0x48	# VdoVertItems
+offset	VertexDataObject	vertCount	0x50	0x50	# VdoVertCount
+offset	VertexDataObject	elemItems	0x58	0x58	# VdoElemItems
+offset	VertexDataObject	elemCount	0x60	0x60	# VdoElemCount
+offset	VertexPrimitive	vdo	0x58	0x58	# VpVdo
+offset	VertexPrimitive	item	0x60	0x60	# VpItem
+offset	VertexPrimitive	node	0x8	0x8	# VpNode
+offset	VertexPrimitive	combineList	0x88	0x88	# VpCombineList
+offset	VertexPrimitive	combineCount	0x90	0x90	# VpCombineCount
+offset	VertexPrimitive	vtbl.AsDangly	0x28	0x20	# VpAsDanglySlot
+offset	VertexPrimitiveDangly	velocity	0xa0	0xa0	# VpdVelocity
+offset	BSPNode	data	0x70	0x70	# BspNodeData
+offset	BSPNode	triMesh	0x20	0x20	# BspDataTriMesh
+offset	BSPNode	triMeshCount	0x28	0x28	# BspDataTriMeshCount
+offset	TileData	fade	0x70	0x70	# TileFade
+offset	TileData	pendingFade	0x74	0x74	# TilePendingFade
+offset	DrawBucket	stride	0x10	0x10	# BucketStride
+offset	CNWCModule	currentArea	0xf8	0xf8	# ModuleCurrentArea
+offset	CNWCArea	flags	0x8	0x8	# AreaFlags
+offset	CAurBehaviorCameraFollow	target	0x20	0x20	# BehaviorTargetObj
+offset	CAurBehavior	owner	0x18	0x18	# BehaviorOwner
+offset	CAurBehaviorCameraFollow	focus	0x30	0x30	# FollowFocus
+offset	CAurBehaviorCameraFollow	dist	0x48	0x48	# FollowDist
+offset	CAurBehaviorCameraFollow	zoomVel	0x4c	0x4c	# FollowZoomVel
+offset	CAurBehaviorCameraFollow	yaw	0x54	0x54	# FollowYaw
+offset	CAurBehaviorCameraFollow	yawVel	0x58	0x58	# FollowYawVel
+offset	CAurBehaviorCameraFollow	yawImpulse	0x88	0x88	# FollowYawImpulse
+offset	CAurBehaviorCameraFollow	pitch	0x5c	0x5c	# FollowPitch
+offset	CAurBehaviorCameraFollow	pitchVel	0x60	0x60	# FollowPitchVel
+offset	CAurBehaviorCameraFollow	pitchImpulse	0x8c	0x8c	# FollowPitchImpulse
+offset	CAurBehaviorCameraFollow	yawClamp	0x64	0x64	# FollowYawClamp
+offset	CAurBehaviorCameraFollow	pitchClamp	0x70	0x70	# FollowPitchClamp
+offset	CAurBehaviorCameraFollow	distClamp	0x7c	0x7c	# FollowDistClamp
+offset	CAurBehaviorCameraFollow	yawMin	0x68	0x68	# FollowYawMin
+offset	CAurBehaviorCameraFollow	pitchMin	0x74	0x74	# FollowPitchMin
+offset	CAurBehaviorCameraFollow	distMin	0x80	0x80	# FollowDistMin
+offset	CNWCModule	camera	0xe8	0xe8	# ModuleCamera
+offset	CNWCModule	cameraAttached	0x124	0x124	# ModuleCameraAttached
+offset	CNWCModule	findClearView	0x140	0x140	# ModuleFindClearView
+offset	CNWCModule	dialogCamera	0x258	0x258	# ModuleDialogCamera
+offset	CNWCModule	cutsceneRate	0x298	0x298	# ModuleCutsceneRate
+offset	CClientExoAppInternal	clientOptions	0x0	0x0	# InternalClientOptions
+offset	CClientOptions	cameraMode	0x1d	0x1d	# OptionsCameraMode
+offset	CExoBase	config	0x0	0x0	# ExoBaseConfig
+offset	CExoConfig	initializing	0x0	0x0	# ExoConfigInitializing
+offset	CExoConfig	workingTable	0x28	0x28	# ExoConfigWorkingTable
+offset	CClientExoApp	internal	0x8	0x8	# ExoAppInternal
+offset	CClientExoAppInternal	inGameGui	0x90	0x90	# InternalInGameGui
+offset	CClientExoAppInternal	mainMenuPanel	0x98	0x98	# InternalMainMenuPanel
+offset	CClientExoAppInternal	reachedMainMenu	0x5f0	0x5f0	# InternalReachedMainMenu
+offset	CClientExoAppInternal	optionsPanelOpen	0x604	0x604	# InternalOptionsPanelOpen
+offset	CNWCPlayer	creatureName	0x40	0x40	# PlayerCreatureName
+offset	CNWCPlayer	creatureNameLen	0x48	0x48	# PlayerCreatureNameLen
+offset	CNWCPlayer	playerId	0x8	0x8	# PlayerId
+offset	CNWCPlayer	creatureId	0x34	0x34	# PlayerCreatureId
+offset	CClientExoAppInternal	players	0x38	0x38	# InternalPlayers
+offset	CClientExoAppInternal	playerCount	0x40	0x40	# InternalPlayerCount
+offset	CClientExoAppInternal	playerCreatureId	0x48	0x48	# InternalPlayerCreatureId
+offset	CClientExoAppInternal	netLayer	0x18	0x18	# InternalNetLayer
+offset	CNWCModule	hour	0x16c	0x16c	# ModuleHour
+offset	CNWCModule	minutesPerHour	0x15c	0x15c	# ModuleMinutesPerHour
+offset	CGuiInGameChatPrompt	shown	0x230	0x200	# ChatPromptShown
+offset	CGuiInGameChatPrompt	edit	0x100	0xf8	# ChatPromptEdit
+offset	CGuiEdit	string	0x90	0x90	# GuiEditString
+offset	CAurString	vtbl.SetText	0xd8	0xd0	# AurStringSetTextSlot
+offset	CGuiInGame	quickbar	0x60	0x60	# InGameGuiQuickbar
+offset	CGuiInGame	dialog	0x70	0x70	# InGameGuiDialog
+offset	CGuiInGame	chatWindow	0x8	0x8	# InGameGuiChatWindow
+offset	CGuiInGame	optionsPanel	0xd8	0xd8	# InGameGuiOptionsPanel
+offset	CGuiPanel	state	0xb8	0xb0	# GuiPanelState
+offset	CGuiMan	vpWidth	0xb8	0xb8	# GuiManVpW
+offset	CGuiMan	vpHeight	0xbc	0xbc	# GuiManVpH
+offset	CGuiMan	mouseX	0xd4	0xd4	# GuiManMouseX
+offset	CGuiMan	mouseY	0xd8	0xd8	# GuiManMouseY
+offset	(abi)	vtblSymbolHeader	0x10	0x0	# VtblSymbolHeader
+offset	Part	node	0x8	0x8	# PartNodeLink
+offset	Part	scale	0x2c	0x2c	# PartScale
+offset	Part	visible	0x34	0x34	# PartVisible
+offset	PartBeam	vdo	0xa0	0xa0	# BeamVdo
+offset	PartBeam	item	0xa8	0xa8	# BeamItem
+offset	PartLight	flareFade	0xa0	0xa4	# LightFlareFade
+offset	PartEmitter	blend	0x64	0x68	# EmBlend
+offset	PartEmitter	alphaEnd	0x68	0x6c	# EmAlphaEnd
+offset	PartEmitter	alphaStart	0x6c	0x70	# EmAlphaStart
+offset	PartEmitter	colorEnd	0x78	0x7c	# EmColorEnd
+offset	PartEmitter	colorStart	0x84	0x88	# EmColorStart
+offset	PartEmitter	fps	0x98	0x9c	# EmFps
+offset	PartEmitter	frameEnd	0x9c	0xa0	# EmFrameEnd
+offset	PartEmitter	frameStart	0xa0	0xa4	# EmFrameStart
+offset	PartEmitter	life	0xa8	0xac	# EmLife
+offset	PartEmitter	sizeStartX	0xc0	0xc4	# EmSizeStartX
+offset	PartEmitter	sizeEndX	0xc4	0xc8	# EmSizeEndX
+offset	PartEmitter	sizeStartY	0xc8	0xcc	# EmSizeStartY
+offset	PartEmitter	sizeEndY	0xcc	0xd0	# EmSizeEndY
+offset	PartEmitter	tileOwner	0xf8	0x100	# EmTileOwner
+offset	PartEmitter	parts	0x188	0x188	# EmParts
+offset	PartEmitter	count	0x190	0x190	# EmCount
+offset	PartEmitter	type	0x1a8	0x1a8	# EmType
+offset	PartEmitter	material	0x1c0	0x1b8	# EmMaterial
+offset	PartEmitter	lifeInterp	0x1d4	0x1cc	# EmLifeInterp
+offset	PartEmitter	orient	0x1d8	0x1d0	# EmOrient
+offset	PartEmitter	pos	0x1e8	0x1e0	# EmPos
+offset	Particle	pos	0x10	0x10	# ParticlePos
+offset	Particle	prevPos	0x64	0x64	# ParticlePrevPos
+offset	Particle	roll	0x1c	0x1c	# ParticleRoll
+offset	Particle	quat	0x34	0x34	# ParticleQuat
+offset	Particle	frame	0x44	0x44	# ParticleFrame
+offset	Particle	frameTime	0x48	0x48	# ParticleFrameTime
+offset	Particle	splatNormal	0x4c	0x4c	# ParticleSplatNormal
+offset	Particle	splat	0x70	0x70	# ParticleSplat
+offset	Particle	age	0x74	0x74	# ParticleAge
+offset	MdlNodeEmitter	gridX	0xa8	0xac	# EmitterGridX
+offset	MdlNodeEmitter	gridY	0xac	0xb0	# EmitterGridY
+offset	MdlNodeEmitter	noCull	0x164	0x168	# EmitterNoCull
+offset	MdlNodeLight	flareRadius	0x9c	0xa0	# FlareRadius
+offset	MdlNodeLight	flareCount	0xa8	0xb0	# FlareCount
+offset	MdlNodeLight	flareSizes	0xc0	0xc8	# FlareSizes
+offset	MdlNodeLight	flareShifts	0xd0	0xd8	# FlareShifts
+offset	MdlNodeTriMesh	faces	0xb0	0xb0	# MeshFaces
+offset	MdlNodeTriMesh	faceCount	0xb8	0xb8	# MeshFaceCount
+offset	MaxFace	stride	0x20	0x20	# FaceStride
+offset	MaxFace	vertA	0x1a	0x1a	# FaceVertA
+offset	MaxFace	vertB	0x1c	0x1c	# FaceVertB
+offset	MaxFace	vertC	0x1e	0x1e	# FaceVertC
+offset	VertexPool	posStride	0xc	0xc	# PoolPosStride
+offset	Scene	skyGobs	0x18	0x18	# SceneSkyGobs
+offset	Scene	skyFadeGob	0x38	0x38	# SceneSkyFadeGob
+offset	Scene	skyT	0x40	0x40	# SceneSkyT
+offset	Scene	skyCur	0x44	0x44	# SceneSkyCur
+offset	Scene	skyDesired	0x48	0x48	# SceneSkyDesired
+offset	Scene	skyOff	0x4c	0x4c	# SceneSkyOff
+offset	Scene	skyPos	0x190	0x190	# SceneSkyPos
+offset	Scene	currentLight	0x50	0x50	# SceneCurrentLight
+offset	Scene	shadowLights	0x60	0x60	# SceneShadowLights
+offset	Scene	shadowLightCount	0x68	0x68	# SceneShadowLightCount
+offset	Scene	envMap	0x1e8	0x1e8	# SceneEnvMap
+offset	Gob	boundsMin	0x160	0x160	# GobBoundsMin
+offset	Gob	boundsMax	0x16c	0x16c	# GobBoundsMax
+offset	Gob	visible	0x1a4	0x1a4	# GobVisible
+offset	Gob	attach	0x450	0x450	# GobAttach
+offset	CAurBehavior	target	0x20	0x20	# BehaviorTarget
+offset	Gob	vtbl.GetAdjustedScale	0x2d8	0x2d0	# GobAdjustedScaleSlot
+offset	TileData	parts	0x30	0x30	# TileParts
+offset	TileData	partCount	0x38	0x38	# TilePartCount
+offset	TileData	geomFade	0xc8	0xc8	# TileGeomFade
+offset	TileData	foggedByWar	0xc4	0xc4	# TileFoggedByWar
+offset	CAurTriangleBin	lists	0x38	0x38	# BinLists
+offset	CAurTriangleBin	listCount	0x40	0x40	# BinListCount
+offset	CAurTriangleList	verts	0x0	0x0	# ListVerts
+offset	CAurTriangleList	vertFloats	0x8	0x8	# ListVertFloats
+offset	CAurTriangleList	blades	0x30	0x30	# ListBlades
+offset	CAurTriangleList	bladeCount	0x38	0x38	# ListBladeCount
+offset	CAurTriangleList	mat	0x40	0x40	# ListMat
+offset	CAurGrassInfo	name	0x0	0x0	# GrassInfoName
+offset	CAurGrassInfo	density	0x20	0x20	# GrassInfoDensity
+offset	CAurGrassInfo	height	0x24	0x24	# GrassInfoHeight
+offset	CAurGrassInfo	diffuse	0x28	0x28	# GrassInfoDiffuse
+offset	CAurGrassInfo	ambient	0x34	0x34	# GrassInfoAmbient
+offset	CAurGrassInfo	prob	0x40	0x40	# GrassInfoProb
+offset	CAurGrassInfo	inUse	0x50	0x50	# GrassInfoInUse
+offset	CAurGrassInfo	stride	0x54	0x54	# GrassInfoStride
+offset	aurMatrixStack	top	0x18	0x18	# MtxStackTop
+offset	aurMatrixStack	stride	0x58	0x58	# MtxStackStride
+offset	Material	params	0x118	0x118	# MatParams
+offset	Material	paramCount	0x120	0x120	# MatParamCount
+offset	SharedMaterial	params	0x1d0	0x1d0	# SharedParams
+offset	SharedMaterial	paramCount	0x1d8	0x1d8	# SharedParamCount
+offset	MaterialParameter	value	0x44	0x44	# ParamValue
+offset	MaterialParameter	type	0x5c	0x5c	# ParamType
+offset	MaterialParameter	comps	0x60	0x60	# ParamComps
+offset	MaterialParameter	stride	0x64	0x64	# ParamStride
+offset	CNWCArea	tileWidth	0xc	0xc	# AreaTileWidth
+offset	CNWCArea	tileHeight	0x10	0x10	# AreaTileHeight
+offset	GLRender::PROG_FIXED	programId	0x64	0x64	# ProgFixedId
+offset	(abi)	list.items	0x0	0x0	# ListItems
+offset	(abi)	list.count	0x8	0x8	# ListItemCount
+offset	CAurTextureBasic	image	0x58	0x58	# TexBasicImage
+offset	CAurTextureBasic	glId	0x6c	0x6c	# TexBasicGlId
+offset	CAurTextureBasic	compressedSize	0x70	0x70	# TexBasicCompressedSize
+offset	CAurTextureBasic	width	0x74	0x74	# TexBasicWidth
+offset	CAurTextureBasic	height	0x78	0x78	# TexBasicHeight
+offset	CAurTextureBasic	bpp	0x7c	0x7c	# TexBasicBpp
+offset	CAurTextureBasic	pltKind	0x84	0x84	# TexBasicPltKind
+offset	CAurTextureBasic	cellNames	0x50	0x50	# TexBasicCellNames
+offset	CAurTextureBasic	schemes	0x48	0x48	# TexBasicSchemes
+offset	CAurTextureBasic	schemeCount	0xd4	0xd4	# TexBasicSchemeCount
+offset	CAurTextureBasic	numX	0xca	0xca	# TexBasicNumX
+offset	CAurTextureBasic	numY	0xcc	0xcc	# TexBasicNumY
+offset	CAurTextureBasic	alphaMean	0x30	0x30	# TexBasicAlphaMean
+offset	CAurTextureBasic	controller	0x38	0x38	# TexBasicController
+offset	CAurTextureBasic	resolvedName	0xa8	0xa8	# TexBasicResolvedName
+offset	CAurTextureBasic	flagCube	0xe3	0xe3	# TexBasicFlagCube
+offset	CAurTextureBasic	flagBuilt	0xe6	0xe6	# TexBasicFlagBuilt
+offset	CAurTextureBasic	flagNoImage	0xe7	0xe7	# TexBasicFlagNoImage
+offset	CAurTextureBasic	flagNeverBuild	0xe8	0xe8	# TexBasicFlagNeverBuild
+offset	CAurTexture	vtbl.GetImage	0x68	0x60	# TexGetImageSlot
+offset	CAurTexture	vtbl.GetWidth	0x78	0x70	# TexGetWidthSlot
+offset	CAurTexture	vtbl.GetHeight	0x80	0x78	# TexGetHeightSlot
+offset	CAurTexture	vtbl.GetBPP	0x88	0x80	# TexGetBppSlot
+offset	CAurTexture	vtbl.GetNumX	0x90	0x88	# TexGetNumXSlot
+offset	CAurTexture	vtbl.GetNumY	0x98	0x90	# TexGetNumYSlot
+offset	CAurTexture	vtbl.GetCompressedSize	0xa8	0xa8	# TexCompressedSizeSlot
+offset	CAurTexture	vtbl.GetNumMipHeaderBytes	0xb8	0xb0	# TexHeaderSkipSlot
+offset	CAurTexture	vtbl.GetMipMap	0xc0	0xb8	# TexMipMapSlot
+offset	CAurTexture	vtbl.GetCompressionFormat	0xd8	0xd0	# TexFormatSlot
+offset	Scene	vtbl.DoBinBucket	0x1c0	0x1b8	# SceneDoBinBucketSlot
+offset	Scene	vtbl.RenderBeams	0x1d8	0x1d0	# SceneRenderBeamsSlot
+offset	Scene	vtbl.DoEmitterBucket	0x1e8	0x1e0	# SceneDoEmitterBucketSlot
+offset	Scene	vtbl.RenderLensFlares	0x230	0x228	# SceneRenderLensFlaresSlot
+offset	Scene	vtbl.FadeDoors	0x260	0x258	# SceneFadeDoorsSlot
+offset	Scene	vtbl.DoFog	0x280	0x278	# SceneDoFogSlot
+offset	Scene	vtbl.DoHighlightGob	0x1b8	0x1b0	# SceneDoHighlightGobSlot
+offset	Scene	vtbl.DoHighlightTriggers	0x1f8	0x1f0	# SceneDoHighlightTriggersSlot
+offset	LightManager	vtbl.EnableLights	0x18	0x10	# LightMgrEnableLightsSlot
+offset	Gob	vtbl.GetAttachedGobs	0x228	0x220	# GobAttachedGobsSlot
+offset	Scene	hiliteGobs	0x80	0x80	# SceneHiliteGobs
+offset	Scene	hiliteCount	0x88	0x88	# SceneHiliteCount
+offset	Scene	hiliteColors	0x90	0x90	# SceneHiliteColors
+offset	Gob	propagateHilite	0x1c	0x1c	# GobPropagateHilite
+offset	CNWCAnimBase	hiliteActive	0x9c	0x9c	# AnimHiliteActive
+offset	CNWCAnimBase	hiliteGlow	0xb0	0xb0	# AnimHiliteGlow
+offset	CNWCAnimBase	gob	0xc8	0xc8	# AnimGob
+offset	GLRender	poolStride	0x20	0x20	# PoolStride
+offset	GLRender	poolSize	0x8	0x8	# PoolSize
+offset	GLRender	poolName	0xc	0xc	# PoolName
+offset	GLRender	poolTarget	0x10	0x10	# PoolTarget
+offset	GLRender	poolLockFlags	0x11	0x11	# PoolLockFlags
+offset	GLRender	poolUsage	0x14	0x14	# PoolUsage
+offset	GLRender	poolUploaded	0x18	0x18	# PoolUploaded
+offset	GLRender	poolNamed	0x19	0x19	# PoolNamed
+offset	GLRender	poolTableCount	0x8	0x8	# PoolTableCount
+offset	GLRender	poolTableAnchorOffset	0x236c	0x0	# PoolTableAnchorOffset
+offset	ShaderExposedRuntimeData	moduleHour	0x0	0x0	# RtModuleHour
+offset	ShaderExposedRuntimeData	moduleDay	0x4	0x4	# RtModuleDay
+offset	ShaderExposedRuntimeData	moduleMonth	0x8	0x8	# RtModuleMonth
+offset	ShaderExposedRuntimeData	moduleTimeIntoTransition	0x10	0x10	# RtModuleTimeIntoTransition
+offset	ShaderExposedRuntimeData	timeOfDay	0x18	0x18	# RtTimeOfDay
+offset	ShaderExposedRuntimeData	areaWind	0x28	0x28	# RtAreaWind
+offset	ShaderExposedRuntimeData	areaFlags	0x3c	0x3c	# RtAreaFlags
+offset	ShaderExposedRuntimeData	playerPos	0x4c	0x4c	# RtPlayerPos
+offset	ShaderExposedRuntimeData	camPos	0x64	0x64	# RtCamPos
+offset	ShaderExposedRuntimeData	camPitch	0x84	0x84	# RtCamPitch
+offset	ShaderExposedRuntimeData	camDist	0x8c	0x8c	# RtCamDist
+offset	ShaderExposedRuntimeData	camFocus	0x90	0x90	# RtCamFocus
+offset	PartTriMesh	selfIllum	0x7c	0x80	# PartSelfIllum
+offset	MdlNodeTriMesh	diffuse	0xe8	0xe8	# MdlDiffuse
+offset	MdlNodeTriMesh	ambient	0xf4	0xf4	# MdlAmbient
+offset	Material	slotStride	0x10	0x10	# MatSlotStride
+offset	SharedMaterial	slot0	0xd8	0xd8	# SharedSlot0
+offset	SharedMaterial	resrefStride	0x11	0x11	# SharedNameLen
+offset	CRes	sizeof	0x60	0x60	# SizeOfCRes
+offset	CRes	data	0x20	0x20	# CResData
+offset	CRes	size	0x30	0x30	# CResSize
+offset	CNWCModule	cameraFlags	0x2bc	0x2bc	# ModuleCameraFlags
+offset	CClientExoAppInternal	driveChanged	0x1b0	0x1b0	# InternalDriveChanged
+offset	CClientExoAppInternal	driveWalk	0x1b4	0x1b4	# InternalDriveWalk
+offset	CClientExoAppInternal	driveKeys	0x1b8	0x1b8	# InternalDriveKeys
+offset	CClientExoAppInternal	driveLastSend	0x1a0	0x1a0	# InternalDriveLastSend
+offset	CNWCObject	orientation	0x44	0x44	# ObjOrientation
+offset	CNWCObject	position	0x38	0x38	# ObjPosition
+offset	CNWCObject	visible	0xa8	0xa8	# ObjVisible
+offset	CNWCObject	highlightable	0x11c	0x11c	# ObjHighlightable
+offset	CNWCArea	objectIds	0x318	0x318	# AreaObjectIds
+offset	CNWCArea	objectCount	0x320	0x320	# AreaObjectCount
+offset	CNWCArea	placeableLights	0x328	0x328	# AreaPlaceableLights
+offset	CNWCArea	placeableLightCount	0x330	0x330	# AreaPlaceableLightCount
+offset	CNWCPlaceableObjectLight	gob	0x8	0x8	# PlaceableLightGob
+offset	CNWCArea	staticPlaceables	0x338	0x338	# AreaStaticPlaceables
+offset	CNWCArea	staticPlaceableCount	0x340	0x340	# AreaStaticPlaceableCount
+offset	CNWCObject	animBase	0x78	0x78	# ObjAnimBase
+offset	CNWCCreature	hoveredOid	0x448	0x428	# CreatureHoveredOid
+offset	CClientExoAppInternal	cursorManager	0xc8	0xc8	# InternalCursorManager
+offset	CCachedMouseCursorManager	currentCursor	0x1cb0	0x1cb0	# CursorCurrentId
+offset	CActionTarget	allowed	0x148	0x108	# ActionTargetAllowed
+offset	CActionTarget	allowedCount	0x150	0x110	# ActionTargetAllowedCount
+offset	CClientExoAppInternal	actionTarget	0x108	0x108	# InternalActionTarget
+offset	CNWCCreature	attitude	0x3a8	0x388	# CreatureAttitude
+offset	CNWCObject	hiliteColour	0x10c	0x10c	# ObjHiliteColour
+offset	CNWCObject	vtbl.Hilite	0x160	0x158	# ObjHiliteSlot
+offset	CNWCObject	vtbl.UnHilite	0x168	0x160	# ObjUnHiliteSlot
+offset	CNWCObject	vtbl.MouseOver	0x110	0x108	# ObjMouseOverSlot
+offset	CNWCObject	vtbl.MouseOff	0x118	0x110	# ObjMouseOffSlot
+offset	CGameObject	vtbl.AsNWCObject	0x20	0x18	# GameObjAsNWCObjectSlot
+offset	CGameObject	vtbl.AsNWCPlaceable	0xa8	0xa0	# GameObjAsNWCPlaceableSlot
+offset	CGuiInGame	actionQueuePanel	0xa8	0xa8	# GuiInGameActionQueue
+offset	CPanelActionQueue	current	0x158	0x150	# ActionQueueCurrent
+offset	CPanelActionQueue	queuedCount	0x100	0xf8	# ActionQueueCount
+offset	CNWCCreature	aiState	0x39e	0x37e	# CreatureAiState
+offset	CNWCCreature	aiTarget	0x3a4	0x384	# CreatureAiTarget
+offset	CNWCObject	animation	0x5c	0x5c	# ObjAnimation
+offset	CNWCCreature	aiFlags	0x39c	0x37c	# CreatureAiFlags
+offset	CNWCCreature	driveEnabled	0x43c	0x41c	# CreatureDriveEnabled
+offset	CNWCCreature	facingTarget	0x2c8	0x2a8	# CreatureFacingTarget
+offset	CNWCCreature	facingTargetB	0x2d4	0x2b4	# CreatureFacingTargetB
+offset	CNWCCreature	desiredPos	0x2e0	0x2c0	# CreatureDesiredPos
+offset	CNWCCreature	driving	0x318	0x2f8	# CreatureDriving
+offset	CNWCCreature	pathfind	0x320	0x300	# CreaturePathfind
+offset	CPathfindInformation	spaceArgs	0xe0	0xe0	# PathfindSpaceArgs
+offset	CNWCCreature	vtbl.SetPosition	0x130	0x128	# CreatureSetPositionSlot
+offset	CNWCModule	chaseSuppressed	0x13c	0x13c	# ModuleChaseSuppressed
+offset	CNWCModule	chaseWasIdle	0x27c	0x27c	# ModuleChaseWasIdle
+offset	CNWCModule	cameraMaxDist	0x2b8	0x2b8	# ModuleCameraMaxDist
+offset	CNWCCreature	combatState	0x1f4	0x1d4	# CreatureCombatState
+offset	CGuiInGame	toggledOff	0x3d4	0x374	# GuiInGameToggledOff
+offset	CNWCCreature	vtbl.GetModel	0x148	0x140	# CreatureGetModelSlot
+offset	LookAtAnimation	finished	0x8	0x8	# LookAtFinished
+offset	LookAtAnimation	gob	0x30	0x30	# LookAtGob
+offset	LookAtAnimation	headPart	0x40	0x40	# LookAtHeadPart
+offset	LookAtAnimation	targetKey	0x58	0x58	# LookAtTargetKey
+offset	Gob	externalType	0x498	0x498	# GobExternalType
+offset	CHitInfo	mode	0x0	0x0	# HitInfoMode
+offset	CHitInfo	ignoreList	0x10	0x10	# HitInfoIgnoreList
+offset	CHitInfo	ignoreCount	0x18	0x18	# HitInfoIgnoreCount
+offset	CHitInfo	kind	0x24	0x24	# HitInfoKind
+offset	CHitInfo	point	0x28	0x28	# HitInfoPoint
+offset	CHitInfo	gob	0x48	0x48	# HitInfoGob
+offset	CRadialMenu	text	0xf8	0xf8	# RadialText
+offset	CRadialMenu	entry	0x138	0x138	# RadialEntry
+offset	CRadialMenu	callbackStride	0x18	0x10	# RadialCallbackStride
+offset	CRadialMenu	param	0x1f8	0x1b8	# RadialParam
+offset	CRadialMenu	flags	0x238	0x1f8	# RadialFlags
+offset	CRadialMenu	creator	0x258	0x218	# RadialCreator
+offset	CRadialMenu	subMenu	0x318	0x298	# RadialSubMenu
+offset	CRadialMenu	parent	0x358	0x2d8	# RadialParent
+offset	CRadialMenu	icon	0x760	0x6e0	# RadialIcon
+offset	CRadialMenu	menuX	0x85c	0x7dc	# RadialMenuX
+offset	CRadialMenu	menuY	0x860	0x7e0	# RadialMenuY
+offset	CRadialMenu	autoDelete	0x871	0x7f1	# RadialAutoDelete
+offset	CRadialMenu	refCount	0x874	0x7f4	# RadialRefCount
+offset	CGuiIcon	resref	0x8	0x8	# GuiIconResRef
+offset	CGuiIcon	countLabel	0x40	0x40	# GuiIconCountLabel
+offset	CRadialMenu	targetId	0x878	0x7f8	# RadialTargetId
+offset	CClientSpellMenu	targetId	0x90c	0x88c	# SpellMenuTargetId
+offset	CGuiCreatureMenu	sizeof	0x8c0	0x840	# CreatureMenuSize
+offset	CClientSpellMenu	sizeof	0x920	0x8a0	# SpellMenuSize
+offset	CGuiTextBubble	aurString	0xf8	0xf0	# TextBubbleString
+offset	StringGob	readerThisAdjust	0x4c0	0x0	# StringGobReaderAdjust
+offset	CLayeredIcon	schemeCount	0x48	0x48	# LayeredIconSchemeCount
+offset	CLayeredIcon	scheme	0x50	0x50	# LayeredIconScheme
+offset	CCompositeIcon	resref2	0x48	0x48	# CompositeIconResRef2
+offset	CCompositeIcon	resref3	0x59	0x59	# CompositeIconResRef3
+offset	CArmorIcon	resrefs	0x48	0x48	# ArmorIconResRefs
+offset	CArmorIcon	schemeCount	0xb0	0xb0	# ArmorIconSchemeCount
+offset	CArmorIcon	scheme	0xb8	0xb8	# ArmorIconScheme
+offset	CArmorIcon	layerSchemes	0xc0	0xc0	# ArmorIconLayerSchemes
+offset	CNWCItem	guiIcon	0x258	0x238	# ItemGuiIcon
+offset	CGameObject	type	0xc	0xc	# GameObjType
+offset	CGameObject	vtbl.AsNWCItem	0x70	0x68	# GameObjAsNWCItemSlot
+
+# rva	linux symbol	windows rva	# SymbolMap constant
+rva	_ZN11CNWCMessage27HandleServerToPlayerMessageEPhj	0x7a41a0	# HandleServerToPlayerMessage
+rva	_ZN11CNWCMessage25HandleServerToPlayerLoginEh	0x7a31b0	# HandleServerToPlayerLogin
+rva	_ZN11CNWCMessage25SendPlayerToServerMessageEhhPhj	0x7c25c0	# SendPlayerToServerMessage
+rva	_ZN11CNWCMessage41SendPlayerToServerDeviceAdvertisePropertyERK10CExoStringi	0x7bbac0	# SendDeviceAdvertiseProperty
+rva	_ZN11CNWCMessage33SendPlayerToServerArea_AreaLoadedEv	0x7ba050	# SendAreaLoaded
+rva	_ZN8CNWCArea7SetTileEP8CNWCTileiii	0x7e6040	# AreaSetTile
+rva	_ZN11CNWCMessage40HandleServerToPlayerUpdate_WorkRemainingEv	0x7b85a0	# HandleUpdateWorkRemaining
+rva	_ZN13CClientExoApp12StartLoadBarEiPKci	0x6acd20	# StartLoadBar
+rva	_ZN13CClientExoApp10EndLoadBarEv	0x6ab770	# EndLoadBar
+rva	_ZN13CClientExoApp15GetLoadBarStateEv	0x6abe20	# GetLoadBarState
+rva	_ZN13CClientExoApp13GetNWCMessageEv	0x6abf90	# GetNWCMessage
+rva	_ZN10CGuiInGame18SetFocusChatPromptEv	0x6fae30	# SetFocusChatPrompt
+rva	_ZN20CGuiInGameChatPrompt11HandleEnterEv	0x87b0d0	# ChatHandleEnter
+rva	_ZN20CGuiInGameChatPrompt9HandleEscEv	0x87b390	# ChatHandleEsc
+rva	_ZN20CGuiInGameChatPrompt24HandleLMouseDownGuiEventEv	0x87b450	# ChatHandleLMouseDown
+rva	_ZN20CGuiInGameChatPrompt41HandleLoseKeyboardFocusLMouseDownGuiEventEv	0x87b4b0	# ChatHandleLoseFocus
+rva	_Z20TurnOffKeyboardModalv	0x6e5d80	# TurnOffKeyboardModal
+rva	_Znwm	0xc10324	# OperatorNew
+rva	_ZdlPv	0xc10370	# OperatorDelete
+rva	_ZN21CClientExoAppInternal17WalkPlayerToPointEfffiji	0x6f3650	# WalkPlayerToPoint
+rva	_ZN21CClientExoAppInternal23FeedbackHitCheckHostileEPP10CNWCObjectP6VectorPii	0x6eae20	# FeedbackHitCheckHostile
+rva	_ZN21CClientExoAppInternal26FeedbackHitCheckNonHostileEPP10CNWCObjectP6VectorPii	0x6ebcf0	# FeedbackHitCheckNonHostile
+rva	_ZN12CNWCCreature12UpdateLookAtEv	0x80fa60	# UpdateLookAt
+rva	_ZN13CActionTarget18ActivateTargetModeEv	0x83b9e0	# ActivateTargetMode
+rva	_ZN13CActionTarget16HandleLMouseDownEv	0x83be00	# ActionTargetLMouseDown
+rva	_ZN21CClientExoAppInternal28PerformDefaultActionOnObjectEP10CNWCObject	0x6efec0	# PerformDefaultActionOnObject
+rva	g_vCreatureEnemyHighlight	0x1296eb8	# HiliteEnemy
+rva	g_vCreatureFriendHighlight	0x1296ec8	# HiliteFriend
+rva	g_vCreatureNeutralHighlight	0x1296ed8	# HiliteNeutral
+rva	g_vPlaceableHighlight	0x1296f08	# HilitePlaceable
+rva	g_vDoorHighlight	0x1296ef8	# HiliteDoor
+rva	_ZTV11CAurTexture	0xd90c70	# AurTextureVtbl
+rva	_ZTV16CAurTextureBasic	0xd90d90	# AurTextureBasicVtbl
+rva	_ZN10CGuiInGame17AppendToMsgBufferE10CExoStringjji7CResRef	0x6f68d0	# AppendToMsgBuffer
+rva	_ZN20CGuiInGameChatWindow18AppendToChatBufferE10CExoStringjji7CResRef	0x879080	# AppendToChatBuffer
+rva	_ZN20CGuiInGameChatWindow9SetFilterEjPP17CGuiInGameMessagej	0x87a0e0	# ChatWindowSetFilter
+rva	_ZN20CGuiInGameChatWindow4ShowEv	0x87a940	# ChatWindowShow
+rva	_ZN20CGuiInGameChatPrompt4ShowEv	0x87cc00	# ChatPromptShow
+rva	_ZN20CGuiInGameChatPrompt8SetFocusE10CExoString	0x87cb30	# ChatPromptSetFocus
+rva	_ZN20CGuiInGameChatPromptC1Ev	0x87abb0	# ChatPromptCtor
+rva	_ZN10CGuiInGame14ShowChatPromptEv	0x6fb480	# ShowChatPrompt
+rva	_ZN10CGuiInGame29PrepChatPromptForTellToPlayerEP10CNWCPlayer	0x6f9ec0	# PrepChatPromptForTell
+rva	_ZN10CGuiInGame25NotifyServerAboutGuiEventEiijRK6Vector	0x6f9bd0	# NotifyServerGuiEvent
+rva	_ZN13CClientExoApp21GetPlayerByPlayerNameE10CExoString	0x6ac120	# GetPlayerByPlayerName
+rva	_ZN13CClientExoApp23GetPlayerByCreatureNameE10CExoString	0x6ac080	# GetPlayerByCreatureName
+rva	_ZN13CClientExoApp9GetModuleEv	0x6abea0	# GetModule
+rva	_ZN11CNWCMessage27SendPlayerToServerChat_TalkE10CExoString	0x7ba7e0	# SendChatTalk
+rva	_ZN11CNWCMessage28SendPlayerToServerChat_ShoutE10CExoString	0x7ba700	# SendChatShout
+rva	_ZN11CNWCMessage30SendPlayerToServerChat_WhisperE10CExoString	0x7baab0	# SendChatWhisper
+rva	_ZN11CNWCMessage31SendPlayerToServerChat_TellNameERK10CExoStringS2_	0x7ba9b0	# SendChatTell
+rva	_ZN11CNWCMessage27SendPlayerToServerChat_TellEj10CExoString	0x7ba8c0	# SendChatTellId
+rva	_ZN11CNWCMessage28SendPlayerToServerChat_PartyE10CExoString	0x7ba620	# SendChatParty
+rva	_ZN11CNWCMessage36SendPlayerToServerChat_DungeonMasterE10CExoString	0x7ba540	# SendChatDM
+rva	_ZN13CClientExoApp13GetGameObjectEj	0x6abb60	# GetGameObject
+rva	_ZN13CClientExoApp13GetObjectNameEjP10CExoString	0x6abfc0	# GetObjectName
+rva	_ZN10CGuiInGame15ShowDialogEntryERK10CExoStringjj	0x6fb560	# ShowDialogEntry
+rva	_ZN10CGuiInGame17ShowDialogRepliesEiP10CExoStringPjiji	0x6fb8e0	# ShowDialogReplies
+rva	_ZN10CGuiInGame15ShowReplyChosenEjj10CExoString	0x6fbbc0	# ShowReplyChosen
+rva	_ZN10CGuiInGame11CloseDialogEv	0x6f6d80	# CloseDialog
+rva	_ZN11CNWCMessage30SendPlayerToServerDialog_ReplyEjjhj	0x7bbc50	# SendDialogReply
+rva	_ZN21CGuiInGamePopUpBubble17SetChatBubbleModeEi	0x6e90e0	# SetChatBubbleMode
+rva	_ZN12CNWCCreature22ShowFeedbackBubbleTextEv	0x80b240	# CreatureShowFeedbackBubbleText
+rva	_ZN13CNWCPlaceable22ShowFeedbackBubbleTextEv	0x871b60	# PlaceableShowFeedbackBubbleText
+rva	_ZN8CNWCItem22ShowFeedbackBubbleTextEv	0x83f230	# ItemShowFeedbackBubbleText
+rva	_ZN10CNWCObject18SetPopUpBubbleTextE10CExoStringiff	0x766450	# SetPopUpBubbleText
+rva	_ZN11CNWCMessage24HandleServerToPlayerChatEh	0x77c140	# HandleServerToPlayerChat
+rva	_ZN10CNWCObject14ShowFloatyTextE10CExoString6VectorS0_i	0x766a70	# ShowFloatyText
+rva	_ZN12CNWCAnimBase13RefreshHiliteEv	0x966170	# RefreshHilite
+rva	_ZN8CNWCArea10LoadBorderEP18CGuiAreaLoadscreenf	0x7dea10	# AreaLoadBorder
+rva	_ZN8CNWCArea12ReloadBorderEv	0x7e1e40	# AreaReloadBorder
+rva	_ZN8CNWCArea10SetWeatherEhf	0x7e63c0	# AreaSetWeather
+rva	_ZN8CNWCArea12StartWeatherEh	0x7e69a0	# AreaStartWeather
+rva	_ZN8CNWCArea11StopWeatherEh	0x7e69e0	# AreaStopWeather
+rva	_ZN10CNWCModule10TurnCameraEfi	0x7cfe60	# TurnCamera
+rva	_ZN10CNWCModule10TiltCameraEfi	0x7cfdb0	# TiltCamera
+rva	_ZN21CClientExoAppInternal15UpdateDriveModeEv	0x6f1e40	# UpdateDriveMode
+rva	_ZN12CNWCCreature18WalkUpdateLocationEv	0x8114d0	# WalkUpdateLocation
+rva	_ZN8CNWCArea14TestDirectLineEP12CNWCCreature6VectorS2_ffi	0x7e6a20	# TestDirectLine
+rva	_ZN10CGuiInGame9ToggleOffEv	0x6fc6f0	# GuiInGameToggleOff
+rva	_ZN10CGuiInGame11UnToggleOffEv	0x6fc900	# GuiInGameUnToggleOff
+rva	_ZTV25CycleTIDTextureController	0xd905c0	# CycleTidControllerVtbl
+rva	noemittervar	0x128ead8	# GlPoolTableAnchor
+rva	_ZN10CGuiInGame11HideCompassEv	0x6f9060	# HideCompass
+rva	_ZTV14PartDanglyMesh	0xd88698	# PartDanglyMeshVtbl
+rva	_ZN14SharedMaterialD2Ev	0x81f80	# SharedMaterialDtor
+rva	_ZTV8PartSkin	0xd88438	# PartSkinVtbl
+rva	primTypeTranslationTable	0xd8ad20	# PrimTypeTranslationTable
+rva	_ZN14CPanelQuickBar10RepositionEv	0x860010	# QuickbarReposition
+rva	_ZN10CGuiInGame11ShowCompassEv	0x6fb490	# ShowCompass
+rva	_ZTV11CRadialMenu	0xdb2e20	# VtCRadialMenu
+rva	_ZTV16CGuiCreatureMenu	0xe74340	# VtCGuiCreatureMenu
+rva	_ZTV16CClientSpellMenu	0xe75bd8	# VtCClientSpellMenu
+rva	_ZTV16CRadialSpellMenu	0xe76af8	# VtCRadialSpellMenu
+rva	_ZTV15CClientTrapMenu	0xe77b90	# VtCClientTrapMenu
+rva	_ZTV12CGuiItemMenu	0xe761d8	# VtCGuiItemMenu
+rva	_ZTV17CGuiPlaceableMenu	0xe78030	# VtCGuiPlaceableMenu
+rva	_ZTV12CGuiDoorMenu	0xe77670	# VtCGuiDoorMenu
+rva	_ZTV16CGuiQuickbarMenu	0xe77340	# VtCGuiQuickbarMenu
+rva	_ZTV18CGuiChatWindowMenu	0xe78838	# VtCGuiChatWindowMenu
+rva	_ZN16CGuiCreatureMenu17RadialMenuUseFeatEl	0x998520	# CreatureMenuUseFeat
+rva	_ZN16CGuiCreatureMenu15RadialMenuEmoteEl	0x997c30	# CreatureMenuEmote
+rva	_ZN16CGuiCreatureMenu20RadialMenuToggleModeEl	0x9984d0	# CreatureMenuToggleMode
+rva	_ZN16CGuiCreatureMenu19RadialMenuQuickChatEl	0x998100	# CreatureMenuQuickChat
+rva	_ZN16CGuiCreatureMenu18RadialMenuUseSkillEl	0x9987d0	# CreatureMenuUseSkill
+rva	_ZN16CGuiCreatureMenu14RadialMenuRestEl	0x998150	# CreatureMenuRest
+rva	_ZN16CGuiCreatureMenu24RadialMenuCharacterSheetEl	0x996110	# CreatureMenuCharacterSheet
+rva	_ZN16CClientSpellMenu14RadialMenuCastEl	0x9a4540	# SpellMenuCast
+rva	_ZN16CClientSpellMenu30RadialMenuCastSpellLikeAbilityEl	0x9a4610	# SpellMenuCastSla
+rva	_ZN16CClientSpellMenu17RadialMenuUseFeatEl	0x9a4770	# SpellMenuUseFeat
+rva	_ZN16CClientSpellMenu13TargetIsValidEj	0x9a4910	# SpellMenuTargetIsValid
+rva	_ZN16CGuiCreatureMenuC1EP12CNWCCreature6Vector	0x98e140	# CreatureMenuCtor
+rva	_ZN16CClientSpellMenuC1E6VectorjP15CGuiQuickButtoni	0x9a10e0	# SpellMenuCtor
+rva	_ZTV12CLayeredIcon	0xdaf750	# VtCLayeredIcon
+rva	_ZTV14CCompositeIcon	0xdaf708	# VtCCompositeIcon
+rva	_ZTV10CArmorIcon	0xdaf6c0	# VtCArmorIcon

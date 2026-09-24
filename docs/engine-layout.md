@@ -5,26 +5,33 @@
 question: the Linux client is built by GCC on the Itanium C++ ABI, the Windows
 client by MSVC, and the two disagree about where a field sits inside a class.
 
-`managed/Framework/EngineLayout.cs` is the single table. Every offset the extender reads
-is declared there and read at the use site as a plain field. Vtable **slots** ride it too;
-why they diverge, and the handler-signature audit that goes with them, is
-`docs/engine-abi.md`.
+`managed/Framework/EngineLayout.cs` declares every offset the extender reads, and the
+running build's file in `managed/Framework/Builds/` gives its value (`ClientBuilds`).
+The code says *what* is read, `Field("CNWCCreature", "plated", Expect.Byte01)`, and the
+use site reads it as a plain field. The data says *where*, one line per row per build:
 
-## The three forms, and there is no fourth
+    offset	CNWCCreature	plated	0x468	0x448	# CreaturePlated
 
-| Form | Means | Counted |
+Vtable **slots** ride the same table; why they diverge, and the handler-signature audit
+that goes with them, is `docs/engine-abi.md`.
+
+## Same, Diverges, Unresolved: facts about a build
+
+| Row in the build file | Means | Counted |
 |---|---|---|
-| `Diverges(cls, field, linux:, win:)` | measured on both, they differ | no |
-| `Same(cls, field, off)` | measured on both, they agree | no |
-| `Unresolved(cls, field, linux)` | Linux value; **nobody has looked on Windows** | yes |
+| `0x468  0x448` | measured on both, they differ (**Diverges**) | no |
+| `0xc  0xc` | measured on both, they agree (**Same**) | no |
+| `0x208  -` | Linux value; **nobody has looked on Windows** (**Unresolved**) | yes |
 
-The point is that "verified identical" and "never looked" stop being the same
-bare `const`. `Unresolved` is usable on Linux and unreachable on Windows —
-`EngineLayout.Require` refuses to let a feature start there while the count is
-above zero — so the count is the migration's completion counter. It is counted on
-**both** platforms, because the migration is worked on Linux and a counter that
-only moves on Windows is invisible where the work happens; only the gate is
-Windows-only. `/knobs` prints it.
+These three used to be declaration forms in C#. Now they are properties of a build's
+values, but the point hasn't changed: "verified identical" and "never looked" are
+never the same thing. A `-` is usable on Linux. On Windows it is **missing**: the row
+reads 0 and `EngineLayout.Require` stands down every feature that names its class. So
+does a row the file leaves out altogether, on either OS, and `ClientBuilds.SelfCheck`
+reports that gap by name. The `-` count is the migration's completion counter,
+counted on **both** platforms, because the migration is worked on Linux and a counter
+that only moves on Windows is invisible where the work happens. `/knobs` prints it.
+The history below still uses the three names for what was measured.
 
 Every row names the **engine class** it belongs to. That is not decoration: it
 is the key #431's Ghidra extractor pairs on, and the unit #430 measures. A class
@@ -38,11 +45,10 @@ Offsets are only valid for the build they were measured against, so the table is
 keyed `(os, build)` and the key is the **linker's build identity**, not a content
 hash: a rewrapped Steam/GOG/Beamdog copy of the same build is the same client.
 
-| | |
-|---|---|
-| Build revision | `26c6e57364a45246e3b58e4f2c49366df72d15db` (Mon Oct 6 2025) |
-| Linux key | `.note.gnu.build-id` of `nwmain-linux` — `3e2500a82e0c32008d24c3e74bbff3021da5e1b7` |
-| Windows key | CodeView PDB GUID + age from `nwmain.exe` — `29431F05E0F2461A8BECCFC9E80D8F27` age `1` |
+The keys live in `managed/Framework/Builds/<name>.tsv` beside that build's values (`ClientBuilds`).
+The first, `8193.37-17`, is revision `26c6e57364a45246e3b58e4f2c49366df72d15db` (Mon Oct 6 2025):
+Linux key `3e2500a82e0c32008d24c3e74bbff3021da5e1b7`, Windows key
+`29431F05E0F2461A8BECCFC9E80D8F27` age `1`.
 
 Read at runtime from the running program: `/proc/self/exe` `PT_NOTE` on Linux,
 the loaded image's `DataDirectory[6]` debug directory on Windows. A mismatch is
@@ -62,11 +68,15 @@ in some features instead of as a refusal. On Linux the lock itself is new
 just nameplates — the intended trade against rendering garbage off a moved
 field, and the reason adding a tested build's key unblocks every feature at once.
 
-There is exactly one row per OS. A second tested build gets its own pinned key
-and its own values; hunting offsets for a build nobody has tested is not work.
+Every build file is complete: one `offset` line per declared row, one `rva` line per
+`At()` symbol. `ClientBuilds.SelfCheck` refuses a gap, a line naming no row, or a value
+that did not land in its row. A later build's file comes from `tools/update/newbuild.py`,
+which copies a row from the old file only when every function vouching for it is
+byte-identical in the two builds, and comments out the rest as `# CHECK` for a human.
+The procedure is `docs/update-day.md`.
 
-**Two checks, one policy.** `SymbolMap` still pins the PE `TimeDateStamp` for its
-RVAs; this pins the build key. Since `#457` the stamp can never be the *first*
+**Two checks, one policy.** `SymbolMap` still checks the PE `TimeDateStamp` (the
+build file's `stamp`) for its RVAs; this checks the build key. Since `#457` the stamp can never be the *first*
 thing to notice rot — nothing gets as far as resolving a symbol — so the two
 locks were settled without collapsing either: `KeyOk` is the policy, the stamp
 stays the RVA-path guard.

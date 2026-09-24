@@ -31,8 +31,8 @@ public static class ServiceHost
         if (!EngineLayout.KeyOk)
         {
             string rot = $"client build changed, extender standing down WHOLE -- including the Alloy renderer. " +
-                         $"Observed build {EngineLayout.BuildKey}, expected {EngineLayout.ExpectedKey}. " +
-                         "The game runs vanilla (re-measure: docs/engine-layout.md).";
+                         $"Observed build {EngineLayout.BuildKey}, known: {ClientBuilds.Known}. " +
+                         "The game runs vanilla until a CX release for this build (docs/update-day.md).";
             log.Always("host: " + rot);
             log.Always("host: 0 service(s) discovered, 0 hook(s) installed");
             SymbolMap.RotNotice("NWNCX:EE: " + rot);   // Windows-only: a version.dll proxy has no log the player reads
@@ -74,6 +74,7 @@ public static class ServiceHost
         EngineLayout.SelfCheck(log);   // #432: the three resolution forms, the counter, and a probe that fires
         EngineLayout.Register();
         SymbolMap.Register();
+        ClientBuilds.SelfCheck(log);   // every build file names real rows and symbols, and covers every RVA
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
         CX.Ui.AtlasSheet.SelfCheck(log);   // #469: pack-and-grow, ceiling refusal, face lookup -- no GL, no stbtt
         foreach (IExtenderService service in all)

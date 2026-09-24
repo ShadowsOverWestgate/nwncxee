@@ -96,8 +96,8 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 # One file. funchook, the UI font and the proxy all ride inside the image; the name is the whole trick,
 # since nwmain.exe imports VERSION.dll and the loader takes the copy beside the exe first.
 cp build/win/cx_managed.dll "$OUT/version.dll"
-STAMP=$(grep -oE 'WindowsBuildStamp = 0x[0-9a-f]+' managed/Framework/SymbolMap.cs | grep -oE '0x[0-9a-f]+')
-sed "s/@VERSION@/$CX_VERSION/g; s/@STAMP@/$STAMP/g" packaging/README-win.txt > "$OUT/README.txt"
+BUILDS=$(awk -F'\t' '$1 == "name" { printf "%s%s", sep, $2; sep = ", " }' managed/Framework/Builds/*.tsv)
+sed "s/@VERSION@/$CX_VERSION/g; s/@BUILDS@/$BUILDS/g" packaging/README-win.txt > "$OUT/README.txt"
 packaging/licenses.sh "$OUT/LICENSES.txt"
 # Contents, not the folder: the README says "unpack here" and that has to be true.
 python3 -c "import shutil; shutil.make_archive('$OUT', 'zip', '$OUT')"

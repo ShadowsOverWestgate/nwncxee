@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Assert every Nm(...) row in SymbolMap._win names a real nwmain.exe export, and every At(...)
-row points inside the image. Alloy stands down under Proton, so no Nm row is exercised at runtime
+"""Assert every Nm(...) row in SymbolMap._win names a real nwmain.exe export, and every At() row has an
+RVA inside the image in the build file (managed/Framework/Builds/*.tsv) whose stamp is this exe's. Alloy stands down under Proton, so no Nm row is exercised at runtime
 yet -- this is the only instrument that says the 142 mechanical rows of #447 (and the 39 that
 predate them) are not typos.
 
@@ -12,6 +12,8 @@ import os, pathlib, re, struct, subprocess, sys
 EXE = os.environ.get("NWN_WIN_EXE",
     "~/gry/steam/Neverwinter Nights/bin/win32/nwmain.exe")
 SRC = pathlib.Path(__file__).resolve().parents[2] / "managed/Framework/SymbolMap.cs"
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "update"))
+from tables import read_builds, symbols  # noqa: E402
 
 
 def pe_exports(path):
@@ -34,7 +36,7 @@ def pe_exports(path):
     for i in range(nnam):
         o = foff(struct.unpack_from("<I", d, foff(anam) + 4 * i)[0])
         names.add(d[o:d.index(b"\0", o)].decode())
-    return names, size
+    return names, size, struct.unpack_from("<I", d, pe + 8)[0]
 
 
 # #456: a member function returning a class BY VALUE takes a hidden return buffer, and the two platforms
@@ -95,21 +97,26 @@ def check_sret(rows):
 
 
 def main():
-    names, size = pe_exports(EXE)
-    body = re.search(r"Dictionary<string, Win> _win = new\(\)\s*\{(.*?)\n    \};", SRC.read_text(), re.S).group(1)
+    names, size, stamp = pe_exports(EXE)
+    consts, win = symbols()
+    build = next((b for b in read_builds() if int(b.get("stamp", "0"), 16) == stamp), None)
+    if build is None:
+        print(f"NO BUILD FILE for nwmain.exe stamp {stamp:#010x} (managed/Framework/Builds/*.tsv)")
+        return 1
     bad = 0
     nm = at = 0
     nm_rows = []
-    for key, kind, arg in re.findall(r"\[(\w+)\]\s*=\s*(Nm|At)\((\"[^\"]+\"|0x[0-9a-fA-F]+)\)", body):
+    for key, kind, arg in win:
         if kind == "Nm":
             nm += 1
-            nm_rows.append((key, arg.strip('"')))
-            if arg.strip('"') not in names:
+            nm_rows.append((key, arg))
+            if arg not in names:
                 print(f"MISSING EXPORT  {key} -> {arg}"); bad += 1
         else:
             at += 1
-            if not 0 < int(arg, 16) < size:
-                print(f"RVA OUT OF IMAGE  {key} -> {arg}"); bad += 1
+            rva = build["rvas"].get(consts[key])
+            if rva is None or not 0 < rva < size:
+                print(f"RVA MISSING OR OUT OF IMAGE  {key} -> {rva} ({build['name']})"); bad += 1
     print(f"{nm} Nm row(s), {at} At row(s), {bad} bad")
     bad += check_sret(nm_rows)
     return 1 if bad else 0

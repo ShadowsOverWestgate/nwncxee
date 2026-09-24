@@ -1363,28 +1363,23 @@ internal static unsafe class SymbolMap
     /// <inheritdoc cref="VtCLayeredIcon"/>
     public const string VtCArmorIcon = "_ZTV10CArmorIcon";
 
-    /// <summary>
-    /// PE TimeDateStamp of the nwmain.exe the RVAs were read from. A client patch shifts
-    /// addresses; RVA hooks are refused unless the loaded exe matches this (see BuildMatches).
-    /// </summary>
-    public const uint WindowsBuildStamp = 0x68e408bc;
-
     /// <summary>A symbol's Windows resolution. Four forms and no fifth -- the point of #447: a missing key
     /// used to mean both "never looked" and "deliberately Linux-only", so the absence could not be counted.
     /// Now every constant has a row, <see cref="Nm"/>/<see cref="At"/> resolve, <see cref="LinuxOnly"/> is a
     /// decision, and <see cref="Hole"/> is the only form that counts against the port.</summary>
-    private readonly record struct Win(string? Name, int Rva, string? Why, bool Counted);
+    private readonly record struct Win(string? Name, bool At, string? Why, bool Counted);
 
     /// <summary>Name-exported on Windows: resolve the MSVC mangling the way Linux resolves Itanium.</summary>
-    private static Win Nm(string msvc) => new(msvc, 0, null, false);
-    /// <summary>Not exported: absolute = runtime module base + RVA, build-locked by the PE stamp.</summary>
-    private static Win At(int rva) => new(null, rva, null, false);
+    private static Win Nm(string msvc) => new(msvc, false, null, false);
+    /// <summary>Not exported: absolute = runtime module base + the running build's RVA for it (its
+    /// <c>rva</c> line in <c>Framework/Builds/*.tsv</c>), build-locked by the PE stamp.</summary>
+    private static Win At() => new(null, true, null, false);
     /// <summary>A decision: this symbol is not wanted on Windows, and <paramref name="why"/> says why. Does
     /// not count -- CLAUDE.md's rule is that the absence be DECLARED, not that it be filled.</summary>
-    private static Win LinuxOnly(string why) => new(null, 0, why, false);
+    private static Win LinuxOnly(string why) => new(null, false, why, false);
     /// <summary>Not yet anchored. Counts, and is printed by <c>/knobs</c> beside EngineLayout's unresolved
     /// offsets: parity is the constraint (#445), so a named instrument is a waypoint, never an exit.</summary>
-    private static Win Hole(string why) => new(null, 0, why, true);
+    private static Win Hole(string why) => new(null, false, why, true);
 
     /// <summary>Linux name -> Windows resolution. Only symbols that DO resolve on Windows are listed: a
     /// missing key and an explicit <c>default</c> entry take the same branch in <see cref="Resolve"/> and emit
@@ -1405,31 +1400,31 @@ internal static unsafe class SymbolMap
         [ExoConfigGetLong]   = Nm("??$Get@_J@CExoConfig@@QEAA_JAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
         [ExoConfigGetDouble] = Nm("??$Get@N@CExoConfig@@QEAANAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
 
-        // --- not exported (client GUI / CNWCMessage): Windows RVA,
-        //     build 0x68e408bc. See docs/windows-symbols.md for how each was anchored. ---
-        [HandleServerToPlayerMessage] = At(0x7a41a0),
-        [HandleServerToPlayerLogin]   = At(0x7a31b0),
-        [SendPlayerToServerMessage]   = At(0x7c25c0),
-        [SendDeviceAdvertiseProperty] = At(0x7bbac0),
+        // --- not exported (client GUI / CNWCMessage): Windows RVA, one per build in Framework/Builds/*.tsv.
+        //     Anchored on build 0x68e408bc; see docs/windows-symbols.md for how each was. ---
+        [HandleServerToPlayerMessage] = At(),
+        [HandleServerToPlayerLogin]   = At(),
+        [SendPlayerToServerMessage]   = At(),
+        [SendDeviceAdvertiseProperty] = At(),
         // #672: the area-loaded hold; none returns a class by value. Anchors in docs/windows-symbols.md.
-        [SendAreaLoaded]              = At(0x7ba050),
-        [AreaSetTile]                 = At(0x7e6040),
-        [HandleUpdateWorkRemaining]   = At(0x7b85a0),
-        [StartLoadBar]                = At(0x6acd20),
-        [EndLoadBar]                  = At(0x6ab770),
-        [GetLoadBarState]             = At(0x6abe20),
-        [GetNWCMessage]               = At(0x6abf90),
-        [SetFocusChatPrompt]          = At(0x6fae30),
-        [ChatHandleEnter]             = At(0x87b0d0),
-        [ChatHandleEsc]               = At(0x87b390),
-        [ChatHandleLMouseDown]        = At(0x87b450),   // Notify event enum 1
-        [ChatHandleLoseFocus]         = At(0x87b4b0),   // Notify event enum 2
-        [TurnOffKeyboardModal]        = At(0x6e5d80),   // anchored via CGuiEdit::SetFocus (call after KeyboardModeOn)
+        [SendAreaLoaded]              = At(),
+        [AreaSetTile]                 = At(),
+        [HandleUpdateWorkRemaining]   = At(),
+        [StartLoadBar]                = At(),
+        [EndLoadBar]                  = At(),
+        [GetLoadBarState]             = At(),
+        [GetNWCMessage]               = At(),
+        [SetFocusChatPrompt]          = At(),
+        [ChatHandleEnter]             = At(),
+        [ChatHandleEsc]               = At(),
+        [ChatHandleLMouseDown]        = At(),   // Notify event enum 1
+        [ChatHandleLoseFocus]         = At(),   // Notify event enum 2
+        [TurnOffKeyboardModal]        = At(),   // anchored via CGuiEdit::SetFocus (call after KeyboardModeOn)
         // Footgun: nwmain.exe statically links the CRT, so the panel frees via the game's own
         // operator delete -- allocate from the game's own operator new (build-locked RVA) or the
         // cross-heap free corrupts. Scalar operator new(size_t), VS2017/2019 release.
-        [OperatorNew]                 = At(0xc10324),
-        [OperatorDelete]              = At(0xc10370),   // void thunk to _free_base; pairs with the operator new above
+        [OperatorNew]                 = At(),
+        [OperatorDelete]              = At(),   // void thunk to _free_base; pairs with the operator new above
         [EncodingFromUtf8] = Nm("?FromUTF8@Encoding@@YA?AV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@PEBDW4Locale@1@@Z"),
 
         // --- consent modal + input, name-exported on Windows (verified in nwmain.exe's export table) ---
@@ -1439,31 +1434,31 @@ internal static unsafe class SymbolMap
         [GetGuiScale]     = Nm("?GetGUIScale@CAurora@@SAMXZ"),   // CAurora shared-engine class -> name-exported
         [SdlGetKeyName]   = Nm("SDL_GetKeyName"),
         [SdlGetKeyFromName] = Nm("SDL_GetKeyFromName"),
-        [WalkPlayerToPoint] = At(0x6f3650),          // action camera: "gui_nowalk" string, unique on both builds
-        [FeedbackHitCheckHostile] = At(0x6eae20),    // action camera: the picker with GetHeightTransition (Callees)
-        [FeedbackHitCheckNonHostile] = At(0x6ebcf0), // action camera: the other picker, same caller cluster
+        [WalkPlayerToPoint] = At(),          // action camera: "gui_nowalk" string, unique on both builds
+        [FeedbackHitCheckHostile] = At(),    // action camera: the picker with GetHeightTransition (Callees)
+        [FeedbackHitCheckNonHostile] = At(), // action camera: the other picker, same caller cluster
         [SdlGetModState]  = Nm("SDL_GetModState"),
         // head tracking: the three Gob/Part/LookAtAnimation symbols are shared-engine exports; only the
         // CNWC* chooser needs an anchor (its Windows caller-of-"HEADTRACK" chain, docs/windows-symbols.md).
-        [UpdateLookAt]       = At(0x80fa60),
+        [UpdateLookAt]       = At(),
         [BeginLookAtAnimate] = Nm("?BeginLookAtAnimate@Gob@@UEAAXPEAVCAurObject@@PEBD1MMMM@Z"),
         [LookAtControl]      = Nm("?Control@LookAtAnimation@@UEAAXXZ"),
         // auto-target: CActionTarget is client-side (not name-exported on Windows). Both anchored by the
         // 'AcTg' GetGuiObjType tag cluster and confirmed by decompile -- ActivateTargetMode is the same
         // CaptureMouse/CaptureKeyboard/RegisterUpdate/RegisterActionTargetGUI body, HandleLMouseDown the
         // same GetMousePos -> hit-check -> allowed-list scan -> fire.
-        [ActivateTargetMode]      = At(0x83b9e0),
-        [ActionTargetLMouseDown]  = At(0x83be00),
+        [ActivateTargetMode]      = At(),
+        [ActionTargetLMouseDown]  = At(),
         // tab-target (CX-636): the click seam is the callee PerformLButtonDownAction (rva 0x6f02c0, the one caller
         // of WalkPlayerToPoint) runs on a verdict-2 pick, same type-byte switch as Linux @0x660830; the colour
         // globals are the DAT_ refs of the Windows HiliteAreaObjects (rva 0x7db2f0), per attitude branch.
-        [PerformDefaultActionOnObject] = At(0x6efec0),
+        [PerformDefaultActionOnObject] = At(),
         [SdlGetKeyboardState] = Nm("SDL_GetKeyboardState"),
-        [HiliteEnemy]     = At(0x1296eb8),
-        [HiliteFriend]    = At(0x1296ec8),
-        [HiliteNeutral]   = At(0x1296ed8),
-        [HilitePlaceable] = At(0x1296f08),
-        [HiliteDoor]      = At(0x1296ef8),
+        [HiliteEnemy]     = At(),
+        [HiliteFriend]    = At(),
+        [HiliteNeutral]   = At(),
+        [HilitePlaceable] = At(),
+        [HiliteDoor]      = At(),
         // hotkey suppression while any vanilla text field captures keys (console etc.) -- shared-engine
         // CExoInput, name-exported on Windows. (Chat also uses ExoInput but stays Linux-only for now.)
         [ExoInput]        = Nm("?g_pExoInput@@3PEAVCExoInput@@EA"),
@@ -1502,31 +1497,31 @@ internal static unsafe class SymbolMap
         // IS the object's first word (no Itanium +0x10 RTTI skew) -- AurTex.Attach knows.
         [AurTextureGet]              = Nm("?AurTextureGet@@YAPEAVCAurTexture@@PEBDPEAV1@0PEAHH_N@Z"),
         [AurTextureGetTID]           = Nm("?AurTextureGetTID@@YAIPEAVCAurTexture@@@Z"),
-        [AurTextureVtbl]             = At(0xd90c70),
-        [AurTextureBasicVtbl]        = At(0xd90d90),
+        [AurTextureVtbl]             = At(),
+        [AurTextureBasicVtbl]        = At(),
 
         // --- chat (#419): client GUI + CNWCMessage senders, RVA, build 0x68e408bc. Anchors in docs/windows-symbols.md.
         //     Win64 ABI notes: every by-value CExoString arrives as a pointer the CALLEE destroys; CResRef too. ---
-        [AppendToMsgBuffer]      = At(0x6f68d0),
-        [AppendToChatBuffer]     = At(0x879080),
-        [ChatWindowSetFilter]    = At(0x87a0e0),
-        [ChatWindowShow]         = At(0x87a940),   // shown flag +0xaf0 (Linux +0xc68)
-        [ChatPromptShow]         = At(0x87cc00),   // shown flag +0x200 (Linux +0x230)
-        [ChatPromptSetFocus]     = At(0x87cb30),
-        [ChatPromptCtor]         = At(0x87abb0),
-        [ShowChatPrompt]         = At(0x6fb480),
-        [PrepChatPromptForTell]  = At(0x6f9ec0),
-        [NotifyServerGuiEvent]   = At(0x6f9bd0),
-        [GetPlayerByPlayerName]  = At(0x6ac120),
-        [GetPlayerByCreatureName]= At(0x6ac080),
-        [GetModule]              = At(0x6abea0),
-        [SendChatTalk]           = At(0x7ba7e0),   // major 9 minor 1
-        [SendChatShout]          = At(0x7ba700),   // minor 2
-        [SendChatWhisper]        = At(0x7baab0),   // minor 3
-        [SendChatTell]           = At(0x7ba9b0),   // minor 4, WriteBOOL(1) + two strings (TellName)
-        [SendChatTellId]         = At(0x7ba8c0),   // minor 4, WriteBOOL(0) + WriteDWORD(id)
-        [SendChatParty]          = At(0x7ba620),   // minor 6
-        [SendChatDM]             = At(0x7ba540),   // minor 0xe
+        [AppendToMsgBuffer]      = At(),
+        [AppendToChatBuffer]     = At(),
+        [ChatWindowSetFilter]    = At(),
+        [ChatWindowShow]         = At(),   // shown flag +0xaf0 (Linux +0xc68)
+        [ChatPromptShow]         = At(),   // shown flag +0x200 (Linux +0x230)
+        [ChatPromptSetFocus]     = At(),
+        [ChatPromptCtor]         = At(),
+        [ShowChatPrompt]         = At(),
+        [PrepChatPromptForTell]  = At(),
+        [NotifyServerGuiEvent]   = At(),
+        [GetPlayerByPlayerName]  = At(),
+        [GetPlayerByCreatureName]= At(),
+        [GetModule]              = At(),
+        [SendChatTalk]           = At(),   // major 9 minor 1
+        [SendChatShout]          = At(),   // minor 2
+        [SendChatWhisper]        = At(),   // minor 3
+        [SendChatTell]           = At(),   // minor 4, WriteBOOL(1) + two strings (TellName)
+        [SendChatTellId]         = At(),   // minor 4, WriteBOOL(0) + WriteDWORD(id)
+        [SendChatParty]          = At(),   // minor 6
+        [SendChatDM]             = At(),   // minor 0xe
 
         // --- nameplates / combat text / dialog (#420), build 0x68e408bc. Anchors in docs/windows-symbols.md.
         //     Win64 ABI: sret comes AFTER `this` (GetSimpleString, the GetPortrait virtual); a by-value Vector
@@ -1534,34 +1529,34 @@ internal static unsafe class SymbolMap
         [TlkTable]           = Nm("?g_pTlkTable@@3PEAVCTlkTable@@EA"),
         [TlkGetSimpleString] = Nm("?GetSimpleString@CTlkTable@@QEAA?AVCExoString@@I@Z"),
         [GetViewPort]        = Nm("?GetViewPort@RenderInterface@@SAXPEAM@Z"),
-        [GetGameObject]      = At(0x6abb60),
-        [GetObjectName]      = At(0x6abfc0),
-        [ShowDialogEntry]    = At(0x6fb560),
-        [ShowDialogReplies]  = At(0x6fb8e0),
-        [ShowReplyChosen]    = At(0x6fbbc0),   // destroys its by-value CExoString: a skip must too
-        [CloseDialog]        = At(0x6f6d80),
-        [SendDialogReply]    = At(0x7bbc50),
-        [SetChatBubbleMode]  = At(0x6e90e0),
-        [CreatureShowFeedbackBubbleText]  = At(0x80b240),   // plated flag +0x448
-        [PlaceableShowFeedbackBubbleText] = At(0x871b60),   // +0x1f8
-        [ItemShowFeedbackBubbleText]      = At(0x83f230),   // `this` = the CNWCObject subobject, flag +0x264
-        [SetPopUpBubbleText] = At(0x766450),
-        [HandleServerToPlayerChat] = At(0x77c140),   // major 9
-        [ShowFloatyText]     = At(0x766a70),
+        [GetGameObject]      = At(),
+        [GetObjectName]      = At(),
+        [ShowDialogEntry]    = At(),
+        [ShowDialogReplies]  = At(),
+        [ShowReplyChosen]    = At(),   // destroys its by-value CExoString: a skip must too
+        [CloseDialog]        = At(),
+        [SendDialogReply]    = At(),
+        [SetChatBubbleMode]  = At(),
+        [CreatureShowFeedbackBubbleText]  = At(),   // plated flag +0x448
+        [PlaceableShowFeedbackBubbleText] = At(),   // +0x1f8
+        [ItemShowFeedbackBubbleText]      = At(),   // `this` = the CNWCObject subobject, flag +0x264
+        [SetPopUpBubbleText] = At(),
+        [HandleServerToPlayerChat] = At(),   // major 9
+        [ShowFloatyText]     = At(),
 
         // --- #446: the three CNWC* anchors Alloy's highlight and border ring hook. No CNWC* class is
         //     name-exported on Windows, so each was anchored by a compiler-invariant string and confirmed
         //     against the named Linux original (docs/windows-symbols.md).
-        [RefreshHilite]    = At(0x966170),   // its own ExoLog nwcanimbase.cpp:0x123a; channels +0x9c/+0xb0/+0xc8
-        [AreaLoadBorder]   = At(0x7dea10),   // __FUNCSIG__ "int __cdecl CNWCArea::LoadBorder(class CGuiAreaLoadscreen *,float)"
-        [AreaReloadBorder] = At(0x7e1e40),   // HandleServerToPlayerArea's flag-bit-2 branch; deletes (vt+0x50) + respawns (vt+0x30)
+        [RefreshHilite]    = At(),   // its own ExoLog nwcanimbase.cpp:0x123a; channels +0x9c/+0xb0/+0xc8
+        [AreaLoadBorder]   = At(),   // __FUNCSIG__ "int __cdecl CNWCArea::LoadBorder(class CGuiAreaLoadscreen *,float)"
+        [AreaReloadBorder] = At(),   // HandleServerToPlayerArea's flag-bit-2 branch; deletes (vt+0x50) + respawns (vt+0x30)
         // #615: SetWeather anchored by its own "weatherlight"/"ModelLightning" strings (the only user of either);
         //       Start/Stop are the two callees of HandleServerToPlayerArea's case 4 (ReadBOOL ? Start : Stop), bodies
         //       identical to Linux (+0x2f1, +0x2ec = 6000, CNWCAmbientSound::Rain). All field offsets Same.
         [TileSetGet]       = Nm("?GetTileSet@CNWTileSetManager@@QEAAPEAVCNWTileSet@@AEBVCResRef@@@Z"),
-        [AreaSetWeather]   = At(0x7e63c0),
-        [AreaStartWeather] = At(0x7e69a0),
-        [AreaStopWeather]  = At(0x7e69e0),
+        [AreaSetWeather]   = At(),
+        [AreaStartWeather] = At(),
+        [AreaStopWeather]  = At(),
 
         // --- #447: the rest of the table. The 142 Nm rows below are MECHANICAL -- MSVC mangling carries the
         //     return type Itanium drops (#433), so llvm-undname over nwmain.exe's 18237 exports pairs on
@@ -1597,19 +1592,19 @@ internal static unsafe class SymbolMap
         [CameraFollowControl] = Nm("?Control@CAurBehaviorCameraFollow@@UEAAHM@Z"),
         // CNWCModule has 0 exports; both found by offset signature (+0x2bc flag, +0x134, +0x88/+0x8c impulse,
         // +0x280) with tools/ghidra/ScanOffsets.java -- bodies decompile identical to Linux, vtable slots -8.
-        [TurnCamera] = At(0x7cfe60),
-        [TiltCamera] = At(0x7cfdb0),
-        [UpdateDriveMode] = At(0x6f1e40),   // #540: the one function carrying both 499999 and 250000 (ScanOffsets)
-        [WalkUpdateLocation] = At(0x8114d0),   // CX-682: the one function with both "RUNDIST" and "WALKDIST" (StringRefs)
-        [TestDirectLine] = At(0x7e6a20),       // CX-682: WalkPlayerToPoint's 7-slot line-test callee (docs/windows-symbols.md)
+        [TurnCamera] = At(),
+        [TiltCamera] = At(),
+        [UpdateDriveMode] = At(),   // #540: the one function carrying both 499999 and 250000 (ScanOffsets)
+        [WalkUpdateLocation] = At(),   // CX-682: the one function with both "RUNDIST" and "WALKDIST" (StringRefs)
+        [TestDirectLine] = At(),       // CX-682: WalkPlayerToPoint's 7-slot line-test callee (docs/windows-symbols.md)
         [SdlSetRelativeMouseMode] = Nm("SDL_SetRelativeMouseMode"),
         [SdlWarpMouseInWindow] = Nm("SDL_WarpMouseInWindow"),
         // #543: CGuiInGame is not exported; both reached from the anchored HandleServerToPlayerMessage (0x7a41a0)
         // case 0x33 -> cutscene handler 0x786450 -> minor 7's ToggleOff / UnToggleOff arms, bodies identical to Linux.
-        [GuiInGameToggleOff] = At(0x6fc6f0),
-        [GuiInGameUnToggleOff] = At(0x6fc900),
+        [GuiInGameToggleOff] = At(),
+        [GuiInGameUnToggleOff] = At(),
         [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),
-        [CycleTidControllerVtbl] = At(0xd905c0),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
+        [CycleTidControllerVtbl] = At(),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [DoBinBucket] = Nm("?DoBinBucket@Scene@@EEAAXXZ"),
         [DoDynamicMeshProjections] = Nm("?DoDynamicMeshProjections@Scene@@EEAAXPEAVPartLight@@@Z"),
         [DoGobShadows] = Nm("?DoGobShadows@Scene@@EEAAXPEAVPartLight@@@Z"),
@@ -1649,7 +1644,7 @@ internal static unsafe class SymbolMap
         [GlMaxElementIndices] = Nm("?GetVertexBufferMaxElementIndices@GLRender@@CAHXZ"),
         [GlMaxElementVertices] = Nm("?GetVertexBufferMaxElementVertices@GLRender@@CAHXZ"),
         [GlOrphanBuffers] = Nm("?g_bOrphanBuffersBeforeWrite@@3HA"),
-        [GlPoolTableAnchor] = At(0x128ead8),   // the {base,count} pair itself -- GetPoolBuffer loads it, UnlockPool leas it
+        [GlPoolTableAnchor] = At(),   // the {base,count} pair itself -- GetPoolBuffer loads it, UnlockPool leas it
         [GlRenderBones] = Nm("?m_bones@GLRender@@0PAVMatrix4x4@@A"),
         [GlRenderVertexData] = Nm("?RenderVertexData@GLRender@@CAXPEAVVertexDataObject@@IW4AuroraPrimitiveTypes@Aurora@@II@Z"),
         [GlRenderVertexStreamData] = Nm("?RenderVertexStreamData@GLRender@@CAXPEAVVertexStreamDataObject@@W4AuroraPrimitiveTypes@Aurora@@II@Z"),
@@ -1667,7 +1662,7 @@ internal static unsafe class SymbolMap
         [GrassInfo] = Nm("?g_GrassInfo@@3V?$List@VCAurGrassInfo@@@@A"),
         [GrassNearRadius] = Nm("?m_fNearRadiusSquared@CAurTriangleBin@@2MA"),
         [GuiUpdateAndRender] = Nm("?UpdateAndRender@CGuiMan@@QEAAXM@Z"),
-        [HideCompass] = At(0x6f9060),
+        [HideCompass] = At(),
         [LightAreaAmbient] = Nm("?m_lightAreaAmbient@GLRender@@0VVector@@A"),
         [LightAreaDiffuse] = Nm("?m_lightAreaDiffuse@GLRender@@0VVector@@A"),
         [LightAreaDiffuseDir] = Nm("?m_lightAreaDiffuseDirection@GLRender@@0VVector@@A"),
@@ -1691,7 +1686,7 @@ internal static unsafe class SymbolMap
         [OnLostFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
         [PartAnimate] = Nm("?Animate@Part@@UEAAXM@Z"),
         [PartDanglyAnimate] = Nm("?Animate@PartDanglyMesh@@UEAAXM@Z"),
-        [PartDanglyMeshVtbl] = At(0xd88698),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
+        [PartDanglyMeshVtbl] = At(),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [PartDtor] = Nm("??1Part@@UEAA@XZ"),
         [GobAppend] = LinuxOnly("#397 diagnostic watch; no swap forensics on Windows yet"),
         [GobAmputate] = LinuxOnly("#397 diagnostic watch; no swap forensics on Windows yet"),
@@ -1700,19 +1695,19 @@ internal static unsafe class SymbolMap
         [SharedMaterialInit] = Nm("?Init@SharedMaterial@@QEAAXPEBD@Z"),
         // The exported ??1SharedMaterial has NO callers: MSVC inlined it into the scalar deleting destructor
         // (this, flags), which RemoveRef and RefreshSharedMaterial call -- the same two callers as Linux D2.
-        [SharedMaterialDtor] = At(0x81f80),
+        [SharedMaterialDtor] = At(),
         [LoadTexture] = Nm("?LoadTexture@@YAPEAVCAurTexture@@PEBD@Z"),
         [AurTextureRelease] = Nm("?AurTextureRelease@@YAXPEAVCAurTexture@@@Z"),
         [PartEmitterDtor] = Nm("??1PartEmitter@@UEAA@XZ"),
         [PartGetIsOpaque] = Nm("?GetIsOpaque@PartTriMesh@@QEAA_NXZ"),
         [PartGetWorld] = Nm("?GetWorld@Part@@UEAAXAEAVVector@@AEAVQuaternion@@@Z"),
-        [PartSkinVtbl] = At(0xd88438),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
+        [PartSkinVtbl] = At(),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [PltOnGpu] = Nm("?g_bGeneratePLTOnGPU@@3HA"),
         [PopCurrentMatrix] = Nm("?PopCurrentMatrix@RenderInterface@@SAXXZ"),
-        [PrimTypeTranslationTable] = At(0xd8ad20),   // the {0,1,3,4,5,6,2} run in .rdata; RenderVertexData leas it three times
+        [PrimTypeTranslationTable] = At(),   // the {0,1,3,4,5,6,2} run in .rdata; RenderVertexData leas it three times
         [ProjectionAlpha] = Nm("?projectionalpha@@3MA"),
         [PushCurrentMatrix] = Nm("?PushCurrentMatrix@RenderInterface@@SAXXZ"),
-        [QuickbarReposition] = At(0x860010),
+        [QuickbarReposition] = At(),
         [ReloadGrass] = Nm("?ReloadGrass@Scene@@UEAAXXZ"),
         [RenderDrawBucket] = Nm("?RenderDrawBucket@Scene@@QEAAXH@Z"),
         [RenderDynamicShadows] = Nm("?RenderDynamicShadows@Scene@@QEAAXXZ"),
@@ -1753,7 +1748,7 @@ internal static unsafe class SymbolMap
         [SetOrthoTransform] = Nm("?SetOrthoTransform@RenderInterface@@SAXNNNNNN@Z"),
         [SetPositionScreen] = Nm("?SetPositionScreen@CGuiPanel@@QEAAXHH@Z"),
         [SetPriMsgFilter] = LinuxOnly("#14 chat-render probe, no caller"),
-        [ShowCompass] = At(0x6fb490),
+        [ShowCompass] = At(),
         [SsaoIntensity] = Nm("?ssao_intensity@@3MA"),
         [ToonColorEdge] = Nm("?toon_color_edge_threshold@@3MA"),
         [ToonDepthEdge] = Nm("?toon_depth_edge_threshold@@3MA"),
@@ -1776,35 +1771,35 @@ internal static unsafe class SymbolMap
         [RadialCtorCounter]        = Nm("?g_nCRadialMenu_ctorCounter@@3HA"),
         [StringGobGetTextLineCount] = Nm("?GetTextLineCount@StringGob@@UEAAHXZ"),
         [StringGobGetTextLine]     = Nm("?GetTextLine@StringGob@@UEAAPEBDH@Z"),
-        [VtCRadialMenu]            = At(0xdb2e20),
-        [VtCGuiCreatureMenu]       = At(0xe74340),
-        [VtCClientSpellMenu]       = At(0xe75bd8),
-        [VtCRadialSpellMenu]       = At(0xe76af8),
-        [VtCClientTrapMenu]        = At(0xe77b90),
-        [VtCGuiItemMenu]           = At(0xe761d8),
-        [VtCGuiPlaceableMenu]      = At(0xe78030),
-        [VtCGuiDoorMenu]           = At(0xe77670),
-        [VtCGuiQuickbarMenu]       = At(0xe77340),
-        [VtCGuiChatWindowMenu]     = At(0xe78838),
+        [VtCRadialMenu]            = At(),
+        [VtCGuiCreatureMenu]       = At(),
+        [VtCClientSpellMenu]       = At(),
+        [VtCRadialSpellMenu]       = At(),
+        [VtCClientTrapMenu]        = At(),
+        [VtCGuiItemMenu]           = At(),
+        [VtCGuiPlaceableMenu]      = At(),
+        [VtCGuiDoorMenu]           = At(),
+        [VtCGuiQuickbarMenu]       = At(),
+        [VtCGuiChatWindowMenu]     = At(),
         // --- CX-694 self pins: unexported handlers, paired by SetEntryx tuple + body (docs/windows-symbols.md).
-        [CreatureMenuUseFeat]      = At(0x998520),
-        [CreatureMenuEmote]        = At(0x997c30),
-        [CreatureMenuToggleMode]   = At(0x9984d0),
-        [CreatureMenuQuickChat]    = At(0x998100),
-        [CreatureMenuUseSkill]     = At(0x9987d0),
-        [CreatureMenuRest]         = At(0x998150),
-        [CreatureMenuCharacterSheet] = At(0x996110),
-        [SpellMenuCast]            = At(0x9a4540),
-        [SpellMenuCastSla]         = At(0x9a4610),
-        [SpellMenuUseFeat]         = At(0x9a4770),
-        [SpellMenuTargetIsValid]   = At(0x9a4910),
-        [CreatureMenuCtor]         = At(0x98e140),
-        [SpellMenuCtor]            = At(0x9a10e0),
+        [CreatureMenuUseFeat]      = At(),
+        [CreatureMenuEmote]        = At(),
+        [CreatureMenuToggleMode]   = At(),
+        [CreatureMenuQuickChat]    = At(),
+        [CreatureMenuUseSkill]     = At(),
+        [CreatureMenuRest]         = At(),
+        [CreatureMenuCharacterSheet] = At(),
+        [SpellMenuCast]            = At(),
+        [SpellMenuCastSla]         = At(),
+        [SpellMenuUseFeat]         = At(),
+        [SpellMenuTargetIsValid]   = At(),
+        [CreatureMenuCtor]         = At(),
+        [SpellMenuCtor]            = At(),
         // --- CX-693: AurTextureFind is a name export; the icon vftables are MSVC labels (FindSym.java, build 0x68e408bc).
         [AurTextureFind]           = Nm("?AurTextureFind@@YAPEAVCAurTexture@@PEBD0PEAHH_N@Z"),
-        [VtCLayeredIcon]           = At(0xdaf750),
-        [VtCCompositeIcon]         = At(0xdaf708),
-        [VtCArmorIcon]             = At(0xdaf6c0),
+        [VtCLayeredIcon]           = At(),
+        [VtCCompositeIcon]         = At(),
+        [VtCArmorIcon]             = At(),
     };
 
     /// <summary>Why a symbol does not resolve on Windows, in the words of its own row. A key that is missing
@@ -1826,6 +1821,16 @@ internal static unsafe class SymbolMap
         }
     }
 
+    /// <summary>Every symbol carried by address on Windows -- what a later build's file must re-anchor.</summary>
+    internal static IEnumerable<string> Anchored
+    {
+        get
+        {
+            foreach (var kv in _win)
+                if (kv.Value.At) yield return kv.Key;
+        }
+    }
+
     /// <summary>Join <c>/knobs</c>, beside the layout counter. Once, from the host.</summary>
     public static void Register() => KnobSurface.Note(() =>
     {
@@ -1833,7 +1838,7 @@ internal static unsafe class SymbolMap
         foreach (Win w in _win.Values)
         {
             if (w.Name is not null) nm++;
-            else if (w.Rva != 0) at++;
+            else if (w.At) at++;
             else if (!w.Counted) only++;
         }
         return $"windows symbols: {_win.Count} row(s), {nm} exported + {at} anchored, " +
@@ -1870,7 +1875,7 @@ internal static unsafe class SymbolMap
             return IntPtr.Zero;
         }
 
-        if (!_win.TryGetValue(linux, out Win w) || (w.Name is null && w.Rva == 0))
+        if (!_win.TryGetValue(linux, out Win w) || (w.Name is null && !w.At))
         {
             log?.Info($"symbol: no Windows resolution for {linux} ({Why(w)}); skipping");
             return IntPtr.Zero;
@@ -1881,7 +1886,8 @@ internal static unsafe class SymbolMap
             log?.Info($"symbol: Windows export not found: {w.Name}");
             return IntPtr.Zero;
         }
-        return BuildMatches(log) ? Base + w.Rva : IntPtr.Zero;   // RVA path is build-locked
+        int rva = ClientBuilds.Rva(linux);
+        return BuildMatches(log) && rva != 0 ? Base + rva : IntPtr.Zero;   // RVA path is build-locked
     }
 
     /// <summary>
@@ -1897,9 +1903,10 @@ internal static unsafe class SymbolMap
         {
             if (Resolve(sym, log) != IntPtr.Zero) continue;
             string why = !OperatingSystem.IsWindows() ? "not exported by this client build"
-                : !_win.TryGetValue(sym, out Win w) || (w.Name is null && w.Rva == 0) ? Why(w)
+                : !_win.TryGetValue(sym, out Win w) || (w.Name is null && !w.At) ? Why(w)
                 : w.Name is not null ? $"Windows export {w.Name} missing"
-                : $"nwmain.exe build 0x{_stamp:x8} != expected 0x{WindowsBuildStamp:x8} (rot: re-derive, docs/windows-symbols.md)";
+                : BuildMatches(null) ? $"build file {ClientBuilds.Current?.Name} carries no RVA for it (docs/update-day.md)"
+                : $"nwmain.exe build 0x{_stamp:x8} != expected 0x{ClientBuilds.Current?.Stamp ?? 0:x8} (rot: docs/update-day.md)";
             log.Always($"{feature}: standing down as a unit -- {sym}: {why}");
             return false;
         }
@@ -1907,7 +1914,7 @@ internal static unsafe class SymbolMap
     }
 
     /// <summary>
-    /// The loaded module's PE TimeDateStamp must equal <see cref="WindowsBuildStamp"/>, else the
+    /// The loaded module's PE TimeDateStamp must equal the running <see cref="ClientBuilds.Current"/>'s, else the
     /// RVAs address a different build. Checked once; on mismatch all RVA hooks skip.
     /// </summary>
     private static bool BuildMatches(ExtenderLog? log)
@@ -1916,11 +1923,12 @@ internal static unsafe class SymbolMap
         byte* b = (byte*)Base;
         int lfanew = *(int*)(b + 0x3c);                 // DOS header e_lfanew
         _stamp = *(uint*)(b + lfanew + 4 + 4);          // PE sig(4) + COFF: TimeDateStamp at +4
-        bool ok = _stamp == WindowsBuildStamp;
+        uint want = ClientBuilds.Current?.Stamp ?? 0;
+        bool ok = _stamp == want;
         if (!ok)
         {
-            log?.Info($"symbol: nwmain.exe build 0x{_stamp:x8} != expected 0x{WindowsBuildStamp:x8}; " +
-                      "RVA hooks disabled -- re-derive (docs/windows-symbols.md)");
+            log?.Info($"symbol: nwmain.exe build 0x{_stamp:x8} != expected 0x{want:x8}; " +
+                      "RVA hooks disabled (docs/update-day.md)");
             // #457: no RotNotice here. The key gate in ServiceHost.Run refuses the same client before a
             // symbol is ever resolved, so this branch can no longer be the first to notice rot -- the popup
             // belongs where the policy is.

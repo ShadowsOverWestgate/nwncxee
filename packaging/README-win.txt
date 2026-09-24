@@ -1,4 +1,4 @@
-NWNCX:EE (CX) -- client extender for Windows -- @VERSION@, pinned to nwmain.exe build @STAMP@
+NWNCX:EE (CX) -- client extender for Windows -- @VERSION@, for client build(s) @BUILDS@
 
 Optional add-on for the Neverwinter Nights: Enhanced Edition client. Run the stock client and you
 play vanilla -- nothing here is required.
