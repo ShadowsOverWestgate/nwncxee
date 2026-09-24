@@ -49,6 +49,7 @@ public sealed unsafe partial class AlloyRenderer
     private static bool BeginOwnedFrame(int* display, int* viewport, out OwnedFrame f)
     {
         f = default;
+        long tSetup = FrameZones.Now, pose0 = FrameZones.Ticks(FrameZones.Zone.Pose);
         // #308 follow-up: consumed FIRST, above every early return -- a flag left standing across a refused
         // colour frame would make the NEXT frame's colour pass skip the pose against a shadow bracket that
         // may have sat that frame out, and every skinned part would draw a stale (or bind) pose.
@@ -145,7 +146,10 @@ public sealed unsafe partial class AlloyRenderer
         bool lightingOn = _litCount > 0 && _lighting && !Programs._litFailed && perspective
                           && (_isEnabled == null || _isEnabled(CapLighting) != 0);
 
+        FrameZones.Add(FrameZones.Zone.Setup, tSetup, FrameZones.Ticks(FrameZones.Zone.Pose) - pose0);
+        long tEnter = FrameZones.Now;
         if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); return false; }
+        FrameZones.Add(FrameZones.Zone.Enter, tEnter);
         long tOwn = FrameZones.Now;
         OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
         OwnedBuffers.ClearDirty();   // #260: geometry uploaded itself at the engine's commit; close the window
@@ -153,6 +157,7 @@ public sealed unsafe partial class AlloyRenderer
         ApplySwaps();   // #386: swapped texture names take their new handles here, in the context that owns residency
         OwnedBuffers.HighWater();    // ...and report the mark the funnel recorded, where a string is affordable
         FrameZones.Add(FrameZones.Zone.Own, tOwn);
+        long tPrep = FrameZones.Now, lights0 = FrameZones.Ticks(FrameZones.Zone.Lights);
         if (!Programs.EnsureProgram()) { GlContextService.Leave(); return false; }
         BindTarget();
         // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both
@@ -189,6 +194,7 @@ public sealed unsafe partial class AlloyRenderer
         // lit program, or a build that refused) would leave the water program reading undefined
         // BufferData contents -- an unbounded per-fragment light loop, not a dim sea.
         _waterArmed = FrameSnapshot.Usable && lightingOn && Programs.EnsureWaterProgram();
+        FrameZones.Add(FrameZones.Zone.Prep, tPrep, FrameZones.Ticks(FrameZones.Zone.Lights) - lights0);
         // #139/#132: from here to PassId.PostProcess the colour passes draw into an RGBA16F target that
         // shares the engine's depth, and everything they write is LINEAR. Asked BEFORE anything is
         // staged, because a refusal is no longer survivable: there is no display-space variant of the
@@ -198,6 +204,7 @@ public sealed unsafe partial class AlloyRenderer
         bool postOk = PostChain.Begin(viewport, engClear, engClearDepth);
         FrameZones.Add(FrameZones.Zone.Post, tPostBegin);
         if (!postOk) { GlContextService.Leave(); return false; }
+        long tPump = FrameZones.Now;
         GpuFrameStart();
         TickCycleTextures();
         // #287's scale, hoisted ahead of the staging walk: the automatic-LOD pick reads it there, and the
@@ -206,7 +213,7 @@ public sealed unsafe partial class AlloyRenderer
         MeshLod.Pump();   // the one GL edge of the LOD arena: collect what the worker finished
         MeshChart.Pump(); // ...and of the chart arenas (#673)
         DrainChartDeferred();   // #674: the offers the enrolment walk could not queue
-        DebugChartAudit();   // [DEBUG-cx25]
+        FrameZones.Add(FrameZones.Zone.Pump, tPump);
         long tBuild = FrameZones.Now;
         int groups = BuildBatches(lightingOn);
         FrameZones.Add(FrameZones.Zone.Build, tBuild);

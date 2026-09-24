@@ -121,6 +121,15 @@ public static class FrameZones
         Own,
         /// <summary>Nested in <see cref="Alloy"/>: the six-face IBL probe capture.</summary>
         Probe,
+        /// <summary>Nested in <see cref="Alloy"/>: the pass preamble ahead of the 4.6 bracket (target latch,
+        /// post precheck, present target, camera), minus its <see cref="Pose"/> child.</summary>
+        Setup,
+        /// <summary>Nested in <see cref="Alloy"/>: making the 4.6 context current.</summary>
+        Enter,
+        /// <summary>Nested in <see cref="Alloy"/>: program ensure, target bind, GL state, water program.</summary>
+        Prep,
+        /// <summary>Nested in <see cref="Alloy"/>: GPU frame start, cycle textures, the LOD/chart arena pumps.</summary>
+        Pump,
         /// <summary>#243: nested in <see cref="Alloy"/>: staging the cull's source list and the two GPU
         /// dispatches over it. CPU-side only -- what the dispatches themselves cost is GPU time and shows up
         /// in <see cref="Present"/> or in nothing at all.</summary>
