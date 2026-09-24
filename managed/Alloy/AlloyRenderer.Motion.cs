@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using CX.Framework;
 using CX.Graphics;
 
@@ -9,17 +10,58 @@ namespace CX.Alloy;
 /// camera field, every record whose model matrix changed THIS frame is drawn once more into the velocity
 /// target, depth-tested LEQUAL against the frame depth it already wrote, with the difference of its current
 /// and previous clip positions -- so a door swinging under a still camera carries its own motion and the
-/// static world around it keeps the camera-only estimate. Rigid opaque movers only (the staging walk picks
-/// them, <c>NoteMoverDraw</c>); skinned, dangly, grass, water, particles and every blended class stay on the
-/// camera path by design.</summary>
+/// static world around it keeps the camera-only estimate. Opaque movers only (the staging walk picks them,
+/// <c>NoteMoverDraw</c>); CX-26 adds posed skinmeshes, skinned with this frame's and last frame's palettes,
+/// and dangly meshes, with each vertex's position from before this frame's solve. Grass, water, particles and
+/// every blended class stay on the camera path by design.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>Draw indices of this pass's movers, serial-appended by the staging walk. ponytail: a fixed
-    /// cap with an overflow counter -- movers are doors and a handful of placeables; a crowd past the cap
-    /// falls back to camera-only vectors, which is what every other class gets anyway.</summary>
-    private const int MaxMoverDraws = 1024;
-    private static readonly int[] _mvDraw = new int[MaxMoverDraws];
-    private static int _mvN, _mvOverflow, _mvDrawn;
+    /// <summary>Draw indices of this pass's movers, serial-appended by the staging walk. Sized to every
+    /// draw (CX-26): with creatures in, a crowd moves thousands of parts a frame, and a cap would hand the
+    /// ones past it camera-only vectors -- exactly the ghosting this pass exists to remove.</summary>
+    private static readonly int[] _mvDraw = new int[MaxOwned];
+    private static int _mvN, _mvDrawn, _mvSkinDrawn, _mvDanglyDrawn;
+    private static bool _mvSkinned, _mvDangly;
+    private static int _mvDanglyLoc;
+
+    /// <summary>CX-26: dangly positions from before this frame's solve, part-local xyz, appended per owned
+    /// part by <see cref="NoteDanglyPrev"/> and reset by the first append of a new frame. Native and growing
+    /// for <c>EnsureBoneSlots</c>' reason.</summary>
+    private static float* _dpStage;
+    private static int _dpUsed, _dpCap, _dpSeq = -1;
+    private static uint _dpBuf;
+    /// <summary>Per ownership slot: the frame its snapshot is from, and where in <see cref="_dpStage"/> and
+    /// how many vertices.</summary>
+    private static readonly int[] _oDpAt = new int[MaxOwned], _oDpBase = new int[MaxOwned], _oDpN = new int[MaxOwned];
+    /// <summary>CX-26: last frame's dangly vertices, read by the mover sweep alone.</summary>
+    internal const uint BindDanglyPrev = 27;
+
+    /// <summary>The dangly solve's hand-off, called before it overwrites <paramref name="dst"/>: keep the
+    /// outgoing positions of an OWNED part for the mover sweep. Main thread, per dangly part per frame;
+    /// allocates only when the stage grows, and a refused grow drops the part to its rigid vectors.</summary>
+    internal static void NoteDanglyPrev(IntPtr part, float* dst, int n)
+    {
+        // Unarmed, _frameSeq stands still and the stage would never reset.
+        int i = _armed ? OwnedSlotOf(part) : -1;
+        if (i < 0) return;
+        if (_dpSeq != _frameSeq) { _dpSeq = _frameSeq; _dpUsed = 0; }
+        int need = _dpUsed + n * 3;
+        if (need > _dpCap)
+        {
+            int cap = Math.Max(_dpCap * 2, Math.Max(need, 1 << 16));
+            float* next;
+            try { next = (float*)NativeMemory.Realloc(_dpStage, (nuint)cap * sizeof(float)); }
+            catch (OutOfMemoryException) { return; }
+            if (next == null) return;
+            _dpStage = next; _dpCap = cap;
+        }
+        Buffer.MemoryCopy(dst, _dpStage + _dpUsed, (long)n * 12, (long)n * 12);
+        _oDpAt[i] = _frameSeq; _oDpBase[i] = _dpUsed; _oDpN[i] = n;
+        _dpUsed = need;
+    }
+
+    /// <summary>Was slot <paramref name="i"/>'s dangly solve snapshotted this frame?</summary>
+    private static bool DanglyPrevNow(int i) => _oDpAt[i] == _frameSeq && _dpSeq == _frameSeq;
     private static uint _progMotion;
     private static int _mvVp, _mvPrevVp, _mvJitter, _mvSize, _mvBase;
     private static bool _mvBuilt, _mvFailed;
@@ -29,9 +71,11 @@ public sealed unsafe partial class AlloyRenderer
     /// wrong camera. Flag writes only; safe from any point of the frame.</summary>
     public static void CameraCut() { MotionVectors.Revoke(); TaaStage.Reset(); }
 
-    private static void NoteMoverDraw(int n)
+    private static void NoteMoverDraw(int n, bool skinned, bool dangly)
     {
-        if (_mvN < MaxMoverDraws) _mvDraw[_mvN++] = n; else _mvOverflow++;
+        _mvDraw[_mvN++] = n;
+        _mvSkinned |= skinned;
+        _mvDangly |= dangly;
     }
 
     /// <summary>The mover sweep, inside the motion bracket. Reads the STAGED slot buffer, so it must run
@@ -40,11 +84,14 @@ public sealed unsafe partial class AlloyRenderer
     private static void MoverMotionPass(Matrix4x4* vp, float jx, float jy, int* viewport)
     {
         int n = _mvN; _mvN = 0;
+        bool skinned = _mvSkinned, dangly = _mvDangly; _mvSkinned = false; _mvDangly = false;
         try
         {
             if (n == 0 || _mvFailed) return;
             if (!_mvBuilt) EnsureMotionProgram();
             if (_progMotion == 0 || !MotionVectors.BeginMovers(PostChain.DepthTex, viewport)) return;
+            if (skinned) Issue.UploadBoneBlock(ref _bonePrevBuf, _bonePrevStage, BindBonesPrev);   // only a frame a skinned mover draws
+            if (dangly) UploadDanglyPrev();
             Sweep(n, vp, jx, jy, viewport);
             MotionVectors.EndMovers(PostChain.Fbo, viewport);
         }
@@ -71,10 +118,25 @@ public sealed unsafe partial class AlloyRenderer
             if (vao == 0) continue;
             BindBatchState(_oNoCull[i], vao, ref boundCull, ref boundVao);
             Gl.Uniform1i(_mvBase, d);
+            if (DanglyPrevNow(i)) { Gl.Uniform2i(_mvDanglyLoc, _oDpBase[i], _oDpN[i]); _mvDanglyDrawn++; }
+            else Gl.Uniform2i(_mvDanglyLoc, 0, 0);
             Gl.MultiDrawElementsBaseVertex(_primTable[_oPrim[i]], counts + d, GlUnsignedShort, (void**)(offs + d), 1, bases + d);
             _mvDrawn++;
+            if (_oBone[i] >= 0) _mvSkinDrawn++;
         }
         Gl.BindVertexArray(0);
+    }
+
+    /// <summary>This frame's dangly snapshots onto <see cref="BindDanglyPrev"/>. Orphan-then-fill.</summary>
+    private static void UploadDanglyPrev()
+    {
+        if (_dpBuf == 0) { uint b; Gl.GenBuffers(1, &b); _dpBuf = b; }
+        var size = (IntPtr)((long)Math.Max(_dpUsed, 1) * sizeof(float));
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _dpBuf);
+        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, size, null, Gl.DYNAMIC_DRAW);
+        if (_dpUsed > 0) Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, size, _dpStage);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDanglyPrev, _dpBuf);
     }
 
     private static void EnsureMotionProgram()
@@ -84,22 +146,24 @@ public sealed unsafe partial class AlloyRenderer
         if (_progMotion == 0) { _mvFailed = true; _log?.Info("MoverMotion: the program did not build -- movers keep camera-only vectors"); return; }
         _mvVp = GlProgram.Loc(_progMotion, "uVP"); _mvPrevVp = GlProgram.Loc(_progMotion, "uPrevVP");
         _mvJitter = GlProgram.Loc(_progMotion, "uJitter"); _mvSize = GlProgram.Loc(_progMotion, "uSize");
-        _mvBase = GlProgram.Loc(_progMotion, "uDrawBase");
+        _mvBase = GlProgram.Loc(_progMotion, "uDrawBase"); _mvDanglyLoc = GlProgram.Loc(_progMotion, "uDangly");
     }
 
     /// <summary>The [alloy] period term for the sweep; resets the counters.</summary>
     internal static string MoverStats(int frames)
     {
-        int d = _mvDrawn, o = _mvOverflow; _mvDrawn = 0; _mvOverflow = 0;
-        return _mvFailed ? "movers FAILED" : d == 0 ? "" : $", {(float)d / MathF.Max(frames, 1):F1} mover draws/frame" + (o > 0 ? $" ({o} past the cap)" : "");
+        int d = _mvDrawn, sk = _mvSkinDrawn, dg = _mvDanglyDrawn; _mvDrawn = 0; _mvSkinDrawn = 0; _mvDanglyDrawn = 0;
+        float f = MathF.Max(frames, 1);
+        return _mvFailed ? "movers FAILED" : d == 0 ? "" : $", {d / f:F1} mover draws/frame ({sk / f:F1} skinned, {dg / f:F1} dangly)";
     }
 
     /// <summary>Context loss: the program name is gone.</summary>
-    private static void MotionContextLost() { _progMotion = 0; _mvBuilt = false; _mvFailed = false; _mvN = 0; }
+    private static void MotionContextLost() { _progMotion = 0; _mvBuilt = false; _mvFailed = false; _mvN = 0; _mvSkinned = false; _mvDangly = false; _dpBuf = 0; }
 
     /// <summary>The mover vertex stage. <c>gl_Position</c> is the prepass's exact <see cref="ClipExpr"/> text
     /// under <c>invariant</c>, so LEQUAL against the depth the mover already wrote passes on every fragment;
-    /// the previous clip position rides through the record's <c>prev</c> and last frame's view-projection.</summary>
+    /// the previous clip position rides through the record's <c>prev</c> and last frame's view-projection, and
+    /// for a posed skinmesh (CX-26) through last frame's palette at <see cref="BindBonesPrev"/>.</summary>
     internal static string MotionVs => ShaderSource.Get("cx_motion_v.glsl");
 
     /// <summary>The same convention as <see cref="MotionVectors.CameraFs"/>: prev minus current, render pixels,

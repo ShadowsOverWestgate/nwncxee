@@ -731,7 +731,7 @@ public sealed unsafe partial class AlloyRenderer
             }
         }
         _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = 0;
-        _mvN = 0;   // #392: this pass's mover list, whether or not a velocity pass consumes it
+        _mvN = 0; _mvSkinned = false; _mvDangly = false;   // #392: this pass's mover list, whether or not a velocity pass consumes it
         // #242: the persistent buffer grows to the high-water ownership count and never shrinks. A growth
         // reallocates it, so everything in it goes back up on this frame rather than only the movers.
         if (_ownCount > _recOwnCap) { _recOwnCap = _ownCount; _recDirtyAll = true; }
@@ -883,11 +883,13 @@ public sealed unsafe partial class AlloyRenderer
             // order does not, so the draw carries the slot rather than the record.
             _dSlot[n] = i;
             // #392: a matrix mover this frame -- its record's prev lags its model by one frame, and the velocity
-            // stage redraws it with both. Rigid and opaque only: a skinned or displaced mesh moves under a
-            // matrix that does not, and a cutout mover would paint its own velocity over its holes.
-            if (_recMovedAt[i] == _frameSeq && _oMx[i] && _oBone[i] < 0 && cls == (int)AlloyClass.Opaque
-                && !ShaderFeatures.OutOfPrepass(feat))
-                NoteMoverDraw(n);
+            // stage redraws it with both. CX-26: a posed skinmesh is one too when its palette changed, and the
+            // stage skins it with both palettes. Opaque only: a displaced mesh moves under a matrix that does
+            // not, and a cutout mover would paint its own velocity over its holes.
+            bool posed = _oBone[i] >= 0, dangly = !posed && DanglyPrevNow(i), recMoved = _recMovedAt[i] == _frameSeq;
+            bool moved = posed ? recMoved || _poseMovedAt[i] == _frameSeq : dangly || recMoved && _oMx[i];
+            if (moved && cls == (int)AlloyClass.Opaque && !ShaderFeatures.OutOfPrepass(feat))
+                NoteMoverDraw(n, posed, dangly);
             // #287: and the same draw as the cull's source record -- the batch is the one the cut just
             // opened or extended, and its output base is where its compacted run starts.
             CullPass.Pack(srcAll + (long)n * CullPass.SrcUints, idxCount, _dOff[n], _dBase[n], i,

@@ -166,16 +166,19 @@ public sealed unsafe partial class AlloyRenderer
     /// <see cref="NotePartDeath"/> uses, no allocation. A part not (yet) owned is not a caster and needs no stamp.</summary>
     internal static bool NoteDanglyMoved(IntPtr part, float dist, float still)
     {
+        int i = OwnedSlotOf(part);
+        if (i < 0 || !Accumulate(ref _oDanglyAcc[i], dist, still)) return false;
+        _oDanglyMovedAt[i] = _frameSeq;
+        return true;
+    }
+
+    /// <summary>The ownership slot holding <paramref name="part"/>, or -1: the O(1) enrollment-hash probe.</summary>
+    private static int OwnedSlotOf(IntPtr part)
+    {
         int mask = (1 << SlotHashBits) - 1;
         for (int j = SlotHash(part); _shGen[j] == _enrollGen; j = (j + 1) & mask)
-            if (_oTri[_shSlot[j]] == part)
-            {
-                int i = _shSlot[j];
-                if (!Accumulate(ref _oDanglyAcc[i], dist, still)) return false;
-                _oDanglyMovedAt[i] = _frameSeq;
-                return true;
-            }
-        return false;
+            if (_oTri[_shSlot[j]] == part) return _shSlot[j];
+        return -1;
     }
 
     /// <summary>The mover verdict: the displacement path length since the last report crosses the threshold.

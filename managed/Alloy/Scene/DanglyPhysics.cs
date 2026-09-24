@@ -254,6 +254,7 @@ internal static unsafe class DanglyPhysics
         float stiff = StiffnessGain * *(float*)(node + MdlTightness);
         float damp = DampingGain * *(float*)(node + MdlPeriod);
         float maxSq = 0f;
+        AlloyRenderer.NoteDanglyPrev(part, dst, n);
 
         for (int i = 0; i < n; i++)
         {

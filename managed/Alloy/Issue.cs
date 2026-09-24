@@ -179,16 +179,22 @@ internal static unsafe class Issue
     /// even on a frame where no draw reads it.</summary>
     internal static void UploadBones()
     {
-        if (!_skinning) return;
-        if (_boneBuf == 0) { uint b; Gl.GenBuffers(1, &b); _boneBuf = b; }
+        if (_skinning) UploadBoneBlock(ref _boneBuf, _boneStage, BindBones);
+    }
+
+    /// <summary>One bone block, <c>_boneSlots</c> palettes from <paramref name="stage"/>, onto
+    /// <paramref name="binding"/>. Shared by the current palette and CX-26's previous one.</summary>
+    internal static void UploadBoneBlock(ref uint buf, float* stage, uint binding)
+    {
+        if (buf == 0) { uint b; Gl.GenBuffers(1, &b); buf = b; }
         var size = (IntPtr)((long)Math.Max(_boneSlots, 1) * BoneFloats * sizeof(float));
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _boneBuf);
+        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, buf);
         Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, size, null, Gl.DYNAMIC_DRAW);
         if (_boneSlots > 0)
             Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
-                             (IntPtr)((long)_boneSlots * BoneFloats * sizeof(float)), _boneStage);
+                             (IntPtr)((long)_boneSlots * BoneFloats * sizeof(float)), stage);
         Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindBones, _boneBuf);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, binding, buf);
     }
 
     /// <summary>Phase B: one bind set + one glMultiDrawElementsBaseVertex per batch. uDrawBase is re-sent for

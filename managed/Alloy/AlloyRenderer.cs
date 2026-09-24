@@ -108,6 +108,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// bracket and read at the next bake, this one is written and read inside a single colour pass, and
     /// coupling two lifetimes to save 256KB buys a class of bug nobody can see.</para></summary>
     internal const uint BindBones = 7;
+    /// <summary>CX-26: last frame's bone block, read by the mover sweep alone.</summary>
+    internal const uint BindBonesPrev = 26;
     /// <summary>#153 bindless: SSBO binding of the per-draw texture-handle block (8 uvec2 per record).
     /// 0..3 = the light rig, 4 = draws, 5 = caster records, 6 = caster bones, 7 = Alloy bones.</summary>
     internal const uint BindTexH = 8;
@@ -1231,6 +1233,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // single part, so the engine walks every one of them itself -- and would then solve each pose a
         // second time.
         if (!_skinning || Programs._progFailed || _batchUnavailable) { _boneSlots = 0; return; }
+        // CX-26: once a FRAME -- a second pose in the same frame (a reflection subframe) re-solves the same
+        // animation state and must not make it its own history.
+        bool roll = _poseRollSeq != _frameSeq;
+        if (roll) { _poseRollSeq = _frameSeq; float* t = _boneStage; _boneStage = _bonePrevStage; _bonePrevStage = t; }
         for (int k = 0; k < _skinCount; k++)
         {
             int i = _skinOrder[k];
@@ -1243,10 +1249,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // an unsolved pose -- the part was already gone, and conflating the two would send the next
             // diagnosis after a skinning bug that is really a lifetime one.
             if (!IdentityOk(i, _oTri[i])) { FreeBoneSlot(prev); RevokeSkinned(i); continue; }
-            int slot = prev >= 0 && prev < _boneTop && _boneOwner[prev] == i ? prev : AllocBoneSlot(i);
+            bool held = prev >= 0 && prev < _boneTop && _boneOwner[prev] == i;
+            int slot = held ? prev : AllocBoneSlot(i);
             if (slot < 0 || !SkinPose.Solve(_oTri[i], _boneStage + (long)slot * BoneFloats))
             { Counters._skinNoPose++; FreeBoneSlot(slot); RevokeSkinned(i); continue; }
             _oBone[i] = slot;
+            // CX-26: a fresh slot's history is its own pose (the rigid `fresh` rule); a held one moved if
+            // the palette differs from last frame's.
+            var was = new Span<float>(_bonePrevStage + (long)slot * BoneFloats, BoneFloats);
+            var now = new ReadOnlySpan<float>(_boneStage + (long)slot * BoneFloats, BoneFloats);
+            if (!held) now.CopyTo(was);
+            else if (roll && !now.SequenceEqual(was)) _poseMovedAt[i] = _frameSeq;
             Counters._skinDrawn++;
             // #302: no separate shadow feed. The pose lands in _oBone/feat.y and the bake reads it through
             // the same record and the same bone block the colour pass draws from.
@@ -1275,11 +1288,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (want <= _boneCap) return true;
         int cap = _boneCap == 0 ? MaxBoneSlots : _boneCap;
         while (cap < want) cap *= 2;
-        float* next;
-        try { next = (float*)NativeMemory.Realloc(_boneStage, (nuint)cap * BoneFloats * sizeof(float)); }
+        float* next, prev;
+        nuint bytes = (nuint)cap * BoneFloats * sizeof(float);
+        try { next = (float*)NativeMemory.Realloc(_boneStage, bytes); }
         catch (OutOfMemoryException) { return false; }
         if (next == null) return false;
-        _boneStage = next; _boneCap = cap;
+        _boneStage = next;
+        try { prev = (float*)NativeMemory.Realloc(_bonePrevStage, bytes); }
+        catch (OutOfMemoryException) { return false; }
+        if (prev == null) return false;
+        _bonePrevStage = prev; _boneCap = cap;
         return true;
     }
 
@@ -1331,7 +1349,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0; Programs._progSkyDecode = 0;
         Highlight.HighlightContextLost();
-        _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
+        _drawBuf = 0; _texHBuf = 0; _boneBuf = 0; _bonePrevBuf = 0;
         MotionContextLost();
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
         // capacity so the next upload reallocates rather than writing into a dead name, and the epoch so

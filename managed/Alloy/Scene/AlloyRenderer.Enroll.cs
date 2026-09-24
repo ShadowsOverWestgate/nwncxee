@@ -476,7 +476,7 @@ public sealed unsafe partial class AlloyRenderer
         for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBboxMin + b * 4);   // #336: +0x64..+0x78
         // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
         // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
-        if (!kept) _oBone[i] = -1;
+        if (!kept) { _oBone[i] = -1; _oDpAt[i] = -1; }   // CX-26: nor the last tenant's dangly snapshot
         _oDangly[i] = PartTable.IsDangly(c.Tri);   // #302: a permanent shadow mover
         if (c.Gob != IntPtr.Zero) Counters._gobOwned++;
         // #126: the local bbox centre, for the blended pass's back-to-front key.

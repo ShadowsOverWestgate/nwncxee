@@ -10,7 +10,7 @@ namespace CX.Alloy;
 /// reprojected through the PREVIOUS frame's view-projection and the screen-space difference is written to
 /// an RG16F target. This is exact for every pixel whose model matrix did not move -- most of a NWN frame --
 /// and wrong by the object's own motion for the rest; #392's mover sweep corrects the rigid matrix movers over
-/// it, and per-bone history is a later step (docs/research/fsr2-opengl.md, section 5).
+/// it, and CX-26 the posed skinmeshes (last frame's palette) and dangly meshes (pre-solve positions).
 /// <para><b>Convention</b>: motion from the CURRENT position to the PREVIOUS one (<c>prev - cur</c>, FSR2's),
 /// in RENDER pixels, GL y-up, UNJITTERED -- the depth is inverted through the jittered view-projection it was
 /// written with, and the current NDC has this frame's jitter (#389) taken back out before the subtraction,
@@ -185,8 +185,15 @@ internal static unsafe class MotionVectors
         var check = new Checker(log);
         check.Expect(CameraFs.Contains("prev.xy / prev.w - (ndc.xy - uJitter)"), "motion is previous minus current (FSR2's convention), the current unjittered");
         check.Expect(AlloyRenderer.MotionFs.Contains("vPrev.xy / vPrev.w - (vCur.xy / vCur.w - uJitter)") && AlloyRenderer.MotionVs.Contains(AlloyRenderer.ClipExpr)
-          && AlloyRenderer.MotionVs.Contains("invariant gl_Position;") && AlloyRenderer.MotionVs.Contains("uPrevVP * d.prev * vec4(aPos, 1.0)"),
+          && AlloyRenderer.MotionVs.Contains("invariant gl_Position;") && AlloyRenderer.MotionVs.Contains("uPrevVP * d.prev * vec4(p, 1.0)"),
           "the mover sweep (#392) shares the convention, and its clip position is the prepass's exact text");
+        check.Expect(AlloyRenderer.MotionVs.Contains("if (bb >= 0) gl_Position = uVP * d.model * pos;")
+          && AlloyRenderer.MotionVs.Contains($"binding = {AlloyRenderer.BindBonesPrev}")
+          && AlloyRenderer.MotionVs.Contains("uPrevVP * d.prev * (CxPrevSkinMat(bb) * vec4(aPos, 1.0))"),
+          "a skinned mover (CX-26) takes the prepass's skinned clip text and last frame's palette");
+        check.Expect(AlloyRenderer.MotionVs.Contains($"binding = {AlloyRenderer.BindDanglyPrev}")
+          && AlloyRenderer.MotionVs.Contains("int k = gl_VertexID - gl_BaseVertex;") && AlloyRenderer.MotionVs.Contains("k < uDangly.y"),
+          "a dangly mover (CX-26) reads its own vertex's pre-solve position, bounded by the snapshot");
         check.Expect(ShaderContract.RecordSafe(AlloyRenderer.MotionVs) && AlloyRenderer.PrevFloat == 44 && AlloyRenderer.DrawFloats == 72,
           "the mover stage declares the 72-float record, prev at float 44");
         _pendingPrev = Matrix4x4.CreateTranslation(1f, 0f, 0f); _pendingSeq = 3; _lastSeq = 2;

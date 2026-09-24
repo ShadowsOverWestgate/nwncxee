@@ -566,6 +566,14 @@ public sealed unsafe partial class AlloyRenderer
     internal static uint _boneBuf;
     internal static float* _boneStage;
     internal static int _boneSlots, _boneCap;
+    /// <summary>CX-26: last frame's palette, slot for slot beside <see cref="_boneStage"/> (the two swap
+    /// once a frame), for the mover sweep's previous clip position. Uploaded only when a skinned mover draws.</summary>
+    internal static uint _bonePrevBuf;
+    internal static float* _bonePrevStage;
+    /// <summary>CX-26: the frame a posed record's palette last differed from the one before it -- the
+    /// skinned twin of <c>_recMovedAt</c>, read by the mover pick.</summary>
+    private static readonly int[] _poseMovedAt = new int[MaxOwned];
+    private static int _poseRollSeq = -1;
     /// <summary>#137 armed: <c>ownskin</c> not 0. False refuses the skinmesh class at enrollment -- which
     /// since #264 means every cloak, robe and tail is NOT DRAWN, not drawn by the engine (#285).</summary>
     internal static bool _skinning;
