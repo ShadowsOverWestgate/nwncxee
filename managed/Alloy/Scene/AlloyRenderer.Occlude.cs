@@ -14,11 +14,11 @@ namespace CX.Alloy;
 /// camera focus to the camera position is marched through <c>Scene::HitCheck</c> (the same engine test the
 /// pull-in uses, <see cref="OccHitsPerRay"/> hits each, so at most 15 calls), and every hit is remembered
 /// as a point plus the gob it landed on. The route walk then tags a tile part whose enrolment box holds a
-/// hit point, or a gob part whose gob was hit, with a coverage that eases toward <c>walls.floor</c>;
-/// only placeables are faded (tiles, doors and creatures draw whole -- a tile hit still stops the ray fan);
-/// the record carries it in <c>rot.z</c> (|value| in (0,1), see <c>CxKeyhole</c>), the part rides the
-/// keyhole prepass sweep so its depth has the same holes, and the vis-ID target and the caster pass see it
-/// whole. Creatures are never faded; the player's own gob is on the hit record's ignore list.
+/// hit point, or a gob part whose gob was hit, with a fade that eases its alpha toward <c>walls.floor</c>;
+/// only placeables are faded (tiles, doors and creatures draw whole -- a tile hit still stops the ray fan).
+/// The faded alpha sends the part into the blended (OIT) run, as a fading tile's does, so it is truly
+/// translucent rather than screen-doored; its class is untouched, so the caster pass sees it whole.
+/// Creatures are never faded; the player's own gob is on the hit record's ignore list.
 /// <para>The engine's pull-in is switched off by <see cref="CameraFlagDisableCollision"/> in
 /// <see cref="ModuleCameraFlags"/> -- the same client field the server's <c>SetCameraFlags</c> lands in.
 /// Only the bit this session set is ever cleared, and a value that already holds is not rewritten.</para>
@@ -29,6 +29,9 @@ public sealed unsafe partial class AlloyRenderer
     private const float OccNudge = SceneRay.Nudge;
     /// <summary>The fade's ease rate per second (a knob would only ever be set to this).</summary>
     private const float OccRate = 8f;
+    /// <summary>Seconds a part counts as hit after its last ray hit: a ray grazing an edge flips hit/miss
+    /// frame to frame, and without the hold the screen-door re-thresholds every frame (flicker).</summary>
+    private const float OccHold = 0.25f;
 
     private static bool _occArmed;
     private static long _occLastTick;
@@ -44,9 +47,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Per slot: how far toward the floor the part is faded, 0 = not at all. Zero is the array's
     /// default, so a fresh slot needs no seeding and a re-tenanted one is cleared in UnstampChase.</summary>
     private static readonly float[] _occFade = new float[MaxOwned];
-    /// <summary>Per slot, this pass: the keyhole verdict the route walk took before the occluder tag joined
-    /// it, so the staged <c>rot.z</c> can keep the aperture's own gate (its sign).</summary>
-    private static readonly bool[] _occKey = new bool[MaxOwned];
+    /// <summary>Per slot: seconds of <see cref="OccHold"/> left since the last hit; cleared with the fade.</summary>
+    private static readonly float[] _occHeld = new float[MaxOwned];
     private static long _occFrames, _occCalls, _occTagged;
 
     private static void OccludeInit(ExtenderLog log)
@@ -136,8 +138,9 @@ public sealed unsafe partial class AlloyRenderer
     }
 
     /// <summary>Route-walk verdict for one opaque/cutout part: ease its fade toward "hit this frame" and
-    /// say whether it draws faded at all. Bounded by <see cref="OccMaxHits"/> compares per part.</summary>
-    private static bool OccludeVerdict(int i)
+    /// return it (0 = solid; the caller multiplies alpha by 1 - fade). Bounded by <see cref="OccMaxHits"/>
+    /// compares per part.</summary>
+    private static float OccludeVerdict(int i)
     {
         float f = _occFade[i];
         bool hit = false;
@@ -147,16 +150,18 @@ public sealed unsafe partial class AlloyRenderer
             if (gob != IntPtr.Zero)
                 for (int n = 0; n < _occHitN && !hit; n++) hit = _occHitGob[n] == gob;
         }
-        if (!hit && f == 0f) return false;
+        if (hit) _occHeld[i] = OccHold;
+        else if (_occHeld[i] > 0f) { _occHeld[i] -= _occDt; hit = true; }
+        if (!hit && f == 0f) return 0f;
         float target = hit ? 1f - Walls.Floor.V : 0f;
         f += (target - f) * _occStep;
         if (MathF.Abs(target - f) < 0.005f) f = target;
         _occFade[i] = f;
         if (f > 0f) _occTagged++;
-        return f > 0f;
+        return f;
     }
 
-    private static float _occStep;
+    private static float _occStep, _occDt;
 
     /// <summary>The easing step for this frame, from wall-clock dt (clamped so a hitch does not snap).</summary>
     private static void OccludeTick()
@@ -164,16 +169,7 @@ public sealed unsafe partial class AlloyRenderer
         long now = Stopwatch.GetTimestamp();
         float dt = _occLastTick == 0 ? 1f / 60f : (float)((now - _occLastTick) / (double)Stopwatch.Frequency);
         _occLastTick = now;
-        _occStep = Math.Clamp(Math.Min(dt, 0.1f) * OccRate, 0f, 1f);
-    }
-
-    /// <summary>The <c>rot.z</c> the record carries: the occluder's coverage when faded (signed by the keyhole
-    /// verdict), otherwise the plain dissolve flag.</summary>
-    private static float OccludeDissolve(int i, bool keyhole)
-    {
-        float f = _occFade[i];
-        if (f <= 0f) return keyhole ? 1f : 0f;
-        float cov = Math.Clamp(1f - f, 0.01f, 0.99f);
-        return keyhole ? cov : -cov;
+        _occDt = Math.Min(dt, 0.1f);
+        _occStep = Math.Clamp(_occDt * OccRate, 0f, 1f);
     }
 }
