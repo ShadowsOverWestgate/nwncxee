@@ -133,15 +133,18 @@ Read engine fields through the typed views in `CX.Engine`
 (`new CNWCCreature(obj).Stats.FirstName`), not `*(T*)(ptr + EngineLayout.X)`.
 A view member exists once its row is typed: `Field<T>` in `EngineLayout.cs`, where `T` is
 the primitive, the target's view for a pointer to a class, or a value type (`Quat`);
-`count: n` makes it an embedded array (`Span<T>`). A class the engine frees under us is
+`count: n` makes it an embedded array (`Span<T>`), `embedded: true` an inline record (its address), and a
+`stride` row gives the class `this[i]` over records laid end to end. A class the engine frees under us is
 listed `TRANSIENT` in the generator and its view is a `ref struct` (#193). Concept members
 go in a hand-written `partial` of the view.
 
 Call engine functions the same way: the signature is declared once, `[Fn("R(T name, ...)")]` on
 the `SymbolMap` symbol or `sig:` on a `vtbl.*` row, and the generator emits `EngineFn.X`, the
 `XFn` pointer type, `hooks.InstallX(&OnX)` / `hooks.ChainX(...)`, and `view.X(...)` for a
-`View this` first parameter; `sret(View this, ...)` orders the hidden buffer per OS. No
-hand-written `delegate* unmanaged` outside `Graphics/Gl.cs` unless its signature differs per OS.
+`View this` first parameter; `sret(View this, ...)` (or `sig: "sret(...)"`) orders the hidden buffer per OS. No
+hand-written `delegate* unmanaged` outside `Graphics/` unless its parameter list differs per OS, it is a
+callback with no symbol, or it needs `[SuppressGCTransition]`. `build.sh` refuses a bare hex const anywhere
+in `managed/` that does not say `not-an-offset:` on its line.
 
 `build.sh` regenerates `Framework/Engine/Views.g.cs` (`tools/engine/views.py`); never edit it
 by hand, and settle a merge conflict in it by rerunning the script. **Touch a file, port its

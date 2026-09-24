@@ -349,7 +349,7 @@ public static partial class PlateLayout
     /// the same <c>(1,1,1)</c> run, so the distinction is already gone before this sees it. The chat
     /// renderer's own <c>EmitRuns</c> collides identically, and inventing a second convention here would only
     /// make the two disagree. Fixing it properly means teaching the parser to report tag DEPTH.</para></summary>
-    public const uint Plain = 0xffffffu;
+    public const uint Plain = 0xffffffu;  // not-an-offset: a colour
 
     /// <summary>
     /// Strip the Aurora inline colour grammar out of a name and hand back the colour each surviving char was

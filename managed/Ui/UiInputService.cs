@@ -25,14 +25,14 @@ public sealed unsafe class UiInputService : IExtenderService
     private static ExtenderLog? _log;
 
     // ---- SDL_Event layout (verified against WinMessageHandler; same offsets the old capture used) ----
-    private const uint SdlKeyDown = 0x300, SdlKeyUp = 0x301, SdlTextInput = 0x303;
-    private const uint SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402, SdlMouseWheel = 0x403;
-    private const int SdlEvTextOff = 0xC, SdlEvSymOff = 0x14, SdlEvButtonOff = 0x10;
-    private const int SdlEvMouseXOff = 0x14, SdlEvMouseYOff = 0x18, SdlEvWheelYOff = 0x14;
+    private const uint SdlKeyDown = 0x300, SdlKeyUp = 0x301, SdlTextInput = 0x303;  // not-an-offset: SDL key/event code
+    private const uint SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402, SdlMouseWheel = 0x403;  // not-an-offset: SDL key/event code
+    private const int SdlEvTextOff = 0xC, SdlEvSymOff = 0x14, SdlEvButtonOff = 0x10;  // not-an-offset: SDL_Event ABI, not an engine class
+    private const int SdlEvMouseXOff = 0x14, SdlEvMouseYOff = 0x18, SdlEvWheelYOff = 0x14;  // not-an-offset: SDL_Event ABI, not an engine class
 
     // NUI keyboard-focus probe: ctx->active (0x6730) is the focused window; win->edit.active (0x18c) is nonzero
     // while an edit box has focus. NUI runs a parallel SDL pump, so a key typed in a NUI field still reaches us.
-    private const int NkActiveWindowOff = 0x6730, NkWinEditActiveOff = 0x18c;
+    private const int NkActiveWindowOff = 0x6730, NkWinEditActiveOff = 0x18c;  // not-an-offset: nuklear context ABI, not an engine class
     // Native (vanilla) dialog probe: *(gui+0x70) non-null while a native conversation panel is up.
     private const int UiCursorId = 3;   // engine walk/default ground pointer
 

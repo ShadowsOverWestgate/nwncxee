@@ -5,7 +5,6 @@ using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using CX.Services.Camera;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -151,7 +150,7 @@ public sealed unsafe partial class AlloyRenderer
         { Counters._skipUnplaced++; SetCastOk(i, false); W(i, "skipped: gob never placed -- identity matrix"); return false; }
         // #336: a part of a LOD tree the gob is not showing. The engine draws GobPartTree alone; the walk
         // enrols all three trees so a swap is a field read, and this is that read. Casts nothing either.
-        if (_oLodRoot[i] != IntPtr.Zero && *(IntPtr*)(_oGob[i] + GobPartTree) != _oLodRoot[i])
+        if (_oLodRoot[i] != IntPtr.Zero && new Gob(_oGob[i]).PartTree.Ptr != _oLodRoot[i])
         { Counters._skipLod++; SetCastOk(i, false); W(i, "skipped: inactive LOD alternate"); return false; }
         if (samp) FrameZones.AddSampled(FrameZones.Zone.Ident, t0, ChaseEvery);
         return true;

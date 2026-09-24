@@ -3,7 +3,6 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
-using CX.Services.CombatText;
 
 namespace CX.Services.Camera;
 
@@ -28,13 +27,7 @@ public sealed unsafe class StepGuardService : IExtenderService
 {
     private static ExtenderLog? _log;
     private static WalkUpdateLocationFn _orig;
-#if WINDOWS
-    /// <summary>Win64 passes a 12-byte Vector by value as a pointer to a caller-made copy (#420).</summary>
-    private static delegate* unmanaged<IntPtr, IntPtr, CombatTextService.Vec3*, CombatTextService.Vec3*, float, float, int, int> _testLine;
-#else
-    /// <summary>SysV: each Vector is xmm(x, y) + xmm(z), the pair then the two floats fill xmm0..xmm5.</summary>
-    private static delegate* unmanaged<IntPtr, IntPtr, CombatTextService.Vec3, CombatTextService.Vec3, float, float, int, int> _testLine;
-#endif
+    private static TestDirectLineFn _testLine;
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
 
     /// <summary>The update handler snaps rather than lerps from 4 m; a desired-position jump past it is not a step.</summary>
@@ -52,13 +45,7 @@ public sealed unsafe class StepGuardService : IExtenderService
         SelfCheck(log);
         if (!EngineLayout.Require(log, "StepGuard", "CClientExoApp", "CClientExoAppInternal", "CNWCObject", "CNWCCreature", "CNWCModule", "CPathfindInformation")) return;
         if (!SymbolMap.Require(log, "StepGuard", SymbolMap.WalkUpdateLocation, SymbolMap.TestDirectLine, SymbolMap.AppManager, SymbolMap.GetModule)) return;
-        _testLine = (delegate* unmanaged<IntPtr, IntPtr,
-#if WINDOWS
-            CombatTextService.Vec3*, CombatTextService.Vec3*,
-#else
-            CombatTextService.Vec3, CombatTextService.Vec3,
-#endif
-            float, float, int, int>)Native.Sym(SymbolMap.TestDirectLine);
+        _testLine = EngineFn.TestDirectLine;
         _orig = hooks.InstallWalkUpdateLocation(&OnWalkUpdateLocation);
         if (_orig == null) { log.Info("StepGuard: standing down (WalkUpdateLocation hook refused)"); return; }
         KnobSurface.Note(Report);
@@ -91,22 +78,18 @@ public sealed unsafe class StepGuardService : IExtenderService
         Vector3 after = desired;
         if (!IsStep(before, after) || new CNWCModule(module).CurrentArea.Ptr != area.Ptr) return r;
         Span<float> space = pathfind.SpaceArgs;
-        // TestDirectLine takes both Vectors BY VALUE, whose ABI differs per OS: hence the Vec3 copies.
-        CombatTextService.Vec3 from = Vec(before), to = Vec(after);
-#if WINDOWS
-        int clear = _testLine(area.Ptr, cre, &from, &to, space[0], space[1], NoCreatures);
-#else
-        int clear = _testLine(area.Ptr, cre, from, to, space[0], space[1], NoCreatures);
-#endif
+        // TestDirectLine takes both Vectors BY VALUE: the copies are what VectorArg points Win64 at.
+        Vec3 from = Vec(before), to = Vec(after);
+        int clear = _testLine(area.Ptr, cre, VectorArg.Of(&from), VectorArg.Of(&to), space[0], space[1], NoCreatures);
         if (clear == 1) { _steps++; return r; }
         desired = before;
-        SetPosition(cre, from);
+        creature.SetPosition(VectorArg.Of(&from));
         if (creature.Driving != 0) _driveRefusals++; else _walkRefusals++;
         return r;
     }
 
     /// <summary>The engine's own <c>Vector</c> shape, which the by-value call arguments need.</summary>
-    private static CombatTextService.Vec3 Vec(in Vector3 v) => new() { X = v.X, Y = v.Y, Z = v.Z };
+    private static Vec3 Vec(in Vector3 v) => new() { X = v.X, Y = v.Y, Z = v.Z };
 
     /// <summary>A walk step moved the desired point and by less than <see cref="MaxStep"/> in the plane; anything
     /// else (unchanged, or a server rewrite) is not a step to test.</summary>
@@ -114,16 +97,6 @@ public sealed unsafe class StepGuardService : IExtenderService
     {
         float dx = b.X - a.X, dy = b.Y - a.Y, d2 = dx * dx + dy * dy;
         return d2 > 0f && d2 < MaxStep * MaxStep;
-    }
-
-    private static void SetPosition(IntPtr cre, CombatTextService.Vec3 pos)
-    {
-        IntPtr fn = new CNWCCreature(cre).SetPositionFn;
-#if WINDOWS
-        ((delegate* unmanaged<IntPtr, CombatTextService.Vec3*, void>)fn)(cre, &pos);
-#else
-        ((delegate* unmanaged<IntPtr, CombatTextService.Vec3, void>)fn)(cre, pos);
-#endif
     }
 
     /// <summary>The /knobs note and the group's status: the refusal ledger split by the driving flag, which answers

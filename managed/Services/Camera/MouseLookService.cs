@@ -42,9 +42,9 @@ public sealed unsafe class MouseLookService : IExtenderService
     private static readonly IntPtr _guiMan = Native.Sym(SymbolMap.GuiMan);
 
     // ---- SDL_Event layout (same rows UiInputService reads; motion adds the relative pair) ----
-    private const uint SdlWindowEvent = 0x200, SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402;
-    private const int EvWindowKindOff = 0xc, EvButtonOff = 0x10, EvXOff = 0x14, EvYOff = 0x18, EvXRelOff = 0x1c, EvYRelOff = 0x20;
-    private const byte SdlWindowFocusLost = 0xd, SdlButtonMiddle = 2, SdlButtonRight = 3;
+    private const uint SdlWindowEvent = 0x200, SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402;  // not-an-offset: SDL key/event code
+    private const int EvWindowKindOff = 0xc, EvButtonOff = 0x10, EvXOff = 0x14, EvYOff = 0x18, EvXRelOff = 0x1c, EvYRelOff = 0x20;  // not-an-offset: SDL_Event ABI, not an engine class
+    private const byte SdlWindowFocusLost = 0xd, SdlButtonMiddle = 2, SdlButtonRight = 3;  // not-an-offset: SDL key/event code
     /// <summary><c>sizeof(SDL_Event)</c> in SDL2: the held press is copied whole for the replay.</summary>
     private const int SdlEventSize = 56;
 
@@ -69,11 +69,11 @@ public sealed unsafe class MouseLookService : IExtenderService
     private static int _cx, _cy;
     private static SdlGetModStateFn _modState;
     /// <summary>SDL <c>KMOD_LALT | KMOD_RALT</c>: the hold that frees the cursor.</summary>
-    private const int KmodAlt = 0x300;
-    private const uint SdlKeyDown = 0x300;
+    private const int KmodAlt = 0x300;  // not-an-offset: SDL key/event code
+    private const uint SdlKeyDown = 0x300;  // not-an-offset: SDL key/event code
     /// <summary>SDL_KeyboardEvent: <c>repeat</c> byte and <c>keysym.sym</c>; the Alt keycodes.</summary>
-    private const int EvRepeatOff = 0xd, EvSymOff = 0x14;
-    private const uint SdlkLAlt = 0x400000E2, SdlkRAlt = 0x400000E6;
+    private const int EvRepeatOff = 0xd, EvSymOff = 0x14;  // not-an-offset: SDL_Event ABI, not an engine class
+    private const uint SdlkLAlt = 0x400000E2, SdlkRAlt = 0x400000E6;  // not-an-offset: SDL key/event code
     /// <summary>Alt as a toggle (the mode's <c>alttoggle</c>): the cursor is freed until the next Alt press.</summary>
     private static bool _altFree;
     private static WalkPlayerToPointFn _walkOrig;

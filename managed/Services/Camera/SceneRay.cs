@@ -13,12 +13,7 @@ namespace CX.Services.Camera;
 /// list, so <see cref="Release"/> must unlink it before the frame ends. Hot: no allocation per cast.</summary>
 public static unsafe class SceneRay
 {
-    [StructLayout(LayoutKind.Sequential)]
-    private struct HitVec { public float X, Y, Z; }
-
-    /// <summary>Both <c>Vector</c> arguments cross BY VALUE, an ABI that differs per OS, so this call keeps its
-    /// hand-written shape (the declared form would have to name one order for both).</summary>
-    private static delegate* unmanaged<IntPtr, HitVec, HitVec, HitVec*, IntPtr, int> _hitCheck;
+    private static SceneHitCheckFn _hitCheck;
     /// <summary>Resolved once: a cast runs per creature per frame (CX-29) and up to 15 times per spring arm.</summary>
     private static HitInfoResetFn _reset;
     private static IntPtr* _scene;
@@ -34,7 +29,7 @@ public static unsafe class SceneRay
     public static void Init()
     {
         if (_info != null) return;
-        _hitCheck = (delegate* unmanaged<IntPtr, HitVec, HitVec, HitVec*, IntPtr, int>)Native.Sym(SymbolMap.SceneHitCheck);
+        _hitCheck = EngineFn.SceneHitCheck;
         _reset = EngineFn.HitInfoReset;
         _scene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
         _statics = (int*)Native.Sym(SymbolMap.HitcheckStaticTrimesh);
@@ -61,11 +56,13 @@ public static unsafe class SceneRay
         *(IntPtr*)(_info + SizeOfHitInfo) = ignore;
         info.IgnoreList = (IntPtr)(_info + SizeOfHitInfo);
         info.IgnoreCount = 1;
-        HitVec h;
+        Vec3 h;
+        // Both ends of the segment cross BY VALUE: the locals are what VectorArg points Win64 at.
+        Vec3 a = new() { X = from.X, Y = from.Y, Z = from.Z }, b = new() { X = to.X, Y = to.Y, Z = to.Z };
         int* sw = statics ? _statics : null;
         int was = sw == null ? 0 : *sw;
         if (sw != null) *sw = 1;
-        int r = _hitCheck(scene, new HitVec { X = from.X, Y = from.Y, Z = from.Z }, new HitVec { X = to.X, Y = to.Y, Z = to.Z }, &h, (IntPtr)_info);
+        int r = _hitCheck(scene, VectorArg.Of(&a), VectorArg.Of(&b), &h, (IntPtr)_info);
         if (sw != null) *sw = was;
         hit = new Vector3(h.X, h.Y, h.Z);
         gob = r == 0 ? IntPtr.Zero : info.Gob;

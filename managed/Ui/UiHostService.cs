@@ -135,7 +135,7 @@ public sealed unsafe class UiHostService : IExtenderService
     private static RiResetRenderStatesFn _resetStates;    // RenderInterface::ResetRenderStates -- the hand-back resync
     private static RiBindBufferFn _bindBuffer;   // ...and the one binding it does not cover
     private static bool _announced;
-    private const uint GlArrayBuffer = 0x8892;
+    private const uint GlArrayBuffer = 0x8892;  // not-an-offset: a GL enum
 
     /// <summary>#456: presents left to sample. Costs a pipeline stall each, so it is a knob that runs out.</summary>
     private static int _presentProbe;

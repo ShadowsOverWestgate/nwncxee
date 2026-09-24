@@ -19,7 +19,7 @@ public static class TypingSignal
     public const int EventUnfocus = 2;
 
     /// <summary>OBJECT_INVALID: vanilla passes it as the event's object id at every chat-bar site.</summary>
-    public const uint ObjectInvalid = 0x7f000000;
+    public const uint ObjectInvalid = 0x7f000000;  // not-an-offset: the invalid object id
 
     // volatile to match ChatService.IsTyping: Open/CloseChat run on the input thread while the session
     // edge (Reset) can fire from the frame thread's gate read.

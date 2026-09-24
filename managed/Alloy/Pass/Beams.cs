@@ -4,7 +4,6 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -63,15 +62,12 @@ internal static unsafe class Beams
     private const uint GlSrcAlpha = 0x0302, GlOne = 1;   // not-an-offset: GL blend-factor enums
     /// <summary>A handful of static volumes per area; past this a beam is left to the engine.</summary>
     private const int MaxBeams = 2048, MaxVdos = 512;
-    /// <summary>The matrix stack: model is index 2, stride 0x58, top at +0x18 (same layout
+    /// <summary>The matrix stack the model matrix comes off -- index 2 of <c>m_aurMtxStack</c> (same entry
     /// <see cref="SkyBox"/> reads). Read once per enrollment -- see the class remarks for why the top is the
     /// same value at the Alloy slot as it is at <c>RenderBeams</c>'s.</summary>
     private const int ModeModel = 2;
-    /// <summary>A STRIDE, not a field: the byte distance between one <c>m_aurMtxStack</c> entry and the next.</summary>
-    private static readonly int StackStride = EngineLayout.MtxStackStride;
-    /// <summary>The embedded <c>DrawBucketManager</c> and the bucket <c>RenderBeams</c> asks it for.</summary>
+    /// <summary>The bucket <c>RenderBeams</c> asks the scene's <c>DrawBucketManager</c> for.</summary>
     private const int BeamBucket = 0xf;   // not-an-offset: a draw-bucket index, not a place in memory
-    private static readonly int SceneDrawBuckets = EngineLayout.SceneDrawBuckets;
 
     /// <summary>One enrolled beam. Rebuilt from the bucket every frame, so there is no liveness field: an
     /// entry exists exactly while the engine's own classification holds it.</summary>
@@ -144,13 +140,13 @@ internal static unsafe class Beams
         if (_off || Disabled || scene == IntPtr.Zero) return;
         if (scene != _scene) { Forget(); _scene = scene; }
         _count = 0;
-        _model = new aurMatrixStack((IntPtr)(_stacks + ModeModel * StackStride)).Top;
-        IntPtr mgr = scene + SceneDrawBuckets;
+        _model = new aurMatrixStack((IntPtr)_stacks)[ModeModel].Top;
+        DrawBucket buckets = new CX.Engine.Scene(scene).DrawBuckets;
         for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
         {
-            IntPtr bucket = mgr + (BeamBucket * BucketGate.BucketPhases + phase) * EngineLayout.BucketStride;
-            IntPtr* items = *(IntPtr**)bucket;
-            int n = *(int*)(bucket + BucketGate.BucketCount);
+            DrawBucket bucket = buckets[BeamBucket * BucketGate.BucketPhases + phase];
+            IntPtr* items = bucket.Items;
+            int n = bucket.Count;
             if (items == null) continue;
             for (int i = 0; i < n; i++)
             {
@@ -204,7 +200,7 @@ internal static unsafe class Beams
 
     private static bool Harvest(IntPtr vdo, int s)
     {
-        uint vao = *(uint*)(vdo + VdoVao);
+        uint vao = new VdoRef(vdo).Vao;
         // ponytail: the #284 sibling. A beam VDO minted after the shim armed has no engine VAO either, and
         // this refuses it silently. NOT dripped here: AlloyRenderer's drip runs at the enrollment edge, while
         // this runs INSIDE the engine's own bucket-15 draw, where re-entering SetVertexDataObject would move
@@ -270,7 +266,7 @@ internal static unsafe class Beams
             if (l.IsNull) continue;
             // Beams are extruded from the FIRST scene light that clears the directional range, which is
             // what makes them sun shafts rather than per-lamp volumes.
-            if (l.Range < DirectionalRange) continue;
+            if (l.Range < EngineLayout.DirectionalRange) continue;
             if (l.CastShadows == 0 || l.Kind != 0) continue;
             Vector3 d = l.Pos;
             if (d.LengthSquared() <= 0f) return false;
@@ -342,9 +338,9 @@ internal static unsafe class Beams
     private static bool Stage(int i, int k)
     {
         ref Beam b = ref _beams[i];
-        long elem = (long)*(IntPtr*)(b.Vdo + VdoElemItems), vert = (long)*(IntPtr*)(b.Vdo + VdoVertItems);
-        if (elem == 0 || vert == 0 || b.Item < 0 || b.Item >= *(int*)(b.Vdo + VdoElemCount)
-            || b.Item >= *(int*)(b.Vdo + VdoVertCount)) return false;
+        var v = new VdoRef(b.Vdo);
+        long elem = v.ElemItems, vert = v.VertItems;
+        if (elem == 0 || vert == 0 || b.Item < 0 || b.Item >= v.ElemCount || b.Item >= v.VertCount) return false;
         int count = *(int*)(elem + b.Item * 8 + 4);
         if (count <= 0 || !EnsureVao(b.Vao)) return false;
         _sCount[k] = count;
@@ -427,7 +423,7 @@ internal static unsafe class Beams
         var check = new Checker(log);
 
         const int SceneBytes = 0x80;   // not-an-offset: the fake Scene this self-check stack-allocates
-        int LightBytes = LightDir + 12;
+        int LightBytes = EngineLayout.LightDir + 12;   // a SIZE: the fake light must hold its position
         byte* scene = stackalloc byte[SceneBytes];
         for (int i = 0; i < SceneBytes; i++) scene[i] = 0;
         byte* a = stackalloc byte[LightBytes];
@@ -476,7 +472,7 @@ internal static unsafe class Beams
         check.Expect(WorldZClip < 0f && Off(0f, WorldZClip, 0f, -1f) > 1f,
           "the clip plane is under the floor, so a shaft at ground level still has length");
 
-        check.Expect(BeamPrim == 4 && WorldZClip == -20f && DirectionalRange == 1000f,
+        check.Expect(BeamPrim == 4 && WorldZClip == -20f && EngineLayout.DirectionalRange == 1000f,
           "the three literals RenderBeams pushes: prim 4, projectionWorldZClip -20.0, range threshold 1000");
 
         log.Info(check.Ok ? "Beams.SelfCheck: passed" : "Beams.SelfCheck: FAILED");

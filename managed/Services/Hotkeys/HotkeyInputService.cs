@@ -26,9 +26,9 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     // SDL_Keymod bits. Ctrl/Shift take both sides; Alt is LALT ONLY -- RALT is AltGr (accented
     // chars; on Windows AltGr = LCTRL+RALT), so binding it would hijack normal typing.
     // ponytail: expose RAlt only if someone genuinely wants an AltGr chord.
-    private const int KmodShift = 0x0003;   // LSHIFT | RSHIFT
-    private const int KmodCtrl  = 0x00C0;   // LCTRL | RCTRL
-    private const int KmodLAlt  = 0x0100;   // LALT only
+    private const int KmodShift = 0x0003;   // not-an-offset: SDL key/event code; LSHIFT | RSHIFT
+    private const int KmodCtrl  = 0x00C0;   // not-an-offset: SDL key/event code; LCTRL | RCTRL
+    private const int KmodLAlt  = 0x0100;   // not-an-offset: SDL key/event code; LALT only
 
     // Vanilla chat-focus trampolines (chat master off only).
     private static SetFocusChatPromptFn _chatOnOrig;

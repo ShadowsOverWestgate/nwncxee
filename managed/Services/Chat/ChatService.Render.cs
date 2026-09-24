@@ -67,7 +67,7 @@ public sealed unsafe partial class ChatService
     {
         /// <summary>SDL keycode for <c>/</c> (SDLK_SLASH), and the raw SDL modifier masks
         /// (KMOD_SHIFT / KMOD_CTRL) that mean the player meant something else.</summary>
-        private const int KeySlash = 47, KmodShift = 0x0003, KmodCtrl = 0x00C0;
+        private const int KeySlash = 47, KmodShift = 0x0003, KmodCtrl = 0x00C0;  // not-an-offset: SDL key/event code
 
         public int Priority => 1;
 

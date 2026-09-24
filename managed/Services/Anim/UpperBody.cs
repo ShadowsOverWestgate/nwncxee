@@ -5,8 +5,6 @@ using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
 using CX.Services.Chat.Core;
-using CX.Services.CombatText;
-using static CX.Framework.EngineLayout;
 using static CX.Services.Anim.PoseMath;
 
 namespace CX.Services.Anim;
@@ -62,20 +60,12 @@ internal static unsafe class UpperBody
     private const float Omega = 2f * MathF.PI * HitHz;
 
     private static GetGameObjectFn _getGameObject;
-    private static IntPtr* _hitNext;
+    private static SpawnHitVisualsFn* _hitNext;
     private static bool _aimReady;
     /// <summary>Object ids resolve (the aim target, the player's position for the detail distance).</summary>
     internal static bool Ready => _aimReady;
 
     internal static int Looked, Aimed, Hits;
-
-#if WINDOWS
-    [StructLayout(LayoutKind.Sequential)]
-    private struct VecArg { public CombatTextService.Vec3* P; }
-#else
-    [StructLayout(LayoutKind.Sequential)]
-    private struct VecArg { public CombatTextService.Vec3 V; }
-#endif
 
     /// <summary>Resolves the aim target's helpers and chains the hit funnel. Each half stands down on its own.</summary>
     internal static void Install(ExtenderLog log, HookService hooks)
@@ -88,23 +78,16 @@ internal static unsafe class UpperBody
         }
         if (!EngineLayout.Require(log, "Pose.hit", "CNWCCombatAttackData", "CNWCCreature")
             || !SymbolMap.Require(log, "Pose.hit", SymbolMap.SpawnHitVisuals)) return;
-        // Left raw: the push vector is a DIFFERENT type per ABI (VecArg), so no single [Fn] signature
-        // describes the symbol (CX-37).
-        _hitNext = hooks.Chain(SymbolMap.SpawnHitVisuals,
-            (IntPtr)(delegate* unmanaged<IntPtr, byte, IntPtr, VecArg, IntPtr, void>)&OnSpawnHitVisuals, 50);
+        _hitNext = hooks.ChainSpawnHitVisuals(&OnSpawnHitVisuals, 50);
         log.Info(_hitNext == null ? "Pose: hit reactions standing down (SpawnHitVisuals chain refused)"
                                   : "Pose: chained CNWCCreature::SpawnHitVisuals (hit reactions)");
     }
 
     [UnmanagedCallersOnly]
-    private static void OnSpawnHitVisuals(IntPtr creature, byte flag, IntPtr ad, VecArg vec, IntPtr text)
+    private static void OnSpawnHitVisuals(IntPtr creature, byte flag, IntPtr ad, VectorArg vec, IntPtr text)
     {
-#if WINDOWS
-        CombatTextService.Vec3 v = *vec.P;   // Win64: read before the original, which owns the copy
-#else
-        CombatTextService.Vec3 v = vec.V;
-#endif
-        ((delegate* unmanaged<IntPtr, byte, IntPtr, VecArg, IntPtr, void>)(*_hitNext))(creature, flag, ad, vec, text);
+        Vec3 v = vec.Value;   // Win64: read before the original, which owns the caller-made copy
+        (*_hitNext)(creature, flag, ad, vec, text);
         if (flag != 1 || ad == IntPtr.Zero || creature == IntPtr.Zero || !(AnimKnobs.Hit.V > 0f)) return;
         IntPtr gob = PoseService.GobOf(creature);
         if (gob == IntPtr.Zero) return;
@@ -275,7 +258,7 @@ internal static unsafe class UpperBody
     /// <summary>The creature animation ids of an attack (<c>CNWCObject::AnimationAttack</c>): 0xc8 ranged,
     /// 0xc9..0xcd melee at each range, 0x107..0x109 the flourishes.</summary>
     internal static bool IsAttack(int anim) => anim is >= AttackRanged and <= 0xcd or >= 0x107 and <= 0x109;
-    private const int AttackRanged = 0xc8;
+    private const int AttackRanged = 0xc8;  // not-an-offset: an animation id
 
     /// <summary>The lock target's aim point: its root part's world position if it is a creature with a model,
     /// else its position raised by the attacker's own <paramref name="hip"/> height.</summary>
@@ -296,8 +279,8 @@ internal static unsafe class UpperBody
             IntPtr root = g == IntPtr.Zero ? IntPtr.Zero : new Gob(g).PartTree.Ptr;
             if (root != IntPtr.Zero) { World(root, out at, out _); return true; }
         }
-        float* p = (float*)(obj + ObjPosition);
-        at = new Vector3(p[0], p[1], p[2] + hip);
+        Vector3 p = new CNWCObject(obj).Position;
+        at = new Vector3(p.X, p.Y, p.Z + hip);
         return true;
     }
 }

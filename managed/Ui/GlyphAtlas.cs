@@ -18,7 +18,7 @@ public sealed class GlyphAtlas
 
     /// <summary>Dense codepoint ceiling for the flat array (0x0000-0x04FF covers Basic Latin, Latin-1,
     /// Latin Extended-A, and Cyrillic). Sparse extras (▪ ▾ ⚙) fall back to the dictionary.</summary>
-    private const int DenseCeil = 0x0500;
+    private const int DenseCeil = 0x0500;  // not-an-offset: a Unicode codepoint
     private readonly Glyph[] _dense = new Glyph[DenseCeil];
     private readonly bool[] _denseOk = new bool[DenseCeil];
     private readonly Dictionary<int, Glyph> _sparse = new();

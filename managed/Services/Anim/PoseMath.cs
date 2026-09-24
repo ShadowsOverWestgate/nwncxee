@@ -2,7 +2,6 @@ using System;
 using System.Numerics;
 using CX.Engine;
 using CX.Framework;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Services.Anim;
 
@@ -145,16 +144,7 @@ internal static unsafe class PoseMath
         rot = new Quaternion(q[1], q[2], q[3], q[0]);
     }
 
-    internal static Quaternion Local(IntPtr part)
-    {
-        float* q = (float*)(part + PartRot);
-        return new Quaternion(q[1], q[2], q[3], q[0]);
-    }
+    internal static Quaternion Local(IntPtr part) => new Part(part).Rot;
 
-    internal static void SetLocal(IntPtr part, Quaternion q)
-    {
-        q = Quaternion.Normalize(q);
-        float* r = (float*)(part + PartRot);
-        r[0] = q.W; r[1] = q.X; r[2] = q.Y; r[3] = q.Z;
-    }
+    internal static void SetLocal(IntPtr part, Quaternion q) => new Part(part).Rot = Quaternion.Normalize(q);
 }

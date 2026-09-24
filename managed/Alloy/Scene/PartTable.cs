@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using static CX.Framework.EngineLayout;
 using static CX.Alloy.BucketGate;
 namespace CX.Alloy;
 
@@ -66,9 +65,8 @@ internal static unsafe class PartTable
     internal static IntPtr _camSlot;   // &CurrentCamera; live CAurCamera* is *_camSlot
     /// <summary>The live <c>CAurCamera*</c>, or zero before the symbol resolved or while no camera renders.</summary>
     internal static IntPtr CurrentCamera => _camSlot == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)_camSlot;
-    /// <summary>Length of the <see cref="EngineLayout.CamKeyholeState"/> span, in 8-byte words -- the 3
-    /// bytes of padding after the enable byte ride along, and comparing more is only more conservative.</summary>
-    internal const int CamKeyholeWords = 3;
+    /// <inheritdoc cref="Camera.KeyholeWordCount"/>
+    internal const int CamKeyholeWords = Camera.KeyholeWordCount;
 
     internal static PartGetIsOpaqueFn _isOpaque;
     internal static MatHasEnvMapFn _hasEnvMap;
@@ -94,7 +92,7 @@ internal static unsafe class PartTable
         _hasEnvMap = EngineFn.MatHasEnvMap;
         _hasBumpyShiny = EngineFn.MatHasBumpyShinyMap;
         IntPtr dv = Native.Sym(SymbolMap.PartDanglyMeshVtbl);
-        _danglyVtbl = dv == IntPtr.Zero ? IntPtr.Zero : dv + VtblSymbolHeader;
+        _danglyVtbl = EngineAbi.Vtbl(dv);
         _getTexture = EngineFn.MatGetTexture;
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _bumpyWater = (int*)Native.Sym(SymbolMap.EnableBumpyWater);
@@ -283,7 +281,7 @@ internal static unsafe class PartTable
     {
         IntPtr tile = new PartRef(tri).Tile;
         if (tile == IntPtr.Zero) return 1f;
-        float f = *(float*)(tile + TileFade);
+        float f = new TileData(tile).Fade;
         return f >= 1f ? 1f : f > 0f ? f : 0f;
     }
 
@@ -321,9 +319,7 @@ internal static unsafe class PartTable
         var nv = new MdlNodeTriMesh((IntPtr)node);
         pv.RenderFlag = 1;
         ok &= !IsRenderable(p);                                            // flag set, no node
-        // Raw, and only here: a view of a TRANSIENT class hands out a COPY of the pointer, so there is no
-        // typed way to PLANT one -- which is the point, and this stand-in is the one place that needs to.
-        *(IntPtr*)(part + EngineLayout.PartNodeLink) = (IntPtr)node;
+        new Part(p).Node = new MdlNode((IntPtr)node);
         ok &= !IsRenderable(p);                                            // node, gate 0
         nv.RenderGate = 1;
         ok &= !IsRenderable(p);                                            // kind 0 and no geometry
@@ -365,15 +361,16 @@ internal static unsafe class PartTable
     }
 
     /// <summary>#330: has the keyhole camera state moved since <paramref name="key"/> was last taken? Compares
-    /// the live camera pointer plus its <see cref="CamKeyholeState"/> words against the four-word key and
+    /// the live camera pointer plus its <see cref="Camera.KeyholeWords"/> against the four-word key and
     /// refreshes it. A null camera keys as all-zero, so the verdicts cached under a real camera do not
     /// survive its loss. Pure in its inputs, which is what the self-check exercises with a fake camera block.</summary>
     internal static bool KeyholeCameraMoved(IntPtr cam, ulong* key)
     {
         ulong* live = stackalloc ulong[CamKeyholeWords + 1];
         live[0] = (ulong)cam;
+        Span<ulong> words = cam == IntPtr.Zero ? default : new Camera(cam).KeyholeWords;
         for (int w = 0; w < CamKeyholeWords; w++)
-            live[1 + w] = cam == IntPtr.Zero ? 0 : *(ulong*)(cam + CamKeyholeState + w * 8);
+            live[1 + w] = words.IsEmpty ? 0 : words[w];
         bool moved = false;
         for (int w = 0; w <= CamKeyholeWords; w++)
             if (key[w] != live[w]) { key[w] = live[w]; moved = true; }

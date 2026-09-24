@@ -32,11 +32,11 @@ internal static unsafe class ActionFeedback
 
     /// <summary>Major 0x06 is player input; 0x26 is the shift-click party-group twin of the same payload, same
     /// minor and the same leading object id.</summary>
-    private const byte MajorInput = 0x06, MajorGroupInput = 0x26;
+    private const byte MajorInput = 0x06, MajorGroupInput = 0x26;  // not-an-offset: a message opcode
 
     /// <summary>The action minors this feature names. <c>CancelAction</c> is the "I changed my mind" signal and
     /// clears the latch instead of setting it.</summary>
-    private const byte MinorAttack = 0x02, MinorUseFeat = 0x06, MinorUseSkill = 0x07, MinorDialog = 0x08,
+    private const byte MinorAttack = 0x02, MinorUseFeat = 0x06, MinorUseSkill = 0x07, MinorDialog = 0x08,  // not-an-offset: a message opcode
                        MinorUseItem = 0x09, MinorUseObject = 0x0b, MinorCastSpell = 0x12,
                        MinorCancelAction = 0x14, MinorTargetSelected = 0x25;
 

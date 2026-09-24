@@ -1067,7 +1067,7 @@ public sealed partial class KnobPanel
     }
 
     /// <summary>SDL keycodes the panel acts on.</summary>
-    private const uint KeyEscape = 0x1B, KeyReturn = 0x0D, KeyKpEnter = 0x40000058, KeyBackspace = 0x08;
+    private const uint KeyEscape = 0x1B, KeyReturn = 0x0D, KeyKpEnter = 0x40000058, KeyBackspace = 0x08;  // not-an-offset: SDL key/event code
 
     /// <summary>A key while the panel owns the keyboard. Escape backs out of an edit, then the list, then the panel.
     /// Returns true when the panel is still open afterwards.</summary>

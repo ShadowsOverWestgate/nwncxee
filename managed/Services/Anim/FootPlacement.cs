@@ -1,7 +1,7 @@
 using System;
 using System.Numerics;
+using CX.Engine;
 using CX.Services.Camera;
-using static CX.Framework.EngineLayout;
 using static CX.Services.Anim.PoseMath;
 
 namespace CX.Services.Anim;
@@ -195,7 +195,7 @@ internal static unsafe class FootPlacement
         {
             Rays++;
             if (!SceneRay.Cast(scene, from, to, self, out Vector3 hit, out IntPtr g, statics: true)) break;
-            if (g == IntPtr.Zero || *(IntPtr*)(g + GobTileData) != IntPtr.Zero) { Tile++; off = hit.Z - refZ; SceneRay.Release(); return true; }
+            if (g == IntPtr.Zero || !new Gob(g).TileData.IsNull) { Tile++; off = hit.Z - refZ; SceneRay.Release(); return true; }
             if (SceneRay.IsPlaceable(g)) { Placeable++; off = hit.Z - refZ; SceneRay.Release(); return true; }
             from.Z = hit.Z - SceneRay.Nudge;
         }

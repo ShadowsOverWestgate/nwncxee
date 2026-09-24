@@ -54,11 +54,6 @@ internal static unsafe class RspShim
     // NOT replicated: it draws the entries whose PartTrigger+0xd8 is clear, and every trigger the client
     // displays has it set. See the punch list for the chain that proves it.
 
-    /// <summary><c>CExoArrayList&lt;Part*&gt;</c> count, at <c>+8</c> of the list head. Stays raw: the
-    /// trigger bucket is a bare list head at a global address, not an engine object a view sits on.</summary>
-    private static readonly int ListCount = EngineLayout.ListItemCount;
-
-
     private static ExtenderLog? _log;
     /// <summary>#456: the LightManager layout probe's one-shot latch.</summary>
     private static bool _probedLightMgr;
@@ -68,7 +63,8 @@ internal static unsafe class RspShim
     private static float* _focusLighting;
     private static GlRenderVertexDataFn* _vdoSlot, _vdoBottomSlot;
     private static int* _fullDynamicLighting;
-    private static byte* _triggerBucket;
+    /// <summary>The trigger bucket: a bare <c>CExoArrayList&lt;Part*&gt;</c> head at a global address.</summary>
+    private static EngineList _triggerBucket;
     private static GlRenderVertexStreamDataFn _origStream;
     private static RiEnableFn _riEnable, _riDisable;
     /// <summary><c>GLRender::m_pCurrentCustomProgram</c> -- the latch both draw funnels read. Cleared at the
@@ -169,7 +165,7 @@ internal static unsafe class RspShim
         _focusObject = (IntPtr*)Native.Sym(SymbolMap.SceneFocusObject);
         _focusLighting = (float*)Native.Sym(SymbolMap.FocusLighting);
         _fullDynamicLighting = (int*)Native.Sym(SymbolMap.FullDynamicLighting);
-        _triggerBucket = (byte*)Native.Sym(SymbolMap.TriggerBucket);
+        _triggerBucket = new EngineList(Native.Sym(SymbolMap.TriggerBucket));
         // #237: the epilogue's two entry points. Deliberately NOT in the `missing` list below -- a shim that
         // cannot restore five enable bits is still a shim that draws the frame, and standing the cutover down
         // over its epilogue would be the worse trade.
@@ -184,7 +180,7 @@ internal static unsafe class RspShim
                         : _focusObject == null ? SymbolMap.SceneFocusObject
                         : _focusLighting == null ? SymbolMap.FocusLighting
                         : _fullDynamicLighting == null ? SymbolMap.FullDynamicLighting
-                        : _triggerBucket == null ? SymbolMap.TriggerBucket : null;
+                        : _triggerBucket.IsNull ? SymbolMap.TriggerBucket : null;
         if (missing != null)
         {
             log.Info($"RspShim: {missing} did not resolve -- the shim stands down and with it the whole "
@@ -237,7 +233,7 @@ internal static unsafe class RspShim
         // runs inside it. Both counts are already final here -- Scene::AddPartsToDrawBuckets fills the
         // trigger bucket and Scene::AddHighlightGob the gob array, both outside RSP and ahead of it.
         WantsEngineOverlays = sc.HiliteCount != 0
-                              || *(int*)(_triggerBucket + ListCount) != 0;
+                              || _triggerBucket.Count != 0;
         // ...and cleared BEFORE the bracket, not after it: only this frame's blit may arm it. A frame that
         // bails out of DrawOwned early (nothing enrolled, a PostChain refusal, no 4.6 context) never reaches
         // the resolve, and an inherited `true` would depth-test the overlays against a stale buffer.

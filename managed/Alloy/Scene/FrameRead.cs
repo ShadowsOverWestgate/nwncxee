@@ -1,7 +1,7 @@
 using System;
 using System.Numerics;
+using CX.Engine;
 using CX.Framework;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -63,30 +63,29 @@ internal static unsafe class FrameRead
         // gated its captures the same way, for the same reason).
         if (!Ready || scene == IntPtr.Zero || !GameGate.InModule) return;
         ReadCamera();
-        ReadFog(scene);
-        ReadAreaTerms(*(IntPtr*)(scene + SceneLightManager));
+        var sc = new Scene(scene);
+        ReadFog(sc);
+        ReadAreaTerms(sc.LightManager);
     }
 
     private static void ReadCamera()
     {
-        IntPtr cam = *(IntPtr*)_currentCamera;
+        var cam = new Camera(*(IntPtr*)_currentCamera);
         // No camera bound means we are outside a scene render; the last frame's constants stand rather than
         // collapsing to zero, which is what every consumer's Has* flag already expects.
-        if (cam == IntPtr.Zero) return;
-        float* p = (float*)(cam + CamPos);
-        float* q = (float*)(cam + CamRot);
-        FrameInputs.CameraPos = new Vector3(p[0], p[1], p[2]);
-        // (w, x, y, z) in the engine, (x, y, z, w) in System.Numerics -- and the rotation matrix
-        // MakeMatrix4x4 @0x5b8ce0 builds from it is Numerics' CreateFromQuaternion term for term.
-        FrameInputs.CameraRot = new Quaternion(q[1], q[2], q[3], q[0]);
+        if (cam.IsNull) return;
+        FrameInputs.CameraPos = cam.Pos;
+        // Quat holds the engine's (w, x, y, z) and converts on assignment to Numerics' (x, y, z, w) -- and
+        // the matrix MakeMatrix4x4 @0x5b8ce0 builds from it is Numerics' CreateFromQuaternion term for term.
+        FrameInputs.CameraRot = cam.Rot;
         FrameInputs.HasCamera = true;
 
-        FrameInputs.CamViewW = *(float*)(cam + CamViewW);
-        FrameInputs.CamViewH = *(float*)(cam + CamViewH);
-        FrameInputs.CamFovy = *(float*)(cam + CamViewAngle);
+        FrameInputs.CamViewW = cam.ViewW;
+        FrameInputs.CamViewH = cam.ViewH;
+        FrameInputs.CamFovy = cam.ViewAngle;
         FrameInputs.CamAspect = FrameInputs.CamViewH > 0f ? FrameInputs.CamViewW / FrameInputs.CamViewH : 1f;
-        FrameInputs.CamNear = *(float*)(cam + CamNear);
-        FrameInputs.CamFar = *(float*)(cam + CamFar);
+        FrameInputs.CamNear = cam.Near;
+        FrameInputs.CamFar = cam.Far;
         FrameInputs.HasPerspective = FrameInputs.CamFovy > 0f;
 
         // The scene camera the shadow fit rides (#99) is now the same read, so there is nothing left to
@@ -111,51 +110,46 @@ internal static unsafe class FrameRead
         return t > 1e-6f ? 1f / t : 0f;
     }
 
-    private static void ReadFog(IntPtr scene)
+    private static void ReadFog(Scene scene)
     {
-        byte* s = (byte*)scene;
-        bool on = *(int*)(s + SceneFogEnable) != 0;
+        bool on = scene.FogEnable != 0;
         FrameInputs.FogOn = on;
         if (!on) return;
-        FrameInputs.FogStart = *(float*)(s + SceneFogStart);
-        FrameInputs.FogEnd = *(float*)(s + SceneFogEnd);
+        FrameInputs.FogStart = scene.FogStart;
+        FrameInputs.FogEnd = scene.FogEnd;
         // DoFog's own branch: while a single gob is being previewed in isolation the fog colour is forced
         // to black rather than the area's.
         if (_onlyGob != IntPtr.Zero && *(IntPtr*)_onlyGob != IntPtr.Zero) { FrameInputs.FogColor = default; return; }
-        float* c = (float*)(s + SceneFogColor);
-        FrameInputs.FogColor = new Vector3(c[0], c[1], c[2]);
+        FrameInputs.FogColor = scene.FogColor;
     }
 
     /// <summary>The two index -1 lights, read where they live instead of intercepted where they are pushed.
     /// Colours land LINEAR, the same curve <c>RenderInterface::GetColorSpaceFromSRGB</c> applies before the
     /// engine's own uniform, because the Alloy pass shades in linear.</summary>
-    private static void ReadAreaTerms(IntPtr lm)
+    private static void ReadAreaTerms(LightManager lm)
     {
-        if (lm == IntPtr.Zero) return;
-        IntPtr amb = *(IntPtr*)((byte*)lm + LmAreaAmbient);
-        IntPtr dif = *(IntPtr*)((byte*)lm + LmAreaDiffuse);
-        if (amb != IntPtr.Zero) ApplyAreaTerm((byte*)amb);
-        if (dif != IntPtr.Zero) ApplyAreaTerm((byte*)dif);
+        if (lm.IsNull) return;
+        PartLight amb = lm.AreaAmbient, dif = lm.AreaDiffuse;
+        if (!amb.IsNull) ApplyAreaTerm(amb);
+        if (!dif.IsNull) ApplyAreaTerm(dif);
     }
 
     /// <summary>Route one index -1 light to the term its own <c>type@0x80</c> says it drives -- ambient,
     /// or the directional diffuse, which when it reaches far enough is also the sun.</summary>
-    private static void ApplyAreaTerm(byte* p)
+    private static void ApplyAreaTerm(PartLight light)
     {
-        int type = *(int*)(p + LightKind);
-        float fade = *(float*)(p + LightFade);
-        float* c = (float*)(p + LightColour);
-        var col = new Vector3(MathF.Pow(MathF.Max(c[0] * fade, 0f), AlloyLights.SrgbGamma),
-                              MathF.Pow(MathF.Max(c[1] * fade, 0f), AlloyLights.SrgbGamma),
-                              MathF.Pow(MathF.Max(c[2] * fade, 0f), AlloyLights.SrgbGamma));
-        if (type != 0)
+        float fade = light.Fade;
+        Vector3 c = light.Colour;
+        var col = new Vector3(MathF.Pow(MathF.Max(c.X * fade, 0f), AlloyLights.SrgbGamma),
+                              MathF.Pow(MathF.Max(c.Y * fade, 0f), AlloyLights.SrgbGamma),
+                              MathF.Pow(MathF.Max(c.Z * fade, 0f), AlloyLights.SrgbGamma));
+        if (light.Kind != 0)
         {
             FrameInputs.AreaAmbient = col;
             FrameInputs.HasAreaAmbient = true;
             return;
         }
-        float* d = (float*)(p + LightDir);
-        var toLight = new Vector3(d[0], d[1], d[2]);
+        Vector3 toLight = light.Pos;
         if (toLight.LengthSquared() <= 1e-8f) return;
         FrameInputs.AreaDiffuse = col;
         FrameInputs.AreaDiffuseDir = Vector3.Normalize(toLight);
@@ -165,7 +159,7 @@ internal static unsafe class FrameRead
         // TRAVELS the other way, which is the direction the cascades render along. Set, never cleared: an
         // interior has no sun and CasterPass gates on FrameInputs.Interior for exactly that reason, so
         // clearing here would only make an exterior's first frames shadowless.
-        if (*(float*)(p + LightRange) <= DirectionalRange) return;
+        if (light.Range <= EngineLayout.DirectionalRange) return;
         Vector3 travel = -Vector3.Normalize(toLight);
         if (travel.Z < DownwardZ) { FrameInputs.SunDir = travel; FrameInputs.HasSun = true; }
     }

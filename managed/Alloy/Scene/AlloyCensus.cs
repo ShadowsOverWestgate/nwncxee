@@ -4,7 +4,6 @@ using System.Runtime.CompilerServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using static CX.Framework.EngineLayout;
 using static CX.Alloy.PartTable;
 using static CX.Alloy.BucketGate;
 using static CX.Alloy.TexProbe;
@@ -61,11 +60,6 @@ internal static unsafe partial class AlloyCensus
     /// are ownable as a PAIR: the engine walks 2 then 3, and owning one without the other splits a single
     /// instance's geometry across two renderers.</summary>
     internal const int GobOpaqueBucket = 2, GobBlendBucket = 3;
-
-    /// <summary>The stride between the three resref slots <see cref="EngineLayout.SharedVsName"/> names
-    /// (VS at +0x188, FS at +0x199, GS at +0x1aa), and the length of each inline NUL-terminated buffer.
-    /// A LENGTH, not a place: the three buffers are one inline run and this is what steps between them.</summary>
-    internal static readonly int SharedNameLen = EngineLayout.SharedNameLen;
 
     /// <summary><c>dumptex</c> (cx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
     /// time, for as long as it takes the camera to find them.</summary>
@@ -540,7 +534,7 @@ internal static unsafe partial class AlloyCensus
     {
         if (_unknownCount >= MaxUnknown) return;
         int len = 0;
-        while (len < SharedNameLen - 1 && vs[len] != 0) len++;
+        while (len < EngineLayout.SharedNameLen - 1 && vs[len] != 0) len++;   // a LENGTH, not a place: the buffer's own size
         // Dedupe on the RAW BYTES first. Every shared-material part reaches this, so allocating a string per
         // part and throwing all but the first away would put hundreds of allocations in an enrollment scan
         // for a diag line that holds at most six.
@@ -791,9 +785,9 @@ internal static unsafe partial class AlloyCensus
         IntPtr owner = g.FadeOwner.Ptr;
         // the flag fields print their VALUE, so they stay raw: GobRef's bool would print "hlTrue" for "hl1"
         return $"gobmod=hl{g.View.Highlight}/tint{g.View.SceneTint}" +
-               $"/col{*(short*)(gob + GobColourMul)}/emi{*(short*)(gob + GobSelfIllum)}" +
+               $"/col{g.View.ColourMul}/emi{g.View.SelfIllum}" +
                $"/env{(g.EnvOverride != IntPtr.Zero ? 1 : 0)}" +
-               $"/own{(owner == IntPtr.Zero ? -1 : *(byte*)(owner + NodeOwnerFlags) & GobOwnerFadeBit)}" +
+               $"/own{(owner == IntPtr.Zero ? -1 : new Model(owner).OwnerFlags & GobOwnerFadeBit)}" +
                $" gmul=a{g.Alpha:0.00}/a2{g.FadeAlpha:0.00}" +
                $" gcol={g.Colour[0]:0.00},{g.Colour[1]:0.00},{g.Colour[2]:0.00}" +
                $" gemi={g.Emissive[0]:0.00},{g.Emissive[1]:0.00},{g.Emissive[2]:0.00}";

@@ -43,14 +43,14 @@ public sealed unsafe partial class ChatService
 
 
     // SDL_Keymod bits (match HotkeyInputService): Ctrl/Shift both sides.
-    private const int KmodShift = 0x0003;
-    private const int KmodCtrl  = 0x00C0;
+    private const int KmodShift = 0x0003;  // not-an-offset: SDL key/event code
+    private const int KmodCtrl  = 0x00C0;  // not-an-offset: SDL key/event code
 
     // SDL keycodes. Printable ones are their codepoint; nav keys carry SDLK_SCANCODE_MASK (0x40000000).
-    private const uint KeyReturn = 0x0D, KeyEsc = 0x1B, KeyBackspace = 0x08, KeyDelete = 0x7F;
-    private const uint KeyA = 0x61, KeyC = 0x63, KeyV = 0x76, KeyX = 0x78;
-    private const uint KeyRight = 0x4000004F, KeyLeft = 0x40000050, KeyDown = 0x40000051, KeyUp = 0x40000052;
-    private const uint KeyHome = 0x4000004A, KeyEnd = 0x4000004D;
+    private const uint KeyReturn = 0x0D, KeyEsc = 0x1B, KeyBackspace = 0x08, KeyDelete = 0x7F;  // not-an-offset: SDL key/event code
+    private const uint KeyA = 0x61, KeyC = 0x63, KeyV = 0x76, KeyX = 0x78;  // not-an-offset: SDL key/event code
+    private const uint KeyRight = 0x4000004F, KeyLeft = 0x40000050, KeyDown = 0x40000051, KeyUp = 0x40000052;  // not-an-offset: SDL key/event code
+    private const uint KeyHome = 0x4000004A, KeyEnd = 0x4000004D;  // not-an-offset: SDL key/event code
 
     /// <summary>SDL_TextInputEvent.text is char[32]; scan the null-terminated UTF-8 within it.</summary>
     private const int SdlTextMax = 31;

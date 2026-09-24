@@ -117,8 +117,9 @@ public sealed unsafe partial class AlloyRenderer
         // #84 can hoist view*proj to a per-program uniform and leave only the model matrix per draw.
         _sceneEnv = _enrollScene != IntPtr.Zero && !new Scene(_enrollScene).EnvMap.IsNull;
 
-        Matrix4x4 view = *(Matrix4x4*)(_mtxStacks + ModeView * StackStride + StackTop);
-        Matrix4x4 proj = *(Matrix4x4*)(_mtxStacks + ModeProjection * StackStride + StackTop);
+        var stacks = new aurMatrixStack((IntPtr)_mtxStacks);
+        Matrix4x4 view = stacks[ModeView].Top;
+        Matrix4x4 proj = stacks[ModeProjection].Top;
         // #389: the ONE site the projection is read, so the ONE site the TAA jitter goes in: an NDC offset is
         // a shear of the clip x/y by w, and in this row-vector convention w = z*M34, so the offset lands in
         // M31/M32 scaled by M34 (sign-agnostic). Every owned stage, the hosted stock text (_projMtx) and the

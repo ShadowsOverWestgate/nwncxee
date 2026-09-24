@@ -23,9 +23,6 @@ internal static unsafe partial class GrassField
     /// <see cref="EngineLayout.ListMat"/>), so it is derived from the last of them rather than written down twice.</summary>
     private static readonly int BorderHeader = (EngineLayout.ListMat + 4 + 7) & ~7;   // a SIZE, not a field read
     private const int MaxBorderLists = 16384, MaxBorderFaces = 4096;
-    /// <summary>Two STRIDES, not fields: the <c>MaxFace</c> record size and the vertex pool's position
-    /// stride, both of which index rather than name a place inside an object.</summary>
-    private static readonly int FaceStride = EngineLayout.FaceStride, PoolStride = EngineLayout.PoolPosStride;
     /// <summary>The tileset's own grass material: <c>CNWCArea::LoadArea</c> registers the <c>.set</c>'s
     /// <c>[GRASS]</c> block as <c>AurGrassAddInfo(3, ...)</c>; server overrides take other slots.</summary>
     private const int TilesetGrassMaterial = 3;
@@ -86,20 +83,20 @@ internal static unsafe partial class GrassField
             if (!IsGrassTexture(AlloyCensus.TexName(new PartRef(tri.Ptr).Material.Texture(0).Ptr))) continue;
             var node = new MdlNodeTriMesh(new PartRef(tri.Ptr).Mdl.Ptr);
             if (node.IsNull) continue;
-            byte* host = _getPool(node.RestPool);
-            byte* face = (byte*)node.Faces;
+            var host = new VertexPool((IntPtr)_getPool(node.RestPool));
+            var faceRecs = new MaxFace(node.Faces);
             int faceCount = node.FaceCount;
-            if (host == null || face == null || faceCount <= 0) continue;
+            if (host.IsNull || faceRecs.IsNull || faceCount <= 0) continue;
             Vector3 wp; float* q = stackalloc float[4];
             _getWorld(tri.Ptr, &wp, q);
             // Quaternions are stored (w, x, y, z); System.Numerics takes (x, y, z, w).
             var rot = new Quaternion(q[1], q[2], q[3], q[0]);
-            for (int f = 0; f < faceCount && faces < MaxBorderFaces; f++, face += FaceStride)
+            for (int f = 0; f < faceCount && faces < MaxBorderFaces; f++)
             {
-                var mf = new MaxFace((IntPtr)face);
-                Vector3 a = wp + Vector3.Transform(*(Vector3*)(host + mf.VertA * PoolStride), rot);
-                Vector3 b = wp + Vector3.Transform(*(Vector3*)(host + mf.VertB * PoolStride), rot);
-                Vector3 c = wp + Vector3.Transform(*(Vector3*)(host + mf.VertC * PoolStride), rot);
+                MaxFace mf = faceRecs[f];
+                Vector3 a = wp + Vector3.Transform(host[mf.VertA].Pos, rot);
+                Vector3 b = wp + Vector3.Transform(host[mf.VertB].Pos, rot);
+                Vector3 c = wp + Vector3.Transform(host[mf.VertC].Pos, rot);
                 Vector3 n = Vector3.Cross(b - a, c - a);
                 float len = n.Length();
                 if (!(len > 0f) || MathF.Abs(n.Z) < MinUpNormal * len) continue;

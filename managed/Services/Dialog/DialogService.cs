@@ -429,7 +429,7 @@ public sealed unsafe class DialogService : IExtenderService
     }
 
     /// <summary>SDL_Keymod LCTRL | RCTRL (matches HotkeyInputService), for the Ctrl+C copy chord.</summary>
-    private const int KmodCtrl = 0x00C0;
+    private const int KmodCtrl = 0x00C0;  // not-an-offset: SDL key/event code
 
     /// <summary>Keyboard while a dialog is open: 1-9 pick that reply row, 0 picks row 10 (vanilla mapping),
     /// ESC closes locally (vanilla parity: no wire send), Ctrl+C copies the selected/whole npc text. Returns
@@ -804,9 +804,9 @@ public sealed unsafe class DialogService : IExtenderService
     private static readonly (float r, float g, float b, float a) TrackBgCol = (0.10f, 0.13f, 0.18f, 0.7f);
     private static readonly (float r, float g, float b, float a) KnobCol = (0.42f, 0.54f, 0.72f, 0.95f);
     private static readonly (float r, float g, float b, float a) GripCol = (0.40f, 0.50f, 0.64f, 0.8f);
-    private const uint NpcRgb = 0xF2F2F2, ReplyRgb = 0xE0E4EA, ReplyHoverRgb = 0xFFFFFF;
-    private const uint NumRgb = 0xFFD200, DimRgb = 0x7A7E86;
-    private const uint NameRgb = 0xEAF0F8;
+    private const uint NpcRgb = 0xF2F2F2, ReplyRgb = 0xE0E4EA, ReplyHoverRgb = 0xFFFFFF;  // not-an-offset: a colour
+    private const uint NumRgb = 0xFFD200, DimRgb = 0x7A7E86;  // not-an-offset: a colour
+    private const uint NameRgb = 0xEAF0F8;  // not-an-offset: a colour
 
     /// <summary>Cold: rebuild the drawable snapshot from the captured content and publish it. Content geometry is
     /// content-relative (y=0 at content top); Draw offsets + clips it. Runs on the message / input threads.</summary>
@@ -1064,17 +1064,13 @@ public sealed unsafe class DialogService : IExtenderService
         IntPtr vtbl = *(IntPtr*)obj;
         if (vtbl == IntPtr.Zero) return "";
 
+        var o = new CNWCObject(obj);
+        if (o.GetPortraitFn == IntPtr.Zero) return "";
         // CResRef is 17 bytes (char[16] + a length byte at +0x10); a 16-byte buffer smashes the stack canary
         // (the SIGABRT that once crashed the client). Over-allocate to 32.
-        // Left raw: a vtbl slot returning a class BY VALUE -- the hidden buffer swaps places per ABI, which the
-        // generated `sig:` call (no sret form) cannot express (CX-37).
-        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)new CNWCObject(obj).GetPortraitFn;
-        if (getPortrait == null) return "";
         byte* buf = stackalloc byte[32];
         for (int i = 0; i < 32; i++) buf[i] = 0;
-        // sret: Itanium puts the hidden buffer FIRST, Win64 puts it after `this`.
-        if (OperatingSystem.IsWindows()) getPortrait(obj, (IntPtr)buf, PortraitSizeMedium);
-        else getPortrait((IntPtr)buf, obj, PortraitSizeMedium);
+        o.GetPortrait(buf, PortraitSizeMedium);
         int n = 0; while (n < 16 && buf[n] != 0) n++;
         return n == 0 ? "" : Encoding.ASCII.GetString(buf, n);
     }

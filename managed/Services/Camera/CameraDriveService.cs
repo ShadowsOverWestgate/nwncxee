@@ -49,7 +49,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
     private const int Fwd = 0, Back = 1, TurnL = 2, TurnR = 3, StrafeL = 4, StrafeR = 5, KeyCount = 6;
     /// <summary><c>CNWCCreature</c> control flag bit UpdateDriveMode and DrivePlayer both require.</summary>
     private const byte PlayerControlled = 2;
-    private const byte MajorInput = 6, MinorAbortDrive = 0x21;
+    private const byte MajorInput = 6, MinorAbortDrive = 0x21;  // not-an-offset: a message opcode
     /// <summary>The wire angle is tenths of a degree, East = 0, counter-clockwise.</summary>
     private const int WireTenths = 3600;
     private const float Deg = MathF.PI / 180f;

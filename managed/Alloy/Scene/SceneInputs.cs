@@ -1,10 +1,8 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -145,7 +143,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // #238: one zone over the whole slot -- the light walk, the focus and the caster bake are one
         // non-overlapping span of the frame, and it is a SIBLING of the shim rather than nested in it.
         long tShadow = FrameZones.Now;
-        WalkMasterList(*(IntPtr*)(scene + SceneLightManager));
+        WalkMasterList(new Scene(scene).LightManager);
         FrameZones.Add(FrameZones.Zone.Lwalk, tShadow);
         if (_stage < 2) { _passDoneThisFrame = true; return; }
         // The shadow focus every Alloy view fits around.
@@ -435,16 +433,15 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// light SSBO and the cube set. Runs ONCE per frame from the deterministic pass
     /// slot (ADR 0007 phase 2), while the manager is alive inside <c>Scene::Render</c>. Alloc-free;
     /// pointers are only read inside this call, never retained.</summary>
-    private static void WalkMasterList(IntPtr self)
+    private static void WalkMasterList(LightManager lm)
     {
-        if (self == IntPtr.Zero || !GameGate.InModule) return;
+        if (lm.IsNull || !GameGate.InModule) return;
         // The area edge frees every PartLight* and malloc hands the addresses back: a peak table keyed on
         // them must not outlive the area, or a new light inherits a stranger's reach for FlkHold frames.
-        IntPtr area = CurrentArea();
-        if (area != _flkArea) { _flkArea = area; Array.Clear(_flkId); }
-        int count = *(int*)((byte*)self + LmMasterCount);
-        IntPtr data = *(IntPtr*)((byte*)self + LmMasterData);
-        if (data == IntPtr.Zero) count = 0;   // an empty list still walks: the lightmap set closes on "no light"
+        CNWCArea area = CurrentArea();
+        if (area.Ptr != _flkArea) { _flkArea = area.Ptr; Array.Clear(_flkId); }
+        int count = lm.MasterCount;
+        if (lm.MasterData == IntPtr.Zero) count = 0;   // an empty list still walks: the lightmap set closes on "no light"
         float radiusMult = _getGspF != null ? _getGspF(0x12) : 1f;
         if (!(radiusMult > 0f)) radiusMult = 1f;
         // #140: the two constants the engine's own point-light attenuation is built from, from the same
@@ -476,26 +473,27 @@ public sealed unsafe class SceneInputs : IExtenderService
         _flkSeq++;
         for (int i = 0; i < count; i++)
         {
-            byte* p = (byte*)*((IntPtr*)data + i);
-            if (p == null) continue;
+            PartLight light = lm.Master(i);
+            if (light.IsNull) continue;
             if (walkDiag && FrameInputs.HasCamera)
             {
-                var wp = new Vector3(*(float*)(p + LightDir), *(float*)(p + LightDir + 4), *(float*)(p + LightDir + 8));
+                Vector3 wp = light.Pos;
                 float wd = (wp - FrameInputs.CameraPos).Length();
                 if (wd < 40f)
-                    _log?.Info($"SceneInputs: masterlight d={wd:F1} pos=({wp.X:F0},{wp.Y:F0},{wp.Z:F1}) type={*(int*)(p + LightKind)} cast={*(int*)(p + LightCastShadows)} flags={*(int*)(p + LightFlagA)}/{*(int*)(p + LightFlagB)} range={*(float*)(p + LightRange):F1} alt={*(float*)(p + LightRangeAlt):F1} inten={*(float*)(p + LightIntensity):F2} fade={*(float*)(p + LightFade):F2} rgb=({*(float*)(p + LightColour):F2},{*(float*)(p + LightColour + 4):F2},{*(float*)(p + LightColour + 8):F2}) adjR={(_getAdjRadius != null ? _getAdjRadius((IntPtr)p) : -1f):F2}");
+                    _log?.Info($"SceneInputs: masterlight d={wd:F1} pos=({wp.X:F0},{wp.Y:F0},{wp.Z:F1}) type={light.Kind} cast={light.CastShadows} flags={light.FlagA}/{light.FlagB} range={light.Range:F1} alt={light.RangeAlt:F1} inten={light.Intensity:F2} fade={light.Fade:F2} rgb=({light.Colour.X:F2},{light.Colour.Y:F2},{light.Colour.Z:F2}) adjR={(_getAdjRadius != null ? _getAdjRadius(light.Ptr) : -1f):F2}");
             }
-            if (_lightDiag && AlloyRenderer.FrameSeq % 300 == 0 && FrameInputs.HasCamera) LightProbe(p, area);
-            if (*(int*)(p + LightFlagA) == 0 && *(int*)(p + LightFlagB) == 0) { LightmapBake.CensusSkipped++; continue; }
-            float range = *(float*)(p + LightRange);
-            if (range >= DirectionalRange) continue;
-            float inten = *(float*)(p + LightIntensity);
-            float r = *(float*)(p + LightColour), g = *(float*)(p + LightColour + 4), b = *(float*)(p + LightColour + 8);
+            if (_lightDiag && AlloyRenderer.FrameSeq % 300 == 0 && FrameInputs.HasCamera) LightProbe(light, area);
+            if (light.FlagA == 0 && light.FlagB == 0) { LightmapBake.CensusSkipped++; continue; }
+            float range = light.Range;
+            if (range >= EngineLayout.DirectionalRange) continue;
+            float inten = light.Intensity;
+            Vector3 rgb = light.Colour;
+            float r = rgb.X, g = rgb.Y, b = rgb.Z;
             if (range <= 0f || inten <= 0f || (r == 0f && g == 0f && b == 0f)) { LightmapBake.CensusSkipped++; continue; }
             // Ghidra SetLightGL: type@0x80 != 0 uploads -adjR^2 and inc_lighting.shd adds c*att to AmbientLight
-            bool ambient = *(int*)(p + LightKind) != 0;
-            float alt = *(float*)(p + LightRangeAlt);
-            var pos = new Vector3(*(float*)(p + LightDir), *(float*)(p + LightDir + 4), *(float*)(p + LightDir + 8));
+            bool ambient = light.Kind != 0;
+            float alt = light.RangeAlt;
+            Vector3 pos = light.Pos;
             // Vanilla lit radius (Ghidra GetLightAdjustedRadius @0x5c0c10): range * intensity, an
             // overbright boost by the max color channel (with the color normalized down to match), then
             // the GLOBAL radius multiplier (shader param 0x12). Uploading raw +0x70 shrank every lit
@@ -508,7 +506,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             // surplus on REACH, not on hue. A torch reads rgb=(1.75,1.50,1.00) -- shipping that raw as a
             // multiplier is what tinted every Alloy surface brown.
             // The radius is the engine's own exported function, so it cannot drift from it.
-            float adjR = _getAdjRadius != null ? _getAdjRadius((IntPtr)p) : range * inten * radiusMult;
+            float adjR = _getAdjRadius != null ? _getAdjRadius(light.Ptr) : range * inten * radiusMult;
             float maxc = MathF.Max(r, MathF.Max(g, b));
             if (maxc > 1f)
             {
@@ -533,15 +531,15 @@ public sealed unsafe class SceneInputs : IExtenderService
             // #674: the bake's snapshot takes the light HERE -- before the engine's nearest-N fade (a light
             // faded out by distance is still in the area) and before the flicker: the fingerprint is over the
             // uncut, steady list, or walking the camera re-keys every bake (#654).
-            bool isStatic = LightmapBake.Record(p, area, pos, adjR, new Vector3(r, g, b), ambient);
+            bool isStatic = LightmapBake.Record(light, area, pos, adjR, new Vector3(r, g, b), ambient);
             // fade@0x90 (ControlLightsFade) scales the uploaded colour only, never the radius (SetLightGL)
-            float lfade = *(float*)(p + LightFade);
+            float lfade = light.Fade;
             if (lfade <= 0f) continue;
             if (lfade < 1f) { r *= lfade; g *= lfade; b *= lfade; }
             var color = new Vector3(r, g, b);
             // An animated light (a torch's `radius` key track) gets a steady reach and a flickering colour
             // instead of the engine's linear pulse -- and a steady reach is also what keeps its cube baked.
-            float flk = Stabilise((IntPtr)p, range * inten, ref adjR, flickerT);
+            float flk = Stabilise(light.Ptr, range * inten, ref adjR, flickerT);
             if (flk != 1f) color *= flk;
             upW = adjR;
             // Receiver light cull (#67 perf): the Alloy fragment loop iterates EVERY uploaded light, so a
@@ -582,11 +580,11 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (!culled)
             {
                 snapIdx = FrameInputs.LightCount;
-                FrameInputs.RecordAreaLight((IntPtr)p, pos, upW, color, ambient, isStatic);
+                FrameInputs.RecordAreaLight(light.Ptr, pos, upW, color, ambient, isStatic);
                 if (FrameInputs.LightCount == snapIdx) snapIdx = -1;   // snapshot full: the light was dropped
             }
-            if (_torchDiag) TrackNearest(p, pos, range, alt, inten, color, adjR, upW, flk, culled, snapIdx);
-            if (ambient || *(int*)(p + LightCastShadows) == 0) continue;
+            if (_torchDiag) TrackNearest(light, pos, range, alt, inten, color, adjR, upW, flk, culled, snapIdx);
+            if (ambient || light.CastShadows == 0) continue;
             // #186: the cube's reach is the LIT radius exactly -- the same sphere the receiver's attenuation
             // has support over, and the same one the engine lights with. Ghidra: SetLightGL @0x4c0e60 uploads
             // GetLightAdjustedRadius(pl)^2 as the light's range (property 4), and inc_lighting.shd's
@@ -597,7 +595,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             // (Scene::DoGobShadows @0x45fbd3, RenderShadowPlanes @0x463e79, PartProjection::Init @0x450193,
             // all under `f78 > 0 ? f78 : f70`). Honouring it here sized the cube and pulled in casters for
             // world the light cannot reach, at no visible gain.
-            FrameInputs.RecordLocalLight((IntPtr)p, pos, adjR, color);
+            FrameInputs.RecordLocalLight(light.Ptr, pos, adjR, color);
         }
         FadeDepartedLights();
         LightmapBake.EndWalk();
@@ -607,39 +605,39 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>#659 probe (<c>/shadow lightdiag</c>, every 300 frames, lights within 40 m): the static-light rule's
     /// three inputs read off a running client -- the light's gob and its tile data, the MdlNode name, the
     /// placeable-light registry hit, and every controller id with its key count. Cold diag path: allocates.</summary>
-    private static void LightProbe(byte* p, IntPtr area)
+    private static void LightProbe(PartLight light, CNWCArea area)
     {
-        var pos = new Vector3(*(float*)(p + LightDir), *(float*)(p + LightDir + 4), *(float*)(p + LightDir + 8));
+        Vector3 pos = light.Pos;
         float d = (pos - FrameInputs.CameraPos).Length();
         if (d >= 40f) return;
-        IntPtr gob = *(IntPtr*)(p + PartGob);
-        bool tile = gob != IntPtr.Zero && *(IntPtr*)(gob + GobTileData) != IntPtr.Zero;
-        IntPtr node = *(IntPtr*)(p + PartNodeLink);
-        string name = node == IntPtr.Zero ? "?" : Marshal.PtrToStringAnsi(node + MdlNodeName) ?? "?";
+        Gob gob = new Part(light.Ptr).Gob;
+        bool tile = !gob.IsNull && !gob.TileData.IsNull;
+        MdlNode node = new Part(light.Ptr).Node;
+        string name = node.IsNull ? "?" : node.NameText ?? "?";
         uint regId = 0; bool reg = false;
-        int regCount = area == IntPtr.Zero ? 0 : *(int*)(area + AreaPlaceableLightCount);
-        IntPtr regData = area == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(area + AreaPlaceableLights);
-        if (gob != IntPtr.Zero && regData != IntPtr.Zero && regCount > 0 && regCount < 65536)
+        int regCount = area.IsNull ? 0 : area.PlaceableLightCount;
+        if (!gob.IsNull && !area.IsNull && area.PlaceableLights != IntPtr.Zero && regCount > 0 && regCount < 65536)
             for (int i = 0; i < regCount && !reg; i++)
             {
-                IntPtr rec = *((IntPtr*)regData + i);
-                if (rec != IntPtr.Zero && *(IntPtr*)(rec + PlaceableLightGob) == gob) { reg = true; regId = *(uint*)rec; }
+                CNWCPlaceableObjectLight rec = area.PlaceableLight(i);
+                if (!rec.IsNull && rec.Gob.Ptr == gob.Ptr) { reg = true; regId = rec.Id; }
             }
         var ctl = new System.Text.StringBuilder();
-        int cnt = node == IntPtr.Zero ? -1 : *(int*)(node + MdlNodeControllerCount);
-        byte* recs = node == IntPtr.Zero ? null : *(byte**)(node + MdlNodeControllers);
+        int cnt = node.IsNull ? -1 : node.ControllerCount;
+        NewController recs = node.IsNull ? default : node.Controller;
         bool animated = false;
-        if (recs != null && cnt > 0 && cnt < 256)
+        if (!recs.IsNull && cnt > 0 && cnt < 256)
             for (int i = 0; i < cnt; i++)
             {
-                int id = *(int*)(recs + i * NewControllerStride);
-                short keys = *(short*)(recs + i * NewControllerStride + NewControllerKeyCount);
-                if ((id == LightRange || id == LightColour) && keys > 1) animated = true;
+                NewController c = recs[i];
+                int id = c.Id;
+                short keys = c.KeyCount;
+                if ((id == EngineLayout.LightRange || id == EngineLayout.LightColour) && keys > 1) animated = true;
                 ctl.Append(ctl.Length == 0 ? "" : ",").Append(id.ToString("X")).Append('x').Append(keys);
             }
-        string cls = gob == IntPtr.Zero ? "TILE(gob=0)" : tile ? "TILE(tileData)" : reg ? "PLACEABLE-LIGHT" : "OTHER";
-        var on = AlloyRenderer.SlotsOnGob(gob);
-        _log?.Info($"SceneInputs: [lightdiag] #659 light={(nint)p:X} d={d:F1} pos=({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) node={name} gob={gob:X} tile={tile} reg={reg} regId={regId:X} regCount={regCount} slotsOnGob={on.slots}({on.tile} tile) ctl[{cnt}]={ctl} animated={animated} => {cls}{(animated ? "+ANIM" : "")} flags={*(int*)(p + LightFlagA)}/{*(int*)(p + LightFlagB)} range={*(float*)(p + LightRange):F2} rgb=({*(float*)(p + LightColour):F2},{*(float*)(p + LightColour + 4):F2},{*(float*)(p + LightColour + 8):F2})");
+        string cls = gob.IsNull ? "TILE(gob=0)" : tile ? "TILE(tileData)" : reg ? "PLACEABLE-LIGHT" : "OTHER";
+        var on = AlloyRenderer.SlotsOnGob(gob.Ptr);
+        _log?.Info($"SceneInputs: [lightdiag] #659 light={light.Ptr:X} d={d:F1} pos=({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) node={name} gob={gob.Ptr:X} tile={tile} reg={reg} regId={regId:X} regCount={regCount} slotsOnGob={on.slots}({on.tile} tile) ctl[{cnt}]={ctl} animated={animated} => {cls}{(animated ? "+ANIM" : "")} flags={light.FlagA}/{light.FlagB} range={light.Range:F2} rgb=({light.Colour.X:F2},{light.Colour.Y:F2},{light.Colour.Z:F2})");
     }
 
     /// <summary>CPU-side light-&gt;cube bind: cube slot per AREA light (-1 = no cube), the one thing that tells
@@ -678,14 +676,14 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static int _tSnapIdx;
 
     /// <summary>Keep the walk's nearest point light to the player anchor, with the verdict it just got.</summary>
-    private static void TrackNearest(byte* p, Vector3 pos, float range, float alt, float inten,
+    private static void TrackNearest(PartLight light, Vector3 pos, float range, float alt, float inten,
                                      Vector3 color, float adjR, float upW, float flk, bool culled, int snapIdx)
     {
         Vector3 anchor = FrameInputs.HasFocus ? FrameInputs.Focus
                        : FrameInputs.HasCamera ? FrameInputs.CameraPos : default;
         float d2 = (pos - anchor).LengthSquared();
         if (d2 >= _tBest) return;
-        _tBest = d2; _tPtr = (IntPtr)p; _tPos = pos; _tColor = color;
+        _tBest = d2; _tPtr = light.Ptr; _tPos = pos; _tColor = color;
         _tRange = range; _tAlt = alt; _tInten = inten; _tAdjR = adjR; _tUpW = upW; _tFlk = flk;
         _tCulled = culled; _tSnapIdx = snapIdx;
     }
@@ -762,21 +760,21 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// false (exterior, sun maps on) whenever the chain is unavailable. Alloc-free, once per frame.</summary>
     private static bool AreaIsInterior()
     {
-        IntPtr area = CurrentArea();
-        return area != IntPtr.Zero && (*(uint*)((byte*)area + AreaFlags) & 1) != 0;
+        CNWCArea area = CurrentArea();
+        return !area.IsNull && (area.Flags & 1) != 0;
     }
 
-    /// <summary>The current CNWCArea*, or zero while the chain is unavailable. Compared, never retained.</summary>
-    private static IntPtr CurrentArea()
+    /// <summary>The current CNWCArea, or the null view while the chain is unavailable. Compared, never
+    /// retained.</summary>
+    private static CNWCArea CurrentArea()
     {
-        if (_appMgr == IntPtr.Zero || _getModule == null) return IntPtr.Zero;
+        if (_appMgr == IntPtr.Zero || _getModule == null) return default;
         IntPtr mgr = *(IntPtr*)_appMgr;          // CAppManager*
-        if (mgr == IntPtr.Zero) return IntPtr.Zero;
+        if (mgr == IntPtr.Zero) return default;
         IntPtr app = *(IntPtr*)mgr;              // CClientExoApp* (mgr's first field -- the UiHostService gate chain)
-        if (app == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr module = _getModule(app);
-        if (module == IntPtr.Zero) return IntPtr.Zero;
-        return *(IntPtr*)((byte*)module + ModuleCurrentArea);
+        if (app == IntPtr.Zero) return default;
+        var module = new CNWCModule(_getModule(app));
+        return module.IsNull ? default : module.CurrentArea;
     }
 
     private static string FocusName(int s) => s switch { 0 => "camera-target", 2 => "camera-ground", _ => "none" };
@@ -791,17 +789,16 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static Vector3? CameraTargetFocus()
     {
         if (_currentCamera == IntPtr.Zero) return null;
-        IntPtr cam = *(IntPtr*)_currentCamera;
-        if (cam == IntPtr.Zero) return null;
-        IntPtr host = *(IntPtr*)((byte*)cam + CameraBehaviorHost);
-        if (host == IntPtr.Zero) return null;
-        var hv = new CAurBehavior(host);
-        if (*(IntPtr*)host == IntPtr.Zero) return null;
-        AlloyProbe.Once(ref _probedBehavior, "CAurBehavior", host, _log);
+        var cam = new Camera(*(IntPtr*)_currentCamera);
+        if (cam.IsNull) return null;
+        CAurBehavior hv = cam.BehaviorHost;
+        if (hv.IsNull) return null;
+        if (*(IntPtr*)hv.Ptr == IntPtr.Zero) return null;   // no vtable yet: AsBehaviorCameraFollow is a vcall
+        AlloyProbe.Once(ref _probedBehavior, "CAurBehavior", hv.Ptr, _log);
         if (hv.AsBehaviorCameraFollowFn == IntPtr.Zero) return null;
         CAurBehaviorCameraFollow behavior = hv.AsBehaviorCameraFollow();
         if (behavior.IsNull) return null;   // non-follow camera -> caller uses sticky/camera-ground
-        IntPtr target = *(IntPtr*)((byte*)behavior.Ptr + BehaviorTargetObj);
+        IntPtr target = behavior.Target;
         if (target == IntPtr.Zero) return null;
         return new Gob(target).Position;
     }

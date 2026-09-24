@@ -5,7 +5,10 @@ From EngineLayout.cs, one view per engine class. A view is a pointer-sized struc
 reading a pointer field AS a view is the same load as reading it as an IntPtr.
   `Field<T>(cls, f)`             -> `ref T F`
   `Field<T>(cls, f, count: n)`   -> `Span<T> F`, an array embedded in the object
-  `Field(cls, "vtbl.S", ..., sig: "R(args)")` -> `R S(args)`, the virtual call; every vtbl row also gets `IntPtr SFn`
+  `Field<View>(cls, f, embedded: true)` -> `View F`, a record inside the object (its address, not a load)
+  `Field(cls, "stride")`         -> `this[i]`, the i-th record of an array starting at this one
+  `Field(cls, "vtbl.S", ..., sig: "R(args)")` -> `R S(args)`, the virtual call; every vtbl row also gets `IntPtr SFn`;
+                                    `sig: "sret(args)"` returns by value into `void* ret`, ordered per OS
   untyped row                    -> nothing; typing it is the port
 From SymbolMap.cs, every `[Fn("R(args)")]` symbol gets its signature declared once:
   `XFn`                          a global alias for the function-pointer type
@@ -14,6 +17,8 @@ From SymbolMap.cs, every `[Fn("R(args)")]` symbol gets its signature declared on
   `view.X(args)`                 when the first parameter is `View this`
 A view-typed parameter crosses as its pointer. `sret(View this, ...)` returns a class by value into a buffer the
 caller passes first; the generated call orders it per OS (Itanium (sret, this), Win64 (this, sret) -- #456).
+A parameter type that is neither a view nor a C# keyword (`VectorArg`, `Vec3*`) is a CX.Engine value type; the
+`XFn` alias spells it in full, because a global using alias compiles with no usings in scope.
 
     tools/engine/views.py      # build.sh runs it; the output is checked in for the Windows builds
 """
@@ -31,6 +36,10 @@ VIEW = 'CX.Engine.'
 INLINE = '[System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]'
 # Value types that live in CX.Engine but are copied, not pointed at.
 VALUES = {'Quat'}
+# A global using alias compiles with NO usings in scope, so every name in one is spelled in full: a C#
+# keyword and an already-qualified name stay, a bare name is a CX.Engine type.
+PRIMS = {'void', 'bool', 'byte', 'sbyte', 'short', 'ushort', 'int', 'uint', 'long', 'ulong',
+         'float', 'double', 'char', 'nint', 'nuint'}
 # Classes whose objects the engine frees while we hold them (#145, #150): their views are ref structs, so a
 # pointer cannot be stashed in a field or an array -- the stale read becomes a compile error (#193).
 TRANSIENT = {
@@ -92,13 +101,20 @@ def main():
             if s := re.search(r'sig:\s*"([^"]*)"', rest):
                 slots.append((cls, name, row, sig(s[1], f'{cls}.{field}')))
             continue
+        if field == 'stride':                  # records laid end to end: index from this one
+            member(cls, 'this[]', f'public {cls} this[int i] => new(Ptr + i * EngineLayout.{row});', f'EngineLayout.{row}')
+            continue
         if not typ:
             continue
         t = typ.removeprefix(VIEW)
         if typ.startswith(VIEW) and t not in VALUES:
             classes.setdefault(t, {})
         n = re.search(r'count:\s*(\d+)', rest)
-        if t in TRANSIENT and n:                # a Span cannot hold a ref struct: the array as its raw pointers
+        if re.search(r'embedded:\s*true', rest):
+            if t not in classes:
+                sys.exit(f'!! {cls}.{field}: embedded needs a view type')
+            member(cls, prop(field), f'public {t} {prop(field)} => new(Ptr + EngineLayout.{row});', f'EngineLayout.{row}')
+        elif t in TRANSIENT and n:                # a Span cannot hold a ref struct: the array as its raw pointers
             member(cls, prop(field), f'public Span<IntPtr> {prop(field)} {{ {INLINE} get => new((void*)(Ptr + EngineLayout.{row}), {n[1]}); }}',
                    f'EngineLayout.{row}')
         elif t in TRANSIENT:                    # no pointer to a ref struct: a copy of the pointer, and a setter
@@ -120,6 +136,12 @@ def main():
 
     def raw(t):                                # the type as it crosses the ABI
         return 'IntPtr' if t in views else t
+
+    def qual(t):                               # the same type for a global using alias: no usings in scope there
+        base, stars = t.rstrip('*'), t[len(t.rstrip('*')):]
+        if t in views or base == 'IntPtr':
+            return 'nint' + stars
+        return t if base in PRIMS or '.' in base else VIEW + base + stars
 
     def arg(t, n):                             # a parameter handed on as the ABI wants it
         return f'{n}.Ptr' if t in views else n
@@ -152,7 +174,8 @@ def main():
                    + ''.join(f', {arg(t, n)}' for t, n in rest) + ');', doc)
             continue
         ptr = f'delegate* unmanaged<{", ".join([raw(t) for t, _ in params] + [raw(r)])}>'
-        aliases.append(f'global using unsafe {name}Fn = {ptr.replace("IntPtr", "nint")};')  # no usings in scope here
+        aliases.append(f'global using unsafe {name}Fn = '
+                       f'delegate* unmanaged<{", ".join([qual(t) for t, _ in params] + [qual(r)])}>;')
         fn_members.append(
             f'    private static IntPtr _{name};\n    private static bool _{name}Done;\n'
             f'    /// <inheritdoc cref="{doc}"/>\n'
@@ -171,6 +194,15 @@ def main():
             member(member_of, name, f'public {r} {name}({mdecl}) => {ret(r, call)};', doc)
 
     for cls, name, row, (r, params) in slots:
+        if r == 'sret':
+            lin = ', '.join(['IntPtr', 'IntPtr'] + [raw(t) for t, _ in params] + ['void'])
+            mdecl = ', '.join(['void* ret'] + [f'{t} {n}' for t, n in params])
+            tail = ''.join(f', {arg(t, n)}' for t, n in params)
+            member(cls, name, f'public void {name}({mdecl})\n    {{\n'
+                   f'        var fn = (delegate* unmanaged<{lin}>){name}Fn;\n'
+                   f'        if (OperatingSystem.IsWindows()) fn(Ptr, (IntPtr)ret{tail});\n'
+                   f'        else fn((IntPtr)ret, Ptr{tail});\n    }}', f'EngineLayout.{row}')
+            continue
         ptr = f'delegate* unmanaged<{", ".join(["IntPtr"] + [raw(t) for t, _ in params] + [raw(r)])}>'
         mdecl = ', '.join(f'{t} {n}' for t, n in params)
         call = f'(({ptr}){name}Fn)(' + ', '.join(['Ptr'] + [arg(t, n) for t, n in params]) + ')'

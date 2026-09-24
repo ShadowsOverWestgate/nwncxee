@@ -438,6 +438,7 @@ internal static unsafe class SymbolMap
     /// by-value string lowered to a hidden pointer*/, Vector colour /*xmm0 = (r,g), xmm1 = b*/,
     /// CExoString* font /*rdx*/, int background /*ecx*/)</c>. The font resref is the class discriminator:
     /// <c>fnt_floaty_smal</c> = a damage number, "" = a banner.</summary>
+    [Fn("void(CNWCObject this, IntPtr text, VectorArg colour, IntPtr font, int background)")]
     public const string ShowFloatyText = "_ZN10CNWCObject14ShowFloatyTextE10CExoString6VectorS0_i";
     /// <summary>CTlkTable::GetSimpleString(unsigned int) @0x541fe0 -- strref to text. Returns a CExoString by
     /// value, i.e. <b>sret</b>: <c>(CExoString* out /*rdi*/, CTlkTable* this /*rsi*/, uint strref /*edx*/)</c>,
@@ -991,6 +992,7 @@ internal static unsafe class SymbolMap
     /// wins; the camera's pull-in is built on it. <c>Vector</c> is BY VALUE and returns <c>int</c>, so no
     /// sret: SysV puts each in xmm pairs, Win64 hands a pointer to a copy -- one blittable struct declaration
     /// lowers to both (#537).</summary>
+    [Fn("int(Scene this, VectorArg from, VectorArg to, Vec3* hit, CHitInfo info)")]
     public const string SceneHitCheck = "_ZN5Scene8HitCheckE6VectorS0_PS0_P8CHitInfo";
     /// <summary><c>CHitInfo::Reset(int mode, long mask, int box)</c> @0x45fa90 -- (re)initialises a hit
     /// record, unlinking the SafePointer a previous hit left in it (#537).</summary>
@@ -1333,6 +1335,7 @@ internal static unsafe class SymbolMap
     /// door's DWK with closed and mid-animation doors solid). Returns 1 on a clear line. The two floats are the pair
     /// at <see cref="EngineLayout.PathfindSpaceArgs"/> in that order (disassembly of ClientSideWalkCommand @0x72043e:
     /// xmm4 = +0xe0, xmm5 = +0xe4). Both Vectors by value: SysV xmm0/xmm1 + xmm2/xmm3, Win64 a pointer each.</summary>
+    [Fn("int(CNWCArea this, CNWCCreature creature, VectorArg from, VectorArg to, float space, float height, int checkCreatures)")]
     public const string TestDirectLine = "_ZN8CNWCArea14TestDirectLineEP12CNWCCreature6VectorS2_ffi";
     /// <summary>SDL2 cursor capture for mouse-look (#539): relative mode hides the cursor and streams raw deltas.</summary>
     [Fn("int(int enabled)")]
@@ -1389,6 +1392,7 @@ internal static unsafe class SymbolMap
     /// layer's hit reactions. ABI: <c>(this /*rdi*/, flag /*esi*/, ad /*rdx*/, Vector /*xmm0 = (x,y), xmm1 = z*/,
     /// CExoString* /*rcx, invisible reference*/)</c>; Win64 passes both aggregates as pointers. Returns nothing,
     /// so no sret order (docs/research/procedural-anim-combat.md §3.1).</summary>
+    [Fn("void(CNWCCreature this, byte flag, IntPtr attackData, VectorArg push, IntPtr text)")]
     public const string SpawnHitVisuals = "_ZN12CNWCCreature15SpawnHitVisualsEhP20CNWCCombatAttackData6Vector10CExoString";
 
     /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
@@ -2230,7 +2234,7 @@ internal static unsafe class SymbolMap
         }) { IsBackground = true, Name = "cx-rot-notice" }.Start();
     }
 
-    private const uint MB_ICONWARNING = 0x30;
+    private const uint MB_ICONWARNING = 0x30;  // not-an-offset: a Win32 MessageBox flag
 
     [DllImport("user32", CharSet = CharSet.Unicode)]
     private static extern int MessageBoxW(IntPtr owner, string text, string caption, uint type);

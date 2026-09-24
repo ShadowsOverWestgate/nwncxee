@@ -31,13 +31,13 @@ internal static class HotkeyProtocol
         CX.Framework.SymbolMap.SdlGetModState, CX.Framework.SymbolMap.SdlGetKeyName,
     };
 
-    public const byte KeyPressMajor = 0x36, KeyPressMinor = 0x40;
-    public const byte OpenUiMajor   = 0x36, OpenUiMinor   = 0x41;
-    public const byte ArmSetMajor   = 0x36, ArmSetMinor   = 0x42;
-    public const byte RevokeMajor   = 0x36, RevokeMinor   = 0x43;
-    public const byte PresentTokenMajor = 0x36, PresentTokenMinor = 0x44;
-    public const byte GrantTokenMajor   = 0x36, GrantTokenMinor   = 0x45;
-    public const byte AbuseContactMajor = 0x36, AbuseContactMinor = 0x46;
+    public const byte KeyPressMajor = 0x36, KeyPressMinor = 0x40;  // not-an-offset: a message opcode
+    public const byte OpenUiMajor   = 0x36, OpenUiMinor   = 0x41;  // not-an-offset: a message opcode
+    public const byte ArmSetMajor   = 0x36, ArmSetMinor   = 0x42;  // not-an-offset: a message opcode
+    public const byte RevokeMajor   = 0x36, RevokeMinor   = 0x43;  // not-an-offset: a message opcode
+    public const byte PresentTokenMajor = 0x36, PresentTokenMinor = 0x44;  // not-an-offset: a message opcode
+    public const byte GrantTokenMajor   = 0x36, GrantTokenMinor   = 0x45;  // not-an-offset: a message opcode
+    public const byte AbuseContactMajor = 0x36, AbuseContactMinor = 0x46;  // not-an-offset: a message opcode
 
     /// <summary>Where a server operator reports abuse of the extender. Sent on every login after CX_ENABLED.
     /// <see cref="Product.Contact"/>: the same address <c>/about</c> prints.</summary>

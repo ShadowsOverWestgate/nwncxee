@@ -51,10 +51,6 @@ internal static unsafe partial class RadialTree
     private static int* _ctorCounter;
     private static int* _menuDepth;
 
-    /// <summary>Itanium vptr = <c>_ZTV</c> + 0x10 (two words: offset-to-top, typeinfo); MSVC vptr = the <c>vftable</c>
-    /// label itself.</summary>
-    private static readonly int VtableToVptr = OperatingSystem.IsWindows() ? 0 : 0x10;
-
     /// <summary>Resolve every symbol once. False when a required one is missing (the caller has already gated on
     /// <see cref="SymbolMap.Require"/>, so this is belt and braces).</summary>
     public static bool Init(ExtenderLog log)
@@ -83,7 +79,7 @@ internal static unsafe partial class RadialTree
     private static void Vt(RootKind kind, string symbol, ExtenderLog log)
     {
         IntPtr vt = SymbolMap.Resolve(symbol, log);
-        _vptr[(int)kind] = vt == IntPtr.Zero ? IntPtr.Zero : vt + VtableToVptr;
+        _vptr[(int)kind] = EngineAbi.Vtbl(vt);
     }
 
     /// <summary><c>CRadialMenu::static_nMenuDepth</c>: non-zero while an ENGINE radial is active (never under the
@@ -126,42 +122,36 @@ internal static unsafe partial class RadialTree
     public static RadialSlot ReadSlot(IntPtr menu, int i)
     {
         var m = new CRadialMenu(menu);
-        int stride = EngineLayout.RadialCallbackStride;
-        IntPtr entry = menu + EngineLayout.RadialEntry + i * stride;
-        IntPtr creator = menu + EngineLayout.RadialCreator + i * stride;
-        bool hasEntry = *(IntPtr*)entry != entry;
-        bool hasCreator = *(IntPtr*)creator != creator;
+        CGuiCallback entry = m.Entry[i], creator = m.Creator[i];
         IntPtr child = m.SubMenu[i].Ptr;
-        SlotKind kind = hasCreator || child != IntPtr.Zero ? SlotKind.Creator : hasEntry ? SlotKind.Entry : SlotKind.Empty;
-        IntPtr obj = hasEntry ? *(IntPtr*)entry : IntPtr.Zero;
-        IntPtr fn = hasEntry ? *(IntPtr*)(entry + 8) : IntPtr.Zero;
-        IntPtr adj = hasEntry && !OperatingSystem.IsWindows() ? *(IntPtr*)(entry + 16) : IntPtr.Zero;
-        var icon = new CGuiIcon(m.Icon[i]);
+        SlotKind kind = creator.IsSet || child != IntPtr.Zero ? SlotKind.Creator : entry.IsSet ? SlotKind.Entry : SlotKind.Empty;
+        CGuiIcon icon = m.Icon[i];
         return new RadialSlot(i, kind,
             ReadLabel(m.Text[i]),
             ReadIcon(icon),
             icon.IsNull ? "" : ReadAur(icon.CountLabel),
             (m.Flags[i] & 1) != 0,
             m.Param[i],
-            obj, fn, adj, child);
+            entry.IsSet ? entry.Obj : IntPtr.Zero,
+            entry.IsSet ? entry.Fn : IntPtr.Zero,
+            entry.IsSet ? entry.Adj : IntPtr.Zero,
+            child);
     }
 
-    private static string ReadLabel(IntPtr bubble) =>
-        bubble == IntPtr.Zero ? "" : ReadAur(new CGuiTextBubble(bubble).AurString);
+    private static string ReadLabel(CGuiTextBubble bubble) => bubble.IsNull ? "" : ReadAur(bubble.AurString);
 
     /// <summary>Rejoin a <c>CAurString</c>'s wrapped lines (the bubble label and the icon's count label are both
     /// <c>NewCAurString</c> gobs): <c>StringGob::WrapLines</c> @0x494d80 keeps the break space (and any newline) on
     /// the first piece, so plain concatenation restores the text SetText was given.</summary>
-    private static string ReadAur(IntPtr aur)
+    private static string ReadAur(CAurString aur)
     {
-        if (aur == IntPtr.Zero || _getTextLineCount == null || _getTextLine == null) return "";
-        // The reader's `this` is a this-ADJUSTMENT, not a field: the object base on Linux, the sub-object on MSVC.
-        IntPtr gob = aur - EngineLayout.StringGobReaderAdjust;
-        int n = _getTextLineCount(gob);
+        if (aur.IsNull || _getTextLineCount == null || _getTextLine == null) return "";
+        StringGob gob = aur.Reader;
+        int n = _getTextLineCount(gob.Ptr);
         if (n <= 0) return "";
         if (n > MaxLabelLines) n = MaxLabelLines;
         var sb = new StringBuilder();
-        for (int k = 0; k < n; k++) AppendCStr(sb, (byte*)_getTextLine(gob, k));
+        for (int k = 0; k < n; k++) AppendCStr(sb, (byte*)_getTextLine(gob.Ptr, k));
         return sb.ToString().Trim();
     }
 
@@ -224,23 +214,13 @@ internal static unsafe partial class RadialTree
     public static bool Invoke(IntPtr menu, int i)
     {
         if (_eventObject == null || (uint)i >= SlotCount) return false;
-        IntPtr entry = menu + EngineLayout.RadialEntry + i * EngineLayout.RadialCallbackStride;
-        IntPtr obj = *(IntPtr*)entry;
-        if (obj == entry) return false;
-        IntPtr fn = *(IntPtr*)(entry + 8);
         var m = new CRadialMenu(menu);
-        long param = m.Param[i];
-        IntPtr self = obj;
-        if (!OperatingSystem.IsWindows())
-        {
-            self = obj + *(IntPtr*)(entry + 16);
-            if (((long)fn & 1) != 0) fn = *(IntPtr*)((long)*(IntPtr*)self + (long)fn - 1);
-        }
-        IntPtr saved = *_eventObject;
-        *_eventObject = menu;
-        ((delegate* unmanaged<IntPtr, long, void>)fn)(self, param);
-        *_eventObject = saved;
-        return true;
+        CGuiCallback entry = m.Entry[i];
+        if (!entry.IsSet) return false;
+        IntPtr fn = entry.Fn, self = entry.Obj + entry.Adj;
+        if (!OperatingSystem.IsWindows() && ((long)fn & 1) != 0)
+            fn = *(IntPtr*)((long)*(IntPtr*)self + (long)fn - 1);
+        return Call(menu, self, fn, m.Param[i]);
     }
 
     /// <summary>A handler invoked on an object CX built (a self stand-in, CX-694): <c>fn(obj, param)</c> under the
@@ -248,9 +228,16 @@ internal static unsafe partial class RadialTree
     public static bool InvokeOn(IntPtr obj, IntPtr fn, long param)
     {
         if (_eventObject == null || obj == IntPtr.Zero || fn == IntPtr.Zero) return false;
+        return Call(obj, obj, fn, param);
+    }
+
+    /// <summary>One leaf call under the <c>s_pCurrentEventObject</c> bracket. Left raw: the target is a member-fn
+    /// pointer read out of the menu, so it belongs to no symbol and no <c>[Fn]</c> declaration can name it (CX-37).</summary>
+    private static bool Call(IntPtr eventObj, IntPtr self, IntPtr fn, long param)
+    {
         IntPtr saved = *_eventObject;
-        *_eventObject = obj;
-        ((delegate* unmanaged<IntPtr, long, void>)fn)(obj, param);
+        *_eventObject = eventObj;
+        ((delegate* unmanaged<IntPtr, long, void>)fn)(self, param);
         *_eventObject = saved;
         return true;
     }

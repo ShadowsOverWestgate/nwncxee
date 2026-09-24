@@ -92,6 +92,7 @@ global using unsafe ItemShowFeedbackBubbleTextFn = delegate* unmanaged<nint, voi
 global using unsafe SetPopUpBubbleTextFn = delegate* unmanaged<nint, nint, int, float, float, void>;
 global using unsafe GuiPanelUnToggleOffFn = delegate* unmanaged<nint, void>;
 global using unsafe HandleServerToPlayerChatFn = delegate* unmanaged<nint, byte, void>;
+global using unsafe ShowFloatyTextFn = delegate* unmanaged<nint, nint, CX.Engine.VectorArg, nint, int, void>;
 global using unsafe GetViewPortFn = delegate* unmanaged<float*, void>;
 global using unsafe GuiObjectHitCheckFn = delegate* unmanaged<nint, int, int, int, int, nint>;
 global using unsafe ExoConfigGetBoolFn = delegate* unmanaged<nint, byte*, byte, byte>;
@@ -153,6 +154,7 @@ global using unsafe SceneDeleteTileFn = delegate* unmanaged<nint, System.Numeric
 global using unsafe SceneBspGetTileDataFn = delegate* unmanaged<nint, System.Numerics.Vector3*, nint>;
 global using unsafe GlGetPoolFn = delegate* unmanaged<uint, byte*>;
 global using unsafe PartDanglyAnimateFn = delegate* unmanaged<nint, float, void>;
+global using unsafe SceneHitCheckFn = delegate* unmanaged<nint, CX.Engine.VectorArg, CX.Engine.VectorArg, CX.Engine.Vec3*, nint, int>;
 global using unsafe HitInfoResetFn = delegate* unmanaged<nint, int, long, int, void>;
 global using unsafe PartAnimateFn = delegate* unmanaged<nint, float, void>;
 global using unsafe VertexPrimGenVelocityFn = delegate* unmanaged<nint, void>;
@@ -187,6 +189,7 @@ global using unsafe TurnCameraFn = delegate* unmanaged<nint, float, int, void>;
 global using unsafe TiltCameraFn = delegate* unmanaged<nint, float, int, void>;
 global using unsafe UpdateDriveModeFn = delegate* unmanaged<nint, void>;
 global using unsafe WalkUpdateLocationFn = delegate* unmanaged<nint, int>;
+global using unsafe TestDirectLineFn = delegate* unmanaged<nint, nint, CX.Engine.VectorArg, CX.Engine.VectorArg, float, float, int, int>;
 global using unsafe SdlSetRelativeMouseModeFn = delegate* unmanaged<int, int>;
 global using unsafe SdlWarpMouseInWindowFn = delegate* unmanaged<nint, int, int, void>;
 global using unsafe GuiInGameToggleOffFn = delegate* unmanaged<nint, void>;
@@ -195,6 +198,7 @@ global using unsafe UpdateLookAtFn = delegate* unmanaged<nint, void>;
 global using unsafe BeginLookAtAnimateFn = delegate* unmanaged<nint, nint, byte*, byte*, float, float, float, float, void>;
 global using unsafe LookAtControlFn = delegate* unmanaged<nint, void>;
 global using unsafe GobAnimateFn = delegate* unmanaged<nint, float, void>;
+global using unsafe SpawnHitVisualsFn = delegate* unmanaged<nint, byte, nint, CX.Engine.VectorArg, nint, void>;
 global using unsafe AurTextureGetFn = delegate* unmanaged<byte*, nint, byte*, int*, int, byte, nint>;
 global using unsafe AurTextureGetTIDFn = delegate* unmanaged<nint, int>;
 global using unsafe AurTextureGetControllerFn = delegate* unmanaged<nint, nint>;
@@ -232,9 +236,39 @@ public readonly unsafe partial struct AnimRun(IntPtr ptr)
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.AnimRunAnimation"/>
-    public ref IntPtr Animation => ref *(IntPtr*)(Ptr + EngineLayout.AnimRunAnimation);
+    public ref Animation Animation => ref *(Animation*)(Ptr + EngineLayout.AnimRunAnimation);
     /// <inheritdoc cref="EngineLayout.AnimRunBlend"/>
     public ref float Blend => ref *(float*)(Ptr + EngineLayout.AnimRunBlend);
+    /// <inheritdoc cref="EngineLayout.AnimRunBlendTime"/>
+    public ref float BlendTime => ref *(float*)(Ptr + EngineLayout.AnimRunBlendTime);
+    /// <inheritdoc cref="EngineLayout.AnimRunFlags"/>
+    public ref uint Flags => ref *(uint*)(Ptr + EngineLayout.AnimRunFlags);
+    /// <inheritdoc cref="EngineLayout.AnimRunRate"/>
+    public ref float Rate => ref *(float*)(Ptr + EngineLayout.AnimRunRate);
+    /// <inheritdoc cref="EngineLayout.AnimRunTime"/>
+    public ref float Time => ref *(float*)(Ptr + EngineLayout.AnimRunTime);
+}
+
+/// <summary>Typed view of an engine <c>Animation*</c>.</summary>
+public readonly unsafe partial struct Animation(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.AnimationName"/>
+    public ref byte Name => ref *(byte*)(Ptr + EngineLayout.AnimationName);
+}
+
+/// <summary>Typed view of an engine <c>BSPNode*</c>.</summary>
+public readonly unsafe partial struct BSPNode(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.BspNodeData"/>
+    public ref IntPtr Data => ref *(IntPtr*)(Ptr + EngineLayout.BspNodeData);
 }
 
 /// <summary>Typed view of an engine <c>CActionTarget*</c>.</summary>
@@ -352,6 +386,8 @@ public readonly unsafe partial struct CAurGrassInfo(IntPtr ptr)
     public ref byte Name => ref *(byte*)(Ptr + EngineLayout.GrassInfoName);
     /// <inheritdoc cref="EngineLayout.GrassInfoProb"/>
     public Span<float> Prob { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.GrassInfoProb), 4); }
+    /// <inheritdoc cref="EngineLayout.GrassInfoStride"/>
+    public CAurGrassInfo this[int i] => new(Ptr + i * EngineLayout.GrassInfoStride);
 }
 
 /// <summary>Typed view of an engine <c>CAurString*</c>.</summary>
@@ -574,6 +610,8 @@ public readonly unsafe partial struct CClientExoAppInternal(IntPtr ptr)
     public int FeedbackHitCheckHostile(IntPtr* obj, IntPtr point, int* ground, int mask) => EngineFn.FeedbackHitCheckHostile(Ptr, obj, point, ground, mask);
     /// <inheritdoc cref="SymbolMap.FeedbackHitCheckNonHostile"/>
     public int FeedbackHitCheckNonHostile(IntPtr* obj, IntPtr point, int* ground, int mask) => EngineFn.FeedbackHitCheckNonHostile(Ptr, obj, point, ground, mask);
+    /// <inheritdoc cref="EngineLayout.InternalFeedbackWord"/>
+    public ref int FeedbackWord => ref *(int*)(Ptr + EngineLayout.InternalFeedbackWord);
     /// <inheritdoc cref="EngineLayout.InternalInGameGui"/>
     public ref CGuiInGame InGameGui => ref *(CGuiInGame*)(Ptr + EngineLayout.InternalInGameGui);
     /// <inheritdoc cref="EngineLayout.InternalMainMenuPanel"/>
@@ -646,6 +684,8 @@ public readonly unsafe partial struct CExoBase(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.ExoBaseConfig"/>
     public ref CExoConfig Config => ref *(CExoConfig*)(Ptr + EngineLayout.ExoBaseConfig);
+    /// <inheritdoc cref="EngineLayout.ExoBaseUserDir"/>
+    public ref IntPtr UserDir => ref *(IntPtr*)(Ptr + EngineLayout.ExoBaseUserDir);
 }
 
 /// <summary>Typed view of an engine <c>CExoConfig*</c>.</summary>
@@ -690,6 +730,21 @@ public readonly unsafe partial struct CGameObject(IntPtr ptr)
     public ref byte Type => ref *(byte*)(Ptr + EngineLayout.GameObjType);
 }
 
+/// <summary>Typed view of an engine <c>CGuiCallback*</c>.</summary>
+public readonly unsafe partial struct CGuiCallback(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.CallbackFn"/>
+    public ref IntPtr Fn => ref *(IntPtr*)(Ptr + EngineLayout.CallbackFn);
+    /// <inheritdoc cref="EngineLayout.CallbackObj"/>
+    public ref IntPtr Obj => ref *(IntPtr*)(Ptr + EngineLayout.CallbackObj);
+    /// <inheritdoc cref="EngineLayout.CallbackStride"/>
+    public CGuiCallback this[int i] => new(Ptr + i * EngineLayout.CallbackStride);
+}
+
 /// <summary>Typed view of an engine <c>CGuiEdit*</c>.</summary>
 public readonly unsafe partial struct CGuiEdit(IntPtr ptr)
 {
@@ -711,7 +766,7 @@ public readonly unsafe partial struct CGuiIcon(IntPtr ptr)
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.GuiIconCountLabel"/>
-    public ref IntPtr CountLabel => ref *(IntPtr*)(Ptr + EngineLayout.GuiIconCountLabel);
+    public ref CAurString CountLabel => ref *(CAurString*)(Ptr + EngineLayout.GuiIconCountLabel);
     /// <inheritdoc cref="EngineLayout.GuiIconResRef"/>
     public Span<byte> Resref { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.GuiIconResRef), 16); }
 }
@@ -778,8 +833,25 @@ public readonly unsafe partial struct CGuiInGameChatPrompt(IntPtr ptr)
     public IntPtr ChatPromptCtor() => EngineFn.ChatPromptCtor(Ptr);
     /// <inheritdoc cref="SymbolMap.ChatPromptSetFocus"/>
     public void ChatPromptSetFocus(IntPtr text) => EngineFn.ChatPromptSetFocus(Ptr, text);
+    /// <inheritdoc cref="EngineLayout.ChatPromptEdit"/>
+    public CGuiEdit Edit => new(Ptr + EngineLayout.ChatPromptEdit);
     /// <inheritdoc cref="EngineLayout.ChatPromptShown"/>
     public ref int Shown => ref *(int*)(Ptr + EngineLayout.ChatPromptShown);
+}
+
+/// <summary>Typed view of an engine <c>CGuiInGamePopUpBubble*</c>.</summary>
+public readonly unsafe partial struct CGuiInGamePopUpBubble(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.BubbleAnchorX"/>
+    public ref float AnchorX => ref *(float*)(Ptr + EngineLayout.BubbleAnchorX);
+    /// <inheritdoc cref="EngineLayout.BubbleAnchorY"/>
+    public ref float AnchorY => ref *(float*)(Ptr + EngineLayout.BubbleAnchorY);
+    /// <inheritdoc cref="EngineLayout.BubbleLiveText"/>
+    public ref int LiveText => ref *(int*)(Ptr + EngineLayout.BubbleLiveText);
 }
 
 /// <summary>Typed view of an engine <c>CGuiMan*</c>.</summary>
@@ -810,6 +882,8 @@ public readonly unsafe partial struct CGuiPanel(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.GuiPanelCloseCallback"/>
+    public CGuiCallback CloseCallback => new(Ptr + EngineLayout.GuiPanelCloseCallback);
     /// <inheritdoc cref="SymbolMap.GuiPanelDeactivate"/>
     public void GuiPanelDeactivate(int arg) => EngineFn.GuiPanelDeactivate(Ptr, arg);
     /// <inheritdoc cref="SymbolMap.GuiPanelUnToggleOff"/>
@@ -828,7 +902,7 @@ public readonly unsafe partial struct CGuiTextBubble(IntPtr ptr)
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.TextBubbleString"/>
-    public ref IntPtr AurString => ref *(IntPtr*)(Ptr + EngineLayout.TextBubbleString);
+    public ref CAurString AurString => ref *(CAurString*)(Ptr + EngineLayout.TextBubbleString);
 }
 
 /// <summary>Typed view of an engine <c>CHitInfo*</c>.</summary>
@@ -846,6 +920,12 @@ public readonly unsafe partial struct CHitInfo(IntPtr ptr)
     public ref int IgnoreCount => ref *(int*)(Ptr + EngineLayout.HitInfoIgnoreCount);
     /// <inheritdoc cref="EngineLayout.HitInfoIgnoreList"/>
     public ref IntPtr IgnoreList => ref *(IntPtr*)(Ptr + EngineLayout.HitInfoIgnoreList);
+    /// <inheritdoc cref="EngineLayout.HitInfoKind"/>
+    public ref int Kind => ref *(int*)(Ptr + EngineLayout.HitInfoKind);
+    /// <inheritdoc cref="EngineLayout.HitInfoMode"/>
+    public ref int Mode => ref *(int*)(Ptr + EngineLayout.HitInfoMode);
+    /// <inheritdoc cref="EngineLayout.HitInfoPoint"/>
+    public ref System.Numerics.Vector3 Point => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.HitInfoPoint);
 }
 
 /// <summary>Typed view of an engine <c>CLayeredIcon*</c>.</summary>
@@ -895,10 +975,20 @@ public readonly unsafe partial struct CNWCArea(IntPtr ptr)
     public void AreaStartWeather(byte kind) => EngineFn.AreaStartWeather(Ptr, kind);
     /// <inheritdoc cref="SymbolMap.AreaStopWeather"/>
     public void AreaStopWeather(byte kind) => EngineFn.AreaStopWeather(Ptr, kind);
+    /// <inheritdoc cref="EngineLayout.AreaFlags"/>
+    public ref uint Flags => ref *(uint*)(Ptr + EngineLayout.AreaFlags);
+    /// <inheritdoc cref="EngineLayout.AreaId"/>
+    public ref uint Id => ref *(uint*)(Ptr + EngineLayout.AreaId);
     /// <inheritdoc cref="EngineLayout.AreaObjectCount"/>
     public ref int ObjectCount => ref *(int*)(Ptr + EngineLayout.AreaObjectCount);
     /// <inheritdoc cref="EngineLayout.AreaObjectIds"/>
     public ref IntPtr ObjectIds => ref *(IntPtr*)(Ptr + EngineLayout.AreaObjectIds);
+    /// <inheritdoc cref="EngineLayout.AreaPlaceableLightCount"/>
+    public ref int PlaceableLightCount => ref *(int*)(Ptr + EngineLayout.AreaPlaceableLightCount);
+    /// <inheritdoc cref="EngineLayout.AreaPlaceableLights"/>
+    public ref IntPtr PlaceableLights => ref *(IntPtr*)(Ptr + EngineLayout.AreaPlaceableLights);
+    /// <inheritdoc cref="SymbolMap.TestDirectLine"/>
+    public int TestDirectLine(CNWCCreature creature, VectorArg from, VectorArg to, float space, float height, int checkCreatures) => EngineFn.TestDirectLine(Ptr, creature.Ptr, from, to, space, height, checkCreatures);
     /// <inheritdoc cref="EngineLayout.AreaTileHeight"/>
     public ref int TileHeight => ref *(int*)(Ptr + EngineLayout.AreaTileHeight);
     /// <inheritdoc cref="EngineLayout.AreaTileWidth"/>
@@ -933,6 +1023,8 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public ref byte AiState => ref *(byte*)(Ptr + EngineLayout.CreatureAiState);
     /// <inheritdoc cref="EngineLayout.CreatureAiTarget"/>
     public ref uint AiTarget => ref *(uint*)(Ptr + EngineLayout.CreatureAiTarget);
+    /// <inheritdoc cref="EngineLayout.CreatureArea"/>
+    public ref uint Area => ref *(uint*)(Ptr + EngineLayout.CreatureArea);
     /// <inheritdoc cref="EngineLayout.CreatureAttitude"/>
     public ref byte Attitude => ref *(byte*)(Ptr + EngineLayout.CreatureAttitude);
     /// <inheritdoc cref="EngineLayout.CreatureCombatState"/>
@@ -962,7 +1054,11 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     /// <inheritdoc cref="EngineLayout.CreaturePlated"/>
     public ref int Plated => ref *(int*)(Ptr + EngineLayout.CreaturePlated);
     /// <inheritdoc cref="EngineLayout.CreatureSetPositionSlot"/>
+    public void SetPosition(VectorArg pos) => ((delegate* unmanaged<IntPtr, VectorArg, void>)SetPositionFn)(Ptr, pos);
+    /// <inheritdoc cref="EngineLayout.CreatureSetPositionSlot"/>
     public IntPtr SetPositionFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.CreatureSetPositionSlot);
+    /// <inheritdoc cref="SymbolMap.SpawnHitVisuals"/>
+    public void SpawnHitVisuals(byte flag, IntPtr attackData, VectorArg push, IntPtr text) => EngineFn.SpawnHitVisuals(Ptr, flag, attackData, push, text);
     /// <inheritdoc cref="EngineLayout.CreatureStats"/>
     public ref CNWCCreatureStats Stats => ref *(CNWCCreatureStats*)(Ptr + EngineLayout.CreatureStats);
     /// <inheritdoc cref="SymbolMap.UpdateLookAt"/>
@@ -978,6 +1074,8 @@ public readonly unsafe partial struct CNWCCreatureStats(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.StatsDamage"/>
+    public ref byte Damage => ref *(byte*)(Ptr + EngineLayout.StatsDamage);
     /// <inheritdoc cref="EngineLayout.StatsFirstName"/>
     public ref IntPtr FirstName => ref *(IntPtr*)(Ptr + EngineLayout.StatsFirstName);
     /// <inheritdoc cref="EngineLayout.StatsFirstNameLen"/>
@@ -986,6 +1084,10 @@ public readonly unsafe partial struct CNWCCreatureStats(IntPtr ptr)
     public ref IntPtr LastName => ref *(IntPtr*)(Ptr + EngineLayout.StatsLastName);
     /// <inheritdoc cref="EngineLayout.StatsLastNameLen"/>
     public ref uint LastNameLen => ref *(uint*)(Ptr + EngineLayout.StatsLastNameLen);
+    /// <inheritdoc cref="EngineLayout.StatsOverrideName"/>
+    public ref IntPtr OverrideName => ref *(IntPtr*)(Ptr + EngineLayout.StatsOverrideName);
+    /// <inheritdoc cref="EngineLayout.StatsOverrideNameLen"/>
+    public ref uint OverrideNameLen => ref *(uint*)(Ptr + EngineLayout.StatsOverrideNameLen);
 }
 
 /// <summary>Typed view of an engine <c>CNWCItem*</c>.</summary>
@@ -1045,16 +1147,33 @@ public readonly unsafe partial struct CNWCObject(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ObjAnimBase"/>
+    public ref CNWCAnimBase AnimBase => ref *(CNWCAnimBase*)(Ptr + EngineLayout.ObjAnimBase);
     /// <inheritdoc cref="EngineLayout.ObjAnimation"/>
     public ref short Animation => ref *(short*)(Ptr + EngineLayout.ObjAnimation);
+    /// <inheritdoc cref="EngineLayout.ObjBubble"/>
+    public ref CGuiInGamePopUpBubble Bubble => ref *(CGuiInGamePopUpBubble*)(Ptr + EngineLayout.ObjBubble);
+    /// <inheritdoc cref="EngineLayout.GetPortraitSlot"/>
+    public void GetPortrait(void* ret, byte size)
+    {
+        var fn = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)GetPortraitFn;
+        if (OperatingSystem.IsWindows()) fn(Ptr, (IntPtr)ret, size);
+        else fn((IntPtr)ret, Ptr, size);
+    }
     /// <inheritdoc cref="EngineLayout.GetPortraitSlot"/>
     public IntPtr GetPortraitFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GetPortraitSlot);
     /// <inheritdoc cref="EngineLayout.ObjHighlightable"/>
     public ref int Highlightable => ref *(int*)(Ptr + EngineLayout.ObjHighlightable);
     /// <inheritdoc cref="EngineLayout.ObjHiliteSlot"/>
+    public void Hilite(VectorArg colour, byte channel, float fade, int glow) => ((delegate* unmanaged<IntPtr, VectorArg, byte, float, int, void>)HiliteFn)(Ptr, colour, channel, fade, glow);
+    /// <inheritdoc cref="EngineLayout.ObjHiliteColour"/>
+    public Span<float> HiliteColour { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.ObjHiliteColour), 3); }
+    /// <inheritdoc cref="EngineLayout.ObjHiliteSlot"/>
     public IntPtr HiliteFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.ObjHiliteSlot);
     /// <inheritdoc cref="EngineLayout.ObjId"/>
     public ref uint Id => ref *(uint*)(Ptr + EngineLayout.ObjId);
+    /// <inheritdoc cref="EngineLayout.ObjItemPlated"/>
+    public ref int ItemPlated => ref *(int*)(Ptr + EngineLayout.ObjItemPlated);
     /// <inheritdoc cref="EngineLayout.ObjMouseOffSlot"/>
     public void MouseOff() => ((delegate* unmanaged<IntPtr, void>)MouseOffFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.ObjMouseOffSlot"/>
@@ -1065,10 +1184,20 @@ public readonly unsafe partial struct CNWCObject(IntPtr ptr)
     public IntPtr MouseOverFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.ObjMouseOverSlot);
     /// <inheritdoc cref="EngineLayout.ObjOrientation"/>
     public ref System.Numerics.Vector3 Orientation => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.ObjOrientation);
+    /// <inheritdoc cref="EngineLayout.ObjOverrideLen"/>
+    public ref int OverrideLen => ref *(int*)(Ptr + EngineLayout.ObjOverrideLen);
+    /// <inheritdoc cref="EngineLayout.ObjOverrideMode"/>
+    public ref int OverrideMode => ref *(int*)(Ptr + EngineLayout.ObjOverrideMode);
+    /// <inheritdoc cref="EngineLayout.ObjOverrideText"/>
+    public ref IntPtr OverrideText => ref *(IntPtr*)(Ptr + EngineLayout.ObjOverrideText);
     /// <inheritdoc cref="EngineLayout.ObjPosition"/>
     public ref System.Numerics.Vector3 Position => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.ObjPosition);
+    /// <inheritdoc cref="EngineLayout.ObjRetired"/>
+    public ref int Retired => ref *(int*)(Ptr + EngineLayout.ObjRetired);
     /// <inheritdoc cref="SymbolMap.SetPopUpBubbleText"/>
     public void SetPopUpBubbleText(IntPtr text, int forceShow, float perChar, float fixedSec) => EngineFn.SetPopUpBubbleText(Ptr, text, forceShow, perChar, fixedSec);
+    /// <inheritdoc cref="SymbolMap.ShowFloatyText"/>
+    public void ShowFloatyText(IntPtr text, VectorArg colour, IntPtr font, int background) => EngineFn.ShowFloatyText(Ptr, text, colour, font, background);
     /// <inheritdoc cref="EngineLayout.ObjType"/>
     public ref byte Type => ref *(byte*)(Ptr + EngineLayout.ObjType);
     /// <inheritdoc cref="EngineLayout.ObjUnHiliteSlot"/>
@@ -1090,6 +1219,17 @@ public readonly unsafe partial struct CNWCPlaceable(IntPtr ptr)
     public void PlaceableShowFeedbackBubbleText() => EngineFn.PlaceableShowFeedbackBubbleText(Ptr);
     /// <inheritdoc cref="EngineLayout.PlaceablePlated"/>
     public ref int Plated => ref *(int*)(Ptr + EngineLayout.PlaceablePlated);
+}
+
+/// <summary>Typed view of an engine <c>CNWCPlaceableObjectLight*</c>.</summary>
+public readonly unsafe partial struct CNWCPlaceableObjectLight(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.PlaceableLightGob"/>
+    public Gob Gob { get => new(*(IntPtr*)(Ptr + EngineLayout.PlaceableLightGob)); set => *(IntPtr*)(Ptr + EngineLayout.PlaceableLightGob) = value.Ptr; }
 }
 
 /// <summary>Typed view of an engine <c>CNWCPlayer*</c>.</summary>
@@ -1155,10 +1295,14 @@ public readonly unsafe partial struct CRadialMenu(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.RadialAutoDelete"/>
     public ref byte AutoDelete => ref *(byte*)(Ptr + EngineLayout.RadialAutoDelete);
+    /// <inheritdoc cref="EngineLayout.RadialCreator"/>
+    public CGuiCallback Creator => new(Ptr + EngineLayout.RadialCreator);
+    /// <inheritdoc cref="EngineLayout.RadialEntry"/>
+    public CGuiCallback Entry => new(Ptr + EngineLayout.RadialEntry);
     /// <inheritdoc cref="EngineLayout.RadialFlags"/>
     public Span<uint> Flags { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.RadialFlags), 8); }
     /// <inheritdoc cref="EngineLayout.RadialIcon"/>
-    public Span<IntPtr> Icon { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.RadialIcon), 8); }
+    public Span<CGuiIcon> Icon { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.RadialIcon), 8); }
     /// <inheritdoc cref="EngineLayout.RadialMenuX"/>
     public ref int MenuX => ref *(int*)(Ptr + EngineLayout.RadialMenuX);
     /// <inheritdoc cref="EngineLayout.RadialMenuY"/>
@@ -1180,7 +1324,7 @@ public readonly unsafe partial struct CRadialMenu(IntPtr ptr)
     /// <inheritdoc cref="EngineLayout.RadialTargetId"/>
     public ref uint TargetId => ref *(uint*)(Ptr + EngineLayout.RadialTargetId);
     /// <inheritdoc cref="EngineLayout.RadialText"/>
-    public Span<IntPtr> Text { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.RadialText), 8); }
+    public Span<CGuiTextBubble> Text { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.RadialText), 8); }
 }
 
 /// <summary>Typed view of an engine <c>CRes*</c>.</summary>
@@ -1203,6 +1347,10 @@ public readonly unsafe partial struct Camera(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.CameraBehaviorHost"/>
+    public ref CAurBehavior BehaviorHost => ref *(CAurBehavior*)(Ptr + EngineLayout.CameraBehaviorHost);
+    /// <inheritdoc cref="EngineLayout.CamFar"/>
+    public ref float Far => ref *(float*)(Ptr + EngineLayout.CamFar);
     /// <inheritdoc cref="EngineLayout.CamKeyholeState"/>
     public ref byte KeyholeState => ref *(byte*)(Ptr + EngineLayout.CamKeyholeState);
     /// <inheritdoc cref="EngineLayout.CamNear"/>
@@ -1217,6 +1365,10 @@ public readonly unsafe partial struct Camera(IntPtr ptr)
     public ref float ViewH => ref *(float*)(Ptr + EngineLayout.CamViewH);
     /// <inheritdoc cref="EngineLayout.CamViewW"/>
     public ref float ViewW => ref *(float*)(Ptr + EngineLayout.CamViewW);
+    /// <inheritdoc cref="EngineLayout.CamViewX"/>
+    public ref float ViewX => ref *(float*)(Ptr + EngineLayout.CamViewX);
+    /// <inheritdoc cref="EngineLayout.CamViewY"/>
+    public ref float ViewY => ref *(float*)(Ptr + EngineLayout.CamViewY);
 }
 
 /// <summary>Typed view of an engine <c>CycleTIDTextureController*</c>.</summary>
@@ -1232,6 +1384,17 @@ public readonly unsafe partial struct CycleTIDTextureController(IntPtr ptr)
     public IntPtr ControlFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.CycleControlSlot);
 }
 
+/// <summary>Typed view of an engine <c>DrawBucket*</c>.</summary>
+public readonly unsafe partial struct DrawBucket(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.BucketStride"/>
+    public DrawBucket this[int i] => new(Ptr + i * EngineLayout.BucketStride);
+}
+
 /// <summary>Typed view of an engine <c>GLRender__PROG_FIXED*</c>.</summary>
 public readonly unsafe partial struct GLRender__PROG_FIXED(IntPtr ptr)
 {
@@ -1241,6 +1404,44 @@ public readonly unsafe partial struct GLRender__PROG_FIXED(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.ProgFixedId"/>
     public ref uint ProgramId => ref *(uint*)(Ptr + EngineLayout.ProgFixedId);
+}
+
+/// <summary>Typed view of an engine <c>GlPool*</c>.</summary>
+public readonly unsafe partial struct GlPool(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.PoolHost"/>
+    public ref IntPtr Host => ref *(IntPtr*)(Ptr + EngineLayout.PoolHost);
+    /// <inheritdoc cref="EngineLayout.PoolLockFlags"/>
+    public ref byte LockFlags => ref *(byte*)(Ptr + EngineLayout.PoolLockFlags);
+    /// <inheritdoc cref="EngineLayout.PoolName"/>
+    public ref uint Name => ref *(uint*)(Ptr + EngineLayout.PoolName);
+    /// <inheritdoc cref="EngineLayout.PoolNamed"/>
+    public ref byte Named => ref *(byte*)(Ptr + EngineLayout.PoolNamed);
+    /// <inheritdoc cref="EngineLayout.PoolSize"/>
+    public ref int Size => ref *(int*)(Ptr + EngineLayout.PoolSize);
+    /// <inheritdoc cref="EngineLayout.PoolUploaded"/>
+    public ref byte Uploaded => ref *(byte*)(Ptr + EngineLayout.PoolUploaded);
+    /// <inheritdoc cref="EngineLayout.PoolUsage"/>
+    public ref uint Usage => ref *(uint*)(Ptr + EngineLayout.PoolUsage);
+    /// <inheritdoc cref="EngineLayout.PoolStride"/>
+    public GlPool this[int i] => new(Ptr + i * EngineLayout.PoolStride);
+}
+
+/// <summary>Typed view of an engine <c>GlPoolTable*</c>.</summary>
+public readonly unsafe partial struct GlPoolTable(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.PoolTableBase"/>
+    public ref GlPool Base => ref *(GlPool*)(Ptr + EngineLayout.PoolTableBase);
+    /// <inheritdoc cref="EngineLayout.PoolTableCount"/>
+    public ref uint Count => ref *(uint*)(Ptr + EngineLayout.PoolTableCount);
 }
 
 /// <summary>Typed view of an engine <c>Gob*</c>.</summary>
@@ -1294,6 +1495,14 @@ public readonly unsafe ref partial struct Gob(IntPtr ptr)
     public float GobGetAdjustedScale() => EngineFn.GobGetAdjustedScale(Ptr);
     /// <inheritdoc cref="EngineLayout.GobHighlight"/>
     public ref byte Highlight => ref *(byte*)(Ptr + EngineLayout.GobHighlight);
+    /// <inheritdoc cref="EngineLayout.GobInView"/>
+    public ref byte InView => ref *(byte*)(Ptr + EngineLayout.GobInView);
+    /// <inheritdoc cref="EngineLayout.GobLodRoot1"/>
+    public Part LodRoot1 { get => new(*(IntPtr*)(Ptr + EngineLayout.GobLodRoot1)); set => *(IntPtr*)(Ptr + EngineLayout.GobLodRoot1) = value.Ptr; }
+    /// <inheritdoc cref="EngineLayout.GobLodRoot2"/>
+    public Part LodRoot2 { get => new(*(IntPtr*)(Ptr + EngineLayout.GobLodRoot2)); set => *(IntPtr*)(Ptr + EngineLayout.GobLodRoot2) = value.Ptr; }
+    /// <inheritdoc cref="EngineLayout.GobLookAt"/>
+    public ref LookAtAnimation LookAt => ref *(LookAtAnimation*)(Ptr + EngineLayout.GobLookAt);
     /// <inheritdoc cref="EngineLayout.GobNode"/>
     public Model Node { get => new(*(IntPtr*)(Ptr + EngineLayout.GobNode)); set => *(IntPtr*)(Ptr + EngineLayout.GobNode) = value.Ptr; }
     /// <inheritdoc cref="EngineLayout.GobPartTree"/>
@@ -1321,12 +1530,20 @@ public readonly unsafe partial struct LightManager(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.LmAreaAmbient"/>
+    public ref PartLight AreaAmbient => ref *(PartLight*)(Ptr + EngineLayout.LmAreaAmbient);
+    /// <inheritdoc cref="EngineLayout.LmAreaDiffuse"/>
+    public ref PartLight AreaDiffuse => ref *(PartLight*)(Ptr + EngineLayout.LmAreaDiffuse);
     /// <inheritdoc cref="EngineLayout.LightMgrEnableLightsSlot"/>
     public void EnableLights() => ((delegate* unmanaged<IntPtr, void>)EnableLightsFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.LightMgrEnableLightsSlot"/>
     public IntPtr EnableLightsFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.LightMgrEnableLightsSlot);
     /// <inheritdoc cref="SymbolMap.GetLensFlareLights"/>
     public IntPtr GetLensFlareLights() => EngineFn.GetLensFlareLights(Ptr);
+    /// <inheritdoc cref="EngineLayout.LmMasterCount"/>
+    public ref int MasterCount => ref *(int*)(Ptr + EngineLayout.LmMasterCount);
+    /// <inheritdoc cref="EngineLayout.LmMasterData"/>
+    public ref IntPtr MasterData => ref *(IntPtr*)(Ptr + EngineLayout.LmMasterData);
 }
 
 /// <summary>Typed view of an engine <c>LookAtAnimation*</c>.</summary>
@@ -1386,6 +1603,8 @@ public readonly unsafe partial struct MaterialParameter(IntPtr ptr)
     public ref int Type => ref *(int*)(Ptr + EngineLayout.ParamType);
     /// <inheritdoc cref="EngineLayout.ParamValue"/>
     public ref float Value => ref *(float*)(Ptr + EngineLayout.ParamValue);
+    /// <inheritdoc cref="EngineLayout.ParamStride"/>
+    public MaterialParameter this[int i] => new(Ptr + i * EngineLayout.ParamStride);
 }
 
 /// <summary>Typed view of an engine <c>MaxFace*</c>.</summary>
@@ -1401,6 +1620,8 @@ public readonly unsafe partial struct MaxFace(IntPtr ptr)
     public ref ushort VertB => ref *(ushort*)(Ptr + EngineLayout.FaceVertB);
     /// <inheritdoc cref="EngineLayout.FaceVertC"/>
     public ref ushort VertC => ref *(ushort*)(Ptr + EngineLayout.FaceVertC);
+    /// <inheritdoc cref="EngineLayout.FaceStride"/>
+    public MaxFace this[int i] => new(Ptr + i * EngineLayout.FaceStride);
 }
 
 /// <summary>Typed view of an engine <c>MdlNode*</c>.</summary>
@@ -1410,6 +1631,10 @@ public readonly unsafe ref partial struct MdlNode(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.MdlNodeControllerCount"/>
+    public ref int ControllerCount => ref *(int*)(Ptr + EngineLayout.MdlNodeControllerCount);
+    /// <inheritdoc cref="EngineLayout.MdlNodeControllers"/>
+    public ref IntPtr Controllers => ref *(IntPtr*)(Ptr + EngineLayout.MdlNodeControllers);
     /// <inheritdoc cref="EngineLayout.MdlNodeKind"/>
     public ref byte Kind => ref *(byte*)(Ptr + EngineLayout.MdlNodeKind);
     /// <inheritdoc cref="EngineLayout.MdlNodeName"/>
@@ -1536,6 +1761,17 @@ public readonly unsafe ref partial struct Model(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.NodeOwnerFlags"/>
     public ref byte OwnerFlags => ref *(byte*)(Ptr + EngineLayout.NodeOwnerFlags);
+}
+
+/// <summary>Typed view of an engine <c>NewController*</c>.</summary>
+public readonly unsafe partial struct NewController(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.NewControllerKeyCount"/>
+    public ref short KeyCount => ref *(short*)(Ptr + EngineLayout.NewControllerKeyCount);
 }
 
 /// <summary>Typed view of an engine <c>Part*</c>.</summary>
@@ -1677,14 +1913,24 @@ public readonly unsafe partial struct PartLight(IntPtr ptr)
     public ref int CastShadows => ref *(int*)(Ptr + EngineLayout.LightCastShadows);
     /// <inheritdoc cref="EngineLayout.LightColour"/>
     public ref System.Numerics.Vector3 Colour => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.LightColour);
+    /// <inheritdoc cref="EngineLayout.LightFade"/>
+    public ref float Fade => ref *(float*)(Ptr + EngineLayout.LightFade);
+    /// <inheritdoc cref="EngineLayout.LightFlagA"/>
+    public ref int FlagA => ref *(int*)(Ptr + EngineLayout.LightFlagA);
+    /// <inheritdoc cref="EngineLayout.LightFlagB"/>
+    public ref int FlagB => ref *(int*)(Ptr + EngineLayout.LightFlagB);
     /// <inheritdoc cref="EngineLayout.LightFlareFade"/>
     public ref float FlareFade => ref *(float*)(Ptr + EngineLayout.LightFlareFade);
+    /// <inheritdoc cref="EngineLayout.LightIntensity"/>
+    public ref float Intensity => ref *(float*)(Ptr + EngineLayout.LightIntensity);
     /// <inheritdoc cref="EngineLayout.LightKind"/>
     public ref int Kind => ref *(int*)(Ptr + EngineLayout.LightKind);
     /// <inheritdoc cref="EngineLayout.LightDir"/>
     public ref System.Numerics.Vector3 Pos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.LightDir);
     /// <inheritdoc cref="EngineLayout.LightRange"/>
     public ref float Range => ref *(float*)(Ptr + EngineLayout.LightRange);
+    /// <inheritdoc cref="EngineLayout.LightRangeAlt"/>
+    public ref float RangeAlt => ref *(float*)(Ptr + EngineLayout.LightRangeAlt);
 }
 
 /// <summary>Typed view of an engine <c>PartTriMesh*</c>.</summary>
@@ -1778,12 +2024,22 @@ public readonly unsafe partial struct Scene(IntPtr ptr)
     public void DoHighlightTriggers(byte kind) => ((delegate* unmanaged<IntPtr, byte, void>)DoHighlightTriggersFn)(Ptr, kind);
     /// <inheritdoc cref="EngineLayout.SceneDoHighlightTriggersSlot"/>
     public IntPtr DoHighlightTriggersFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.SceneDoHighlightTriggersSlot);
+    /// <inheritdoc cref="EngineLayout.SceneDrawBuckets"/>
+    public DrawBucket DrawBuckets => new(Ptr + EngineLayout.SceneDrawBuckets);
     /// <inheritdoc cref="EngineLayout.SceneEnvMap"/>
     public CAurTexture EnvMap { get => new(*(IntPtr*)(Ptr + EngineLayout.SceneEnvMap)); set => *(IntPtr*)(Ptr + EngineLayout.SceneEnvMap) = value.Ptr; }
     /// <inheritdoc cref="EngineLayout.SceneFadeDoorsSlot"/>
     public void FadeDoors() => ((delegate* unmanaged<IntPtr, void>)FadeDoorsFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.SceneFadeDoorsSlot"/>
     public IntPtr FadeDoorsFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.SceneFadeDoorsSlot);
+    /// <inheritdoc cref="EngineLayout.SceneFogColor"/>
+    public ref System.Numerics.Vector3 FogColor => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.SceneFogColor);
+    /// <inheritdoc cref="EngineLayout.SceneFogEnable"/>
+    public ref int FogEnable => ref *(int*)(Ptr + EngineLayout.SceneFogEnable);
+    /// <inheritdoc cref="EngineLayout.SceneFogEnd"/>
+    public ref float FogEnd => ref *(float*)(Ptr + EngineLayout.SceneFogEnd);
+    /// <inheritdoc cref="EngineLayout.SceneFogStart"/>
+    public ref float FogStart => ref *(float*)(Ptr + EngineLayout.SceneFogStart);
     /// <inheritdoc cref="EngineLayout.SceneGobCount"/>
     public ref int GobCount => ref *(int*)(Ptr + EngineLayout.SceneGobCount);
     /// <inheritdoc cref="EngineLayout.SceneGobs"/>
@@ -1822,6 +2078,8 @@ public readonly unsafe partial struct Scene(IntPtr ptr)
     public TileData SceneBspGetTileData(System.Numerics.Vector3* pos) => new TileData(EngineFn.SceneBspGetTileData(Ptr, pos));
     /// <inheritdoc cref="SymbolMap.SceneDeleteTile"/>
     public void SceneDeleteTile(System.Numerics.Vector3* pos) => EngineFn.SceneDeleteTile(Ptr, pos);
+    /// <inheritdoc cref="SymbolMap.SceneHitCheck"/>
+    public int SceneHitCheck(VectorArg from, VectorArg to, Vec3* hit, CHitInfo info) => EngineFn.SceneHitCheck(Ptr, from, to, hit, info.Ptr);
     /// <inheritdoc cref="SymbolMap.SceneInitBsp"/>
     public void SceneInitBsp(int width, int height, int depth, byte flag, float size) => EngineFn.SceneInitBsp(Ptr, width, height, depth, flag, size);
     /// <inheritdoc cref="SymbolMap.SceneSpawnTile"/>
@@ -1971,6 +2229,19 @@ public readonly unsafe ref partial struct VertexDataObject(IntPtr ptr)
     public ref uint VertToken => ref *(uint*)(Ptr + EngineLayout.VdoVertToken);
 }
 
+/// <summary>Typed view of an engine <c>VertexPool*</c>.</summary>
+public readonly unsafe partial struct VertexPool(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.PoolPos"/>
+    public ref System.Numerics.Vector3 Pos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.PoolPos);
+    /// <inheritdoc cref="EngineLayout.PoolPosStride"/>
+    public VertexPool this[int i] => new(Ptr + i * EngineLayout.PoolPosStride);
+}
+
 /// <summary>Typed view of an engine <c>VertexPrimitive*</c>.</summary>
 public readonly unsafe ref partial struct VertexPrimitive(IntPtr ptr)
 {
@@ -2022,6 +2293,8 @@ public readonly unsafe partial struct aurMatrixStack(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.MtxStackTop"/>
     public ref System.Numerics.Matrix4x4 Top => ref *(System.Numerics.Matrix4x4*)(Ptr + EngineLayout.MtxStackTop);
+    /// <inheritdoc cref="EngineLayout.MtxStackStride"/>
+    public aurMatrixStack this[int i] => new(Ptr + i * EngineLayout.MtxStackStride);
 }
 
 /// <summary>Engine functions, typed by their <c>[Fn]</c> signature in <see cref="SymbolMap"/>.</summary>
@@ -2426,6 +2699,10 @@ public static unsafe class EngineFn
     private static bool _HandleServerToPlayerChatDone;
     /// <inheritdoc cref="SymbolMap.HandleServerToPlayerChat"/>
     public static HandleServerToPlayerChatFn HandleServerToPlayerChat => (HandleServerToPlayerChatFn)(_HandleServerToPlayerChatDone ? _HandleServerToPlayerChat : Resolve(ref _HandleServerToPlayerChat, ref _HandleServerToPlayerChatDone, SymbolMap.HandleServerToPlayerChat));
+    private static IntPtr _ShowFloatyText;
+    private static bool _ShowFloatyTextDone;
+    /// <inheritdoc cref="SymbolMap.ShowFloatyText"/>
+    public static ShowFloatyTextFn ShowFloatyText => (ShowFloatyTextFn)(_ShowFloatyTextDone ? _ShowFloatyText : Resolve(ref _ShowFloatyText, ref _ShowFloatyTextDone, SymbolMap.ShowFloatyText));
     private static IntPtr _GetViewPort;
     private static bool _GetViewPortDone;
     /// <inheritdoc cref="SymbolMap.GetViewPort"/>
@@ -2670,6 +2947,10 @@ public static unsafe class EngineFn
     private static bool _PartDanglyAnimateDone;
     /// <inheritdoc cref="SymbolMap.PartDanglyAnimate"/>
     public static PartDanglyAnimateFn PartDanglyAnimate => (PartDanglyAnimateFn)(_PartDanglyAnimateDone ? _PartDanglyAnimate : Resolve(ref _PartDanglyAnimate, ref _PartDanglyAnimateDone, SymbolMap.PartDanglyAnimate));
+    private static IntPtr _SceneHitCheck;
+    private static bool _SceneHitCheckDone;
+    /// <inheritdoc cref="SymbolMap.SceneHitCheck"/>
+    public static SceneHitCheckFn SceneHitCheck => (SceneHitCheckFn)(_SceneHitCheckDone ? _SceneHitCheck : Resolve(ref _SceneHitCheck, ref _SceneHitCheckDone, SymbolMap.SceneHitCheck));
     private static IntPtr _HitInfoReset;
     private static bool _HitInfoResetDone;
     /// <inheritdoc cref="SymbolMap.HitInfoReset"/>
@@ -2806,6 +3087,10 @@ public static unsafe class EngineFn
     private static bool _WalkUpdateLocationDone;
     /// <inheritdoc cref="SymbolMap.WalkUpdateLocation"/>
     public static WalkUpdateLocationFn WalkUpdateLocation => (WalkUpdateLocationFn)(_WalkUpdateLocationDone ? _WalkUpdateLocation : Resolve(ref _WalkUpdateLocation, ref _WalkUpdateLocationDone, SymbolMap.WalkUpdateLocation));
+    private static IntPtr _TestDirectLine;
+    private static bool _TestDirectLineDone;
+    /// <inheritdoc cref="SymbolMap.TestDirectLine"/>
+    public static TestDirectLineFn TestDirectLine => (TestDirectLineFn)(_TestDirectLineDone ? _TestDirectLine : Resolve(ref _TestDirectLine, ref _TestDirectLineDone, SymbolMap.TestDirectLine));
     private static IntPtr _SdlSetRelativeMouseMode;
     private static bool _SdlSetRelativeMouseModeDone;
     /// <inheritdoc cref="SymbolMap.SdlSetRelativeMouseMode"/>
@@ -2838,6 +3123,10 @@ public static unsafe class EngineFn
     private static bool _GobAnimateDone;
     /// <inheritdoc cref="SymbolMap.GobAnimate"/>
     public static GobAnimateFn GobAnimate => (GobAnimateFn)(_GobAnimateDone ? _GobAnimate : Resolve(ref _GobAnimate, ref _GobAnimateDone, SymbolMap.GobAnimate));
+    private static IntPtr _SpawnHitVisuals;
+    private static bool _SpawnHitVisualsDone;
+    /// <inheritdoc cref="SymbolMap.SpawnHitVisuals"/>
+    public static SpawnHitVisualsFn SpawnHitVisuals => (SpawnHitVisualsFn)(_SpawnHitVisualsDone ? _SpawnHitVisuals : Resolve(ref _SpawnHitVisuals, ref _SpawnHitVisualsDone, SymbolMap.SpawnHitVisuals));
     private static IntPtr _AurTextureGet;
     private static bool _AurTextureGetDone;
     /// <inheritdoc cref="SymbolMap.AurTextureGet"/>
@@ -3497,6 +3786,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.HandleServerToPlayerChat"/>; returns the slot holding the next layer, or null.</summary>
     public static HandleServerToPlayerChatFn* ChainHandleServerToPlayerChat(this HookService h, HandleServerToPlayerChatFn handler, int priority) =>
         (HandleServerToPlayerChatFn*)h.Chain(SymbolMap.HandleServerToPlayerChat, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ShowFloatyText"/>; returns the original, or null.</summary>
+    public static ShowFloatyTextFn InstallShowFloatyText(this HookService h, ShowFloatyTextFn handler) =>
+        (ShowFloatyTextFn)h.Install(SymbolMap.ShowFloatyText, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ShowFloatyText"/>; returns the slot holding the next layer, or null.</summary>
+    public static ShowFloatyTextFn* ChainShowFloatyText(this HookService h, ShowFloatyTextFn handler, int priority) =>
+        (ShowFloatyTextFn*)h.Chain(SymbolMap.ShowFloatyText, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.GetViewPort"/>; returns the original, or null.</summary>
     public static GetViewPortFn InstallGetViewPort(this HookService h, GetViewPortFn handler) =>
         (GetViewPortFn)h.Install(SymbolMap.GetViewPort, (IntPtr)handler);
@@ -3863,6 +4158,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.PartDanglyAnimate"/>; returns the slot holding the next layer, or null.</summary>
     public static PartDanglyAnimateFn* ChainPartDanglyAnimate(this HookService h, PartDanglyAnimateFn handler, int priority) =>
         (PartDanglyAnimateFn*)h.Chain(SymbolMap.PartDanglyAnimate, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SceneHitCheck"/>; returns the original, or null.</summary>
+    public static SceneHitCheckFn InstallSceneHitCheck(this HookService h, SceneHitCheckFn handler) =>
+        (SceneHitCheckFn)h.Install(SymbolMap.SceneHitCheck, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SceneHitCheck"/>; returns the slot holding the next layer, or null.</summary>
+    public static SceneHitCheckFn* ChainSceneHitCheck(this HookService h, SceneHitCheckFn handler, int priority) =>
+        (SceneHitCheckFn*)h.Chain(SymbolMap.SceneHitCheck, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.HitInfoReset"/>; returns the original, or null.</summary>
     public static HitInfoResetFn InstallHitInfoReset(this HookService h, HitInfoResetFn handler) =>
         (HitInfoResetFn)h.Install(SymbolMap.HitInfoReset, (IntPtr)handler);
@@ -4067,6 +4368,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.WalkUpdateLocation"/>; returns the slot holding the next layer, or null.</summary>
     public static WalkUpdateLocationFn* ChainWalkUpdateLocation(this HookService h, WalkUpdateLocationFn handler, int priority) =>
         (WalkUpdateLocationFn*)h.Chain(SymbolMap.WalkUpdateLocation, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.TestDirectLine"/>; returns the original, or null.</summary>
+    public static TestDirectLineFn InstallTestDirectLine(this HookService h, TestDirectLineFn handler) =>
+        (TestDirectLineFn)h.Install(SymbolMap.TestDirectLine, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.TestDirectLine"/>; returns the slot holding the next layer, or null.</summary>
+    public static TestDirectLineFn* ChainTestDirectLine(this HookService h, TestDirectLineFn handler, int priority) =>
+        (TestDirectLineFn*)h.Chain(SymbolMap.TestDirectLine, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.SdlSetRelativeMouseMode"/>; returns the original, or null.</summary>
     public static SdlSetRelativeMouseModeFn InstallSdlSetRelativeMouseMode(this HookService h, SdlSetRelativeMouseModeFn handler) =>
         (SdlSetRelativeMouseModeFn)h.Install(SymbolMap.SdlSetRelativeMouseMode, (IntPtr)handler);
@@ -4115,6 +4422,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.GobAnimate"/>; returns the slot holding the next layer, or null.</summary>
     public static GobAnimateFn* ChainGobAnimate(this HookService h, GobAnimateFn handler, int priority) =>
         (GobAnimateFn*)h.Chain(SymbolMap.GobAnimate, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SpawnHitVisuals"/>; returns the original, or null.</summary>
+    public static SpawnHitVisualsFn InstallSpawnHitVisuals(this HookService h, SpawnHitVisualsFn handler) =>
+        (SpawnHitVisualsFn)h.Install(SymbolMap.SpawnHitVisuals, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SpawnHitVisuals"/>; returns the slot holding the next layer, or null.</summary>
+    public static SpawnHitVisualsFn* ChainSpawnHitVisuals(this HookService h, SpawnHitVisualsFn handler, int priority) =>
+        (SpawnHitVisualsFn*)h.Chain(SymbolMap.SpawnHitVisuals, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.AurTextureGet"/>; returns the original, or null.</summary>
     public static AurTextureGetFn InstallAurTextureGet(this HookService h, AurTextureGetFn handler) =>
         (AurTextureGetFn)h.Install(SymbolMap.AurTextureGet, (IntPtr)handler);

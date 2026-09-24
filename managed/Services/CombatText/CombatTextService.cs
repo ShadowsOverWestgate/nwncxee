@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 using CX.Services.Nameplate;
@@ -36,22 +37,7 @@ public sealed unsafe class CombatTextService : IExtenderService
     private static readonly FloatyTable _table = new();
     private static Window? _window;
 
-    /// <summary>The engine's <c>Vector</c> parameter, by value. SysV puts a 12-byte all-float aggregate in
-    /// xmm0 (x, y) + xmm1 (z), which is exactly what the disassembly at 0x8e7032 stores -- declaring it as
-    /// three separate <c>float</c> parameters would instead read xmm0/xmm1/xmm2 and mis-tint every element.</summary>
-    [StructLayout(LayoutKind.Sequential)]
-    public struct Vec3 { public float X, Y, Z; }
-
-#if WINDOWS
-    /// <summary>Win64 passes any by-value aggregate over 8 bytes as a pointer to a caller-made copy.</summary>
-    private struct ColourArg { public Vec3* P; }
-#else
-    private struct ColourArg { public Vec3 V; }
-#endif
-
-    /// <summary>Left raw: the colour argument is a DIFFERENT type per ABI (<see cref="ColourArg"/>), so no single
-    /// <c>[Fn]</c> signature describes the symbol (CX-37).</summary>
-    private static delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void> _origShowFloaty;
+    private static ShowFloatyTextFn _origShowFloaty;
 
     /// <summary>The ShowFloatyText unit (#420): the funnel itself. Nameplates are a runtime prerequisite
     /// (checked per call, not here).</summary>
@@ -98,9 +84,7 @@ public sealed unsafe class CombatTextService : IExtenderService
 
         if (!SymbolMap.Require(log, "CombatTextService", RequiredSymbols)) return;   // #420: whole or nothing
 
-        _origShowFloaty = (delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void>)hooks.Install(
-            SymbolMap.ShowFloatyText,
-            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void>)&OnShowFloatyText);
+        _origShowFloaty = hooks.InstallShowFloatyText(&OnShowFloatyText);
         if (_origShowFloaty == null)
         {
             log.Info("CombatTextService: standing down (ShowFloatyText unresolved) -- vanilla damage numbers "
@@ -129,13 +113,9 @@ public sealed unsafe class CombatTextService : IExtenderService
     /// that is the whole opt-out, and it is also what keeps an element we could not have anchored from being
     /// lost between the two renderers.</para></summary>
     [UnmanagedCallersOnly]
-    private static void OnShowFloatyText(IntPtr self, IntPtr text, ColourArg colourArg, IntPtr font, int background)
+    private static void OnShowFloatyText(IntPtr self, IntPtr text, VectorArg colourArg, IntPtr font, int background)
     {
-#if WINDOWS
-        Vec3 colour = *colourArg.P;   // Win64: a 12-byte Vector by value arrives as a pointer
-#else
-        Vec3 colour = colourArg.V;
-#endif
+        Vec3 colour = colourArg.Value;   // Win64: read before the original, which owns the caller-made copy
         // Hand back to vanilla unless we can actually draw this one BETTER. Swallowing an element we then
         // fail to place would lose it outright, so every reason it might not reach the screen is tested here,
         // on the cold path, and not in the draw:
@@ -144,7 +124,7 @@ public sealed unsafe class CombatTextService : IExtenderService
         //   - the object owns no chat bubble, so it has no anchor at all (a placeable or door taking damage:
         //     only creatures get one, via CNWCCreature::SetName -- docs/re/nameplate.md §D)
         if (!_armed || !CombatTextKnobs.Enabled.V || self == IntPtr.Zero
-            || !NameplateService.Suppressing || NameplateNative.Bubble(self) == IntPtr.Zero)
+            || !NameplateService.Suppressing || NameplateNative.Bubble(self).IsNull)
         {
             if (_origShowFloaty != null) _origShowFloaty(self, text, colourArg, font, background);
             return;

@@ -4,7 +4,6 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -96,10 +95,10 @@ internal static unsafe partial class LightmapBake
     internal static void OnTileChanged() => _reopen = true;
 
     /// <summary>Restart the per-frame snapshot. Called from the walk's top, beside <c>BeginAreaLights</c>.</summary>
-    internal static void BeginWalk(IntPtr area)
+    internal static void BeginWalk(CNWCArea area)
     {
         CensusStatic = CensusAnimated = CensusDynamic = CensusTile = CensusPlaceable = CensusSkipped = CensusUnstable = 0;
-        if (area != _clsArea || _edgePending) { _clsArea = area; _edgePending = false; _areaChanged = true; VoidClasses(); _regGobs.Clear(); _regCountSeen = -1; _whyLeft = 8; _lateLeft = 24; _lateLogged.Clear(); Reopen(); }
+        if (area.Ptr != _clsArea || _edgePending) { _clsArea = area.Ptr; _edgePending = false; _areaChanged = true; VoidClasses(); _regGobs.Clear(); _regCountSeen = -1; _whyLeft = 8; _lateLeft = 24; _lateLogged.Clear(); Reopen(); }
         if (_reopen) { _reopen = false; VoidClasses(); Reopen(); _edgeSeen = true; }
         if (_closed) return;
         // open, every walk is the whole set again: the lights the engine re-sets after the edge must not leave
@@ -107,16 +106,15 @@ internal static unsafe partial class LightmapBake
         _seen.Clear(); _seenPtr.Clear(); _stN = 0;
         _walks++;
         if (_edgeSeen && _edgeWalk < 0) _edgeWalk = _walks;
-        int reg = area == IntPtr.Zero ? 0 : *(int*)(area + AreaPlaceableLightCount);
+        int reg = area.IsNull ? 0 : area.PlaceableLightCount;
         if (reg != _regCountSeen)
         {
             _regCountSeen = reg;
-            IntPtr regData = area == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(area + AreaPlaceableLights);
-            if (regData != IntPtr.Zero && reg > 0 && reg < 65536)
+            if (!area.IsNull && area.PlaceableLights != IntPtr.Zero && reg > 0 && reg < 65536)
                 for (int i = 0; i < reg; i++)
                 {
-                    IntPtr rec = *((IntPtr*)regData + i);
-                    if (rec != IntPtr.Zero) _regGobs.Add(*(IntPtr*)(rec + PlaceableLightGob));
+                    CNWCPlaceableObjectLight rec = area.PlaceableLight(i);
+                    if (!rec.IsNull) _regGobs.Add(rec.Gob.Ptr);
                 }
         }
     }
@@ -129,15 +127,15 @@ internal static unsafe partial class LightmapBake
     /// model) || the gob is in the area's placeable-light registry (a <c>placeables.2da</c> light); and no
     /// radius/colour controller with more than one key. Ambient-class lights are never static (the caller
     /// excludes them). Cached per identity; a full table classifies without caching.</summary>
-    internal static bool IsStatic(byte* p, IntPtr area, out bool animated, out bool placeable)
+    internal static bool IsStatic(PartLight light, CNWCArea area, out bool animated, out bool placeable)
     {
         animated = placeable = false;
-        int h = (int)((ulong)p >> 4) * -1640531527 & (ClsSlots - 1);
+        int h = (int)((ulong)light.Ptr >> 4) * -1640531527 & (ClsSlots - 1);
         int free = -1;
         for (int k = 0; k < ClsProbe; k++)
         {
             int j = (h + k) & (ClsSlots - 1);
-            if (_clsId[j] == (IntPtr)p)
+            if (_clsId[j] == light.Ptr)
             {
                 byte c = _cls[j];
                 animated = (c & 4) != 0; placeable = (c & 8) != 0;
@@ -145,46 +143,46 @@ internal static unsafe partial class LightmapBake
             }
             if (free < 0 && _clsId[j] == IntPtr.Zero) free = j;
         }
-        bool st = Classify(p, area, out animated, out placeable);
+        bool st = Classify(light, area, out animated, out placeable);
         if (!st && _whyLeft > 0 && _log != null)
         {
             _whyLeft--;
-            IntPtr gob = *(IntPtr*)(p + PartGob), node = *(IntPtr*)(p + PartNodeLink);
-            string name = node != IntPtr.Zero ? Marshal.PtrToStringAnsi(node + MdlNodeName) ?? "?" : "?";
-            _log.Info($"LightmapBake: refused light -- node '{name}' gob {gob:x} tileData {(gob != IntPtr.Zero ? *(IntPtr*)(gob + GobTileData) : 0):x} animated {animated}");
+            Gob gob = new Part(light.Ptr).Gob;
+            MdlNode node = new Part(light.Ptr).Node;
+            string name = node.IsNull ? "?" : node.NameText ?? "?";
+            _log.Info($"LightmapBake: refused light -- node '{name}' gob {gob.Ptr:x} tileData {(gob.IsNull ? IntPtr.Zero : gob.TileData.Ptr):x} animated {animated}");
         }
         if (free >= 0)
         {
-            _clsId[free] = (IntPtr)p;
+            _clsId[free] = light.Ptr;
             _cls[free] = (byte)((st ? 1 : 2) | (animated ? 4 : 0) | (placeable ? 8 : 0));
         }
         else _clsFull++;
         return st;
     }
 
-    private static bool Classify(byte* p, IntPtr area, out bool animated, out bool placeable)
+    private static bool Classify(PartLight light, CNWCArea area, out bool animated, out bool placeable)
     {
         animated = placeable = false;
-        IntPtr gob = *(IntPtr*)(p + PartGob);
-        bool tile = gob == IntPtr.Zero || *(IntPtr*)(gob + GobTileData) != IntPtr.Zero;
-        if (!tile && gob != IntPtr.Zero) placeable = _regGobs.Contains(gob);
-        IntPtr node = *(IntPtr*)(p + PartNodeLink);
-        if (node != IntPtr.Zero)
+        Gob gob = new Part(light.Ptr).Gob;
+        bool tile = gob.IsNull || !gob.TileData.IsNull;
+        if (!tile) placeable = _regGobs.Contains(gob.Ptr);
+        MdlNode node = new Part(light.Ptr).Node;
+        if (!node.IsNull)
         {
-            int cnt = *(int*)(node + MdlNodeControllerCount);
-            byte* recs = *(byte**)(node + MdlNodeControllers);
-            if (recs != null && cnt > 0 && cnt < 256)
+            int cnt = node.ControllerCount;
+            NewController recs = node.Controller;
+            if (!recs.IsNull && cnt > 0 && cnt < 256)
                 for (int i = 0; i < cnt && !animated; i++)
                 {
-                    int id = *(int*)(recs + i * NewControllerStride);
-                    short keys = *(short*)(recs + i * NewControllerStride + NewControllerKeyCount);
-                    if ((id == LightRange || id == LightColour) && keys > 1) animated = true;
+                    NewController c = recs[i];
+                    if ((c.Id == EngineLayout.LightRange || c.Id == EngineLayout.LightColour) && c.KeyCount > 1) animated = true;
                 }
         }
         // present at the closed edge and not animated = the area's light, whatever spawned it: the candles and
         // model lights on placeables the registry never named (run 24: 39 static of 97, 58 live on every lit
         // fragment, cutout 5 ms) -- only a light carried by a creature is a mover by construction
-        return !animated && (tile || placeable || !CreatureRooted(gob));
+        return !animated && (tile || placeable || !CreatureRooted(gob.Ptr));
     }
 
     /// <summary>AlloyRenderer.CreaturePart's chain walk on a light's gob: its own gob, or any gob up its
@@ -194,9 +192,9 @@ internal static unsafe partial class LightmapBake
         for (int hop = 0; hop < 8 && g != IntPtr.Zero; hop++)
         {
             if (SceneRay.IsCreature(g)) return true;
-            IntPtr behavior = *(IntPtr*)(g + GobAttach);
-            if (behavior == IntPtr.Zero) return false;
-            g = *(IntPtr*)(behavior + BehaviorTarget);
+            CAurBehavior behavior = new Gob(g).Attach;
+            if (behavior.IsNull) return false;
+            g = behavior.Target.Ptr;
         }
         return false;
     }
@@ -204,7 +202,7 @@ internal static unsafe partial class LightmapBake
     /// <summary>One master-list light, classified and -- when static -- folded into the snapshot. Called for
     /// every point light the walk admits, BEFORE its fade and cull, with the lightmap on or off (GI keys its
     /// cache on the same fingerprint). Returns the static verdict for the SSBO bit.</summary>
-    internal static bool Record(byte* p, IntPtr area, Vector3 pos, float adjR, Vector3 color, bool ambient)
+    internal static bool Record(PartLight light, CNWCArea area, Vector3 pos, float adjR, Vector3 color, bool ambient)
     {
         ulong id = Mix(Mix(Mix(Mix(FnvOffset, Q(pos.X, 0.05f)), Q(pos.Y, 0.05f)), Q(pos.Z, 0.05f)), Q(adjR, 0.05f));
         if (ambient) { CensusDynamic++; return false; }
@@ -215,18 +213,18 @@ internal static unsafe partial class LightmapBake
         {
             // the same object a hair off its close-time place (a bobbing lantern, a reach re-adjusted by the
             // engine) is still the light the bake holds; a far move is a reused address or a scripted move
-            if (_seenPtr.TryGetValue((IntPtr)p, out int at) && Near(_stPosR[at], pos, adjR)) { CensusStatic++; return true; }
+            if (_seenPtr.TryGetValue(light.Ptr, out int at) && Near(_stPosR[at], pos, adjR)) { CensusStatic++; return true; }
             CensusDynamic++;
-            if (_lateLeft > 0) LateLight(p, pos, adjR);
+            if (_lateLeft > 0) LateLight(light, pos, adjR);
             return false;
         }
-        bool st = IsStatic(p, area, out bool animated, out bool placeable);
+        bool st = IsStatic(light, area, out bool animated, out bool placeable);
         if (animated) CensusAnimated++;
         if (!st) { CensusDynamic++; return false; }
         // this light's own reading, walk over walk: it joins the set once it has held SettleWalks (a reach
         // the engine is still ramping, a colour a script is still setting, is not the light to bake)
         ulong key = Mix(Mix(Mix(id, Q(color.X, 0.01f)), Q(color.Y, 0.01f)), Q(color.Z, 0.01f));
-        ref var stab = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(_stab, (IntPtr)p, out bool known);
+        ref var stab = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(_stab, light.Ptr, out bool known);
         if (!known) _lastNew = _walks;
         if (stab.key == key) stab.held++; else stab = (key, 1);
         if (stab.held < SettleWalks) { CensusUnstable++; CensusDynamic++; return false; }
@@ -237,7 +235,7 @@ internal static unsafe partial class LightmapBake
             int n = _stN * 2;
             Array.Resize(ref _stPosR, n); Array.Resize(ref _stCol, n);
         }
-        _seen[id] = _stN; _seenPtr[(IntPtr)p] = _stN;
+        _seen[id] = _stN; _seenPtr[light.Ptr] = _stN;
         _stPosR[_stN] = new Vector4(pos, adjR); _stCol[_stN++] = color;
         return true;
     }
@@ -248,19 +246,20 @@ internal static unsafe partial class LightmapBake
 
     /// <summary>One line per light the closed set refuses: the same object drifted (how far, by how much
     /// reach) or a new object (its node, gob and creature chain). Cold: allocates the strings.</summary>
-    private static void LateLight(byte* p, Vector3 pos, float adjR)
+    private static void LateLight(PartLight light, Vector3 pos, float adjR)
     {
-        if (!_lateLogged.Add((IntPtr)p)) return;
+        if (!_lateLogged.Add(light.Ptr)) return;
         _lateLeft--;
-        IntPtr gob = *(IntPtr*)(p + PartGob), node = *(IntPtr*)(p + PartNodeLink);
-        string name = node != IntPtr.Zero ? Marshal.PtrToStringAnsi(node + MdlNodeName) ?? "?" : "?";
-        if (_seenPtr.TryGetValue((IntPtr)p, out int i))
+        Gob gob = new Part(light.Ptr).Gob;
+        MdlNode node = new Part(light.Ptr).Node;
+        string name = node.IsNull ? "?" : node.NameText ?? "?";
+        if (_seenPtr.TryGetValue(light.Ptr, out int i))
         {
             Vector4 was = _stPosR[i];
-            _log?.Info($"LightmapBake: late light '{name}' {(nint)p:x} is set #{i} DRIFTED -- moved {(pos - new Vector3(was.X, was.Y, was.Z)).Length():F2}u, reach {was.W:F2} -> {adjR:F2}");
+            _log?.Info($"LightmapBake: late light '{name}' {light.Ptr:x} is set #{i} DRIFTED -- moved {(pos - new Vector3(was.X, was.Y, was.Z)).Length():F2}u, reach {was.W:F2} -> {adjR:F2}");
         }
         else
-            _log?.Info($"LightmapBake: late light '{name}' {(nint)p:x} is NEW after the close -- gob {gob:x} tile {(gob == IntPtr.Zero || *(IntPtr*)(gob + GobTileData) != IntPtr.Zero)} creature {CreatureRooted(gob)} at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) r {adjR:F2} flags {*(int*)(p + LightFlagA)}/{*(int*)(p + LightFlagB)} inten {*(float*)(p + LightIntensity):F2}");
+            _log?.Info($"LightmapBake: late light '{name}' {light.Ptr:x} is NEW after the close -- gob {gob.Ptr:x} tile {(gob.IsNull || !gob.TileData.IsNull)} creature {CreatureRooted(gob.Ptr)} at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1}) r {adjR:F2} flags {light.FlagA}/{light.FlagB} inten {light.Intensity:F2}");
     }
 
     /// <summary>The walk's tail: close the set on the first walk after the area-loaded edge (or the fallback),

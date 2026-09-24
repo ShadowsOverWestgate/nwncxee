@@ -18,7 +18,7 @@ public sealed class MenuGear
     /// <summary>The face that makes the sprite <see cref="SizePx"/> tall: DejaVu's ⚙ box is 1523 of the font's 2384
     /// stbtt height units, 0.639 em, so 64 px of gear is a 100 px face.</summary>
     public const float FacePx = 100f;
-    public const int Codepoint = 0x2699;
+    public const int Codepoint = 0x2699;  // not-an-offset: a Unicode codepoint
     /// <summary>Spin while hovered, radians per second, and how fast the spin and the brightness settle.</summary>
     public const float SpinRate = 1.2f, Settle = 8f;
     /// <summary>Idle tint (warm, a little dim) and the hovered tint (white).</summary>

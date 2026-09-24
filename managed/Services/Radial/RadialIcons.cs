@@ -48,9 +48,6 @@ internal static unsafe class RadialIcons
     private static bool _ready, _initTried, _firstDrawLogged;
     private static ExtenderLog? _log;
 
-    /// <summary>Itanium vptr = <c>_ZTV</c> + 0x10; MSVC vptr = the <c>vftable</c> label itself.</summary>
-    private static readonly int VtableToVptr = OperatingSystem.IsWindows() ? 0 : 0x10;
-
     /// <summary>Resolve once; false stands the composite icon down (the dropdown then shows no header icon), and the
     /// stand-down line prints once, not per right-click. Called lazily by <see cref="HeaderItem"/> so the owner needs
     /// no init call.</summary>
@@ -68,9 +65,9 @@ internal static unsafe class RadialIcons
         _getObjectName = (GetObjectNameFn)SymbolMap.Resolve(SymbolMap.GetObjectName, log);
         _exoDtor = (ExoStringDtorFn)SymbolMap.Resolve(SymbolMap.ExoStringDtor, log);
         _appMgr = SymbolMap.Resolve(SymbolMap.AppManager, log);
-        _vtLayered = SymbolMap.Resolve(SymbolMap.VtCLayeredIcon, log) + VtableToVptr;
-        _vtComposite = SymbolMap.Resolve(SymbolMap.VtCCompositeIcon, log) + VtableToVptr;
-        _vtArmor = SymbolMap.Resolve(SymbolMap.VtCArmorIcon, log) + VtableToVptr;
+        _vtLayered = EngineAbi.Vtbl(SymbolMap.Resolve(SymbolMap.VtCLayeredIcon, log));
+        _vtComposite = EngineAbi.Vtbl(SymbolMap.Resolve(SymbolMap.VtCCompositeIcon, log));
+        _vtArmor = EngineAbi.Vtbl(SymbolMap.Resolve(SymbolMap.VtCArmorIcon, log));
         _ready = _find != null && _get != null && _getGameObject != null && _appMgr != IntPtr.Zero;
         return _ready;
     }

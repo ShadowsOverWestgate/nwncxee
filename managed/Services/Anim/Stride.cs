@@ -1,6 +1,6 @@
 using System;
 using System.Numerics;
-using static CX.Framework.EngineLayout;
+using CX.Engine;
 using static CX.Services.Anim.PoseMath;
 
 namespace CX.Services.Anim;
@@ -78,8 +78,8 @@ internal static unsafe class Stride
     internal static void Scale(ref PoseService.Slot s, IntPtr gob, float f)
     {
         s.RateF = f;
-        IntPtr* runs = *(IntPtr**)(gob + GobAnimRuns);
-        int n = Math.Min(*(int*)(gob + GobAnimRunCount), TrackedRuns);
+        var g = new Gob(gob);
+        int n = Math.Min(g.RunCount, TrackedRuns);
         fixed (long* run = s.RateRun)
         fixed (float* eng = s.RateEngine, wrote = s.RateWritten)
         {
@@ -87,17 +87,16 @@ internal static unsafe class Stride
             float* keepEng = stackalloc float[TrackedRuns];
             float* keepWrote = stackalloc float[TrackedRuns];
             int kept = 0;
-            for (int i = 0; i < n && runs != null; i++)
+            for (int i = 0; i < n; i++)
             {
-                IntPtr r = runs[i];
-                if (r == IntPtr.Zero) continue;
-                float* rate = (float*)(r + AnimRunRate);
-                float cur = *rate, baseRate = cur;
+                AnimRun r = g.Run(i);
+                if (r.IsNull) continue;
+                float cur = r.Rate, baseRate = cur;
                 for (int k = 0; k < TrackedRuns; k++)
-                    if (run[k] == (long)r) { if (cur == wrote[k]) baseRate = eng[k]; break; }
+                    if (run[k] == (long)r.Ptr) { if (cur == wrote[k]) baseRate = eng[k]; break; }
                 float want = baseRate * f;
-                if (want != cur) *rate = want;
-                keepRun[kept] = (long)r; keepEng[kept] = baseRate; keepWrote[kept] = want; kept++;
+                if (want != cur) r.Rate = want;
+                keepRun[kept] = (long)r.Ptr; keepEng[kept] = baseRate; keepWrote[kept] = want; kept++;
             }
             for (int k = 0; k < TrackedRuns; k++)
             {
@@ -118,58 +117,62 @@ internal static unsafe class Stride
     /// slot when <paramref name="tracked"/>, to tell the engine's rate from this module's last write.</summary>
     internal static void Sync(IntPtr gob, IntPtr body, ref PoseService.Slot b, bool tracked, float f)
     {
-        IntPtr* runs = *(IntPtr**)(gob + GobAnimRuns);
-        IntPtr* bodyRuns = *(IntPtr**)(body + GobAnimRuns);
-        int n = *(int*)(gob + GobAnimRunCount), bn = *(int*)(body + GobAnimRunCount);
-        if (runs == null || bodyRuns == null) return;
+        var g = new Gob(gob);
+        var bg = new Gob(body);
+        int n = g.RunCount, bn = bg.RunCount;
+        if (n == 0 || bn == 0) return;
         bool phase = AnimKnobs.SyncAttach.V;
         if (!phase && f == 1f) return;
         for (int i = 0; i < n; i++)
         {
-            IntPtr r = runs[i];
-            if (r == IntPtr.Zero) continue;
-            IntPtr br = Match(r, bodyRuns, bn, i);
-            if (br == IntPtr.Zero) continue;
-            float rate = *(float*)(br + AnimRunRate);
+            AnimRun r = g.Run(i);
+            if (r.IsNull) continue;
+            AnimRun br = Match(r, bg, bn, i);
+            if (br.IsNull) continue;
+            float rate = br.Rate;
             if (tracked)
                 fixed (long* run = b.RateRun)
                 fixed (float* eng = b.RateEngine, wrote = b.RateWritten)
                     for (int k = 0; k < TrackedRuns; k++)
-                        if (run[k] == (long)br) { if (rate == wrote[k]) rate = eng[k]; break; }
-            *(float*)(r + AnimRunRate) = rate * f;
+                        if (run[k] == (long)br.Ptr) { if (rate == wrote[k]) rate = eng[k]; break; }
+            r.Rate = rate * f;
             if (!phase) continue;
-            *(float*)(r + AnimRunTime) = *(float*)(br + AnimRunTime);
-            if (((*(uint*)(r + AnimRunFlags) ^ *(uint*)(br + AnimRunFlags)) & FadingOut) == 0)
+            r.Time = br.Time;
+            if (((r.Flags ^ br.Flags) & FadingOut) == 0)
             {
-                *(float*)(r + AnimRunBlend) = *(float*)(br + AnimRunBlend);
-                *(float*)(r + AnimRunBlendTime) = *(float*)(br + AnimRunBlendTime);
+                r.Blend = br.Blend;
+                r.BlendTime = br.BlendTime;
             }
             Synced++;
         }
     }
 
     /// <summary>AnimRun flag bit: the run is fading out.</summary>
-    private const uint FadingOut = 0x1;
+    private const uint FadingOut = 0x1;  // not-an-offset: a flag bit
 
     /// <summary>The body's run playing the animation <paramref name="run"/> plays, by name (the two gobs load
     /// their own <c>Animation</c> objects): the one at the same list position first, else the first by name.</summary>
-    private static IntPtr Match(IntPtr run, IntPtr* bodyRuns, int bn, int at)
+    private static AnimRun Match(AnimRun run, Gob body, int bn, int at)
     {
-        IntPtr anim = *(IntPtr*)(run + AnimRunAnimation);
-        if (anim == IntPtr.Zero) return IntPtr.Zero;
-        byte* name = (byte*)(anim + AnimationName);
-        if (at < bn && SameName(bodyRuns[at], name)) return bodyRuns[at];
+        Animation anim = run.Animation;
+        if (anim.IsNull) return default;
+        byte* name = anim.Chars;
+        AnimRun same = at < bn ? body.Run(at) : default;
+        if (SameName(same, name)) return same;
         for (int j = 0; j < bn; j++)
-            if (j != at && SameName(bodyRuns[j], name)) return bodyRuns[j];
-        return IntPtr.Zero;
+        {
+            AnimRun br = body.Run(j);
+            if (j != at && SameName(br, name)) return br;
+        }
+        return default;
     }
 
-    private static bool SameName(IntPtr run, byte* name)
+    private static bool SameName(AnimRun run, byte* name)
     {
-        if (run == IntPtr.Zero) return false;
-        IntPtr anim = *(IntPtr*)(run + AnimRunAnimation);
-        if (anim == IntPtr.Zero) return false;
-        byte* other = (byte*)(anim + AnimationName);
+        if (run.IsNull) return false;
+        Animation anim = run.Animation;
+        if (anim.IsNull) return false;
+        byte* other = anim.Chars;
         for (int i = 0; i < MaxName; i++)
         {
             if (name[i] != other[i]) return false;

@@ -4,7 +4,6 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -128,33 +127,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// mark is reported. <see cref="CasterPass"/> keeps it as a hard cap; a shadow that does not bake is a
     /// missing shadow, not a missing creature.</summary>
     internal const int MaxBoneSlots = 512;
-    /// <summary>aurMatrixStack layout (Ghidra GLRender::PushMatrix/PopMatrix/aurMatrixStack::SetIdentity):
-    /// stride 0x58 per stack, top matrix (row-major float[16]) at +0x18. Modes: PROJECTION=0, VIEW=1.
-    /// <para>Raw: <c>m_aurMtxStack</c> is a bare ARRAY of stacks at a global address, indexed by mode, so
-    /// there is no engine object for a view to sit on and the stride is arithmetic rather than a field.</para></summary>
-    internal static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
+    /// <summary>The <c>m_aurMtxStack</c> entry a matrix is read from: PROJECTION=0, VIEW=1, MODEL=2. An INDEX
+    /// into the global array of stacks, which <see cref="CX.Engine.aurMatrixStack"/>'s indexer steps by.
+    /// </summary>
     internal const int ModeProjection = 0, ModeView = 1;
-    /// <summary>The part's MdlNode (part+0x8) and its material colours, from Ghidra
-    /// <c>PartTriMesh::MatStatic</c> @0x450560, which calls <c>SetMaterialv(prop 1, node+0xf4)</c>,
-    /// <c>SetMaterialv(prop 2, node+0xe8)</c> and <c>SetMaterialv(prop 3, part+0x7c)</c>. Prop 3 takes the
-    /// self-illumination colour, so the enum runs ambient/diffuse/emissive -- and node+0xe8 is the one
-    /// carrying the part's alpha (part+0xa0), which in fixed-function material setup is the DIFFUSE term.
-    /// Distinct from the bucket node at part+0x88.</summary>
-    /// <para>CX-39: the material node and its colour terms are <see cref="MdlRef"/>'s now; what is left here
-    /// is the offset itself, because <c>Alloy/Pass/</c> still walks it raw (its port is CX-39's other half).</para>
-    internal static readonly int PartMdlNode = EngineLayout.PartNodeLink;
-    /// <summary>MaterialParameter layout, from <c>Material::SetMaterialParam</c> @0x4c5d70 (the name is
-    /// <c>strncasecmp</c>'d over 0x40 bytes from the record's start) and BindShaderParameters (value floats at
-    /// +0x44, the two cached uniform locations at +0x54/+0x58, the type discriminator at +0x5c, the component
-    /// count as a ushort at +0x60). The record is 100 bytes -- both walks step by exactly that.
-    /// <para>The type discriminator selects how +0x44 is READ, not where the value lives: 0 takes it as a
-    /// <c>float*</c> with <c>ParamComps</c> components, 1 as a single <c>int</c>, both off the same
-    /// address.</para>
-    /// <para>CX-39: these stay raw. <c>ParamStride</c> is a stride, not a place, and the record is walked as
-    /// <c>list + k*stride</c>; <c>ParamValue</c> is a UNION its own discriminator decides the type of, which
-    /// no single typed field can be.</para></summary>
-    internal static readonly int ParamValue = EngineLayout.ParamValue, ParamType = EngineLayout.ParamType,
-                                ParamComps = EngineLayout.ParamComps, ParamStride = EngineLayout.ParamStride;
     /// <summary>A parameter list longer than this is not a .mtr, it is a bad pointer -- refuse it rather than
     /// walk off into the heap. Real materials declare a handful.</summary>
     internal const int MaxParams = 64;

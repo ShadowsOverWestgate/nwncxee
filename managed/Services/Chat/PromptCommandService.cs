@@ -29,13 +29,10 @@ public sealed unsafe class PromptCommandService : IExtenderService
 
     /// <summary><c>GUIINGAME_MESSAGE_CONSOLE</c>: the channel <c>ParseChatString</c> echoes client-only command
     /// output on (decompiled @0x7780b0: <c>AppendToMsgBuffer(gui, text, 0x10000000, 0, 0, "")</c>).</summary>
-    private const uint ConsoleChannel = 0x10000000;
+    private const uint ConsoleChannel = 0x10000000;  // not-an-offset: a chat channel mask
 
     private static ExtenderLog? _log;
     private static ChatHandleEnterFn* _slot;
-    /// <summary>Not a pointer field: the CGuiEdit is EMBEDDED in the prompt, so this is the address of a
-    /// subobject, which no view accessor can hand out.</summary>
-    private static readonly int EditOff = EngineLayout.ChatPromptEdit;
     private static IntPtr _appMgr;
     /// <summary>The <c>""</c> handed to <c>CAurString::SetText</c>: the engine passes a string literal there, so the
     /// callee may keep the pointer -- give it memory that never moves.</summary>
@@ -81,8 +78,9 @@ public sealed unsafe class PromptCommandService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnEnter(IntPtr prompt)
     {
-        string line = ReadLine(prompt + EditOff);
-        bool hit = CommandRegistry.Global.Knows(line) && Clear(prompt + EditOff);
+        CGuiEdit edit = new CGuiInGameChatPrompt(prompt).Edit;
+        string line = ReadLine(edit);
+        bool hit = CommandRegistry.Global.Knows(line) && Clear(edit);
         if (_slot != null) (*_slot)(prompt);
         if (!hit) return;
         if (CommandRegistry.Global.TryDispatch(line, out string? reply) && reply != null) Echo(reply);
@@ -90,11 +88,11 @@ public sealed unsafe class PromptCommandService : IExtenderService
 
     /// <summary>What vanilla reads: <c>CGuiEdit::GetText</c> (sret, caller-owned buffer), cut at the first line break
     /// the way HandleEnter's two <c>Find</c>/<c>Left</c> passes do. Latin1, as the chatbox reads engine text.</summary>
-    private static string ReadLine(IntPtr edit)
+    private static string ReadLine(CGuiEdit edit)
     {
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;   // the dtor below frees whatever buffer lands here
-        new CGuiEdit(edit).GuiEditGetText(exo);
+        edit.GuiEditGetText(exo);
         byte* buf = *(byte**)exo;
         uint len = *(uint*)(exo + 8);
         var sb = new StringBuilder((int)Math.Min(len, 4096));
@@ -112,9 +110,9 @@ public sealed unsafe class PromptCommandService : IExtenderService
 
     /// <summary>The clear HandleEnter itself does first: <c>m_pString->SetText("")</c> through the CAurString vtable.
     /// Returns false when the slot failed its probe, so the line is forwarded as chat rather than dispatched half-way.</summary>
-    private static bool Clear(IntPtr edit)
+    private static bool Clear(CGuiEdit edit)
     {
-        CAurString str = new CGuiEdit(edit).String;
+        CAurString str = edit.String;
         if (str.IsNull) return false;
         _probeOk ??= EngineLayout.Probe("CAurString", str.Ptr, _log);
         if (_probeOk == false) return false;

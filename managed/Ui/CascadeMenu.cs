@@ -143,10 +143,10 @@ public sealed partial class CascadeMenu
     private const int LeftButton = 1;
     /// <summary>How far a list slides as it fades in: the root from above, a child from its parent's edge.</summary>
     public static float SlidePx => 8f * Metrics.Scale;
-    private const uint KeyRight = 0x4000004F, KeyLeft = 0x40000050, KeyDown = 0x40000051, KeyUp = 0x40000052;
-    private const uint KeyEscape = 0x1B, KeyReturn = 0x0D, KeyKpEnter = 0x40000058;
+    private const uint KeyRight = 0x4000004F, KeyLeft = 0x40000050, KeyDown = 0x40000051, KeyUp = 0x40000052;  // not-an-offset: SDL key/event code
+    private const uint KeyEscape = 0x1B, KeyReturn = 0x0D, KeyKpEnter = 0x40000058;  // not-an-offset: SDL key/event code
     /// <summary>Back mark: U+2039, or '&lt;' when the face lacks it.</summary>
-    private const int BackMark = 0x2039;
+    private const int BackMark = 0x2039;  // not-an-offset: a Unicode codepoint
     private const int RightButton = 3;
 
     public static float Pad => 4f * Metrics.Scale;

@@ -11,8 +11,9 @@ namespace CX.Services.Hotkeys;
 /// arms the keys; Esc/Cancel/close all deny.
 /// </summary>
 /// <remarks>
-/// Spawn mirrors the engine's own path (decomp-verified both platforms): operator new; ctor;
-/// p+0x80=context, p+0x88=on-close callback (Linux also zeroes p+0x90); Activate(msg, OK, CANCEL).
+/// Spawn mirrors the engine's own path (decomp-verified both platforms): operator new
+/// (<see cref="EngineLayout.OkCancelSize"/>); ctor; fill the panel's own close callback
+/// (<see cref="EngineLayout.GuiPanelCloseCallback"/>); Activate(msg, OK, CANCEL).
 /// On close the engine calls callback(context, result); 1 = OK, anything else = deny. The panel then
 /// self-frees via its deleting dtor -> operator delete, so we allocate from the matching operator new
 /// (the game's own on Windows -- static CRT) or the free lands on the wrong heap. The message
@@ -22,12 +23,8 @@ namespace CX.Services.Hotkeys;
 /// </remarks>
 internal static unsafe class HotkeyConsent
 {
-    // sizeof(CPanelOkCancel): 0x3a0 Itanium / 0x360 MSVC (from the operator new arg in the engine's
-    // own spawn path). Wrong size = the ctor/dtor touch out-of-bounds bytes.
-    private static readonly int PanelSize = OperatingSystem.IsWindows() ? 0x360 : 0x3a0;
-    private const int CtxOff = 0x80, CbOff = 0x88, PadOff = 0x90;
     // OK / Cancel button label strrefs -- the exact pair HandleQuitClick passes to Activate.
-    private const uint OkStrRef = 0x2052, CancelStrRef = 0x2053;
+    private const uint OkStrRef = 0x2052, CancelStrRef = 0x2053;  // not-an-offset: a TLK strref
 
     private static ExtenderLog? _log;
     private static IntPtr _guiManSym;                    // &g_pGuiMan -- read its value, never deref as an object
@@ -44,7 +41,8 @@ internal static unsafe class HotkeyConsent
         _guiManSym = Native.Sym(SymbolMap.GuiMan);
 
         _ready = EngineFn.OperatorNew != null && EngineFn.OkCancelCtor != null && EngineFn.OkCancelActivate != null
-                 && _guiManSym != IntPtr.Zero;
+                 && _guiManSym != IntPtr.Zero
+                 && EngineLayout.Require(log, "HotkeyConsent", "CPanelOkCancel", "CGuiPanel", "CGuiCallback");
         if (!_ready)
             _log?.Info("HotkeyConsent: native modal unavailable on this client -- new binds will be refused");
     }
@@ -88,15 +86,14 @@ internal static unsafe class HotkeyConsent
             return false;
         }
 
-        IntPtr panel = EngineFn.OperatorNew((nuint)PanelSize);
+        IntPtr panel = EngineFn.OperatorNew((nuint)EngineLayout.OkCancelSize);
         if (panel == IntPtr.Zero) return false;
-        EngineFn.OkCancelCtor(panel);
-        *(IntPtr*)(panel + CtxOff) = panel;              // benign non-null context; our callback ignores it
+        EngineFn.OkCancelCtor(panel);                    // seeds the callback; ours overwrites it after
+        CGuiCallback onClose = new CGuiPanel(panel).CloseCallback;
+        onClose.Obj = panel;                             // benign non-null context; our callback ignores it
         // Left raw: a callback pointer stored INTO an engine struct field, tied to no symbol (CX-37).
-        *(IntPtr*)(panel + CbOff)  = (IntPtr)(delegate* unmanaged<IntPtr, int, void>)&OnAnswer;
-        // Mirror each platform's real code: Linux HandleQuitClick zeroes +0x90; the MSVC path doesn't.
-        if (!OperatingSystem.IsWindows())
-            *(IntPtr*)(panel + PadOff) = IntPtr.Zero;
+        onClose.Fn = (IntPtr)(delegate* unmanaged<IntPtr, int, void>)&OnAnswer;
+        onClose.Adj = IntPtr.Zero;                       // Itanium invokes fn(obj + adj, ...); a no-op on MSVC
 
         IntPtr msg = Native.NewExoString(Describe(additions));
         EngineFn.OkCancelActivate(panel, msg, OkStrRef, CancelStrRef);   // Linux overload copies the text; does not own msg

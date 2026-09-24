@@ -23,13 +23,14 @@ if grep -rnE '\bGl\.|using static .*\bGl;' managed/Alloy/Scene/ | grep -v 'gl-ok
   exit 1
 fi
 
-# #443 (#429 section 2's exit criterion): an engine offset read by Alloy lives in EngineLayout and nowhere
-# else, so that the unresolved counter is the truth. The declaration form an offset takes here is a
+# #443 (#429 section 2's exit criterion), widened to all of managed/ by CX-36: an engine offset lives in
+# EngineLayout and nowhere else, so that the unresolved counter is the truth. Graphics/ is GL enums only. The declaration form an offset takes here is a
 # hex-valued integer const -- anything matching that has to say on its own line why it is NOT a place in
 # memory (a GL enum, a shader-param index, a bit mask, a sentinel value).
 if grep -rnE '(const|readonly)[[:space:]]+(int|uint|long|ulong|byte|ushort|short|nint)\b[^;]*0x' \
-     --include='*.cs' managed/Alloy/ | grep -v 'not-an-offset:'; then
-  echo "!! bare hex constant under managed/Alloy/ (see the lines above; #443). An engine offset belongs in" >&2
+     --include='*.cs' --exclude-dir=Graphics --exclude=EngineLayout.cs --exclude=Views.g.cs managed/ \
+     | grep -v 'not-an-offset:'; then
+  echo "!! bare hex constant under managed/ (see the lines above; #443, CX-36). An engine offset belongs in" >&2
   echo "!! managed/Framework/EngineLayout.cs with a class and a form; anything else says why on the same" >&2
   echo "!! line as a 'not-an-offset: <why>' comment." >&2
   exit 1

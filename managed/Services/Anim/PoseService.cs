@@ -181,7 +181,7 @@ public sealed unsafe class PoseService : IExtenderService
         IntPtr body = Owner(gob);
         if (body != IntPtr.Zero) { Attached(gob, root, bones, slot, body, next, dt, t0); return; }
         // out of the view volume the engine does not even advance the gob's time: nothing to correct
-        found &= *(byte*)(gob + GobInView) != 0 && Near(gob);
+        found &= new Gob(gob).InView != 0 && Near(gob);
         if (slot >= 0 && found && _slots[slot].Root == root) Stride.Pre(ref _slots[slot], gob);
 
         long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -215,9 +215,6 @@ public sealed unsafe class PoseService : IExtenderService
     private static long _playerAt;
     private static long PlayerTicks => System.Diagnostics.Stopwatch.Frequency / 200;
     private static long _ticks;
-    /// <summary>The engine's in-view-volume flag (<c>Gob::IsInViewVolume</c> is <c>return *(this+0x1b)</c>:
-    /// Linux @0x444780, Windows rva 0x49110, both disassembled), refreshed by <c>ManageSceneBSP</c>.</summary>
-    private const int GobInView = 0x1b;
 
     /// <summary>The body's corrections, when it is in the world scene and has (or gets) a slot.</summary>
     private static void Correct(IntPtr gob, IntPtr root, in Bones bones, int slot, float dt)
@@ -254,7 +251,7 @@ public sealed unsafe class PoseService : IExtenderService
         int bs = Find(body);
         bool tracked = bs >= 0;
         Stride.Sync(gob, body, ref tracked ? ref _slots[bs] : ref _none, tracked, tracked ? Stride.Of(_slots[bs]) : 1f);
-        bool copy = root != IntPtr.Zero && (AnimKnobs.SyncAttach.V || tracked) && *(byte*)(body + GobInView) != 0;
+        bool copy = root != IntPtr.Zero && (AnimKnobs.SyncAttach.V || tracked) && new Gob(body).InView != 0;
         if (slot < 0 && copy) slot = Claim(gob);
 
         long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -315,7 +312,7 @@ public sealed unsafe class PoseService : IExtenderService
     {
         if (depth > MaxDepth) return;
         IntPtr node = new Part(part).Node.Ptr;
-        int bone = node == IntPtr.Zero ? -1 : BoneIndex((byte*)(node + MdlNodeName));
+        int bone = node == IntPtr.Zero ? -1 : BoneIndex(new MdlNode(node).Chars);
         if (bone >= 0 && bones[bone] == IntPtr.Zero) bones[bone] = part;
         IntPtr* kids = (IntPtr*)new Part(part).Children;
         int n = new Part(part).ChildCount;
@@ -354,15 +351,16 @@ public sealed unsafe class PoseService : IExtenderService
     private static bool Gated(IntPtr gob, out bool fading)
     {
         fading = false;
-        IntPtr* runs = (IntPtr*)new Gob(gob).AnimRuns;
-        int n = new Gob(gob).AnimRunCount;
+        var g = new Gob(gob);
+        int n = g.RunCount;
         bool gated = false;
-        for (int i = 0; i < n && runs != null; i++)
+        for (int i = 0; i < n; i++)
         {
-            if (runs[i] == IntPtr.Zero) continue;
-            if (new AnimRun(runs[i]).Blend < Settled) fading = true;
-            IntPtr anim = new AnimRun(runs[i]).Animation;
-            if (anim != IntPtr.Zero && IsDenied((byte*)(anim + AnimationName))) gated = true;
+            AnimRun r = g.Run(i);
+            if (r.IsNull) continue;
+            if (r.Blend < Settled) fading = true;
+            Animation anim = r.Animation;
+            if (!anim.IsNull && IsDenied(anim.Chars)) gated = true;
         }
         return gated;
     }
@@ -498,17 +496,13 @@ public sealed unsafe class PoseService : IExtenderService
         if (upper) UpperBody.Write(bones.Torso, bones.Neck, fwdH, right, torsoRot, neckRot);
     }
 
-    /// <summary>The engine's live look-at on this gob: <c>Gob+0x1b0</c> holds the <c>LookAtAnimation</c>
-    /// (<c>BeginLookAtAnimate</c> stores it, <c>EndLookAtAnimate</c> reads it there: Linux @0x4979e0, Windows
-    /// rva 0x50eb0, both disassembled), not yet finished. An idle animation's own head tilt is not a look-at and
-    /// is left on the head.</summary>
+    /// <summary>The engine's live look-at on this gob (<see cref="EngineLayout.GobLookAt"/>), not yet
+    /// finished. An idle animation's own head tilt is not a look-at and is left on the head.</summary>
     private static bool LookingAt(IntPtr gob)
     {
-        IntPtr look = *(IntPtr*)(gob + GobLookAt);
-        return look != IntPtr.Zero && new LookAtAnimation(look).Finished == 0;
+        LookAtAnimation look = new Gob(gob).LookAt;
+        return !look.IsNull && look.Finished == 0;
     }
-
-    private const int GobLookAt = 0x1b0;
 
     /// <summary>Eases the measured motion: ground speed, yaw rate and signed slope over <see cref="MotionTime"/>,
     /// forward acceleration over <see cref="AccelTime"/>. A snap zeroes the rates rather than reading a teleport as a sprint.</summary>

@@ -46,6 +46,9 @@ internal static unsafe class SelfActions
     private static IntPtr[] _addr = Array.Empty<IntPtr>();
     private static OperatorNewFn _new;
     private static SpellMenuTargetIsValidFn _targetIsValid;
+    // Left raw: the ctors take their Vector BY VALUE and Itanium packs it into the FIRST TWO argument slots
+    // (xmm0 = x|y, xmm1 = z) while Win64 passes a pointer after `this` -- the parameter LISTS differ, so no
+    // single [Fn] signature describes either symbol (CX-37).
 #if WINDOWS
     private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr> _creatureCtor;
     private static delegate* unmanaged<IntPtr, IntPtr, uint, IntPtr, int, IntPtr> _spellCtor;

@@ -65,12 +65,12 @@ public sealed unsafe class TabTargetService : IExtenderService
 
     /// <summary>Between the mouse-look layer (100) and the framework input layer (0).</summary>
     private const int ChainPriority = 50;
-    private const uint SdlKeyDown = 0x300, SdlKeyUp = 0x301;
+    private const uint SdlKeyDown = 0x300, SdlKeyUp = 0x301;  // not-an-offset: SDL key/event code
     /// <summary>SDL_KeyboardEvent: <c>repeat</c>, <c>keysym.scancode</c>, <c>keysym.sym</c>.</summary>
-    private const int EvRepeatOff = 0xd, EvScancodeOff = 0x10, EvSymOff = 0x14;
-    private const int KmodShift = 0x0003;
+    private const int EvRepeatOff = 0xd, EvScancodeOff = 0x10, EvSymOff = 0x14;  // not-an-offset: SDL_Event ABI, not an engine class
+    private const int KmodShift = 0x0003;  // not-an-offset: SDL key/event code
     /// <summary>SDL scancode range of the modifier keys, never a "release fires" key.</summary>
-    private const int ScancodeLCtrl = 0xE0, ScancodeRGui = 0xE7;
+    private const int ScancodeLCtrl = 0xE0, ScancodeRGui = 0xE7;  // not-an-offset: SDL key/event code
     /// <summary>The lock's hilite channel: above hover/Tab (2) and VFX (3), so those show through.</summary>
     private const byte LockChannel = 4;
     private const int Glow = 1;
@@ -78,18 +78,6 @@ public sealed unsafe class TabTargetService : IExtenderService
     private const byte AttitudeNeutral = 0, AttitudeFriend = 1;
     /// <summary>The world pick's "an object" verdict (PerformLButtonDownAction's <c>== 2</c> branch).</summary>
     private const int PickObject = 2;
-
-    /// <summary>The object's script highlight colour: a Vector read through a <c>float*</c> that is then rebased
-    /// onto one of the engine's own colour globals, so the offset stays raw rather than becoming a view row.</summary>
-    private static readonly int ObjColourOff = EngineLayout.ObjHiliteColour;
-
-    /// <summary>The engine's by-value <c>Vector</c> into <c>Hilite</c>: the house shape (<c>CombatTextService</c>, #420,
-    /// live on both) -- SysV xmm0 (x, y) + xmm1 (z), Win64 a pointer to a caller-made copy.</summary>
-#if WINDOWS
-    private struct ColourArg { public CombatText.CombatTextService.Vec3* P; }
-#else
-    private struct ColourArg { public CombatText.CombatTextService.Vec3 V; }
-#endif
 
     // ---- the lock ----
     private static uint _lock;
@@ -343,20 +331,15 @@ public sealed unsafe class TabTargetService : IExtenderService
     /// attitude's global. Virtual: CNWCCreature overrides Hilite to reach its equipped items too.</summary>
     private static void Hilite(CNWCObject obj, byte kind)
     {
-        float* c = (float*)(obj.Ptr + ObjColourOff);
+        Span<float> c = obj.HiliteColour;
         if (!(c[0] >= 0f))
         {
             IntPtr g = kind == TabTargetCore.TypePlaceable ? _colPlaceable : kind == TabTargetCore.TypeDoor ? _colDoor
                 : new CNWCCreature(obj.Ptr).Attitude switch { AttitudeFriend => _colFriend, AttitudeNeutral => _colNeutral, _ => _colEnemy };
-            c = (float*)g;
+            c = new Span<float>((void*)g, 3);
         }
-        CombatText.CombatTextService.Vec3 colour = new() { X = c[0], Y = c[1], Z = c[2] };
-#if WINDOWS
-        ColourArg arg = new() { P = &colour };
-#else
-        ColourArg arg = new() { V = colour };
-#endif
-        ((delegate* unmanaged<IntPtr, ColourArg, byte, float, int, void>)obj.HiliteFn)(obj.Ptr, arg, LockChannel, 0f, Glow);
+        Vec3 colour = new() { X = c[0], Y = c[1], Z = c[2] };
+        obj.Hilite(VectorArg.Of(&colour), LockChannel, 0f, Glow);
     }
 
     private static void UnHilite()

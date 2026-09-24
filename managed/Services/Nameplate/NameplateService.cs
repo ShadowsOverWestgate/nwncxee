@@ -85,7 +85,9 @@ public sealed unsafe class NameplateService : IExtenderService
         UiCategory.Declare();   // the UI groups declare in panel order whether or not the hooks arm
 
         if (!SymbolMap.Require(log, "NameplateService", RequiredSymbols)) return;   // #420: whole or nothing
-        if (!EngineLayout.Require(log, "NameplateService", "CNWCObject", "CNWCCreature", "CNWCPlaceable")) return;                 // #432: same, for offsets
+        if (!EngineLayout.Require(log, "NameplateService", "CNWCObject", "CNWCCreature", "CNWCPlaceable",   // #432: same, for offsets
+                                  "CNWCCreatureStats", "CGuiInGamePopUpBubble", "CNWCModule", "CNWCArea",
+                                  "CClientExoApp", "CClientExoAppInternal", "Camera")) return;
 
         // ORDER: the two critical symbols first, so nothing else installs if either refuses.
         _origSetMode = hooks.InstallSetChatBubbleMode(&OnSetChatBubbleMode);

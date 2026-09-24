@@ -49,7 +49,7 @@ internal static unsafe partial class RadialTree
     {
         var check = new Checker(log);
 
-        const int BlobSize = 0x900, VtSize = 0x200, ObjAdj = 0x10;
+        const int BlobSize = 0x900, VtSize = 0x200, ObjAdj = 0x10;  // not-an-offset: sizes of the self-check's fake objects
         byte* menu = (byte*)NativeMemory.AllocZeroed(BlobSize);
         byte* fakeVt = (byte*)NativeMemory.AllocZeroed(VtSize);
         byte* handlerVt = (byte*)NativeMemory.AllocZeroed(VtSize);
@@ -69,70 +69,70 @@ internal static unsafe partial class RadialTree
         var savedCreate = _createSubMenu;
         try
         {
-            int stride = EngineLayout.RadialCallbackStride;
             bool win = OperatingSystem.IsWindows();
+            // Left raw: the address of our own handler in the engine's member-fn shape (see RadialTree.Call).
+            IntPtr fake = (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler;
+            var root = new CRadialMenu((IntPtr)menu);
             for (int i = 0; i < SlotCount; i++)
             {
-                IntPtr e = (IntPtr)(menu + EngineLayout.RadialEntry + i * stride);
-                IntPtr c = (IntPtr)(menu + EngineLayout.RadialCreator + i * stride);
-                *(IntPtr*)e = e;
-                *(IntPtr*)c = c;
+                CGuiCallback e = root.Entry[i], c = root.Creator[i];
+                e.Obj = e.Ptr;
+                c.Obj = c.Ptr;
             }
             // vptr: Itanium points 0x10 into the _ZTV blob, MSVC at the vftable label -- plant the resolved form.
-            *(IntPtr*)menu = (IntPtr)fakeVt + VtableToVptr;
-            _vptr[(int)RootKind.Door] = (IntPtr)fakeVt + VtableToVptr;
-            var root = new CRadialMenu((IntPtr)menu);
+            *(IntPtr*)menu = EngineAbi.Vtbl((IntPtr)fakeVt);
+            _vptr[(int)RootKind.Door] = EngineAbi.Vtbl((IntPtr)fakeVt);
             root.MenuX = 640;
             root.MenuY = 360;
             root.TargetId = 0x7f01;
 
             // slot 0: a direct entry leaf, labelled + iconed, param 0x123456789.
-            IntPtr e0 = (IntPtr)(menu + EngineLayout.RadialEntry);
-            *(IntPtr*)e0 = (IntPtr)handlerObj;
-            *(IntPtr*)(e0 + 8) = (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler;
+            CGuiCallback e0 = root.Entry[0];
+            e0.Obj = (IntPtr)handlerObj;
+            e0.Fn = fake;
             root.Param[0] = 0x123456789L;
-            root.Text[0] = (IntPtr)bubble;
-            root.Icon[0] = (IntPtr)icon;
+            root.Text[0] = new CGuiTextBubble((IntPtr)bubble);
+            root.Icon[0] = new CGuiIcon((IntPtr)icon);
             "IR_CAST\0"u8.CopyTo(new CGuiIcon((IntPtr)icon).Resref);
             "Cast "u8.CopyTo(new Span<byte>(line0, 32));
             "Spell"u8.CopyTo(new Span<byte>(line1, 32));
             _line0 = (IntPtr)line0; _line1 = (IntPtr)line1; _fakeGob = (IntPtr)gob;
-            new CGuiTextBubble((IntPtr)bubble).AurString = (IntPtr)gob + EngineLayout.StringGobReaderAdjust;
+            new CGuiTextBubble((IntPtr)bubble).AurString = new StringGob((IntPtr)gob).AurString;
             "3"u8.CopyTo(new Span<byte>(countLine, 32));
             _countLine = (IntPtr)countLine; _fakeCountGob = (IntPtr)countGob;
-            new CGuiIcon((IntPtr)icon).CountLabel = (IntPtr)countGob + EngineLayout.StringGobReaderAdjust;
+            new CGuiIcon((IntPtr)icon).CountLabel = new StringGob((IntPtr)countGob).AurString;
             _getTextLineCount = &FakeLineCount;
             _getTextLine = &FakeLine;
             _createSubMenu = &FakeCreate;
             _fakeChild = (IntPtr)child;
 
             // slot 1: a creator (submenu), disabled; slot 2: a materialized child with no creator.
-            IntPtr c1 = (IntPtr)(menu + EngineLayout.RadialCreator + stride);
-            *(IntPtr*)c1 = (IntPtr)handlerObj;
+            CGuiCallback c1 = root.Creator[1];
+            c1.Obj = (IntPtr)handlerObj;
             root.Flags[1] = 1;
             root.SubMenu[2] = new CRadialMenu((IntPtr)fakeVt);
 
             // slot 3 (Itanium only): a virtual entry -- odd fn = vtable byte offset 0x28 + 1, adj 0x10, so this =
             // obj + 0x10 and the vtable is read from there.
-            IntPtr e3 = (IntPtr)(menu + EngineLayout.RadialEntry + 3 * stride);
-            *(IntPtr*)e3 = (IntPtr)handlerObj;
+            CGuiCallback e3 = root.Entry[3];
+            e3.Obj = (IntPtr)handlerObj;
             if (win)
             {
-                *(IntPtr*)(e3 + 8) = (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler;
+                e3.Fn = fake;
             }
             else
             {
-                *(IntPtr*)(e3 + 8) = (IntPtr)(0x28 + 1);
-                *(IntPtr*)(e3 + 16) = (IntPtr)ObjAdj;
+                e3.Fn = (IntPtr)(0x28 + 1);
+                e3.Adj = (IntPtr)ObjAdj;
                 *(IntPtr*)(handlerObj + ObjAdj) = (IntPtr)handlerVt;
-                *(IntPtr*)(handlerVt + 0x28) = (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler;
+                *(IntPtr*)(handlerVt + 0x28) = fake;
             }
             root.Param[3] = -7;
 
             check.Expect(Classify((IntPtr)menu) == RootKind.Door, "a planted vptr classifies as the kind it was planted for");
             *(IntPtr*)menu = (IntPtr)handlerVt;
             check.Expect(Classify((IntPtr)menu) == RootKind.Unknown, "an unknown vptr classifies as Unknown");
-            *(IntPtr*)menu = (IntPtr)fakeVt + VtableToVptr;
+            *(IntPtr*)menu = EngineAbi.Vtbl((IntPtr)fakeVt);
             check.Expect(Position((IntPtr)menu) == (640, 360), "Position reads menu XY");
             check.Expect(TargetId((IntPtr)menu, RootKind.Door) == 0x7f01 && TargetId((IntPtr)menu, RootKind.Quickbar) == 0,
                 "TargetId reads the subclass word for kinds that have one, 0 otherwise");
@@ -143,7 +143,7 @@ internal static unsafe partial class RadialTree
             check.Expect(s0.Icon == "ir_cast", $"slot 0 icon is the lowercased resref (\"{s0.Icon}\")");
             check.Expect(s0.Count == "3", $"slot 0 count reads the icon's label gob (\"{s0.Count}\")");
             check.Expect(!s0.Disabled && s0.Param == 0x123456789L, "slot 0 enabled, param read");
-            check.Expect(s0.Obj == (IntPtr)handlerObj && s0.Fn == (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler
+            check.Expect(s0.Obj == (IntPtr)handlerObj && s0.Fn == fake
                 && s0.Adj == IntPtr.Zero && s0.Child == IntPtr.Zero, "slot 0 triple read back");
             RadialSlot s1 = ReadSlot((IntPtr)menu, 1);
             check.Expect(s1.Kind == SlotKind.Creator && s1.IsSubMenu && s1.Disabled && s1.Label == "" && s1.Icon == "",

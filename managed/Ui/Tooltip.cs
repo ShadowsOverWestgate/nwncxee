@@ -24,7 +24,7 @@ public sealed class Tooltip
     /// <summary>Widest text box before wrapping.</summary>
     public static float MaxW => 280f * Metrics.Scale;
     public static float Pad => 6f * Metrics.Scale;
-    private const uint FrameRgb = 0x8C8C8C;
+    private const uint FrameRgb = 0x8C8C8C;  // not-an-offset: a colour
 
     /// <summary>Time source; the self-check substitutes a fake clock. Stopwatch ticks.</summary>
     internal static Func<long> Clock = Stopwatch.GetTimestamp;

@@ -4,7 +4,7 @@ namespace CX.Ui;
 /// chrome) and the fill / outline primitives. Brought into scope with <c>using static</c>.</summary>
 internal static class PanelChrome
 {
-    internal const uint PanelBg = 0x0d0f17, Border = 0x2a3350, HeaderBg = 0x1a1f29, CatBg = 0x0a0c14, SubBg = 0x0f121c,
+    internal const uint PanelBg = 0x0d0f17, Border = 0x2a3350, HeaderBg = 0x1a1f29, CatBg = 0x0a0c14, SubBg = 0x0f121c,  // not-an-offset: a colour
                         ColBorder = 0x1f2740, NavOn = 0x192040, Accent = 0x335785, Accent2 = 0x4a78b4, Input = 0x050508,
                         Selected = 0x38669e, Tx = 0xd8dee9, Tx2 = 0x8a93a6, Tx3 = 0x5a6274, Grip = 0xb8c0cc, Hi = 0xeaf0f8,
                         ToggleOff = 0x2a2f3d, Frame = 0x3a4460, Frame2 = 0x2f3850, Track = 0x1e2333, ListBg = 0x05060a,

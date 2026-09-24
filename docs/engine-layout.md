@@ -548,7 +548,7 @@ over six classes for the constructor store runs.
 | `PartTriMesh` `selfIllum` | `Diverges` `0x7c` → `0x80` | `PartTriMesh::Mat` loads three floats into the emission scratch and hands them to `SetMaterialv(0, 3)` |
 | `VertexDataObject` `vao` `0xc` | `Same` | `GLRender::SetVertexDataObject`: `glGenVertexArrays` when `vdo+0xc` is zero, store back, bind |
 | `MaxFace` ×4 (`0x1a`/`0x1c`/`0x1e`, stride `0x20`) | `Same` | `MdlNodeTriMesh::BuildVertexIndices` walks `node+0xb0` in `0x20` steps, three `u16`s per face |
-| `VertexPool` `posStride` `0xc` | `Same` | the tangent-basis worker locks `node+0x280` and indexes `* 0xc` on both, and resizes to twelve bytes a vertex on each — Linux `count * 0xc`, Windows the strength-reduced `(count + count * 2) * 4` |
+| `VertexPool` `stride` `0xc` | `Same` | the tangent-basis worker locks `node+0x280` and indexes `* 0xc` on both, and resizes to twelve bytes a vertex on each — Linux `count * 0xc`, Windows the strength-reduced `(count + count * 2) * 4` |
 | `GLRender::PROG_FIXED` `programId` `0x64` | `Same` | `GLRender::SetProgram` hands `prog+0x64` to `glUseProgram` |
 
 Five findings the rest of the port inherits:
@@ -646,7 +646,8 @@ with the Linux ctor of the same signature.
 | Class | Rows | Anchor |
 |---|---|---|
 | `CRadialMenu` | `text 0xf8` (Same) | `SetEntryx`: `this + i*8 + 0xf8` on both, the `CGuiTextBubble` it `new`s (`0x118` bytes on Windows) |
-| `CRadialMenu` | `entry 0x138` (Same), `callbackStride 0x18 / 0x10` | the ctor's first loop: 8 × `CGuiCallbackl` ctor stepping `0x18` / `0x10` from `0x138`; `SetEntryx` stores `obj` at `+0x138+i*stride`, `fn` at `+0x140+i*stride` |
+| `CRadialMenu` | `entry 0x138` (Same) | the ctor's first loop: 8 × `CGuiCallbackl` ctor stepping `0x18` / `0x10` from `0x138` |
+| `CGuiCallback` | `obj 0x0` (Same), `fn 0x8` (Same), `stride 0x18 / 0x10` | `SetEntryx` stores `obj` at `+0x138+i*stride`, `fn` at `+0x140+i*stride`; Itanium's pair carries a this-adjust word after `fn`, MSVC's does not |
 | `CRadialMenu` | `param 0x1f8 / 0x1b8` | `SetEntryx` and `SetSubMenuCreatorx` both store the `long` at `i*8` from it; `CreateSubMenu` and `HandleMenuAction` pass it as the callback's argument |
 | `CRadialMenu` | `flags 0x238 / 0x1f8` | `DisableEntry` ORs 1 into `i*4` from it (with the `nMenuPosition < RM_NUM` warning at 8 on both); `HandleMenuAction` and `BuildIcon` test the same bit |
 | `CRadialMenu` | `creator 0x258 / 0x218` | the ctor's second loop (8 × `CGuiCallbackpRadialMenu_l` from `0x218`); `SetSubMenuCreatorx` stores `obj`/`fn` at `+0x218`/`+0x220`; `CreateSubMenu`'s self-pointer sentinel test |
@@ -726,3 +727,52 @@ Read from the decompiles in `docs/research/procedural-anim-locomotion.md` and `p
 
 **No probes.** An id, a signed short, a byte and two floats; the attack-data class has no field with a known
 ctor value, so its rows rest on the wire order alone.
+
+### The last private-const rows (CX-40)
+
+Three files still read engine memory through their own `private const int` / `IsWindows() ? win : linux`
+pairs: `NameplateNative`, `HotkeyConsent` and `PoseService`. All 21 are rows now. Half of them the
+`#420`/`#446` tables had already measured; each was **re-read** here, by decompiling the same function on
+both programs of `~/ghidra/nwn-linux.rep` (`tools/ghidra/DecompOne.java`), because a table entry is a prior
+measurement and not a substitute for one. Linux addresses are `nm` (Ghidra shows `nm + 0x100000`), Windows
+are RVAs off the `0x140000000` image base.
+
+Nine of the constants were already rows under another name and are simply gone: `ObjId`,
+`ObjPosition`, `CreatureAttitude` (the nameplate's "reaction"), `CreatureStats`, `ModuleCurrentArea`,
+`ModuleCamera`, `CamPos`, `CamRot` and `ExoAppInternal`. Every one agreed with the constant it replaced;
+`CamViewW` / `CamViewH` also turned out to be the third and fourth float of the viewport rect, so that rect
+needed two new rows rather than four.
+
+| Class | Rows | Anchor |
+|---|---|---|
+| `CNWCObject` | `bubble 0xb8`, `retired 0x104` (both builds) | `CNWCObject::SetPopUpBubbleText` (Linux nm `0x7e8050`, Windows rva `0x766450`): `*(int*)(this + 0x104) == 1` is the first test in each body, then `this[0x17]` is read and `new`ed into (`operator new` `0x160` Linux, `0x158` Windows) |
+| `CNWCObject` | `overrideMode 0x124`, `overrideText 0x128`, `overrideLen 0x130` (both builds) | `CNWCCreature::ShowFeedbackBubbleText` (Linux nm `0x71a800`, Windows rva `0x80b240`) reads the triple in the same order on both; `CNWCItem::ShowFeedbackBubbleText` reads the SAME triple through the base subobject (Linux nm `0x7cea90` at `item+0x16c/0x170/0x178`, Windows rva `0x83f230` at `0x124/0x128/0x130` of the subobject it is handed) |
+| `CNWCObject` | `itemPlated 0x284` / `0x264` | CNWCItem's flag, measured **from the CNWCObject base subobject** — the only item pointer CX holds, which is why the row's class is the subobject's and not the declaring `CNWCItem`. The base is `CNWCItem+0x48` on both (Linux's `lea 0x48(%rbx)` into `SetPopUpBubbleText` and the `_ZThn72_` thunk's `sub $0x48,%rdi`; Windows' `this-0x48` for `CNWCItem::GetName`), so Linux's `item+0x2cc` is `base+0x284` and MSVC's `0x264` is already base-relative. First store in each body |
+| `CNWCCreature` | `area 0x478` / `0x458` | `CNWCCreature::UpdatePopUpBubble` (Linux nm `0x72e600`, Windows rva `0x8107a0`): two reads per build, `this+area == module[currentArea][id]`. The class's usual Windows `-0x20` |
+| `CNWCArea` | `id 0x118` (both builds) | the right-hand side of that same comparison |
+| `CNWCCreatureStats` | `overrideName 0x40`, `overrideNameLen 0x48`, `damage 0x8e` (both builds) | `CNWCCreatureStats::GetFullName` (Linux nm `0x74db80`, Windows rva `0x7f3f00`) tests `+0x48` first and returns `+0x40` alone when it is non-zero — the "a disguise wins outright" rule, same shape and same order on both. The damage byte is `*(byte*)(stats + 0x8e)` in `ShowFeedbackBubbleText`, picking the injury line's `damagelevels.2da` colour |
+| `CGuiInGamePopUpBubble` | `anchorX 0x154` / `0x14c`, `anchorY 0x158` / `0x150` | `CGuiInGamePopUpBubble::Show(Vector)` (Linux nm `0x6a05a0`, Windows rva `0x6e9820`) stores x and y as one 8-byte store and z after it |
+| `CGuiInGamePopUpBubble` | `liveText 0x14c` / `0x144` | cleared through `obj->bubble` by every `ShowFeedbackBubbleText` (Linux nm `0x71a800` / `0x7cea90`, Windows rva `0x80b240` / `0x83f230`), one field below the mode `SetChatBubbleMode` writes (Linux nm `0x6a0be0` `+0x150`, Windows rva `0x6e90e0` `+0x148`) |
+| `Camera` | `viewX 0x4d4` / `0x4d8`, `viewY 0x4d8` / `0x4dc` | `Camera::SetViewPort(float,float,float,float)` (Linux nm `0x4a38a0`, Windows rva `0x5b810`, name-exported `?SetViewPort@Camera@@UEAAXMMMM@Z`): four consecutive stores `0x4d4..0x4e0` / `0x4d8..0x4e4`, each clamping w and h up to 1.0. The upper two ARE the existing `viewW`/`viewH` rows, which is the cross-check — and the `+0x4` is Camera's measured `0x4c4..0x4e4` block, not an interpolation across it |
+| `CClientExoAppInternal` | `feedbackWord 0x180` (both builds) | the `ui.mouseover-feedback` setter is one store on each build, `*(uint*)(*(g_pAppManager) + 8) + 0x180) = *arg` — Linux nm `0x8ca7f0`, Windows rva `0x6bdb20` |
+| `Gob` | `inView 0x1b` (both builds) | the whole body of `Gob::IsInViewVolume` is `return *(this + 0x1b)` (Linux nm `0x444780`, Windows rva `0x49110`, name-exported `?IsInViewVolume@Gob@@UEAA_NXZ`) |
+| `Gob` | `lookAt 0x1b0` (both builds) | `Gob::EndLookAtAnimate` (Linux nm `0x4979e0`, Windows rva `0x50eb0`, name-exported `?EndLookAtAnimate@Gob@@UEAAXXZ`) reads it and calls a virtual on it at the same offset on each |
+| `CPanelOkCancel` | **sizeof** `0x3a0` / `0x360` | the `operator new` argument of the engine's own spawn path: Linux `COptionsPanel::HandleQuitClick` nm `0x6b9800`, the Windows ExitButton twins rva `0x7103a0` and `0x84f480` (found via `Callers.java` on the exported `??0CPanelOkCancel@@QEAA@XZ`, rva `0x1ffa80`) — two independent Windows sites, both `0x360` |
+| `CGuiPanel` | `closeCallback 0x80` (both builds), an embedded `CGuiCallback` | `CGuiPanel::CGuiPanel` (Linux nm `0x586fb0`, Windows rva `0x1fbb80`) seeds `obj = this + 0x80` — the unset sentinel `CGuiCallback.IsSet` tests — and `fn = CGuiCallbackv1<void,int>::HandleUninitializedCallback`, same offsets on both |
+
+**The `+0x90` "pad" was the Itanium this-adjust, and that is why it is not a row.** `HotkeyConsent` used to
+zero `panel+0x90` on Linux only, with no Windows value and no explanation. `CGuiPanel::Deactivate(int)`
+(Linux nm `0x587cd0`, Windows rva `0x1fc470`) names it: Linux invokes
+`fn(*(this+0x90) + *(this+0x80), result)` after testing `fn & 1` for a vtable offset, Windows invokes
+`fn(*(this+0x80), result)` flat. So `+0x80` is a `CGuiCallbackv1<void,int>` whose Itanium form carries the
+adjust word and whose MSVC form does not — the `CallbackStride` `0x18` / `0x10` difference `#689` already
+measured, and exactly what `CGuiCallback.Adj` encodes (a write is dropped on Windows rather than landing on
+the next member, which the Windows constructor does use). One embedded row replaces three constants and the
+OS branch. It also explains `CGuiPanel.state`'s own `0xb8` / `0xb0`: everything declared after the callback
+shifts by that same pointer.
+
+**No probes.** Pointers, ids, floats, a size and a callback record; `Expect.Byte01` fits none of them.
+`CNWCObject.retired` is the near miss — both builds compare it against 1 — but its semantics beyond its
+writer set are unknown (`docs/re/nameplate.md` §8.3b), so 0/1 is not something these rows may assert.
+`Gob.inView` is a *byte*: the dword a `Byte01` reads there spans `propagateHilite` at `+0x1c`, so the
+predicate would be judging two fields.

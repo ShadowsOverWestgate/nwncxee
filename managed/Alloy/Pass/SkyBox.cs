@@ -4,7 +4,6 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -40,15 +39,12 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class SkyBox
 {
-    /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1), stride 0x58, top at
-    /// +0x18. <c>RenderSkyBoxes</c> replaces the PROJECTION (push/identity/SetPerspectiveTransform @0x466aa2)
+    /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1).
+    /// <c>RenderSkyBoxes</c> replaces the PROJECTION (push/identity/SetPerspectiveTransform @0x466aa2)
     /// and leaves the model stack alone, so this top is the base every composed sky matrix sits on -- and it
     /// is the same value at the Alloy slot, because every engine walk brackets its own model writes with
     /// Push/PopCurrentMatrix.</summary>
     private const int ModeModel = 2;
-    /// <summary>A STRIDE, not a field: the byte distance between one <c>m_aurMtxStack</c> entry and the
-    /// next, which is what picks the model stack out of the global array.</summary>
-    private static readonly int StackStride = EngineLayout.MtxStackStride;
     /// <summary>A skybox model is a handful of parts and there are at most three gobs in play -- 11 was the
     /// most ever logged. Sized as a ceiling anyway (one Part struct is small), because a sky handed back for
     /// want of a slot is a whole-screen artifact.</summary>
@@ -150,7 +146,7 @@ internal static unsafe class SkyBox
         _count = 0;
         if (_off || Disabled || scene == IntPtr.Zero) { Scene = IntPtr.Zero; return; }
         Scene = scene;
-        _base = new aurMatrixStack((IntPtr)(_stacks + ModeModel * StackStride)).Top;
+        _base = new aurMatrixStack((IntPtr)_stacks)[ModeModel].Top;
         Vector3 cam = new CX.Engine.Scene(scene).SkyPos;
         Span<Role> roles = stackalloc Role[3];
         int n = Roles(scene, roles);
@@ -250,7 +246,7 @@ internal static unsafe class SkyBox
     /// <para>Reads the gob only to compare a byte; the pointer is the one <see cref="Roles"/> just took off
     /// the Scene, so it is live for the length of the staging walk.</para></summary>
     internal static bool FogTinted(IntPtr gob)
-        => gob != IntPtr.Zero && *(byte*)(gob + GobSceneTint) != 0;
+        => gob != IntPtr.Zero && new Gob(gob).SceneTint != 0;
 
     internal static int Roles(IntPtr scene, Span<Role> into)
     {

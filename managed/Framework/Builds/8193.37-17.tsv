@@ -183,6 +183,7 @@ offset	CNWCModule	cutsceneRate	0x298	0x298	# ModuleCutsceneRate
 offset	CClientExoAppInternal	clientOptions	0x0	0x0	# InternalClientOptions
 offset	CClientOptions	cameraMode	0x1d	0x1d	# OptionsCameraMode
 offset	CExoBase	config	0x0	0x0	# ExoBaseConfig
+offset	CExoBase	userDir	0x38	0x38	# ExoBaseUserDir
 offset	CExoConfig	initializing	0x0	0x0	# ExoConfigInitializing
 offset	CExoConfig	workingTable	0x28	0x28	# ExoConfigWorkingTable
 offset	CClientExoApp	internal	0x8	0x8	# ExoAppInternal
@@ -263,7 +264,8 @@ offset	MaxFace	stride	0x20	0x20	# FaceStride
 offset	MaxFace	vertA	0x1a	0x1a	# FaceVertA
 offset	MaxFace	vertB	0x1c	0x1c	# FaceVertB
 offset	MaxFace	vertC	0x1e	0x1e	# FaceVertC
-offset	VertexPool	posStride	0xc	0xc	# PoolPosStride
+offset	VertexPool	stride	0xc	0xc	# PoolPosStride
+offset	VertexPool	pos	0x0	0x0	# PoolPos
 offset	Scene	skyGobs	0x18	0x18	# SceneSkyGobs
 offset	Scene	skyFadeGob	0x38	0x38	# SceneSkyFadeGob
 offset	Scene	skyT	0x40	0x40	# SceneSkyT
@@ -361,15 +363,17 @@ offset	Gob	propagateHilite	0x1c	0x1c	# GobPropagateHilite
 offset	CNWCAnimBase	hiliteActive	0x9c	0x9c	# AnimHiliteActive
 offset	CNWCAnimBase	hiliteGlow	0xb0	0xb0	# AnimHiliteGlow
 offset	CNWCAnimBase	gob	0xc8	0xc8	# AnimGob
-offset	GLRender	poolStride	0x20	0x20	# PoolStride
-offset	GLRender	poolSize	0x8	0x8	# PoolSize
-offset	GLRender	poolName	0xc	0xc	# PoolName
-offset	GLRender	poolTarget	0x10	0x10	# PoolTarget
-offset	GLRender	poolLockFlags	0x11	0x11	# PoolLockFlags
-offset	GLRender	poolUsage	0x14	0x14	# PoolUsage
-offset	GLRender	poolUploaded	0x18	0x18	# PoolUploaded
-offset	GLRender	poolNamed	0x19	0x19	# PoolNamed
-offset	GLRender	poolTableCount	0x8	0x8	# PoolTableCount
+offset	GlPool	stride	0x20	0x20	# PoolStride
+offset	GlPool	host	0x0	0x0	# PoolHost
+offset	GlPool	size	0x8	0x8	# PoolSize
+offset	GlPool	name	0xc	0xc	# PoolName
+offset	GlPool	target	0x10	0x10	# PoolTarget
+offset	GlPool	lockFlags	0x11	0x11	# PoolLockFlags
+offset	GlPool	usage	0x14	0x14	# PoolUsage
+offset	GlPool	uploaded	0x18	0x18	# PoolUploaded
+offset	GlPool	named	0x19	0x19	# PoolNamed
+offset	GlPoolTable	base	0x0	0x0	# PoolTableBase
+offset	GlPoolTable	count	0x8	0x8	# PoolTableCount
 offset	GLRender	poolTableAnchorOffset	0x236c	0x0	# PoolTableAnchorOffset
 offset	ShaderExposedRuntimeData	moduleHour	0x0	0x0	# RtModuleHour
 offset	ShaderExposedRuntimeData	moduleDay	0x4	0x4	# RtModuleDay
@@ -472,7 +476,9 @@ offset	CHitInfo	point	0x28	0x28	# HitInfoPoint
 offset	CHitInfo	gob	0x48	0x48	# HitInfoGob
 offset	CRadialMenu	text	0xf8	0xf8	# RadialText
 offset	CRadialMenu	entry	0x138	0x138	# RadialEntry
-offset	CRadialMenu	callbackStride	0x18	0x10	# RadialCallbackStride
+offset	CGuiCallback	obj	0x0	0x0	# CallbackObj
+offset	CGuiCallback	fn	0x8	0x8	# CallbackFn
+offset	CGuiCallback	stride	0x18	0x10	# CallbackStride
 offset	CRadialMenu	param	0x1f8	0x1b8	# RadialParam
 offset	CRadialMenu	flags	0x238	0x1f8	# RadialFlags
 offset	CRadialMenu	creator	0x258	0x218	# RadialCreator
@@ -502,6 +508,27 @@ offset	CArmorIcon	layerSchemes	0xc0	0xc0	# ArmorIconLayerSchemes
 offset	CNWCItem	guiIcon	0x258	0x238	# ItemGuiIcon
 offset	CGameObject	type	0xc	0xc	# GameObjType
 offset	CGameObject	vtbl.AsNWCItem	0x70	0x68	# GameObjAsNWCItemSlot
+offset	CNWCObject	bubble	0xb8	0xb8	# ObjBubble
+offset	CNWCObject	retired	0x104	0x104	# ObjRetired
+offset	CNWCObject	overrideMode	0x124	0x124	# ObjOverrideMode
+offset	CNWCObject	overrideText	0x128	0x128	# ObjOverrideText
+offset	CNWCObject	overrideLen	0x130	0x130	# ObjOverrideLen
+offset	CNWCObject	itemPlated	0x284	0x264	# ObjItemPlated
+offset	CNWCCreature	area	0x478	0x458	# CreatureArea
+offset	CNWCArea	id	0x118	0x118	# AreaId
+offset	CNWCCreatureStats	overrideName	0x40	0x40	# StatsOverrideName
+offset	CNWCCreatureStats	overrideNameLen	0x48	0x48	# StatsOverrideNameLen
+offset	CNWCCreatureStats	damage	0x8e	0x8e	# StatsDamage
+offset	CGuiInGamePopUpBubble	anchorX	0x154	0x14c	# BubbleAnchorX
+offset	CGuiInGamePopUpBubble	anchorY	0x158	0x150	# BubbleAnchorY
+offset	CGuiInGamePopUpBubble	liveText	0x14c	0x144	# BubbleLiveText
+offset	Camera	viewX	0x4d4	0x4d8	# CamViewX
+offset	Camera	viewY	0x4d8	0x4dc	# CamViewY
+offset	CClientExoAppInternal	feedbackWord	0x180	0x180	# InternalFeedbackWord
+offset	Gob	inView	0x1b	0x1b	# GobInView
+offset	Gob	lookAt	0x1b0	0x1b0	# GobLookAt
+offset	CPanelOkCancel	sizeof	0x3a0	0x360	# OkCancelSize
+offset	CGuiPanel	closeCallback	0x80	0x80	# GuiPanelCloseCallback
 
 # rva	linux symbol	windows rva	# SymbolMap constant
 rva	_ZN11CNWCMessage27HandleServerToPlayerMessageEPhj	0x7a41a0	# HandleServerToPlayerMessage

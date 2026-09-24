@@ -2,7 +2,6 @@ using System;
 using System.Numerics;
 using CX.Engine;
 using CX.Framework;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -95,7 +94,7 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly bool[] _fadeKnown = new bool[MaxOwned];
     /// <summary>Bytes of the TileData stub the self-check hands the fade walk: enough to hold
     /// <see cref="EngineLayout.TilePendingFade"/>.</summary>
-    private static readonly int TileStubBytes = TilePendingFade + sizeof(float);
+    private static readonly int TileStubBytes = EngineLayout.TilePendingFade + sizeof(float);   // a SIZE, not a field read
     /// <summary>The first pending tile's live and pending factors this sample, for the period line -- a tile
     /// that pends forever is the one number that explains a fade cache that never serves.</summary>
     private static float _movLive, _movPending;
@@ -158,12 +157,10 @@ public sealed unsafe partial class AlloyRenderer
         IntPtr cam = PartTable.KeyholeArmed ? PartTable.CurrentCamera : IntPtr.Zero;
         _khCam = cam != IntPtr.Zero;
         if (!_khCam) return;
-        // Raw, and it stays raw: the keyhole state is a BLOCK, not a field -- an enable byte, three bytes of
-        // padding, the four plane floats and the height cut, all read off the one row that anchors it
-        // (EngineLayout.CamKeyholeState). No typed field names the interior of a block.
-        _khOn = new Camera(cam).KeyholeState;
-        for (int k = 0; k < 4; k++) _khPlane[k] = *(float*)(cam + EngineLayout.CamKeyholeState + 4 + k * 4);
-        _khCut = *(float*)(cam + EngineLayout.CamKeyholeState + 20);
+        var c = new Camera(cam);
+        _khOn = c.KeyholeState;
+        c.KeyholePlane.CopyTo(_khPlane);
+        _khCut = c.KeyholeCut;
     }
 
     /// <summary>#336 step 4: the VISIBLE SET -- per class, in enrollment order, the slots the route walk
@@ -645,11 +642,13 @@ public sealed unsafe partial class AlloyRenderer
         check.Expect(MarkPendingTiles(bucket), "...but an EMPTY one (null items, count 0) marks nothing and stays bounded");
 
         // #546: the fog-of-war ramp rides the served factor, live, and 0 is a skip even from a warm cache
-        byte* fogTile = stackalloc byte[TileGeomFade + sizeof(float)];
-        new Span<byte>(fogTile, TileGeomFade + sizeof(float)).Clear();
-        byte* fogTri = stackalloc byte[PartTile + sizeof(IntPtr)];
-        new Span<byte>(fogTri, PartTile + sizeof(IntPtr)).Clear();
-        *(IntPtr*)(fogTri + PartTile) = (IntPtr)fogTile;
+        int fogTileBytes = EngineLayout.TileGeomFade + sizeof(float);       // SIZES, not field reads
+        int fogTriBytes = EngineLayout.PartTile + sizeof(IntPtr);
+        byte* fogTile = stackalloc byte[fogTileBytes];
+        new Span<byte>(fogTile, fogTileBytes).Clear();
+        byte* fogTri = stackalloc byte[fogTriBytes];
+        new Span<byte>(fogTri, fogTriBytes).Clear();
+        new PartTriMesh((IntPtr)fogTri).Tile = new TileData((IntPtr)fogTile);
         int slot = MaxOwned - 1; IntPtr wasTile = _oTile[slot]; bool wasKnown = _fadeKnown[slot]; float wasF = _oFadeF[slot];
         _oTile[slot] = (IntPtr)fogTile; _fadeKnown[slot] = false; _fadeAll = false;
         var fogV = new TileData((IntPtr)fogTile);

@@ -146,14 +146,10 @@ public static unsafe class Native
     private static readonly IntPtr _exoBaseSym = Sym(SymbolMap.ExoBase);
     private static string? _userDir;
 
-    /// <summary>Offset of the user-directory CExoString within CExoBase. Verified identical on the Linux
-    /// and Windows builds (CExoBase::CExoBase stores the ctor arg via InitFromCharArray at this+0x38).</summary>
-    private const int ExoBaseUserDirOffset = 0x38;
-
     /// <summary>
     /// The client's own resolved user directory (e.g. <c>~/.local/share/Neverwinter Nights</c>) --
     /// whatever <c>SetUpUserDirectory</c> produced, so it honours <c>-userdirectory</c>, per-OS rules and
-    /// the <c>.N</c> instance suffix for free. Read live from <c>g_pExoBase -> CExoString@0x38</c>; null
+    /// the <c>.N</c> instance suffix for free. Read live from <c>g_pExoBase -> CExoString (<see cref="EngineLayout.ExoBaseUserDir"/>)</c>; null
     /// before the engine sets that up (our loader runs pre-main) or headless (run-demo has no g_pExoBase).
     /// Cached on first success; the engine char* is copied out immediately, never held (cf. #33).
     /// </summary>
@@ -162,8 +158,8 @@ public static unsafe class Native
         if (_userDir != null) return _userDir;
         if (_exoBaseSym == IntPtr.Zero) return null;
         IntPtr exoBase = *(IntPtr*)_exoBaseSym;             // g_pExoBase's value: the CExoBase*
-        if (exoBase == IntPtr.Zero) return null;            // not constructed yet (pre-main)
-        byte* p = *(byte**)(exoBase + ExoBaseUserDirOffset);
+        if (exoBase == IntPtr.Zero || !EngineLayout.KeyOk) return null;   // pre-main, or an unknown build's rows are 0
+        byte* p = (byte*)new CExoBase(exoBase).UserDir;
         string s = p == null ? "" : Marshal.PtrToStringUTF8((IntPtr)p) ?? "";
         if (s.Length == 0) return null;
         _userDir = s;

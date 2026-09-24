@@ -1,10 +1,10 @@
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -460,7 +460,7 @@ public sealed unsafe partial class AlloyRenderer
         // walk has not -- every other reader of _oGob only COMPARES it (or derefs it behind the LodRoot
         // guard), so a per-frame deref would be a new way to touch a freed gob. A gob does not become a
         // tile or stop being one.
-        _oTileGob[i] = c.Gob != IntPtr.Zero && *(IntPtr*)(c.Gob + GobTileData) != IntPtr.Zero;
+        _oTileGob[i] = c.Gob != IntPtr.Zero && !new Gob(c.Gob).TileData.IsNull;
         // #144 retry: gob parts only (heads, bodies, placeables -- the low-poly flat-normal content);
         // tiles carry deliberate creases by the tens of thousands of verts and stay as authored.
         if (!kept && lit && c.Gob != IntPtr.Zero && !_oTileGob[i]) WeldNormals(c.Vdo, c.Item, v);
@@ -474,21 +474,23 @@ public sealed unsafe partial class AlloyRenderer
         if ((!kept || retargeted) && StaticAtEnroll(c.Cls, c.Gob, _oTileGob[i], c.Mx, _vSkin[v], PartTable.IsDangly(c.Tri), c.Feat) == 0
             && !OfferChart(c.Vdo, c.Item, c.Prim, v))
             OfferLod(c.Vdo, c.Item, c.Prim, v);
-        for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = *(float*)(c.Tri + PartBboxMin + b * 4);   // #336: +0x64..+0x78
+        var tri = new PartRef(c.Tri);
+        // #336: the local box as six floats -- bboxMax follows bboxMin, the span PartTriMesh::WithinRange reads
+        float* box = tri.BboxMin;
+        for (int b = 0; b < 6; b++) _oBox[i * 6 + b] = box[b];
         // Kept tenants keep their sticky bone slot too (#308 follow-up); a fresh tenant starts unposed
         // and PoseSkinned's orphan sweep reclaims whatever the previous tenant held.
         if (!kept) { _oBone[i] = -1; _oDpAt[i] = -1; }   // CX-26: nor the last tenant's dangly snapshot
         _oDangly[i] = PartTable.IsDangly(c.Tri);   // #302: a permanent shadow mover
         if (c.Gob != IntPtr.Zero) Counters._gobOwned++;
         // #126: the local bbox centre, for the blended pass's back-to-front key.
-        var tri = new PartRef(c.Tri);
         float* lo = tri.BboxMin, hi = tri.BboxMax;
         _oCx[i] = (lo[0] + hi[0]) * 0.5f; _oCy[i] = (lo[1] + hi[1]) * 0.5f; _oCz[i] = (lo[2] + hi[2]) * 0.5f;
         float ex = hi[0] - lo[0], ey = hi[1] - lo[1], ez = hi[2] - lo[2];
         _oR[i] = 0.5f * MathF.Sqrt(ex * ex + ey * ey + ez * ez);
         if (!(_oR[i] > 0f) && c.Gob != IntPtr.Zero) _oR[i] = MeshRadius(c.Tri, c.Vdo, c.Item, v);
         // #330: spawn-time fields the chase keys on without touching the part again.
-        _oTile[i] = tri.Tile != IntPtr.Zero ? tri.Tile : _oTileGob[i] ? *(IntPtr*)(c.Gob + GobTileData) : IntPtr.Zero;
+        _oTile[i] = tri.Tile != IntPtr.Zero ? tri.Tile : _oTileGob[i] ? new Gob(c.Gob).TileData.Ptr : IntPtr.Zero;
         _oBsp[i] = PartTable._pBsp[e];
         // #308 follow-up: a kept slot's record survives the scan, but the .mtr CONTENT under a stable
         // Material* can still move (the engine exports runtime SetMaterialParam mutators). ReadMaterial
@@ -854,17 +856,21 @@ public sealed unsafe partial class AlloyRenderer
     {
         if (list == IntPtr.Zero || count <= 0 || count > MaxParams) return;
         int feat = (int)_oFeat[f];
+        var first = new MaterialParameter(list);
         for (int k = 0; k < count; k++)
         {
-            byte* rec = (byte*)list + (long)k * ParamStride;
-            float* p = (float*)(rec + ParamValue);
-            int comps = *(ushort*)(rec + ParamComps);
+            MaterialParameter mp = first[k];
+            byte* rec = (byte*)mp.Ptr;
+            // The value is a UNION its own discriminator decides the type of, and a declaration may state
+            // several components, so it is reached as a pointer rather than as the one float it is typed as.
+            float* p = (float*)Unsafe.AsPointer(ref mp.Value);
+            int comps = mp.Comps;
             // #123: iRoofInterior is the one int-valued parameter any of this reads, and the roof shaders
             // compare it to 1. Taken before the float-only gate below, where it would be skipped. The value
             // sits at the SAME +0x44 the floats do -- BindShaderParameters @0x4c5480 sends the type-1 branch
             // to SetCustomParameterValuei(prog, loc, *(int*)(rec + 0x44)), the type-0 branch to
             // SetCustomParameterValuef with the same address as a float*. Only the read type differs.
-            if (*(int*)(rec + ParamType) != 0)
+            if (mp.Type != 0)
             {
                 if (feat == (int)ShaderFeature.RoofKn || feat == (int)ShaderFeature.RoofKnM)
                     if (NameIs(rec, "iRoofInterior") && comps >= 1) _oFeat[f + 3] = *(int*)p;
@@ -949,13 +955,14 @@ public sealed unsafe partial class AlloyRenderer
     {
         var check = new Checker(log, "AlloyRenderer.MaterialExtSelfCheck");
         const int n = 6;
-        byte* list = stackalloc byte[n * ParamStride];
-        new Span<byte>(list, n * ParamStride).Clear();
+        byte* list = stackalloc byte[n * EngineLayout.ParamStride];   // a record SIZE: the forged list is n records long
+        new Span<byte>(list, n * EngineLayout.ParamStride).Clear();
         PutParam(list, 0, "CxMetallic", 0, 1, 0f);
         PutParam(list, 1, "cxclearcoat", 0, 1, 2f);
         PutParam(list, 2, "CxSheenColor", 0, 3, 0.2f, 0.3f, 0.4f);
         PutParam(list, 3, "CxOrm", 1, 1, 0f);
-        *(int*)(list + 3 * ParamStride + ParamValue) = 1;
+        MaterialParameter orm = new MaterialParameter((IntPtr)list)[3];
+        *(int*)Unsafe.AsPointer(ref orm.Value) = 1;      // type 1 reads the value union as an int
         PutParam(list, 4, "Specularity", 0, 1, 0.5f);
         PutParam(list, 5, "CxEmissiveStrengthX", 0, 1, 7f);
         int o = 0, x = ParamExt;
@@ -977,12 +984,13 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>One forged float/int record for <see cref="MaterialExtSelfCheck"/>.</summary>
     private static void PutParam(byte* list, int k, string name, int type, int comps, float a, float b = 0f, float c = 0f)
     {
-        byte* rec = list + k * ParamStride;
+        MaterialParameter mp = new MaterialParameter((IntPtr)list)[k];
+        byte* rec = (byte*)mp.Ptr;
         for (int i = 0; i < name.Length; i++) rec[i] = (byte)name[i];
-        float* v = (float*)(rec + ParamValue);
+        float* v = (float*)Unsafe.AsPointer(ref mp.Value);
         v[0] = a; v[1] = b; v[2] = c;
-        *(int*)(rec + ParamType) = type;
-        *(ushort*)(rec + ParamComps) = (ushort)comps;
+        mp.Type = type;
+        mp.Comps = (ushort)comps;
     }
 
     /// <summary>The ceiling on <c>CxEmissiveStrength</c>: well into bloom territory, short of the RGBA16F

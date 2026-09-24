@@ -36,10 +36,10 @@ public sealed unsafe class FreeCameraService : IExtenderService
     private static ExtenderLog? _log;
     private static WinMessageHandlerFn* _next;
 
-    private const uint SdlWindowEvent = 0x200, SdlKeyDown = 0x300, SdlKeyUp = 0x301, SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402, SdlMouseWheel = 0x403;
+    private const uint SdlWindowEvent = 0x200, SdlKeyDown = 0x300, SdlKeyUp = 0x301, SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402, SdlMouseWheel = 0x403;  // not-an-offset: SDL key/event code
     /// <summary>SDL_KeyboardEvent: repeat byte at +0xd, keysym.scancode at +0x10; button/motion rows as MouseLook's; wheel y at +0x14.</summary>
-    private const int EvWindowKindOff = 0xc, EvRepeatOff = 0xd, EvScancodeOff = 0x10, EvButtonOff = 0x10, EvXOff = 0x14, EvYOff = 0x18, EvXRelOff = 0x1c, EvYRelOff = 0x20, EvWheelYOff = 0x14;
-    private const byte SdlWindowFocusLost = 0xd, SdlButtonLeft = 1, SdlButtonMiddle = 2, SdlButtonRight = 3;
+    private const int EvWindowKindOff = 0xc, EvRepeatOff = 0xd, EvScancodeOff = 0x10, EvButtonOff = 0x10, EvXOff = 0x14, EvYOff = 0x18, EvXRelOff = 0x1c, EvYRelOff = 0x20, EvWheelYOff = 0x14;  // not-an-offset: SDL_Event ABI, not an engine class
+    private const byte SdlWindowFocusLost = 0xd, SdlButtonLeft = 1, SdlButtonMiddle = 2, SdlButtonRight = 3;  // not-an-offset: SDL key/event code
     /// <summary>SDL scancodes (layout-independent): Escape, Space, C, Z, X, left/right Shift.</summary>
     private const int ScEscape = 41, ScSpace = 44, ScC = 6, ScZ = 29, ScX = 27, ScLShift = 225, ScRShift = 229;
     private const int Fwd = 0, Back = 1, TurnL = 2, TurnR = 3, StrafeL = 4, StrafeR = 5;

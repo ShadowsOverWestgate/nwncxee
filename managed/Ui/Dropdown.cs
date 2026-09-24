@@ -17,7 +17,7 @@ public sealed class Dropdown
 {
     /// <summary>Rows the open list shows at most before it scrolls.</summary>
     public const int MaxVisible = 8;
-    private const uint FrameRgb = 0x8C8C8C;
+    private const uint FrameRgb = 0x8C8C8C;  // not-an-offset: a colour
     private const float FrameA = 1f;
 
     public bool Open { get; private set; }

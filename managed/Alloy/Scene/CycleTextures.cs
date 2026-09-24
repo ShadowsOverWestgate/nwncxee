@@ -2,7 +2,6 @@ using System;
 using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -50,9 +49,7 @@ internal static unsafe class CycleTextures
         // CX-25: no death notice, no table -- a ref kept without one is the crash this hook exists for.
         _origDtor = hooks.InstallAurTextureDtor(&OnTextureDtor);
         _getController = EngineFn.AurTextureGetController;
-        IntPtr v = Native.Sym(SymbolMap.CycleTidControllerVtbl);
-        // Itanium ABI: an object's first word is the vtable symbol + 0x10. An (abi) row, not a class field.
-        _vtbl = v == IntPtr.Zero ? IntPtr.Zero : v + EngineLayout.VtblSymbolHeader;
+        _vtbl = EngineAbi.Vtbl(Native.Sym(SymbolMap.CycleTidControllerVtbl));
         _enabled = (int*)Native.Sym(SymbolMap.EnableTextureControllers);
         if (!Ready) log.Info("CycleTextures: AurTextureGetController, the CycleTID vtable or ~CAurTexture unresolved -- cycle textures stay frozen on Alloy parts");
     }

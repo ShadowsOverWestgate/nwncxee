@@ -14,9 +14,6 @@ internal static unsafe class ShaderResource
 {
     /// <summary>Resource type of a .shd, read off the client's own <c>CResHelper&lt;CResSHD, 2069&gt;</c>.</summary>
     private const ushort ResTypeShd = 2069;
-    /// <summary>sizeof(CRes): what <c>CExoResMan::Get</c> passes to operator new before <c>CRes::CRes</c>.
-    /// A SIZE, so it stays a bare number -- there is no object to view yet when it is read.</summary>
-    private static readonly int SizeOfCRes = EngineLayout.SizeOfCRes;
     /// <summary>A CResRef is 16 bytes of null-padded ASCII; longer names cannot address a resource.</summary>
     internal const int ResRefBytes = 16;
 
@@ -93,8 +90,9 @@ internal static unsafe class ShaderResource
         IntPtr res = EngineFn.ResManGetResObject(resMan, rr, ResTypeShd);
         if (res == IntPtr.Zero)
         {
-            // First ask for this resource: no CRes exists yet, so make one exactly as CResHelper does.
-            res = EngineFn.OperatorNew((nuint)SizeOfCRes);
+            // First ask for this resource: no CRes exists yet, so make one exactly as CResHelper does --
+            // sizeof(CRes) is a SIZE, and there is no object to view until operator new has returned one.
+            res = EngineFn.OperatorNew((nuint)EngineLayout.SizeOfCRes);
             if (res == IntPtr.Zero) return null;
             EngineFn.CResCtor(res);
             EngineFn.ResManSetResObject(resMan, rr, ResTypeShd, res);   // seeds the refcount at 1, like GetResObject's bump

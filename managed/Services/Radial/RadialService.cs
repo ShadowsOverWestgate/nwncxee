@@ -148,7 +148,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         SelfCheck(log);
 
         if (!SymbolMap.Require(log, "RadialService", RequiredSymbols)) return;
-        if (!EngineLayout.Require(log, "RadialService", "CRadialMenu", "CClientSpellMenu", "CGuiCreatureMenu", "CGuiIcon", "CGuiTextBubble", "StringGob", "CGuiMan")) return;
+        if (!EngineLayout.Require(log, "RadialService", "CRadialMenu", "CGuiCallback", "CClientSpellMenu", "CGuiCreatureMenu", "CGuiIcon", "CGuiTextBubble", "StringGob", "CGuiMan")) return;
         if (!RadialTree.Init(log)) { log.Always("RadialService: standing down -- RadialTree.Init could not resolve its unit"); return; }
         if (!SelfActions.Init(log)) log.Info("RadialService: self pins unavailable (SelfActions unit unresolved); rows grey, Show everywhere not offered");
         _guiMan = Native.Sym(SymbolMap.GuiMan);
@@ -864,9 +864,9 @@ public sealed unsafe partial class RadialService : IExtenderService
     }
 
     /// <summary>SDL keycodes: SDLK_RETURN, SDLK_KP_ENTER (scancode 0x58 | SDLK_SCANCODE_MASK), SDLK_ESCAPE, SDLK_BACKSPACE.</summary>
-    private const uint KeyReturn = 0x0D, KeyKpEnter = 0x40000058, KeyEscape = 0x1B, KeyBackspace = 0x08;
+    private const uint KeyReturn = 0x0D, KeyKpEnter = 0x40000058, KeyEscape = 0x1B, KeyBackspace = 0x08;  // not-an-offset: SDL key/event code
     /// <summary>SDL modifier bits: KMOD_SHIFT (left | right), KMOD_CAPS.</summary>
-    private const int ModShift = 0x0003, ModCaps = 0x2000;
+    private const int ModShift = 0x0003, ModCaps = 0x2000;  // not-an-offset: SDL key/event code
 
     /// <summary>A key while naming: printable ASCII appends (Shift/Caps upper-case a letter), Backspace deletes,
     /// Enter commits a non-empty trimmed name, Esc cancels. Anything else is swallowed.</summary>

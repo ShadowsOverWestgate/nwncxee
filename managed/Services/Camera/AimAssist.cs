@@ -42,7 +42,7 @@ internal static unsafe class AimAssist
 
     /// <summary>Object type bytes worth aiming at. The walk's fourth type, item (6, the loose-loot class the
     /// pickup cursor is for), has no constant on purpose: loot is picked by pointing, not by aiming.</summary>
-    private const byte TypeCreature = 5, TypePlaceable = 9, TypeDoor = 0xa;
+    private const byte TypeCreature = 5, TypePlaceable = 9, TypeDoor = 0xa;  // not-an-offset: an object type enum
     /// <summary>The synthetic allowed-target type meaning "a point on the ground" (AoE placement).</summary>
     private const int GroundTargetType = 2;
     /// <summary>Metres added to the object's ground position for the aim point -- there is no cheap height

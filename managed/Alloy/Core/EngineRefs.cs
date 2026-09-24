@@ -97,16 +97,16 @@ internal readonly unsafe ref struct MaterialRef
     internal TextureRef Texture(int slot)
     {
         if (_p == IntPtr.Zero) return new(IntPtr.Zero);
-        IntPtr shared = View.Shared.Ptr;
-        if (shared != IntPtr.Zero)
+        SharedMaterial shared = View.Shared;
+        if (!shared.IsNull)
         {
-            IntPtr over = *(IntPtr*)(shared + SharedSlot0 + slot * MatSlotStride);
+            IntPtr over = shared.Slot(slot).Ptr;
             if (over != IntPtr.Zero) return new(over);
         }
         // the engine's fallback is unbounded: past the Material's own slots it hands back whatever field
         // sits at mat+slot*0x10 (crashes 1789305736, 1789311470 dereferenced it as a texture)
         if (slot >= OwnSlots) return new(IntPtr.Zero);
-        return new(*(IntPtr*)(_p + slot * MatSlotStride));
+        return new(View.Slot(slot).Ptr);
     }
     /// <summary>Slots a plain <c>Material</c> owns itself (<c>BindAllStandardTextures</c> @0x4c6e30 stops at
     /// i &lt; 3); anything higher is real only in a SharedMaterial's table.</summary>
@@ -118,9 +118,6 @@ internal readonly unsafe ref struct MaterialRef
     /// <summary>#275: a <c>.mtr</c> slot by its index, engine (<c>texture0..10</c>) or extender-owned (11+).</summary>
     internal TextureRef TextureAt(int n)
         => n >= MaterialExtraSlots.First ? MaterialExtraSlots.Texture(Shared.Ptr, n) : Texture(n);
-    /// <summary>A slot TABLE's geometry, not a field: the stride between two slots and where the shared
-    /// table starts. No view shape describes an index into an inline array of pointers.</summary>
-    private static readonly int MatSlotStride = EngineLayout.MatSlotStride, SharedSlot0 = EngineLayout.SharedSlot0;
 }
 
 internal readonly unsafe ref struct SharedRef

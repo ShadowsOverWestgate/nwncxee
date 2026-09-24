@@ -7,18 +7,17 @@ namespace CX.Services.Nameplate;
 
 /// <summary>
 /// Every native read the overhead plate/bubble needs, in one place. No UI types, no GL: a service
-/// or table calls in here and gets managed values back. Offsets are the ones verified in
-/// <c>docs/re/nameplate.md</c> and re-confirmed by disassembly where the contract was thin.
+/// or table calls in here and gets managed values back. Every engine field is read through its typed view;
+/// the offsets are <see cref="EngineLayout"/> rows, provenance <c>docs/re/nameplate.md</c> and
+/// <c>docs/engine-layout.md</c>.
 /// <para>The standing rule from #33/#138/#145 applies to every pointer below: a <c>CNWCObject*</c> is
 /// BORROWED. Nothing here stores one; callers hold object <b>ids</b> and re-resolve through
 /// <see cref="GameObject"/> every frame, treating null as the despawn signal.</para>
 /// </summary>
 public static unsafe class NameplateNative
 {
-    // ---- object layout (CNWCObject, the base subobject -- what SetPopUpBubbleText's `this` is) ----
-    // Offsets that differ on Windows are `IsWindows() ? win : linux` (#420, decomp-diffed against the same
-    // build); a plain const is identical on both.
-    private static readonly bool Win = OperatingSystem.IsWindows();
+    // Every engine offset this file reads is an EngineLayout row (CX-40): the pointer it is handed is always
+    // the CNWCObject base subobject, which is what `ObjItemPlated` is measured from.
 
     /// <summary>Set once by the service so the one-shot layout probe has somewhere to complain.</summary>
     private static ExtenderLog? _log;
@@ -31,80 +30,7 @@ public static unsafe class NameplateNative
 
     /// <summary>Hand this file the log. From <c>NameplateService.Initialize</c>, before any hook fires.</summary>
     public static void UseLog(ExtenderLog log) => _log = log;
-    /// <summary>uint object id.</summary>
-    private const int ObjId = 0x08;
-    /// <summary>World position x/y/z (three floats).</summary>
-    private const int ObjPosX = 0x38;
-    /// <summary>CGuiInGamePopUpBubble* (nullable).</summary>
-    private const int ObjBubble = 0xb8;
-    /// <summary>1 => the server has retired this object: no plate and no bubble.</summary>
-    private const int ObjRetired = 0x104;
 
-    /// <summary><c>ObjectTextBubbleOverride</c> -- the module's own plate text. Mode int at <c>+0x124</c>,
-    /// then a <c>CExoString</c>: <c>char*</c> at <c>+0x128</c> and a <b>dword</b> length at <c>+0x130</c>
-    /// (<c>mov 0x130(%rbx),%edx</c>). 1 = replace, 2 = prepend, 3 = append, anything else = leave alone.
-    /// <para>CNWCObject-relative for all three plated classes: creature and placeable read them at these
-    /// offsets verbatim (disasm @0x71ab8e, @0x7ea9b8), and <c>CNWCItem</c>'s <c>+0x16c/0x170/0x178</c> is the
-    /// same triple through its base subobject at <c>+0x48</c> -- the <c>lea 0x48(%rbx)</c> that feeds
-    /// <c>SetPopUpBubbleText</c> at @0x7cebec. Every pointer this file is handed is already that base.</para></summary>
-    private const int ObjOverrideMode = 0x124, ObjOverrideText = 0x128, ObjOverrideLen = 0x130;
-
-    // ---- per-class "the feedback plate is currently shown for me" flag ----
-    /// <summary>CNWCItem is multiply inherited: the flag is at CNWCItem+0x2cc (disasm @0x7ceaa2) and the
-    /// CNWCObject base sits at CNWCItem+0x48 (the <c>lea 0x48(%rbx)</c> feeding SetPopUpBubbleText at
-    /// 0x7cebec, matching the <c>_ZThn72_</c> thunk's <c>sub $0x48,%rdi</c>). So from a CNWCObject* the
-    /// flag is 0x2cc - 0x48. MSVC hands the override the subobject pointer directly (its body does the
-    /// <c>-0x48</c>), so the Windows value is already subobject-relative.</summary>
-    private static readonly int ItemPlated = Win ? 0x264 : 0x2cc - 0x48;
-
-    // ---- creature ----
-    /// <summary>Reaction byte: 1 friend, 2 enemy, else neutral.</summary>
-    private static readonly int CreatureReaction = Win ? 0x388 : 0x3a8;
-    /// <summary>Area id; hidden when it differs from the player's area.</summary>
-    private static readonly int CreatureArea = Win ? 0x458 : 0x478;
-
-    // ---- CNWCCreatureStats ----
-    private const int StatsOverride = 0x40, StatsOverrideLen = 0x48;
-    /// <summary>Damage-level byte, 0..5 -- a server-sent enum, not a client HP division.</summary>
-    private const int StatsDamage = 0x8e;
-
-    // ---- CGuiInGamePopUpBubble ----
-    /// <summary>The projected screen anchor (x at +0x154, y at +0x158), whole-pixel snapped. Under the
-    /// mode-0 suppression the engine refreshes it every tick for every bubble-owning object.
-    /// <para>NOT the space a <c>Window</c> draws in: see <see cref="AnchorRaw"/>.</para></summary>
-    private static readonly int BubbleAnchorX = Win ? 0x14c : 0x154, BubbleAnchorY = Win ? 0x150 : 0x158;
-    /// <summary>1 while live (chat/feedback) text owns the bubble. Nothing clears it under mode 0, and
-    /// MouseOver refuses to build a plate while it is 1 -- so we clear it ourselves (hook 3).</summary>
-    private static readonly int BubbleLiveText = Win ? 0x144 : 0x14c;
-
-    // ---- module / camera ----
-    /// <summary>CNWCModule + 0xf8 = the player's current CNWCArea*.</summary>
-    private const int ModuleArea = 0xf8;
-    /// <summary>CNWCArea + 0x118 = its area id.</summary>
-    private const int AreaId = 0x118;
-    /// <summary>Camera + 0xb0 = position x/y/z. This is exactly what <c>Camera::GetPosition()</c> reads
-    /// (disasm @0x4813f1); a field read avoids its two-XMM return ABI, which a delegate* cannot express.</summary>
-    private const int CameraPos = 0xb0;
-    /// <summary>Camera + 0xbc = the orientation quaternion, stored (w, x, y, z) -- the four floats
-    /// <c>Camera::SetOrientation</c> writes (disasm @0x4a3939) and the ones <c>MapToScreen</c> conjugates at
-    /// <c>lea 0xbc(%rbx)</c> (@0x4a3ed5). Same field Alloy's <c>FrameRead</c> re-orders into Numerics.</summary>
-    private const int CameraRot = 0xbc;
-    /// <summary>Camera + 0x4d4..0x4e0 = the camera's viewport rect {x, y, w, h} as floats -- the four values
-    /// <c>Camera::SetViewPort(float,float,float,float)</c> stores (disasm @0x4a38a0, which clamps w and h up
-    /// to 1.0). <c>MapToScreen</c> loads them at its top (@0x4a3d83) and, when either extent is exactly 0,
-    /// overwrites all four from <c>RenderInterface::GetViewPort</c> instead (@0x4a3eb8).</summary>
-    private static readonly int CameraViewport = Win ? 0x4d8 : 0x4d4;
-
-    /// <summary>CClientExoApp + 8 = CClientExoAppInternal.</summary>
-    private const int AppInternal = 0x8;
-    /// <summary>CClientExoAppInternal + 0x180: bit 0 = the "show mouse-over feedback" option,
-    /// bit 1 = highlight-all (Tab) currently held. The engine tests the WHOLE word, which is why Tab
-    /// plates even with the option off.</summary>
-    private const int InternalFeedbackWord = 0x180;
-
-    /// <summary>CNWCModule + 0xe8 = the live <c>Camera*</c> -- what <c>CClientExoApp::GetModuleCamera()</c>
-    /// returns (disasm @0x63a930); read directly because MSVC inlined that accessor out of existence.</summary>
-    private const int ModuleCameraOff = 0xe8;
     /// <summary>Portrait size byte: the suffix appended to the base resref. Verified by decompiling
     /// <c>CNWPortrait::GetPortrait(unsigned char)</c> (nm <c>0x81e910</c>), whose suffix table is
     /// <c>{ "", "T", "S", "M", "L", "H" }</c> indexed by the byte -- so 1 is TINY (a 16x25 image), which is
@@ -145,16 +71,18 @@ public static unsafe class NameplateNative
         return app == IntPtr.Zero ? IntPtr.Zero : _getGameObject(app, id);
     }
 
-    public static uint IdOf(IntPtr obj) => obj == IntPtr.Zero ? 0u : *(uint*)(obj + ObjId);
+    public static uint IdOf(IntPtr obj) => obj == IntPtr.Zero ? 0u : new CNWCObject(obj).Id;
     public static byte TypeOf(IntPtr obj) => obj == IntPtr.Zero ? (byte)0 : new CNWCObject(obj).Type;
 
     /// <summary>Object type bytes we care about.</summary>
-    public const byte TypeCreature = 5, TypeItem = 6, TypePlaceable = 9, TypeDoor = 0xa;
+    public const byte TypeCreature = 5, TypeItem = 6, TypePlaceable = 9, TypeDoor = 0xa;  // not-an-offset: an object type enum
 
     /// <summary>The server has retired this object -- it gets neither element (acceptance §9).</summary>
-    public static bool Retired(IntPtr obj) => obj != IntPtr.Zero && *(int*)(obj + ObjRetired) == 1;
+    public static bool Retired(IntPtr obj) => obj != IntPtr.Zero && new CNWCObject(obj).Retired == 1;
 
-    public static IntPtr Bubble(IntPtr obj) => obj == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(obj + ObjBubble);
+    /// <summary>The object's own bubble panel, or a null view when it has none yet.</summary>
+    public static CGuiInGamePopUpBubble Bubble(IntPtr obj)
+        => obj == IntPtr.Zero ? default : new CNWCObject(obj).Bubble;
 
     /// <summary>
     /// The engine's own projected anchor for this object's bubble panel, EXACTLY as stored. False when there
@@ -176,10 +104,10 @@ public static unsafe class NameplateNative
     public static bool AnchorRaw(IntPtr obj, out float x, out float y)
     {
         x = 0f; y = 0f;
-        IntPtr b = Bubble(obj);
-        if (b == IntPtr.Zero) return false;
-        x = *(float*)(b + BubbleAnchorX);
-        y = *(float*)(b + BubbleAnchorY);
+        CGuiInGamePopUpBubble b = Bubble(obj);
+        if (b.IsNull) return false;
+        x = b.AnchorX;
+        y = b.AnchorY;
         return true;
     }
 
@@ -188,8 +116,8 @@ public static unsafe class NameplateNative
     /// this a creature's plate dies permanently the first time it speaks.</summary>
     public static void ClearLiveTextLatch(IntPtr obj)
     {
-        IntPtr b = Bubble(obj);
-        if (b != IntPtr.Zero) *(int*)(b + BubbleLiveText) = 0;
+        CGuiInGamePopUpBubble b = Bubble(obj);
+        if (!b.IsNull) b.LiveText = 0;
     }
 
     private static readonly GuiPanelUnToggleOffFn _unToggleOff = EngineFn.GuiPanelUnToggleOff;
@@ -200,8 +128,8 @@ public static unsafe class NameplateNative
     /// else. Cold: once per hover, spoken line or floaty, from the hooks.</summary>
     public static void UnfreezeAnchor(IntPtr obj)
     {
-        IntPtr b = Bubble(obj);
-        if (b != IntPtr.Zero && _unToggleOff != null) _unToggleOff(b);
+        CGuiInGamePopUpBubble b = Bubble(obj);
+        if (!b.IsNull && _unToggleOff != null) _unToggleOff(b.Ptr);
     }
 
     /// <summary>Is the engine currently showing its feedback plate for this object? The per-class flag set at
@@ -226,7 +154,7 @@ public static unsafe class NameplateNative
         {
             TypeCreature => new CNWCCreature(obj).Plated != 0,
             TypePlaceable => new CNWCPlaceable(obj).Plated != 0,
-            TypeItem => *(int*)(obj + ItemPlated) != 0,
+            TypeItem => new CNWCObject(obj).ItemPlated != 0,
             _ => false,
         };
     }
@@ -236,20 +164,21 @@ public static unsafe class NameplateNative
     public static int OverrideMode(IntPtr obj)
     {
         if (obj == IntPtr.Zero) return 0;
-        int m = *(int*)(obj + ObjOverrideMode);
+        int m = new CNWCObject(obj).OverrideMode;
         return m is 1 or 2 or 3 ? m : 0;
     }
 
     /// <summary>Does the object's override text still equal <paramref name="cached"/>? HOT: compares the
     /// engine's bytes against the cached string in place, so a steady plate allocates nothing and a server
-    /// that flips "Sneaking" on mid-hover is caught on the next frame. Latin1, matching <see cref="RawStr"/>.
+    /// that flips "Sneaking" on mid-hover is caught on the next frame. Latin1, matching <see cref="Chars"/>.
     /// <para>A length compare alone would not do: <c>CExoString</c> assignment can land a different payload of
     /// the same length in the same block, and status labels are all near-identical lengths.</para></summary>
     public static bool OverrideTextIs(IntPtr obj, string cached)
     {
         if (obj == IntPtr.Zero) return cached.Length == 0;
-        byte* p = *(byte**)(obj + ObjOverrideText);
-        int len = *(int*)(obj + ObjOverrideLen);
+        var o = new CNWCObject(obj);
+        byte* p = (byte*)o.OverrideText;
+        int len = o.OverrideLen;
         if (p == null || len <= 0 || len > MaxOverrideLen) return cached.Length == 0;
         if (cached.Length != len) return false;
         for (int i = 0; i < len; i++) if (cached[i] != (char)p[i]) return false;
@@ -261,7 +190,11 @@ public static unsafe class NameplateNative
     /// separators), so trimming it would glue "Poisoned" onto the injury line without its space and drop the
     /// break before "Sneaking". COLD -- allocates, called only on the change edge.</summary>
     public static string OverrideText(IntPtr obj)
-        => obj == IntPtr.Zero ? "" : RawStr(obj, ObjOverrideText, ObjOverrideLen, MaxOverrideLen);
+    {
+        if (obj == IntPtr.Zero) return "";
+        var o = new CNWCObject(obj);
+        return Chars((byte*)o.OverrideText, o.OverrideLen, MaxOverrideLen);
+    }
 
     /// <summary>Longest override we will copy out. Past this the pointer is not what we think it is.</summary>
     private const int MaxOverrideLen = 1024;
@@ -270,9 +203,8 @@ public static unsafe class NameplateNative
     {
         x = 0f; y = 0f; z = 0f;
         if (obj == IntPtr.Zero) return;
-        x = *(float*)(obj + ObjPosX);
-        y = *(float*)(obj + ObjPosX + 4);
-        z = *(float*)(obj + ObjPosX + 8);
+        System.Numerics.Vector3 p = new CNWCObject(obj).Position;
+        x = p.X; y = p.Y; z = p.Z;
     }
 
     /// <summary>The live game camera's world position. NOT the Alloy <c>CameraPos</c> global, which at
@@ -280,11 +212,10 @@ public static unsafe class NameplateNative
     public static bool CameraPosition(out float x, out float y, out float z)
     {
         x = 0f; y = 0f; z = 0f;
-        IntPtr cam = ModuleCamera();
-        if (cam == IntPtr.Zero) return false;
-        x = *(float*)(cam + CameraPos);
-        y = *(float*)(cam + CameraPos + 4);
-        z = *(float*)(cam + CameraPos + 8);
+        CX.Engine.Camera cam = ModuleCamera();
+        if (cam.IsNull) return false;
+        System.Numerics.Vector3 p = cam.Pos;
+        x = p.X; y = p.Y; z = p.Z;
         return true;
     }
 
@@ -296,10 +227,10 @@ public static unsafe class NameplateNative
     public static bool CameraForward(out float x, out float y, out float z)
     {
         x = 0f; y = 0f; z = 0f;
-        IntPtr cam = ModuleCamera();
-        if (cam == IntPtr.Zero) return false;
-        float* q = (float*)(cam + CameraRot);
-        float qw = q[0], qx = q[1], qy = q[2], qz = q[3];
+        CX.Engine.Camera cam = ModuleCamera();
+        if (cam.IsNull) return false;
+        Quat q = cam.Rot;
+        float qw = q.W, qx = q.X, qy = q.Y, qz = q.Z;
         // -(third column of the rotation matrix) -- the quaternion applied to (0,0,-1).
         x = -2f * (qx * qz + qw * qy);
         y = -2f * (qy * qz - qw * qx);
@@ -324,10 +255,9 @@ public static unsafe class NameplateNative
     public static bool CameraViewportRect(out float x, out float y, out float w, out float h)
     {
         x = 0f; y = 0f; w = 0f; h = 0f;
-        IntPtr cam = ModuleCamera();
-        if (cam == IntPtr.Zero) return false;
-        float* v = (float*)(cam + CameraViewport);
-        x = v[0]; y = v[1]; w = v[2]; h = v[3];
+        CX.Engine.Camera cam = ModuleCamera();
+        if (cam.IsNull) return false;
+        x = cam.ViewX; y = cam.ViewY; w = cam.ViewW; h = cam.ViewH;
         return true;
     }
 
@@ -343,13 +273,15 @@ public static unsafe class NameplateNative
         return w > 0f && h > 0f;
     }
 
-    /// <summary>The live <c>Camera*</c> off the module, or Zero.</summary>
-    private static IntPtr ModuleCamera()
+    /// <summary>The live <c>Camera*</c> off the module -- what <c>CClientExoApp::GetModuleCamera()</c> returns,
+    /// read as a field because MSVC inlined that accessor out of existence. A null view when there is no
+    /// module.</summary>
+    private static CX.Engine.Camera ModuleCamera()
     {
-        if (_getModule == null) return IntPtr.Zero;
+        if (_getModule == null) return default;
         IntPtr app = ExoApp();
         IntPtr module = app == IntPtr.Zero ? IntPtr.Zero : _getModule(app);
-        return module == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(module + ModuleCameraOff);
+        return module == IntPtr.Zero ? default : new CNWCModule(module).Camera;
     }
 
     /// <summary>The player's current area id, or 0 when there is no module/area.</summary>
@@ -360,14 +292,14 @@ public static unsafe class NameplateNative
         if (app == IntPtr.Zero) return 0u;
         IntPtr module = _getModule(app);
         if (module == IntPtr.Zero) return 0u;
-        IntPtr area = *(IntPtr*)(module + ModuleArea);
-        return area == IntPtr.Zero ? 0u : *(uint*)(area + AreaId);
+        CNWCArea area = new CNWCModule(module).CurrentArea;
+        return area.IsNull ? 0u : area.Id;
     }
 
     /// <summary>A creature's area id (0 for anything else). Only the creature path is area-gated in vanilla;
     /// placeables and items rely on being unloaded instead.</summary>
     public static uint CreatureAreaId(IntPtr obj, byte type)
-        => obj != IntPtr.Zero && type == TypeCreature ? *(uint*)(obj + CreatureArea) : 0u;
+        => obj != IntPtr.Zero && type == TypeCreature ? new CNWCCreature(obj).Area : 0u;
 
     /// <summary>The "show mouse-over feedback" option word: bit 0 = the option, bit 1 = Tab held. Read for
     /// the <c>/nameplate</c> report only -- the plate trigger itself is the engine's, which already tests
@@ -376,8 +308,8 @@ public static unsafe class NameplateNative
     {
         IntPtr app = ExoApp();
         if (app == IntPtr.Zero) return 0;
-        IntPtr intern = *(IntPtr*)(app + AppInternal);
-        return intern == IntPtr.Zero ? 0 : *(int*)(intern + InternalFeedbackWord);
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal;
+        return intern.IsNull ? 0 : intern.FeedbackWord;
     }
 
     /// <summary>Damage-level index 0..5 for a creature (5 = dead), or -1 when it has no stats.</summary>
@@ -386,13 +318,13 @@ public static unsafe class NameplateNative
         if (obj == IntPtr.Zero || type != TypeCreature) return -1;
         CNWCCreatureStats stats = new CNWCCreature(obj).Stats;
         if (stats.IsNull) return -1;
-        int lvl = *(byte*)(stats.Ptr + StatsDamage);
+        int lvl = stats.Damage;
         return lvl > 5 ? 5 : lvl;
     }
 
     /// <summary>Reaction byte for the name colour: 1 friend, 2 enemy, anything else neutral.</summary>
     public static byte Reaction(IntPtr obj, byte type)
-        => obj != IntPtr.Zero && type == TypeCreature ? *(byte*)(obj + CreatureReaction) : (byte)0;
+        => obj != IntPtr.Zero && type == TypeCreature ? new CNWCCreature(obj).Attitude : (byte)0;
 
     /// <summary>The creature's display name off its stats block: the override wins outright, else
     /// "first last", else whichever half is non-empty, else "". COLD -- it allocates a string, so it is
@@ -402,7 +334,7 @@ public static unsafe class NameplateNative
         if (obj == IntPtr.Zero || type != TypeCreature) return "";
         CNWCCreatureStats stats = new CNWCCreature(obj).Stats;
         if (stats.IsNull) return "";
-        string over = Str(stats.Ptr, StatsOverride, StatsOverrideLen);
+        string over = Chars((byte*)stats.OverrideName, (int)stats.OverrideNameLen, MaxNameLen).Trim();
         if (over.Length != 0) return over;
         string first = Chars((byte*)stats.FirstName, (int)stats.FirstNameLen, MaxNameLen).Trim();
         string last = Chars((byte*)stats.LastName, (int)stats.LastNameLen, MaxNameLen).Trim();
@@ -415,16 +347,9 @@ public static unsafe class NameplateNative
     /// pointer is not what we think it is, so we return "" rather than walk it.</summary>
     private const int MaxNameLen = 256;
 
-    private static string Str(IntPtr owner, int ptrOff, int lenOff)
-        => RawStr(owner, ptrOff, lenOff, MaxNameLen).Trim();
-
-    /// <summary>An engine <c>char* / len</c> pair copied out verbatim -- no trim. <see cref="Str"/> is the
-    /// trimming form; anything whose leading or trailing whitespace is load-bearing must use this.</summary>
-    private static string RawStr(IntPtr owner, int ptrOff, int lenOff, int maxLen)
-        => Chars(*(byte**)(owner + ptrOff), *(int*)(owner + lenOff), maxLen);
-
-    /// <summary>The same pair already loaded -- what a typed view hands out. "" when the length says the
-    /// pointer is not what we think it is.</summary>
+    /// <summary>An engine <c>char* / len</c> pair copied out verbatim -- no trim, so anything whose leading or
+    /// trailing whitespace is load-bearing can use it. "" when the length says the pointer is not what we
+    /// think it is.</summary>
     private static string Chars(byte* p, int len, int maxLen)
     {
         if (p == null || len <= 0 || len > maxLen) return "";
@@ -459,14 +384,11 @@ public static unsafe class NameplateNative
         if (obj == IntPtr.Zero || _layoutRot) return "";
         IntPtr vtbl = *(IntPtr*)obj;
         if (vtbl == IntPtr.Zero) return "";
-        // Left raw: a vtbl slot returning a class BY VALUE -- the hidden buffer swaps places per ABI, which the
-        // generated `sig:` call (no sret form) cannot express (CX-37).
-        var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)new CNWCObject(obj).GetPortraitFn;
-        if (getPortrait == null) return "";
+        var o = new CNWCObject(obj);
+        if (o.GetPortraitFn == IntPtr.Zero) return "";
         byte* buf = stackalloc byte[ResRefScratch];
         for (int i = 0; i < ResRefScratch; i++) buf[i] = 0;
-        // sret: Itanium puts the hidden buffer FIRST, Win64 puts it after `this`.
-        if (Win) getPortrait(obj, (IntPtr)buf, PortraitSizePlate); else getPortrait((IntPtr)buf, obj, PortraitSizePlate);
+        o.GetPortrait(buf, PortraitSizePlate);
         int n = 0; while (n < 16 && buf[n] != 0) n++;
         return n == 0 ? "" : Encoding.ASCII.GetString(buf, n);
     }

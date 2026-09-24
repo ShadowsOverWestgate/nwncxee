@@ -9,7 +9,7 @@ namespace CX.Services.Chat.Render;
 /// is mirrored onto statics from the (cold) config so this stays a cheap, allocation-light hot component.</summary>
 public sealed class TimestampComponent : ILineComponent
 {
-    private const uint Grey = 0x8A8A8A;
+    private const uint Grey = 0x8A8A8A;  // not-an-offset: a colour
 
     public uint Bit => ChatToggle.Timestamp;
 

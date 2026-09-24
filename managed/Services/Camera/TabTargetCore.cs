@@ -31,7 +31,7 @@ internal static class TabTargetCore
         public byte Type;
     }
 
-    internal const byte TypeCreature = 5, TypePlaceable = 9, TypeDoor = 0xa;
+    internal const byte TypeCreature = 5, TypePlaceable = 9, TypeDoor = 0xa;  // not-an-offset: an object type enum
 
     internal enum CastMode { Normal, Quick, Preview }
     internal enum CastEvent { Open, Release, Cancel }

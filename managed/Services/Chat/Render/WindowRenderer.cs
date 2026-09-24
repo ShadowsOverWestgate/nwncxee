@@ -36,7 +36,7 @@ public static partial class WindowRenderer
     [System.ThreadStatic] private static List<Rune>? _runesScratch;
     [System.ThreadStatic] private static List<uint>? _colsScratch;
 
-    private const uint EditRgb = 0xF0F0F0;
+    private const uint EditRgb = 0xF0F0F0;  // not-an-offset: a colour
     /// <summary>Unread ephemeral tab: label + pulsing underline.</summary>
     private const uint UnreadRgb = Warn;
     /// <summary>Soft drop shadow outside the frame: rings of 1 px, outermost last, alpha scaled by the background's.</summary>

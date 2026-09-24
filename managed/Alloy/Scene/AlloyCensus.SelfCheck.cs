@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using static CX.Framework.EngineLayout;
 using static CX.Alloy.PartTable;
 using static CX.Alloy.BucketGate;
 using static CX.Alloy.TexProbe;
@@ -30,11 +29,12 @@ internal static unsafe partial class AlloyCensus
         byte* part = stackalloc byte[0x100];
         for (int i = 0; i < 0x500; i++) gob[i] = 0;
         for (int i = 0; i < 0x100; i++) { owner[i] = 0; part[i] = 0; }
-        // The typed views read these stand-ins exactly as they read a live object; PLANTING a pointer is the
-        // one thing a view of a TRANSIENT class cannot do (it hands out a copy), so those four writes are raw.
+        // The typed views read these stand-ins exactly as they read a live object, and a pointer row to a
+        // TRANSIENT class carries a setter, so the planted links go through the views too.
         var gv = new Gob((IntPtr)gob);
         var mv = new Model((IntPtr)owner);
-        *(IntPtr*)(part + PartGob) = (IntPtr)gob;
+        var pv = new Part((IntPtr)part);
+        pv.Gob = gv;
         IntPtr p = (IntPtr)part;
 
         // an unarmed gob is the identity of all three terms -- the case every plain instance takes
@@ -43,9 +43,9 @@ internal static unsafe partial class AlloyCensus
         check.Expect(GobDiffuseMul(p) == System.Numerics.Vector3.One, "colour identity is (1,1,1) -- it is a MULTIPLY");
         check.Expect(GobEmissiveAdd(p) == default, "self-illum identity is 0 -- it is an ADD");
         // ...and so is a part with no gob at all, without dereferencing anything
-        *(IntPtr*)(part + PartGob) = IntPtr.Zero;
+        pv.Gob = default;
         check.Expect(GobAlphaMul(p) == 1f && GobDiffuseMul(p) == System.Numerics.Vector3.One, "a gobless part folds nothing");
-        *(IntPtr*)(part + PartGob) = (IntPtr)gob;
+        pv.Gob = gv;
 
         // the colour/alpha pair, armed together by gob+0xf6 and dead without it
         gv.Alpha = 0.5f;
@@ -59,7 +59,7 @@ internal static unsafe partial class AlloyCensus
         // whole creature into the transparent run, and the one term whose flag is not on the object it scales
         gv.FadeAlpha = 0.5f;
         check.Expect(GobAlphaMul(p) == 0.5f, "the fade alpha is dead without its owner");
-        *(IntPtr*)(gob + GobNode) = (IntPtr)owner;
+        gv.Node = mv;
         check.Expect(GobAlphaMul(p) == 0.5f, "...and dead without the owner's fade bit");
         mv.OwnerFlags = GobOwnerFadeBit;
         check.Expect(GobAlphaMul(p) == 0.25f, "both multiplies compose");

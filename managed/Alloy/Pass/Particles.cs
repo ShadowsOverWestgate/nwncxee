@@ -5,7 +5,6 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -47,9 +46,6 @@ internal static unsafe partial class Particles
     // (PartEmitter, Particle, MdlNodeEmitter, Material); the RE provenance lives on the EngineLayout rows
     // those are generated from, and PartEmitter::RenderEmitter @0x4ad4c0 is the function they all came off.
 
-    /// <summary>A RECORD SIZE, not a field: the stride of the <c>List&lt;MaterialParameter&gt;</c> the
-    /// emissive scan walks.</summary>
-    private static readonly int ParamStride = EngineLayout.ParamStride;
     /// <summary>A list longer than this is a bad pointer, not a .mtr.</summary>
     private const int MaxParams = 64;
     /// <summary>#148: the .mtr parameter an effect declares to say how bright it really is. Named the way
@@ -130,12 +126,9 @@ internal static unsafe partial class Particles
     /// emitter's model matrix to the centre and its two axes, which is exact for an affine matrix and four
     /// transforms cheaper per particle than transforming the corners.</summary>
     private const int RecFloats = 24;
-    /// <summary>The engine's software matrix stack: model is index 2, stride 0x58, top at +0x18. Named
-    /// rather than open-coded because <see cref="Beams"/> and <see cref="SkyBox"/> name the same trio, and a
-    /// layout correction that misses one site is the kind that is found by looking at the screen.</summary>
+    /// <summary>The <c>m_aurMtxStack</c> entry the model matrix comes off -- index 2. Named rather than
+    /// open-coded because <see cref="Beams"/> and <see cref="SkyBox"/> read the same one.</summary>
     private const int ModeModel = 2;
-    /// <summary>A STRIDE, not a field: the byte distance between one <c>m_aurMtxStack</c> entry and the next.</summary>
-    private static readonly int StackStride = EngineLayout.MtxStackStride;
     /// <summary>The SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
     /// 5-7 the caster's, 12-16 <see cref="CullPass"/>'s; 10/11 are the record and index buffers the vertex
     /// stage names, and #288's two descriptor buffers take the next free pair above the cull's.</summary>
@@ -458,7 +451,7 @@ internal static unsafe partial class Particles
         // RenderEmitter pushes nothing, so the top of the model stack IS the transform the engine's own
         // draw ran under. Almost always identity -- particles simulate in world space -- but reading it
         // costs nothing and an emitter under a transform would otherwise land at the origin.
-        e.Model = new aurMatrixStack((IntPtr)(_stacks + ModeModel * StackStride)).Top;
+        e.Model = new aurMatrixStack((IntPtr)_stacks)[ModeModel].Top;
         e.Ident = e.Model.IsIdentity;
         if (_orderN < MaxEmitters) _order[_orderN++] = s;
         return s;
@@ -1156,13 +1149,13 @@ internal static unsafe partial class Particles
     private static void Scan(IntPtr list, int count, ref float v)
     {
         if (list == IntPtr.Zero || count <= 0 || count > MaxParams) return;
+        var first = new MaterialParameter(list);
         for (int k = 0; k < count; k++)
         {
-            byte* rec = (byte*)list + (long)k * ParamStride;
-            var mp = new MaterialParameter((IntPtr)rec);
+            MaterialParameter mp = first[k];
             if (mp.Type != 0) continue;                          // 1 = int-valued; this one is a float
             if (mp.Comps < 1) continue;
-            if (AlloyRenderer.NameIs(rec, EmissiveParam)) v = mp.Value;
+            if (AlloyRenderer.NameIs((byte*)mp.Ptr, EmissiveParam)) v = mp.Value;
         }
     }
 

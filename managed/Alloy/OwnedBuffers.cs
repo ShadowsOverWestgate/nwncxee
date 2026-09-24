@@ -53,7 +53,7 @@ internal static unsafe class OwnedBuffers
     /// that bounds them -- <c>RequestPool</c> @0x4d1ec0 doubles its descriptor table on demand.
     /// <para>ponytail: a number, not a derivation. Past it a rehash allocates on the render thread, once,
     /// and the tables keep working. Upgrade path if an area is ever seen past it: the descriptor count is
-    /// readable at <c>_table + PoolCountOffset</c>, so <see cref="Install"/> could size from the live figure
+    /// readable as <c>_table.Count</c>, so <see cref="Install"/> could size from the live figure
     /// and <see cref="HighWater"/> could report crossing it.</para></summary>
     private const int PoolCeiling = 1024;
     private static readonly Dictionary<uint, Entry> _byToken = new(PoolCeiling);
@@ -113,11 +113,13 @@ internal static unsafe class OwnedBuffers
         }
         if (!_armed) return;
         IntPtr anchor = Native.Sym(SymbolMap.GlPoolTableAnchor);
-        _table = anchor == IntPtr.Zero ? null : (byte*)anchor + PoolTableOffset;
+        // The anchor is a SYMBOL, and the {base, count} pair sits a fixed step from it -- the one place the
+        // step is taken, because there is no view to reach it through yet.
+        _table = new GlPoolTable(anchor == IntPtr.Zero ? IntPtr.Zero : anchor + EngineLayout.PoolTableAnchorOffset);
         _orphan = (byte*)Native.Sym(SymbolMap.GlOrphanBuffers);
         _totalMemPool = (int*)Native.Sym(SymbolMap.GlTotalMemPool);
         _origUnlock = hooks.InstallGlUnlockPool(&OnUnlockPool);
-        bool ok = _table != null && _origUnlock != null && _origDelete != null;
+        bool ok = !_table.IsNull && _origUnlock != null && _origDelete != null;
         if (!ok) _armed = false;
         log.Info(ok
             ? "OwnedBuffers: took GLRender::UnlockPool + GLRender::DeleteBuffer -- Alloy performs the pool "
@@ -138,9 +140,9 @@ internal static unsafe class OwnedBuffers
     /// is never consulted. Cold: read per VDO allocation.</summary>
     [UnmanagedCallersOnly]
     private static int OnMaxElements() => _maxElements;
-    /// <summary>Address of the pool table's base POINTER (not the table). Deliberately not the table itself:
-    /// <c>RequestPool</c> @0x4d1ec0 grows the table with <c>calloc</c>+<c>free</c>, so the base moves.</summary>
-    private static byte* _table;
+    /// <summary>The {base, count} pair, NOT the table it points at: <c>RequestPool</c> @0x4d1ec0 grows the
+    /// table with <c>calloc</c>+<c>free</c>, so the base moves and every lookup re-reads it.</summary>
+    private static GlPoolTable _table;
     private static byte* _orphan;
     private static int* _totalMemPool;
 
@@ -165,27 +167,27 @@ internal static unsafe class OwnedBuffers
     private static bool Take(uint token, uint size, uint offset)
     {
         if (!_armed || size == 0) return false;
-        byte* p = Pool(token);
-        if (p == null) return false;
+        GlPool p = Pool(token);
+        if (p.IsNull) return false;
         // The engine's own two refusals, replicated: a pool with no bytes, and a pool whose lock flags say
         // the host block is not in a state to be pushed (GLRender::UnlockPool @0x4cfc80 tests +0x11 & 0x18
         // before it does anything). Handing those back costs nothing -- the original refuses them too.
-        int bytes = *(int*)(p + PoolSize);
-        if (bytes <= 0 || (p[PoolLockFlags] & LockNoUpload) != 0) return false;
-        byte* host = *(byte**)p;
+        int bytes = p.Size;
+        if (bytes <= 0 || (p.LockFlags & LockNoUpload) != 0) return false;
+        byte* host = (byte*)p.Host;
         if (host == null) return false;
         if (Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null || Gl.BindBuffer == null)
         { _refused++; return false; }
 
-        uint name = *(uint*)(p + PoolName);
-        bool fresh = p[PoolNamed] == 0;
+        uint name = p.Name;
+        bool fresh = p.Named == 0;
         if (fresh)
         {
             Gl.GenBuffers(1, &name);
             if (name == 0) { _refused++; return false; }
-            *(uint*)(p + PoolName) = name;
-            p[PoolNamed] = 1;
-            p[PoolUploaded] = 0;
+            p.Name = name;
+            p.Named = 1;
+            p.Uploaded = 0;
         }
         else if (name == 0) { _refused++; return false; }
 
@@ -211,17 +213,17 @@ internal static unsafe class OwnedBuffers
     /// it explicitly, which the xref of the descriptor table confirms is how every draw path reaches it.
     /// Dropping it also stops an ELEMENT_ARRAY_BUFFER bind -- VAO state -- from landing in whatever VAO the
     /// engine happened to have current.</para></summary>
-    private static void Upload(byte* p, uint name, byte* host, int bytes, uint size, uint offset)
+    private static void Upload(GlPool p, uint name, byte* host, int bytes, uint size, uint offset)
     {
-        uint usage = *(uint*)(p + PoolUsage);
+        uint usage = p.Usage;
         bool dynamic = (usage & UsageDynamic) != 0;
         uint hint = dynamic ? Gl.DYNAMIC_DRAW : Gl.STATIC_DRAW;
         long span = size == WholePool ? bytes : size;
         Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, name);
         if ((usage & UsageSubData) != 0)
         {
-            if (p[PoolUploaded] == 0)
-            { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, null, hint); p[PoolUploaded] = 1; }
+            if (p.Uploaded == 0)
+            { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, null, hint); p.Uploaded = 1; }
             // The engine reads its own [offset, offset+size) with no bound check, and would over-read the
             // host block if a caller ever paired a whole-pool size with a non-zero offset. Nothing does --
             // CommitElementStreamData @0x45c9c0 unlocks with `xor %edx,%edx` -- but the clamp costs one
@@ -232,8 +234,8 @@ internal static unsafe class OwnedBuffers
         }
         else if (dynamic)
         {
-            if (p[PoolUploaded] == 0)
-            { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, host, hint); p[PoolUploaded] = 1; }
+            if (p.Uploaded == 0)
+            { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, host, hint); p.Uploaded = 1; }
             else
             {
                 if (_orphan != null && *_orphan != 0)
@@ -242,8 +244,8 @@ internal static unsafe class OwnedBuffers
                 _subUploads++;
             }
         }
-        else if (p[PoolUploaded] == 0)
-        { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, host, hint); p[PoolUploaded] = 1; }
+        else if (p.Uploaded == 0)
+        { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, host, hint); p.Uploaded = 1; }
         Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
         _uploads++;
         if (size == WholePool) _wholePool++;
@@ -284,13 +286,12 @@ internal static unsafe class OwnedBuffers
     /// every call on purpose: <c>RequestPool</c> reallocates the whole table when it runs out of slots.
     /// <para>The bound check is the engine's own (<c>UnlockPool</c> tests the token against the descriptor
     /// count before it indexes), which is what makes this safe to run on an arbitrary token.</para></summary>
-    private static byte* Pool(uint token)
+    private static GlPool Pool(uint token)
     {
-        if (_table == null || token == NoPool) return null;
-        byte* table = *(byte**)_table;
-        uint count = *(uint*)(_table + PoolCountOffset);
-        if (table == null || token >= count) return null;
-        return table + (nuint)token * (nuint)PoolStride;
+        if (_table.IsNull || token == NoPool) return default;
+        GlPool table = _table.Base;
+        if (table.IsNull || token >= _table.Count) return default;
+        return table[(int)token];
     }
 
     /// <summary>#284: does this pool token already name a GL buffer? The VAO drip needs it because
@@ -301,25 +302,25 @@ internal static unsafe class OwnedBuffers
     /// stream".</summary>
     internal static bool PoolHasName(uint token)
     {
-        byte* p = Pool(token);
-        return p != null && *(uint*)(p + PoolName) != 0;
+        GlPool p = Pool(token);
+        return !p.IsNull && p.Name != 0;
     }
 
     /// <summary>The host shadow of the pool this token names, or null. #144 retry: the normal weld reads
     /// and rewrites vertex bytes here, the same block <see cref="Upload"/> pushes, so nothing is read back.</summary>
     internal static byte* PoolHost(uint token)
     {
-        byte* p = Pool(token);
-        return p == null ? null : *(byte**)p;
+        GlPool p = Pool(token);
+        return p.IsNull ? null : (byte*)p.Host;
     }
 
     /// <summary>The host shadow behind a GL buffer name, looked up among a VDO's two vertex pools -- a
     /// stream's <c>Buf</c> is a pool NAME, and which pool holds it is the descriptor's to say.</summary>
     internal static byte* PoolHostByName(uint name, uint tokA, uint tokB)
     {
-        byte* a = Pool(tokA), b = Pool(tokB);
-        if (a != null && *(uint*)(a + PoolName) == name) return *(byte**)a;
-        if (b != null && *(uint*)(b + PoolName) == name) return *(byte**)b;
+        GlPool a = Pool(tokA), b = Pool(tokB);
+        if (!a.IsNull && a.Name == name) return (byte*)a.Host;
+        if (!b.IsNull && b.Name == name) return (byte*)b.Host;
         return null;
     }
 
@@ -414,20 +415,6 @@ internal static unsafe class OwnedBuffers
     /// <c>glBufferSubData</c> sites substitute the pool's own byte count for it (@0x4cfda1/0x4cfda3 and
     /// @0x4cfe7d/0x4cfe7f).</summary>
     private const uint WholePool = 0xFFFFFFFF;   // not-an-offset: the "whole pool" size sentinel UnlockPool substitutes for
-    /// <summary>Byte offset from <see cref="SymbolMap.GlPoolTableAnchor"/> to the table base pointer, and
-    /// from there to the descriptor count -- the two globals <c>GLRender::UnlockPool</c> indexes through.
-    /// The anchor offset is Windows-unresolved on purpose; see the row.</summary>
-    private static readonly int PoolTableOffset = EngineLayout.PoolTableAnchorOffset,
-                               PoolCountOffset = EngineLayout.PoolTableCount;
-    /// <summary>The 0x20-byte pool descriptor (<c>GLRender::RequestPool</c> @0x4d1ec0 callocs 0x20 apiece):
-    /// host shadow, byte size, GL name, target index, lock flags, usage word, "uploaded once", "named".
-    /// <para>CX-39: these stay raw. The descriptor is not an engine object -- it is one element of a
-    /// calloc'd array reached as <c>table + i*stride</c> from a global anchor, so there is no pointer for a
-    /// view to sit on and the stride is arithmetic, not a field.</para></summary>
-    private static readonly int PoolStride = EngineLayout.PoolStride, PoolSize = EngineLayout.PoolSize,
-        PoolName = EngineLayout.PoolName, PoolLockFlags = EngineLayout.PoolLockFlags,
-        PoolUsage = EngineLayout.PoolUsage, PoolUploaded = EngineLayout.PoolUploaded,
-        PoolNamed = EngineLayout.PoolNamed;
     /// <summary>Lock-flag bits that make <c>UnlockPool</c> do nothing at all.</summary>
     private const byte LockNoUpload = 0x18;   // not-an-offset: bits inside the lock-flags byte
     /// <summary>Usage bits from <c>RequestPool</c>'s third argument: 0x100 = the sub-data path (the three
@@ -503,7 +490,7 @@ internal static unsafe class OwnedBuffers
     internal static bool SelfCheck(ExtenderLog log)
     {
         bool wasArmed = _armed;
-        byte* savedTable = _table;
+        GlPoolTable savedTable = _table;
         var savedTok = new Dictionary<uint, Entry>(_byToken);
         var savedName = new Dictionary<int, uint>(_byName);
         _byToken.Clear(); _byName.Clear(); _dirty.Clear();
@@ -511,15 +498,16 @@ internal static unsafe class OwnedBuffers
 
         // A fake pool table: two 0x20-byte descriptors behind a base pointer, laid out exactly as
         // RequestPool leaves them.
-        byte* mem = stackalloc byte[0x20 + 2 * PoolStride];
-        byte* pools = mem + 0x20;
-        *(byte**)mem = pools;
-        *(uint*)(mem + PoolCountOffset) = 2;
+        byte* mem = stackalloc byte[0x20 + 2 * EngineLayout.PoolStride];   // a SIZE here, not a field read
+        var table = new GlPoolTable((IntPtr)mem);
+        var pools = new GlPool((IntPtr)(mem + 0x20));
+        table.Base = pools;
+        table.Count = 2;
         byte* payload = stackalloc byte[64];
-        SetPool(pools + 0 * PoolStride, payload, 64, usage: UsageSubData, lockFlags: 0);
-        SetPool(pools + 1 * PoolStride, payload, 64, usage: UsageSubData, lockFlags: LockNoUpload);
+        SetPool(pools[0], payload, 64, usage: UsageSubData, lockFlags: 0);
+        SetPool(pools[1], payload, 64, usage: UsageSubData, lockFlags: LockNoUpload);
 
-        _armed = false; _table = mem;
+        _armed = false; _table = table;
         bool ok = !Take(0, 64, 0) && _byToken.Count == 0;            // stood down: the engine keeps its pool
         _armed = true;
         ok &= !Take(NoPool, 64, 0) && _byToken.Count == 0;           // not a token
@@ -527,7 +515,7 @@ internal static unsafe class OwnedBuffers
         ok &= !Take(0, 0, 0);                                        // a zero-length push is the engine's no-op
         ok &= !Take(1, 64, 0);                                       // ...and so is a locked pool
         // Headless: no GL entry points, so a real pool is REFUSED and handed back rather than half-taken.
-        ok &= !Take(0, 64, 0) && _byToken.Count == 0 && _refused == 1 && pools[PoolNamed] == 0;
+        ok &= !Take(0, 64, 0) && _byToken.Count == 0 && _refused == 1 && pools.Named == 0;
 
         // From here the table is driven directly -- Record is the half that decides identity, and it is the
         // half that has no GL in it.
@@ -564,14 +552,14 @@ internal static unsafe class OwnedBuffers
         return ok;
     }
 
-    private static void SetPool(byte* p, byte* host, int bytes, uint usage, byte lockFlags)
+    private static void SetPool(GlPool p, byte* host, int bytes, uint usage, byte lockFlags)
     {
-        *(byte**)p = host;
-        *(int*)(p + PoolSize) = bytes;
-        *(uint*)(p + PoolUsage) = usage;
-        p[PoolLockFlags] = lockFlags;
-        p[PoolUploaded] = 0;
-        p[PoolNamed] = 0;
-        *(uint*)(p + PoolName) = 0;
+        p.Host = (IntPtr)host;
+        p.Size = bytes;
+        p.Usage = usage;
+        p.LockFlags = lockFlags;
+        p.Uploaded = 0;
+        p.Named = 0;
+        p.Name = 0;
     }
 }

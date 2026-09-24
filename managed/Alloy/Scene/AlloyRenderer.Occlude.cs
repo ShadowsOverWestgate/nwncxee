@@ -1,11 +1,9 @@
 using System;
 using System.Diagnostics;
 using System.Numerics;
-using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
-using static CX.Framework.EngineLayout;
 
 namespace CX.Alloy;
 
@@ -80,13 +78,12 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The followed gob (the PC), ManageSceneBSP's chain as <c>SceneInputs</c> walks it.</summary>
     private static IntPtr OccludeTargetGob()
     {
-        IntPtr cam = *_occCamera;
-        if (cam == IntPtr.Zero) return IntPtr.Zero;
-        IntPtr host = *(IntPtr*)(cam + CameraBehaviorHost);
-        if (host == IntPtr.Zero) return IntPtr.Zero;
-        var hv = new CAurBehavior(host);
-        IntPtr behavior = hv.AsBehaviorCameraFollowFn == IntPtr.Zero ? IntPtr.Zero : hv.AsBehaviorCameraFollow().Ptr;
-        return behavior == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(behavior + BehaviorTargetObj);
+        var cam = new Camera(*_occCamera);
+        if (cam.IsNull) return IntPtr.Zero;
+        CAurBehavior hv = cam.BehaviorHost;
+        if (hv.IsNull) return IntPtr.Zero;
+        CAurBehaviorCameraFollow behavior = hv.AsBehaviorCameraFollowFn == IntPtr.Zero ? default : hv.AsBehaviorCameraFollow();
+        return behavior.IsNull ? IntPtr.Zero : behavior.Target;
     }
 
     /// <summary>The fade wants the engine's pull-in off; <see cref="CameraService.SettleCollision"/> is the

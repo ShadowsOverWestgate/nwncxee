@@ -34,12 +34,6 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe partial class GrassField
 {
-    /// <summary>A SIZE, not a field: the record stride <c>g_GrassInfo</c> is indexed by.</summary>
-    private static readonly int InfoStride = EngineLayout.GrassInfoStride;
-    /// <summary>A <c>List&lt;T&gt;</c> / <c>CExoArrayList&lt;T&gt;</c> in this engine is {element pointer,
-    /// count}: the symbol's own address is the list, not the elements.</summary>
-    private static readonly int ListPtr = EngineLayout.ListItems, ListCount = EngineLayout.ListItemCount;
-
     /// <summary>Patches (one per visible bin x grass material) the cache holds, and the open-addressed slot
     /// table that interns them by <c>CAurTriangleList*</c> (power of two, ~2x for a 0.5 load factor).</summary>
     private const int MaxPatches = 32768, PatchHash = 65536;
@@ -128,7 +122,10 @@ internal static unsafe partial class GrassField
     private static DoBinBucketFn _origBin;
     private static ReloadGrassFn _origReload;
     private static AurTextureGetFn _aurGet;
-    private static byte* _binBucket, _grassInfo, _grassEnabled;
+    /// <summary><c>binbucket</c> (the BSP walk's active bins) and <c>g_GrassInfo</c> (the material records)
+    /// are both bare list heads at global addresses.</summary>
+    private static EngineList _binBucket, _grassInfo;
+    private static byte* _grassEnabled;
     private static float* _farDist, _nearRadius;
     /// <summary>The RESOLUTION latch: a grass global, the texture loader or a hook that did not come up, so
     /// this client cannot run the Alloy pass at all. Separate from <see cref="Grass.Enabled"/> on purpose --
@@ -263,8 +260,8 @@ internal static unsafe partial class GrassField
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _binBucket = (byte*)Native.Sym(SymbolMap.BinBucket);
-        _grassInfo = (byte*)Native.Sym(SymbolMap.GrassInfo);
+        _binBucket = new EngineList(Native.Sym(SymbolMap.BinBucket));
+        _grassInfo = new EngineList(Native.Sym(SymbolMap.GrassInfo));
         _grassEnabled = (byte*)Native.Sym(SymbolMap.GrassEnabled);
         // Not fatal: no gob list just means nothing displaces the grass (the pre-#127-followup look).
         _farDist = (float*)Native.Sym(SymbolMap.GrassFarDistance);
@@ -273,7 +270,7 @@ internal static unsafe partial class GrassField
         // Not fatal: without it every gob counts as solid, which is the pre-fix behaviour (target reticles
         // and other effect gobs displace grass) rather than a misrender.
         _isOpaque = EngineFn.PartGetIsOpaque;
-        if (_binBucket == null || _grassInfo == null || _grassEnabled == null || _farDist == null
+        if (_binBucket.IsNull || _grassInfo.IsNull || _grassEnabled == null || _farDist == null
             || _nearRadius == null || _aurGet == null || !AurTex.Ready)
         {
             _off = true;
@@ -358,7 +355,7 @@ internal static unsafe partial class GrassField
     /// number per frame), then every patch sighted this frame is culled, sorted and issued.</summary>
     private static bool Gate()
     {
-        if (_off || !Grass.Enabled.V || _down.Failed || _binBucket == null) return false;
+        if (_off || !Grass.Enabled.V || _down.Failed || _binBucket.IsNull) return false;
         if (*_grassEnabled == 0) return false;
         if (Gl.DrawArraysIndirect == null || Gl.VertexAttribDivisor == null || Gl.DispatchCompute == null
             || Gl.MemoryBarrier == null || Gl.BindBufferBase == null || Gl.CopyBufferSubData == null)
@@ -386,7 +383,7 @@ internal static unsafe partial class GrassField
     {
         // Toggle-off returns WITHOUT stamping the generation: the class goes back to the ENGINE, which is
         // the opposite of the density-0 branch below (nobody draws it, and the stamp is what keeps it that way).
-        if (_off || !Grass.Enabled.V || _down.Failed || _binBucket == null) return;
+        if (_off || !Grass.Enabled.V || _down.Failed || _binBucket.IsNull) return;
         if (*_grassEnabled == 0) return;      // the player's "Grass Mode" option: off means off, both paths
         if (Gl.DrawArraysIndirect == null || Gl.VertexAttribDivisor == null || Gl.DispatchCompute == null
             || Gl.MemoryBarrier == null || Gl.BindBufferBase == null || Gl.CopyBufferSubData == null)
@@ -410,8 +407,8 @@ internal static unsafe partial class GrassField
     /// or been freed; either way it simply stops being drawn, and no pointer of it is ever touched again.</summary>
     private static int Collect()
     {
-        IntPtr* bins = *(IntPtr**)(_binBucket + ListPtr);
-        int binCount = *(int*)(_binBucket + ListCount);
+        IntPtr* bins = (IntPtr*)_binBucket.Items;
+        int binCount = _binBucket.Count;
         if (bins == null || binCount <= 0) return 0;
         int budget = BakePerFrame, seen = 0;
         for (int b = 0; b < binCount; b++)
@@ -540,10 +537,9 @@ internal static unsafe partial class GrassField
 
     private static CAurGrassInfo GrassInfo(int mat)
     {
-        byte* recs = *(byte**)(_grassInfo + ListPtr);
-        int count = *(int*)(_grassInfo + ListCount);
-        if (recs == null || mat < 0 || mat >= count) return default;
-        return new CAurGrassInfo((IntPtr)(recs + mat * InfoStride));
+        var recs = new CAurGrassInfo(_grassInfo.Items);
+        if (recs.IsNull || mat < 0 || mat >= _grassInfo.Count) return default;
+        return recs[mat];
     }
 
     /// <summary>Push whatever the bake appended. One <c>BufferSubData</c> over the new tail, never the whole
@@ -1136,7 +1132,7 @@ internal static unsafe partial class GrassField
         int want = Math.Min(Grass.Shadow.V, cascades);
         bool blades = _bladeNear + _bladeFar > 0 && _progBladeDepth != 0, cards = _slotCount > 0 && _progDepth != 0;
         if (want <= 0 || _shadowN <= 0 || !(blades || cards) || _vao == 0 || _off || !Grass.Enabled.V || _down.Failed) return;
-        if (_binBucket == null || *_grassEnabled == 0 || Grass.Density.V <= 0f) return;
+        if (_binBucket.IsNull || *_grassEnabled == 0 || Grass.Density.V <= 0f) return;
         bool any = false;
         for (int i = 0; i < want && !any; i++) any = rebaked[i];
         if (!any) return;

@@ -2,7 +2,6 @@ using System;
 using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
-using static CX.Framework.EngineLayout;
 using static CX.Alloy.PartTable;
 
 namespace CX.Alloy;
@@ -129,7 +128,7 @@ internal static unsafe class SceneWalk
         _countPart = (int*)Native.Sym(SymbolMap.CountPart);
         _bspTraverse = EngineFn.BspTraverse;
         IntPtr sv = Native.Sym(SymbolMap.PartSkinVtbl);
-        _skinVtbl = sv == IntPtr.Zero ? IntPtr.Zero : sv + VtblSymbolHeader;
+        _skinVtbl = EngineAbi.Vtbl(sv);
         Ready = _sequence != null && _bspTraverse != null && _skinVtbl != IntPtr.Zero;
         if (!Ready)
             log.Info("SceneWalk: " + (_sequence == null ? SymbolMap.SceneSequence
@@ -178,7 +177,7 @@ internal static unsafe class SceneWalk
         // a different (per-present, not per-world-frame) clock, so once it crossed the threshold the check
         // would run every frame until the two happened to line up.
         if (++_sinceCheck >= AlloyRenderer.LogEvery)
-        { _sinceCheck = 0; _lastMiss = CrossCheck(scene + SceneDrawBuckets, out _lastSample); }
+        { _sinceCheck = 0; _lastMiss = CrossCheck(new Scene(scene).DrawBuckets, out _lastSample); }
     }
 
     private static int _lastMiss, _sinceCheck;
@@ -227,8 +226,9 @@ internal static unsafe class SceneWalk
         _walks++; _walksSinceLog++;
         _lastWalked = 0; _lastRoots = 0; _lastLodAltGobs = 0;
 
-        IntPtr* gobs = *(IntPtr**)(scene + SceneGobs);
-        int nGobs = *(int*)(scene + SceneGobCount);
+        var sc = new Scene(scene);
+        IntPtr* gobs = (IntPtr*)sc.Gobs;
+        int nGobs = sc.GobCount;
         if (gobs != null)
             for (int i = 0; i < nGobs; i++)
             {
@@ -238,14 +238,15 @@ internal static unsafe class SceneWalk
                 // All THREE LOD roots, which is the whole point (see GobLodRoot1): Gob::SetLODModel rotates
                 // them with no notice of any kind, so enumerating only the active one would go stale the
                 // moment the camera crossed an LOD radius.
-                _curLodAlt = *(IntPtr*)(gob + GobLodRoot1) != IntPtr.Zero || *(IntPtr*)(gob + GobLodRoot2) != IntPtr.Zero;
+                var gv = new Gob(gob);
+                _curLodAlt = !gv.LodRoot1.IsNull || !gv.LodRoot2.IsNull;
                 if (_curLodAlt) _lastLodAltGobs++;
-                Tree(*(IntPtr*)(gob + GobPartTree));
-                Tree(*(IntPtr*)(gob + GobLodRoot1));
-                Tree(*(IntPtr*)(gob + GobLodRoot2));
+                Tree(gv.PartTree.Ptr);
+                Tree(gv.LodRoot1.Ptr);
+                Tree(gv.LodRoot2.Ptr);
                 _curLodAlt = false;
-                IntPtr* roots = *(IntPtr**)(gob + GobAppendRoots);
-                int nRoots = *(int*)(gob + GobAppendCount);
+                IntPtr* roots = (IntPtr*)gv.AppendRoots;
+                int nRoots = gv.AppendCount;
                 if (roots == null) continue;
                 for (int r = 0; r < nRoots; r++) Tree(roots[r]);
             }
@@ -253,7 +254,7 @@ internal static unsafe class SceneWalk
         // Tile geometry: SpawnPartsForTile @0x46352b passes gob = NULL, so it hangs off no gob and the loop
         // above cannot reach it. The unculled BSPTraverse visits every node whether the camera can see it or
         // not, which is exactly the difference between enumerating the area and enumerating the frame.
-        IntPtr root = new Scene(scene).BspRoot;
+        IntPtr root = sc.BspRoot;
         _walkingBsp = true;
         if (root != IntPtr.Zero)
             // OUR callback's address, not an engine symbol: the cast is the C# way to spell &OnBspNode.
@@ -270,11 +271,10 @@ internal static unsafe class SceneWalk
     [UnmanagedCallersOnly]
     private static void OnBspNode(IntPtr node, IntPtr ctx)
     {
-        IntPtr data = *(IntPtr*)(node + BspNodeData);
-        if (data == IntPtr.Zero) return;
-        IntPtr* items = *(IntPtr**)(data + BspDataTriMesh);
-        int n = *(int*)(data + BspDataTriMeshCount);
+        var bsp = new BSPNode(node);
+        IntPtr* items = bsp.TileParts;
         if (items == null) return;
+        int n = bsp.TilePartCount;
         for (int i = 0; i < n; i++) Tree(items[i]);
     }
 
@@ -473,9 +473,9 @@ internal static unsafe class SceneWalk
         // Only mode 1 (indexed static) can be drawn from our own tables; the capture killed the rest as
         // "multidraw-or-unindexed" and that verdict is unchanged, it is just reached without a draw.
         if (new VdoRef(vdo).Mode != 1) { Release(e, "unindexed"); return false; }
-        IntPtr mdl = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
-        if (mdl == IntPtr.Zero) { Release(e, "no-mdlnode"); return false; }
-        _pVdo[e] = vdo; _pItem[e] = item; _pPrim[e] = *(int*)(mdl + MdlPrimType);
+        MdlNode mdl = new Part(part).Node;
+        if (mdl.IsNull) { Release(e, "no-mdlnode"); return false; }
+        _pVdo[e] = vdo; _pItem[e] = item; _pPrim[e] = mdl.PrimType;
         int bucket = Classify(part, _pMat[e]);
         // Not tested against AlphaBucket: Classify never produces 7 or 8 -- they are per-frame fade states,
         // not properties of the part, and BucketGate publishes the live _bucketId for whoever needs it.
@@ -691,17 +691,15 @@ internal static unsafe class SceneWalk
     /// engine classified into <c>Scene+0x208</c> this frame must have a record. A miss means the walk did
     /// not reach something the engine is drawing, which is the failure this ticket has to be able to see.
     /// Returns the number of misses.</summary>
-    internal static int CrossCheck(IntPtr mgr, out int sample)
+    internal static int CrossCheck(DrawBucket buckets, out int sample)
     {
         int miss = 0; sample = 0;
         for (int id = 0; id < BucketTypes; id++)
             for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
             {
-                // The bucket STRIDE, not a field: DrawBucketManager is an inline array of list heads and
-                // this is the arithmetic that indexes it (id, phase), so no view sits on it.
-                IntPtr bucket = mgr + (id * BucketGate.BucketPhases + phase) * EngineLayout.BucketStride;
-                IntPtr* items = *(IntPtr**)bucket;
-                int count = *(int*)(bucket + BucketGate.BucketCount);
+                DrawBucket bucket = buckets[id * BucketGate.BucketPhases + phase];
+                IntPtr* items = bucket.Items;
+                int count = bucket.Count;
                 if (items == null) continue;
                 for (int i = 0; i < count; i++)
                 {
