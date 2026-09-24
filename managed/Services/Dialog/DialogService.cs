@@ -119,15 +119,14 @@ public sealed unsafe class DialogService : IExtenderService
     /// fall through -- desired.</summary>
     public static bool IsOpen => _visible;
 
-    private static delegate* unmanaged<IntPtr, void> _closeOrig;
-    private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, long> _entryOrig;
-    private static delegate* unmanaged<IntPtr, int, IntPtr, IntPtr, int, uint, int, long> _repliesOrig;
-    private static delegate* unmanaged<IntPtr, uint, uint, IntPtr, long> _chosenOrig;
-    private static delegate* unmanaged<IntPtr, float, long> _forceOrig;
+    private static CloseDialogFn _closeOrig;
+    private static ShowDialogEntryFn _entryOrig;
+    private static ShowDialogRepliesFn _repliesOrig;
+    private static ShowReplyChosenFn _chosenOrig;
+    private static ForceDialogVisibleFn _forceOrig;
     /// <summary>The current node is the stock panel's: decided at <see cref="OnShowEntry"/> from
     /// <c>dialog.enabled</c>, followed by the replies / chosen / force hooks until the next entry.</summary>
     private static volatile bool _engineOwns;
-    private static delegate* unmanaged<IntPtr, uint, uint, byte, uint, void> _sendReply;
     private static Window? _window;   // the framework Window Dialog draws through (#63)
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -157,21 +156,15 @@ public sealed unsafe class DialogService : IExtenderService
             HitTestOverride = (px, py) => MouseOverUi((int)px, (int)py),
         };
 
-        _sendReply = (delegate* unmanaged<IntPtr, uint, uint, byte, uint, void>)Native.Sym(SymbolMap.SendDialogReply);
         TextRig.FontChanged += Rebuild;   // ui.font: the open window re-lays out on the new atlas (cold, the setter's thread)
 
-        _entryOrig = (delegate* unmanaged<IntPtr, IntPtr, uint, uint, long>)hooks.Install(SymbolMap.ShowDialogEntry,
-            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, uint, uint, long>)&OnShowEntry);
-        _repliesOrig = (delegate* unmanaged<IntPtr, int, IntPtr, IntPtr, int, uint, int, long>)hooks.Install(SymbolMap.ShowDialogReplies,
-            (IntPtr)(delegate* unmanaged<IntPtr, int, IntPtr, IntPtr, int, uint, int, long>)&OnShowReplies);
-        _chosenOrig = (delegate* unmanaged<IntPtr, uint, uint, IntPtr, long>)hooks.Install(SymbolMap.ShowReplyChosen,
-            (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, IntPtr, long>)&OnReplyChosen);
-        _closeOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.CloseDialog, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnCloseDialog);
-        _forceOrig = (delegate* unmanaged<IntPtr, float, long>)hooks.Install(SymbolMap.ForceDialogVisible,
-            (IntPtr)(delegate* unmanaged<IntPtr, float, long>)&OnForceVisible);
+        _entryOrig = hooks.InstallShowDialogEntry(&OnShowEntry);
+        _repliesOrig = hooks.InstallShowDialogReplies(&OnShowReplies);
+        _chosenOrig = hooks.InstallShowReplyChosen(&OnReplyChosen);
+        _closeOrig = hooks.InstallCloseDialog(&OnCloseDialog);
+        _forceOrig = hooks.InstallForceDialogVisible(&OnForceVisible);
 
-        log.Info(_sendReply != null
+        log.Info(EngineFn.SendDialogReply != null
             ? "DialogService: hooks installed (Entry/Replies capture, ReplyChosen skip, CloseDialog call-through)"
             : "DialogService: hooks attempted but reply sender unresolved (run-demo / non-Linux) -- render only");
     }
@@ -613,10 +606,10 @@ public sealed unsafe class DialogService : IExtenderService
 
     private static void SendReply(uint dialogId, uint replyIndex, byte isAbort, uint pageId)
     {
-        if (_sendReply == null) { _log?.Info("[dialog] reply sender unresolved; not sending"); return; }
+        if (EngineFn.SendDialogReply == null) { _log?.Info("[dialog] reply sender unresolved; not sending"); return; }
         IntPtr msg = ClientApi.Message();
         if (msg == IntPtr.Zero) { _log?.Info("[dialog] no live CNWCMessage; cannot send reply"); return; }
-        _sendReply(msg, dialogId, replyIndex, isAbort, pageId);
+        EngineFn.SendDialogReply(msg, dialogId, replyIndex, isAbort, pageId);
         _log?.Info($"[dialog] sent reply idx={replyIndex} abort={isAbort} page={pageId}");
     }
 
@@ -1050,14 +1043,11 @@ public sealed unsafe class DialogService : IExtenderService
     private static string Trunc(string s) => s.Length <= 60 ? s : s.Substring(0, 60) + "...";
 
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
-        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
+    private static readonly GetGameObjectFn _getGameObject = EngineFn.GetGameObject;
     /// <summary>CClientExoApp::GetObjectName(this, objId, CExoString* out) -- fills a caller-owned CExoString.</summary>
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr, void> _getObjectName =
-        (delegate* unmanaged<IntPtr, uint, IntPtr, void>)Native.Sym(SymbolMap.GetObjectName);
+    private static readonly GetObjectNameFn _getObjectName = EngineFn.GetObjectName;
     /// <summary>CExoString::~CExoString(this) -- frees the buffer GetObjectName allocated into our stack CExoString.</summary>
-    private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
-        (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ExoStringDtor);
+    private static readonly ExoStringDtorFn _exoDtor = EngineFn.ExoStringDtor;
 
     private const byte PortraitSizeMedium = 3;
 
@@ -1076,6 +1066,8 @@ public sealed unsafe class DialogService : IExtenderService
 
         // CResRef is 17 bytes (char[16] + a length byte at +0x10); a 16-byte buffer smashes the stack canary
         // (the SIGABRT that once crashed the client). Over-allocate to 32.
+        // Left raw: a vtbl slot returning a class BY VALUE -- the hidden buffer swaps places per ABI, which the
+        // generated `sig:` call (no sret form) cannot express (CX-37).
         var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)new CNWCObject(obj).GetPortraitFn;
         if (getPortrait == null) return "";
         byte* buf = stackalloc byte[32];

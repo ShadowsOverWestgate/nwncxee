@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 
@@ -15,8 +16,11 @@ public static unsafe class SceneRay
     [StructLayout(LayoutKind.Sequential)]
     private struct HitVec { public float X, Y, Z; }
 
+    /// <summary>Both <c>Vector</c> arguments cross BY VALUE, an ABI that differs per OS, so this call keeps its
+    /// hand-written shape (the declared form would have to name one order for both).</summary>
     private static delegate* unmanaged<IntPtr, HitVec, HitVec, HitVec*, IntPtr, int> _hitCheck;
-    private static delegate* unmanaged<IntPtr, int, long, int, void> _reset;
+    /// <summary>Resolved once: a cast runs per creature per frame (CX-29) and up to 15 times per spring arm.</summary>
+    private static HitInfoResetFn _reset;
     private static IntPtr* _scene;
     private static int* _statics;
     /// <summary>The CHitInfo, then one ignore-list slot after it.</summary>
@@ -31,7 +35,7 @@ public static unsafe class SceneRay
     {
         if (_info != null) return;
         _hitCheck = (delegate* unmanaged<IntPtr, HitVec, HitVec, HitVec*, IntPtr, int>)Native.Sym(SymbolMap.SceneHitCheck);
-        _reset = (delegate* unmanaged<IntPtr, int, long, int, void>)Native.Sym(SymbolMap.HitInfoReset);
+        _reset = EngineFn.HitInfoReset;
         _scene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
         _statics = (int*)Native.Sym(SymbolMap.HitcheckStaticTrimesh);
         if (_hitCheck == null || _reset == null || _scene == null) return;
@@ -42,7 +46,7 @@ public static unsafe class SceneRay
     public static IntPtr WorldScene()
     {
         IntPtr s = _scene == null ? IntPtr.Zero : *_scene;
-        return s == IntPtr.Zero || *(IntPtr*)(s + SceneBspRoot) == IntPtr.Zero ? IntPtr.Zero : s;
+        return s == IntPtr.Zero || new Scene(s).BspRoot == IntPtr.Zero ? IntPtr.Zero : s;
     }
 
     /// <summary>Nearest hit on <paramref name="from"/>-&gt;<paramref name="to"/>, skipping <paramref name="ignore"/>
@@ -51,11 +55,12 @@ public static unsafe class SceneRay
     /// footstep cast does -- a no-op on a client where the switch did not resolve.</summary>
     public static bool Cast(IntPtr scene, Vector3 from, Vector3 to, IntPtr ignore, out Vector3 hit, out IntPtr gob, bool statics = false)
     {
+        var info = new CHitInfo((IntPtr)_info);
         // mode 0 = BSP parts then gobs; -0x40000001 and box 0 are the camera's own arguments
         _reset((IntPtr)_info, 0, -0x40000001L, 0);
         *(IntPtr*)(_info + SizeOfHitInfo) = ignore;
-        *(IntPtr**)(_info + HitInfoIgnoreList) = (IntPtr*)(_info + SizeOfHitInfo);
-        *(int*)(_info + HitInfoIgnoreCount) = 1;
+        info.IgnoreList = (IntPtr)(_info + SizeOfHitInfo);
+        info.IgnoreCount = 1;
         HitVec h;
         int* sw = statics ? _statics : null;
         int was = sw == null ? 0 : *sw;
@@ -63,13 +68,13 @@ public static unsafe class SceneRay
         int r = _hitCheck(scene, new HitVec { X = from.X, Y = from.Y, Z = from.Z }, new HitVec { X = to.X, Y = to.Y, Z = to.Z }, &h, (IntPtr)_info);
         if (sw != null) *sw = was;
         hit = new Vector3(h.X, h.Y, h.Z);
-        gob = r == 0 ? IntPtr.Zero : *(IntPtr*)(_info + HitInfoGob);
+        gob = r == 0 ? IntPtr.Zero : info.Gob;
         return r != 0;
     }
 
     /// <summary>True when <paramref name="gob"/> is a creature's (never a camera obstacle, like the engine).</summary>
-    public static bool IsCreature(IntPtr gob) => gob != IntPtr.Zero && *(int*)(gob + GobExternalType) == GobKindCreature;
-    public static bool IsPlaceable(IntPtr gob) => gob != IntPtr.Zero && *(int*)(gob + GobExternalType) == GobKindPlaceable;
+    public static bool IsCreature(IntPtr gob) => gob != IntPtr.Zero && new Gob(gob).ExternalType == GobKindCreature;
+    public static bool IsPlaceable(IntPtr gob) => gob != IntPtr.Zero && new Gob(gob).ExternalType == GobKindPlaceable;
 
     /// <summary>Unlink the SafePointer the last hit left behind -- now, not when the gob dies mid-frame.</summary>
     public static void Release() => _reset((IntPtr)_info, 0, -0x40000001L, 0);

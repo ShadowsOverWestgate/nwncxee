@@ -14,86 +14,123 @@ internal static unsafe class SymbolMap
 {
     // ---- symbol identity: the Linux mangled name of everything we resolve ----
     // input / frame
+    [Fn("int(uint key, uint flags)")]
     public const string HandleWMKeyDown   = "_Z22HandleWMKeyDownMessagejj";
+    [Fn("int(IntPtr ev)")]
     public const string WinMessageHandler = "_Z17WinMessageHandlerP9SDL_Event";
+    [Fn("void(IntPtr window)")]
     public const string SwapBuffers       = "_ZN8GLRender11SwapBuffersEP10SDL_Window";
     /// <summary>#336 step 5: the engine main loop's four non-render steps, timed by <c>EngineZonesService</c>.
     /// <c>CNetLayer::ProcessReceivedFrames(int)</c> @0x5b92c0, <c>CExoResMan::Update(unsigned)</c> @0x536c60,
     /// <c>CClientAIMaster::UpdateState()</c> @0x991c30, <c>CGuiMan::UpdateAndRender(float)</c> @0x580450.</summary>
+    [Fn("long(CNetLayer this, int frames)")]
     public const string NetProcessReceivedFrames = "_ZN9CNetLayer21ProcessReceivedFramesEi";
+    [Fn("long(IntPtr resman, uint arg)")]
     public const string ResManUpdate = "_ZN10CExoResMan6UpdateEj";
     /// <summary>CNetLayer::GetServerNetworkAddress() @0x5ba070 returns a CExoString BY VALUE ("a.b.c.d:port"):
     /// Itanium <c>(CExoString* sret, CNetLayer* this)</c>, Win64 <c>(this, sret)</c>. The net layer itself is the
     /// <see cref="EngineLayout.InternalNetLayer"/> field (what <c>CClientExoApp::GetNetLayer</c> returns). Read by
     /// <see cref="PlayerIdentity"/> for the radial layout's key and by <c>ServerPing</c> for the /fps readout.</summary>
+    [Fn("sret(CNetLayer this)")]
     public const string GetServerNetworkAddress = "_ZN9CNetLayer23GetServerNetworkAddressEv";
+    [Fn("long(IntPtr master)")]
     public const string ClientAiUpdateState = "_ZN15CClientAIMaster11UpdateStateEv";
+    [Fn("long(CGuiMan this, float dt)")]
     public const string GuiUpdateAndRender = "_ZN7CGuiMan15UpdateAndRenderEf";
     // window focus (CClientExoApp). Empty stubs reached by indirect dispatch, so no Windows anchor
     // was derivable -- they skip there, which the OS focus handling already covers.
+    [Fn("void(CClientExoApp this)")]
     public const string OnGainFocus       = "_ZN13CClientExoApp11OnGainFocusEv";
+    [Fn("void(CClientExoApp this)")]
     public const string OnLostFocus       = "_ZN13CClientExoApp11OnLostFocusEv";
     // chat prompt (typing gate)
+    [Fn("void(CGuiInGame this)")]
     public const string SetFocusChatPrompt   = "_ZN10CGuiInGame18SetFocusChatPromptEv";           // chat opened by key
+    [Fn("void(CGuiInGameChatPrompt this)")]
     public const string ChatHandleLMouseDown = "_ZN20CGuiInGameChatPrompt24HandleLMouseDownGuiEventEv"; // clicked into
+    [Fn("void(CGuiInGameChatPrompt this)")]
     public const string ChatHandleEnter      = "_ZN20CGuiInGameChatPrompt11HandleEnterEv";
+    [Fn("void(CGuiInGameChatPrompt this)")]
     public const string ChatHandleEsc        = "_ZN20CGuiInGameChatPrompt9HandleEscEv";
+    [Fn("void(CGuiInGameChatPrompt this)")]
     public const string ChatHandleLoseFocus  = "_ZN20CGuiInGameChatPrompt41HandleLoseKeyboardFocusLMouseDownGuiEventEv";
     /// <summary>CGuiEdit::GetText() @0x592680 -- the prompt's typed line, joined from the edit's CAurString lines.
     /// Returns a CExoString BY VALUE, i.e. <b>sret</b>: Itanium <c>(CExoString* out, CGuiEdit* this)</c>, Win64
     /// <c>(this, out)</c>; the buffer it writes is CALLER-OWNED (zero the struct first, dtor it after). What
     /// <c>HandleEnter</c> itself calls first, so the #580 chain reads exactly what vanilla would have sent.</summary>
+    [Fn("sret(CGuiEdit this)")]
     public const string GuiEditGetText       = "_ZN8CGuiEdit7GetTextEv";
     // ---- chat edit control (build slice #20): focus suppression, keyboard-mode gate, SDL
     //      text-input + clipboard. Chatbox-specific symbols are Linux-only (no _win entries -> skip-with-log
     //      on Windows). EXCEPTIONS: ExoInput + GetKeyboardMode carry _win mappings -- the hotkey
     //      keyboard-mode gate (cross-platform) reads them, and both are name-exported on Windows. ----
     /// <summary>CGuiInGame::ShowChatPrompt() -- a chat opener we skip to suppress vanilla focus.</summary>
+    [Fn("void(CGuiInGame this)")]
     public const string ShowChatPrompt = "_ZN10CGuiInGame14ShowChatPromptEv";
     /// <summary>CGuiInGameChatPrompt::CGuiInGameChatPrompt() -- hooked on WINDOWS ONLY (#419): MSVC inlined Show into
     /// it, so the prompt is activated at birth there; Linux's ctor calls Show, which the skip already covers.</summary>
+    [Fn("IntPtr(CGuiInGameChatPrompt this)")]
     public const string ChatPromptCtor = "_ZN20CGuiInGameChatPromptC1Ev";
     /// <summary>CGuiPanel::Deactivate(int) -- what vanilla Hide pairs with Activate; undoes the ctor-inlined Show.</summary>
+    [Fn("void(CGuiPanel this, int arg)")]
     public const string GuiPanelDeactivate = "_ZN9CGuiPanel10DeactivateEi";
     /// <summary>CGuiInGame::PrepChatPromptForTellToPlayer(CNWCPlayer*) -- (this, player) chat opener; skipped.</summary>
+    [Fn("void(CGuiInGame this, IntPtr player)")]
     public const string PrepChatPromptForTell = "_ZN10CGuiInGame29PrepChatPromptForTellToPlayerEP10CNWCPlayer";
     /// <summary>CExoInput* global; deref for the instance to drive KeyboardModeOn/Off.</summary>
     public const string ExoInput = "g_pExoInput";
     /// <summary>CExoInput::KeyboardModeOn() -- engine gameplay-key gate on (text entry).</summary>
+    [Fn("void(IntPtr input)")]
     public const string KeyboardModeOn = "_ZN9CExoInput14KeyboardModeOnEv";
     /// <summary>CExoInput::KeyboardModeOff() -- gameplay-key gate off (resume movement).</summary>
+    [Fn("void(IntPtr input)")]
     public const string KeyboardModeOff = "_ZN9CExoInput15KeyboardModeOffEv";
     /// <summary>CExoInput::GetKeyboardMode() -- nonzero while the engine is capturing text (chat, console,
     /// any vanilla edit field); the signal to suppress gameplay hotkeys.</summary>
+    [Fn("int(IntPtr input)")]
     public const string GetKeyboardMode = "_ZN9CExoInput15GetKeyboardModeEv";
     /// <summary>CAurora::GetGUIScale() -- static float accessor for the engine's live GUI-scale multiplier
     /// (floor 1.0; changes with resolution / the options slider). We fold it into the chatbox scale so our
     /// overlay tracks the game's UI scaling. Name-exported on Windows (CAurora is a shared-engine class).</summary>
+    [Fn("float()")]
     public const string GetGuiScale = "_ZN7CAurora11GetGUIScaleEv";
     /// <summary>TurnOffKeyboardModal() -- the free function vanilla runs from CGuiEdit::SetFocus right after
     /// KeyboardModeOn: resets modal keys, clears the WASD drive-mode latch, and sends AbortDriveControl so the
     /// server stops too. We SkipOriginal the vanilla focus path, so we must call it ourselves or movement
     /// sticks when chat grabs the keyboard mid-walk (#34). Takes no args -- it walks g_pAppManager itself.</summary>
+    [Fn("void()")]
     public const string TurnOffKeyboardModal = "_Z20TurnOffKeyboardModalv";
+    [Fn("void()")]
     public const string SdlStartTextInput   = "SDL_StartTextInput";
+    [Fn("IntPtr()")]
     public const string SdlGetClipboardText = "SDL_GetClipboardText";
+    [Fn("int(byte* text)")]
     public const string SdlSetClipboardText = "SDL_SetClipboardText";
+    [Fn("void(IntPtr block)")]
     public const string SdlFree             = "SDL_free";
 
     // client<->server messages (CNWCMessage)
+    [Fn("uint(IntPtr msg, byte* data, uint len)")]
     public const string HandleServerToPlayerMessage = "_ZN11CNWCMessage27HandleServerToPlayerMessageEPhj";
+    [Fn("uint(IntPtr msg, byte subcmd)")]
     public const string HandleServerToPlayerLogin   = "_ZN11CNWCMessage25HandleServerToPlayerLoginEh";
+    /// <summary>Returns the net layer's send verdict (0 = nothing went out): the tail is
+    /// <c>mov %r13d,%eax</c> off <c>CNetLayer::SendMessageToPlayer</c> (@0x7f9a85).</summary>
+    [Fn("int(IntPtr self, byte major, byte minor, byte* buf, uint len)")]
     public const string SendPlayerToServerMessage   = "_ZN11CNWCMessage25SendPlayerToServerMessageEhhPhj";
+    [Fn("void(IntPtr msg, IntPtr name, int value)")]
     public const string SendDeviceAdvertiseProperty = "_ZN11CNWCMessage41SendPlayerToServerDeviceAdvertisePropertyERK10CExoStringi";
     // ---- the area-loaded hold (#672, research docs/research/area-loaded-hold.md). Landed for #674/#675;
     //      nothing hooks them yet. ----
     /// <summary>CNWCMessage::SendPlayerToServerArea_AreaLoaded() @0x7fa0c0 -- major 4 minor 3, no payload; the
     /// send whose arrival makes the server place the player (<c>MovePlayerToArea</c>). Three call sites: the
     /// post-loading-screen tail of <see cref="HandleUpdateWorkRemaining"/> and the two movie exits.</summary>
+    [Fn("void(IntPtr msg)")]
     public const string SendAreaLoaded = "_ZN11CNWCMessage33SendPlayerToServerArea_AreaLoadedEv";
     /// <summary>CNWCArea::SetTile(CNWCTile*, int id, int orientation, int height) @0x708e60 -- the server tile-change
     /// message's one callee that re-spawns a tile's model and lights (HandleServerToPlayerArea case 0x14). The
     /// lightmap's static set reopens on it. <c>(this, tile, int, int, int) -> void</c>, no sret.</summary>
+    [Fn("void(CNWCArea this, IntPtr tile, int id, int orientation, int height)")]
     public const string AreaSetTile = "_ZN8CNWCArea7SetTileEP8CNWCTileiii";
     /// <summary>CNWCMessage::HandleServerToPlayerUpdate_WorkRemaining() @0x781a30 -- drives the load bar and, on
     /// the last tick, fades the loadscreen and sends AreaLoaded (or latches <c>internal+0x58c</c> behind an intro
@@ -101,6 +138,7 @@ internal static unsafe class SymbolMap
     public const string HandleUpdateWorkRemaining = "_ZN11CNWCMessage40HandleServerToPlayerUpdate_WorkRemainingEv";
     /// <summary>CClientExoApp::StartLoadBar(int state, char const* image, int rebuild) @0x638a70 -- forwarder to the
     /// internal; disables input, stores <c>state</c> at <c>internal+0x450</c> (1 = local stall, 2 = area transition).</summary>
+    [Fn("IntPtr(CClientExoApp this, int state, IntPtr image, int rebuild)")]
     public const string StartLoadBar = "_ZN13CClientExoApp12StartLoadBarEiPKci";
     /// <summary>CClientExoApp::EndLoadBar() @0x636980 -- destroys the loadscreen, zeroes +0x450, re-enables input.
     /// The happy path does NOT call it: the bar fades out inside WorkRemaining's tail instead.</summary>
@@ -117,12 +155,22 @@ internal static unsafe class SymbolMap
     // new lines reaching the docked windows' text model; SetFilter stops any filter/split re-rendering the
     // backlog (and both births of CReplyButton). The by-value CExoString param is freed by the CALLER
     // (AppendToMsgBuffer, kept running) -- verified in the disasm -- so skipping is data- and leak-safe.
+    /// <summary>Declared as the SKIP shape, not the full ABI: nothing calls these, only installs a handler that
+    /// returns without forwarding, so the trailing arguments are never read and <c>long</c> leaves rax readable as
+    /// false/null (the Itanium mangling hides each real return type).</summary>
+    [Fn("long(IntPtr self, IntPtr text)")]
     public const string AppendToChatBuffer  = "_ZN20CGuiInGameChatWindow18AppendToChatBufferE10CExoStringjji7CResRef";
+    /// <inheritdoc cref="AppendToChatBuffer"/>
+    [Fn("long(IntPtr self)")]
     public const string ChatWindowSetFilter = "_ZN20CGuiInGameChatWindow9SetFilterEjPP17CGuiInGameMessagej";
     // ...and the chrome: SkipOriginal Show on the docked window + input prompt so they never activate into
     // the render tree (Show pairs with Activate, Hide with Deactivate). The gate reads module-presence, not
     // the window's IsVisible flag, so keeping the window un-shown doesn't hide our own box.
+    /// <inheritdoc cref="AppendToChatBuffer"/>
+    [Fn("long(IntPtr self)")]
     public const string ChatWindowShow      = "_ZN20CGuiInGameChatWindow4ShowEv";
+    /// <inheritdoc cref="AppendToChatBuffer"/>
+    [Fn("long(IntPtr self)")]
     public const string ChatPromptShow      = "_ZN20CGuiInGameChatPrompt4ShowEv";
 
     // dialog reimplementation (#dialog): SkipOriginal the three GUI-layer entry points so the vanilla
@@ -132,18 +180,25 @@ internal static unsafe class SymbolMap
     // call-through (panel null -> it guards and just runs ResetGuiState). Replies go out via
     // SendPlayerToServerDialog_Reply (major 0x14, minor 0x03) with ClientApi.Message() as `this`. RVA on
     // Windows (#420); ForceDialogVisible is an empty body on both builds and has no Windows anchor (optional).
+    [Fn("long(CGuiInGame this, IntPtr text, uint speakerId, uint arg)")]
     public const string ShowDialogEntry   = "_ZN10CGuiInGame15ShowDialogEntryERK10CExoStringjj";
+    [Fn("long(CGuiInGame this, int count, IntPtr texts, IntPtr ids, int arg4, uint arg5, int arg6)")]
     public const string ShowDialogReplies = "_ZN10CGuiInGame17ShowDialogRepliesEiP10CExoStringPjiji";
+    [Fn("long(CGuiInGame this, uint arg1, uint arg2, IntPtr text)")]
     public const string ShowReplyChosen   = "_ZN10CGuiInGame15ShowReplyChosenEjj10CExoString";
+    [Fn("void(CGuiInGame this)")]
     public const string CloseDialog       = "_ZN10CGuiInGame11CloseDialogEv";
+    [Fn("void(IntPtr msg, uint dialogId, uint replyIndex, byte isAbort, uint pageId)")]
     public const string SendDialogReply   = "_ZN11CNWCMessage30SendPlayerToServerDialog_ReplyEjjhj";
     /// <summary>CGuiInGameChatDialog::ForceDialogVisible(float) -- a timer-driven re-show (arg is likely the VO
     /// duration). SkipOriginal it too: its body only touches the vanilla panel we never create, so if the
     /// message layer calls it against our null panel it would deref garbage. Skipping is always correct.</summary>
+    [Fn("long(IntPtr chatDialog, float arg)")]
     public const string ForceDialogVisible = "_ZN20CGuiInGameChatDialog18ForceDialogVisibleEf";
     /// <summary>CClientExoApp::GetGameObject(uint) -> CGameObject* (or null). Speaker-id -> object for the
     /// dialog portrait; the object's portrait comes from its virtual GetPortrait (vtable+0x1d8), so no extra
     /// symbol is needed for that. Resolved via the same *(*g_pAppManager) chain ShowDialogEntry uses.</summary>
+    [Fn("CGameObject(CClientExoApp this, uint id)")]
     public const string GetGameObject = "_ZN13CClientExoApp13GetGameObjectEj";
 
     /// <summary>CClientExoApp::GetObjectName(uint objId, CExoString* out) -- writes the speaker's display name
@@ -152,6 +207,7 @@ internal static unsafe class SymbolMap
     /// new[] every call, or a Steal from a temp) -- it MUST be zeroed before the call (the engine frees any
     /// non-null buf first) and freed after via <see cref="ExoStringDtor"/>. Empty name = len==0/buf==NULL. Pass
     /// the CClientExoApp* (the wrapper does the +8 to the internal itself). Confirmed by Ghidra decompile.</summary>
+    [Fn("void(CClientExoApp this, uint objId, IntPtr name)")]
     public const string GetObjectName = "_ZN13CClientExoApp13GetObjectNameEjP10CExoString";
     // Frees GetObjectName's caller-owned CExoString buffer -> the existing ExoStringDtor (in "misc helpers").
 
@@ -159,7 +215,12 @@ internal static unsafe class SymbolMap
     /// string. The player-list "Tell Player" button calls this directly (with '/t "Name" '), bypassing
     /// the three opener hooks -- so it gets its own skip-original hook. By-value CExoString is
     /// non-trivial -> lowered to a pointer arg.</summary>
+    [Fn("void(CGuiInGameChatPrompt this, IntPtr text)")]
     public const string ChatPromptSetFocus  = "_ZN20CGuiInGameChatPrompt8SetFocusE10CExoString";
+    /// <summary>The outbound chat senders (#22), all on <c>CNWCMessage</c>. Each <c>CExoString</c> argument is a
+    /// non-trivial C++ class, so it travels by invisible reference on both ABIs: the slot is a pointer, the callee
+    /// copies, and the caller owns and frees it (#14).</summary>
+    [Fn("void(IntPtr msg, IntPtr text)")]
     public const string SendChatTalk        = "_ZN11CNWCMessage27SendPlayerToServerChat_TalkE10CExoString"; // outbound verify
 
     /// <summary>CGuiInGame::NotifyServerAboutGuiEvent(int type, int integer, uint oid, Vector const&amp;) --
@@ -169,39 +230,63 @@ internal static unsafe class SymbolMap
     /// null. Chat-bar events: type 1 = focus, 2 = unfocus, integer = the prompt's chat mode,
     /// oid = 0x7f000000, vector = {0,0,0}. Wire: existing major 0x35 minor 0x01, itself gated on
     /// ServerSatisfiesBuild(0x2001, 0x23) -- nothing new is invented.</summary>
+    [Fn("void(IntPtr self, int eventType, int mode, uint objectId, IntPtr pos)")]
     public const string NotifyServerGuiEvent = "_ZN10CGuiInGame25NotifyServerAboutGuiEventEiijRK6Vector";
     // outbound send parity (#22): the other five channel senders. All major 0x09; minor per §4.3.
     // Talk/Shout/Whisper/Party/DM take (this, CExoString); TellName takes (this, const CExoString&, const CExoString&).
+    /// <inheritdoc cref="SendChatTalk"/>
+    [Fn("void(IntPtr msg, IntPtr text)")]
     public const string SendChatShout   = "_ZN11CNWCMessage28SendPlayerToServerChat_ShoutE10CExoString";        // minor 0x02
+    /// <inheritdoc cref="SendChatTalk"/>
+    [Fn("void(IntPtr msg, IntPtr text)")]
     public const string SendChatWhisper = "_ZN11CNWCMessage30SendPlayerToServerChat_WhisperE10CExoString";      // minor 0x03
+    /// <inheritdoc cref="SendChatTalk"/>
+    [Fn("void(IntPtr msg, IntPtr name, IntPtr text)")]
     public const string SendChatTell    = "_ZN11CNWCMessage31SendPlayerToServerChat_TellNameERK10CExoStringS2_"; // minor 0x04, (name, text); server resolves by FIRST name only
+    /// <inheritdoc cref="SendChatTalk"/>
+    [Fn("void(IntPtr msg, uint playerId, IntPtr text)")]
     public const string SendChatTellId  = "_ZN11CNWCMessage27SendPlayerToServerChat_TellEj10CExoString";         // minor 0x04, (playerId, text) -- vanilla /t path
+    /// <inheritdoc cref="SendChatTalk"/>
+    [Fn("void(IntPtr msg, IntPtr text)")]
     public const string SendChatParty   = "_ZN11CNWCMessage28SendPlayerToServerChat_PartyE10CExoString";        // minor 0x06
+    /// <inheritdoc cref="SendChatTalk"/>
+    [Fn("void(IntPtr msg, IntPtr text)")]
     public const string SendChatDM      = "_ZN11CNWCMessage36SendPlayerToServerChat_DungeonMasterE10CExoString"; // minor 0x0e
 
     /// <summary>CClientExoApp::GetPlayerByPlayerName(CExoString) -> CNWCPlayer* or null.
     /// Name→player roster lookup for Tell-pinned tabs (#45, ADR 0002).</summary>
+    [Fn("IntPtr(CClientExoApp this, IntPtr name)")]
     public const string GetPlayerByPlayerName = "_ZN13CClientExoApp21GetPlayerByPlayerNameE10CExoString";
 
     /// <summary>CClientExoApp::GetPlayerByCreatureName(CExoString) -> CNWCPlayer* or null.
     /// What vanilla /t resolves with -- pinned tab names are character names, so try this first.</summary>
+    [Fn("IntPtr(CClientExoApp this, IntPtr name)")]
     public const string GetPlayerByCreatureName = "_ZN13CClientExoApp23GetPlayerByCreatureNameE10CExoString";
 
     // cursor override: client-internal, no Windows anchor yet -> skip + log there.
+    [Fn("void(CClientExoAppInternal this, int param1)")]
     public const string UpdateMouseCursorAppearance = "_ZN21CClientExoAppInternal27UpdateMouseCursorAppearanceEi";
+    [Fn("void(CCachedMouseCursorManager this, int cursorId, int hotspot, int p3, int p4, int p5)")]
     public const string SetMouseCursor = "_ZN25CCachedMouseCursorManager14SetMouseCursorEiiiii";
 
     // quickbar positioning (client GUI, Windows = RVA rows, #439)
+    [Fn("void(IntPtr panel)")]
     public const string QuickbarReposition = "_ZN14CPanelQuickBar10RepositionEv";
+    [Fn("void(CGuiPanel this, int x, int y)")]
     public const string SetPositionScreen  = "_ZN9CGuiPanel17SetPositionScreenEii";
     // compass hide/show (CGuiInGame methods, take `this`)
+    [Fn("void(CGuiInGame this)")]
     public const string HideCompass = "_ZN10CGuiInGame11HideCompassEv";
+    [Fn("void(CGuiInGame this)")]
     public const string ShowCompass = "_ZN10CGuiInGame11ShowCompassEv";
 
     // misc engine helpers
+    [Fn("IntPtr(CClientExoApp this)")]
     public const string GetNWCMessage = "_ZN13CClientExoApp13GetNWCMessageEv";
     public const string SetText       = "_ZN20CAuroraStringWrapper7SetTextEj";
+    [Fn("void(IntPtr exo, byte* s, uint len)")]
     public const string ExoStringInit = "_ZN10CExoString17InitFromCharArrayEPKcj";
+    [Fn("void(IntPtr self)")]
     public const string ExoStringDtor = "_ZN10CExoStringD1Ev";
     /// <summary><c>Encoding::FromUTF8(const char*, Encoding::Locale)</c> @0x5fd710 -- the engine's UTF-8 -> codepage
     /// transcode, what SDL_TEXTINPUT runs before any vanilla edit field sees a byte (WinMessageHandler case 0x303;
@@ -209,46 +294,63 @@ internal static unsafe class SymbolMap
     /// language, else cp1252); a module <c>encoding.2da</c> overrides it. Unmappable -> <c>'?'</c>. Returns a
     /// <c>std::string</c> BY VALUE from a FREE function, so the sret buffer is the first arg on both ABIs:
     /// <c>(std::string* out, const char*, int locale)</c>. The string layout differs per CRT: <see cref="Native.StdString"/>.</summary>
+    [Fn("byte*(byte* ret, byte* s, int locale)")]
     public const string EncodingFromUtf8 = "_ZN8Encoding8FromUTF8B5cxx11EPKcNS_6LocaleE";
     /// <summary><c>operator delete(void*)</c> -- frees a heap <c>std::string</c> buffer the engine handed us. Linux:
     /// libstdc++'s, through the global scope; Windows: the game's own (static CRT: the <c>_free_base</c> thunk).</summary>
+    [Fn("void(IntPtr block)")]
     public const string OperatorDelete = "_ZdlPv";
     // consent modal (CPanelOkCancel, as used by the quit dialog). All name-exported on both
     // platforms except operator new (static CRT on Windows -> RVA; see the _win table).
+    [Fn("IntPtr(nuint size)")]
     public const string OperatorNew     = "_Znwm";                                     // Linux: libstdc++ operator new(size_t); Windows: the game's own by RVA
+    [Fn("void(IntPtr panel)")]
     public const string OkCancelCtor    = "_ZN14CPanelOkCancelC1Ev";
+    [Fn("void(IntPtr panel, IntPtr msg, uint ok, uint cancel)")]
     public const string OkCancelActivate= "_ZN14CPanelOkCancel8ActivateE10CExoStringjj"; // (CExoString msg, uint ok, uint cancel)
+    [Fn("byte*(int key)")]
     public const string SdlGetKeyName   = "SDL_GetKeyName";
+    [Fn("int(byte* name)")]
     public const string SdlGetKeyFromName = "SDL_GetKeyFromName";                        // action-camera toggle key by name
     /// <summary><c>CClientExoAppInternal::WalkPlayerToPoint(float, float, float, int, uint, int)</c> @0x663950: the one
     /// seam every left-click walk goes through (the action camera refuses it). Windows: the only function referencing
     /// "gui_nowalk" on both builds (StringRefs).</summary>
+    [Fn("int(CClientExoAppInternal this, float x, float y, float z, int flags, uint obj, int extra)")]
     public const string WalkPlayerToPoint = "_ZN21CClientExoAppInternal17WalkPlayerToPointEfffiji";
     /// <summary><c>CClientExoAppInternal::FeedbackHitCheck{Hostile,NonHostile}(CNWCObject**, Vector*, int*, int)</c>
     /// @0x660a10 / @0x6618f0: the world pick under the cursor (hover, cursor shape, tooltip, both clicks). The
     /// dispatcher between them is inlined on Windows, so both are hooked; paired by callee lists (the hostile one
     /// calls CNWTileSet::GetHeightTransition, the other does not).</summary>
+    [Fn("int(CClientExoAppInternal this, IntPtr* obj, IntPtr point, int* ground, int mask)")]
     public const string FeedbackHitCheckHostile = "_ZN21CClientExoAppInternal23FeedbackHitCheckHostileEPP10CNWCObjectP6VectorPii";
+    /// <inheritdoc cref="FeedbackHitCheckHostile"/>
+    [Fn("int(CClientExoAppInternal this, IntPtr* obj, IntPtr point, int* ground, int mask)")]
     public const string FeedbackHitCheckNonHostile = "_ZN21CClientExoAppInternal26FeedbackHitCheckNonHostileEPP10CNWCObjectP6VectorPii";
+    [Fn("int()")]
     public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
+    [Fn("uint(int* x, int* y)")]
     public const string SdlGetMouseState = "SDL_GetMouseState";
     /// <summary><c>CActionTarget::ActivateTargetMode()</c> @0x9652b0 -- the one funnel every "pick a target" mode
     /// reaches (quickbar spell/feat/item, radial, DM tool, script <c>SetupScriptTargetMode</c>); the subclasses only
     /// build the mode and call this last. Takes <c>this</c> and nothing else, returns void, on both builds.</summary>
+    [Fn("void(CActionTarget this)")]
     public const string ActivateTargetMode = "_ZN13CActionTarget18ActivateTargetModeEv";
     /// <summary><c>CActionTarget::HandleLMouseDown()</c> @0x965840 -- resolve a live targeting mode at the engine's
     /// own mouse position (<c>CGuiMan::GetMousePos</c> + <c>FeedbackHitCheck</c> + the allowed-target scan + the
     /// per-mode validation callback). Called, not hooked: the auto-target fires the same code path a click does.
     /// Safe to call re-entrantly from the <see cref="ActivateTargetMode"/> post-hook -- it touches no member after
     /// the fire callback (which may <c>delete this</c>), and all 45 callers of ActivateTargetMode call it last.</summary>
+    [Fn("void(CActionTarget this)")]
     public const string ActionTargetLMouseDown = "_ZN13CActionTarget16HandleLMouseDownEv";
     /// <summary>Tab-target (CX-636). <c>CClientExoAppInternal::PerformDefaultActionOnObject(CNWCObject*)</c>
     /// @0x660830: the one world-click seam -- <c>PerformLButtonDownAction</c> calls it when the pick returned an
     /// object (verdict 2) and walks to the point when it answers 0, so a non-zero answer is "handled, no walk".
     /// Dispatches on the type byte to the creature / item / placeable / door defaults on both builds.</summary>
+    [Fn("int(CClientExoAppInternal this, IntPtr obj)")]
     public const string PerformDefaultActionOnObject = "_ZN21CClientExoAppInternal28PerformDefaultActionOnObjectEP10CNWCObject";
     /// <summary>SDL: the live scancode array (<c>const Uint8*</c>, <c>SDL_NUM_SCANCODES</c> entries). The
     /// preview cast snapshots which keys were down when a target mode opened, to fire on their release.</summary>
+    [Fn("byte*(int* numkeys)")]
     public const string SdlGetKeyboardState = "SDL_GetKeyboardState";
     /// <summary>The Tab-highlight colour globals <c>HiliteAreaObjects</c> @0x7119f0 picks from (Vector, 16-byte
     /// stride, plain C names). Linux 0x19fac00/0x19fabf0/0x19fabe0/0x19faba0/0x19fabc0; the Windows body
@@ -264,18 +366,22 @@ internal static unsafe class SymbolMap
     /// <c>Nui__Render()</c> (which only fills the command queue and touches no GL). Everything drawn before
     /// it lands UNDER every NUI window and over the vanilla GUI panels -- which is where the framework's own
     /// windows draw (<c>UiHostService</c>), not just where nuklear windows get built.</summary>
+    [Fn("void(float aa)")]
     public const string NkSdlRender        = "_Z13nk_sdl_renderf";
     /// <summary><c>int nk_window_is_any_hovered(nk_context*)</c> -- pointer precedence for the layering
     /// above. NUI draws on top of our windows, so it must get the click too.</summary>
+    [Fn("int(IntPtr ctx)")]
     public const string NkWindowIsAnyHovered = "nk_window_is_any_hovered";
     /// <summary><c>void nk_sdl_copy_event(SDL_Event*)</c> -- nuklear's own event feed, normally reached via
     /// <c>CExoInput::AddEvent</c>. Swallowing an event at <c>WinMessageHandler</c> starves it, so a swallowed
     /// pointer motion is handed here directly to keep <see cref="NkWindowIsAnyHovered"/> answering live.</summary>
+    [Fn("void(IntPtr ev)")]
     public const string NkSdlCopyEvent      = "_Z17nk_sdl_copy_eventP9SDL_Event";
     // in-game game clock (chat game-time timestamps). The SERVER-synced module time lives on CNWCModule
     // (hour at +0x16c); CClientExoApp::GetModule(app) fetches it off the same *g_pAppManager chain the
     // in-game gate walks. NOT CWorldTimer -- that's a free-running local clock never anchored to server time.
     // Linux-only (no _win entry -> skip on Windows).
+    [Fn("CNWCModule(CClientExoApp this)")]
     public const string GetModule         = "_ZN13CClientExoApp9GetModuleEv";
     /// <summary>CClientExoApp::GetPlayerCreature() @0x637780 -- the controlled creature (client object). Call
     /// with a live CClientExoApp* (ClientApi.LiveExoApp). Used to anchor the shadow map on the PLAYER, not the
@@ -289,21 +395,26 @@ internal static unsafe class SymbolMap
     /// Mode 0 sets every bubble's <c>+0x150</c>, and every path that could activate the panel is guarded on
     /// it: the engine stops drawing both the plate and the bubble while still building the state and
     /// refreshing the screen anchor we read. This is a supported vanilla setting, not a patch.</summary>
+    [Fn("void(int mode)")]
     public const string SetChatBubbleMode = "_ZN21CGuiInGamePopUpBubble17SetChatBubbleModeEi";
     /// <summary>CNWCCreature::ShowFeedbackBubbleText() @0x71a800 -- builds the mouse-over/Tab plate string and
     /// sets the creature's own "plate is up" flag. ABI: <c>(this) -&gt; void</c>.</summary>
+    [Fn("void(CNWCCreature this)")]
     public const string CreatureShowFeedbackBubbleText = "_ZN12CNWCCreature22ShowFeedbackBubbleTextEv";
     /// <summary>CNWCPlaceable::ShowFeedbackBubbleText() @0x7ea8a0 -- the placeable twin.</summary>
+    [Fn("void(CNWCPlaceable this)")]
     public const string PlaceableShowFeedbackBubbleText = "_ZN13CNWCPlaceable22ShowFeedbackBubbleTextEv";
     /// <summary>CNWCItem::ShowFeedbackBubbleText() @0x7cea90 -- the item twin. Hook the PRIMARY only: the
     /// <c>_ZThn72_</c> thunk @0x7ced80 is <c>sub $0x48,%rdi; jmp</c> straight into it, so hooking both
     /// would double-fire.</summary>
+    [Fn("void(CNWCItem this)")]
     public const string ItemShowFeedbackBubbleText = "_ZN8CNWCItem22ShowFeedbackBubbleTextEv";
     /// <summary>CNWCObject::SetPopUpBubbleText(CExoString, int, float, float) @0x7e8050 -- the ONE sink both
     /// the plate and an overhead chat line pass through, and the only place the speaking/plated object is a
     /// clean <c>CNWCObject*</c>. ABI (verified by disassembly): <c>(this /*rdi*/, CExoString* /*rsi, the
     /// by-value string lowered to a hidden pointer*/, int forceShow /*edx*/, float perChar /*xmm0*/,
     /// float fixedSec /*xmm1*/)</c> -- Ghidra drops the two floats.</summary>
+    [Fn("void(CNWCObject this, IntPtr text, int forceShow, float perChar, float fixedSec)")]
     public const string SetPopUpBubbleText = "_ZN10CNWCObject18SetPopUpBubbleTextE10CExoStringiff";
     /// <summary>CGuiPanel::UnToggleOff() @0x5876a0 -- clears the hide bit (<c>+0xb8 &amp;= ~4</c>) and re-attaches the
     /// model only when that leaves the panel at exactly state 1 (was 5: active AND hidden); on an inactive panel it is
@@ -311,10 +422,12 @@ internal static unsafe class SymbolMap
     /// <c>ToggleOff</c>) and <c>UpdatePopUpBubble</c> early-outs on it, so after a vanilla interlude the mode-0
     /// anchor stays frozen until the bit is cleared -- <c>SetChatBubbleMode(0)</c>'s walk only Deactivates
     /// (<c>&amp;= ~1</c>). Called per bubble from the two cold hooks that read its anchor.</summary>
+    [Fn("void(CGuiPanel this)")]
     public const string GuiPanelUnToggleOff = "_ZN9CGuiPanel11UnToggleOffEv";
     /// <summary>CNWCMessage::HandleServerToPlayerChat(unsigned char) @0x75b280 -- the channel byte arrives in
     /// esi and the SetPopUpBubbleText for that line runs on the same stack, so it latches the channel for
     /// per-channel bubble styling. ABI: <c>(this /*rdi*/, uchar channel /*esi*/)</c>.</summary>
+    [Fn("void(IntPtr msg, byte channel)")]
     public const string HandleServerToPlayerChat = "_ZN11CNWCMessage24HandleServerToPlayerChatEh";
     // ---- combat text: damage numbers + floating combat text (docs/re/combat-text.md). RVA on Windows (#420). ----
     /// <summary>CNWCObject::ShowFloatyText(CExoString, Vector, CExoString, int) @0x7e7010 -- the ONE funnel
@@ -335,6 +448,7 @@ internal static unsafe class SymbolMap
     /// <summary>RenderInterface::GetViewPort(float*) @0x45d0b0 -- tail-jumps to GLRender::GetViewPort, which
     /// widens the four ints of <c>GLRender::m_viewport</c> into the caller's float[4] {x, y, w, h}. The same
     /// call <c>Camera::MapToScreen</c> falls back to when the camera carries no viewport of its own.</summary>
+    [Fn("void(float* out4)")]
     public const string GetViewPort = "_ZN15RenderInterface11GetViewPortEPf";
 
     // data globals
@@ -347,6 +461,7 @@ internal static unsafe class SymbolMap
     /// "which GUI object is under this point" test (#451). fresh=0 returns the object cached at CGuiMan+0x78 when one
     /// is (x, y and mask then ignored); the mask only filters the secondary layer list, not the primary scene hit.
     /// Pass it exactly as the engine's own handlers do: press (mouseX, mouseY, 0, 1), wheel (…, 0, 8). Same on both builds.</summary>
+    [Fn("IntPtr(CGuiMan this, int x, int y, int fresh, int mask)")]
     public const string GuiObjectHitCheck = "_ZN7CGuiMan17GuiObjectHitCheckEiiii";
     /// <summary>CTlkTable* global; the <c>this</c> for <see cref="TlkGetSimpleString"/>.</summary>
     public const string TlkTable   = "g_pTlkTable";
@@ -361,19 +476,29 @@ internal static unsafe class SymbolMap
     /// bind, or a bind of another type, answers the type's zero -- so a caller names the bound type, never
     /// guesses it. Allocates (map lookup, cpptoml substrings): cold reads only. Windows exports the same
     /// three instantiations (<c>_N</c>, <c>_J</c> = the 64-bit long, <c>N</c>).</summary>
+    [Fn("byte(CExoConfig this, byte* key, byte committed)")]
     public const string ExoConfigGetBool   = "_ZN10CExoConfig3GetIbEET_RKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEb";
+    [Fn("long(CExoConfig this, byte* key, byte committed)")]
     public const string ExoConfigGetLong   = "_ZN10CExoConfig3GetIlEET_RKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEb";
+    [Fn("double(CExoConfig this, byte* key, byte committed)")]
     public const string ExoConfigGetDouble = "_ZN10CExoConfig3GetIdEET_RKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEb";
 
     // ---- owned-render text (chatbox slice #19). Linux-only throwaway rig; no Windows anchors
     //      (Resolve returns Zero + logs on Windows, so the feature degrades gracefully there). ----
     // stb_truetype: the client statically links stb and exports every entry point as extern "C".
+    [Fn("int(byte* info, byte* data, int offset)")]
     public const string StbttInitFont              = "stbtt_InitFont";
+    [Fn("float(byte* info, float px)")]
     public const string StbttScaleForPixelHeight   = "stbtt_ScaleForPixelHeight";
+    [Fn("void(byte* info, int* ascent, int* descent, int* lineGap)")]
     public const string StbttGetFontVMetrics       = "stbtt_GetFontVMetrics";
+    [Fn("void(byte* info, int codepoint, int* advance, int* leftSideBearing)")]
     public const string StbttGetCodepointHMetrics  = "stbtt_GetCodepointHMetrics";
+    [Fn("void(byte* info, int codepoint, float scaleX, float scaleY, int* x0, int* y0, int* x1, int* y1)")]
     public const string StbttGetCodepointBitmapBox = "stbtt_GetCodepointBitmapBox";
+    [Fn("void(byte* info, byte* output, int outW, int outH, int outStride, float scaleX, float scaleY, int codepoint)")]
     public const string StbttMakeCodepointBitmap   = "stbtt_MakeCodepointBitmap";
+    [Fn("int(byte* info, int codepoint)")]
     public const string StbttFindGlyphIndex        = "stbtt_FindGlyphIndex";
     // The client runs an OpenGL 3.3 CORE context (verified: SDL_GL_SetAttribute PROFILE_MASK=CORE),
     // so the owned draw is shader+VAO+VBO. Modern GL (>=1.3) resolves through this exported SDL entry.
@@ -381,7 +506,9 @@ internal static unsafe class SymbolMap
     // RenderInterface blend/depth wrappers (static; args in edi/esi, no `this`). We route only these
     // through the engine so its enable-cache stays in sync; matrices are ours (software stack -> shader
     // uniforms in the engine, useless for a raw draw). Immediates read from PrintStringScreenPos (0x4351f0).
+    [Fn("void(int cap)")]
     public const string RiEnable       = "_ZN15RenderInterface6EnableEN6Aurora17AuroraEnableEnumsE";
+    [Fn("void(int cap)")]
     public const string RiDisable      = "_ZN15RenderInterface7DisableEN6Aurora17AuroraEnableEnumsE";
     public const string RiSetBlendFunc = "_ZN15RenderInterface12SetBlendFuncEN6Aurora16AuroraBlendModesES1_";
     /// <summary>RenderInterface::IsEnabled(AuroraEnableEnums) @0x45cf30 -- read an Aurora render cap's cached
@@ -390,6 +517,7 @@ internal static unsafe class SymbolMap
     /// <para>Cap 5 = LIGHTING, and it is the modern renderer's lit predicate: <c>PartTriMesh::MatStatic</c>
     /// (@0x450560) sends flat white instead of the material ambient/diffuse/emissive when it reads false, and
     /// <c>RenderFlat</c> (@0x450eb0) drops the cap around a <c>mat+0x98</c> material.</para></summary>
+    [Fn("byte(int cap)")]
     public const string RiIsEnabled    = "_ZN15RenderInterface9IsEnabledEN6Aurora17AuroraEnableEnumsE";
     /// <summary>#210 (G1): RenderInterface::ResetRenderStates() @0x45d330 -- a thin static thunk to
     /// <c>GLRender::ResetRenderStates()</c> @0x4d1810 (no <c>this</c>). It force-applies the engine's default
@@ -400,6 +528,7 @@ internal static unsafe class SymbolMap
     /// <c>SDL_GL_SwapWindow</c>, so the per-frame cost is proven and the C-heap work inside it is engine-side
     /// (not NativeAOT GC). We call it a second time on hand-back so the resync is OURS rather than incidental
     /// to where the engine happens to have put its own.</para></summary>
+    [Fn("void()")]
     public const string RiResetRenderStates = "_ZN15RenderInterface17ResetRenderStatesEv";
     /// <summary>#210: RenderInterface::BindBuffer(target, name) @0x45d190 -- a static thunk to
     /// <c>GLRender::BindBuffer</c> @0x4d04a0, which is a CACHING wrapper: for GL_ARRAY_BUFFER it compares the
@@ -407,6 +536,7 @@ internal static unsafe class SymbolMap
     /// glBindBuffer on a match. <c>ResetRenderStates</c> does not reset that global -- array and uniform
     /// buffer bindings are the two GL_* bindings outside its write set -- so the hand-back has to route one
     /// bind through this wrapper to bring cache and GL back into agreement.</summary>
+    [Fn("void(uint target, uint name)")]
     public const string RiBindBuffer = "_ZN15RenderInterface10BindBufferEjj";
     /// <summary>#237: <c>GLRender::m_boundTextures</c> @0x19ad0e0 -- the engine's per-stage bound-texture
     /// CACHE, 16 entries of <c>{AuroraEnableEnums target, GLuint name}</c> (8 bytes each), with
@@ -428,6 +558,7 @@ internal static unsafe class SymbolMap
     /// <c>Camera::ClearFrameBufferResources</c> and the movie/nuklear teardowns. #211 keys its owned copies
     /// on the engine name, and this is the exact moment a name stops meaning what was copied from it --
     /// including on an area transition, which fires no other edge Alloy watches.</summary>
+    [Fn("void(uint count, uint* names)")]
     public const string RiDeleteTextures = "_ZN15RenderInterface14DeleteTexturesEjPKj";
     /// <summary>#259: RenderInterface::CreateTexture(CAurTexture*, bool, int) @0x45d200 -- the engine's
     /// per-cell texture UPLOAD, and the only window in which decoded pixels exist. Ghidra: its one caller is
@@ -440,6 +571,7 @@ internal static unsafe class SymbolMap
     /// <para>ABI: <c>(CAurTexture* /*rdi*/, bool useSubImage /*sil*/, int cell /*edx*/)</c>. The bool picks
     /// <c>glTexSubImage2D</c> (assumes storage) over <c>glTexImage2D</c> (allocates); a fresh texture always
     /// needs the allocating form.</para></summary>
+    [Fn("void(IntPtr tex, byte useSubImage, int cell)")]
     public const string RiCreateTexture = "_ZN15RenderInterface13CreateTextureEP11CAurTexturebi";
     /// <summary><c>g_bGeneratePLTOnGPU</c> @0x19abd7c (B, a 4-byte int) -- does the engine composite PLT
     /// textures on the GPU? PLT is the LAYERED, colourable format every player character's body uses: skin,
@@ -460,22 +592,26 @@ internal static unsafe class SymbolMap
     /// it and the engine rebuilds every PLT texture in the SAME step (options-apply), which a per-frame
     /// re-assert is one frame too late for.
     /// <para>ABI: <c>(CAurTextureBasic* /*rdi*/)</c>, no return.</para></summary>
+    [Fn("void(IntPtr tex)")]
     public const string AurTextureConstructImage = "_ZN16CAurTextureBasic14ConstructImageEv";
     /// <summary><c>CAurTextureBasic::BuildAndStoreTexture()</c> @0x48b320 -- the inner build: ConstructImage (the
     /// resource read via AurGetImageWrapper and the decode) unless +0xe6, glImageBasic (the upload) unless the
     /// image is null, the alpha mean, FreeImage. Skipped outright when +0xe8 is set. ADR 0023 hooks it to stand a
     /// resident texture in for the whole of that. ABI: <c>(CAurTextureBasic* /*rdi*/)</c>, no return.</summary>
+    [Fn("void(IntPtr tex)")]
     public const string AurTextureBuildAndStoreTexture = "_ZN16CAurTextureBasic20BuildAndStoreTextureEv";
     /// <summary><c>CAurTextureBasic::glImageBasic(bool)</c> @0x48bcf0 -- the other <see cref="PltOnGpu"/>
     /// reader, and the one that routes a PLT texture (<c>+0x84 == 4</c>) around the upload funnel. Hooked
     /// for the same reason and on the same terms as <see cref="AurTextureConstructImage"/>.
     /// <para>ABI: <c>(CAurTextureBasic* /*rdi*/, bool useSubImage /*sil*/)</c>, no return.</para></summary>
+    [Fn("int(IntPtr tex, byte useSubImage)")]
     public const string AurTextureGlImageBasic = "_ZN16CAurTextureBasic12glImageBasicEb";
     /// <summary>The engine's <c>operator new[]</c> -- what ADR 0023's warm hand-back allocates the cell-name
     /// array with, because <c>CAurTextureBasic::Reset</c> frees it with the engine's <c>delete[]</c>. #461:
     /// Windows resolves it to the exported <c>MaxTree::operator new</c> @0x8a060, which is <c>_malloc_base</c>
     /// on the same statically linked UCRT heap that <c>Reset</c>'s <c>_free_base</c> @0xc10370 returns to.
     /// Unresolved here meant every Windows build was cold, which is the churn behind #461.</summary>
+    [Fn("IntPtr(nuint size)")]
     public const string OperatorNewArray = "_Znam";
 
     // ---- shadow replacement (#65). Linux-only; no _win entries -> skip-with-log on Windows. ----
@@ -483,20 +619,26 @@ internal static unsafe class SymbolMap
     // suppresses stencil shadows while RenderShadows keeps managing all pipeline state itself
     // (its post-skip net state is runtime-dependent -- see docs/research/shadow-rendering-impl.md).
     /// <summary>Scene::RenderDynamicShadows() @ 0x4670b0 -- per-frame dynamic shadow-volume sub-pass.</summary>
+    [Fn("void(Scene this)")]
     public const string RenderDynamicShadows = "_ZN5Scene20RenderDynamicShadowsEv";
     /// <summary>Scene::RenderStaticShadows() @ 0x46a3a0 -- static (world-geometry) shadow-volume sub-pass.</summary>
+    [Fn("void(Scene this)")]
     public const string RenderStaticShadows  = "_ZN5Scene19RenderStaticShadowsEv";
     /// <summary>CAurScene::ComputeStaticLighting() @0x465590 -- the engine's own "the static lighting changed"
     /// signal (#664 §A.6): called after a script toggles a placeable light. The lightmap's re-classify edge
     /// (#674). <c>(this) -> void</c>, virtual (Scene vtable 0x68 Linux / 0x60 Windows; hooked by name).</summary>
+    [Fn("void(IntPtr scene)")]
     public const string ComputeStaticLighting = "_ZN9CAurScene21ComputeStaticLightingEv";
     /// <summary>Scene::RenderShadowPlanes(int, int) @ 0x463e20 -- planar/projected shadow fallback sub-pass.</summary>
+    [Fn("void(Scene this, int pass, int flag)")]
     public const string RenderShadowPlanes   = "_ZN5Scene18RenderShadowPlanesEii";
     /// <summary>Scene::DoGobShadows(PartLight*) @ 0x45fba0 -- per-light gob volume builder, dispatched
     /// directly by RenderShadows (Scene-vtable +0x1c8) alongside the Render* sub-passes.</summary>
+    [Fn("void(Scene this, PartLight light)")]
     public const string DoGobShadows         = "_ZN5Scene12DoGobShadowsEP9PartLight";
     /// <summary>Scene::DoDynamicMeshProjections(PartLight*) @ 0x45f2e0 -- per-light dynamic mesh shadow
     /// builder, dispatched directly by RenderShadows (Scene-vtable +0x1e0).</summary>
+    [Fn("void(Scene this, PartLight light)")]
     public const string DoDynamicMeshProjections = "_ZN5Scene24DoDynamicMeshProjectionsEP9PartLight";
 
     // ---- shadow-map caster re-drive (#65 slice 3b). The frame slot + the geometry submission. ----
@@ -504,10 +646,12 @@ internal static unsafe class SymbolMap
     /// iterate+SetModelMatrix+RenderVertexData loop, DrawBucketManager @Scene+0x208). Ids 1..8 (RenderSinglePass);
     /// bucket 1 = opaque casters. Called directly to render casters into our depth FBO. ABI: <c>(Scene* /*rdi*/,
     /// int bucketId /*esi*/)</c>.</summary>
+    [Fn("void(Scene this, int bucketId)")]
     public const string RenderDrawBucket = "_ZN5Scene16RenderDrawBucketEi";
     /// <summary>Scene::RenderSinglePass() @0x46e5f0 -- one whole per-view colour pass (buckets 0..8, sky,
     /// lights); runs for the main view AND each reflection subframe, with view/proj already on the matrix
     /// stacks at entry. The M1 tracer (#81) hooks it to run the owned opaque block before buckets 0/1.</summary>
+    [Fn("void(IntPtr scene)")]
     public const string RenderSinglePass = "_ZN5Scene16RenderSinglePassEv";
     /// <summary>Scene::FadeDoors() @0x467990 -- vtable slot 0x260, the LAST engine call inside
     /// <c>Scene::RenderSinglePass</c> before <c>RenderDrawBucket(0)</c>. #132's frame anchor.
@@ -521,6 +665,7 @@ internal static unsafe class SymbolMap
     /// one, and both write state the owned pass reads -- scene fog (#124) and the per-tile fade factor -- so
     /// the anchor sits after them rather than before. Unconditional in the decompile, and reached only
     /// through the vtable, so no other caller exists to gate against.</para></summary>
+    [Fn("void(IntPtr scene)")]
     public const string FadeDoors = "_ZN5Scene9FadeDoorsEv";
     /// <summary>GLRender's matrix-stack array <c>m_aurMtxStack</c> @0x19e2f60, indexed by AuroraTransStates
     /// (PROJECTION=0, VIEW=1, ...), stride 0x58 per stack: a std::vector&lt;Matrix4x4&gt; (0x18 bytes of
@@ -532,6 +677,7 @@ internal static unsafe class SymbolMap
     /// modes 1/2, glDrawArrays otherwise; picks + sets the program from VDO attributes first). Static member:
     /// first arg IS the VDO, no <c>this</c>. Hooked by DrawStatsService (ADR 0006 phase 0) for the per-frame
     /// draw histogram.</summary>
+    [Fn("void(IntPtr vdo, uint item, uint prim, uint size, uint offset)")]
     public const string GlRenderVertexData = "_ZN8GLRender16RenderVertexDataEP16VertexDataObjectjN6Aurora20AuroraPrimitiveTypesEjj";
     /// <summary>#215: GLRender::RenderVertexStreamData(VertexStreamDataObject*, AuroraPrimitiveTypes, uint,
     /// uint) @0x4d0ca0 -- the engine's SECOND and last draw funnel. Established by enumerating the binary's
@@ -545,9 +691,11 @@ internal static unsafe class SymbolMap
     /// prim/size/offset in <c>esi</c>/<c>edx</c>/<c>ecx</c>. Checked rather than inherited from
     /// <see cref="GlRenderVertexData"/>'s: a shifted argument here would fault on the menu's debug boxes,
     /// long before any world frame.</para></summary>
+    [Fn("void(IntPtr vsdo, uint prim, uint size, uint offset)")]
     public const string GlRenderVertexStreamData = "_ZN8GLRender22RenderVertexStreamDataEP22VertexStreamDataObjectN6Aurora20AuroraPrimitiveTypesEjj";
     /// <summary>#215: Gob::CollectLights(List&lt;PartLight*&gt;&amp;) @0x43fa90 -- half of the
     /// <c>focuslighting</c> write the shim has to replicate. ABI: <c>(Gob* /*rdi*/, List* /*rsi*/)</c>.</summary>
+    [Fn("void(IntPtr gob, IntPtr list)")]
     public const string GobCollectLights = "_ZN3Gob13CollectLightsER4ListIP9PartLightE";
     /// <summary>#215: <c>Scene::m_pFocusObject</c> @0x19ab960 -- the Gob whose lighting
     /// <c>focuslighting</c> describes. Data symbol; read only.</summary>
@@ -587,6 +735,7 @@ internal static unsafe class SymbolMap
     /// so does every VFX that highlights. This recomputes the winner and is what calls
     /// <c>Scene::AddHighlightGob</c>, so an After hook here sees the engine's own verdict rather than
     /// re-deriving it -- and takes a single pointer, dodging the by-value Vector in Hilite's ABI.</summary>
+    [Fn("void(IntPtr obj)")]
     public const string RefreshHilite = "_ZN12CNWCAnimBase13RefreshHiliteEv";
     /// <summary>#330: <c>fadingoutbucket</c> @0x19abba0 and <c>fadinginbucket</c> @0x19abbb0 -- the tiles whose
     /// fade factor is being stepped this frame. <c>HandleFadingOutBucket</c> @0x47f870 /
@@ -600,6 +749,7 @@ internal static unsafe class SymbolMap
     /// their own projection with the depth mask off. #261: NOT hooked. The shim calls it for its
     /// bookkeeping -- ProcessGob, node animation, the cross-fade alpha writes and the per-gob
     /// <c>SetPosition(Scene+0x190)</c> -- and Alloy enrols the gobs itself. ABI: <c>(Scene* /*rdi*/)</c>.</summary>
+    [Fn("void(IntPtr scene)")]
     public const string RenderSkyBoxes = "_ZN5Scene14RenderSkyBoxesEv";
     /// <summary>#261: Part::GetWorld(Vector&amp;, Quaternion&amp;) @0x437930 -- composes a part's world
     /// transform by walking <c>part+0x48</c> to the root and then applying the owning Gob's adjusted
@@ -607,11 +757,13 @@ internal static unsafe class SymbolMap
     /// <c>_ZTV4Part*</c>), so it is safe to call by symbol. OUT PARAMETERS, which is why the sky can call it
     /// at all: the engine's own by-value <c>Vector</c>/<c>Quaternion</c> returns are an ABI this side does
     /// not invent. ABI: <c>(Part* /*rdi*/, Vector* /*rsi*/, Quaternion* /*rdx*/)</c>.</summary>
+    [Fn("void(Part this, System.Numerics.Vector3* pos, float* rot)")]
     public const string PartGetWorld = "_ZN4Part8GetWorldER6VectorR10Quaternion";
     /// <summary>#261: Gob::GetAdjustedScale() @0x437cf0 -- <c>LerpFloat(gob+0x1c0).Lerped() *
     /// *(float*)(gob+0x49c)</c>, the uniform scale <c>Gob::Render</c> pushes and <see cref="PartGetWorld"/>
     /// applies to the position but does not hand back. A plain float return, so it is callable.
     /// ABI: <c>(Gob const* /*rdi*/) -&gt; float</c>.</summary>
+    [Fn("float(Gob this)")]
     public const string GobGetAdjustedScale = "_ZNK3Gob16GetAdjustedScaleEv";
 
     // ---- #130/#261: the beam globals. Beams are NOT walked by Scene::RenderDrawBucket -- they live in
@@ -637,28 +789,34 @@ internal static unsafe class SymbolMap
     /// <c>RenderStandard</c>/<c>RenderLinked</c>/<c>RenderMotionBlurred</c> are one-line wrappers that all
     /// funnel here; <c>RenderNothing</c> bypasses it, which is correct. Hooked as both the capture point and
     /// the per-emitter suppression point. ABI: <c>(PartEmitter* /*rdi*/)</c>.</summary>
+    [Fn("void(PartEmitter this)")]
     public const string RenderEmitter = "_ZN11PartEmitter13RenderEmitterEv";
     /// <summary>#131: PartEmitter::~PartEmitter() @0x4af890 (D1 and D2 share the address; the deleting D0
     /// @0x4afa60 tail-calls it, and every emitter subclass's dtor reaches it). #145's lesson applied to
     /// emitters: the owned replay reads a live Particle array off the emitter one frame after the capture,
     /// so the one event that says a captured emitter is GONE has to evict it.
     /// ABI: <c>(PartEmitter* /*rdi*/)</c>.</summary>
+    [Fn("void(PartEmitter this)")]
     public const string PartEmitterDtor = "_ZN11PartEmitterD2Ev";
     /// <summary>#131: PartEmitter::GetTileAlpha() @0x4ac300 -- one of the two factors the engine folds into
     /// every particle's alpha. Called rather than reproduced. ABI: <c>(PartEmitter* /*rdi*/) -&gt; float</c>.
     /// </summary>
+    [Fn("float(PartEmitter this)")]
     public const string EmitterGetTileAlpha = "_ZN11PartEmitter12GetTileAlphaEv";
     /// <summary>#131: PartEmitter::GetGobAlpha() @0x4ac2d0 -- the other one. Same treatment.
     /// ABI: <c>(PartEmitter* /*rdi*/) -&gt; float</c>.</summary>
+    [Fn("float(PartEmitter this)")]
     public const string EmitterGetGobAlpha = "_ZN11PartEmitter11GetGobAlphaEv";
     /// <summary>#131: MdlNodeEmitter::IsSplat() @0x4ab070 -- the model flag that turns an emitter's quads
     /// into ground splats: the billboard basis comes off the particle's own splat normal, size stops
     /// interpolating, and the softness term is suppressed.
     /// ABI: <c>(MdlNodeEmitter* /*rdi*/) -&gt; bool</c>.</summary>
+    [Fn("byte(MdlNodeEmitter this)")]
     public const string EmitterIsSplat = "_ZN14MdlNodeEmitter7IsSplatEv";
     /// <summary>#131: MdlNodeEmitter::IsTinted() @0x4aafc0 -- the flag that runs the emitter's start/end
     /// colours through the scene lighting at its own position before interpolation.
     /// ABI: <c>(MdlNodeEmitter* /*rdi*/) -&gt; bool</c>.</summary>
+    [Fn("byte(MdlNodeEmitter this)")]
     public const string EmitterIsTinted = "_ZN14MdlNodeEmitter8IsTintedEv";
     /// <summary>#131: LightManager::GetEmitterLighting(Vector, List&lt;PartLight*&gt;*) @0x4c1970 -- the tint
     /// lookup, one call per tinted emitter per frame.
@@ -671,6 +829,7 @@ internal static unsafe class SymbolMap
     public const string GetEmitterLighting = "_ZN12LightManager18GetEmitterLightingE6VectorP4ListIP9PartLightE";
     /// <summary>LightManager::GetLensFlareLights() @0x4c1d80 -- the list (items at +0, count at +8) of every
     /// light node with <c>lensflares 1</c>; <c>Scene::RenderLensFlares</c> is its one consumer. Read by <see cref="Halos"/>.</summary>
+    [Fn("IntPtr(LightManager this)")]
     public const string GetLensFlareLights = "_ZN12LightManager18GetLensFlareLightsEv";
     /// <summary>#131: the <c>currentscene</c> global @0x19ab950 -- <c>RenderEmitter</c> reads the light list
     /// for the tint at <c>*currentscene + 0x158</c>. Read live at build time for the same reason
@@ -694,6 +853,7 @@ internal static unsafe class SymbolMap
     /// check, and every one of them is a place for a reproduction to drift.
     /// ABI: <c>(CAurTexture* /*rdi*/, uint unit /*esi*/, int frame /*edx*/)</c>; the engine passes -1 for
     /// the frame, meaning "whatever the controller says".</para></summary>
+    [Fn("void(CAurTexture this, uint unit, int stage)")]
     public const string AurTextureBindInUnit = "_ZN11CAurTexture10BindInUnitEji";
     // ---- #127: the grass site. Grass is NOT a draw-bucket resident -- Scene::RenderSinglePass calls
     //      Scene::DoBinBucket @0x474c50 (vt+0x1c0) under the engine's own Tracy scope "Grass", between the
@@ -703,11 +863,14 @@ internal static unsafe class SymbolMap
     /// EVERY bin in the area, an optional bin sort, then one RenderVertexData per (bin, material) triangle
     /// list with no frustum culling. Skipped outright on the passes the owned grass drew, which is what
     /// retires the wind rewrite as well as the draw. ABI: <c>(Scene* /*rdi*/)</c>.</summary>
+    // Not `Scene this`: the view method Scene.DoBinBucket() is the virtual call through its vtbl row.
+    [Fn("void(IntPtr scene)")]
     public const string DoBinBucket = "_ZN5Scene11DoBinBucketEv";
     /// <summary>Scene::ReloadGrass() @0x469540 -- rebuilds every bin from the tile BSP (area load, grass
     /// option change, a server grass override). Every CAurTriangleBin and CAurTriangleList the owned pass
     /// captured is freed here, so it is the one signal that invalidates the whole capture.
     /// ABI: <c>(Scene* /*rdi*/)</c>.</summary>
+    [Fn("void(Scene this)")]
     public const string ReloadGrass = "_ZN5Scene11ReloadGrassEv";
     /// <summary>Global <c>binbucket</c> @0x19abbc0 -- the BSP visibility walk's active-bin list. The
     /// symbol's address IS the list: <c>CAurTriangleBin**</c> at +0, count at +8. Rebuilt per frame, so a
@@ -720,9 +883,11 @@ internal static unsafe class SymbolMap
     //      them. LoadArea sizes the tile BSP for exactly that ring: InitBSP(w, h, 5, true, 10.0).
     /// <summary>CNWCArea::LoadBorder(CGuiAreaLoadscreen*, float) @0x70a5c0. ABI: <c>(CNWCArea* /*rdi*/,
     /// CGuiAreaLoadscreen* /*rsi*/, float progress /*xmm0*/) -> int</c>.</summary>
+    [Fn("int(CNWCArea this, IntPtr loadscreen, float progress)")]
     public const string AreaLoadBorder = "_ZN8CNWCArea10LoadBorderEP18CGuiAreaLoadscreenf";
     /// <summary>CNWCArea::ReloadBorder() @0x711ff0 -- the server's tile-border toggle / tile change path
     /// (HandleServerToPlayerArea). ABI: <c>(CNWCArea* /*rdi*/)</c>.</summary>
+    [Fn("void(CNWCArea this)")]
     public const string AreaReloadBorder = "_ZN8CNWCArea12ReloadBorderEv";
 
     // ---- #615: the weather entry points. CNWCArea::SetWeather @0x702b10 is VIRTUAL (vtbl+0x60), and it is the
@@ -734,35 +899,44 @@ internal static unsafe class SymbolMap
     //      target byte (+0x2f1) and the 6000ms ramp (+0x2ec) and cue the rain sound; hooked for the edge log.
     /// <summary>CNWCArea::SetWeather(unsigned char type, float density). ABI: <c>(CNWCArea*, uchar, float)</c>
     /// -- Linux <c>rdi, esi, xmm0</c>; Win64 <c>rcx, dl, xmm2</c>. Returns int (1 = applied).</summary>
+    [Fn("int(CNWCArea this, byte kind, float density)")]
     public const string AreaSetWeather = "_ZN8CNWCArea10SetWeatherEhf";
     /// <summary>CNWCArea::StartWeather(unsigned char type). ABI: <c>(CNWCArea*, uchar)</c>.</summary>
+    [Fn("void(CNWCArea this, byte kind)")]
     public const string AreaStartWeather = "_ZN8CNWCArea12StartWeatherEh";
     /// <summary>CNWTileSet* CNWTileSetManager::GetTileSet(CResRef const&amp;) -- the area load's one ask for its
     /// tileset, by name. ABI: <c>(CNWTileSetManager*, const CResRef*)</c>, a pointer return, so no sret on either build.</summary>
+    [Fn("IntPtr(IntPtr manager, IntPtr resref)")]
     public const string TileSetGet = "_ZN17CNWTileSetManager10GetTileSetERK7CResRef";
     /// <summary>CNWCArea::StopWeather(unsigned char). ABI: <c>(CNWCArea*, uchar)</c>; the byte is unused.</summary>
+    [Fn("void(CNWCArea this, byte kind)")]
     public const string AreaStopWeather = "_ZN8CNWCArea11StopWeatherEh";
     /// <summary>Scene::InitBSP(int w, int h, int border, bool, float cell) @0x46c330 (Scene vt+0x30) -- the
     /// tile BSP covers <c>(w + 2*border) x (h + 2*border)</c> cells, and <c>SceneBSPGetTileData</c> CLAMPS a
     /// position outside it onto the edge leaf (BSPFitSphere), so a wider ring needs a wider border here.
     /// ABI: <c>(Scene* /*rdi*/, int /*esi*/, int /*edx*/, int /*ecx*/, bool /*r8b*/, float /*xmm0*/)</c>.</summary>
+    [Fn("void(Scene this, int width, int height, int depth, byte flag, float size)")]
     public const string SceneInitBsp = "_ZN5Scene7InitBSPEiiibf";
     /// <summary>Scene::SpawnTile(char const* model, Vector const&amp; pos, int orientation, int border,
     /// Quaternion*) @0x474470 (Scene vt+0x38) -- every tile, real (border 0, from CNWCTile::LoadModel) or
     /// edge (border 1, from LoadBorder). Position is the tile centre: <c>index*10+5</c>. Returns the Gob*, null
     /// for an edge tile (SpawnPartsForTile builds a bare instance tree for those).
     /// ABI: <c>(Scene* /*rdi*/, char* /*rsi*/, Vector* /*rdx*/, int /*ecx*/, int /*r8d*/, Quaternion* /*r9*/) -> Gob*</c>.</summary>
+    [Fn("IntPtr(Scene this, byte* resref, System.Numerics.Vector3* pos, int id, int orientation, IntPtr rot)")]
     public const string SceneSpawnTile = "_ZN5Scene9SpawnTileEPKcRK6VectoriiP10Quaternion";
     /// <summary>Scene::DeleteTile(Vector const&amp;) @0x4636a0 (Scene vt+0x58). Dereferences the tile data at
     /// the position UNGUARDED (its neighbour unlink reads <c>tile+0xb8</c>), so never call it where
     /// <see cref="SceneBspGetTileData"/> is null. ABI: <c>(Scene* /*rdi*/, Vector* /*rsi*/)</c>.</summary>
+    [Fn("void(Scene this, System.Numerics.Vector3* pos)")]
     public const string SceneDeleteTile = "_ZN5Scene10DeleteTileERK6Vector";
     /// <summary>SceneBSPGetTileData(Scene*, Vector const&amp;) @0x47b480 -- the TileData* at a position, or
     /// null. ABI: <c>(Scene* /*rdi*/, Vector* /*rsi*/) -> TileData*</c>.</summary>
+    [Fn("TileData(Scene this, System.Numerics.Vector3* pos)")]
     public const string SceneBspGetTileData = "_Z19SceneBSPGetTileDataP5SceneRK6Vector";
     /// <summary>GLRender::GetPool(uint) @0x4cfb70 -- the pool's HOST shadow pointer (descriptor +0), a plain
     /// table read with no lock/unlock side effect. What <c>RenderInterface::LockPool(pool, 0, 0, 8)</c>
     /// hands the engine's own grass binning, minus the lock byte. ABI: <c>(uint /*edi*/) -> void*</c>.</summary>
+    [Fn("byte*(uint token)")]
     public const string GlGetPool = "_ZN8GLRender7GetPoolEj";
     /// <summary>Global <c>g_GrassInfo</c> @0x19acc90 -- <c>List&lt;CAurGrassInfo&gt;</c>: element pointer at
     /// +0, count at +8. One 0x54-byte record per grass material (name, density, height, diffuse, ambient,
@@ -799,6 +973,7 @@ internal static unsafe class SymbolMap
     /// <summary><c>PartDanglyMesh::Animate(float)</c> @0x49bbb0 -- vtable slot 27 (+0xd8), the per-frame
     /// dangly SOLVE. Separate from the draw, which is why Alloy's M4 draw takeover never froze the sway.
     /// Chained, not installed: the whole point is to replace the integrator inside it.</summary>
+    [Fn("void(IntPtr part, float dt)")]
     public const string PartDanglyAnimate = "_ZN14PartDanglyMesh7AnimateEf";
     /// <summary><c>Scene::GetWindVector(Vector const&amp;, float)</c> @0x460c60 -- the AREA's wind at a world
     /// position, and the only honest source of it: a four-instruction forward to
@@ -819,22 +994,27 @@ internal static unsafe class SymbolMap
     public const string SceneHitCheck = "_ZN5Scene8HitCheckE6VectorS0_PS0_P8CHitInfo";
     /// <summary><c>CHitInfo::Reset(int mode, long mask, int box)</c> @0x45fa90 -- (re)initialises a hit
     /// record, unlinking the SafePointer a previous hit left in it (#537).</summary>
+    [Fn("void(CHitInfo this, int mode, long flags, int box)")]
     public const string HitInfoReset = "_ZN8CHitInfo5ResetEili";
     /// <summary><c>Part::Animate(float)</c> @0x49ad00 -- walks the part's children (Part+0x38 pointer,
     /// Part+0x40 count) and calls +0xd8 on each. The dangly solve TAIL-CALLS it, so a replacement that
     /// skips the original must call it or the whole subtree freezes.</summary>
+    [Fn("void(IntPtr part, float dt)")]
     public const string PartAnimate = "_ZN4Part7AnimateEf";
     /// <summary><c>VertexPrimitiveDangly::GenerateVelocityArray()</c> @0x45ad70 -- allocates the zeroed
     /// <c>verts*12</c> velocity array at <c>+0xa0</c>, lazily, on the first Animate. A replacement that
     /// never calls the original has to drive this itself or the array is never born.</summary>
+    [Fn("void(IntPtr vp)")]
     public const string VertexPrimGenVelocity = "_ZN21VertexPrimitiveDangly21GenerateVelocityArrayEv";
     /// <summary><c>VertexDataObject::GetItemDynamicData(uint)</c> @0x45c6c0 -- the host shadow of one item's
     /// DYNAMIC vertex fork, stride 12, which is where dangly writes its deformed positions AND where it
     /// reads last frame's back. Both the state and the output live here.</summary>
+    [Fn("byte*(IntPtr vdo, uint item)")]
     public const string VdoGetItemDynamicData = "_ZN16VertexDataObject18GetItemDynamicDataEj";
     /// <summary><c>VertexDataObject::CommitItemDynamicData(uint, uint)</c> @0x45c7d0 -- funnels into
     /// <c>GLRender::UnlockPool</c>, which Alloy owns (#260) and which raises the #241 dirty bit the caster
     /// re-bake reads. Writing the verts is not enough; this is what publishes them.</summary>
+    [Fn("void(IntPtr vdo, uint item, uint flags)")]
     public const string VdoCommitItemDynamicData = "_ZN16VertexDataObject21CommitItemDynamicDataEjj";
     /// <summary>#256: <c>PartSkin</c>'s vtable, the same kind of identity as
     /// <see cref="PartDanglyMeshVtbl"/>. The scene walk records a part without ever entering its draw, so
@@ -855,45 +1035,58 @@ internal static unsafe class SymbolMap
     /// UNCULLED variant (the other two take a camera position or a plane list). Visits every node:
     /// <c>node+0x10</c> then iterating <c>node+0x18</c>. Tile geometry has no owning gob, so this is the
     /// only route to it that does not depend on what the camera can see.</summary>
+    [Fn("void(IntPtr root, IntPtr visit, IntPtr user)")]
     public const string BspTraverse = "_Z11BSPTraverseP7BSPNodePFvS0_PvES1_";
         /// <summary>Material::HasEnvMap @0x43d1a0-ish -- env-mapped parts take RenderEnvironmentMapped, not
     /// RenderFlat; excluded from batching.</summary>
+    [Fn("byte(IntPtr mat)")]
     public const string MatHasEnvMap = "_ZN8Material9HasEnvMapEv";
     /// <summary>Material::HasBumpyShinyMap -- bumpy-shiny parts take RenderBumpyShiny; excluded.</summary>
+    [Fn("byte(IntPtr mat)")]
     public const string MatHasBumpyShinyMap = "_ZN8Material16HasBumpyShinyMapEv";
         /// <summary>Material::GetTexture(int) @0x4c5810 -- texture slot i (SharedMaterial override at
     /// mat+0xd0 wins, else own slot at mat+i*0x10). Batch group key = material CONTENT (each part owns
     /// its Material instance, so pointer identity shatters groups to size 1).</summary>
+    [Fn("long(Material this, int slot)")]
     public const string MatGetTexture = "_ZN8Material10GetTextureEi";
     /// <summary>#275: <c>SharedMaterial::ParseField(char const*)</c> @0x4c6760 -- one <c>.mtr</c> line. The
     /// engine's chain ends at <c>texture10</c>; the hook keeps <c>texture11+</c> in a side table.</summary>
+    [Fn("void(IntPtr shared, byte* line)")]
     public const string SharedMaterialParseField = "_ZN14SharedMaterial10ParseFieldEPKc";
     /// <summary>#275: <c>SharedMaterial::Init(char const*)</c> @0x4c6ff0 -- after the parse, where the
     /// engine loads its own slots (<c>LoadTextureArray</c>, which MSVC inlines here -- hence Init, not it).</summary>
+    [Fn("void(IntPtr shared, byte* line)")]
     public const string SharedMaterialInit = "_ZN14SharedMaterial4InitEPKc";
     /// <summary>#275: <c>SharedMaterial::~SharedMaterial()</c> @0x4c5260 (D1 = D2), the side table's death
     /// notice. Called from <c>RemoveRef</c> (last Material gone) and <c>RefreshSharedMaterial</c>.</summary>
+    [Fn("IntPtr(IntPtr shared, uint flags)")]
     public const string SharedMaterialDtor = "_ZN14SharedMaterialD2Ev";
     /// <summary>#275: <c>LoadTexture(char const*)</c> @0x4c50f0 -- <c>AurTextureGetReference</c> (an ADDREF'd
     /// reference, unlike <see cref="AurTextureGet"/>), or the NULL texture for an empty/"NULL" name.</summary>
+    [Fn("IntPtr(byte* resref)")]
     public const string LoadTexture = "_Z11LoadTexturePKc";
     /// <summary>#275: <c>AurTextureRelease(CAurTexture*)</c> @0x486010 -- the release the destructor pairs
     /// with <see cref="LoadTexture"/>.</summary>
+    [Fn("void(IntPtr tex)")]
     public const string AurTextureRelease = "_Z17AurTextureReleaseP11CAurTexture";
     /// <summary>Part::~Part() @0x437720 (D1 and D2 share the address) -- the BASE destructor every part
     /// class tail-jumps to: PartSkin and PartDanglyMesh jump to PartTriMesh::~PartTriMesh, which jumps here
     /// with <c>this</c> unchanged (verified in the disassembly, no thunk adjust). #145: the one event that
     /// says a recorded part is GONE. Without it the part table holds the pointer until something happens to
     /// notice, and the owned pass chases it into freed memory.</summary>
+    [Fn("void(IntPtr part)")]
     public const string PartDtor = "_ZN4PartD2Ev";
     /// <summary>#397 diagnostic: <c>Gob::Append(char const*, char const*)</c> @0x4422a0 (model, attach
     /// node) and <c>Gob::Amputate(char const*)</c> @0x443fa0 -- the equipment-swap pair. Logged cold to say
     /// whether a swap amputates what it appended. Linux-only: no Windows anchor derived (skip + log there).</summary>
+    [Fn("int(IntPtr gob, IntPtr model, IntPtr node)")]
     public const string GobAppend = "_ZN3Gob6AppendEPKcS1_";
+    [Fn("int(IntPtr gob, IntPtr node)")]
     public const string GobAmputate = "_ZN3Gob8AmputateEPKc";
     /// <summary>VertexDataObject::Repack() @0x45c270 -- compacts tombstoned items (RemoveItem only zeroes
     /// sizes), MOVING the surviving items' indices and offsets. Triggered by AddItem on fragmentation, so
     /// streaming fires it mid-play; every batch member of that VDO must recapture its item.</summary>
+    [Fn("void(VertexDataObject this)")]
     public const string VdoRepack = "_ZN16VertexDataObject6RepackEv";
     /// <summary>#212: GLRender::UnlockPool(token, size, offset) @0x4cfc80 -- the SINGLE funnel through which
     /// every byte of engine vertex/index data reaches a GL buffer (glBufferData or glBufferSubData off the
@@ -902,12 +1095,14 @@ internal static unsafe class SymbolMap
     /// PERFORMS it rather than observing it. Hooked at the GLRender level rather than the
     /// <c>RenderInterface</c> thunk because that thunk is its only direct caller AND the vtable slot points
     /// here -- the lower funnel catches both.</summary>
+    [Fn("void(uint pool, uint offset, uint size)")]
     public const string GlUnlockPool = "_ZN8GLRender10UnlockPoolEjjj";
     /// <summary>#212: GLRender::DeleteBuffer(name) @0x4cfec0 -- where an engine GL buffer name dies.
     /// <c>GLRender::DeletePool</c> @0x4d1d80 routes here whenever a pool is released, freeing the buffer
     /// #260 minted for it; this is the exact moment the name (and the pool token behind it) go back into
     /// circulation. The geometry twin of <see cref="RiDeleteTextures"/>, and the same #220 corruption
     /// without it.</summary>
+    [Fn("void(uint name)")]
     public const string GlDeleteBuffer = "_ZN8GLRender12DeleteBufferEj";
     /// <summary><c>GLRender::GetVertexBufferMaxElementVertices</c> @0x4cb730 / <c>...Indices</c> @0x4cb700:
     /// <c>glGetIntegerv(GL_MAX_ELEMENTS_VERTICES / _INDICES)</c>, cached. The ONLY reader is
@@ -915,7 +1110,9 @@ internal static unsafe class SymbolMap
     /// VDO only while its vertex and index totals stay under them -- so the driver's answer is the shared
     /// pool's capacity. NVIDIA answers 1048576; every Mesa driver answers 3000 (core <c>MaxArrayLockSize</c>,
     /// reproduced under zink and llvmpipe), which fragments an area into hundreds to thousands of VDOs.</summary>
+    [Fn("int()")]
     public const string GlMaxElementVertices = "_ZN8GLRender33GetVertexBufferMaxElementVerticesEv";
+    [Fn("int()")]
     public const string GlMaxElementIndices = "_ZN8GLRender32GetVertexBufferMaxElementIndicesEv";
     /// <summary>#260: <c>noemittervar</c> @0x19e3114 (B) -- the nearest EXPORTED symbol below the GLRender
     /// pool descriptor table's two globals, which have no symbols of their own. The table base pointer sits
@@ -935,6 +1132,7 @@ internal static unsafe class SymbolMap
     /// <summary>GLRender::SetVertexDataObject(VertexDataObject*) @0x4cff30 -- binds (lazily creating) the
     /// VDO's VAO + element buffer and updates the engine's current-VDO cache. The owned caster path (ADR 0008)
     /// binds engine geometry through this so the cache never desyncs; null unbinds to the default VAO.</summary>
+    [Fn("void(IntPtr vdo)")]
     public const string GlSetVertexDataObject = "_ZN8GLRender19SetVertexDataObjectEP16VertexDataObject";
     /// <summary>GLRender::m_nArrayBufferBound @0x19e30e4 (B) -- the shadow copy of the ARRAY_BUFFER binding
     /// that <c>GLRender::BindBuffer</c> @0x4d04a0 early-outs against. Written, not read: Alloy binds that
@@ -1025,18 +1223,22 @@ internal static unsafe class SymbolMap
     /// <summary><c>GLRender::SetUniforms(PROG_FIXED&amp;)</c> @0x4ccbf0 -- uploads the whole engine uniform
     /// set (matrices from <c>m_aurMtxStack</c>, the global constant tables, the runtime block) into that
     /// program. ENGINE CONTEXT ONLY: see SkyBox.NoteEngineDraw.</summary>
+    [Fn("void(IntPtr prog)")]
     public const string GlSetUniforms = "_ZN8GLRender11SetUniformsERNS_10PROG_FIXEDE";
     /// <summary><c>GLRender::GlUseProgramConditionally(unsigned int)</c> @0x4ce8b0 -- glUseProgram behind the
     /// engine's own current-program cache. Called on the engine side so that cache stays true.</summary>
+    [Fn("void(uint program)")]
     public const string GlUseProgramConditionally = "_ZN8GLRender25GlUseProgramConditionallyEj";
     /// <summary>Global shader param scalar getter -- param 0x12 is the light-radius multiplier
     /// GetLightAdjustedRadius applies (adjR = range * intensity * overbright * this).</summary>
+    [Fn("float(uint param)")]
     public const string RiGetGlobalShaderParamf = "_ZN15RenderInterface21GetGlobalShaderParamfEN6Aurora23AurGlobalShaderParamf_tE";
     /// <summary>Global shader param INTEGER getter -- param 0 is the gamma pipeline, the engine's own gate on
     /// the colour-space round trip (it becomes <c>#define GAMMA_CORRECTION %d</c> in every shader preamble,
     /// and <c>ApplyColorSpace</c>/<c>RevertColorSpace</c> in inc_common.shd are identity when it is 0).
     /// #132's resolve reads it so the one remaining encode is gated where the per-shader encodes never
     /// were.</summary>
+    [Fn("int(uint param)")]
     public const string RiGetGlobalShaderParami = "_ZN15RenderInterface21GetGlobalShaderParamiEN6Aurora23AurGlobalShaderParami_tE";
     /// <summary>#375: <c>enableFBeffects</c> @0x18aa34c, the engine's console gate on the whole
     /// framebuffer-effect walk -- <c>Camera::DoFrameBufferEffects</c> @0x4a8eb0 returns at once when it is 0.
@@ -1067,6 +1269,7 @@ internal static unsafe class SymbolMap
     /// <c>range * intensity</c>, times the max colour channel when that exceeds 1, times the global radius
     /// multiplier (param 0x12). Returns the raw range unchanged for a directional light (range &gt;= 1000).
     /// Called rather than re-derived. ABI: <c>(PartLight* /*rdi*/) -&gt; float /*xmm0*/</c>.</summary>
+    [Fn("float(IntPtr light)")]
     public const string GetLightAdjustedRadius = "_Z22GetLightAdjustedRadiusPK9PartLight";
     /// <summary>GLRender::m_nCurrentMatrix @0x19e30d0 -- the selected matrix-stack index; saved/restored around
     /// the pass so we leave the engine's active matrix mode as we found it. Data symbol (read/write int).</summary>
@@ -1082,6 +1285,7 @@ internal static unsafe class SymbolMap
     //      caster source. The two symbols the re-walk shared with live code stay below. ----
     /// <summary>PartTriMesh::GetIsOpaque() @0x43cee0 -- true if the part is opaque. ABI:
     /// <c>(PartTriMesh* /*rdi*/) -> bool</c>.</summary>
+    [Fn("byte(PartTriMesh this)")]
     public const string PartGetIsOpaque = "_ZN11PartTriMesh11GetIsOpaqueEv";
 
     // ---- camera-follow anchor (#65): the real, camera-INDEPENDENT PC position, independent of the vanilla
@@ -1099,24 +1303,30 @@ internal static unsafe class SymbolMap
     /// yaw/pitch/dist, lerps the focus and writes the pose (Camera+0xb0/+0xbc) through the owner Gob's vtable;
     /// every engine reader, Alloy included, is downstream of those two fields. <c>this</c> = the behavior; the
     /// owner at +0x18 is <c>Camera+8</c>. Returns int. Chained by CameraService (post-adjusts the answer).</summary>
+    [Fn("int(CAurBehaviorCameraFollow this, float dt)")]
     public const string CameraFollowControl = "_ZN24CAurBehaviorCameraFollow7ControlEf";
 
     /// <summary><c>CNWCModule::TurnCamera(float deg, int impulse)</c> @0x7d8960 / <c>TiltCamera</c> @0x7d88a0 -- the
     /// engine's own orbit input (#539). impulse=1 adds to the behavior's one-shot yaw/pitch impulse (+0x88/+0x8c),
     /// consumed by the next Control; the flag byte (+0x2bc bit 0x10 / 0x20) refuses a server-disabled axis and the
     /// dialog "user turned" bookkeeping (+0x134, +0x280) is kept. Middle-drag calls exactly these.</summary>
+    [Fn("void(CNWCModule this, float deg, int impulse)")]
     public const string TurnCamera = "_ZN10CNWCModule10TurnCameraEfi";
+    /// <inheritdoc cref="TurnCamera"/>
+    [Fn("void(CNWCModule this, float deg, int impulse)")]
     public const string TiltCamera = "_ZN10CNWCModule10TiltCameraEfi";
     /// <summary><c>CClientExoAppInternal::UpdateDriveMode()</c> @0x65f780 -- the per-frame drive step (#540). Reads the
     /// key booleans at +0x1b8.. and the "input changed" latch at +0x1b0, derives the wire heading from the player
     /// creature's orientation (+0x44/+0x48, <c>round(atan2 * 10)</c>), sends <c>DriveControl</c> on the latch or the
     /// 500 ms keep-alive, snaps the local facing and runs the prediction. Pre-hooked by CameraDriveService, which
     /// writes the orientation and the key set it wants the engine to act on.</summary>
+    [Fn("void(CClientExoAppInternal this)")]
     public const string UpdateDriveMode = "_ZN21CClientExoAppInternal15UpdateDriveModeEv";
     /// <summary><c>CNWCCreature::WalkUpdateLocation()</c> @0x725830 -- the per-frame walk step (CX-682): picks the rate off
     /// the animation, steps the desired position (<see cref="EngineLayout.CreatureDesiredPos"/>) along the waypoints and
     /// moves the model to it, testing no walkmesh and no door. <c>(this) -> int</c>, always 1. Pre-hooked by
     /// StepGuardService for the player creature.</summary>
+    [Fn("int(CNWCCreature this)")]
     public const string WalkUpdateLocation = "_ZN12CNWCCreature18WalkUpdateLocationEv";
     /// <summary><c>CNWCArea::TestDirectLine(CNWCCreature*, Vector from, Vector to, float, float, int bCheckCreatures)</c>
     /// @0x703850: the engine's own door-aware swept walkability test (tile meshes, placeable walkmeshes, then every
@@ -1125,13 +1335,19 @@ internal static unsafe class SymbolMap
     /// xmm4 = +0xe0, xmm5 = +0xe4). Both Vectors by value: SysV xmm0/xmm1 + xmm2/xmm3, Win64 a pointer each.</summary>
     public const string TestDirectLine = "_ZN8CNWCArea14TestDirectLineEP12CNWCCreature6VectorS2_ffi";
     /// <summary>SDL2 cursor capture for mouse-look (#539): relative mode hides the cursor and streams raw deltas.</summary>
+    [Fn("int(int enabled)")]
     public const string SdlSetRelativeMouseMode = "SDL_SetRelativeMouseMode";
+    /// <inheritdoc cref="SdlSetRelativeMouseMode"/>
+    [Fn("void(IntPtr window, int x, int y)")]
     public const string SdlWarpMouseInWindow = "SDL_WarpMouseInWindow";
     /// <summary><c>CGuiInGame::ToggleOff()</c> @0x66dda0 / <c>UnToggleOff()</c> @0x66e930 -- the engine's own
     /// hide/show of the whole in-game GUI (every panel, quick chat, the NUI scope), the pair the server's
     /// Cutscene_HideGui message (major 0x33 minor 7) and <c>SetCutsceneMode</c> call. The free camera (#543)
     /// hides the UI through exactly these; <c>this</c> = <c>CClientExoAppInternal+0x90</c>.</summary>
+    [Fn("void(CGuiInGame this)")]
     public const string GuiInGameToggleOff = "_ZN10CGuiInGame9ToggleOffEv";
+    /// <inheritdoc cref="GuiInGameToggleOff"/>
+    [Fn("void(CGuiInGame this)")]
     public const string GuiInGameUnToggleOff = "_ZN10CGuiInGame11UnToggleOffEv";
 
     /// <summary><c>CNWCCreature::UpdateLookAt()</c> @0x726f00 -- the engine's own per-frame head-track target
@@ -1143,24 +1359,28 @@ internal static unsafe class SymbolMap
     /// action camera. Windows: CNWCCreature name-exports nothing, so rva 0x80fa60, anchored through the Windows
     /// <c>LookAt</c> (the one function referencing "HEADTRACK"/"HEAD_ARC_H"/"HEAD_NAME", rva 0x803f20) as its
     /// only caller; body decompiles identical, the mode word reading +0x37c (the class's -0x20 shift).</summary>
+    [Fn("void(CNWCCreature this)")]
     public const string UpdateLookAt = "_ZN12CNWCCreature12UpdateLookAtEv";
     /// <summary><c>Gob::BeginLookAtAnimate(CAurObject* target, char const* targetNode, char const* myNode,
     /// float arcH, float arcV, float blend, float maxDist)</c> @0x49d5b0 -- <c>FindPart</c>s both nodes (silently
     /// returning if either misses), destroys any existing <c>LookAtAnimation</c> at Gob+0x1b0 and builds a fresh
     /// one plus its AnimRun. Virtual (Gob slot +0x250 / Windows +0x248) but there is exactly one implementation,
     /// so it is called by symbol. All-void return, no by-value crossing.</summary>
+    [Fn("void(Gob this, IntPtr target, byte* targetNode, byte* myNode, float arcH, float arcV, float blend, float maxDist)")]
     public const string BeginLookAtAnimate = "_ZN3Gob18BeginLookAtAnimateEP10CAurObjectPKcS3_ffff";
     /// <summary><c>LookAtAnimation::Control()</c> @0x4973c0 -- one head-aim step, driven by <c>Gob::Animate</c>
     /// @0x49d8c0 through the vtable. Deactivates past the max distance, else writes the clamped look-at
     /// quaternion into the synthetic animation's second keyframe (<c>*(float**)(this+0x58)</c>, x/y/z/w) and the
     /// head's current local rotation into the first (+0x60), so every frame is a fresh 0.25 s ease. Chained, not
     /// installed: the aim is overwritten after the original runs.</summary>
+    [Fn("void(LookAtAnimation this)")]
     public const string LookAtControl = "_ZN15LookAtAnimation7ControlEv";
     /// <summary>CX-29: <c>Gob::Animate(float dt)</c> @0x49d8c0 -- one gob's whole animation step, called for
     /// every gob in the scene every frame by <c>Scene::Animate</c> (vtable slot +0x30 over <c>Scene+0x130</c>,
     /// with <c>currentscene</c> set to that scene for the duration). Advances the AnimRun list at
     /// <c>Gob+0xe0</c> and writes every part's local pos/rot; nothing composes world transforms here, so a
     /// local written after it reaches every draw. Chained. ABI: <c>(Gob* /*rdi*/, float dt /*xmm0*/)</c>.</summary>
+    [Fn("void(Gob gob, float dt)")]
     public const string GobAnimate = "_ZN3Gob7AnimateEf";
 
     /// <summary><c>CNWCCreature::SpawnHitVisuals(uchar flag, CNWCCombatAttackData*, Vector, CExoString)</c>: the one
@@ -1185,14 +1405,18 @@ internal static unsafe class SymbolMap
     // NULL, NULL, NULL, 0, false) loads/caches a CAurTexture*; AurTextureGetTID(tex) returns its GL
     // texture id (0 until the engine's RefreshTextures pass uploads it). Chat portraits (#26) bind it
     // directly -- no decode, no upload. See ConvertPortrait for the H/L/M/S/T size suffixes.
+    [Fn("IntPtr(byte* name, IntPtr tex, byte* plt, int* scheme, int count, byte byName)")]
     public const string AurTextureGet    = "_Z13AurTextureGetPKcP11CAurTextureS0_Piib";
+    [Fn("int(IntPtr tex)")]
     public const string AurTextureGetTID = "_Z16AurTextureGetTIDP11CAurTexture";
     /// <summary>#331: <c>AurTextureGetController(CAurTexture*)</c> @0x485350 -- resolves ref -> basic and returns
     /// <c>basic+0x38</c>, the texture's animation controller (or null).</summary>
+    [Fn("IntPtr(IntPtr tex)")]
     public const string AurTextureGetController = "_Z23AurTextureGetControllerP11CAurTexture";
     /// <summary>CX-25: <c>CAurTexture::~CAurTexture()</c> @0x486080 (D1 = D2), the death notice for every
     /// texture. <c>CAurTextureBasic</c>'s D1 tail-jumps here and both deleting dtors call it, on Linux and
     /// Windows alike (verified in both disassemblies).</summary>
+    [Fn("void(IntPtr tex)")]
     public const string AurTextureDtor = "_ZN11CAurTextureD2Ev";
     /// <summary>#331: the one controller class whose Control() (vtable slot +0x10) only rewrites a GL name.</summary>
     public const string CycleTidControllerVtbl = "_ZTV25CycleTIDTextureController";
@@ -1216,6 +1440,7 @@ internal static unsafe class SymbolMap
     /// <para>Expensive -- a decode plus a fresh upload through <c>RenderInterface::CreateTexture</c>, i.e.
     /// the funnel <see cref="CX.Alloy.OwnedTextures"/> adopts from -- so it is dripped, never swept.
     /// ABI: <c>(CAurTexture* /*rdi*/) -> void</c>. Needs a live GL context.</para></summary>
+    [Fn("void(IntPtr tex)")]
     public const string AurTextureBuildAndStore = "_ZN11CAurTexture13BuildAndStoreEv";
     public const string AurTextureVtbl = "_ZTV11CAurTexture";
     public const string AurTextureBasicVtbl = "_ZTV16CAurTextureBasic";
@@ -1234,15 +1459,21 @@ internal static unsafe class SymbolMap
     //   -> read CRes+0x20 (data) / CRes+0x30 (size) -> Release + ReleaseResObject.
     // SetResObject seeds the object refcount at 1, so both paths release exactly once.
     public const string ExoResMan          = "g_pExoResMan";
+    [Fn("int(IntPtr resman, byte* resref, ushort type, uint* id)")]
     public const string ResManExists       = "_ZN10CExoResMan6ExistsERK7CResReftPj";
+    [Fn("IntPtr(IntPtr resman, byte* resref, ushort type)")]
     public const string ResManGetResObject = "_ZN10CExoResMan12GetResObjectERK7CResReft";
+    [Fn("void(IntPtr resman, byte* resref, ushort type, IntPtr res)")]
     public const string ResManSetResObject = "_ZN10CExoResMan12SetResObjectERK7CResReftP4CRes";
+    [Fn("long(IntPtr resman, IntPtr res)")]
     public const string ResManDemand       = "_ZN10CExoResMan6DemandEP4CRes";
     /// <summary>The two pre-dispatch calls of the world scene render, inside the AI update: the BSP
     /// management (every gob, three passes, the frustum traverse) and the draw-bucket build (the sole
     /// writer of the gob model matrix Alloy draws with). Timed only; see
     /// docs/research/engine-scene-walk-bypass.md.</summary>
+    [Fn("long(Scene scene)")]
     public const string ManageSceneBSP         = "_Z14ManageSceneBSPP5Scene";
+    [Fn("long(Scene this)")]
     public const string AddPartsToDrawBuckets  = "_ZN5Scene21AddPartsToDrawBucketsEv";
     /// <summary>The BSP visit callback's per-frame tile-part lists that AddPartsToDrawBuckets' six flat loops
     /// consume. meshbuckets/fadebuckets are <c>List&lt;Bucket&gt;</c> objects (CExoArrayList: items at +0,
@@ -1252,7 +1483,9 @@ internal static unsafe class SymbolMap
     /// 16-byte object is a decoder crash. staticbeambucket is left alone: Beams.Enroll re-reads bucket 15.</summary>
     public const string MeshBuckets = "meshbuckets", FadeBuckets = "fadebuckets", CapBuckets = "capbuckets",
                         StaticShadowBucket = "staticshadowbucket", MeshShadowBucket = "meshshadowbucket";
+    [Fn("ulong(IntPtr resman, IntPtr res)")]
     public const string ResManRelease      = "_ZN10CExoResMan7ReleaseEP4CRes";
+    [Fn("int(IntPtr resman, IntPtr res, byte flag)")]
     public const string ResManReleaseObj   = "_ZN10CExoResMan16ReleaseResObjectEP4CResb";
 
     // #346: the engine's OWN resource read, which is how a stock .shd must be fetched. CResHelper builds a
@@ -1263,15 +1496,19 @@ internal static unsafe class SymbolMap
     /// <summary><c>AurResGet(const char* name, const char* ext, int* size, bool)</c> @0x4332c0 -- opens a
     /// resource and pushes it on the <c>Resources</c> stack. Returns the handle and writes the byte count.
     /// The engine passes the extension WITH its dot (".shd") and true for the bool.</summary>
+    [Fn("IntPtr(byte* name, byte* ext, int* size, byte push)")]
     public const string AurResGet = "_Z9AurResGetPKcS0_Pib";
     /// <summary><c>AurResGetData(int nBytes)</c> @0x432fe0 -- read that many bytes from the resource on TOP
     /// of the stack into its own buffer and return it. Stack-based, so the trio runs back to back with no
     /// engine call in between, exactly as @0x4d2940 does it.</summary>
+    [Fn("byte*(int handle)")]
     public const string AurResGetData = "_Z13AurResGetDatai";
     /// <summary><c>AurResFree(void* handle)</c> @0x4335d0 -- pop and release. Called only on the path where
     /// the handle AND the size are non-zero; the engine's own loader does not free on the failure path, so
     /// neither do we.</summary>
+    [Fn("void(IntPtr handle)")]
     public const string AurResFree = "_Z10AurResFreePv";
+    [Fn("void(IntPtr res)")]
     public const string CResCtor           = "_ZN4CResC1Ev";
 
     // ---- CX-689..CX-693: the radial menu seam (docs/research/radial-menu-reimplementation.md). The whole
@@ -1281,14 +1518,17 @@ internal static unsafe class SymbolMap
     /// CGuiPanel::Activate, static_nMenuDepth++, CaptureMouse, SetModal. Skipped by RadialService: at this point
     /// <c>this</c> is a fully built root (top ring filled, XY at +0x85c/+0x860) and no engine modality has been
     /// engaged, so there is nothing to release. <c>(this) -> void</c>.</summary>
+    [Fn("void(CRadialMenu this)")]
     public const string RadialActivateInternal = "_ZN11CRadialMenu16ActivateInternalEv";
     /// <summary><c>CRadialMenu::CreateSubMenu(int slot)</c> @0x584790 -- materializes slot <c>i</c>'s child through its
     /// creator callback under the <see cref="GuiCurrentEventObject"/> bracket, stores it at m_pSubMenu[i] and bumps
     /// the child's refcount. Returns 1 if the child exists after the call. <c>(this, int) -> int</c>.</summary>
+    [Fn("int(CRadialMenu this, int slot)")]
     public const string RadialCreateSubMenu = "_ZN11CRadialMenu13CreateSubMenuEi";
     /// <summary><c>CRadialMenu::RecursiveAutoDelete()</c> @0x583680 -- the teardown vanilla's <c>Deactivate</c> runs on
     /// the root: recurses into every materialized child, then virtual-deletes self when m_bAutoDelete and the
     /// refcount reaches 0. CX calls it on the root at dropdown close. <c>(this) -> int</c>.</summary>
+    [Fn("int(CRadialMenu this)")]
     public const string RadialRecursiveAutoDelete = "_ZN11CRadialMenu19RecursiveAutoDeleteEv";
     /// <summary><c>CRadialMenu::static_nMenuDepth</c> (int) -- what <c>CGuiMan::InMenuMode</c> returns. Read-only
     /// sanity: stays 0 under the CX scheme because ActivateInternal never runs.</summary>
@@ -1304,9 +1544,11 @@ internal static unsafe class SymbolMap
     /// <summary><c>StringGob::GetTextLineCount()</c> @0x495ac0 -- the wrapped line count of the CAurString behind a
     /// CGuiTextBubble. <c>this</c> = the CAurString* minus <see cref="EngineLayout.StringGobReaderAdjust"/>: the
     /// StringGob base on Linux, the sub-object itself on Windows. <c>(this) -> int</c>.</summary>
+    [Fn("int(StringGob this)")]
     public const string StringGobGetTextLineCount = "_ZN9StringGob16GetTextLineCountEv";
     /// <summary><c>StringGob::GetTextLine(int)</c> @0x4922f0 -- line <c>i</c>'s NUL-terminated bytes (the CStringItem's
     /// <c>+0x8</c> buffer). <c>(this, int) -> const char*</c>.</summary>
+    [Fn("IntPtr(StringGob this, int line)")]
     public const string StringGobGetTextLine = "_ZN9StringGob11GetTextLineEi";
     /// <summary>Root-kind vtables (Linux <c>_ZTV</c>; the object's vptr is the symbol + 0x10). The roots
     /// themselves are not exported on Windows -- the kind is a vptr compare against these, nothing is called.</summary>
@@ -1353,6 +1595,7 @@ internal static unsafe class SymbolMap
     /// <summary><c>CClientSpellMenu::TargetIsValid(uint spell)</c> @0x6f0450: <c>spells.2da TargetType</c> masked by the
     /// menu's +0x918 against the +0x90c object's type (self / creature / ground / item / door / placeable / trigger);
     /// what the spell creators grey a leaf on. <c>(this, uint) -> ushort</c>.</summary>
+    [Fn("ushort(CClientSpellMenu this, uint spell)")]
     public const string SpellMenuTargetIsValid = "_ZN16CClientSpellMenu13TargetIsValidEj";
     /// <summary><c>CGuiCreatureMenu::CGuiCreatureMenu(CNWCCreature*, Vector)</c> @0x73f110: the self root's ctor -- target
     /// id, associate fields and portrait off the creature, the vector at +0x8b0, quickbutton null, m_bAutoDelete 1.
@@ -1373,6 +1616,7 @@ internal static unsafe class SymbolMap
     /// texture <c>Material::ReplaceTexturePLT</c> @0x4c7a10 made for a tinted PLT, so a per-frame call with the icon's
     /// own (resref, scheme) hands back that live borrowed pointer or null, and never creates a second one. Same body
     /// on Windows (rva 0xe7560). Returns a BORROWED <c>CAurTexture*</c> -- see <see cref="AurTex"/>.</summary>
+    [Fn("IntPtr(byte* name, byte* plt, int* scheme, int count, byte byName)")]
     public const string AurTextureFind = "_Z14AurTextureFindPKcS0_Piib";
     /// <summary>Icon-kind vtables (Linux <c>_ZTV</c>; the object's vptr is the symbol + 0x10). Any vptr not listed is
     /// the plain kind (<c>CGuiIcon</c>, <c>CSpellIcon</c>: every subclass keeps the resref at +0x8); these three change

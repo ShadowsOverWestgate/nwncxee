@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using CX.Services.Chat;
@@ -47,10 +48,12 @@ public sealed unsafe class NameplateService : IExtenderService
     private static Window? _plates;
 
     // ---- trampolines -------------------------------------------------------------------------
-    private static delegate* unmanaged<int, void> _origSetMode;
-    private static delegate* unmanaged<IntPtr, void> _origCreaturePlate, _origPlaceablePlate, _origItemPlate;
-    private static delegate* unmanaged<IntPtr, IntPtr, int, float, float, void> _origBubbleText;
-    private static delegate* unmanaged<IntPtr, byte, void> _origChat;
+    private static SetChatBubbleModeFn _origSetMode;
+    private static CreatureShowFeedbackBubbleTextFn _origCreaturePlate;
+    private static PlaceableShowFeedbackBubbleTextFn _origPlaceablePlate;
+    private static ItemShowFeedbackBubbleTextFn _origItemPlate;
+    private static SetPopUpBubbleTextFn _origBubbleText;
+    private static HandleServerToPlayerChatFn _origChat;
 
     /// <summary>Nesting depth of a <c>ShowFeedbackBubbleText</c> in flight on this thread. The bubble-text
     /// sink is shared: non-zero means the string arriving there is the plate's own, not chat.</summary>
@@ -85,11 +88,8 @@ public sealed unsafe class NameplateService : IExtenderService
         if (!EngineLayout.Require(log, "NameplateService", "CNWCObject", "CNWCCreature", "CNWCPlaceable")) return;                 // #432: same, for offsets
 
         // ORDER: the two critical symbols first, so nothing else installs if either refuses.
-        _origSetMode = (delegate* unmanaged<int, void>)hooks.Install(
-            SymbolMap.SetChatBubbleMode, (IntPtr)(delegate* unmanaged<int, void>)&OnSetChatBubbleMode);
-        _origBubbleText = (delegate* unmanaged<IntPtr, IntPtr, int, float, float, void>)hooks.Install(
-            SymbolMap.SetPopUpBubbleText,
-            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int, float, float, void>)&OnSetPopUpBubbleText);
+        _origSetMode = hooks.InstallSetChatBubbleMode(&OnSetChatBubbleMode);
+        _origBubbleText = hooks.InstallSetPopUpBubbleText(&OnSetPopUpBubbleText);
         if (_origBubbleText == null || _origSetMode == null)
         {
             log.Info("NameplateService: standing down (mode="
@@ -99,14 +99,10 @@ public sealed unsafe class NameplateService : IExtenderService
             return;
         }
 
-        _origCreaturePlate = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.CreatureShowFeedbackBubbleText, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnCreaturePlate);
-        _origPlaceablePlate = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.PlaceableShowFeedbackBubbleText, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPlaceablePlate);
-        _origItemPlate = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.ItemShowFeedbackBubbleText, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnItemPlate);
-        _origChat = (delegate* unmanaged<IntPtr, byte, void>)hooks.Install(
-            SymbolMap.HandleServerToPlayerChat, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnServerChat);
+        _origCreaturePlate = hooks.InstallCreatureShowFeedbackBubbleText(&OnCreaturePlate);
+        _origPlaceablePlate = hooks.InstallPlaceableShowFeedbackBubbleText(&OnPlaceablePlate);
+        _origItemPlate = hooks.InstallItemShowFeedbackBubbleText(&OnItemPlate);
+        _origChat = hooks.InstallHandleServerToPlayerChat(&OnServerChat);
 
         _chatHooked = _origChat != null;
         if (!_chatHooked) log.Info("NameplateService: channel styling disabled (chat handler unhooked)");

@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -30,17 +31,18 @@ internal static unsafe partial class GrassField
         bool blades = Grass.Style.V == Grass.StyleBlades && _progBlade != 0;
         for (int m = 0; m < MaxGrassMaterials; m++)
         {
-            byte* info = live[m] ? GrassInfo(m) : null;
-            bits[m] = blades && info != null ? Classified(m, tids[m], info) : 0;
+            CAurGrassInfo info = live[m] ? GrassInfo(m) : default;
+            bits[m] = blades && !info.IsNull ? Classified(m, tids[m], info) : 0;
         }
     }
 
     /// <summary>The material's BLADE cell bits, classifying its atlas when it is new. Cold on a miss: one
     /// level-0 readback per atlas upload, which allocates.</summary>
-    private static int Classified(int m, int tid, byte* info)
+    private static int Classified(int m, int tid, CAurGrassInfo info)
     {
+        byte* resref = (byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref info.Name);
         uint name = 2166136261u;
-        for (int i = 0; i < 32 && info[InfoName + i] != 0; i++) name = (name ^ info[InfoName + i]) * 16777619u;
+        for (int i = 0; i < 32 && resref[i] != 0; i++) name = (name ^ resref[i]) * 16777619u;
         ref Cls c = ref _cls[m];
         if (c.Done && c.Tid == tid && c.Name == name) return c.Kinds;
         if (tid == 0) return 0;   // not uploaded yet: a card this frame (which skips it too), asked again next

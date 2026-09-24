@@ -1,4 +1,5 @@
 using System;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -45,7 +46,6 @@ internal static unsafe class FrameSnapshot
     /// <c>AurTextureGetFallbackEnvironmentMap</c> when the tileset names none -- so it is present even where
     /// the MATERIAL has no env map, which is the case the <c>[water]</c> census line's <c>env=False</c>
     /// reports and which made this term look inapplicable.</summary>
-    private static readonly int SceneEnvMap = EngineLayout.SceneEnvMap;
 
     /// <summary><c>water.enabled</c> off stands the class down; on brings it back at the next pass. Armed
     /// and idling rather than un-installed, so the toggle is live either way.</summary>
@@ -289,7 +289,7 @@ internal static unsafe class FrameSnapshot
         if (_pCurrentScene == null) return 0;
         IntPtr scene = *_pCurrentScene;
         if (scene == IntPtr.Zero) return 0;
-        return CX.Framework.AurTex.Tid(*(IntPtr*)(scene + SceneEnvMap));
+        return CX.Framework.AurTex.Tid(new Scene(scene).EnvMap.Ptr);
     }
 
     /// <summary>Is the environment term live this pass? The stage reads it as a switch, because a missing

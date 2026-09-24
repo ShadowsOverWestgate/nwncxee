@@ -32,10 +32,12 @@ namespace CX.Services.Camera;
 public sealed unsafe class HeadTrackService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, void> _updateOrig;
-    private static IntPtr* _controlNext;
-    private static delegate* unmanaged<IntPtr, IntPtr, byte*, byte*, float, float, float, float, void> _begin;
-    private static delegate* unmanaged<IntPtr, Vector3*, float*, void> _getWorld;
+    private static UpdateLookAtFn _updateOrig;
+    private static LookAtControlFn* _controlNext;
+    /// <summary>Resolved once: both run inside the per-creature animation step.</summary>
+    private static BeginLookAtAnimateFn _begin;
+    /// <inheritdoc cref="_begin"/>
+    private static PartGetWorldFn _getWorld;
 
     /// <summary>The head node name handed to <c>FindPart</c>, preallocated: the hook is not allowed to allocate,
     /// and the engine keeps no copy (it reads it inside the call). <c>head_g</c> is what vanilla looks for when
@@ -57,10 +59,6 @@ public sealed unsafe class HeadTrackService : IExtenderService
     private static bool _armed, _probed, _rot;
     private static int _drives, _writes;
 
-    /// <summary>The head part's LOCAL orientation: an embedded quaternion stored (w, x, y, z), which the aim
-    /// reads component-wise into System.Numerics' (x, y, z, w), so the offset stays raw.</summary>
-    private static readonly int PartRot = EngineLayout.PartRot;
-
     private const float Deg = MathF.PI / 180f;
     /// <summary>The engine's own literals at the <c>BeginLookAtAnimate</c> call site: the 0.25 s ease every
     /// look-at blends over, and a reach the self-target can never exceed (the distance check is gob-to-gob).</summary>
@@ -74,18 +72,16 @@ public sealed unsafe class HeadTrackService : IExtenderService
         if (!EngineLayout.Require(log, "HeadTrack", "CNWCCreature", "LookAtAnimation", "Part")) return;
         if (!SymbolMap.Require(log, "HeadTrack", SymbolMap.UpdateLookAt, SymbolMap.LookAtControl,
                                SymbolMap.BeginLookAtAnimate, SymbolMap.PartGetWorld)) return;
-        _begin = (delegate* unmanaged<IntPtr, IntPtr, byte*, byte*, float, float, float, float, void>)
-                 Native.Sym(SymbolMap.BeginLookAtAnimate);
-        _getWorld = (delegate* unmanaged<IntPtr, Vector3*, float*, void>)Native.Sym(SymbolMap.PartGetWorld);
+        _begin = EngineFn.BeginLookAtAnimate;
+        _getWorld = EngineFn.PartGetWorld;
 
         ReadOnlySpan<byte> node = "head_g\0"u8;
         _headNode = (byte*)NativeMemory.AllocZeroed((nuint)node.Length);
         node.CopyTo(new Span<byte>(_headNode, node.Length));
 
-        _updateOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.UpdateLookAt, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnUpdateLookAt);
+        _updateOrig = hooks.InstallUpdateLookAt(&OnUpdateLookAt);
         if (_updateOrig == null) { log.Info("HeadTrack: standing down (UpdateLookAt install refused)"); return; }
-        _controlNext = hooks.Chain(SymbolMap.LookAtControl, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnControl, 50);
+        _controlNext = hooks.ChainLookAtControl(&OnControl, 50);
         // Both or neither: the chooser hook alone would aim the head at the creature's own head.
         if (_controlNext == null) { log.Info("HeadTrack: standing down (Control chain refused)"); return; }
         _armed = true;
@@ -123,7 +119,7 @@ public sealed unsafe class HeadTrackService : IExtenderService
     {
         IntPtr vtbl = *(IntPtr*)creature;
         if (vtbl == IntPtr.Zero) return IntPtr.Zero;
-        return ((delegate* unmanaged<IntPtr, byte, int, IntPtr>)new CNWCCreature(creature).GetModelFn)(creature, 0xff, 1);
+        return new CNWCCreature(creature).GetModel(0xff, 1);
     }
 
     /// <summary>After the engine's own aim step: ours is the animation whose looker is the gob we drove, and
@@ -131,7 +127,7 @@ public sealed unsafe class HeadTrackService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnControl(IntPtr self)
     {
-        ((delegate* unmanaged<IntPtr, void>)(*_controlNext))(self);
+        (*_controlNext)(self);
         IntPtr gob = _gob;
         // Wanted as well as the gob: the camera dropping is what stops us driving, and a gob freed after it
         // dropped could otherwise be matched by an address the engine has handed to something else.
@@ -162,8 +158,7 @@ public sealed unsafe class HeadTrackService : IExtenderService
         _getWorld(head.Ptr, &pos, world);
         // Engine quaternions are (w, x, y, z); System.Numerics is (x, y, z, w).
         Quaternion wq = new(world[1], world[2], world[3], world[0]);
-        float* local = (float*)(head.Ptr + PartRot);
-        Quaternion lq = new(local[1], local[2], local[3], local[0]);
+        Quaternion lq = head.Rot;
         Vector3 fwd = YAxis(wq);
         if (fwd.LengthSquared() < 1e-12f) return;
         float arcH = MouseLook.HeadYaw.V, arcV = MouseLook.HeadPitch.V;

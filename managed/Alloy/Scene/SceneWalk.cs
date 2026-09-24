@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 using static CX.Alloy.PartTable;
@@ -39,7 +40,7 @@ internal static unsafe class SceneWalk
 
     private static int* _sequence;
     private static int* _countPart;
-    private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, void> _bspTraverse;
+    private static BspTraverseFn _bspTraverse;
     /// <summary><c>_ZTV8PartSkin</c> + 0x10 -- the Itanium ABI puts the function pointers two words past the
     /// symbol, so this is the value a PartSkin's first word holds.</summary>
     private static IntPtr _skinVtbl;
@@ -126,7 +127,7 @@ internal static unsafe class SceneWalk
         _log = log;
         _sequence = (int*)Native.Sym(SymbolMap.SceneSequence);
         _countPart = (int*)Native.Sym(SymbolMap.CountPart);
-        _bspTraverse = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, void>)Native.Sym(SymbolMap.BspTraverse);
+        _bspTraverse = EngineFn.BspTraverse;
         IntPtr sv = Native.Sym(SymbolMap.PartSkinVtbl);
         _skinVtbl = sv == IntPtr.Zero ? IntPtr.Zero : sv + VtblSymbolHeader;
         Ready = _sequence != null && _bspTraverse != null && _skinVtbl != IntPtr.Zero;
@@ -252,9 +253,10 @@ internal static unsafe class SceneWalk
         // Tile geometry: SpawnPartsForTile @0x46352b passes gob = NULL, so it hangs off no gob and the loop
         // above cannot reach it. The unculled BSPTraverse visits every node whether the camera can see it or
         // not, which is exactly the difference between enumerating the area and enumerating the frame.
-        IntPtr root = *(IntPtr*)(scene + SceneBspRoot);
+        IntPtr root = new Scene(scene).BspRoot;
         _walkingBsp = true;
         if (root != IntPtr.Zero)
+            // OUR callback's address, not an engine symbol: the cast is the C# way to spell &OnBspNode.
             _bspTraverse(root, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnBspNode, IntPtr.Zero);
         _walkingBsp = false;
 
@@ -293,10 +295,10 @@ internal static unsafe class SceneWalk
             // an equipment swap leaves the old item appended and hidden, not amputated, and a walk that read
             // only the mesh part drew both shields coincident. Tile parts (SceneBSPAddPart @0x47ca10) never
             // consult the byte, so the BSP walk does not either.
-            if (!_walkingBsp && *(byte*)(part + EngineLayout.PartVisible) == 0) { _hidden++; continue; }
+            if (!_walkingBsp && new Part(part).Visible == 0) { _hidden++; continue; }
             Visit(part);
-            IntPtr* kids = *(IntPtr**)(part + PartChildren);
-            int n = *(int*)(part + PartChildCount);
+            IntPtr* kids = (IntPtr*)new Part(part).Children;
+            int n = new Part(part).ChildCount;
             if (kids == null) continue;
             for (int i = 0; i < n; i++)
             {
@@ -322,8 +324,7 @@ internal static unsafe class SceneWalk
         // class (SceneBSPAddPart @0x47ca10 discriminates with exactly this call, and BucketGate already
         // resolves every bucket item through it). The RETURNED pointer is the record key, because that is
         // what PartTriMesh::Draw receives as `this` and therefore what every Find() elsewhere looks up.
-        IntPtr part = ((delegate* unmanaged<IntPtr, IntPtr>)
-                       (*(IntPtr*)(*(IntPtr*)walked + BucketGate.PartVtblGetTriMesh)))(walked);
+        IntPtr part = new Part(walked).AsPartTriMesh().Ptr;
         if (part == IntPtr.Zero) { _nonMesh++; return; }
         int e = Find(part);
         if (e < 0)
@@ -387,9 +388,10 @@ internal static unsafe class SceneWalk
     /// re-asking have one node and no groups.</para></summary>
     internal static long GeomSig(IntPtr vp)
     {
-        IntPtr node = *(IntPtr*)(vp + EngineLayout.VpNode);
-        int count = *(int*)(vp + EngineLayout.VpCombineCount);
-        IntPtr list = *(IntPtr*)(vp + EngineLayout.VpCombineList);
+        var vpv = new VertexPrimitive(vp);
+        IntPtr node = vpv.Node.Ptr;
+        int count = vpv.CombineCount;
+        IntPtr list = vpv.CombineList;
         uint verts = 0, idx = 0;
         // A negative count skips the engine's loop entirely -- including this node -- and leaves both totals
         // zero, so it is a no-geometry verdict rather than a one-node walk.
@@ -397,19 +399,21 @@ internal static unsafe class SceneWalk
         {
             unchecked
             {
-                verts += *(ushort*)(node + EngineLayout.MdlVertexCount);
-                int groups = *(int*)(node + EngineLayout.MdlIndexGroups);
-                IntPtr counts = *(IntPtr*)(node + EngineLayout.MdlIndexGroupCounts);
+                var tri = new MdlNodeTriMesh(node);
+                verts += tri.VertexCount;
+                int groups = tri.IndexGroups;
+                IntPtr counts = tri.IndexGroupCounts;
                 if (counts != IntPtr.Zero)
                     for (int g = 0; g < groups; g++) idx += *(uint*)(counts + g * sizeof(int));
-                idx += *(uint*)(node + EngineLayout.MdlIndexCount);
+                idx += tri.IndexCount;
             }
             if (i >= count || list == IntPtr.Zero) break;
             IntPtr sib = *(IntPtr*)(list + i * sizeof(IntPtr));
-            node = sib == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(sib + EngineLayout.PartNodeLink);
+            node = sib == IntPtr.Zero ? IntPtr.Zero : new Part(sib).Node.Ptr;
             // MdlNode::AsMdlNodeTriMesh, inlined: the engine dereferences its result unguarded, so a node
             // that fails the cast never reaches here in a client that is not already crashing.
-            if (node != IntPtr.Zero && (*(byte*)(node + EngineLayout.MdlNodeKind) & EngineLayout.MdlNodeKindTriMesh) != EngineLayout.MdlNodeKindTriMesh)
+            if (node != IntPtr.Zero
+                && (new MdlNode(node).Kind & EngineLayout.MdlNodeKindTriMesh) != EngineLayout.MdlNodeKindTriMesh)
                 node = IntPtr.Zero;
         }
         return ((long)(verts & 0x7fffffff) << 32) | idx;
@@ -441,8 +445,9 @@ internal static unsafe class SceneWalk
         AlloyProbe.Once(ref _probedPart, "Part", part, _log);
         AlloyProbe.Once(ref _probedVp, "VertexPrimitive", vp, _log);
         bool wasBound = _pState[e] == StStale;   // only a formerly bound entry's failure is a change the delta must see
-        IntPtr vdo = *(IntPtr*)(vp + VpVdo);
-        int item = *(int*)(vp + VpItem);
+        var vpv = new VertexPrimitive(vp);
+        IntPtr vdo = vpv.Vdo.Ptr;
+        int item = vpv.Item;
         // #264: RESIDENCY IS ALLOY'S TO DRIVE NOW. These two fields are filled by
         // VertexPrimitive::SetupArrays (vtable 0x38), and until #264 the only thing that ever called it was
         // PartTriMesh::Draw -- i.e. the engine bucket walk. With the walk deleted nothing ran it, every
@@ -460,9 +465,9 @@ internal static unsafe class SceneWalk
             if (_pGeomSig[e] != PartTable.GeomSigNever) _reasks++;
             _pGeomSig[e] = sig;
             _setupLeft--; _setups++;
-            ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(*(IntPtr*)vp + VpSetupArraysSlot)))(vp);
-            vdo = *(IntPtr*)(vp + VpVdo);
-            item = *(int*)(vp + VpItem);
+            vpv.SetupArrays();
+            vdo = vpv.Vdo.Ptr;
+            item = vpv.Item;
             if (vdo == IntPtr.Zero || item < 0) { _pState[e] = StUnbound; if (wasBound) NoteChanged(e); return false; }
         }
         // Only mode 1 (indexed static) can be drawn from our own tables; the capture killed the rest as
@@ -692,6 +697,8 @@ internal static unsafe class SceneWalk
         for (int id = 0; id < BucketTypes; id++)
             for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
             {
+                // The bucket STRIDE, not a field: DrawBucketManager is an inline array of list heads and
+                // this is the arithmetic that indexes it (id, phase), so no view sits on it.
                 IntPtr bucket = mgr + (id * BucketGate.BucketPhases + phase) * EngineLayout.BucketStride;
                 IntPtr* items = *(IntPtr**)bucket;
                 int count = *(int*)(bucket + BucketGate.BucketCount);
@@ -700,8 +707,7 @@ internal static unsafe class SceneWalk
                 {
                     IntPtr part = items[i];
                     if (part == IntPtr.Zero) continue;
-                    IntPtr tri = ((delegate* unmanaged<IntPtr, IntPtr>)
-                                  (*(IntPtr*)(*(IntPtr*)part + BucketGate.PartVtblGetTriMesh)))(part);
+                    IntPtr tri = new Part(part).AsPartTriMesh().Ptr;
                     if (tri != IntPtr.Zero && Find(tri) < 0) miss++;
                     if (id == SampleBucket) sample++;
                 }

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -97,16 +98,15 @@ internal static unsafe class OwnedBuffers
     {
         // Installed whether or not the upload takeover is armed: the VAO-cache death notice
         // (AlloyRenderer.OnEngineBufferDeleted) rides this funnel, and Alloy draws from engine pools either way.
-        _origDelete = (delegate* unmanaged<uint, void>)hooks.Install(
-            SymbolMap.GlDeleteBuffer, (IntPtr)(delegate* unmanaged<uint, void>)&OnDeleteBuffer);
+        _origDelete = hooks.InstallGlDeleteBuffer(&OnDeleteBuffer);
         if (_origDelete == null) log.Info("OwnedBuffers: GLRender::DeleteBuffer did not resolve -- no buffer death notice for the VAO caches");
         // Whether or not the takeover is armed: the shared-VDO capacity is the engine's own pooling, and a
         // Mesa answer of 3000 fragments it 350x against NVIDIA's (see SymbolMap.GlMaxElementVertices).
         _maxElements = Renderer.MaxElements.Boot;
         if (_maxElements > 0)
         {
-            bool a = hooks.Install(SymbolMap.GlMaxElementVertices, (IntPtr)(delegate* unmanaged<int>)&OnMaxElements) != IntPtr.Zero;
-            bool b = hooks.Install(SymbolMap.GlMaxElementIndices, (IntPtr)(delegate* unmanaged<int>)&OnMaxElements) != IntPtr.Zero;
+            bool a = hooks.InstallGlMaxElementVertices(&OnMaxElements) != null;
+            bool b = hooks.InstallGlMaxElementIndices(&OnMaxElements) != null;
             log.Info(a && b
                 ? $"OwnedBuffers: shared-VDO capacity pinned to {_maxElements} vertices/indices regardless of the driver's GL_MAX_ELEMENTS answer (alloy.maxelements=0 restores it)"
                 : "OwnedBuffers: GetVertexBufferMaxElement* did not resolve -- the driver's GL_MAX_ELEMENTS answer sizes the shared VDOs");
@@ -116,8 +116,7 @@ internal static unsafe class OwnedBuffers
         _table = anchor == IntPtr.Zero ? null : (byte*)anchor + PoolTableOffset;
         _orphan = (byte*)Native.Sym(SymbolMap.GlOrphanBuffers);
         _totalMemPool = (int*)Native.Sym(SymbolMap.GlTotalMemPool);
-        _origUnlock = (delegate* unmanaged<uint, uint, uint, void>)hooks.Install(
-            SymbolMap.GlUnlockPool, (IntPtr)(delegate* unmanaged<uint, uint, uint, void>)&OnUnlockPool);
+        _origUnlock = hooks.InstallGlUnlockPool(&OnUnlockPool);
         bool ok = _table != null && _origUnlock != null && _origDelete != null;
         if (!ok) _armed = false;
         log.Info(ok
@@ -127,8 +126,8 @@ internal static unsafe class OwnedBuffers
               + "takeover that cannot read the pool descriptor would upload nothing");
     }
 
-    private static delegate* unmanaged<uint, uint, uint, void> _origUnlock;
-    private static delegate* unmanaged<uint, void> _origDelete;
+    private static GlUnlockPoolFn _origUnlock;
+    private static GlDeleteBufferFn _origDelete;
 
     /// <summary>NVIDIA's GL_MAX_ELEMENTS answer, which the engine has always pooled under there. The value is a
     /// glDrawRangeElements hint in GL, never a buffer limit, and the pools grow by doubling past it anyway.</summary>
@@ -388,10 +387,10 @@ internal static unsafe class OwnedBuffers
     internal static void NoteEngineDraw(IntPtr vdo)
     {
         if (!_armed || vdo == IntPtr.Zero) return;
-        byte* v = (byte*)vdo;
-        Tag(*(uint*)(v + VdoElemToken));
-        Tag(*(uint*)(v + VdoStaticToken));
-        Tag(*(uint*)(v + VdoDynamicToken));
+        var v = new VertexDataObject(vdo);
+        Tag(v.ElemToken);
+        Tag(v.VertToken);
+        Tag(v.DynToken);
     }
 
     /// <summary>The other half of the rate #260 owes. <c>VertexDataObject::Repack</c> @0x45c270 fires when
@@ -421,7 +420,10 @@ internal static unsafe class OwnedBuffers
     private static readonly int PoolTableOffset = EngineLayout.PoolTableAnchorOffset,
                                PoolCountOffset = EngineLayout.PoolTableCount;
     /// <summary>The 0x20-byte pool descriptor (<c>GLRender::RequestPool</c> @0x4d1ec0 callocs 0x20 apiece):
-    /// host shadow, byte size, GL name, target index, lock flags, usage word, "uploaded once", "named".</summary>
+    /// host shadow, byte size, GL name, target index, lock flags, usage word, "uploaded once", "named".
+    /// <para>CX-39: these stay raw. The descriptor is not an engine object -- it is one element of a
+    /// calloc'd array reached as <c>table + i*stride</c> from a global anchor, so there is no pointer for a
+    /// view to sit on and the stride is arithmetic, not a field.</para></summary>
     private static readonly int PoolStride = EngineLayout.PoolStride, PoolSize = EngineLayout.PoolSize,
         PoolName = EngineLayout.PoolName, PoolLockFlags = EngineLayout.PoolLockFlags,
         PoolUsage = EngineLayout.PoolUsage, PoolUploaded = EngineLayout.PoolUploaded,
@@ -431,9 +433,6 @@ internal static unsafe class OwnedBuffers
     /// <summary>Usage bits from <c>RequestPool</c>'s third argument: 0x100 = the sub-data path (the three
     /// per-VDO pools are 0x100/0x100/0x102), 0x2 = dynamic.</summary>
     private const uint UsageSubData = 0x100, UsageDynamic = 0x2;   // not-an-offset: bits inside the usage word
-    /// <summary>Pool tokens on a <c>VertexDataObject</c>: element, static vertex, dynamic vertex.</summary>
-    private static readonly int VdoElemToken = EngineLayout.VdoElemToken,
-        VdoStaticToken = EngineLayout.VdoVertToken, VdoDynamicToken = EngineLayout.VdoDynToken;
 
     /// <summary>ADR 0016's measurement, and the only VRAM number this ticket ships. Called once a frame from
     /// inside the bracket, NOT from the upload funnel: the mark is RECORDED there (two compares) and the line
@@ -547,7 +546,7 @@ internal static unsafe class OwnedBuffers
         // The UI tag lands on the three tokens a VDO names, and on nothing else.
         byte* vdo = stackalloc byte[0x40];
         for (int i = 0; i < 0x40; i++) vdo[i] = 0xFF;                // every token = NoPool...
-        *(uint*)(vdo + VdoStaticToken) = 3;                          // ...but the static one
+        new VertexDataObject((IntPtr)vdo).VertToken = 3;             // ...but the static one
         NoteEngineDraw((IntPtr)vdo);
         ok &= _byToken[3].EngineDrawn && _byToken[3].AlloyDrawn;
 

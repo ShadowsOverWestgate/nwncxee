@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -128,7 +129,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// missing shadow, not a missing creature.</summary>
     internal const int MaxBoneSlots = 512;
     /// <summary>aurMatrixStack layout (Ghidra GLRender::PushMatrix/PopMatrix/aurMatrixStack::SetIdentity):
-    /// stride 0x58 per stack, top matrix (row-major float[16]) at +0x18. Modes: PROJECTION=0, VIEW=1.</summary>
+    /// stride 0x58 per stack, top matrix (row-major float[16]) at +0x18. Modes: PROJECTION=0, VIEW=1.
+    /// <para>Raw: <c>m_aurMtxStack</c> is a bare ARRAY of stacks at a global address, indexed by mode, so
+    /// there is no engine object for a view to sit on and the stride is arithmetic rather than a field.</para></summary>
     internal static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
     internal const int ModeProjection = 0, ModeView = 1;
     /// <summary>The part's MdlNode (part+0x8) and its material colours, from Ghidra
@@ -137,34 +140,24 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// self-illumination colour, so the enum runs ambient/diffuse/emissive -- and node+0xe8 is the one
     /// carrying the part's alpha (part+0xa0), which in fixed-function material setup is the DIFFUSE term.
     /// Distinct from the bucket node at part+0x88.</summary>
-    internal static readonly int PartMdlNode = EngineLayout.PartNodeLink, MdlDiffuse = EngineLayout.MdlDiffuse,
-                                MdlAmbient = EngineLayout.MdlAmbient;
-    /// <summary>Self-illumination colour (3 floats) at part+0x7c -- MatStatic's prop-3 material term. It is
-    /// applied whenever <c>part+0x94 == 0</c>, and LightPartTriMesh (@0x47a6a0) clears that byte on every
-    /// part under <c>g_bFullDynamicLighting</c>, so under the modern renderer it applies ALWAYS.</summary>
-    internal static readonly int PartSelfIllum = EngineLayout.PartSelfIllum;
-    /// <summary>#120: the material's parsed .mtr parameter list, <c>List&lt;MaterialParameter&gt;</c> at
-    /// mat+0x118 -- Ghidra <c>Material::CheckAndBindCustomShader</c> @0x4c62f0 passes exactly
-    /// <c>(this + 0x118)</c> to <c>SharedMaterial::BindShaderParameters</c>, which reads the element pointer
-    /// at +0 and the count at +8. So the count sits at mat+0x120.</summary>
-    internal static readonly int MatParams = EngineLayout.MatParams, MatParamCount = EngineLayout.MatParamCount;
+    /// <para>CX-39: the material node and its colour terms are <see cref="MdlRef"/>'s now; what is left here
+    /// is the offset itself, because <c>Alloy/Pass/</c> still walks it raw (its port is CX-39's other half).</para>
+    internal static readonly int PartMdlNode = EngineLayout.PartNodeLink;
     /// <summary>MaterialParameter layout, from <c>Material::SetMaterialParam</c> @0x4c5d70 (the name is
     /// <c>strncasecmp</c>'d over 0x40 bytes from the record's start) and BindShaderParameters (value floats at
     /// +0x44, the two cached uniform locations at +0x54/+0x58, the type discriminator at +0x5c, the component
     /// count as a ushort at +0x60). The record is 100 bytes -- both walks step by exactly that.
     /// <para>The type discriminator selects how +0x44 is READ, not where the value lives: 0 takes it as a
-    /// <c>float*</c> with <paramref name="ParamComps"/> components, 1 as a single <c>int</c>, both off the
-    /// same address.</para></summary>
+    /// <c>float*</c> with <c>ParamComps</c> components, 1 as a single <c>int</c>, both off the same
+    /// address.</para>
+    /// <para>CX-39: these stay raw. <c>ParamStride</c> is a stride, not a place, and the record is walked as
+    /// <c>list + k*stride</c>; <c>ParamValue</c> is a UNION its own discriminator decides the type of, which
+    /// no single typed field can be.</para></summary>
     internal static readonly int ParamValue = EngineLayout.ParamValue, ParamType = EngineLayout.ParamType,
                                 ParamComps = EngineLayout.ParamComps, ParamStride = EngineLayout.ParamStride;
     /// <summary>A parameter list longer than this is not a .mtr, it is a bad pointer -- refuse it rather than
     /// walk off into the heap. Real materials declare a handful.</summary>
     internal const int MaxParams = 64;
-    /// <summary>The SharedMaterial's own parameter list -- the one the .mtr's <c>parameter float &lt;Name&gt;
-    /// &lt;value&gt;</c> lines are parsed onto. Ghidra <c>Material::SetMaterialParam</c> @0x4c5d70 walks
-    /// <c>*(shared+0x1d0)</c> for <c>*(int*)(shared+0x1d8)</c> records of the same 100-byte layout.</summary>
-    internal static readonly int SharedParams = EngineLayout.SharedParams,
-                                SharedParamCount = EngineLayout.SharedParamCount;
     /// <summary>#120 texture slots the Alloy lit program binds beyond the diffuse: 1 normal, 2 specular,
     /// 3 roughness, 4 height, 5 self-illumination (the stock map, inc_material.shd's header comment).
     /// They resolve through <c>Material::GetTexture</c> exactly as slot 0 does -- a SharedMaterial's own
@@ -208,7 +201,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// Most areas leave it null, and that is why vanilla cobblestone does not reflect the sky: nothing is
     /// bound, so the ambient-specular sample reads nothing. It is the switch, not the texture -- what gets
     /// sampled here is the probe.</summary>
-    internal static readonly int SceneEnvMap = EngineLayout.SceneEnvMap;
     internal const uint GlUnsignedShort = 0x1403;   // not-an-offset: GL enum
     /// <summary>The GL blend factors <see cref="Issue.BlendGl"/> maps the Aurora ones onto.</summary>
     internal const uint GlZero = 0, GlOne = 1, GlSrcColor = 0x0300, GlSrcAlpha = 0x0302,   // not-an-offset: GL blend-factor enums
@@ -233,10 +225,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     internal static ExtenderLog? _log;
     private static bool _armed;
-    private static delegate* unmanaged<IntPtr, void> _origRsp;
+    private static RenderSinglePassFn _origRsp;
     /// <summary>#132: the frame anchor's trampoline (<c>Scene::FadeDoors</c>).</summary>
-    private static delegate* unmanaged<IntPtr, void> _origFade;
-    internal static delegate* unmanaged<IntPtr, int, long> _getTexture;
+    private static FadeDoorsFn _origFade;
+    internal static MatGetTextureFn _getTexture;
     private static uint* _primTable;
     private static byte* _mtxStacks;
 
@@ -291,14 +283,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <c>m_shaderExposedRuntimeData</c> -- the same value its shaders read as <c>playerPosition</c>. Zero
     /// before the struct resolves, which for the grass displacement window just means it stays at the
     /// origin until it does.</summary>
-    internal static Vector3 PlayerPos =>
-        _runtime == null ? default : *(Vector3*)(_runtime + RtPlayerPos);
+    internal static Vector3 PlayerPos => _runtime == null ? default : Rt.PlayerPos;
     /// <summary>#352: the module calendar the runtime block carries, what the shaders read as <c>moduleHour</c>
     /// and friends. Zero before the struct resolves.</summary>
-    internal static int ModuleHour => _runtime == null ? 0 : *(int*)(_runtime + EngineLayout.RtModuleHour);
-    internal static int ModuleDay => _runtime == null ? 0 : *(int*)(_runtime + EngineLayout.RtModuleDay);
-    internal static int ModuleMonth => _runtime == null ? 0 : *(int*)(_runtime + EngineLayout.RtModuleMonth);
-    internal static float ModuleTimeIntoTransition => _runtime == null ? 0f : *(float*)(_runtime + EngineLayout.RtModuleTimeIntoTransition);
+    internal static int ModuleHour => _runtime == null ? 0 : Rt.ModuleHour;
+    internal static int ModuleDay => _runtime == null ? 0 : Rt.ModuleDay;
+    internal static int ModuleMonth => _runtime == null ? 0 : Rt.ModuleMonth;
+    internal static float ModuleTimeIntoTransition => _runtime == null ? 0f : Rt.ModuleTimeIntoTransition;
     /// <summary>#352: the presented-frame counter, what a hosted content chain gets as <c>sceneCurrentFrame</c>.</summary>
     internal static int FrameSeq => _frameSeq;
     /// <summary><c>/alloy viz N</c>. 1..3 and 6 attribute a dim (or a too-shiny) frame to a lighting TERM instead
@@ -350,7 +341,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary><c>/alloy light 0</c> forces every Alloy part back to the #82 fullbright variant (the lighting A/B).</summary>
     internal static bool _lighting => Renderer.Light.V;
     /// <summary>RenderInterface::IsEnabled -- queried for cap 5 (LIGHTING) once per Alloy pass.</summary>
-    private static delegate* unmanaged<int, byte> _isEnabled;
+    private static RiIsEnabledFn _isEnabled;
     /// <summary>The AuroraEnableEnums value for lighting. <c>MatStatic</c>/<c>RenderFlat</c> both branch on
     /// it, so a pass that runs with it off wants the flat variant for everything.</summary>
     internal const int CapLighting = 5;
@@ -840,7 +831,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #128: same rule. A wrong gob offset draws a creature at the wrong alpha and a leaky refused-gob set
         // half-owns one -- both misrenders, neither of which errors.
         if (!AlloyCensus.GobSelfCheck(log)) return;
-        _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
+        _getTexture = EngineFn.MatGetTexture;
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         if (CycleTextures.SelfCheck(log)) CycleTextures.Attach(log, hooks);   // #331; a failed check freezes cycles, not Alloy
         ResolveChase(log);   // #330: the three engine sets the chase is bounded by; unresolved = unbounded
@@ -872,28 +863,24 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (_getTexture == null || !AurTex.Ready || _primTable == null || _mtxStacks == null)
         { log.Info("AlloyRenderer: engine symbols unresolved -- Alloy world pass unavailable"); return; }
 
-        _origRsp = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.RenderSinglePass, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRenderSinglePass);
+        _origRsp = hooks.InstallRenderSinglePass(&OnRenderSinglePass);
         // #132: the frame anchor. After-original, so the pass runs with the world FBO bound and cleared, the
         // scene fog and the door/tile fades already written for this frame, and nothing drawn yet.
-        _origFade = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.FadeDoors, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnFadeDoors);
+        _origFade = hooks.InstallFadeDoors(&OnFadeDoors);
         // #336: the highlight SOURCE. Cold -- it fires on a mouseover edge or a VFX starting, never per
         // frame -- and it is the only place the channel that produced a highlight is visible.
-        Highlight._origRefreshHilite = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.RefreshHilite, (IntPtr)(delegate* unmanaged<IntPtr, void>)&Highlight.OnRefreshHilite);
+        Highlight._origRefreshHilite = hooks.InstallRefreshHilite(&Highlight.OnRefreshHilite);
         if (Highlight._origRefreshHilite == null)
             log.Info("AlloyRenderer: RefreshHilite unhooked -- no highlight claims a source, so every"
                      + " highlight keeps the engine glow and the owned outline draws nothing");
-        _repackSlot = hooks.Chain(SymbolMap.VdoRepack,   // shared symbol: draw funnels + Alloy cast invalidate too (#88)
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepackHook, RepackPriority);
-        _commitSlot = hooks.Chain(SymbolMap.VdoCommitItemDynamicData,   // the item-level vertex-dirty signal
-            (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, void>)&OnCommitItemDynamicData, CommitPriority);
+        // shared symbol: draw funnels + Alloy cast invalidate too (#88)
+        _repackSlot = hooks.ChainVdoRepack(&OnVdoRepackHook, RepackPriority);
+        // the item-level vertex-dirty signal
+        _commitSlot = hooks.ChainVdoCommitItemDynamicData(&OnCommitItemDynamicData, CommitPriority);
         if (_commitSlot == null) log.Info("AlloyRenderer: CommitItemDynamicData unhooked -- vertex-dirty stays per pool buffer");
         // CX-19: the area edge that is NOT a Scene change (a server hop reuses the Scene object). Chained
         // above the lightmap hold's own subscriber, which sits at 0 and may swallow the send.
-        _areaLoadedSlot = hooks.Chain(SymbolMap.SendAreaLoaded,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSendAreaLoaded, AreaLoadedPriority);
+        _areaLoadedSlot = hooks.ChainSendAreaLoaded(&OnSendAreaLoaded, AreaLoadedPriority);
         if (_areaLoadedSlot == null)
             log.Info("AlloyRenderer: the AreaLoaded send did not resolve -- an in-module area change keeps the "
                      + "previous area's VDO slots, charts and draw-arg ranges until the Scene pointer changes");
@@ -905,7 +892,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _skinning = Renderer.OwnSkin.Boot && _skinMathOk;
         _enrollBudget = Renderer.EnrollBudget.Boot;
         _enrollDelta = Renderer.EnrollDelta.Boot;
-        _isEnabled = (delegate* unmanaged<int, byte>)Native.Sym(SymbolMap.RiIsEnabled);
+        _isEnabled = EngineFn.RiIsEnabled;
         ResolveVaoDrip(log);
         OccludeInit(log);   // #537
         // Hook install is its own walk, and it stays HERE rather than joining Attach above: a pass that hooks
@@ -1075,7 +1062,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// camera + SetAmbient, no InitBSP, so its root stays null. This is also the engine's own test --
     /// <c>ManageSceneBSP</c> @0x47fa80 early-outs on exactly it.</summary>
     internal static bool IsWorldScene(IntPtr scene) =>
-        scene != IntPtr.Zero && *(IntPtr*)(scene + EngineLayout.SceneBspRoot) != IntPtr.Zero;
+        scene != IntPtr.Zero && new Scene(scene).BspRoot != IntPtr.Zero;
 
     /// <summary>#216: the terms <see cref="AlloyGate"/> reads out of this class. <c>_armed</c> is "the hooks
     /// installed"; the capability pair is "a program built and the multidraw entry points exist", both of
@@ -1321,12 +1308,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     internal const int RepackPriority = 30;
-    private static IntPtr* _repackSlot;
+    private static VdoRepackFn* _repackSlot;
 
     [UnmanagedCallersOnly]
     private static void OnVdoRepackHook(IntPtr vdo)
     {
-        var next = (delegate* unmanaged<IntPtr, void>)*_repackSlot;
+        VdoRepackFn next = *_repackSlot;
         if (next != null) next(vdo);
         // Repack moved item indices/offsets under us: revoke every part on that VDO, re-enroll later
         for (int i = 0; i < _ownCount; i++)
@@ -1832,20 +1819,15 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// were authored, which is the pre-#123 look, not a misrender.</summary>
     private static byte* _runtime;
 
-    internal static readonly int RtTimeOfDay = EngineLayout.RtTimeOfDay, RtAreaWind = EngineLayout.RtAreaWind,
-        RtAreaFlags = EngineLayout.RtAreaFlags, RtPlayerPos = EngineLayout.RtPlayerPos,
-        RtCamPos = EngineLayout.RtCamPos;
-
-    /// <summary>#347: the camera's PIVOT, as the engine's own stages read it under the name
-    /// <c>cameraFocus</c> -- <c>GLRender::SetUniforms</c> @0x4cf359 uploads
-    /// <c>m_shaderExposedRuntimeData + 0x90</c> to the location <c>ConnectShaderData</c> resolved for that
-    /// name. Not the camera POSITION (<see cref="RtCamPos"/>, +0x64): in chase cam the pivot sits on the
-    /// controlled character at roughly chest height, which is why content measures a sight range against it
-    /// and not against the eye.</summary>
-    internal static readonly int RtCamFocus = EngineLayout.RtCamFocus;
-    /// <summary>#124's two more fields of the same struct, from the same pairing: <c>cameraPitch</c> at
-    /// +0x84 and <c>playerCameraDist</c> at +0x8c. Both feed the keyhole aperture.</summary>
-    internal static readonly int RtCamPitch = EngineLayout.RtCamPitch, RtCamDist = EngineLayout.RtCamDist;
+    /// <summary>The same struct as a typed view. Every reader below null-checks <see cref="_runtime"/> first;
+    /// the view itself is one pointer, so this costs nothing.
+    /// <para>#347: <c>CamFocus</c> is the camera's PIVOT, as the engine's own stages read it under the name
+    /// <c>cameraFocus</c> -- <c>GLRender::SetUniforms</c> @0x4cf359 uploads <c>m_shaderExposedRuntimeData +
+    /// 0x90</c> to the location <c>ConnectShaderData</c> resolved for that name. Not the camera POSITION
+    /// (<c>CamPos</c>, +0x64): in chase cam the pivot sits on the controlled character at roughly chest
+    /// height, which is why content measures a sight range against it and not against the eye. #124 reads
+    /// <c>CamPitch</c> (+0x84) and <c>CamDist</c> (+0x8c) of the same struct for the keyhole aperture.</para></summary>
+    internal static ShaderExposedRuntimeData Rt => new((IntPtr)_runtime);
     /// <summary>#124: the keyhole diameter pair inside
     /// <see cref="SymbolMap.GlGlobalShaderConstantsF"/>. Stored unordered -- SetUniforms uploads min as
     /// <c>keyholeDiameterMin</c> and max as <c>keyholeDiameterMax</c>, so the ordering happens here too.</summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -114,7 +115,7 @@ public sealed unsafe partial class AlloyRenderer
         // row-major v*M convention: clip = v * Model * View * Proj; raw bytes read column-major by GLSL are
         // the transpose, so uVP * d.model * vec4(aPos,1) is exact -- (M*V*P)^T = (V*P)^T * M^T, which is why
         // #84 can hoist view*proj to a per-program uniform and leave only the model matrix per draw.
-        _sceneEnv = _enrollScene != IntPtr.Zero && *(IntPtr*)(_enrollScene + SceneEnvMap) != IntPtr.Zero;
+        _sceneEnv = _enrollScene != IntPtr.Zero && !new Scene(_enrollScene).EnvMap.IsNull;
 
         Matrix4x4 view = *(Matrix4x4*)(_mtxStacks + ModeView * StackStride + StackTop);
         Matrix4x4 proj = *(Matrix4x4*)(_mtxStacks + ModeProjection * StackStride + StackTop);
@@ -934,7 +935,7 @@ public sealed unsafe partial class AlloyRenderer
 
     private static void CaptureProbeInner(int groups, float far)
     {
-        IntPtr bsp = _enrollScene != IntPtr.Zero ? *(IntPtr*)(_enrollScene + EngineLayout.SceneBspRoot) : IntPtr.Zero;
+        IntPtr bsp = _enrollScene != IntPtr.Zero ? new Scene(_enrollScene).BspRoot : IntPtr.Zero;
         if (!EnvProbe.Wanted(_eyePos, bsp, _frameSeq)) return;
         if (!EnvProbe.Begin(_eyePos, bsp, _frameSeq, far, ProbeClear())) return;
 

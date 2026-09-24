@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat;
 using CX.Ui;
@@ -30,10 +31,13 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     private const int KmodLAlt  = 0x0100;   // LALT only
 
     // Vanilla chat-focus trampolines (chat master off only).
-    private static delegate* unmanaged<IntPtr, void> _chatOnOrig, _clickOrig, _escOrig, _loseOrig;
+    private static SetFocusChatPromptFn _chatOnOrig;
+    private static ChatHandleLMouseDownFn _clickOrig;
+    private static ChatHandleEscFn _escOrig;
+    private static ChatHandleLoseFocusFn _loseOrig;
     /// <summary>Chain slot on the prompt's Enter (#580): PromptCommandService shares the symbol below us, so this layer
     /// observes at a higher priority and always calls through; <c>*_enterSlot</c> is the next layer or the original.</summary>
-    private static IntPtr* _enterSlot;
+    private static ChatHandleEnterFn* _enterSlot;
     /// <summary>Above <c>PromptCommandService.EnterPriority</c> (0): the typing flag clears on every Enter, whatever the layer below does.</summary>
     private const int EnterObserverPriority = 10;
 
@@ -56,11 +60,11 @@ public sealed unsafe class HotkeyInputService : IExtenderService
         // to track _typing, so vanilla chat keeps working and hotkeys still withhold while typing.
         if (!ChatService.Enabled)
         {
-            _chatOnOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.SetFocusChatPrompt,   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatOn);
-            _clickOrig  = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleLMouseDown, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatClick);
-            _enterSlot  = hooks.Chain(SymbolMap.ChatHandleEnter, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEnter, EnterObserverPriority);
-            _escOrig    = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleEsc,        (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatEsc);
-            _loseOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ChatHandleLoseFocus,  (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnChatLose);
+            _chatOnOrig = hooks.InstallSetFocusChatPrompt(&OnChatOn);
+            _clickOrig  = hooks.InstallChatHandleLMouseDown(&OnChatClick);
+            _enterSlot  = hooks.ChainChatHandleEnter(&OnChatEnter, EnterObserverPriority);
+            _escOrig    = hooks.InstallChatHandleEsc(&OnChatEsc);
+            _loseOrig   = hooks.InstallChatHandleLoseFocus(&OnChatLose);
         }
     }
 
@@ -119,7 +123,7 @@ public sealed unsafe class HotkeyInputService : IExtenderService
     // track _typing to withhold hotkeys.
     [UnmanagedCallersOnly] private static void OnChatOn(IntPtr self)   { _typing = true;  if (_chatOnOrig != null) _chatOnOrig(self); }
     [UnmanagedCallersOnly] private static void OnChatClick(IntPtr self){ _typing = true;  if (_clickOrig  != null) _clickOrig(self); }
-    [UnmanagedCallersOnly] private static void OnChatEnter(IntPtr self){ _typing = false; if (_enterSlot != null) ((delegate* unmanaged<IntPtr, void>)*_enterSlot)(self); }
+    [UnmanagedCallersOnly] private static void OnChatEnter(IntPtr self){ _typing = false; if (_enterSlot != null) (*_enterSlot)(self); }
     [UnmanagedCallersOnly] private static void OnChatEsc(IntPtr self)  { _typing = false; if (_escOrig    != null) _escOrig(self); }
     [UnmanagedCallersOnly] private static void OnChatLose(IntPtr self) { _typing = false; if (_loseOrig   != null) _loseOrig(self); }
 }

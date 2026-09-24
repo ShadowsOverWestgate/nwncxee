@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
 using static CX.Framework.EngineLayout;
@@ -329,29 +330,29 @@ internal static unsafe partial class LightmapBake
         return dx * dx + dy * dy + dz * dz <= rr * rr;
     }
 
-    private static delegate* unmanaged<IntPtr, void> _origCsl;
+    private static ComputeStaticLightingFn _origCsl;
 
     /// <summary>The engine's own "the static lighting changed" signal (#664 §A.6): called after a script
     /// toggles a placeable light on or off. Voids the classification so the next walk re-reads every light;
     /// the fingerprint then moves on its own if the set did. Cold hook: allocates nothing anyway.</summary>
     internal static void Install(ExtenderLog log, HookService hooks)
     {
-        _origCsl = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.ComputeStaticLighting, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnComputeStaticLighting);
-        _loadedSlot = hooks.Chain(SymbolMap.SendAreaLoaded, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSendAreaLoaded, EdgePriority);
-        _setTileSlot = hooks.Chain(SymbolMap.AreaSetTile, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int, int, int, void>)&OnSetTile, EdgePriority);
+        _origCsl = hooks.InstallComputeStaticLighting(&OnComputeStaticLighting);
+        _loadedSlot = hooks.ChainSendAreaLoaded(&OnSendAreaLoaded, EdgePriority);
+        _setTileSlot = hooks.ChainAreaSetTile(&OnSetTile, EdgePriority);
         if (_loadedSlot == null) log.Info("LightmapBake: the AreaLoaded send did not resolve -- the static set closes on the walk fallback, no hold");
         else InstallSurface(log);
     }
 
     /// <summary>Observers, bar the hold (<c>LightmapBake.Hold.cs</c>): they read nothing and call through, so any priority is fine.</summary>
     private const int EdgePriority = 0;
-    private static IntPtr* _loadedSlot, _setTileSlot;
+    private static SendAreaLoadedFn* _loadedSlot;
+    private static AreaSetTileFn* _setTileSlot;
 
     [UnmanagedCallersOnly]
     private static void OnSetTile(IntPtr area, IntPtr tile, int id, int orientation, int height)
     {
-        if (_setTileSlot != null) ((delegate* unmanaged<IntPtr, IntPtr, int, int, int, void>)*_setTileSlot)(area, tile, id, orientation, height);
+        if (_setTileSlot != null) (*_setTileSlot)(area, tile, id, orientation, height);
         OnTileChanged();
     }
 

@@ -4,6 +4,8 @@ using System.Numerics;
 using System.Threading;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -116,7 +118,7 @@ internal static unsafe partial class OwnedTextures
             log.Info("OwnedTextures: GLRender::m_boundTextures unresolved -- a name that dies outside the engine's DeleteTextures leaves its bind cache stale (#461)");
         // #284: resolved whatever `ownedtex` says. A texture with no GL id is a hole in the owned draw under
         // either key -- the retry is about the ENGINE's build having never run, not about who owns the copy.
-        _buildAndStore = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.AurTextureBuildAndStore);
+        _buildAndStore = EngineFn.AurTextureBuildAndStore;
         _nullTex = (IntPtr*)Native.Sym(SymbolMap.AurTextureNullPtr);
         if (_nullTex == null)
             log.Info("OwnedTextures: CAurTextureBasic::m_pNullTexture unresolved -- a material naming the "
@@ -172,18 +174,15 @@ internal static unsafe partial class OwnedTextures
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         if (!_armed) return;
-        _origCreate = (delegate* unmanaged<IntPtr, byte, int, void>)hooks.Install(
-            SymbolMap.RiCreateTexture, (IntPtr)(delegate* unmanaged<IntPtr, byte, int, void>)&OnCreateTexture);
+        _origCreate = hooks.InstallRiCreateTexture(&OnCreateTexture);
         log.Info(_origCreate != null
             ? "OwnedTextures: watching RenderInterface::CreateTexture -- Alloy uploads every engine texture from its decoded pixels"
             : "OwnedTextures: CreateTexture not installed -- every texture is BORROWED (owned draws sample engine ids)");
 
-        _origDelete = (delegate* unmanaged<uint, uint*, void>)hooks.Install(
-            SymbolMap.RiDeleteTextures, (IntPtr)(delegate* unmanaged<uint, uint*, void>)&OnDeleteTextures);
+        _origDelete = hooks.InstallRiDeleteTextures(&OnDeleteTextures);
         // ADR 0023: the build itself, so a warm resource skips the read, the decode and the upload.
-        _origBuildAndStoreTexture = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.AurTextureBuildAndStoreTexture, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnBuildAndStoreTexture);
-        _znam = (delegate* unmanaged<nuint, IntPtr>)Native.Sym(SymbolMap.OperatorNewArray);
+        _origBuildAndStoreTexture = hooks.InstallAurTextureBuildAndStoreTexture(&OnBuildAndStoreTexture);
+        _znam = EngineFn.OperatorNewArray;
         log.Info(_origBuildAndStoreTexture != null && _znam != null
             ? $"OwnedTextures: watching CAurTextureBasic::BuildAndStoreTexture -- a resident texture is handed back without a read, decode or upload (alloy.texcache {(_budgetCfgMb < 0 ? "auto" : _budgetCfgMb.ToString())})"
             : "OwnedTextures: BuildAndStoreTexture not hooked or operator new[] unresolved -- textures are kept across the world edge but every build is cold");
@@ -196,11 +195,9 @@ internal static unsafe partial class OwnedTextures
         // ConstructImage is the hold alone, so it stays gated on the flag actually being there to hold.
         // Attach ran first (AlloyRenderer wires the pass table before it installs it), so a null _pltOnGpu
         // means the symbol did not resolve -- already logged there, with its reason.
-        _origGlImageBasic = (delegate* unmanaged<IntPtr, byte, int>)hooks.Install(
-            SymbolMap.AurTextureGlImageBasic, (IntPtr)(delegate* unmanaged<IntPtr, byte, int>)&OnGlImageBasic);
+        _origGlImageBasic = hooks.InstallAurTextureGlImageBasic(&OnGlImageBasic);
         if (_pltOnGpu != null)
-            _origConstructImage = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-                SymbolMap.AurTextureConstructImage, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnConstructImage);
+            _origConstructImage = hooks.InstallAurTextureConstructImage(&OnConstructImage);
         if (_pltWanted)
             log.Info(_origConstructImage != null && _origGlImageBasic != null
                 ? "OwnedTextures: GPU-PLT held at zero on both readers -- an options-apply that re-enables it "
@@ -215,8 +212,8 @@ internal static unsafe partial class OwnedTextures
                 + "adopt it on and stays BORROWED (#360)");
     }
 
-    private static delegate* unmanaged<IntPtr, void> _origConstructImage;
-    private static delegate* unmanaged<IntPtr, byte, int> _origGlImageBasic;
+    private static AurTextureConstructImageFn _origConstructImage;
+    private static AurTextureGlImageBasicFn _origGlImageBasic;
 
     /// <summary>#358: the engine is about to decide whether to composite this texture's PLT layers on the
     /// CPU. Cold -- once per texture build -- and the whole body is one predicted compare.</summary>
@@ -244,10 +241,9 @@ internal static unsafe partial class OwnedTextures
         return r;
     }
 
-    /// <summary><c>CAurTextureBasic+0x84</c>: the texture's own format/kind word. <c>glImageBasic</c>
-    /// @0x48bd67 takes the GPU-composite branch on <c>== 4</c> and nothing else, so 4 is the PLT marker and
-    /// this is the ONLY test that separates a build Alloy must copy from one it has already uploaded.</summary>
-    private static readonly int OffPltKind = EngineLayout.TexBasicPltKind;
+    /// <summary><c>glImageBasic</c> @0x48bd67 takes the GPU-composite branch on
+    /// <see cref="CAurTextureBasic.PltKind"/> <c>== 4</c> and nothing else, so 4 is the PLT marker and this is
+    /// the ONLY test that separates a build Alloy must copy from one it has already uploaded.</summary>
     private const int PltKind = 4;
 
     /// <summary>One finished GPU composite, waiting for a context that may copy it. Deliberately holds NO
@@ -283,10 +279,11 @@ internal static unsafe partial class OwnedTextures
     private static void QueuePltCopy(IntPtr tex)
     {
         if (!_armed || !AurTex.IsBasic(tex)) return;
-        if (*(int*)((byte*)tex + OffPltKind) != PltKind) return;
-        uint* cells = *(uint**)((byte*)tex + OffCellNames);
+        var b = new CAurTextureBasic(tex);
+        if (b.PltKind != PltKind) return;
+        uint* cells = (uint*)b.CellNames;
         if (cells == null) return;
-        int n = *(short*)((byte*)tex + OffNumX) * *(short*)((byte*)tex + OffNumY);
+        int n = b.NumX * b.NumY;
         if (n > MaxCells) return;
         for (int cell = 0; cell < n; cell++)
         {
@@ -306,24 +303,15 @@ internal static unsafe partial class OwnedTextures
             if (_pltQ[i].Src == name) { _pltQ.RemoveAt(i); _pltCopyDied++; }
     }
 
-    private static delegate* unmanaged<IntPtr, byte, int, void> _origCreate;
-    private static delegate* unmanaged<uint, uint*, void> _origDelete;
+    private static RiCreateTextureFn _origCreate;
+    private static RiDeleteTexturesFn _origDelete;
     private static long _retired;
 
-    /// <summary><c>CAurTextureBasic+0x50</c>: <c>uint*</c>, the <c>numX*numY</c> GL names
-    /// <c>glImageBasic</c> @0x48bcf0 generates and binds one per cell.</summary>
-    private static readonly int OffCellNames = EngineLayout.TexBasicCellNames;
-    /// <summary><c>CAurTextureBasic+0xa8</c>: <c>char[0x20]</c>, the resolved texture name
-    /// <c>LoadImage</c> @0x487980 fills and <c>CAurTexture::Restore</c> @0x48e300 re-acquires by. Stable
-    /// across a delete/rebuild, which is what makes it an identity.</summary>
-    private static readonly int OffName = EngineLayout.TexBasicResolvedName;
-    /// <summary><c>CAurTextureBasic+0x48</c> / <c>+0xd4</c>: the PLT scheme array (<c>int*</c>) and its
-    /// <c>short</c> count -- the other half of the engine's own texture identity.</summary>
-    private static readonly int OffSchemes = EngineLayout.TexBasicSchemes,
-                               OffSchemeCount = EngineLayout.TexBasicSchemeCount;
-    /// <summary><c>CAurTextureBasic+0xca</c> / <c>+0xcc</c>: the <c>short</c> atlas grid the engine
-    /// de-atlases into one GL texture per cell.</summary>
-    private static readonly int OffNumX = EngineLayout.TexBasicNumX, OffNumY = EngineLayout.TexBasicNumY;
+    /// <summary>The name byte the key hashes from: <see cref="CAurTextureBasic.ResolvedName"/>, a
+    /// <c>char[0x20]</c> <c>LoadImage</c> @0x487980 fills and <c>CAurTexture::Restore</c> @0x48e300
+    /// re-acquires by. Stable across a delete/rebuild, which is what makes it an identity. A pointer into the
+    /// buffer, because the hash walks it.</summary>
+    private static byte* NameOf(IntPtr tex) => (byte*)Unsafe.AsPointer(ref new CAurTextureBasic(tex).ResolvedName);
 
     /// <summary><c>GLRender::m_boundTextures</c>: 16 <c>{target, name}</c> entries the engine's cache-checked
     /// binds early-out on. #461: <c>GLRender::DeleteTextures</c> zeroes the entry naming a deleted texture on
@@ -375,8 +363,9 @@ internal static unsafe partial class OwnedTextures
         // texture pointer is only ever as good as its vtable.
         if (!AurTex.IsBasic(tex)) return false;
 
-        uint* cells = *(uint**)((byte*)tex + OffCellNames);
-        int n = *(short*)((byte*)tex + OffNumX) * *(short*)((byte*)tex + OffNumY);
+        var b = new CAurTextureBasic(tex);
+        uint* cells = (uint*)b.CellNames;
+        int n = b.NumX * b.NumY;
         if (cells == null || cell < 0 || cell >= n || n > MaxCells) return false;
         int etid = (int)cells[cell];
         if (etid <= 0) return false;
@@ -410,7 +399,7 @@ internal static unsafe partial class OwnedTextures
         _origCreate(tex, 0, cell);
         uint err = Gl.GetError();          // read BEFORE Measure, whose own queries would mask it
         long bytes = err == 0 ? Measure() : 0;
-        bool wantBcn = err == 0 && _bcn && *(int*)((byte*)tex + OffCompressedSize) == 0;
+        bool wantBcn = err == 0 && _bcn && b.CompressedSize == 0;
         TexScan.Result scan = default;
         bool scanned = err == 0 && TexScan.Scan(tex, cell, CoverageAlpha, wantBcn, out scan);
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
@@ -430,7 +419,7 @@ internal static unsafe partial class OwnedTextures
             // exists, so the next AurTextureBindTID of ours compares unequal and binds. Deleting a bound name
             // resets the binding to 0, which is the state that cache should read as.
             cells[cell] = dst;
-            if (cell == 0) *(int*)((byte*)tex + OffGlId) = (int)dst;
+            if (cell == 0) b.GlId = (int)dst;
             uint old = (uint)etid;
             if (!_owned.Contains(old) && Gl.DeleteTextures != null) { Gl.DeleteTextures(1, &old); ScrubEngineBoundCache(old); }
             else _engineHeld.Remove(old);   // a refresh INTO our name: the engine will never return the old one, so Discard deletes it
@@ -448,7 +437,7 @@ internal static unsafe partial class OwnedTextures
         // class is asked again. ponytail: a full walk per such texture; a per-part dirty list if it shows in Enroll.
         if (scanned && scan.Graded >= AlloyCensus.GradedBlend) SceneWalk.Dirty = true;
         if (AlloyCensus._dumpTex != null && AlloyCensus.TexName(tex).Contains(AlloyCensus._dumpTex, StringComparison.OrdinalIgnoreCase))
-            _log?.Info($"[dumpframe] SCAN tex={AlloyCensus.TexName(tex)} cell={cell} scanned={scanned} compressed={*(int*)((byte*)tex + OffCompressedSize) != 0} refusedFmt={TexScan.LastRefusedFormat} holes={scan.Holes:F2} graded={scan.Graded:F2} {scan.W}x{scan.H} owned={dst}");
+            _log?.Info($"[dumpframe] SCAN tex={AlloyCensus.TexName(tex)} cell={cell} scanned={scanned} compressed={b.CompressedSize != 0} refusedFmt={TexScan.LastRefusedFormat} holes={scan.Holes:F2} graded={scan.Graded:F2} {scan.W}x{scan.H} owned={dst}");
         if (wantBcn && scan.Rgba != null) EnqueueTranscode(key, etid, dst, bytes, scan.Rgba, scan.W, scan.H, scan.Mips);
         return true;
     }
@@ -530,13 +519,13 @@ internal static unsafe partial class OwnedTextures
         if (AurTex.Tid(tex) != 0) return;
         // #456: CAurTexture carries fourteen vtable-slot rows and this is the first place Alloy devirts one.
         AlloyProbe.Once(ref _probedTex, "CAurTexture", tex, _log);
-        IntPtr real = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)tex + AlloyCensus.TexVtblReferenced))(tex);
+        IntPtr real = new CAurTexture(tex).GetReferencedTexture().Ptr;
         if (real == IntPtr.Zero) real = tex;
         if (_nullTex != null && real == *_nullTex) return;
-        IntPtr basic = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)real + AlloyCensus.TexVtblAsBasic))(real);
-        if (basic == IntPtr.Zero || *(int*)((byte*)basic + OffGlId) != 0 || *((byte*)basic + FlagNeverBuild) != 0) return;
+        CAurTextureBasic basic = new CAurTexture(real).AsCAurTextureBasic();
+        if (basic.IsNull || basic.GlId != 0 || basic.FlagNeverBuild != 0) return;
         if (_prefetchSeen.Count > 65536) _prefetchSeen.Clear();
-        if (!_prefetchSeen.Add(basic)) return;
+        if (!_prefetchSeen.Add(basic.Ptr)) return;
         if (_prefetchN >= PrefetchQueue) { _prefetchDropped++; return; }
         _prefetchQ[(_prefetchHead + _prefetchN++) % PrefetchQueue] = tex;
     }
@@ -594,22 +583,18 @@ internal static unsafe partial class OwnedTextures
     /// <summary>Content keys with a transcode queued or in flight: not warm-eligible (the pipeline is about
     /// to retire the name the engine would be handed).</summary>
     private static readonly HashSet<ulong> _inFlight = new();
-    private static delegate* unmanaged<IntPtr, void> _origBuildAndStoreTexture;
-    private static delegate* unmanaged<nuint, IntPtr> _znam;
-    private static readonly int OffImage = EngineLayout.TexBasicImage, OffGlId = EngineLayout.TexBasicGlId,
-        OffWidth = EngineLayout.TexBasicWidth, OffHeight = EngineLayout.TexBasicHeight,
-        OffBpp = EngineLayout.TexBasicBpp, OffAlphaMean = EngineLayout.TexBasicAlphaMean,
-        OffController = EngineLayout.TexBasicController, OffPltMarker = EngineLayout.TexBasicPltKind,
-        FlagCube = EngineLayout.TexBasicFlagCube, FlagImageBuilt = EngineLayout.TexBasicFlagBuilt,
-        FlagNoImage = EngineLayout.TexBasicFlagNoImage, FlagNeverBuild = EngineLayout.TexBasicFlagNeverBuild;
+    private static AurTextureBuildAndStoreTextureFn _origBuildAndStoreTexture;
+    private static OperatorNewArrayFn _znam;
     private const int PltMarker = 4;
 
     /// <summary>Is this a texture the cache may stand in for? Plain 2D, no PLT scheme, no animation
     /// controller, not the engine's never-build case. Everything else takes the cold path unchanged.</summary>
     private static bool Plain(IntPtr tex)
-        => *((byte*)tex + FlagNeverBuild) == 0 && *((byte*)tex + FlagCube) == 0
-           && *(IntPtr*)((byte*)tex + OffSchemes) == IntPtr.Zero && *(int*)((byte*)tex + OffPltMarker) != PltMarker
-           && *(IntPtr*)((byte*)tex + OffController) == IntPtr.Zero;
+    {
+        var b = new CAurTextureBasic(tex);
+        return b.FlagNeverBuild == 0 && b.FlagCube == 0 && b.Schemes == IntPtr.Zero
+               && b.PltKind != PltMarker && b.Controller == IntPtr.Zero;
+    }
 
     [UnmanagedCallersOnly]
     private static void OnBuildAndStoreTexture(IntPtr tex)
@@ -623,17 +608,18 @@ internal static unsafe partial class OwnedTextures
     /// funnel as an owned resource.</summary>
     private static void Capture(IntPtr tex)
     {
-        if (!AurTex.IsBasic(tex) || !Plain(tex) || *(IntPtr*)((byte*)tex + OffImage) != IntPtr.Zero || *((byte*)tex + OffName) == 0) return;
-        uint* cells = *(uint**)((byte*)tex + OffCellNames);
-        int nx = *(short*)((byte*)tex + OffNumX), ny = *(short*)((byte*)tex + OffNumY);
-        if (cells == null || nx <= 0 || ny <= 0 || *((byte*)tex + FlagImageBuilt) == 0) return;
+        var b = new CAurTextureBasic(tex);
+        if (!AurTex.IsBasic(tex) || !Plain(tex) || b.Image != IntPtr.Zero || b.ResolvedName == 0) return;
+        uint* cells = (uint*)b.CellNames;
+        int nx = b.NumX, ny = b.NumY;
+        if (cells == null || nx <= 0 || ny <= 0 || b.FlagBuilt == 0) return;
         for (int c = 0; c < nx * ny; c++)
             if (!_index.TryGetValue((int)cells[c], out ulong k) || !_res.ContainsKey(k)) return;
         _meta[Key(tex, 0)] = new TexMeta
         {
-            W = *(int*)((byte*)tex + OffWidth), H = *(int*)((byte*)tex + OffHeight), Bpp = *(int*)((byte*)tex + OffBpp),
-            Compressed = *(int*)((byte*)tex + OffCompressedSize), NumX = nx, NumY = ny,
-            Alpha = *(float*)((byte*)tex + OffAlphaMean),
+            W = b.Width, H = b.Height, Bpp = b.Bpp,
+            Compressed = b.CompressedSize, NumX = nx, NumY = ny,
+            Alpha = b.AlphaMean,
         };
     }
 
@@ -643,7 +629,7 @@ internal static unsafe partial class OwnedTextures
     /// DeleteTextures -- where <see cref="OnDeleteTextures"/> keeps them. Refuses on any doubt.</summary>
     private static bool TryWarm(IntPtr tex)
     {
-        if (_znam == null || !AurTex.IsBasic(tex) || *((byte*)tex + OffName) == 0) return false;   // +0xa8 is empty until LoadImage copies +0x88: no identity yet
+        if (_znam == null || !AurTex.IsBasic(tex) || new CAurTextureBasic(tex).ResolvedName == 0) return false;   // the resolved name is empty until LoadImage fills it: no identity yet
         ulong k0 = Key(tex, 0);
         if (!_meta.TryGetValue(k0, out TexMeta m)) { _cacheMisses++; return false; }
         int cells = m.NumX * m.NumY;
@@ -677,15 +663,15 @@ internal static unsafe partial class OwnedTextures
     /// <summary>The field writes alone, so the self-check can run them over a stand-in object.</summary>
     private static void FillWarm(IntPtr tex, IntPtr names, in TexMeta m)
     {
-        byte* p = (byte*)tex;
-        *(IntPtr*)(p + OffCellNames) = names;
-        *(int*)(p + OffGlId) = *(int*)names;
-        *(short*)(p + OffNumX) = (short)m.NumX; *(short*)(p + OffNumY) = (short)m.NumY;
-        *(int*)(p + OffWidth) = m.W; *(int*)(p + OffHeight) = m.H; *(int*)(p + OffBpp) = m.Bpp;
-        *(int*)(p + OffCompressedSize) = m.Compressed;
-        *(float*)(p + OffAlphaMean) = m.Alpha;
-        *(IntPtr*)(p + OffImage) = IntPtr.Zero;
-        p[FlagImageBuilt] = 1; p[FlagNoImage] = 0;
+        var b = new CAurTextureBasic(tex);
+        b.CellNames = names;
+        b.GlId = *(int*)names;
+        b.NumX = (short)m.NumX; b.NumY = (short)m.NumY;
+        b.Width = m.W; b.Height = m.H; b.Bpp = m.Bpp;
+        b.CompressedSize = m.Compressed;
+        b.AlphaMean = m.Alpha;
+        b.Image = IntPtr.Zero;
+        b.FlagBuilt = 1; b.FlagNoImage = 0;
     }
 
     /// <summary>Evict idle resources, oldest first, until the cache fits its budget. Bracket-side (it
@@ -790,14 +776,15 @@ internal static unsafe partial class OwnedTextures
         uint* arr = stackalloc uint[2] { 7, 8 };
         var m = new TexMeta { W = 64, H = 32, Bpp = 4, Compressed = 0, NumX = 2, NumY = 1, Alpha = 0.5f };
         FillWarm((IntPtr)obj, (IntPtr)arr, in m);
-        ok &= *(int*)(obj + OffGlId) == 7 && *(short*)(obj + OffNumX) == 2 && *(short*)(obj + OffNumY) == 1
-              && *(int*)(obj + OffWidth) == 64 && *(int*)(obj + OffHeight) == 32 && obj[FlagImageBuilt] == 1
-              && *(IntPtr*)(obj + OffImage) == IntPtr.Zero && *(float*)(obj + OffAlphaMean) == 0.5f;
+        var objView = new CAurTextureBasic((IntPtr)obj);
+        ok &= objView.GlId == 7 && objView.NumX == 2 && objView.NumY == 1
+              && objView.Width == 64 && objView.Height == 32 && objView.FlagBuilt == 1
+              && objView.Image == IntPtr.Zero && objView.AlphaMean == 0.5f;
         // the key: an anagram family (the engine's hash folds these to ONE value) is two resources, case is
         // not, and the cell lives in the low field
         byte* obj2 = stackalloc byte[0x100];
         new Span<byte>(obj2, 0x100).Clear();
-        static void Name(byte* o, string n) { for (int i = 0; i < n.Length; i++) o[OffName + i] = (byte)n[i]; o[OffName + n.Length] = 0; }
+        static void Name(byte* o, string n) { byte* d = NameOf((IntPtr)o); for (int i = 0; i < n.Length; i++) d[i] = (byte)n[i]; d[n.Length] = 0; }
         Name(obj, "tex_core_0145_d"); Name(obj2, "tex_core_0154_d");
         ok &= Key((IntPtr)obj, 0) != Key((IntPtr)obj2, 0);
         Name(obj2, "TEX_CORE_0145_D");
@@ -1051,7 +1038,6 @@ internal static unsafe partial class OwnedTextures
     /// <c>GetCompressedSize</c> @0x484b00 verdict that picks <c>glTexImage2D</c> over
     /// <c>glCompressedTexImage2D</c> -- versus the already-BCn path. The uncompressed share is the whole
     /// BCn-transcode prize; the issue forbids building the transcode without this line.</summary>
-    private static readonly int OffCompressedSize = EngineLayout.TexBasicCompressedSize;
     private static int _censusRaw, _censusBcn, _censusTrans;
     private static long _censusRawBytes, _censusBcnBytes, _censusSaved;
     /// <summary>#266's number, measured before anything is built: per area, how many textures are
@@ -1067,7 +1053,7 @@ internal static unsafe partial class OwnedTextures
     private const int CensusSettle = 300;
 
     private static void Census(IntPtr tex, long bytes, long transSaved, int gridN, int cell)
-        => CensusTally(*(int*)((byte*)tex + OffCompressedSize) > 0, bytes, transSaved, gridN, cell);
+        => CensusTally(new CAurTextureBasic(tex).CompressedSize > 0, bytes, transSaved, gridN, cell);
 
     /// <summary>The tally half, split from the field read so <see cref="SelfCheck"/> can exercise the
     /// window: report-then-upload resets, silence settles, one line per window. A texture is charged to the
@@ -1308,11 +1294,11 @@ internal static unsafe partial class OwnedTextures
         if (AurTex.Tid(tex) != 0) { _rebuildWon++; _rebuildTried.Remove(tex); return; }
         if (AurTex.Refused != refusedBefore) { _rebuildDead++; Give(tex, true); return; }
 
-        IntPtr real = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)tex + AlloyCensus.TexVtblReferenced))(tex);
+        IntPtr real = new CAurTexture(tex).GetReferencedTexture().Ptr;
         if (real == IntPtr.Zero) real = tex;
         if (_nullTex != null && real == *_nullTex)
         { _rebuildNullTex++; Give(tex, true); UnbuiltDiag(tex, "the engine's shared NULL texture", IntPtr.Zero, 0); return; }
-        IntPtr basic = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)real + AlloyCensus.TexVtblAsBasic))(real);
+        IntPtr basic = new CAurTexture(real).AsCAurTextureBasic().Ptr;
         if (basic == IntPtr.Zero)
         { _rebuildNoBasic++; Give(tex, true); UnbuiltDiag(tex, "no CAurTextureBasic behind it", IntPtr.Zero, 0); return; }
 
@@ -1328,7 +1314,7 @@ internal static unsafe partial class OwnedTextures
         // its last attempt would sit in the residual and in `now have an id` at once.
         if (Give(tex, false))
         {
-            if (*(byte*)(basic + BasicInvalid) != 0) _rebuildNoImage++;
+            if (new CAurTextureBasic(basic).FlagNoImage != 0) _rebuildNoImage++;
             else _rebuildSpent++;
         }
         UnbuiltDiag(tex, "built, still no id", basic, tid);
@@ -1357,21 +1343,16 @@ internal static unsafe partial class OwnedTextures
         _unbuiltDiagLeft--;
         _log?.Info($"OwnedTextures: [unbuilt] \"{nm}\" -- {what}"
                  + (basic == IntPtr.Zero ? "" :
-                    $"; scheme={(*(IntPtr*)(basic + BasicScheme) == IntPtr.Zero ? "none (file-backed)" : "PLT")}"
-                  + $" image={(*(IntPtr*)(basic + BasicImage) == IntPtr.Zero ? "none" : "decoded")}"
-                  + $" built={*(byte*)(basic + BasicBuilt)} invalid={*(byte*)(basic + BasicInvalid)} tid={tid}")
+                    $"; scheme={(new CAurTextureBasic(basic).Schemes == IntPtr.Zero ? "none (file-backed)" : "PLT")}"
+                  + $" image={(new CAurTextureBasic(basic).Image == IntPtr.Zero ? "none" : "decoded")}"
+                  + $" built={new CAurTextureBasic(basic).FlagBuilt} invalid={new CAurTextureBasic(basic).FlagNoImage} tid={tid}")
                  + $" (#284: {_rebuildTried[tex].Tries}/{RebuildAttempts} attempts)");
     }
 
-    /// <summary>The fields <see cref="UnbuiltDiag"/> reads off a <c>CAurTextureBasic</c>, all four of them
-    /// written by <c>ConstructImage</c> @0x48a5d0 and cleared by <c>Reset</c> @0x4858c0: the PLT layer scheme,
-    /// the decoded image, the constructed latch, and the "no image and no controller" verdict.</summary>
-    private static readonly int BasicScheme = EngineLayout.TexBasicSchemes, BasicImage = EngineLayout.TexBasicImage,
-        BasicBuilt = EngineLayout.TexBasicFlagBuilt, BasicInvalid = EngineLayout.TexBasicFlagNoImage;
     private static int _unbuiltDiagLeft = 8;
     private static readonly HashSet<string> _unbuiltDiagSeen = new();
 
-    private static delegate* unmanaged<IntPtr, void> _buildAndStore;
+    private static AurTextureBuildAndStoreFn _buildAndStore;
     private static IntPtr* _nullTex;
 
     /// <summary>#284's number, for the period line: how many unbuilt textures Alloy has retried, how many of
@@ -1445,13 +1426,14 @@ internal static unsafe partial class OwnedTextures
     {
         const ulong Prime = 0x100000001B3UL;   // not-an-offset: FNV-1a 64 prime
         ulong h = 0xCBF29CE484222325UL;   // not-an-offset: FNV-1a 64 basis
-        for (byte* p = (byte*)tex + OffName; *p != 0; p++)
+        for (byte* p = NameOf(tex); *p != 0; p++)
         {
             uint c = *p; if (c - 'A' < 26) c += 32;
             h = (h ^ c) * Prime;
         }
-        short n = *(short*)((byte*)tex + OffSchemeCount);
-        int* sch = *(int**)((byte*)tex + OffSchemes);
+        var b = new CAurTextureBasic(tex);
+        short n = b.SchemeCount;
+        int* sch = (int*)b.Schemes;
         h = (h ^ (uint)n) * Prime;
         for (int i = 0; sch != null && i < n; i++) h = (h ^ (uint)sch[i]) * Prime;
         return (h & ~CellMask) | ((ulong)(uint)cell & CellMask);

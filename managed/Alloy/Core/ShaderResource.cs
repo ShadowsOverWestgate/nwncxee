@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -13,31 +14,13 @@ internal static unsafe class ShaderResource
 {
     /// <summary>Resource type of a .shd, read off the client's own <c>CResHelper&lt;CResSHD, 2069&gt;</c>.</summary>
     private const ushort ResTypeShd = 2069;
-    /// <summary>sizeof(CRes): what <c>CExoResMan::Get</c> passes to operator new before <c>CRes::CRes</c>.</summary>
+    /// <summary>sizeof(CRes): what <c>CExoResMan::Get</c> passes to operator new before <c>CRes::CRes</c>.
+    /// A SIZE, so it stays a bare number -- there is no object to view yet when it is read.</summary>
     private static readonly int SizeOfCRes = EngineLayout.SizeOfCRes;
-    /// <summary>CRes::GetData / CRes::GetSize field offsets. A serviced .shd is the raw file bytes --
-    /// <c>CResSHD::OnResourceServiced</c> only mirrors these two into its own pair.</summary>
-    private static readonly int CResData = EngineLayout.CResData, CResSize = EngineLayout.CResSize;
     /// <summary>A CResRef is 16 bytes of null-padded ASCII; longer names cannot address a resource.</summary>
     internal const int ResRefBytes = 16;
 
     private static readonly IntPtr _resManSym = Native.Sym(SymbolMap.ExoResMan);
-    private static readonly delegate* unmanaged<IntPtr, byte*, ushort, uint*, int> _exists =
-        (delegate* unmanaged<IntPtr, byte*, ushort, uint*, int>)Native.Sym(SymbolMap.ResManExists);
-    private static readonly delegate* unmanaged<IntPtr, byte*, ushort, IntPtr> _getResObject =
-        (delegate* unmanaged<IntPtr, byte*, ushort, IntPtr>)Native.Sym(SymbolMap.ResManGetResObject);
-    private static readonly delegate* unmanaged<IntPtr, byte*, ushort, IntPtr, void> _setResObject =
-        (delegate* unmanaged<IntPtr, byte*, ushort, IntPtr, void>)Native.Sym(SymbolMap.ResManSetResObject);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _demand =
-        (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.ResManDemand);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr, ulong> _release =
-        (delegate* unmanaged<IntPtr, IntPtr, ulong>)Native.Sym(SymbolMap.ResManRelease);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr, byte, int> _releaseObj =
-        (delegate* unmanaged<IntPtr, IntPtr, byte, int>)Native.Sym(SymbolMap.ResManReleaseObj);
-    private static readonly delegate* unmanaged<IntPtr, void> _cresCtor =
-        (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.CResCtor);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr> _operatorNew =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.OperatorNew);
 
     /// <summary>The GLSL a content author supplied for <paramref name="resref"/>, or null when nothing in
     /// the resource chain provides it (the common case: everyone runs the embedded defaults).
@@ -96,36 +79,38 @@ internal static unsafe class ShaderResource
     /// <summary>The raw bytes behind <paramref name="resref"/>.shd, or null when nothing supplies it.</summary>
     private static byte[]? Blob(string resref, ExtenderLog? log)
     {
-        if (_resManSym == IntPtr.Zero || _exists == null || _getResObject == null || _setResObject == null
-            || _demand == null || _release == null || _releaseObj == null || _cresCtor == null
-            || _operatorNew == null || resref.Length > ResRefBytes) return null;
+        if (_resManSym == IntPtr.Zero || EngineFn.ResManExists == null || EngineFn.ResManGetResObject == null
+            || EngineFn.ResManSetResObject == null || EngineFn.ResManDemand == null || EngineFn.ResManRelease == null
+            || EngineFn.ResManReleaseObj == null || EngineFn.CResCtor == null || EngineFn.OperatorNew == null
+            || resref.Length > ResRefBytes) return null;
         IntPtr resMan = *(IntPtr*)_resManSym;
         if (resMan == IntPtr.Zero) return null;
 
         byte* rr = stackalloc byte[ResRefBytes];
         for (int i = 0; i < ResRefBytes; i++) rr[i] = i < resref.Length ? (byte)resref[i] : (byte)0;
-        if (_exists(resMan, rr, ResTypeShd, null) == 0) return null;   // size out-param is null-checked there
+        if (EngineFn.ResManExists(resMan, rr, ResTypeShd, null) == 0) return null;   // size out-param is null-checked there
 
-        IntPtr res = _getResObject(resMan, rr, ResTypeShd);
+        IntPtr res = EngineFn.ResManGetResObject(resMan, rr, ResTypeShd);
         if (res == IntPtr.Zero)
         {
             // First ask for this resource: no CRes exists yet, so make one exactly as CResHelper does.
-            res = _operatorNew((IntPtr)SizeOfCRes);
+            res = EngineFn.OperatorNew((nuint)SizeOfCRes);
             if (res == IntPtr.Zero) return null;
-            _cresCtor(res);
-            _setResObject(resMan, rr, ResTypeShd, res);   // seeds the refcount at 1, like GetResObject's bump
+            EngineFn.CResCtor(res);
+            EngineFn.ResManSetResObject(resMan, rr, ResTypeShd, res);   // seeds the refcount at 1, like GetResObject's bump
         }
-        _demand(resMan, res);
+        EngineFn.ResManDemand(resMan, res);
 
-        byte* data = *(byte**)(res + CResData);
-        int size = *(int*)(res + CResSize);
+        var cres = new CRes(res);
+        byte* data = (byte*)cres.Data;
+        int size = cres.Size;
         byte[]? bytes = null;
         if (data != null && size > 0) { bytes = new byte[size]; new Span<byte>(data, size).CopyTo(bytes); }
 
-        _release(resMan, res);
+        EngineFn.ResManRelease(resMan, res);
         // Second arg is ReleaseResObject's "do not queue for freeing"; CResHelper::ClearResHelper passes
         // exactly this predicate -- GetData() == 0, i.e. nothing was ever serviced, so there is nothing to free.
-        _releaseObj(resMan, res, data == null ? (byte)1 : (byte)0);
+        EngineFn.ResManReleaseObj(resMan, res, data == null ? (byte)1 : (byte)0);
 
         return bytes;
     }

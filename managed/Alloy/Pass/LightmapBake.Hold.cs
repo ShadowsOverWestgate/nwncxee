@@ -64,7 +64,7 @@ internal static unsafe partial class LightmapBake
 
     private static void Forward(IntPtr msg)
     {
-        if (_loadedSlot != null) ((delegate* unmanaged<IntPtr, void>)*_loadedSlot)(msg);
+        if (_loadedSlot != null) (*_loadedSlot)(msg);
     }
 
     /// <summary>The set closed, a slot enrolled, a chart landed: the drain clock restarts.</summary>

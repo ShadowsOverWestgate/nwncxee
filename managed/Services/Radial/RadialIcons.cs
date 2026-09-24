@@ -39,11 +39,11 @@ internal static unsafe class RadialIcons
     /// <summary>CGameObject type byte for an item (<c>CClientExoAppInternal::GetItemByGameObjectID</c> @0x63f3a0).</summary>
     private const byte GameObjTypeItem = 6;
 
-    private static delegate* unmanaged<byte*, byte*, int*, int, byte, IntPtr> _find;
-    private static delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _get;
-    private static delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject;
-    private static delegate* unmanaged<IntPtr, uint, IntPtr, void> _getObjectName;
-    private static delegate* unmanaged<IntPtr, void> _exoDtor;
+    private static AurTextureFindFn _find;
+    private static AurTextureGetFn _get;
+    private static GetGameObjectFn _getGameObject;
+    private static GetObjectNameFn _getObjectName;
+    private static ExoStringDtorFn _exoDtor;
     private static IntPtr _appMgr, _vtLayered, _vtComposite, _vtArmor;
     private static bool _ready, _initTried, _firstDrawLogged;
     private static ExtenderLog? _log;
@@ -62,11 +62,11 @@ internal static unsafe class RadialIcons
         if (!SymbolMap.Require(log, "RadialIcons", SymbolMap.AurTextureFind, SymbolMap.AurTextureGet, SymbolMap.GetGameObject,
                                SymbolMap.AppManager, SymbolMap.VtCLayeredIcon, SymbolMap.VtCCompositeIcon, SymbolMap.VtCArmorIcon)) return false;
         if (!EngineLayout.Require(log, "RadialIcons", "CGuiIcon", "CLayeredIcon", "CCompositeIcon", "CArmorIcon", "CNWCItem", "CGameObject")) return false;
-        _find = (delegate* unmanaged<byte*, byte*, int*, int, byte, IntPtr>)SymbolMap.Resolve(SymbolMap.AurTextureFind, log);
-        _get = (delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr>)SymbolMap.Resolve(SymbolMap.AurTextureGet, log);
-        _getGameObject = (delegate* unmanaged<IntPtr, uint, IntPtr>)SymbolMap.Resolve(SymbolMap.GetGameObject, log);
-        _getObjectName = (delegate* unmanaged<IntPtr, uint, IntPtr, void>)SymbolMap.Resolve(SymbolMap.GetObjectName, log);
-        _exoDtor = (delegate* unmanaged<IntPtr, void>)SymbolMap.Resolve(SymbolMap.ExoStringDtor, log);
+        _find = (AurTextureFindFn)SymbolMap.Resolve(SymbolMap.AurTextureFind, log);
+        _get = (AurTextureGetFn)SymbolMap.Resolve(SymbolMap.AurTextureGet, log);
+        _getGameObject = (GetGameObjectFn)SymbolMap.Resolve(SymbolMap.GetGameObject, log);
+        _getObjectName = (GetObjectNameFn)SymbolMap.Resolve(SymbolMap.GetObjectName, log);
+        _exoDtor = (ExoStringDtorFn)SymbolMap.Resolve(SymbolMap.ExoStringDtor, log);
         _appMgr = SymbolMap.Resolve(SymbolMap.AppManager, log);
         _vtLayered = SymbolMap.Resolve(SymbolMap.VtCLayeredIcon, log) + VtableToVptr;
         _vtComposite = SymbolMap.Resolve(SymbolMap.VtCCompositeIcon, log) + VtableToVptr;
@@ -130,30 +130,34 @@ internal static unsafe class RadialIcons
     /// for a layer that exists as a PLT, a find miss IS its skip, so the compacted index advances on a hit only.</summary>
     internal static int Layers(IntPtr icon, Span<int> tids)
     {
-        byte* p = (byte*)icon;
+        Span<byte> resref = new CGuiIcon(icon).Resref;
         switch (Classify(icon))
         {
             case IconKind.Layered:
             {
                 var layered = new CLayeredIcon(icon);
-                tids[0] = TidPlt(p + EngineLayout.GuiIconResRef, (ushort*)layered.Scheme, layered.SchemeCount);
+                tids[0] = TidPlt(resref, (ushort*)layered.Scheme, layered.SchemeCount);
                 return 1;
             }
             case IconKind.Composite:
-                tids[0] = TidPlain(p + EngineLayout.GuiIconResRef);
-                tids[1] = TidPlain(p + EngineLayout.CompositeIconResRef2);
-                tids[2] = TidPlain(p + EngineLayout.CompositeIconResRef3);
+            {
+                var composite = new CCompositeIcon(icon);
+                tids[0] = TidPlain(resref);
+                tids[1] = TidPlain(composite.Resref2);
+                tids[2] = TidPlain(composite.Resref3);
                 return 3;
+            }
             case IconKind.Armor:
             {
                 var armor = new CArmorIcon(icon);
                 int count = armor.SchemeCount;
                 ushort* shared = (ushort*)armor.Scheme;
                 ushort* perLayer = (ushort*)armor.LayerSchemes;
+                Span<byte> layers = armor.Resrefs;
                 int n = 0;
                 for (int slot = 0; slot < EngineLayout.ArmorIconLayers; slot++)
                 {
-                    byte* name = p + EngineLayout.ArmorIconResRefs + slot * EngineLayout.ArmorIconResRefStride;
+                    Span<byte> name = layers.Slice(slot * EngineLayout.ArmorIconResRefStride, EngineLayout.ArmorIconResRefStride);
                     if (name[0] == 0) continue;
                     ushort* scheme = perLayer != null ? perLayer + n * count : shared;
                     IntPtr tex = FindPlt(name, scheme, count);
@@ -163,7 +167,7 @@ internal static unsafe class RadialIcons
                 return n;
             }
             default:
-                tids[0] = TidPlain(p + EngineLayout.GuiIconResRef);
+                tids[0] = TidPlain(resref);
                 return 1;
         }
     }
@@ -178,25 +182,25 @@ internal static unsafe class RadialIcons
         if (app == IntPtr.Zero) return IntPtr.Zero;
         var obj = new CGameObject(_getGameObject(app, (uint)(long)handle));
         if (obj.IsNull || obj.Type != GameObjTypeItem) return IntPtr.Zero;
-        IntPtr item = ((delegate* unmanaged<IntPtr, IntPtr>)obj.AsNWCItemFn)(obj.Ptr);
+        IntPtr item = obj.AsNWCItem();
         return item == IntPtr.Zero ? IntPtr.Zero : new CNWCItem(item).GuiIcon;
     }
 
     /// <summary>A plain layer: <c>AurTextureGet(name, 0, 0, 0, 0, false)</c>, the resman's find-or-create by resref
     /// (what the engine's own <c>ReplaceTexture</c> and <see cref="TextRig.ResolveTid"/> do).</summary>
-    private static int TidPlain(byte* resref)
+    private static int TidPlain(ReadOnlySpan<byte> resref)
     {
         byte* name = stackalloc byte[ResRefLen + 1];
         if (CName(resref, name) == 0) return 0;
         return AurTex.Tid(_get(name, IntPtr.Zero, null, null, 0, 0));
     }
 
-    private static int TidPlt(byte* resref, ushort* scheme, int count) => AurTex.Tid(FindPlt(resref, scheme, count));
+    private static int TidPlt(ReadOnlySpan<byte> resref, ushort* scheme, int count) => AurTex.Tid(FindPlt(resref, scheme, count));
 
     /// <summary>A PLT layer: <c>AurTextureFind(name, name, scheme, count, false)</c> -- the hashed (pltName, scheme)
     /// lookup, scheme widened <c>ushort -&gt; int</c> as <c>Gob::ReplaceTexture</c> @0x43eb30 widens it. Find, never get:
     /// a get would mint a scheme-less duplicate every frame.</summary>
-    private static IntPtr FindPlt(byte* resref, ushort* scheme, int count)
+    private static IntPtr FindPlt(ReadOnlySpan<byte> resref, ushort* scheme, int count)
     {
         if (scheme == null || (uint)count > MaxScheme) return IntPtr.Zero;
         byte* name = stackalloc byte[ResRefLen + 1];
@@ -207,7 +211,7 @@ internal static unsafe class RadialIcons
     }
 
     /// <summary>Copy a 16-byte <c>CResRef</c> into a NUL-terminated stack buffer; returns its length.</summary>
-    private static int CName(byte* resref, byte* dst)
+    private static int CName(ReadOnlySpan<byte> resref, byte* dst)
     {
         int n = 0;
         while (n < ResRefLen && resref[n] != 0) { dst[n] = resref[n]; n++; }
@@ -258,7 +262,7 @@ internal static unsafe class RadialIcons
         return plt == null && scheme == null && count == 0 ? _fakeTex : IntPtr.Zero;
     }
 
-    private static void Put(byte* dst, string s) { for (int i = 0; i < s.Length; i++) dst[i] = (byte)s[i]; dst[s.Length] = 0; }
+    private static void Put(Span<byte> dst, string s) { for (int i = 0; i < s.Length; i++) dst[i] = (byte)s[i]; dst[s.Length] = 0; }
     private static string LastName() { int n = 0; while (n < ResRefLen && _fakeLastName[n] != 0) n++; return System.Text.Encoding.ASCII.GetString(_fakeLastName, 0, n); }
 
     /// <summary>Off-device: the vptr classification and the layer walk over fake icon blobs laid out per the resolved
@@ -285,10 +289,10 @@ internal static unsafe class RadialIcons
             _find = &FakeFind; _get = &FakeGet; _ready = true;
             _fakeTex = (IntPtr)vt;   // any non-null: AurTex is unarmed headless, so Tid() answers 0 and only the walk is checked
             _vtLayered = (IntPtr)(vt + 0x10); _vtComposite = (IntPtr)(vt + 0x20); _vtArmor = (IntPtr)(vt + 0x30);
-            fixed (byte* miss = _fakeMissName) Put(miss, "no_such_plt");
+            Put(_fakeMissName, "no_such_plt");
 
             *(IntPtr*)icon = (IntPtr)(vt + 0x40);
-            Put(icon + EngineLayout.GuiIconResRef, "isk_pocket");
+            Put(new CGuiIcon((IntPtr)icon).Resref, "isk_pocket");
             check.Expect(Classify((IntPtr)icon) == IconKind.Plain, "an unlisted vptr is Plain");
             _fakeGets = _fakeFinds = 0;
             check.Expect(Layers((IntPtr)icon, tids) == 1 && _fakeGets == 1 && _fakeFinds == 0 && LastName() == "isk_pocket", $"plain = one get by resref ({LastName()})");
@@ -306,18 +310,20 @@ internal static unsafe class RadialIcons
             check.Expect(Layers((IntPtr)icon, tids) == 1 && _fakeFinds == 0 && tids[0] == 0, "an over-long scheme is refused, not truncated");
 
             *(IntPtr*)icon = _vtComposite;
-            Put(icon + EngineLayout.CompositeIconResRef2, "iwaxe_m_1");
-            Put(icon + EngineLayout.CompositeIconResRef3, "iwaxe_t_1");
+            var composite = new CCompositeIcon((IntPtr)icon);
+            Put(composite.Resref2, "iwaxe_m_1");
+            Put(composite.Resref3, "iwaxe_t_1");
             _fakeGets = _fakeFinds = 0;
             check.Expect(Classify((IntPtr)icon) == IconKind.Composite && Layers((IntPtr)icon, tids) == 3 && _fakeGets == 3 && _fakeFinds == 0
               && LastName() == "iwaxe_t_1", "composite = three gets, 01 -> 03");
 
             NativeMemory.Clear(icon + 8, 0xf8);
             *(IntPtr*)icon = _vtArmor;
-            Put(icon + EngineLayout.ArmorIconResRefs + 0 * EngineLayout.ArmorIconResRefStride, "arm_a");
-            Put(icon + EngineLayout.ArmorIconResRefs + 2 * EngineLayout.ArmorIconResRefStride, "no_such_plt");
-            Put(icon + EngineLayout.ArmorIconResRefs + 3 * EngineLayout.ArmorIconResRefStride, "arm_d");
             var armor = new CArmorIcon((IntPtr)icon);
+            Span<byte> layers = armor.Resrefs;
+            Put(layers[(0 * EngineLayout.ArmorIconResRefStride)..], "arm_a");
+            Put(layers[(2 * EngineLayout.ArmorIconResRefStride)..], "no_such_plt");
+            Put(layers[(3 * EngineLayout.ArmorIconResRefStride)..], "arm_d");
             armor.SchemeCount = 10;
             armor.Scheme = (IntPtr)scheme;
             for (int i = 0; i < 30; i++) perLayer[i] = (ushort)(100 + i);

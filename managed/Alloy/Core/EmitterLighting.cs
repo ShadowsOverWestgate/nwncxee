@@ -29,6 +29,9 @@ internal static unsafe class EmitterLighting
     [StructLayout(LayoutKind.Sequential)]
     internal struct V3 { public float X, Y, Z; }
 
+    /// <summary>Raw, and it stays raw (CX-39): this ONE symbol has two signatures -- the by-value
+    /// <c>Vector</c> return puts the hidden buffer in a different argument slot per ABI -- so no single
+    /// declared signature describes it.</summary>
     private static IntPtr _fn;
 
     /// <summary>Resolved on this client? Callers gate on this exactly as they gated on their own pointer.</summary>

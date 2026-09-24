@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Ui;
@@ -65,21 +66,6 @@ public sealed unsafe class AtlasSheet
         }
     }
 
-    private static readonly delegate* unmanaged<byte*, byte*, int, int> _initFont =
-        (delegate* unmanaged<byte*, byte*, int, int>)Native.Sym(SymbolMap.StbttInitFont);
-    private static readonly delegate* unmanaged<byte*, float, float> _scaleForPx =
-        (delegate* unmanaged<byte*, float, float>)Native.Sym(SymbolMap.StbttScaleForPixelHeight);
-    private static readonly delegate* unmanaged<byte*, int*, int*, int*, void> _vmetrics =
-        (delegate* unmanaged<byte*, int*, int*, int*, void>)Native.Sym(SymbolMap.StbttGetFontVMetrics);
-    private static readonly delegate* unmanaged<byte*, int, int*, int*, void> _hmetrics =
-        (delegate* unmanaged<byte*, int, int*, int*, void>)Native.Sym(SymbolMap.StbttGetCodepointHMetrics);
-    private static readonly delegate* unmanaged<byte*, int, float, float, int*, int*, int*, int*, void> _bitmapBox =
-        (delegate* unmanaged<byte*, int, float, float, int*, int*, int*, int*, void>)Native.Sym(SymbolMap.StbttGetCodepointBitmapBox);
-    private static readonly delegate* unmanaged<byte*, byte*, int, int, int, float, float, int, void> _makeBitmap =
-        (delegate* unmanaged<byte*, byte*, int, int, int, float, float, int, void>)Native.Sym(SymbolMap.StbttMakeCodepointBitmap);
-
-    private static readonly delegate* unmanaged<byte*, int, int> _findGlyph =
-        (delegate* unmanaged<byte*, int, int>)Native.Sym(SymbolMap.StbttFindGlyphIndex);
 
     /// <summary>#470: a codepoint the typeface has no glyph for (index 0) is filled from the default typeface's face
     /// at the same px -- same sheet, so the copied UVs are valid -- never baked as a .notdef box. Logged per range so
@@ -142,7 +128,7 @@ public sealed unsafe class AtlasSheet
     public static AtlasSheet? Bake(IReadOnlyList<FaceRequest> reqs, (int lo, int hi, string name, bool icon)[] ranges,
         (string Name, byte[]? Font) icon, int startSide, ExtenderLog log)
     {
-        if (_initFont == null || _scaleForPx == null || _makeBitmap == null)
+        if (EngineFn.StbttInitFont == null || EngineFn.StbttScaleForPixelHeight == null || EngineFn.StbttMakeCodepointBitmap == null)
         {
             log.Info("AtlasSheet: stbtt exports unresolved (headless?); skipping bake");
             return null;
@@ -181,16 +167,16 @@ public sealed unsafe class AtlasSheet
                 new Span<byte>(fi, FontInfoBytes).Clear();   // InitFont fills what it uses; zero the rest to be version-proof
                 byte* fn = (byte*)(fonts[f] = Marshal.AllocHGlobal(r.Font.Length));   // stbtt keeps a pointer into this
                 Marshal.Copy(r.Font, 0, fonts[f], r.Font.Length);
-                if (_initFont(fi, fn, 0) == 0) { log.Info($"AtlasSheet: stbtt_InitFont failed for {r.Typeface}"); return null; }
-                float scale = _scaleForPx(fi, r.Px);
+                if (EngineFn.StbttInitFont(fi, fn, 0) == 0) { log.Info($"AtlasSheet: stbtt_InitFont failed for {r.Typeface}"); return null; }
+                float scale = EngineFn.StbttScaleForPixelHeight(fi, r.Px);
 
                 var face = faces[f] = new GlyphAtlas();
                 int asc = 0, desc = 0, gap = 0;
-                if (_vmetrics != null) _vmetrics(fi, &asc, &desc, &gap);
+                if (EngineFn.StbttGetFontVMetrics != null) EngineFn.StbttGetFontVMetrics(fi, &asc, &desc, &gap);
                 face.Ascent = asc * scale;
                 face.LineHeight = (asc - desc + gap) * scale;
                 int adv = 0, lsb = 0;
-                if (_hmetrics != null) { _hmetrics(fi, ' ', &adv, &lsb); face.SpaceAdvance = adv * scale; }
+                if (EngineFn.StbttGetCodepointHMetrics != null) { EngineFn.StbttGetCodepointHMetrics(fi, ' ', &adv, &lsb); face.SpaceAdvance = adv * scale; }
 
                 int iconSrc = r.IconsOnly ? f : iconByPx[r.Px];
                 for (int ri = 0; ri < ranges.Length; ri++)
@@ -198,16 +184,16 @@ public sealed unsafe class AtlasSheet
                     {
                         if (r.IconsOnly && !ranges[ri].icon) continue;
                         int ax = 0, al = 0;
-                        if (_hmetrics != null) _hmetrics(fi, cp, &ax, &al);
+                        if (EngineFn.StbttGetCodepointHMetrics != null) EngineFn.StbttGetCodepointHMetrics(fi, cp, &ax, &al);
                         float advance = ax * scale;
                         if (ranges[ri].icon && f != iconSrc) { missing.Add((f, cp, ri, advance)); continue; }   // routed, not measured
-                        if (_findGlyph != null && _findGlyph(fi, cp) == 0)
+                        if (EngineFn.StbttFindGlyphIndex != null && EngineFn.StbttFindGlyphIndex(fi, cp) == 0)
                         {
                             if (r.IconsOnly) { face.Store(cp, new Glyph { Advance = advance }); continue; }   // no fill source: blank
                             missing.Add((f, cp, ri, advance)); continue;
                         }
                         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-                        if (_bitmapBox != null) _bitmapBox(fi, cp, scale, scale, &x0, &y0, &x1, &y1);
+                        if (EngineFn.StbttGetCodepointBitmapBox != null) EngineFn.StbttGetCodepointBitmapBox(fi, cp, scale, scale, &x0, &y0, &x1, &y1);
                         int gw = x1 - x0, gh = y1 - y0;
                         if (gw <= 0 || gh <= 0) { face.Store(cp, new Glyph { Advance = advance }); continue; }
                         boxes.Add(new Box { Face = f, Cp = cp, W = gw, H = gh, X0 = x0, Y0 = y0, Advance = advance, Scale = scale });
@@ -229,7 +215,7 @@ public sealed unsafe class AtlasSheet
             fixed (byte* px = sheet.Pixels)
                 foreach (ref Box b in bs)
                 {
-                    _makeBitmap((byte*)infos[b.Face], px + b.Y * side + b.X, b.W, b.H, side, b.Scale, b.Scale, b.Cp);
+                    EngineFn.StbttMakeCodepointBitmap((byte*)infos[b.Face], px + b.Y * side + b.X, b.W, b.H, side, b.Scale, b.Scale, b.Cp);
                     faces[b.Face].Store(b.Cp, new Glyph
                     {
                         U0 = b.X / (float)side, V0 = b.Y / (float)side,

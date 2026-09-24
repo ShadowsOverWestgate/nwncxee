@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -19,22 +20,12 @@ internal static unsafe class Halos
 {
     internal const string ShdHaloVs = "cx_halo_vs", ShdHaloFs = "cx_halo_fs";
 
-    /// <summary>PartLight fields (Ghidra <c>Scene::RenderLensFlares</c>): the MdlNode, the colour, the
-    /// integrated occlusion fade (0..1) and the world position. The fade is the flare's own, NOT the shadow
-    /// fade -- see <see cref="EngineLayout.LightFlareFade"/>.</summary>
-    private static readonly int PlNode = EngineLayout.PartNodeLink, PlColor = EngineLayout.LightColour,
-                               PlFade = EngineLayout.LightFlareFade, PlPos = EngineLayout.LightDir;
-    /// <summary>Light MdlNode fields (same function): <c>flareradius</c>, the flare count, the
-    /// <c>flaresizes</c> float array and the <c>flarecolorshifts</c> vec3 array.</summary>
-    private static readonly int NdFlareRadius = EngineLayout.FlareRadius, NdFlareCount = EngineLayout.FlareCount,
-                               NdFlareSizes = EngineLayout.FlareSizes, NdFlareShifts = EngineLayout.FlareShifts;
-    private static readonly int SceneLightManager = EngineLayout.SceneLightManager;
     private const uint BindHalos = 5, GlTriangleStrip = 0x0005;   // not-an-offset: GL primitive-mode enum
     /// <summary>Two vec4 per halo: (pos.xyz, world radius), (linear rgb with the engine fade folded in, flareradius).</summary>
     private const int Floats = 8;
     private const int InitialHalos = 64;
 
-    private static delegate* unmanaged<IntPtr, IntPtr> _getFlareLights;
+    private static GetLensFlareLightsFn _getFlareLights;
     private static ExtenderLog? _log;
     private static float[] _stage = new float[InitialHalos * Floats];
     private static int _count, _ssboCap;
@@ -48,7 +39,7 @@ internal static unsafe class Halos
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _getFlareLights = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetLensFlareLights);
+        _getFlareLights = EngineFn.GetLensFlareLights;
         if (_getFlareLights == null) { _off = true; log.Info("Halos: GetLensFlareLights unresolved -- no halos"); return; }
         log.Info($"Halos: armed -- flare lights drawn as procedural halos (/effects; size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2})");
     }
@@ -59,9 +50,9 @@ internal static unsafe class Halos
     {
         _count = 0;
         if (_off || !Effects.Halos.V || scene == IntPtr.Zero) return;
-        IntPtr lm = *(IntPtr*)(scene + SceneLightManager);
-        if (lm == IntPtr.Zero) return;
-        byte* list = (byte*)_getFlareLights(lm);
+        LightManager lm = new Scene(scene).LightManager;
+        if (lm.IsNull) return;
+        byte* list = (byte*)_getFlareLights(lm.Ptr);
         if (list == null) return;
         IntPtr* items = *(IntPtr**)list;
         int n = *(int*)(list + 8);
@@ -69,24 +60,25 @@ internal static unsafe class Halos
         if (n * Floats > _stage.Length) _stage = new float[n * Floats];
         for (int i = 0; i < n; i++)
         {
-            byte* pl = (byte*)items[i];
-            if (pl == null) continue;
-            byte* nd = *(byte**)(pl + PlNode);
-            if (nd == null || *(int*)(nd + NdFlareCount) <= 0) continue;
-            float fade = *(float*)(pl + PlFade);
+            var pl = new PartLight(items[i]);
+            if (pl.IsNull) continue;
+            var nd = new MdlNodeLight(new Part(pl.Ptr).Node.Ptr);
+            if (nd.IsNull || nd.FlareCount <= 0) continue;
+            float fade = pl.FlareFade;
             if (fade <= 0f) continue;
-            float* sizes = *(float**)(nd + NdFlareSizes);
-            float* shift = *(float**)(nd + NdFlareShifts);
+            float* sizes = (float*)nd.FlareSizes;
+            float* shift = (float*)nd.FlareShifts;
             float sz = sizes != null ? sizes[0] : 1f;
             if (sz <= 0f) continue;
-            float* c = (float*)(pl + PlColor);
-            float r = c[0], g = c[1], b = c[2];
+            Vector3 c = pl.Colour;
+            float r = c.X, g = c.Y, b = c.Z;
             if (shift != null) { r += shift[0]; g += shift[1]; b += shift[2]; }
             float* d = (float*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref _stage[_count * Floats]);
-            d[0] = *(float*)(pl + PlPos); d[1] = *(float*)(pl + PlPos + 4); d[2] = *(float*)(pl + PlPos + 8);
+            Vector3 wp = pl.Pos;
+            d[0] = wp.X; d[1] = wp.Y; d[2] = wp.Z;
             d[3] = sz * Effects.HaloSize.V;
             d[4] = Lin(r) * fade; d[5] = Lin(g) * fade; d[6] = Lin(b) * fade;
-            d[7] = *(float*)(nd + NdFlareRadius);
+            d[7] = nd.FlareRadius;
             _count++;
         }
     }

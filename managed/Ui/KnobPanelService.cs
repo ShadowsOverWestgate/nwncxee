@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -23,7 +24,6 @@ public sealed unsafe class KnobPanelService : IExtenderService
     private static int _epoch = -1;
     private static float _facePx, _smallPx;
     private static GlyphAtlas? _body, _small;
-    private static delegate* unmanaged<void> _startText;
 
     /// <summary>The live panel, for the gear (#5) and the sibling tickets.</summary>
     public static KnobPanel Panel => _panel;
@@ -38,7 +38,6 @@ public sealed unsafe class KnobPanelService : IExtenderService
     {
         _log = log;
         KnobPanel.SelfCheck(log);
-        _startText = (delegate* unmanaged<void>)Native.Sym(SymbolMap.SdlStartTextInput);
         // Focusable = false like every CX window: the panel self-manages the keyboard (a framework focus change
         // clears WantsKeyboard silently, which would leave the engine gate up with nobody to drop it). Registered
         // after Chat and Dialog by discovery order, so it paints above them; SuppressChords while open puts it in
@@ -130,7 +129,7 @@ public sealed unsafe class KnobPanelService : IExtenderService
         bool wasEditing = _panel.Editing;
         if (!_panel.MouseDown(x, y)) return false;
         if (_window != null && _panel.Open && !_window.WantsKeyboard) UiHost.RequestKeyboard(_window, true);
-        if (_panel.Editing && !wasEditing && _startText != null) _startText();
+        if (_panel.Editing && !wasEditing && EngineFn.SdlStartTextInput != null) EngineFn.SdlStartTextInput();
         if (!_panel.Open) Close();
         SyncRect();
         return true;

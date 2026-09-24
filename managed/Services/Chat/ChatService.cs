@@ -101,6 +101,8 @@ public sealed unsafe partial class ChatService : IExtenderService
     /// and the callee copies the 17th byte), so there the slot is an <c>IntPtr</c> forwarded untouched.</summary>
     [StructLayout(LayoutKind.Sequential, Size = 16)]
     private struct CResRef16 { public ulong Lo; public ulong Hi; }
+    // Left raw: AppendToMsgBuffer's last parameter has a DIFFERENT shape per ABI, so no single
+    // [Fn] signature describes it (CX-37).
 #if WINDOWS
     private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, IntPtr, void> _tapOrig;
 #else
@@ -221,21 +223,19 @@ public sealed unsafe partial class ChatService : IExtenderService
     /// master off.</summary>
     private static void InitSuppression(ExtenderLog log, HookService hooks)
     {
-        var skip = (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnSuppressed;
-        _ = hooks.Install(SymbolMap.AppendToChatBuffer, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, long>)&OnSuppressedExo);   // text: new lines
+        _ = hooks.InstallAppendToChatBuffer(&OnSuppressedExo);   // text: new lines
         if (OperatingSystem.IsWindows())
         {
             // MSVC inlined CGuiInGameChatPrompt::Show into the prompt's ctor (#419), so the skip on Show alone
             // leaves the "Talk:" prompt activated from birth: undo it right after construction (= vanilla Hide).
-            _promptCtorOrig = (delegate* unmanaged<IntPtr, IntPtr>)hooks.Install(SymbolMap.ChatPromptCtor,
-                (IntPtr)(delegate* unmanaged<IntPtr, IntPtr>)&OnPromptCtor);
-            _panelDeactivate = (delegate* unmanaged<IntPtr, int, void>)Native.Sym(SymbolMap.GuiPanelDeactivate);
+            _promptCtorOrig = hooks.InstallChatPromptCtor(&OnPromptCtor);
+            _panelDeactivate = EngineFn.GuiPanelDeactivate;
             // ponytail: CGuiInGameChatWindow::DoSplitScreen (0x879560) also inlines Show, so toggling the
             // split-chat option activates the docked window on Windows; hook it the same way if anyone trips it.
         }
-        _ = hooks.Install(SymbolMap.ChatWindowSetFilter, skip);   // text: backlog re-render + reply buttons
-        _ = hooks.Install(SymbolMap.ChatWindowShow,      skip);   // chrome: docked message panels
-        _ = hooks.Install(SymbolMap.ChatPromptShow,      skip);   // chrome: the "Talk:" input prompt
+        _ = hooks.InstallChatWindowSetFilter(&OnSuppressed);   // text: backlog re-render + reply buttons
+        _ = hooks.InstallChatWindowShow(&OnSuppressed);        // chrome: docked message panels
+        _ = hooks.InstallChatPromptShow(&OnSuppressed);        // chrome: the "Talk:" input prompt
         log.Info("ChatService: vanilla chat suppressed (text: AppendToChatBuffer+SetFilter; chrome: Window/Prompt Show)");
     }
 
@@ -254,8 +254,9 @@ public sealed unsafe partial class ChatService : IExtenderService
         return 0;
     }
 
-    private static delegate* unmanaged<IntPtr, IntPtr> _promptCtorOrig;
-    private static delegate* unmanaged<IntPtr, int, void> _panelDeactivate;
+    private static ChatPromptCtorFn _promptCtorOrig;
+    /// <summary>Resolved on the Windows path only: a null here is also "not the Windows chat-prompt fix-up".</summary>
+    private static GuiPanelDeactivateFn _panelDeactivate;
 
     [UnmanagedCallersOnly]
     private static IntPtr OnPromptCtor(IntPtr self)

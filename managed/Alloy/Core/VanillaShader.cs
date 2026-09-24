@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -228,9 +229,9 @@ internal static unsafe class VanillaShader
     /// mis-read, and the engine's own loader has the same exposure.</para></summary>
     private static string? EngineText(string resref, ExtenderLog? log)
     {
-        var get = (delegate* unmanaged<byte*, byte*, int*, byte, IntPtr>)Native.Sym(SymbolMap.AurResGet);
-        var data = (delegate* unmanaged<int, byte*>)Native.Sym(SymbolMap.AurResGetData);
-        var free = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.AurResFree);
+        AurResGetFn get = EngineFn.AurResGet;
+        AurResGetDataFn data = EngineFn.AurResGetData;
+        AurResFreeFn free = EngineFn.AurResFree;
         if (get == null || data == null || free == null)
         {
             log?.Info("VanillaShader: AurResGet/AurResGetData/AurResFree unresolved -- no text to splice");

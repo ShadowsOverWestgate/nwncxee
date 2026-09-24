@@ -32,11 +32,10 @@ public sealed unsafe class UiHostService : IExtenderService
         TextRig.Init(log);   // the one glyph atlas every window draws from (null under run-demo: stbtt absent)
         ApplyFont();         // ...baked at ui.font x GUI scale; declares the ui group
         ApplyTypeface();     // #681: the persisted ui.typeface, a no-op at default
-        _getGuiScale = (delegate* unmanaged<float>)Native.Sym(SymbolMap.GetGuiScale);
-        _resetStates = (delegate* unmanaged<void>)Native.Sym(SymbolMap.RiResetRenderStates);
-        _bindBuffer = (delegate* unmanaged<uint, uint, void>)Native.Sym(SymbolMap.RiBindBuffer);
-        _swapOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.SwapBuffers, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnSwap);
+        _getGuiScale = EngineFn.GetGuiScale;
+        _resetStates = EngineFn.RiResetRenderStates;
+        _bindBuffer = EngineFn.RiBindBuffer;
+        _swapOrig = hooks.InstallSwapBuffers(&OnSwap);
         log.Info(_swapOrig != null
             ? "UiHostService: frame present owned (SwapBuffers) -- driving the window registry"
             : "UiHostService: frame present not installed (Install returned Zero: symbol unresolved or already hooked)");
@@ -44,7 +43,7 @@ public sealed unsafe class UiHostService : IExtenderService
         // The roll-call's draw site. nk_sdl_render is nuklear's GL flush: run the windows just before it and
         // they land under every NUI window and over the vanilla GUI panels. Chained, not Installed (#88):
         // the symbol is shared plumbing, and higher priority = outer keeps our raw GL and its resync first.
-        _nkSlot = hooks.Chain(SymbolMap.NkSdlRender, (IntPtr)(delegate* unmanaged<float, void>)&OnNkRender, 20);
+        _nkSlot = hooks.ChainNkSdlRender(&OnNkRender, 20);
         log.Info(_nkSlot != null
             ? "UiHostService: window roll-call runs below NUI (chained on nk_sdl_render)"
             : "UiHostService: nk_sdl_render unavailable -- window roll-call stays at the present (above NUI)");
@@ -129,11 +128,12 @@ public sealed unsafe class UiHostService : IExtenderService
         TextRig.DrawBatch(b.AsSpan(), b.VertexCount);
     }
 
-    private static delegate* unmanaged<IntPtr, void> _swapOrig;
-    private static IntPtr* _nkSlot;   // chain slot: the next nk_sdl_render subscriber (null = not chained)
-    private static delegate* unmanaged<float> _getGuiScale;   // CAurora::GetGUIScale -> live GUI-scale multiplier
-    private static delegate* unmanaged<void> _resetStates;    // RenderInterface::ResetRenderStates -- the hand-back resync
-    private static delegate* unmanaged<uint, uint, void> _bindBuffer;   // ...and the one binding it does not cover
+    private static SwapBuffersFn _swapOrig;
+    private static NkSdlRenderFn* _nkSlot;   // chain slot: the next nk_sdl_render subscriber (null = not chained)
+    // Resolved once at init, not per frame: every one of these runs on the present.
+    private static GetGuiScaleFn _getGuiScale;   // CAurora::GetGUIScale -> live GUI-scale multiplier
+    private static RiResetRenderStatesFn _resetStates;    // RenderInterface::ResetRenderStates -- the hand-back resync
+    private static RiBindBufferFn _bindBuffer;   // ...and the one binding it does not cover
     private static bool _announced;
     private const uint GlArrayBuffer = 0x8892;
 
@@ -211,7 +211,7 @@ public sealed unsafe class UiHostService : IExtenderService
     private static void OnNkRender(float aa)
     {
         DrawWindows();
-        ((delegate* unmanaged<float, void>)(*_nkSlot))(aa);
+        (*_nkSlot)(aa);
     }
 
     /// <summary>Refresh the session gate, the UI scale and the viewport, run the z-order roll-call, then hand

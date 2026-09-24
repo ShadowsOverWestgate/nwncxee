@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
@@ -26,7 +27,7 @@ namespace CX.Services.Camera;
 public sealed unsafe class StepGuardService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, int> _orig;
+    private static WalkUpdateLocationFn _orig;
 #if WINDOWS
     /// <summary>Win64 passes a 12-byte Vector by value as a pointer to a caller-made copy (#420).</summary>
     private static delegate* unmanaged<IntPtr, IntPtr, CombatTextService.Vec3*, CombatTextService.Vec3*, float, float, int, int> _testLine;
@@ -35,12 +36,6 @@ public sealed unsafe class StepGuardService : IExtenderService
     private static delegate* unmanaged<IntPtr, IntPtr, CombatTextService.Vec3, CombatTextService.Vec3, float, float, int, int> _testLine;
 #endif
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-
-    /// <summary>The desired-position Vector and the pathfind block's personal-space pair: both are embedded
-    /// floats taken by address -- one written back through, one passed positionally -- so they stay raw.</summary>
-    private static readonly int DesiredOff = EngineLayout.CreatureDesiredPos;
-    /// <inheritdoc cref="DesiredOff"/>
-    private static readonly int SpaceArgsOff = EngineLayout.PathfindSpaceArgs;
 
     /// <summary>The update handler snaps rather than lerps from 4 m; a desired-position jump past it is not a step.</summary>
     private const float MaxStep = 4f;
@@ -64,8 +59,7 @@ public sealed unsafe class StepGuardService : IExtenderService
             CombatTextService.Vec3, CombatTextService.Vec3,
 #endif
             float, float, int, int>)Native.Sym(SymbolMap.TestDirectLine);
-        _orig = (delegate* unmanaged<IntPtr, int>)hooks.Install(SymbolMap.WalkUpdateLocation,
-                                                               (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWalkUpdateLocation);
+        _orig = hooks.InstallWalkUpdateLocation(&OnWalkUpdateLocation);
         if (_orig == null) { log.Info("StepGuard: standing down (WalkUpdateLocation hook refused)"); return; }
         KnobSurface.Note(Report);
         log.Info("StepGuard: pre-hooked CNWCCreature::WalkUpdateLocation");
@@ -91,27 +85,32 @@ public sealed unsafe class StepGuardService : IExtenderService
         CPathfindInformation pathfind = creature.Pathfind;
         if (!_probeOk || area.IsNull || pathfind.IsNull) return _orig(cre);
 
-        CombatTextService.Vec3* desired = (CombatTextService.Vec3*)(cre + DesiredOff);
-        CombatTextService.Vec3 before = *desired;
+        ref Vector3 desired = ref creature.DesiredPos;
+        Vector3 before = desired;
         int r = _orig(cre);
-        CombatTextService.Vec3 after = *desired;
+        Vector3 after = desired;
         if (!IsStep(before, after) || new CNWCModule(module).CurrentArea.Ptr != area.Ptr) return r;
-        float* space = (float*)(pathfind.Ptr + SpaceArgsOff);
+        Span<float> space = pathfind.SpaceArgs;
+        // TestDirectLine takes both Vectors BY VALUE, whose ABI differs per OS: hence the Vec3 copies.
+        CombatTextService.Vec3 from = Vec(before), to = Vec(after);
 #if WINDOWS
-        int clear = _testLine(area.Ptr, cre, &before, &after, space[0], space[1], NoCreatures);
+        int clear = _testLine(area.Ptr, cre, &from, &to, space[0], space[1], NoCreatures);
 #else
-        int clear = _testLine(area.Ptr, cre, before, after, space[0], space[1], NoCreatures);
+        int clear = _testLine(area.Ptr, cre, from, to, space[0], space[1], NoCreatures);
 #endif
         if (clear == 1) { _steps++; return r; }
-        *desired = before;
-        SetPosition(cre, before);
+        desired = before;
+        SetPosition(cre, from);
         if (creature.Driving != 0) _driveRefusals++; else _walkRefusals++;
         return r;
     }
 
+    /// <summary>The engine's own <c>Vector</c> shape, which the by-value call arguments need.</summary>
+    private static CombatTextService.Vec3 Vec(in Vector3 v) => new() { X = v.X, Y = v.Y, Z = v.Z };
+
     /// <summary>A walk step moved the desired point and by less than <see cref="MaxStep"/> in the plane; anything
     /// else (unchanged, or a server rewrite) is not a step to test.</summary>
-    private static bool IsStep(CombatTextService.Vec3 a, CombatTextService.Vec3 b)
+    private static bool IsStep(in Vector3 a, in Vector3 b)
     {
         float dx = b.X - a.X, dy = b.Y - a.Y, d2 = dx * dx + dy * dy;
         return d2 > 0f && d2 < MaxStep * MaxStep;
@@ -137,7 +136,7 @@ public sealed unsafe class StepGuardService : IExtenderService
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "StepGuard.SelfCheck");
-        static CombatTextService.Vec3 V(float x, float y, float z) => new() { X = x, Y = y, Z = z };
+        static Vector3 V(float x, float y, float z) => new(x, y, z);
         check.Expect(!IsStep(V(1, 2, 3), V(1, 2, 3)), "an unchanged desired point is not a step");
         check.Expect(!IsStep(V(1, 2, 3), V(1, 2, 9)), "a height-only change is not a step");
         check.Expect(IsStep(V(1, 2, 3), V(1.05f, 2, 3)), "a centimetre move is a step");

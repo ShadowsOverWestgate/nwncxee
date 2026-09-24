@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -1059,7 +1060,7 @@ public sealed unsafe partial class AlloyRenderer
             if (d > r2) r2 = d;
         }
         if (!float.IsFinite(r2)) return 0f;
-        float scale = *(float*)(tri + EngineLayout.PartScale);
+        float scale = new Part(tri).Scale;
         return MathF.Sqrt(r2) * (scale > 0f && float.IsFinite(scale) ? scale : 1f);
     }
 }

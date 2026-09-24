@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -24,7 +25,7 @@ public sealed unsafe class DrawStatsService : IExtenderService
     public static bool Enabled;
 
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, int, void> _origBucket;
+    private static RenderDrawBucketFn _origBucket;
     private static int _bucket = -1;
 
     // period accumulators (reset each log)
@@ -51,10 +52,8 @@ public sealed unsafe class DrawStatsService : IExtenderService
         _log = log;
         // Chained, not Install()ed: RenderVertexData has several subscribers (#88). Lowest priority --
         // we only count what actually reached the GPU.
-        _drawSlot = hooks.Chain(SymbolMap.GlRenderVertexData,
-            (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)&OnVdoDraw, DrawPriority);
-        _origBucket = (delegate* unmanaged<IntPtr, int, void>)hooks.Install(
-            SymbolMap.RenderDrawBucket, (IntPtr)(delegate* unmanaged<IntPtr, int, void>)&OnBucket);
+        _drawSlot = hooks.ChainGlRenderVertexData(&OnVdoDraw, DrawPriority);
+        _origBucket = hooks.InstallRenderDrawBucket(&OnBucket);
         Enabled = _drawSlot != null;
         log.Info(Enabled
             ? "DrawStatsService: draw-path histogram armed ([drawstats] every 900 frames)"
@@ -72,14 +71,14 @@ public sealed unsafe class DrawStatsService : IExtenderService
 
     /// <summary>Chain priority on RenderVertexData: below the shadow cull and the draw funnels (#88).</summary>
     internal const int DrawPriority = 10;
-    private static IntPtr* _drawSlot;
+    private static GlRenderVertexDataFn* _drawSlot;
 
     /// <summary>Post-draw observer: calls the rest of the chain first, so CURRENT_PROGRAM is valid
     /// (and a swallowed draw is never counted as drawn).</summary>
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_drawSlot;
+        GlRenderVertexDataFn next = *_drawSlot;
         if (next != null) next(vdo, item, prim, size, offset);
         Observe(vdo, item, (int)prim, size, offset);
     }
@@ -92,11 +91,12 @@ public sealed unsafe class DrawStatsService : IExtenderService
         _draws++;
         if (_bucket >= 0) _bucketDraws++;
         int idx = 0;
-        if (*(int*)(vdo + VdoMode) == 1)
+        var v = new VertexDataObject(vdo);
+        if (v.Mode == 1)
         {
             _indexed++;
             idx = size != uint.MaxValue ? (int)size
-                : *(int*)(*(IntPtr*)(vdo + VdoElemItems) + item * 8 + 4);
+                : *(int*)(v.ElemItems + item * 8 + 4);
             _idxSum += idx;
         }
         int prog = 0;

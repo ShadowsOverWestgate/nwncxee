@@ -22,8 +22,6 @@ public sealed unsafe partial class ChatService
     // reading it showed a wrong hour). CClientExoApp::GetModule(app) fetches the module off the same
     // *g_pAppManager chain the gate walks. minute/second aren't on the wire, so we anchor real-time to each
     // hour edge (PollGameClock, per frame) and interpolate a sub-hour minute at ingest.
-    private static readonly delegate* unmanaged<IntPtr, IntPtr> _getModule =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
 
     private static int _gmHour = -1;    // last polled server game hour (0..23); -1 = none seen -> local fallback
     private static long _gmHourMs;      // TickCount64 when _gmHour last changed (sub-hour interpolation anchor)
@@ -33,10 +31,10 @@ public sealed unsafe partial class ChatService
     /// guarded pointer reads off *g_pAppManager, then CClientExoApp::GetModule(app).</summary>
     private static IntPtr GameModule()
     {
-        if (_appMgr == IntPtr.Zero || _getModule == null) return IntPtr.Zero;
+        if (_appMgr == IntPtr.Zero || EngineFn.GetModule == null) return IntPtr.Zero;
         IntPtr mgr = *(IntPtr*)_appMgr; if (mgr == IntPtr.Zero) return IntPtr.Zero;
         IntPtr app = *(IntPtr*)mgr;     if (app == IntPtr.Zero) return IntPtr.Zero;
-        return _getModule(app);
+        return new CClientExoApp(app).GetModule().Ptr;
     }
 
     /// <summary>Track the server-synced game hour each frame so ingest can interpolate a sub-hour minute. Hot,

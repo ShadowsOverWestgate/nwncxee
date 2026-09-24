@@ -1,4 +1,5 @@
 using System;
+using CX.Engine;
 
 namespace CX.Framework;
 
@@ -22,11 +23,12 @@ namespace CX.Framework;
 /// </summary>
 public static unsafe class AurTex
 {
-    private static delegate* unmanaged<IntPtr, int> _getTid;
+    /// <summary>Resolved once: <see cref="Tid"/> runs per Alloy part per frame, so the lazy resolve's compare
+    /// does not belong in it.</summary>
+    private static AurTextureGetTIDFn _getTid;
     /// <summary>The two values a live texture's first word may hold: each class's vtable symbol plus the
     /// 0x10 the Itanium ABI puts before the function pointers.</summary>
     private static IntPtr _vtbl, _vtblBasic;
-    private static delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet;
     private static long _refused;
 
     /// <summary>Resolved and usable. False leaves every caller where it was before its texture resolved --
@@ -42,8 +44,7 @@ public static unsafe class AurTex
     public static void Attach(ExtenderLog log)
     {
         if (Ready) return;
-        _getTid = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.AurTextureGetTID);
-        _aurGet = (delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr>)Native.Sym(SymbolMap.AurTextureGet);
+        _getTid = EngineFn.AurTextureGetTID;
         IntPtr v = Native.Sym(SymbolMap.AurTextureVtbl), b = Native.Sym(SymbolMap.AurTextureBasicVtbl);
         if (_getTid == null || v == IntPtr.Zero || b == IntPtr.Zero)
         {
@@ -89,12 +90,12 @@ public static unsafe class AurTex
     /// Borrowed, never cached -- the engine frees it on an area transition.</summary>
     public static IntPtr FindByName(string resref)
     {
-        if (!Ready || _aurGet == null || resref.Length == 0) return IntPtr.Zero;
+        if (!Ready || EngineFn.AurTextureGet == null || resref.Length == 0) return IntPtr.Zero;
         byte* name = stackalloc byte[17];   // 16 resref bytes + NUL
         int n = resref.Length < 16 ? resref.Length : 16;
         for (int i = 0; i < n; i++) name[i] = (byte)resref[i];
         name[n] = 0;
-        return _aurGet(name, IntPtr.Zero, null, null, 0, 0);
+        return EngineFn.AurTextureGet(name, IntPtr.Zero, null, null, 0, 0);
     }
 
     /// <summary>Is this pointer a live <c>CAurTextureBasic</c> specifically? <see cref="Live"/> admits both

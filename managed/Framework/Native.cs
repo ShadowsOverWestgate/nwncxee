@@ -1,12 +1,13 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 
 namespace CX.Framework;
 
 /// <summary>
 /// Thin bridge to the client's own functions and data. The binary is unstripped and
 /// (near-)fully exported, so we resolve engine symbols by mangled name and either call
-/// them through a matching delegate* or read globals through them.
+/// them through their declared signature (<c>EngineFn</c>) or read globals through them.
 /// </summary>
 public static unsafe class Native
 {
@@ -17,15 +18,6 @@ public static unsafe class Native
     /// </summary>
     public static IntPtr Sym(string linux) => SymbolMap.Resolve(linux, null);
 
-    private static readonly delegate* unmanaged<IntPtr, byte*, uint, void> _exoInit =
-        (delegate* unmanaged<IntPtr, byte*, uint, void>)Sym(SymbolMap.ExoStringInit);
-    private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
-        (delegate* unmanaged<IntPtr, void>)Sym(SymbolMap.ExoStringDtor);
-    private static readonly delegate* unmanaged<byte*, byte*, int, byte*> _fromUtf8 =
-        (delegate* unmanaged<byte*, byte*, int, byte*>)Sym(SymbolMap.EncodingFromUtf8);
-    private static readonly delegate* unmanaged<IntPtr, void> _opDelete =
-        (delegate* unmanaged<IntPtr, void>)Sym(SymbolMap.OperatorDelete);
-
     /// <summary>
     /// Build a CExoString on the native heap from a C# string, as <see cref="EngineBytes"/> encodes it.
     /// The layout is opaque: we zero an over-sized buffer and let the client's own InitFromCharArray
@@ -35,9 +27,9 @@ public static unsafe class Native
     {
         IntPtr exo = Marshal.AllocHGlobal(32);              // > sizeof(CExoString); zeroed below
         for (int i = 0; i < 32; i++) ((byte*)exo)[i] = 0;
-        if (_exoInit == null) return exo;
+        if (EngineFn.ExoStringInit == null) return exo;
         byte[] b = EngineBytes(s);
-        fixed (byte* p = b) _exoInit(exo, p, (uint)b.Length);   // copies into its own buffer
+        fixed (byte* p = b) EngineFn.ExoStringInit(exo, p, (uint)b.Length);   // copies into its own buffer
         return exo;
     }
 
@@ -51,12 +43,12 @@ public static unsafe class Native
     public static byte[] EngineBytes(string s)
     {
         byte[] utf8 = Encoding.UTF8.GetBytes(s);
-        if (_fromUtf8 == null || _opDelete == null) return utf8;
+        if (EngineFn.EncodingFromUtf8 == null || EngineFn.OperatorDelete == null) return utf8;
         byte* str = stackalloc byte[32];                    // sret std::string, both CRTs' sizeof
-        fixed (byte* c = NulTerminated(utf8)) _fromUtf8(str, c, 0);
+        fixed (byte* c = NulTerminated(utf8)) EngineFn.EncodingFromUtf8(str, c, 0);
         var (buf, len, heap) = StdString(str);
         byte[] r = new ReadOnlySpan<byte>((byte*)buf, (int)len).ToArray();
-        if (heap != IntPtr.Zero) _opDelete(heap);
+        if (heap != IntPtr.Zero) EngineFn.OperatorDelete(heap);
         return r;
     }
 
@@ -139,15 +131,15 @@ public static unsafe class Native
     /// 16-byte shell). For a Win64 by-value arg a skipped callee would otherwise leak (#419).</summary>
     public static void DestroyExoString(IntPtr exo)
     {
-        if (exo == IntPtr.Zero || _exoDtor == null) return;
-        _exoDtor(exo);
+        if (exo == IntPtr.Zero || EngineFn.ExoStringDtor == null) return;
+        EngineFn.ExoStringDtor(exo);
         *(long*)exo = 0; *(long*)(exo + 8) = 0;   // the engine's own destroy-and-null shape; callers reuse the shell
     }
 
     public static void FreeExoString(IntPtr exo)
     {
         if (exo == IntPtr.Zero) return;
-        if (_exoDtor != null) _exoDtor(exo);                // frees the internal buffer
+        if (EngineFn.ExoStringDtor != null) EngineFn.ExoStringDtor(exo);                // frees the internal buffer
         Marshal.FreeHGlobal(exo);
     }
 

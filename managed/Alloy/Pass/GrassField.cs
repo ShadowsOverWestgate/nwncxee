@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -33,26 +34,8 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe partial class GrassField
 {
-    /// <summary><c>CAurTriangleList</c> layout, from Ghidra <c>CAurTriangleList::AddTriangle</c> @0x4b5650 and
-    /// <c>BuildGrassPolys</c> @0x4b5080: the world-space face vertices as a flat float array (9 floats per
-    /// face, stride 0x24) with its FLOAT count at +8, the parallel per-face blade counts at +0x30 with their
-    /// count at +0x38, and the grass material index at +0x40 (<c>RenderGrassPolys</c> compares exactly that
-    /// against the material it is drawing).</summary>
-    private static readonly int ListVerts = EngineLayout.ListVerts, ListVertFloats = EngineLayout.ListVertFloats,
-                               ListBlades = EngineLayout.ListBlades, ListBladeCount = EngineLayout.ListBladeCount,
-                               ListMat = EngineLayout.ListMat;
-    /// <summary><c>CAurTriangleBin</c> layout, from <c>RenderGrassPolys</c> @0x4b5410: the triangle-list
-    /// array at +0x38 and its count at +0x40. (The constructor @0x4b4ba0 also stores the BSP cell's own
-    /// min/max at +0x0c / +0x18; the patch bounds are the blades' own extent instead -- see
-    /// <see cref="Bake"/>.)</summary>
-    private static readonly int BinLists = EngineLayout.BinLists, BinListCount = EngineLayout.BinListCount;
-    /// <summary><c>CAurGrassInfo</c>, 0x54 bytes: 32-char texture name, density, blade height (the quad is
-    /// height wide AND height tall), diffuse and ambient colours, and the four 2x2-atlas selection
-    /// probabilities. Read live off <c>g_GrassInfo</c> -- a server <c>AddGrassOverride</c> rewrites them.</summary>
-    private static readonly int InfoStride = EngineLayout.GrassInfoStride, InfoName = EngineLayout.GrassInfoName,
-                               InfoHeight = EngineLayout.GrassInfoHeight, InfoDiffuse = EngineLayout.GrassInfoDiffuse,
-                               InfoAmbient = EngineLayout.GrassInfoAmbient, InfoProb = EngineLayout.GrassInfoProb,
-                               InfoInUse = EngineLayout.GrassInfoInUse;
+    /// <summary>A SIZE, not a field: the record stride <c>g_GrassInfo</c> is indexed by.</summary>
+    private static readonly int InfoStride = EngineLayout.GrassInfoStride;
     /// <summary>A <c>List&lt;T&gt;</c> / <c>CExoArrayList&lt;T&gt;</c> in this engine is {element pointer,
     /// count}: the symbol's own address is the list, not the elements.</summary>
     private static readonly int ListPtr = EngineLayout.ListItems, ListCount = EngineLayout.ListItemCount;
@@ -101,24 +84,10 @@ internal static unsafe partial class GrassField
     /// this is a bad pointer, not a model.</summary>
     private const int MaxPartDepth = 12, MaxPartChildren = 4096;
 
-    // ---- the gob-footprint struct layout (#127); every offset below is a row in EngineLayout (#441) ----
-    /// <summary>Gob -&gt; its cached bounding box, min at +0x160 and max at +0x16c. <c>Gob::GetBoundingBox</c>
-    /// @0x436ee0 is a plain read of exactly these two, no recompute. Only the EXTENT is used (the pair's
-    /// space -- model or world -- is not established, and the extent is the same either way); it is centred
-    /// on <see cref="EngineLayout.GobPosition"/>, which is unambiguously world.</summary>
-    private static readonly int GobBoxMin = EngineLayout.GobBoundsMin, GobBoxMax = EngineLayout.GobBoundsMax;
-    /// <summary>The MdlNode <c>Gob::SetAsCharacter</c> writes through (<see cref="EngineLayout.GobNode"/>), and
-    /// the byte it writes: <c>node+0x8e = 4</c>. The only positive "this gob is a creature" mark found in the
-    /// client. Used to keep creatures OUT of the grass cull -- they bend grass, they do not erase it.</summary>
+    /// <summary>The byte <c>Gob::SetAsCharacter</c> @0x444790 writes into the gob's MdlNode
+    /// (<see cref="EngineLayout.NodeOwnerFlags"/>): the only positive "this gob is a creature" mark in the
+    /// client. Keeps creatures OUT of the grass cull -- they bend grass, they do not erase it.</summary>
     private const int NodeCharacterValue = 4;
-    private static readonly int NodeCharacterKind = EngineLayout.NodeOwnerFlags;
-    /// <summary>A Part's child array (+0x38) and its count (+0x40), and the vtable slot (+0x60) that yields the
-    /// part's <c>PartTriMesh*</c> or null. Straight out of <c>Gob::ContainsNonSolids</c> @0x43f250 and
-    /// <c>Gob::ContainsWater</c> @0x43f2f0, which walk exactly this shape. <see cref="PartTriMeshLive"/> is the
-    /// byte ContainsNonSolids gates the trimesh on before testing its opacity.</summary>
-    private static readonly int PartAsTriMeshVtbl = CX.Framework.EngineLayout.PartAsTriMeshSlot;
-    private static readonly int PartChildren = EngineLayout.PartChildren, PartChildCount = EngineLayout.PartChildCount,
-                               PartTriMeshLive = EngineLayout.PartRenderFlag;
     /// <summary>Vertices in the blade template: two quads crossed at 90 degrees, six vertices each. Vanilla
     /// draws ONE flat card per blade, which reads as a paper cutout from the side; a cross costs one extra
     /// quad per blade and is the cheapest thing that makes grass look like grass from any angle.</summary>
@@ -156,8 +125,9 @@ internal static unsafe partial class GrassField
     };
 
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, void> _origBin, _origReload;
-    private static delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet;
+    private static DoBinBucketFn _origBin;
+    private static ReloadGrassFn _origReload;
+    private static AurTextureGetFn _aurGet;
     private static byte* _binBucket, _grassInfo, _grassEnabled;
     private static float* _farDist, _nearRadius;
     /// <summary>The RESOLUTION latch: a grass global, the texture loader or a hook that did not come up, so
@@ -228,7 +198,7 @@ internal static unsafe partial class GrassField
     private static byte[]? _push, _pushClear;
     private static float _pushOriginX, _pushOriginY, _pushPerUnit;
     private static int _pushers, _cullers, _reticles;
-    private static delegate* unmanaged<IntPtr, byte> _isOpaque;
+    private static PartGetIsOpaqueFn _isOpaque;
     private static int _drawnGen = -1, _frame;
     /// <summary>Set from the chat thread by a <see cref="Grass.Density"/> set; consumed by the render thread
     /// at the top of <see cref="Draw"/>. The tables it clears are the render thread's, so the flag is the
@@ -299,11 +269,10 @@ internal static unsafe partial class GrassField
         // Not fatal: no gob list just means nothing displaces the grass (the pre-#127-followup look).
         _farDist = (float*)Native.Sym(SymbolMap.GrassFarDistance);
         _nearRadius = (float*)Native.Sym(SymbolMap.GrassNearRadius);
-        _aurGet = (delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr>)
-            Native.Sym(SymbolMap.AurTextureGet);
+        _aurGet = EngineFn.AurTextureGet;
         // Not fatal: without it every gob counts as solid, which is the pre-fix behaviour (target reticles
         // and other effect gobs displace grass) rather than a misrender.
-        _isOpaque = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.PartGetIsOpaque);
+        _isOpaque = EngineFn.PartGetIsOpaque;
         if (_binBucket == null || _grassInfo == null || _grassEnabled == null || _farDist == null
             || _nearRadius == null || _aurGet == null || !AurTex.Ready)
         {
@@ -314,10 +283,8 @@ internal static unsafe partial class GrassField
 
         Array.Fill(_slot, -1);
         BorderInstall(log);
-        _origBin = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.DoBinBucket, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnDoBinBucket);
-        _origReload = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.ReloadGrass, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnReloadGrass);
+        _origBin = hooks.InstallDoBinBucket(&OnDoBinBucket);
+        _origReload = hooks.InstallReloadGrass(&OnReloadGrass);
         if (_origBin == null || _origReload == null)
         {
             _off = true;
@@ -451,8 +418,9 @@ internal static unsafe partial class GrassField
         {
             IntPtr bin = bins[b];
             if (bin == IntPtr.Zero) continue;
-            IntPtr* lists = *(IntPtr**)(bin + BinLists);
-            int listCount = *(int*)(bin + BinListCount);
+            var tb = new CAurTriangleBin(bin);
+            IntPtr* lists = (IntPtr*)tb.Lists;
+            int listCount = tb.ListCount;
             if (lists == null || listCount <= 0) continue;
             for (int l = 0; l < listCount && seen < MaxPatches; l++)
             {
@@ -516,16 +484,17 @@ internal static unsafe partial class GrassField
         int p = _patchCount++;
         _patches[p] = new Patch { List = list, Seen = _frame };   // Count 0: refused until proven otherwise
         Intern(list, p);
-        float* verts = *(float**)(list + ListVerts);
-        int floats = *(int*)(list + ListVertFloats);
-        int* blades = *(int**)(list + ListBlades);
-        int bladeFaces = *(int*)(list + ListBladeCount);
-        int mat = *(int*)(list + ListMat);
+        var tl = new CAurTriangleList(list);
+        float* verts = (float*)tl.Verts;
+        int floats = tl.VertFloats;
+        int* blades = (int*)tl.Blades;
+        int bladeFaces = tl.BladeCount;
+        int mat = tl.Mat;
         int faces = floats / 9;
         if (verts == null || blades == null || faces <= 0 || bladeFaces < faces) { _refused++; return p; }
-        byte* info = GrassInfo(mat);
-        if (info == null || mat >= MaxGrassMaterials) { _refused++; return p; }
-        float height = *(float*)(info + InfoHeight);
+        CAurGrassInfo info = GrassInfo(mat);
+        if (info.IsNull || mat >= MaxGrassMaterials) { _refused++; return p; }
+        float height = info.Height;
         if (!(height > 0f)) { _refused++; return p; }
 
         // procedural blades are thin: they take the blade multiplier, and the scatter thins a card cell back out
@@ -569,12 +538,12 @@ internal static unsafe partial class GrassField
         return p;
     }
 
-    private static byte* GrassInfo(int mat)
+    private static CAurGrassInfo GrassInfo(int mat)
     {
         byte* recs = *(byte**)(_grassInfo + ListPtr);
         int count = *(int*)(_grassInfo + ListCount);
-        if (recs == null || mat < 0 || mat >= count) return null;
-        return recs + mat * InfoStride;
+        if (recs == null || mat < 0 || mat >= count) return default;
+        return new CAurGrassInfo((IntPtr)(recs + mat * InfoStride));
     }
 
     /// <summary>Push whatever the bake appended. One <c>BufferSubData</c> over the new tail, never the whole
@@ -641,8 +610,8 @@ internal static unsafe partial class GrassField
             IntPtr* gobs; int count;
             if (!Grass.PushVis.V || !AlloyRenderer.VisibleGobs(out gobs, out count))
             {
-                gobs = *(IntPtr**)(scene + EngineLayout.SceneGobs);
-                count = *(int*)(scene + EngineLayout.SceneGobCount);
+                gobs = (IntPtr*)new CX.Engine.Scene(scene).Gobs;
+                count = new CX.Engine.Scene(scene).GobCount;
                 _pushWalkedAll++;
             }
             _pushWalked += count;
@@ -658,9 +627,9 @@ internal static unsafe partial class GrassField
                 if (gob == IntPtr.Zero) continue;
                 // Same guard the shadow feed used: a gob with no part tree has no geometry to stand in the
                 // grass with, so it must not dent it.
-                IntPtr tree = *(IntPtr*)(gob + EngineLayout.GobPartTree);
-                if (tree == IntPtr.Zero) continue;
-                float* pos = (float*)(gob + EngineLayout.GobPosition);
+                var gr = new GobRef(gob);
+                if (gr.PartTree == IntPtr.Zero) continue;   // no geometry to stand in the grass with
+                float* pos = gr.Position;
                 float gx = (pos[0] - _pushOriginX) * _pushPerUnit, gy = (pos[1] - _pushOriginY) * _pushPerUnit;
                 // The cull footprint can be much larger than the push radius, so the window test uses
                 // whichever of the two actually reaches.
@@ -670,7 +639,7 @@ internal static unsafe partial class GrassField
                 if (gx < -reach || gy < -reach || gx > PushRes + reach || gy > PushRes + reach) continue;
                 // A gob with no OPAQUE geometry is not standing in the grass, it is drawn over it: target
                 // reticles, spell VFX, the ground-target decal. They neither bend nor cull.
-                if (!HasOpaque(tree, 0)) { _reticles++; continue; }
+                if (!HasOpaque(gr.PartTree, 0)) { _reticles++; continue; }
                 _pushers++;
                 Splat(_push, gx, gy, rTex);
                 if (cull)
@@ -735,12 +704,12 @@ internal static unsafe partial class GrassField
     {
         // A creature is marked by Gob::SetAsCharacter @0x444790, which writes node+0x8e = 4. This is exactly
         // as strong as the engine's own writer: nothing else found writes that byte.
-        IntPtr node = *(IntPtr*)(gob + EngineLayout.GobNode);
-        if (node != IntPtr.Zero
-            && *(byte*)(node + NodeCharacterKind) == NodeCharacterValue) return false;
-        float* mn = (float*)(gob + GobBoxMin), mx = (float*)(gob + GobBoxMax);
-        hx = (mx[0] - mn[0]) * 0.5f * Grass.CullShrink.V;
-        hy = (mx[1] - mn[1]) * 0.5f * Grass.CullShrink.V;
+        var g = new CX.Engine.Gob(gob);
+        if (!g.Node.IsNull
+            && g.Node.OwnerFlags == NodeCharacterValue) return false;
+        Vector3 mn = g.BoundsMin, mx = g.BoundsMax;
+        hx = (mx.X - mn.X) * 0.5f * Grass.CullShrink.V;
+        hy = (mx.Y - mn.Y) * 0.5f * Grass.CullShrink.V;
         // A degenerate or absurd box is a field that was never filled, not a very large object.
         if (!(hx > 0.01f) || !(hy > 0.01f) || hx > 500f || hy > 500f) return false;
         if (Grass.CullMax.V > 0f) { hx = MathF.Min(hx, Grass.CullMax.V); hy = MathF.Min(hy, Grass.CullMax.V); }
@@ -756,19 +725,15 @@ internal static unsafe partial class GrassField
     private static bool HasOpaque(IntPtr part, int depth)
     {
         if (part == IntPtr.Zero || depth > MaxPartDepth || _isOpaque == null) return false;
-        IntPtr vt = *(IntPtr*)part;
-        if (vt != IntPtr.Zero)
+        var pv = new CX.Engine.Part(part);
+        if (*(IntPtr*)part != IntPtr.Zero && pv.AsPartTriMeshFn != IntPtr.Zero)
         {
-            var asTri = *(delegate* unmanaged<IntPtr, IntPtr>*)(vt + PartAsTriMeshVtbl);
-            if (asTri != null)
-            {
-                IntPtr tri = asTri(part);
-                if (tri != IntPtr.Zero && *(byte*)(tri + PartTriMeshLive) != 0 && _isOpaque(tri) != 0)
-                    return true;
-            }
+            PartTriMesh tri = pv.AsPartTriMesh();
+            if (!tri.IsNull && tri.RenderFlag != 0 && _isOpaque(tri.Ptr) != 0)
+                return true;
         }
-        IntPtr* kids = *(IntPtr**)(part + PartChildren);
-        int n = *(int*)(part + PartChildCount);
+        IntPtr* kids = (IntPtr*)pv.Children;
+        int n = pv.ChildCount;
         if (kids == null || n <= 0 || n > MaxPartChildren) return false;
         for (int i = 0; i < n; i++) if (HasOpaque(kids[i], depth + 1)) return true;
         return false;
@@ -970,9 +935,10 @@ internal static unsafe partial class GrassField
     {
         for (int m = 0; m < MaxGrassMaterials; m++)
         {
-            byte* info = GrassInfo(m);
-            live[m] = info != null && *(info + InfoInUse) != 0;
-            IntPtr tex = !live[m] ? IntPtr.Zero : _aurGet(info + InfoName, IntPtr.Zero, null, null, 0, 0);
+            CAurGrassInfo info = GrassInfo(m);
+            live[m] = !info.IsNull && info.InUse != 0;
+            IntPtr tex = !live[m] ? IntPtr.Zero
+                : _aurGet((byte*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref info.Name), IntPtr.Zero, null, null, 0, 0);
             tids[m] = OwnedTextures.Draw(AurTex.Tid(tex));
         }
     }
@@ -984,9 +950,9 @@ internal static unsafe partial class GrassField
     /// fallback) that is not a BLADE cell.</summary>
     private static bool CardCells(int m, int bits)
     {
-        byte* info = GrassInfo(m);
-        if (info == null) return false;
-        float* prob = (float*)(info + InfoProb);
+        CAurGrassInfo info = GrassInfo(m);
+        if (info.IsNull) return false;
+        Span<float> prob = info.Prob;
         int used = 1;
         for (int k = 0; k < 4; k++) if (prob[k] > 0f) used |= 1 << k;
         return (used & ~bits) != 0;
@@ -1008,15 +974,16 @@ internal static unsafe partial class GrassField
         {
             int o = m * MatVec4 * 4;
             _matTable[o + 5] = -1f;
-            byte* info = live[m] ? GrassInfo(m) : null;
-            if (info == null) continue;
+            CAurGrassInfo info = live[m] ? GrassInfo(m) : default;
+            if (info.IsNull) continue;
             top = m + 1;
-            float* prob = (float*)(info + InfoProb);
+            Span<float> prob = info.Prob;
             for (int k = 0; k < 4; k++) _matTable[o + k] = prob[k];
-            _matTable[o + 4] = *(float*)(info + InfoHeight);
+            _matTable[o + 4] = info.Height;
             _matTable[o + 7] = bits[m];
-            float* dif = (float*)(info + InfoDiffuse), amb = (float*)(info + InfoAmbient);
-            for (int k = 0; k < 3; k++) { _matTable[o + 8 + k] = dif[k]; _matTable[o + 12 + k] = amb[k]; }
+            Vector3 dif = info.Diffuse, amb = info.Ambient;
+            _matTable[o + 8] = dif.X; _matTable[o + 9] = dif.Y; _matTable[o + 10] = dif.Z;
+            _matTable[o + 12] = amb.X; _matTable[o + 13] = amb.Y; _matTable[o + 14] = amb.Z;
             for (int r = 0; r < 12; r++)
             {
                 Vector3 c = _ramp[m * 12 + r];
@@ -1297,13 +1264,14 @@ internal static unsafe partial class GrassField
     private static void DrawSlot(int slot, int* tids, in Loc loc, bool depth)
     {
         int mat = _slotMat[slot];
-        byte* info = GrassInfo(mat);
+        CAurGrassInfo info = GrassInfo(mat);
         int tid = tids[mat];
-        if (info == null || tid == 0) return;   // not uploaded yet: skip the material, not the pass
+        if (info.IsNull || tid == 0) return;   // not uploaded yet: skip the material, not the pass
         if (!depth)
         {
-            Gl.Uniform3fv(loc.MatDif, 1, (float*)(info + InfoDiffuse));
-            Gl.Uniform3fv(loc.MatAmb, 1, (float*)(info + InfoAmbient));
+            Vector3 dif = info.Diffuse, amb = info.Ambient;
+            Gl.Uniform3fv(loc.MatDif, 1, (float*)&dif);
+            Gl.Uniform3fv(loc.MatAmb, 1, (float*)&amb);
         }
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
         if (_sampMip != 0) Gl.BindSampler(0, HasMips(tid) ? _sampMip : _sampFlat);

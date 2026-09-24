@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Alloy;
 using CX.Graphics;
@@ -597,7 +598,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <summary>The diffuse lookup for masked casters: <c>Material::GetTexture(mat, 0)</c> then the Aurora
     /// texture's live GL id. Both re-read per frame -- a CAurTexture* is BORROWED and freed on area
     /// transitions, so it is never cached.</summary>
-    private static delegate* unmanaged<IntPtr, int, long> _getTexture;
+    private static MatGetTextureFn _getTexture;
 
     private static readonly float[] _liveCx = new float[MaxCasters], _liveCy = new float[MaxCasters],
                                     _liveCz = new float[MaxCasters], _liveR = new float[MaxCasters];
@@ -819,7 +820,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         Array.Fill(_dynPageOf, -1);
 
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
-        _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
+        _getTexture = EngineFn.MatGetTexture;
         if (_primTable == null)
         { log.Info("CasterPass: primitive-type table unresolved -- Alloy caster submission unavailable"); return; }
 
@@ -827,8 +828,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // already invalidates on it (#88 chain: draw funnels 50, interim cube 40, Alloy colour 30) and this pass
         // must too -- a stale item index does not read as an empty draw, it reads as ANOTHER part's index
         // range, which submits out-of-range indices to the GPU.
-        _repackSlot = hooks.Chain(SymbolMap.VdoRepack,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepack, RepackPriority);
+        _repackSlot = hooks.ChainVdoRepack(&OnVdoRepack, RepackPriority);
         if (_repackSlot == null)
         { log.Info("CasterPass: could not chain VdoRepack -- refusing to arm on stale index ranges"); return; }
 
@@ -850,7 +850,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
 
     /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
     private const int RepackPriority = 20;
-    private static IntPtr* _repackSlot;
+    private static VdoRepackFn* _repackSlot;
 
     /// <summary>Repack observer. The live list and the gather's uploaded staging are both copies of index
     /// ranges that have just moved, so both are dropped rather than submitted from -- and #328 makes the
@@ -858,7 +858,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnVdoRepack(IntPtr vdo)
     {
-        var next = (delegate* unmanaged<IntPtr, void>)*_repackSlot;
+        VdoRepackFn next = *_repackSlot;
         if (next != null) next(vdo);
         _liveCount = 0; _liveCreatures = 0; _liveGen = -1;
         CasterGather.Stand();

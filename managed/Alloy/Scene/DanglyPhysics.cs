@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 
@@ -54,20 +56,22 @@ internal static unsafe class DanglyPhysics
     private const float BreezeTurn = 0.05f;
 
     private static ExtenderLog? _log;
-    private static IntPtr* _slot;
+    private static PartDanglyAnimateFn* _slot;
     private static IntPtr* _pCurrentScene;
-    private static delegate* unmanaged<IntPtr, Vector3*, float*, void> _getWorld;
-    private static delegate* unmanaged<uint, byte*> _getPool;
-    private static delegate* unmanaged<IntPtr, uint, byte*> _getItemDyn;
-    private static delegate* unmanaged<IntPtr, uint, uint, void> _commitItemDyn;
-    private static delegate* unmanaged<IntPtr, void> _genVelocity;
-    private static delegate* unmanaged<IntPtr, float, void> _childAnimate;
+    private static PartGetWorldFn _getWorld;
+    private static GlGetPoolFn _getPool;
+    private static VdoGetItemDynamicDataFn _getItemDyn;
+    private static VdoCommitItemDynamicDataFn _commitItemDyn;
+    private static VertexPrimGenVelocityFn _genVelocity;
+    private static PartAnimateFn _childAnimate;
     private static delegate* unmanaged<IntPtr, Vector3*, float, Vector3> _getWind;
     /// <summary><c>Scene::GetWindVector</c> returns <c>Vector</c> BY VALUE, so it takes a hidden return
     /// buffer -- and the two platforms put that buffer in different argument slots: Itanium
     /// <c>(sret, this, ...)</c>, Win64 <c>(this, sret, ...)</c>. Measured, rva 0xc9b90:
     /// <c>mov rcx,[rcx+0x160]</c> reads the Scene, <c>mov rbx,rdx</c> ... <c>mov rax,rbx</c> returns the
-    /// buffer that arrived in rdx. Same function, second declaration (#456).</summary>
+    /// buffer that arrived in rdx. Same function, second declaration (#456).
+    /// <para>CX-39: the one pointer pair in this file that stays hand-written, for exactly that reason -- a
+    /// declared signature is per SYMBOL, and this symbol has two.</para></summary>
     private static delegate* unmanaged<IntPtr, Vector3*, Vector3*, float, void> _getWindWin;
 
     /// <summary>The wind at <paramref name="pos"/>, through whichever order this platform uses.</summary>
@@ -89,12 +93,12 @@ internal static unsafe class DanglyPhysics
     {
         _log = log;
         _pCurrentScene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
-        _getWorld = (delegate* unmanaged<IntPtr, Vector3*, float*, void>)Native.Sym(SymbolMap.PartGetWorld);
-        _getPool = (delegate* unmanaged<uint, byte*>)Native.Sym(SymbolMap.GlGetPool);
-        _getItemDyn = (delegate* unmanaged<IntPtr, uint, byte*>)Native.Sym(SymbolMap.VdoGetItemDynamicData);
-        _commitItemDyn = (delegate* unmanaged<IntPtr, uint, uint, void>)Native.Sym(SymbolMap.VdoCommitItemDynamicData);
-        _genVelocity = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.VertexPrimGenVelocity);
-        _childAnimate = (delegate* unmanaged<IntPtr, float, void>)Native.Sym(SymbolMap.PartAnimate);
+        _getWorld = EngineFn.PartGetWorld;
+        _getPool = EngineFn.GlGetPool;
+        _getItemDyn = EngineFn.VdoGetItemDynamicData;
+        _commitItemDyn = EngineFn.VdoCommitItemDynamicData;
+        _genVelocity = EngineFn.VertexPrimGenVelocity;
+        _childAnimate = EngineFn.PartAnimate;
         _getWind = (delegate* unmanaged<IntPtr, Vector3*, float, Vector3>)Native.Sym(SymbolMap.SceneGetWindVector);
         _getWindWin = (delegate* unmanaged<IntPtr, Vector3*, Vector3*, float, void>)_getWind;
 
@@ -107,8 +111,7 @@ internal static unsafe class DanglyPhysics
 
         // Chain rather than Install: the solve is a plausible future co-consumer, and #88's rule is that a
         // second Install on the same target silently orphans the first.
-        _slot = hooks.Chain(SymbolMap.PartDanglyAnimate,
-                            (IntPtr)(delegate* unmanaged<IntPtr, float, void>)&OnAnimate, 10);
+        _slot = hooks.ChainPartDanglyAnimate(&OnAnimate, 10);
         if (_slot == null)
         {
             log.Info("DanglyPhysics: could not chain PartDanglyMesh::Animate -- dangly stays vanilla");
@@ -150,30 +153,29 @@ internal static unsafe class DanglyPhysics
         // The engine returns without integrating on these two (dangly-physics.md), so nothing moved.
         IntPtr scene = *_pCurrentScene;
         if (scene == IntPtr.Zero) { Down(part, dt, solves: false); return; }
-        var isAnimating = (delegate* unmanaged<IntPtr, byte>)(*(IntPtr**)scene)[SceneIsAnimatingSlot / 8];
-        if (isAnimating(scene) == 0) { Down(part, dt, solves: false); return; }
+        if (new Scene(scene).IsAnimating() == 0) { Down(part, dt, solves: false); return; }
 
-        IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
-        IntPtr vp = *(IntPtr*)(part + PartNode);
-        if (node == IntPtr.Zero || vp == IntPtr.Zero) { Down(part, dt); return; }
+        IntPtr node = new Part(part).Node.Ptr;
+        var vpv = new PartTriMesh(part).VertexPrimitive;
+        if (node == IntPtr.Zero || vpv.IsNull) { Down(part, dt); return; }
 
-        int item = *(int*)(vp + VpItem);
-        IntPtr vdo = *(IntPtr*)(vp + VpVdo);
+        int item = vpv.Item;
+        IntPtr vdo = vpv.Vdo.Ptr;
         if (item == -1 || vdo == IntPtr.Zero) { Down(part, dt); return; }
 
-        float* cons = *(float**)(node + MdlConstraints);
-        int n = Math.Min(*(ushort*)(node + MdlVertexCount), *(int*)(node + MdlConstraintCount));
+        var dn = new MdlNodeDanglyMesh(node);
+        float* cons = (float*)dn.Constraints;
+        int n = Math.Min(new MdlNodeTriMesh(node).VertexCount, dn.ConstraintCount);
         if (cons == null || n <= 0) { Down(part, dt); return; }
 
-        var asDangly = (delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr**)vp)[VpAsDanglySlot / 8];
-        IntPtr vpd = asDangly(vp);
-        if (vpd == IntPtr.Zero) { Down(part, dt); return; }
+        var vpd = new VertexPrimitiveDangly(vpv.AsDangly());
+        if (vpd.IsNull) { Down(part, dt); return; }
         // Born lazily on the first Animate. Swallowing the original means nobody else ever creates it.
-        if (*(IntPtr*)(vpd + VpdVelocity) == IntPtr.Zero) _genVelocity(vpd);
-        float* vel = *(float**)(vpd + VpdVelocity);
+        if (vpd.Velocity == IntPtr.Zero) _genVelocity(vpd.Ptr);
+        float* vel = (float*)vpd.Velocity;
         if (vel == null) { Down(part, dt); return; }
 
-        float* rest = (float*)_getPool(*(uint*)(node + MdlRestPool));
+        float* rest = (float*)_getPool(new MdlNodeTriMesh(node).RestPool);
         float* dst = (float*)_getItemDyn(vdo, (uint)item);
         if (rest == null || dst == null) { Down(part, dt); return; }
 
@@ -186,8 +188,9 @@ internal static unsafe class DanglyPhysics
         // prevPos = 0, so anywhere but the origin it takes the teleport branch on frame one -- and that
         // memcpy is the only thing that ever initialises the dynamic buffer. Seeding first would skip it
         // and open every spawn by integrating from whatever the buffer held.
-        float* prevRot = (float*)(part + PartPrevRot);
-        Vector3 ppos = *(Vector3*)(part + PartPrevPos);
+        var pd = new PartDanglyMesh(part);
+        float* prevRot = (float*)Unsafe.AsPointer(ref pd.PrevRot);
+        Vector3 ppos = pd.PrevPos;
         if ((wpos - ppos).Length() > TeleportDist)
         {
             Buffer.MemoryCopy(rest, dst, (long)n * 12, (long)n * 12);
@@ -250,9 +253,9 @@ internal static unsafe class DanglyPhysics
         float sdt = MathF.Min(dt, maxSteps / hz);
         int steps = Math.Clamp((int)MathF.Round(sdt * hz), 1, maxSteps);
         float h = sdt / steps;
-        float disp = *(float*)(node + MdlDisplacement);
-        float stiff = StiffnessGain * *(float*)(node + MdlTightness);
-        float damp = DampingGain * *(float*)(node + MdlPeriod);
+        float disp = dn.Displacement;
+        float stiff = StiffnessGain * dn.Tightness;
+        float damp = DampingGain * dn.Period;
         float maxSq = 0f;
         AlloyRenderer.NoteDanglyPrev(part, dst, n);
 
@@ -331,8 +334,9 @@ internal static unsafe class DanglyPhysics
 
     private static void StorePose(IntPtr part, Vector3 pos, float* rot)
     {
-        *(Vector3*)(part + PartPrevPos) = pos;
-        float* p = (float*)(part + PartPrevRot);
+        var pd = new PartDanglyMesh(part);
+        pd.PrevPos = pos;
+        float* p = (float*)Unsafe.AsPointer(ref pd.PrevRot);
         p[0] = rot[0]; p[1] = rot[1]; p[2] = rot[2]; p[3] = rot[3];
     }
 
@@ -342,7 +346,7 @@ internal static unsafe class DanglyPhysics
     private static void Down(IntPtr part, float dt, bool solves = true)
     {
         if (solves) AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, Dangly.Still.V);
-        ((delegate* unmanaged<IntPtr, float, void>)(*_slot))(part, dt);
+        (*_slot)(part, dt);
     }
 
     /// <summary>The obligation the original's tail carries: animate the part's CHILDREN. Skipped, the

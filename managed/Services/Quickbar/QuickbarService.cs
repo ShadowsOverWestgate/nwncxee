@@ -39,7 +39,6 @@ public sealed unsafe class QuickbarService : IExtenderService
     private static volatile bool _dirty = true;
 
     // Compass hide/show engine calls.
-    private static delegate* unmanaged<IntPtr, void> _hideCompass, _showCompass;
     private static bool _compassApplied = true;
 
     private static volatile RenderFrame[] _extraFrames = Array.Empty<RenderFrame>();
@@ -58,15 +57,10 @@ public sealed unsafe class QuickbarService : IExtenderService
         // Stand down as a UNIT, #48's rule: every knob here ends in one of these three symbols, so a build
         // that resolves none of them would offer rows whose every control silently does nothing.
         // Not OS-gated -- gated on the symbols, so the Windows anchors landing is all it takes to switch on.
-        _setPosScreen = (delegate* unmanaged<IntPtr, int, int, void>)Native.Sym(SymbolMap.SetPositionScreen);
-        _hideCompass = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.HideCompass);
-        _showCompass = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ShowCompass);
-        IntPtr tramp = hooks.Install(
-            SymbolMap.QuickbarReposition,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnReposition);
-        if (tramp == IntPtr.Zero || _setPosScreen == null)
+        QuickbarRepositionFn tramp = hooks.InstallQuickbarReposition(&OnReposition);
+        if (tramp == null || _setPosScreen == null)
         {
-            string missing = (tramp == IntPtr.Zero ? "CPanelQuickBar::Reposition " : "")
+            string missing = (tramp == null ? "CPanelQuickBar::Reposition " : "")
                            + (_setPosScreen == null ? "CGuiPanel::SetPositionScreen " : "");
             log.Always($"QuickbarService: standing down as a unit -- no anchor for {missing}" +
                        "(docs/windows-symbols.md); the quickbar rows answer instead of acting");
@@ -87,7 +81,7 @@ public sealed unsafe class QuickbarService : IExtenderService
 
     private static Window? _window;
 
-    private static delegate* unmanaged<IntPtr, int, int, void> _setPosScreen;
+    private static readonly SetPositionScreenFn _setPosScreen = EngineFn.SetPositionScreen;
 
     [UnmanagedCallersOnly]
     private static void OnReposition(IntPtr self)
@@ -191,8 +185,8 @@ public sealed unsafe class QuickbarService : IExtenderService
         CGuiInGame gui = LiveGuiInGame();
         if (gui.IsNull) return;
         _compassApplied = want;
-        if (!want && _hideCompass != null) _hideCompass(gui.Ptr);
-        else if (want && _showCompass != null) _showCompass(gui.Ptr);
+        if (!want && EngineFn.HideCompass != null) gui.HideCompass();
+        else if (want && EngineFn.ShowCompass != null) gui.ShowCompass();
     }
 
     /// <summary>Rebuild the chrome vertex batch: full-width band (if bars on and quickbar visible) and the

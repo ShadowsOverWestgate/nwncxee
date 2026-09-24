@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
 using static CX.Framework.EngineLayout;
@@ -32,8 +33,8 @@ namespace CX.Services.Anim;
 public sealed unsafe class PoseService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static IntPtr* _next;
-    private static delegate* unmanaged<IntPtr, float> _scale;
+    private static GobAnimateFn* _next;
+    private static GobGetAdjustedScaleFn _scale;
     private static bool _armed, _creatures;
 
     /// <summary>World units between two frames past which the gob teleported: springs snap, nothing eases.</summary>
@@ -138,13 +139,13 @@ public sealed unsafe class PoseService : IExtenderService
         if (!SymbolMap.Require(log, "Pose", SymbolMap.GobAnimate, SymbolMap.PartGetWorld, SymbolMap.GobGetAdjustedScale,
                                SymbolMap.SceneHitCheck, SymbolMap.HitInfoReset, SymbolMap.CurrentScene)) return;
         SceneRay.Init();
-        GetWorld = (delegate* unmanaged<IntPtr, Vector3*, float*, void>)Native.Sym(SymbolMap.PartGetWorld);
-        _scale = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.GobGetAdjustedScale);
+        GetWorld = EngineFn.PartGetWorld;
+        _scale = EngineFn.GobGetAdjustedScale;
         if (!SceneRay.Armed || GetWorld == null || _scale == null) { log.Info("Pose: standing down (symbols unresolved)"); return; }
         _creatures = EngineLayout.Require(log, "Pose.creature", "CNWCObject", "CNWCCreature");
         _slots = new Slot[SlotCount];
         _pending = new Pending[PendingCount];
-        _next = hooks.Chain(SymbolMap.GobAnimate, (IntPtr)(delegate* unmanaged<IntPtr, float, void>)&OnAnimate, 50);
+        _next = hooks.ChainGobAnimate(&OnAnimate, 50);
         if (_next == null) { log.Info("Pose: standing down (Gob::Animate chain refused)"); return; }
         _armed = true;
         UpperBody.Install(log, hooks);
@@ -159,11 +160,11 @@ public sealed unsafe class PoseService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnAnimate(IntPtr gob, float dt)
     {
-        var next = (delegate* unmanaged<IntPtr, float, void>)(*_next);
-        if (!_armed || gob == IntPtr.Zero || *(int*)(gob + GobExternalType) != GobKindCreature) { next(gob, dt); return; }
+        GobAnimateFn next = *_next;
+        if (!_armed || gob == IntPtr.Zero || new Gob(gob).ExternalType != GobKindCreature) { next(gob, dt); return; }
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
 
-        IntPtr root = *(IntPtr*)(gob + GobPartTree);
+        IntPtr root = new Gob(gob).PartTree.Ptr;
         Bones bones = default;
         if (root != IntPtr.Zero) FindBones(root, ref bones, 0);
         bool found = bones.Legs;
@@ -202,11 +203,11 @@ public sealed unsafe class PoseService : IExtenderService
             _playerAt = now;
             IntPtr me = UpperBody.Ready ? CameraService.PlayerCreature() : IntPtr.Zero;
             _hasPlayer = me != IntPtr.Zero;
-            if (_hasPlayer) _player = *(Vector3*)(me + ObjPosition);
+            if (_hasPlayer) _player = new CNWCObject(me).Position;
         }
         if (!_hasPlayer) return true;
         float d = AnimKnobs.Distance.V;
-        return Vector3.DistanceSquared(*(Vector3*)(gob + GobPosition), _player) <= d * d;
+        return Vector3.DistanceSquared(new Gob(gob).Position, _player) <= d * d;
     }
 
     private static Vector3 _player;
@@ -222,7 +223,7 @@ public sealed unsafe class PoseService : IExtenderService
     private static void Correct(IntPtr gob, IntPtr root, in Bones bones, int slot, float dt)
     {
         IntPtr scene = SceneRay.WorldScene();
-        if (scene == IntPtr.Zero || *(IntPtr*)(gob + GobScene) != scene) return;
+        if (scene == IntPtr.Zero || new Gob(gob).Scene != scene) return;
         if (slot < 0 && (slot = Claim(gob)) < 0) { _noSlot++; return; }
         Apply(ref _slots[slot], gob, root, bones, scene, dt);
     }
@@ -234,7 +235,7 @@ public sealed unsafe class PoseService : IExtenderService
     private static IntPtr Owner(IntPtr gob)
     {
         if (!_creatures) return IntPtr.Zero;
-        IntPtr creature = *(IntPtr*)(gob + GobExternalData);
+        IntPtr creature = new Gob(gob).ExternalData;
         if (creature == IntPtr.Zero) return IntPtr.Zero;
         IntPtr body = GobOf(creature);
         return body == gob ? IntPtr.Zero : body;
@@ -248,7 +249,7 @@ public sealed unsafe class PoseService : IExtenderService
     /// (<c>PartSkin</c>), so nothing the body does reaches it otherwise. The body's raise is not copied: the
     /// attachment hangs off the body's root part, which carries it already.</summary>
     private static void Attached(IntPtr gob, IntPtr root, in Bones bones, int slot, IntPtr body,
-                                 delegate* unmanaged<IntPtr, float, void> next, float dt, long t0)
+                                 GobAnimateFn next, float dt, long t0)
     {
         int bs = Find(body);
         bool tracked = bs >= 0;
@@ -304,7 +305,7 @@ public sealed unsafe class PoseService : IExtenderService
             fixed (long* parts = s.Parts)
                 for (int k = 0; k < Bones.Count; k++)
                     if (parts[k] != 0 && bones[k] != IntPtr.Zero)
-                        *(Vector4*)((IntPtr)parts[k] + PartRot) = *(Vector4*)(bones[k] + PartRot);
+                        new Part((IntPtr)parts[k]).Rot = new Part(bones[k]).Rot;
             _followed++;
         }
     }
@@ -313,11 +314,11 @@ public sealed unsafe class PoseService : IExtenderService
     private static void FindBones(IntPtr part, ref Bones bones, int depth)
     {
         if (depth > MaxDepth) return;
-        IntPtr node = *(IntPtr*)(part + PartNodeLink);
+        IntPtr node = new Part(part).Node.Ptr;
         int bone = node == IntPtr.Zero ? -1 : BoneIndex((byte*)(node + MdlNodeName));
         if (bone >= 0 && bones[bone] == IntPtr.Zero) bones[bone] = part;
-        IntPtr* kids = *(IntPtr**)(part + PartChildren);
-        int n = *(int*)(part + PartChildCount);
+        IntPtr* kids = (IntPtr*)new Part(part).Children;
+        int n = new Part(part).ChildCount;
         for (int i = 0; i < n && kids != null; i++)
             if (kids[i] != IntPtr.Zero) FindBones(kids[i], ref bones, depth + 1);
     }
@@ -353,14 +354,14 @@ public sealed unsafe class PoseService : IExtenderService
     private static bool Gated(IntPtr gob, out bool fading)
     {
         fading = false;
-        IntPtr* runs = *(IntPtr**)(gob + GobAnimRuns);
-        int n = *(int*)(gob + GobAnimRunCount);
+        IntPtr* runs = (IntPtr*)new Gob(gob).AnimRuns;
+        int n = new Gob(gob).AnimRunCount;
         bool gated = false;
         for (int i = 0; i < n && runs != null; i++)
         {
             if (runs[i] == IntPtr.Zero) continue;
-            if (*(float*)(runs[i] + AnimRunBlend) < Settled) fading = true;
-            IntPtr anim = *(IntPtr*)(runs[i] + AnimRunAnimation);
+            if (new AnimRun(runs[i]).Blend < Settled) fading = true;
+            IntPtr anim = new AnimRun(runs[i]).Animation;
             if (anim != IntPtr.Zero && IsDenied((byte*)(anim + AnimationName))) gated = true;
         }
         return gated;
@@ -418,22 +419,22 @@ public sealed unsafe class PoseService : IExtenderService
     /// frame: a part the tree no longer reaches may already be freed.</summary>
     private static void Restore(ref Slot s, in Bones bones)
     {
-        *(Vector3*)(s.Root + PartPos) = s.RootPos;
+        new Part(s.Root).Pos = s.RootPos;
         fixed (float* r = s.Rot)
         fixed (long* p = s.Parts)
             for (int i = 0; i < Bones.Count; i++)
-                if (bones[i] != IntPtr.Zero && bones[i] == (IntPtr)p[i]) *(Vector4*)(bones[i] + PartRot) = *(Vector4*)(r + 4 * i);
+                if (bones[i] != IntPtr.Zero && bones[i] == (IntPtr)p[i]) new Part(bones[i]).Rot = *(Quat*)(r + 4 * i);
     }
 
     private static void Save(ref Slot s, IntPtr root, in Bones bones)
     {
-        s.RootPos = *(Vector3*)(root + PartPos);
+        s.RootPos = new Part(root).Pos;
         fixed (float* r = s.Rot)
         fixed (long* p = s.Parts)
             for (int i = 0; i < Bones.Count; i++)
             {
                 p[i] = (long)bones[i];
-                if (bones[i] != IntPtr.Zero) *(Vector4*)(r + 4 * i) = *(Vector4*)(bones[i] + PartRot);
+                if (bones[i] != IntPtr.Zero) *(Quat*)(r + 4 * i) = new Part(bones[i]).Rot;
             }
     }
 
@@ -443,7 +444,7 @@ public sealed unsafe class PoseService : IExtenderService
         float scale = _scale(gob);
         if (!(scale > 1e-4f)) return;
         World(root, out Vector3 rootW, out Quaternion rootWq);
-        Vector3 rootL = *(Vector3*)(root + PartPos);
+        Vector3 rootL = new Part(root).Pos;
         Quaternion adj = rootWq * Quaternion.Conjugate(Local(root));
         Vector3 adjPos = rootW - Vector3.Transform(rootL * scale, adj);
         Vector3 fwd = Vector3.Transform(Vector3.UnitY, adj);
@@ -461,8 +462,8 @@ public sealed unsafe class PoseService : IExtenderService
 
         bool gated = Gated(gob, out bool fading);
         if (gated) _gated++;
-        IntPtr creature = _creatures ? *(IntPtr*)(gob + GobExternalData) : IntPtr.Zero;
-        s.Loco = !gated && s.Moving > 0f && creature != IntPtr.Zero && IsLocomotion(*(short*)(creature + ObjAnimation));
+        IntPtr creature = _creatures ? new Gob(gob).ExternalData : IntPtr.Zero;
+        s.Loco = !gated && s.Moving > 0f && creature != IntPtr.Zero && IsLocomotion(new CNWCObject(creature).Animation);
 
         World(bones.RFoot, out Vector3 rAnkle, out _);
         World(bones.LFoot, out Vector3 lAnkle, out _);
@@ -486,7 +487,7 @@ public sealed unsafe class PoseService : IExtenderService
         Save(ref s, root, bones);
         s.Applied = true;
         _gobs++;
-        *(Vector3*)(root + PartPos) = rootL + Vector3.Transform(new Vector3(0f, 0f, body / scale), toModel);
+        new Part(root).Pos = rootL + Vector3.Transform(new Vector3(0f, 0f, body / scale), toModel);
         if (legs)
         {
             float cap = AnimKnobs.Lift.V * scale;
@@ -504,7 +505,7 @@ public sealed unsafe class PoseService : IExtenderService
     private static bool LookingAt(IntPtr gob)
     {
         IntPtr look = *(IntPtr*)(gob + GobLookAt);
-        return look != IntPtr.Zero && *(byte*)(look + LookAtFinished) == 0;
+        return look != IntPtr.Zero && new LookAtAnimation(look).Finished == 0;
     }
 
     private const int GobLookAt = 0x1b0;
@@ -543,9 +544,8 @@ public sealed unsafe class PoseService : IExtenderService
     /// CNWCAnimBase at +0x78 (as <see cref="HeadTrackService"/> reaches it).</summary>
     internal static IntPtr GobOf(IntPtr creature)
     {
-        IntPtr vtbl = *(IntPtr*)creature;
-        if (vtbl == IntPtr.Zero) return IntPtr.Zero;
-        return ((delegate* unmanaged<IntPtr, byte, int, IntPtr>)(*(IntPtr*)(vtbl + CreatureGetModelSlot)))(creature, 0xff, 1);
+        if (*(IntPtr*)creature == IntPtr.Zero) return IntPtr.Zero;
+        return new CNWCCreature(creature).GetModel(0xff, 1);
     }
 
     /// <summary>Moves one ankle by <paramref name="delta"/> world units: two-bone IK in world space, written back as
@@ -555,8 +555,8 @@ public sealed unsafe class PoseService : IExtenderService
     {
         bool moves = delta.LengthSquared() >= FootPlacement.MinLift * FootPlacement.MinLift;
         if (!moves && tilt.IsIdentity) return;
-        IntPtr hip = *(IntPtr*)(thigh + PartParent);
-        if (hip == IntPtr.Zero || *(IntPtr*)(shin + PartParent) != thigh || *(IntPtr*)(foot + PartParent) != shin) return;
+        IntPtr hip = new Part(thigh).Parent.Ptr;
+        if (hip == IntPtr.Zero || new Part(shin).Parent.Ptr != thigh || new Part(foot).Parent.Ptr != shin) return;
         World(shin, out Vector3 k, out Quaternion qs);
         World(foot, out Vector3 a, out Quaternion qf);
         if (moves)

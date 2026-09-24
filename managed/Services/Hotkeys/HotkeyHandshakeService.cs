@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Services.Hotkeys;
@@ -18,16 +19,13 @@ namespace CX.Services.Hotkeys;
 public sealed unsafe class HotkeyHandshakeService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, byte, uint> _loginOrig;
-    private static delegate* unmanaged<IntPtr, IntPtr, int, void> _advertise;
+    private static HandleServerToPlayerLoginFn _loginOrig;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
         if (!SymbolMap.Require(log, "HotkeyHandshakeService", HotkeyProtocol.RequiredSymbols)) return;
-        _advertise = (delegate* unmanaged<IntPtr, IntPtr, int, void>)Native.Sym(SymbolMap.SendDeviceAdvertiseProperty);
-        _loginOrig = (delegate* unmanaged<IntPtr, byte, uint>)hooks.Install(
-            SymbolMap.HandleServerToPlayerLogin, (IntPtr)(delegate* unmanaged<IntPtr, byte, uint>)&OnLogin);
+        _loginOrig = hooks.InstallHandleServerToPlayerLogin(&OnLogin);
     }
 
     [UnmanagedCallersOnly]
@@ -48,7 +46,7 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
 
     private static void Advertise(IntPtr msg)
     {
-        if (_advertise == null) return;
+        if (EngineFn.SendDeviceAdvertiseProperty == null) return;
         Adv(msg, "CX_ENABLED", 1);
         ClientApi.SendAscii(HotkeyProtocol.AbuseContactMajor, HotkeyProtocol.AbuseContactMinor, HotkeyProtocol.AbuseContact);
         _log?.Info("Handshake: advertised extender + abuse contact (no key list -- consent is per-server via token)");
@@ -57,7 +55,7 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
     private static void Adv(IntPtr msg, string name, int value)
     {
         IntPtr s = Native.NewExoString(name);
-        _advertise(msg, s, value);
+        EngineFn.SendDeviceAdvertiseProperty(msg, s, value);
         Native.FreeExoString(s);
     }
 }

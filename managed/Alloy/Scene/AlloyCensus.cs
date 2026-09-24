@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -61,7 +63,8 @@ internal static unsafe partial class AlloyCensus
     internal const int GobOpaqueBucket = 2, GobBlendBucket = 3;
 
     /// <summary>The stride between the three resref slots <see cref="EngineLayout.SharedVsName"/> names
-    /// (VS at +0x188, FS at +0x199, GS at +0x1aa), and the length of each inline NUL-terminated buffer.</summary>
+    /// (VS at +0x188, FS at +0x199, GS at +0x1aa), and the length of each inline NUL-terminated buffer.
+    /// A LENGTH, not a place: the three buffers are one inline run and this is what steps between them.</summary>
     internal static readonly int SharedNameLen = EngineLayout.SharedNameLen;
 
     /// <summary><c>dumptex</c> (cx.cfg): log only parts whose diffuse texture name contains this, one frame's worth at a
@@ -679,10 +682,10 @@ internal static unsafe partial class AlloyCensus
     /// often this fires.</summary>
     private static bool DupSibling(IntPtr part, int e, in VdoRef vd, int it)
     {
-        IntPtr parent = *(IntPtr*)(part + EngineLayout.PartParent);
+        IntPtr parent = new Part(part).Parent.Ptr;
         if (parent == IntPtr.Zero) return false;
-        IntPtr* kids = *(IntPtr**)(parent + EngineLayout.PartChildren);
-        int n = *(int*)(parent + EngineLayout.PartChildCount);
+        IntPtr* kids = (IntPtr*)new Part(parent).Children;
+        int n = new Part(parent).ChildCount;
         if (kids == null || n < 2 || n > DupSiblingMaxFanOut) return false;
         int mine = -1;
         for (int i = 0; i < n; i++) if (kids[i] == part) { mine = i; break; }
@@ -693,11 +696,12 @@ internal static unsafe partial class AlloyCensus
         {
             IntPtr sib = kids[j];
             if (sib == IntPtr.Zero || sib == part) continue;
-            IntPtr tri = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)sib + BucketGate.PartVtblGetTriMesh)))(sib);
-            if (tri == IntPtr.Zero || *(byte*)(tri + EngineLayout.PartVisible) == 0 || !PartTable.IsRenderable(tri)) continue;
-            // pos (3), rot (4), scale (1) sit contiguously from PartPos: one 32-byte compare
-            if (!new ReadOnlySpan<byte>((void*)(part + EngineLayout.PartPos), DupSiblingXformBytes)
-                    .SequenceEqual(new ReadOnlySpan<byte>((void*)(tri + EngineLayout.PartPos), DupSiblingXformBytes))) continue;
+            IntPtr tri = new Part(sib).AsPartTriMesh().Ptr;
+            if (tri == IntPtr.Zero || new Part(tri).Visible == 0 || !PartTable.IsRenderable(tri)) continue;
+            // pos (3), rot (4), scale (1) sit contiguously from the position: one 32-byte compare, which is
+            // why this reads the BLOCK rather than the three typed fields.
+            if (!new ReadOnlySpan<byte>(Unsafe.AsPointer(ref new Part(part).Pos), DupSiblingXformBytes)
+                    .SequenceEqual(new ReadOnlySpan<byte>(Unsafe.AsPointer(ref new Part(tri).Pos), DupSiblingXformBytes))) continue;
             int es = PartTable.Find(tri);
             if (es < 0 || _pVdo[es] == IntPtr.Zero || _pItem[es] < 0) continue;
             var sv = new VdoRef(_pVdo[es]); int si = _pItem[es];
@@ -777,7 +781,6 @@ internal static unsafe partial class AlloyCensus
         $"{_ownSharedShader} approximated" +
         (_unknownCount == 0 ? "" : $" ({string.Join(", ", _unknown, 0, _unknownCount)})");
 
-    internal static readonly int TexVtblAsBasic = CX.Framework.EngineLayout.TexAsBasicSlot, TexVtblReferenced = CX.Framework.EngineLayout.TexReferencedSlot;
 
     /// <summary>Triage: every gob term the gate and the fold read, printed rather than reduced to a bool.
     /// "The instance modulates" is not actionable; "it modulates because its owner's fade bit is set" is.</summary>
@@ -787,7 +790,7 @@ internal static unsafe partial class AlloyCensus
         var g = new GobRef(gob);
         IntPtr owner = g.FadeOwner.Ptr;
         // the flag fields print their VALUE, so they stay raw: GobRef's bool would print "hlTrue" for "hl1"
-        return $"gobmod=hl{*(byte*)(gob + GobHighlight)}/tint{*(byte*)(gob + GobSceneTint)}" +
+        return $"gobmod=hl{g.View.Highlight}/tint{g.View.SceneTint}" +
                $"/col{*(short*)(gob + GobColourMul)}/emi{*(short*)(gob + GobSelfIllum)}" +
                $"/env{(g.EnvOverride != IntPtr.Zero ? 1 : 0)}" +
                $"/own{(owner == IntPtr.Zero ? -1 : *(byte*)(owner + NodeOwnerFlags) & GobOwnerFadeBit)}" +
@@ -838,19 +841,23 @@ internal static unsafe partial class AlloyCensus
     {
         IntPtr part = _pPart[e];
         if (part == IntPtr.Zero) return "part=0";
-        static string Nm(IntPtr p) { IntPtr n = *(IntPtr*)(p + EngineLayout.PartNodeLink); return n == IntPtr.Zero ? "?" : Marshal.PtrToStringAnsi(n + MdlNodeName) ?? "?"; }
+        static string Nm(IntPtr p)
+        {
+            MdlNode n = new Part(p).Node;
+            return n.IsNull ? "?" : Marshal.PtrToStringAnsi((IntPtr)Unsafe.AsPointer(ref n.Name)) ?? "?";
+        }
         var sb = new System.Text.StringBuilder();
         sb.Append($"part=0x{part:x} name={Nm(part)} vis=");
-        IntPtr gob = *(IntPtr*)(part + EngineLayout.PartGob);
+        IntPtr gob = new Part(part).Gob.Ptr;
         int depth = 0; string chain = "";
-        for (IntPtr p = part; p != IntPtr.Zero && depth < 16; p = *(IntPtr*)(p + EngineLayout.PartParent), depth++)
-        { sb.Append(*(byte*)(p + EngineLayout.PartVisible)); if (depth == 1) chain = Nm(p); }
+        for (IntPtr p = part; p != IntPtr.Zero && depth < 16; p = new Part(p).Parent.Ptr, depth++)
+        { sb.Append(new Part(p).Visible); if (depth == 1) chain = Nm(p); }
         sb.Append($" parent={chain} gob=0x{gob:x}");
         if (gob != IntPtr.Zero)
         {
-            IntPtr* roots = *(IntPtr**)(gob + EngineLayout.GobAppendRoots);
-            int n = *(int*)(gob + EngineLayout.GobAppendCount), at = -1;
-            for (int i = 0; roots != null && i < n; i++) if (roots[i] == part || roots[i] == *(IntPtr*)(part + EngineLayout.PartParent)) at = i;
+            IntPtr* roots = (IntPtr*)new Gob(gob).AppendRoots;
+            int n = new Gob(gob).AppendCount, at = -1;
+            for (int i = 0; roots != null && i < n; i++) if (roots[i] == part || roots[i] == new Part(part).Parent.Ptr) at = i;
             sb.Append($" appendroots={n} self-or-parent-at={at} root=0x{_pRoot[e]:x} bsp={_pBsp[e]}");
         }
         return sb.ToString();
@@ -859,10 +866,10 @@ internal static unsafe partial class AlloyCensus
     internal static string TexName(IntPtr tex)
     {
         if (tex == IntPtr.Zero) return "-";
-        IntPtr real = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)tex + TexVtblReferenced))(tex);
+        IntPtr real = new CAurTexture(tex).GetReferencedTexture().Ptr;
         if (real == IntPtr.Zero) real = tex;
-        IntPtr basic = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)real + TexVtblAsBasic))(real);
-        return basic == IntPtr.Zero ? "?" : Marshal.PtrToStringAnsi(basic + TexBasicName) ?? "?";
+        CAurTextureBasic basic = new CAurTexture(real).AsCAurTextureBasic();
+        return basic.IsNull ? "?" : Marshal.PtrToStringAnsi((IntPtr)Unsafe.AsPointer(ref basic.Name)) ?? "?";
     }
 
 }

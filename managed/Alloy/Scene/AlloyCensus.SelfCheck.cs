@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -29,6 +30,10 @@ internal static unsafe partial class AlloyCensus
         byte* part = stackalloc byte[0x100];
         for (int i = 0; i < 0x500; i++) gob[i] = 0;
         for (int i = 0; i < 0x100; i++) { owner[i] = 0; part[i] = 0; }
+        // The typed views read these stand-ins exactly as they read a live object; PLANTING a pointer is the
+        // one thing a view of a TRANSIENT class cannot do (it hands out a copy), so those four writes are raw.
+        var gv = new Gob((IntPtr)gob);
+        var mv = new Model((IntPtr)owner);
         *(IntPtr*)(part + PartGob) = (IntPtr)gob;
         IntPtr p = (IntPtr)part;
 
@@ -43,39 +48,37 @@ internal static unsafe partial class AlloyCensus
         *(IntPtr*)(part + PartGob) = (IntPtr)gob;
 
         // the colour/alpha pair, armed together by gob+0xf6 and dead without it
-        *(float*)(gob + GobAlpha) = 0.5f;
-        *(float*)(gob + GobColour) = 0.25f;
-        *(float*)(gob + GobColour + 4) = 1f;
-        *(float*)(gob + GobColour + 8) = 1f;
+        gv.Alpha = 0.5f;
+        gv.Colour = new System.Numerics.Vector3(0.25f, 1f, 1f);
         check.Expect(GobAlphaMul(p) == 1f && GobDiffuseMul(p) == System.Numerics.Vector3.One, "unarmed values do not apply");
-        *(short*)(gob + GobColourMul) = 1;
+        gv.ColourMul = 1;
         check.Expect(GobAlphaMul(p) == 0.5f, "armed gob alpha multiplies");
         check.Expect(GobDiffuseMul(p) == new System.Numerics.Vector3(0.25f, 1f, 1f), "armed gob colour multiplies, in order");
 
         // the SECOND alpha multiply, armed on the gob's OWNER rather than on the gob -- the fade that moves a
         // whole creature into the transparent run, and the one term whose flag is not on the object it scales
-        *(float*)(gob + GobFadeAlpha) = 0.5f;
+        gv.FadeAlpha = 0.5f;
         check.Expect(GobAlphaMul(p) == 0.5f, "the fade alpha is dead without its owner");
         *(IntPtr*)(gob + GobNode) = (IntPtr)owner;
         check.Expect(GobAlphaMul(p) == 0.5f, "...and dead without the owner's fade bit");
-        owner[NodeOwnerFlags] = GobOwnerFadeBit;
+        mv.OwnerFlags = GobOwnerFadeBit;
         check.Expect(GobAlphaMul(p) == 0.25f, "both multiplies compose");
 
-        *(short*)(gob + GobSelfIllum) = 1;
-        *(float*)(gob + GobEmissive + 4) = 2f;
+        gv.SelfIllum = 1;
+        gv.Emissive = new System.Numerics.Vector3(0f, 2f, 0f);
         check.Expect(GobEmissiveAdd(p) == new System.Numerics.Vector3(0f, 2f, 0f), "armed self-illum adds, in order");
 
         // ...and none of that made the instance unownable, which is the whole of #128 over #134
         check.Expect(!GobUnownable((IntPtr)gob), "a MODULATING instance is still ownable: the terms are folded, not refused");
-        gob[GobHighlight] = 1;
+        gv.Highlight = 1;
         // #285: and neither is a HIGHLIGHT. Refusing one used to hand the part to the engine's walk; since
         // #264 it hands it to nothing, so a hovered placeable disappeared under its own glow.
         check.Expect(!GobUnownable((IntPtr)gob), "a highlight is OWNABLE -- the engine's glow overlay composites over it");
-        gob[GobHighlight] = 0; gob[GobSceneTint] = 1;
+        gv.Highlight = 0; gv.SceneTint = 1;
         check.Expect(GobUnownable((IntPtr)gob), "a scene tint is not -- it REPLACES the surface with one unlit colour");
-        gob[GobSceneTint] = 0;
+        gv.SceneTint = 0;
         check.Expect(!GobHasEnvMap((IntPtr)gob), "a bare gob overrides no env map");
-        *(IntPtr*)(gob + GobEnvOverride) = (IntPtr)owner;
+        gv.EnvOverride = (IntPtr)owner;
         check.Expect(!GobUnownable((IntPtr)gob), "a per-instance env override is OWNABLE -- it is the env flag, not a class");
         check.Expect(GobHasEnvMap((IntPtr)gob), "...and it reports as one, so the candidate takes #121's env path");
         check.Expect(!GobHasEnvMap(IntPtr.Zero), "a gobless part overrides nothing, without dereferencing");

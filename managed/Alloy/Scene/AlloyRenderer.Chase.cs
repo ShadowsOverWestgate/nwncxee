@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 
@@ -157,7 +158,10 @@ public sealed unsafe partial class AlloyRenderer
         IntPtr cam = PartTable.KeyholeArmed ? PartTable.CurrentCamera : IntPtr.Zero;
         _khCam = cam != IntPtr.Zero;
         if (!_khCam) return;
-        _khOn = *(byte*)(cam + EngineLayout.CamKeyholeState);
+        // Raw, and it stays raw: the keyhole state is a BLOCK, not a field -- an enable byte, three bytes of
+        // padding, the four plane floats and the height cut, all read off the one row that anchors it
+        // (EngineLayout.CamKeyholeState). No typed field names the interior of a block.
+        _khOn = new Camera(cam).KeyholeState;
         for (int k = 0; k < 4; k++) _khPlane[k] = *(float*)(cam + EngineLayout.CamKeyholeState + 4 + k * 4);
         _khCut = *(float*)(cam + EngineLayout.CamKeyholeState + 20);
     }
@@ -325,8 +329,8 @@ public sealed unsafe partial class AlloyRenderer
             if (h < 0) return false;
             // the two tests Scene::AddPartsToDrawBuckets @0x4751d0 makes on a gobbucket entry before it
             // walks the tree: everything it skips keeps the identity matrix the VertexPrimitive ctor left
-            _visPlaced[h] = *(byte*)(gob + EngineLayout.GobVisible) != 0
-                            && *(float*)(gob + EngineLayout.GobAlpha) > 0f;
+            var gv = new Gob(gob);
+            _visPlaced[h] = gv.Visible != 0 && gv.Alpha > 0f;
         }
         return true;
     }
@@ -394,7 +398,8 @@ public sealed unsafe partial class AlloyRenderer
         {
             IntPtr tile = items[k];
             if (tile == IntPtr.Zero) continue;
-            float live = *(float*)(tile + EngineLayout.TileFade), pending = *(float*)(tile + TilePendingFade);
+            var td = new TileData(tile);
+            float live = td.Fade, pending = td.PendingFade;
             if (live == pending) continue;
             if (_movCount == 0) { _movLive = live; _movPending = pending; }
             if (!MovSlot(tile, true)) return false;
@@ -511,7 +516,7 @@ public sealed unsafe partial class AlloyRenderer
     private static float TileFade(int i, IntPtr tri)
     {
         IntPtr owner = _oTile[i];
-        float fog = owner == IntPtr.Zero ? 1f : *(float*)(owner + TileGeomFade);
+        float fog = owner == IntPtr.Zero ? 1f : new TileData(owner).GeomFade;
         if (fog <= 0f) return 0f;
         if (fog > 1f) fog = 1f;
         bool cached = _fadeKnown[i] && !TileMoving(owner);
@@ -585,14 +590,15 @@ public sealed unsafe partial class AlloyRenderer
         int ps = MaxOwned - 1;
         IntPtr wasGob = _oGob[ps]; bool wasBsp = _oBsp[ps], wasPlaced = _oPlaced[ps];
         _oGob[ps] = (IntPtr)pGob; _oBsp[ps] = false; _oPlaced[ps] = false;
-        *(byte*)(pGob + EngineLayout.GobVisible) = 1; *(float*)(pGob + EngineLayout.GobAlpha) = 0f;
+        var pGobV = new Gob((IntPtr)pGob);
+        pGobV.Visible = 1; pGobV.Alpha = 0f;
         _visSeq++; _visCount = 0;
         _visSetOk = SampleVisibleGobs(pBucket);
         check.Expect(_visSetOk && !PartPlaced(ps), "a gobbucket gob at zero alpha is unplaced (no matrix was written)");
-        *(float*)(pGob + EngineLayout.GobAlpha) = 1f; *(byte*)(pGob + EngineLayout.GobVisible) = 0;
+        pGobV.Alpha = 1f; pGobV.Visible = 0;
         _visSeq++; _visCount = 0; _visSetOk = SampleVisibleGobs(pBucket);
         check.Expect(!PartPlaced(ps), "an invisible gobbucket gob is unplaced");
-        *(byte*)(pGob + EngineLayout.GobVisible) = 1;
+        pGobV.Visible = 1;
         _visSeq++; _visCount = 0; _visSetOk = SampleVisibleGobs(pBucket);
         check.Expect(PartPlaced(ps) && _oPlaced[ps], "a visible, opaque gob in gobbucket places the slot");
         _visSeq++; _visCount = 0;   // the set now holds nothing: the gob left the engine's view volume
@@ -623,10 +629,11 @@ public sealed unsafe partial class AlloyRenderer
         items[0] = (IntPtr)tile;
         byte* bucket = stackalloc byte[BucketBytes];
         *(IntPtr**)(bucket + BucketItems) = items; *(int*)(bucket + BucketCount) = 1;
-        *(float*)(tile + EngineLayout.TileFade) = 1f; *(float*)(tile + TilePendingFade) = 1f;
+        var tileV = new TileData((IntPtr)tile);
+        tileV.Fade = 1f; tileV.PendingFade = 1f;
         _visSeq++; _movCountPrev = _movCount = 0; _fadeAll = false;
         check.Expect(MarkPendingTiles(bucket) && _movCount == 0 && !TileMoving((IntPtr)tile), "a settled tile pends nothing");
-        *(float*)(tile + TilePendingFade) = 0.5f;
+        tileV.PendingFade = 0.5f;
         check.Expect(MarkPendingTiles(bucket) && _movCount == 1 && TileMoving((IntPtr)tile) && !TileMoving((IntPtr)0x4000),
           "a stepped tile is moving, its neighbour is not");
         _visSeq++; _movCountPrev = _movCount; _movCount = 0;
@@ -645,11 +652,12 @@ public sealed unsafe partial class AlloyRenderer
         *(IntPtr*)(fogTri + PartTile) = (IntPtr)fogTile;
         int slot = MaxOwned - 1; IntPtr wasTile = _oTile[slot]; bool wasKnown = _fadeKnown[slot]; float wasF = _oFadeF[slot];
         _oTile[slot] = (IntPtr)fogTile; _fadeKnown[slot] = false; _fadeAll = false;
-        *(float*)(fogTile + EngineLayout.TileFade) = 1f; *(float*)(fogTile + TileGeomFade) = 1f;
+        var fogV = new TileData((IntPtr)fogTile);
+        fogV.Fade = 1f; fogV.GeomFade = 1f;
         check.Expect(TileFade(slot, (IntPtr)fogTri) == 1f && _fadeKnown[slot], "an explored tile fades at its own factor");
-        *(float*)(fogTile + TileGeomFade) = 0.5f;
+        fogV.GeomFade = 0.5f;
         check.Expect(TileFade(slot, (IntPtr)fogTri) == 0.5f, "a tile exploring in is served half from the warm cache");
-        *(float*)(fogTile + TileGeomFade) = 0f;
+        fogV.GeomFade = 0f;
         check.Expect(TileFade(slot, (IntPtr)fogTri) == 0f, "an unexplored tile is 0, cache or not");
         _oTile[slot] = wasTile; _fadeKnown[slot] = wasKnown; _oFadeF[slot] = wasF;
 

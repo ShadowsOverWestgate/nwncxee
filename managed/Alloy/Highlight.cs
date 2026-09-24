@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using CX.Services.Quickbar;
@@ -28,18 +29,9 @@ namespace CX.Alloy;
 /// <c>using static</c>, a compile-time alias that emits the same static load the same-class read did.</para></summary>
 internal static unsafe class Highlight
 {
-    /// <summary><c>Scene</c>'s highlight state, as <c>Scene::AddHighlightGob</c> @0x462280 lays it out:
-    /// a <c>CExoArrayList&lt;Gob*&gt;</c> (data ptr, then count) and a parallel RGB <c>Vector</c> array,
-    /// stride 0xc.</summary>
-    internal static readonly int SceneHlGobs = EngineLayout.SceneHiliteGobs,
-        SceneHlCount = EngineLayout.SceneHiliteCount, SceneHlColors = EngineLayout.SceneHiliteColors;
-
-    /// <summary>Gob fields <c>Scene::DoHighlightGob</c> @0x470fc0 reads when it recurses into a highlighted
-    /// gob's attached children: the propagate-highlight byte, the node pointer whose owner-flags bit 0 marks
-    /// the child as skipped, and the vtable slot that fills a malloc'd {Gob** data, int count} pair the
-    /// caller frees.</summary>
-    private static readonly int GobPropagate = EngineLayout.GobPropagateHilite, GobSkipPtr = EngineLayout.GobNode,
-        GobSkipFlag = EngineLayout.NodeOwnerFlags, VtGobChildren = EngineLayout.GobAttachedGobsSlot;
+    /// <summary>Bit 0 of the fade owner's flag byte: <c>Scene::DoHighlightGob</c> @0x470fc0 skips an
+    /// attached child whose owner has it set.</summary>
+    private const int SkipFlagBit = 1;
 
     /// <summary>Ceilings: highlighted ROOT gobs per frame, and (roots + attached children) in total.
     /// Roots beyond the cap stay unhandled and get the engine glow instead of silently vanishing.
@@ -57,8 +49,6 @@ internal static unsafe class Highlight
     /// <c>::UpdateSelfIlluminationPulse</c> all call <c>Hilite(colour, 3, 1)</c>. Lowest-wins is why a
     /// Tab over a glowing creature shows the Tab colour.</para></summary>
     private const int HiliteChannels = 5;
-    private static readonly int AbActive = EngineLayout.AnimHiliteActive, AbGlow = EngineLayout.AnimHiliteGlow,
-                               AbGob = EngineLayout.AnimGob;
 
     /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
     /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. 4 is the
@@ -80,7 +70,8 @@ internal static unsafe class Highlight
     {
         _origRefreshHilite(animBase);
         if (animBase == IntPtr.Zero) return;
-        IntPtr gob = *(IntPtr*)(animBase + AbGob);
+        var anim = new CNWCAnimBase(animBase);
+        IntPtr gob = anim.Gob.Ptr;
         // #456: the trace goes AHEAD of the early return, not after it. Sited below, "no [hldiag] lines at
         // all" reads as "the hook never fired" when it may equally be "fired, published no gob" -- and on
         // Windows those two have completely different causes. The engine's own body takes the same branch
@@ -89,10 +80,11 @@ internal static unsafe class Highlight
         if (HlDiag) _log?.Info($"[hldiag] enter animBase={animBase:x} gob={gob:x}");
         if (gob == IntPtr.Zero) return;
         int win = -1;
+        Span<int> active = anim.HiliteActive, glow = anim.HiliteGlow;
         for (int c = 0; c < HiliteChannels && win < 0; c++)
-            if (*(int*)(animBase + AbActive + c * 4) != 0) win = c;
+            if (active[c] != 0) win = c;
         // Claimed only when the winner is ours AND the engine would publish a gob for it at all.
-        bool claim = win >= 0 && (HlChannels & (1 << win)) != 0 && *(int*)(animBase + AbGlow + win * 4) != 0;
+        bool claim = win >= 0 && (HlChannels & (1 << win)) != 0 && glow[win] != 0;
         int at = -1;
         for (int i = 0; i < _ownedHlN; i++) if (_ownedHl[i] == gob) { at = i; break; }
         if (claim)
@@ -101,11 +93,11 @@ internal static unsafe class Highlight
         }
         else if (at >= 0) _ownedHl[at] = _ownedHl[--_ownedHlN];
         if (HlDiag)
-            _log?.Info($"[hldiag] gob={gob:x} channel={win} glow={(win >= 0 ? *(int*)(animBase + AbGlow + win * 4) : 0)}"
+            _log?.Info($"[hldiag] gob={gob:x} channel={win} glow={(win >= 0 ? glow[win] : 0)}"
                        + $" -> {(claim ? "OWNED outline" : "engine glow")}");
     }
 
-    internal static delegate* unmanaged<IntPtr, void> _origRefreshHilite;
+    internal static RefreshHiliteFn _origRefreshHilite;
 
     /// <summary>Did the source hook claim this gob? A gob the hook never saw is not ours: the engine can put
     /// a gob in the highlight list by a path that never reaches <c>RefreshHilite</c>, and the safe verdict
@@ -236,7 +228,8 @@ internal static unsafe class Highlight
         HandledCount = 0;
         if (!Renderer.OutlineHighlight) return;
         IntPtr scene = _enrollScene;
-        if (scene == IntPtr.Zero || *(int*)(scene + SceneHlCount) == 0) return;
+        var sc = new Scene(scene);
+        if (scene == IntPtr.Zero || sc.HiliteCount == 0) return;
         if (PostChain.DepthTex == 0) return;
         if (!EnsureHighlightPrograms()) return;
 
@@ -249,10 +242,10 @@ internal static unsafe class Highlight
         byte* rootHit = stackalloc byte[MaxHlRoots];
         // Hoisted out of the loop: stackalloc in a loop grows the frame until return.
         IntPtr* list = stackalloc IntPtr[2];
-        int nGobs = *(int*)(scene + SceneHlCount);
+        int nGobs = sc.HiliteCount;
         if (nGobs > MaxHlRoots) nGobs = MaxHlRoots;
-        IntPtr* arr = *(IntPtr**)(scene + SceneHlGobs);
-        float* cols = (float*)*(IntPtr*)(scene + SceneHlColors);
+        IntPtr* arr = (IntPtr*)sc.HiliteGobs;
+        float* cols = (float*)sc.HiliteColors;
         int nT = 0;
         for (int i = 0; i < nGobs; i++)
         {
@@ -267,15 +260,16 @@ internal static unsafe class Highlight
             targetRoot[nT] = (byte)i;
             targets[nT++] = gob;
             list[0] = IntPtr.Zero; list[1] = IntPtr.Zero;
-            ((delegate* unmanaged<IntPtr, IntPtr, void>)(*(IntPtr*)(*(IntPtr*)gob + VtGobChildren)))(gob, (IntPtr)list);
+            new Gob(gob).GetAttachedGobs((IntPtr)list);
             int nc = (int)list[1];
             IntPtr* kids = (IntPtr*)list[0];
             for (int c = 0; c < nc && nT < MaxHlTargets; c++)
             {
                 IntPtr k = kids[c];
-                IntPtr skip = *(IntPtr*)(k + GobSkipPtr);
-                if (skip != IntPtr.Zero && (*(byte*)(skip + GobSkipFlag) & 1) != 0) continue;
-                if (*(byte*)(k + GobPropagate) == 0) continue;
+                var kid = new Gob(k);
+                Model skip = kid.Node;
+                if (!skip.IsNull && (skip.OwnerFlags & SkipFlagBit) != 0) continue;
+                if (kid.PropagateHilite == 0) continue;
                 targetRoot[nT] = (byte)i;
                 targets[nT++] = k;
             }

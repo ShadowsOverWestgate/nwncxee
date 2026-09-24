@@ -38,10 +38,7 @@ namespace CX.Services.Camera;
 public sealed unsafe class MouseLookService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static IntPtr* _next;
-    private static delegate* unmanaged<IntPtr, float, int, void> _turn, _tilt;
-    private static delegate* unmanaged<int, int> _setRelative;
-    private static delegate* unmanaged<IntPtr, int, int, void> _warp;
+    private static WinMessageHandlerFn* _next;
     private static readonly IntPtr _guiMan = Native.Sym(SymbolMap.GuiMan);
 
     // ---- SDL_Event layout (same rows UiInputService reads; motion adds the relative pair) ----
@@ -70,7 +67,7 @@ public sealed unsafe class MouseLookService : IExtenderService
     /// What <see cref="HeadTrackService"/> turns the head on.</summary>
     internal static bool ActionHeld => _action;
     private static int _cx, _cy;
-    private static delegate* unmanaged<int> _modState;
+    private static SdlGetModStateFn _modState;
     /// <summary>SDL <c>KMOD_LALT | KMOD_RALT</c>: the hold that frees the cursor.</summary>
     private const int KmodAlt = 0x300;
     private const uint SdlKeyDown = 0x300;
@@ -79,9 +76,9 @@ public sealed unsafe class MouseLookService : IExtenderService
     private const uint SdlkLAlt = 0x400000E2, SdlkRAlt = 0x400000E6;
     /// <summary>Alt as a toggle (the mode's <c>alttoggle</c>): the cursor is freed until the next Alt press.</summary>
     private static bool _altFree;
-    private static delegate* unmanaged<byte*, int> _keyFromName;
-    private static delegate* unmanaged<IntPtr, float, float, float, int, uint, int, int> _walkOrig;
-    private static delegate* unmanaged<IntPtr, IntPtr*, IntPtr, int*, int, int> _pickHostileOrig, _pickNonHostileOrig;
+    private static WalkPlayerToPointFn _walkOrig;
+    private static FeedbackHitCheckHostileFn _pickHostileOrig;
+    private static FeedbackHitCheckNonHostileFn _pickNonHostileOrig;
     private static int _walksRefused, _selfHidden;
     /// <summary>The toggle bind per camera mode: an SDL keycode, or a mouse button carried negative (-4 = X1,
     /// -5 = X2); 0 = none. Indexed by the engine mode byte, like <see cref="CameraModes.ByMode"/>.</summary>
@@ -96,24 +93,16 @@ public sealed unsafe class MouseLookService : IExtenderService
         if (!SymbolMap.Require(log, "MouseLook", SymbolMap.WinMessageHandler, SymbolMap.TurnCamera, SymbolMap.TiltCamera,
                                SymbolMap.SdlSetRelativeMouseMode, SymbolMap.SdlWarpMouseInWindow,
                                SymbolMap.GuiMan, SymbolMap.GuiObjectHitCheck, SymbolMap.GetModule, SymbolMap.AppManager)) return;
-        _turn = (delegate* unmanaged<IntPtr, float, int, void>)Native.Sym(SymbolMap.TurnCamera);
-        _tilt = (delegate* unmanaged<IntPtr, float, int, void>)Native.Sym(SymbolMap.TiltCamera);
-        _setRelative = (delegate* unmanaged<int, int>)Native.Sym(SymbolMap.SdlSetRelativeMouseMode);
-        _warp = (delegate* unmanaged<IntPtr, int, int, void>)Native.Sym(SymbolMap.SdlWarpMouseInWindow);
-        _modState = (delegate* unmanaged<int>)Native.Sym(SymbolMap.SdlGetModState);
-        _keyFromName = (delegate* unmanaged<byte*, int>)Native.Sym(SymbolMap.SdlGetKeyFromName);
+        _modState = EngineFn.SdlGetModState;
         Crosshair.Register();
         ActionKeyChanged();
         UiHost.AddChordConsumer(new ActionToggle());
         // The action camera's two refusals: no click-to-move, and the player is never what the crosshair picks.
         if (SymbolMap.Require(log, "MouseLook.action", SymbolMap.WalkPlayerToPoint, SymbolMap.FeedbackHitCheckHostile, SymbolMap.FeedbackHitCheckNonHostile))
         {
-            _walkOrig = (delegate* unmanaged<IntPtr, float, float, float, int, uint, int, int>)hooks.Install(SymbolMap.WalkPlayerToPoint,
-                (IntPtr)(delegate* unmanaged<IntPtr, float, float, float, int, uint, int, int>)&OnWalkPlayerToPoint);
-            _pickHostileOrig = (delegate* unmanaged<IntPtr, IntPtr*, IntPtr, int*, int, int>)hooks.Install(SymbolMap.FeedbackHitCheckHostile,
-                (IntPtr)(delegate* unmanaged<IntPtr, IntPtr*, IntPtr, int*, int, int>)&OnPickHostile);
-            _pickNonHostileOrig = (delegate* unmanaged<IntPtr, IntPtr*, IntPtr, int*, int, int>)hooks.Install(SymbolMap.FeedbackHitCheckNonHostile,
-                (IntPtr)(delegate* unmanaged<IntPtr, IntPtr*, IntPtr, int*, int, int>)&OnPickNonHostile);
+            _walkOrig = hooks.InstallWalkPlayerToPoint(&OnWalkPlayerToPoint);
+            _pickHostileOrig = hooks.InstallFeedbackHitCheckHostile(&OnPickHostile);
+            _pickNonHostileOrig = hooks.InstallFeedbackHitCheckNonHostile(&OnPickNonHostile);
             log.Info((_walkOrig == null || _pickHostileOrig == null || _pickNonHostileOrig == null)
                 ? "MouseLook: action camera refusals partly unhooked (walk/pick install refused) -- click-to-move or self-pick may survive it"
                 : "MouseLook: action camera hooks WalkPlayerToPoint + FeedbackHitCheck{Hostile,NonHostile}");
@@ -121,7 +110,7 @@ public sealed unsafe class MouseLookService : IExtenderService
         AimAssist.Init(log, hooks);
         ActionFeedback.Init(log, hooks);
 
-        _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 100);
+        _next = hooks.ChainWinMessageHandler(&OnWinMessage, 100);
         if (_next == null) { log.Info("MouseLook: standing down (WinMessageHandler chain refused)"); return; }
         _held = (byte*)NativeMemory.AllocZeroed(SdlEventSize);
         log.Info(!MouseLook.Enabled.V ? "MouseLook: chained, this mode's mouselook=0 -- the stock middle-drag runs until it is turned on"
@@ -154,7 +143,7 @@ public sealed unsafe class MouseLookService : IExtenderService
                 {
                     // The engine's own orbit button: it keeps the press, we keep the cursor.
                     _state = State.Looking; _looks++;
-                    _setRelative(1);
+                    EngineFn.SdlSetRelativeMouseMode(1);
                     return Forward(ev);
                 }
                 Buffer.MemoryCopy((void*)ev, _held, SdlEventSize, SdlEventSize);
@@ -168,7 +157,7 @@ public sealed unsafe class MouseLookService : IExtenderService
                     int threshold = MouseLook.Threshold.V;
                     if (dx * dx + dy * dy <= threshold * threshold) break;   // a still click so far: the engine tracks it
                     _state = State.Looking; _looks++;
-                    _setRelative(1);
+                    EngineFn.SdlSetRelativeMouseMode(1);
                     return 0;   // this event's delta already moved the (soon warped-back) cursor; start clean
                 }
                 if (CameraService.GateUp || FreeCameraService.Active) { Release(); return 0; }
@@ -177,8 +166,9 @@ public sealed unsafe class MouseLookService : IExtenderService
                 {
                     float w = ViewportWidth();
                     float k = MouseLook.Sens.V / w;
-                    _turn(module, *(int*)(ev + EvXRelOff) * TurnPerPx * k, 1);
-                    _tilt(module, *(int*)(ev + EvYRelOff) * TiltPerPx * k * (MouseLook.Invert.V ? -1f : 1f), 1);
+                    var mod = new CNWCModule(module);
+                    mod.TurnCamera(*(int*)(ev + EvXRelOff) * TurnPerPx * k, 1);
+                    mod.TiltCamera(*(int*)(ev + EvYRelOff) * TiltPerPx * k * (MouseLook.Invert.V ? -1f : 1f), 1);
                 }
                 return 0;
             case SdlMouseUp:
@@ -228,12 +218,12 @@ public sealed unsafe class MouseLookService : IExtenderService
         {
             if (_state != State.Idle) Release();
             ViewportCentre(out _cx, out _cy);
-            _setRelative(1); _actions++;
+            EngineFn.SdlSetRelativeMouseMode(1); _actions++;
         }
         else
         {
-            _setRelative(0);
-            _warp(IntPtr.Zero, _cx, _cy);   // the cursor appears where the engine believes it is
+            EngineFn.SdlSetRelativeMouseMode(0);
+            EngineFn.SdlWarpMouseInWindow(IntPtr.Zero, _cx, _cy);   // the cursor appears where the engine believes it is
         }
         _action = on;
         Crosshair.Visible = on;
@@ -253,8 +243,9 @@ public sealed unsafe class MouseLookService : IExtenderService
                 if (module != IntPtr.Zero)
                 {
                     float k = MouseLook.Sens.V / ViewportWidth();
-                    _turn(module, *(int*)(ev + EvXRelOff) * TurnPerPx * k, 1);
-                    _tilt(module, *(int*)(ev + EvYRelOff) * TiltPerPx * k * (MouseLook.Invert.V ? -1f : 1f), 1);
+                    var mod = new CNWCModule(module);
+                    mod.TurnCamera(*(int*)(ev + EvXRelOff) * TurnPerPx * k, 1);
+                    mod.TiltCamera(*(int*)(ev + EvYRelOff) * TiltPerPx * k * (MouseLook.Invert.V ? -1f : 1f), 1);
                 }
                 *(int*)(ev + EvXOff) = ax; *(int*)(ev + EvYOff) = ay;
                 *(int*)(ev + EvXRelOff) = 0; *(int*)(ev + EvYRelOff) = 0;
@@ -312,12 +303,12 @@ public sealed unsafe class MouseLookService : IExtenderService
         if (name.Length == 0) return 0;
         if (name.StartsWith("mouse", StringComparison.OrdinalIgnoreCase) && int.TryParse(name.AsSpan(5), out int btn) && btn is >= 1 and <= 5)
             return -btn;
-        if (_keyFromName == null) return 0;
+        if (EngineFn.SdlGetKeyFromName == null) return 0;
         // SDL_GetKeyFromName answers a one-character name with that character; a key event's sym is lower-case.
         if (name.Length == 1) name = name.ToLowerInvariant();
         byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(name + "\0");
         int code;
-        fixed (byte* p = utf8) code = _keyFromName(p);
+        fixed (byte* p = utf8) code = EngineFn.SdlGetKeyFromName(p);
         if (code == 0) _log?.Info($"MouseLook: actionkey '{name}' is not an SDL key name; nothing bound");
         return code;
     }
@@ -347,8 +338,8 @@ public sealed unsafe class MouseLookService : IExtenderService
     {
         if (_state == State.Looking)
         {
-            _setRelative(0);
-            _warp(IntPtr.Zero, _originX, _originY);   // NULL window = the one with mouse focus
+            EngineFn.SdlSetRelativeMouseMode(0);
+            EngineFn.SdlWarpMouseInWindow(IntPtr.Zero, _originX, _originY);   // NULL window = the one with mouse focus
         }
         _state = State.Idle;
     }
@@ -373,7 +364,7 @@ public sealed unsafe class MouseLookService : IExtenderService
         return w > 0 ? w : 1920f;
     }
 
-    private static int Forward(IntPtr ev) => ((delegate* unmanaged<IntPtr, int>)(*_next))(ev);
+    private static int Forward(IntPtr ev) => (*_next)(ev);
 
     /// <summary>The mouse-look line of the live mode's status.</summary>
     internal static string Report() =>

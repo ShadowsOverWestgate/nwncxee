@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -58,7 +59,9 @@ internal static unsafe class PartTable
     /// <summary>#330: <c>SuppressGCTransition</c> -- the callee is ~60 instructions of pure field reads
     /// (decompiled @0x4a6f70: three camera fields, three part fields, <c>BoxAbovePlane</c>) and it is asked
     /// once per lit part per frame, so the GC transition around a plain <c>calli</c> was a real share of the
-    /// Scan bracket. Legal because it never blocks, never calls back and never throws.</summary>
+    /// Scan bracket. Legal because it never blocks, never calls back and never throws.
+    /// <para>CX-39: hand-written on purpose -- the calling CONVENTION is the point of this pointer, and a
+    /// declared signature carries none.</para></summary>
     internal static delegate* unmanaged[SuppressGCTransition]<IntPtr, IntPtr, byte> _keyhole;
     internal static IntPtr _camSlot;   // &CurrentCamera; live CAurCamera* is *_camSlot
     /// <summary>The live <c>CAurCamera*</c>, or zero before the symbol resolved or while no camera renders.</summary>
@@ -67,8 +70,10 @@ internal static unsafe class PartTable
     /// bytes of padding after the enable byte ride along, and comparing more is only more conservative.</summary>
     internal const int CamKeyholeWords = 3;
 
-    internal static delegate* unmanaged<IntPtr, byte> _isOpaque, _hasEnvMap, _hasBumpyShiny;
-    internal static delegate* unmanaged<IntPtr, int, long> _getTexture;
+    internal static PartGetIsOpaqueFn _isOpaque;
+    internal static MatHasEnvMapFn _hasEnvMap;
+    internal static MatHasBumpyShinyMapFn _hasBumpyShiny;
+    internal static MatGetTextureFn _getTexture;
     internal static uint* _primTable;
     /// <summary><c>g_nEnableBumpyWater</c>: null (Windows, or a build without the symbol) leaves the
     /// bumpy-shiny route to water unrecognised, so only .mtr-declared water is owned. Never a misrender:
@@ -83,12 +88,14 @@ internal static unsafe class PartTable
     /// is missing (headless, or Windows), and nothing above may arm.</summary>
     internal static bool Resolve()
     {
-        _isOpaque = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.PartGetIsOpaque);
-        _hasEnvMap = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.MatHasEnvMap);
-        _hasBumpyShiny = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.MatHasBumpyShinyMap);
+        // Resolved ONCE into a static here rather than through EngineFn at the use site: these three are
+        // asked per part per frame, and a lazy compare in that loop is the cost the declaration removes.
+        _isOpaque = EngineFn.PartGetIsOpaque;
+        _hasEnvMap = EngineFn.MatHasEnvMap;
+        _hasBumpyShiny = EngineFn.MatHasBumpyShinyMap;
         IntPtr dv = Native.Sym(SymbolMap.PartDanglyMeshVtbl);
         _danglyVtbl = dv == IntPtr.Zero ? IntPtr.Zero : dv + VtblSymbolHeader;
-        _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
+        _getTexture = EngineFn.MatGetTexture;
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _bumpyWater = (int*)Native.Sym(SymbolMap.EnableBumpyWater);
         _keyhole = (delegate* unmanaged[SuppressGCTransition]<IntPtr, IntPtr, byte>)Native.Sym(SymbolMap.GetCanKeyholeDissolve);
@@ -294,11 +301,10 @@ internal static unsafe class PartTable
     /// emissive all zero) Z-fighting the real surface.</para></summary>
     internal static bool IsRenderable(IntPtr part)
     {
-        if (part == IntPtr.Zero || *(byte*)(part + EngineLayout.PartRenderFlag) == 0) return false;
-        IntPtr n = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
-        if (n == IntPtr.Zero || *(int*)(n + EngineLayout.MdlRenderGate) == 0) return false;
-        return *(short*)(n + EngineLayout.MdlRenderKind) != 0
-               || *(IntPtr*)(n + EngineLayout.MdlRenderGeom) != IntPtr.Zero;
+        if (part == IntPtr.Zero || new PartTriMesh(part).RenderFlag == 0) return false;
+        var n = new MdlNodeTriMesh(new Part(part).Node.Ptr);
+        if (n.IsNull || n.RenderGate == 0) return false;
+        return n.RenderKind != 0 || n.RenderGeom != IntPtr.Zero;
     }
 
     /// <summary>Off-device: the four branches of the renderable rule over a fake part + node. A rule that
@@ -311,16 +317,20 @@ internal static unsafe class PartTable
         for (int i = 0; i < 0x300; i++) node[i] = 0;
         IntPtr p = (IntPtr)part;
         bool ok = !IsRenderable(IntPtr.Zero) && !IsRenderable(p);          // flag clear, and a null part
-        part[EngineLayout.PartRenderFlag] = 1;
+        var pv = new PartTriMesh(p);
+        var nv = new MdlNodeTriMesh((IntPtr)node);
+        pv.RenderFlag = 1;
         ok &= !IsRenderable(p);                                            // flag set, no node
-        *(IntPtr*)(part + AlloyRenderer.PartMdlNode) = (IntPtr)node;
+        // Raw, and only here: a view of a TRANSIENT class hands out a COPY of the pointer, so there is no
+        // typed way to PLANT one -- which is the point, and this stand-in is the one place that needs to.
+        *(IntPtr*)(part + EngineLayout.PartNodeLink) = (IntPtr)node;
         ok &= !IsRenderable(p);                                            // node, gate 0
-        *(int*)(node + EngineLayout.MdlRenderGate) = 1;
+        nv.RenderGate = 1;
         ok &= !IsRenderable(p);                                            // kind 0 and no geometry
-        *(IntPtr*)(node + EngineLayout.MdlRenderGeom) = (IntPtr)1;
+        nv.RenderGeom = (IntPtr)1;
         ok &= IsRenderable(p);                                             // kind 0 but geometry present
-        *(IntPtr*)(node + EngineLayout.MdlRenderGeom) = IntPtr.Zero;
-        *(short*)(node + EngineLayout.MdlRenderKind) = 1;
+        nv.RenderGeom = IntPtr.Zero;
+        nv.RenderKind = 1;
         ok &= IsRenderable(p);                                             // kind set: geometry not asked
         if (!ok) log.Info("PartTable.RenderableSelfCheck: FAILED -- the IsPartRenderable rule disagrees with the decompile");
         return ok;

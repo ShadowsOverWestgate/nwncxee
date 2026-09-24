@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -311,7 +312,7 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _ciPerVdo = new int[MaxVdos];
     private static int _ciGeneration = 1, _ciCount;
     private static bool _ciOverflow;
-    private static IntPtr* _commitSlot;
+    private static VdoCommitItemDynamicDataFn* _commitSlot;
     private const int CommitPriority = 10;
     private static long _ciCommits, _ciOverflows;
 
@@ -354,8 +355,8 @@ public sealed unsafe partial class AlloyRenderer
     private static void OnCommitItemDynamicData(IntPtr vdo, uint item, uint flags)
     {
         NoteItemCommit(vdo, item);
-        if (_commitSlot != null && *_commitSlot != IntPtr.Zero)
-            ((delegate* unmanaged<IntPtr, uint, uint, void>)*_commitSlot)(vdo, item, flags);
+        if (_commitSlot != null && *_commitSlot != null)
+            (*_commitSlot)(vdo, item, flags);
     }
 
     /// <summary>The item table: a committed item is dirty, its pool-mates are not, a pool with no commit

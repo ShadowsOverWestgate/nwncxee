@@ -49,6 +49,8 @@ public sealed unsafe class CombatTextService : IExtenderService
     private struct ColourArg { public Vec3 V; }
 #endif
 
+    /// <summary>Left raw: the colour argument is a DIFFERENT type per ABI (<see cref="ColourArg"/>), so no single
+    /// <c>[Fn]</c> signature describes the symbol (CX-37).</summary>
     private static delegate* unmanaged<IntPtr, IntPtr, ColourArg, IntPtr, int, void> _origShowFloaty;
 
     /// <summary>The ShowFloatyText unit (#420): the funnel itself. Nameplates are a runtime prerequisite

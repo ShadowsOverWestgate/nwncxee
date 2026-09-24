@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Services.Hotkeys;
@@ -12,7 +13,7 @@ namespace CX.Services.Hotkeys;
 public sealed unsafe class HotkeyServerLinkService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, byte*, uint, uint> _inboundOrig;
+    private static HandleServerToPlayerMessageFn _inboundOrig;
 
     /// <summary>
     /// A server asking to track an implausible number of keys is refused wholesale, to bound a
@@ -27,8 +28,7 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         if (!SymbolMap.Require(log, "HotkeyServerLinkService", HotkeyProtocol.RequiredSymbols)) return;
         HotkeyConsent.Init(_log!);
         SelfCheck();   // the fail-closed consent policy is security-critical; verify it at startup
-        _inboundOrig = (delegate* unmanaged<IntPtr, byte*, uint, uint>)hooks.Install(
-            SymbolMap.HandleServerToPlayerMessage, (IntPtr)(delegate* unmanaged<IntPtr, byte*, uint, uint>)&OnInbound);
+        _inboundOrig = hooks.InstallHandleServerToPlayerMessage(&OnInbound);
     }
 
     // The engine frames every server->client message as ['P'][major][minor][payload...]

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -15,13 +16,13 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#284: the engine's lazy VAO builder, and the ARRAY_BUFFER shadow it early-outs against.
     /// Both may be null on a client whose symbols did not resolve -- the drip then simply does not run and
     /// the refusal is reported exactly as it was before.</summary>
-    private static delegate* unmanaged<IntPtr, void> _setVdo;
+    private static GlSetVertexDataObjectFn _setVdo;
     private static uint* _arrayBound;
 
     /// <summary>Resolve the two symbols the VAO drip drives the engine through.</summary>
     private static void ResolveVaoDrip(ExtenderLog log)
     {
-        _setVdo = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GlSetVertexDataObject);
+        _setVdo = EngineFn.GlSetVertexDataObject;
         _arrayBound = (uint*)Native.Sym(SymbolMap.GlArrayBufferBound);
         if (_setVdo == null || _arrayBound == null)
             log.Info("AlloyRenderer: " +

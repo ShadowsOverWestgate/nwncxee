@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -45,9 +46,9 @@ internal static unsafe partial class Particles
         // ---- the UV grid, including the wrap in both directions.
         var pt = stackalloc byte[0x80];
         for (int i = 0; i < 0x80; i++) pt[i] = 0;
-        IntPtr q = (IntPtr)pt;
+        var q = new Particle((IntPtr)pt);
         float u0, u1, v0, v1;
-        *(int*)(pt + PFrame) = 5;                       // 4x2 grid: frame 5 = column 1, row 1
+        q.Frame = 5;                                    // 4x2 grid: frame 5 = column 1, row 1
         Frame(q, 0f, 0f, 0f, 0.25f, 0.5f, 4, 8, out u0, out u1, out v0, out v1);
         // the inset is deliberately included in the tolerance: the cell is right, the read is pulled inside it
         float ins = 0.25f * CellInset, insV = 0.5f * CellInset;
@@ -60,34 +61,33 @@ internal static unsafe partial class Particles
         // Containment: an index outside the frames the emitter declared can never select a cell. This is the
         // "no foreign artwork, whatever the index says" guarantee, and it has to hold in both orientations
         // and against the atlas size as well as against the declared range.
-        *(int*)(pt + PFrame) = 900;                     // far past anything a 4x2 atlas could hold
+        q.Frame = 900;                                  // far past anything a 4x2 atlas could hold
         Frame(q, 0f, 2f, 5f, 0.25f, 0.5f, 4, 8, out u0, out u1, out v0, out v1);
         check.Expect(u0 >= 0.25f && u1 <= 0.5f && v0 >= 0f && v1 <= 0.5f,
           "a wild frame index lands on the emitter's LAST declared cell, never outside the atlas");
-        *(int*)(pt + PFrame) = -7;
+        q.Frame = -7;
         Frame(q, 0f, 2f, 5f, 0.25f, 0.5f, 4, 8, out u0, out u1, out v0, out v1);
         check.Expect(u0 >= 0.5f && u1 <= 0.75f && v0 >= 0.5f && v1 <= 1.0f,
           "...and a negative one lands on the FIRST, which for start=2 is column 2 of the top row");
         // ...but an emitter that declares NO range keeps its per-particle index, bounded only by the atlas.
-        *(int*)(pt + PFrame) = 6;
+        q.Frame = 6;
         Frame(q, 0f, 0f, 0f, 0.25f, 0.5f, 4, 8, out u0, out u1, out v0, out v1);
         check.Expect(u0 >= 0.5f && u1 <= 0.75f && v0 >= 0f && v1 <= 0.5f,
           "equal frame ends mean NO animation, not one frame -- the index still picks the cell");
-        *(int*)(pt + PFrame) = 900;
+        q.Frame = 900;
         Frame(q, 0f, 0f, 0f, 0.25f, 0.5f, 4, 8, out u0, out u1, out v0, out v1);
         check.Expect(u0 >= 0.75f && u1 <= 1.0f && v0 >= 0f && v1 <= 0.5f,
           "...and it is still bounded by the ATLAS, which is the guarantee that matters");
-        *(int*)(pt + PFrame) = 5;
-        *(int*)(pt + PFrame) = 3; *(float*)(pt + PAge) = 1f; *(float*)(pt + PFrameTime) = 0f;
+        q.Frame = 3; q.Age = 1f; q.FrameTime = 0f;
         Frame(q, 0.5f, 0f, 3f, 0.25f, 0.5f, 4, 8, out _, out _, out _, out _);
-        check.Expect(*(int*)(pt + PFrame) == 0, "an ascending grid past its end frame wraps back to the start frame");
-        check.Expect(*(float*)(pt + PFrameTime) == 1f, "...and the step stamps the age, or it advances every frame");
-        *(int*)(pt + PFrame) = 1; *(float*)(pt + PAge) = 1f; *(float*)(pt + PFrameTime) = 0f;
+        check.Expect(q.Frame == 0, "an ascending grid past its end frame wraps back to the start frame");
+        check.Expect(q.FrameTime == 1f, "...and the step stamps the age, or it advances every frame");
+        q.Frame = 1; q.Age = 1f; q.FrameTime = 0f;
         Frame(q, 0.5f, 3f, 0f, 0.25f, 0.5f, 4, 8, out _, out _, out _, out _);
-        check.Expect(*(int*)(pt + PFrame) == 3, "a descending grid past its end frame wraps the other way");
-        *(int*)(pt + PFrame) = 2; *(float*)(pt + PAge) = 0.1f; *(float*)(pt + PFrameTime) = 0f;
+        check.Expect(q.Frame == 3, "a descending grid past its end frame wraps the other way");
+        q.Frame = 2; q.Age = 0.1f; q.FrameTime = 0f;
         Frame(q, 0.5f, 0f, 3f, 0.25f, 0.5f, 4, 8, out _, out _, out _, out _);
-        check.Expect(*(int*)(pt + PFrame) == 2, "a particle that has not held its frame long enough does not advance");
+        check.Expect(q.Frame == 2, "a particle that has not held its frame long enough does not advance");
 
         // ---- the zero-motion guard. rsqrt(0) is +inf, and inf * a direction is a NaN quad: the particle
         // silently vanishes rather than standing still.

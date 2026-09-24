@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -23,9 +24,6 @@ internal static unsafe class AreaBorder
     /// past each far one, and LoadArea sizes the BSP with <c>InitBSP(w, h, 5)</c>.</summary>
     internal const int EngineRing = 5;
     internal const int DefaultRing = 15, MaxRing = 40;
-    /// <summary>CNWCArea -&gt; tile grid width (+0xc) and height (+0x10): LoadBorder multiplies exactly these
-    /// for the tile count and bounds its strip loops on them.</summary>
-    private static readonly int AreaWidth = EngineLayout.AreaTileWidth, AreaHeight = EngineLayout.AreaTileHeight;
     /// <summary><c>CNWTile::TILE_WIDTH</c> / <c>TILE_LENGTH</c> @0x1311850 = 10.0, and the half-tile the border
     /// loop adds (DAT_013ee9e8 = 5.0): grid <c>(i, j)</c> spawns at <c>(i*10+5, j*10+5)</c>.</summary>
     internal const float TileSize = 10f, TileHalf = 5f;
@@ -36,12 +34,12 @@ internal static unsafe class AreaBorder
     /// which a SpawnTile or DeleteTile is a ring tile.</summary>
     private static IntPtr _area;
     private static int _spawned, _replayed, _deleted, _areas;
-    private static delegate* unmanaged<IntPtr, IntPtr, float, int> _origLoad;
-    private static delegate* unmanaged<IntPtr, void> _origReload;
-    private static delegate* unmanaged<IntPtr, int, int, int, byte, float, void> _origInitBsp;
-    private static delegate* unmanaged<IntPtr, byte*, Vector3*, int, int, IntPtr, IntPtr> _origSpawn;
-    private static delegate* unmanaged<IntPtr, Vector3*, void> _origDelete;
-    private static delegate* unmanaged<IntPtr, Vector3*, IntPtr> _tileData;
+    private static AreaLoadBorderFn _origLoad;
+    private static AreaReloadBorderFn _origReload;
+    private static SceneInitBspFn _origInitBsp;
+    private static SceneSpawnTileFn _origSpawn;
+    private static SceneDeleteTileFn _origDelete;
+    private static SceneBspGetTileDataFn _tileData;
 
     internal static int Ring => _ring;
 
@@ -51,17 +49,12 @@ internal static unsafe class AreaBorder
         // Restart knob: Boot -- the ring is binned at area load from what this session started with.
         _ring = Renderer.Border.Boot;
         if (_ring == EngineRing) { log.Info("AreaBorder: alloy.border=5 is the engine's own ring -- nothing to widen"); return; }
-        _tileData = (delegate* unmanaged<IntPtr, Vector3*, IntPtr>)Native.Sym(SymbolMap.SceneBspGetTileData);
-        _origLoad = (delegate* unmanaged<IntPtr, IntPtr, float, int>)hooks.Install(
-            SymbolMap.AreaLoadBorder, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, float, int>)&OnLoadBorder);
-        _origReload = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.AreaReloadBorder, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnReloadBorder);
-        _origInitBsp = (delegate* unmanaged<IntPtr, int, int, int, byte, float, void>)hooks.Install(
-            SymbolMap.SceneInitBsp, (IntPtr)(delegate* unmanaged<IntPtr, int, int, int, byte, float, void>)&OnInitBsp);
-        _origSpawn = (delegate* unmanaged<IntPtr, byte*, Vector3*, int, int, IntPtr, IntPtr>)hooks.Install(
-            SymbolMap.SceneSpawnTile, (IntPtr)(delegate* unmanaged<IntPtr, byte*, Vector3*, int, int, IntPtr, IntPtr>)&OnSpawnTile);
-        _origDelete = (delegate* unmanaged<IntPtr, Vector3*, void>)hooks.Install(
-            SymbolMap.SceneDeleteTile, (IntPtr)(delegate* unmanaged<IntPtr, Vector3*, void>)&OnDeleteTile);
+        _tileData = EngineFn.SceneBspGetTileData;
+        _origLoad = hooks.InstallAreaLoadBorder(&OnLoadBorder);
+        _origReload = hooks.InstallAreaReloadBorder(&OnReloadBorder);
+        _origInitBsp = hooks.InstallSceneInitBsp(&OnInitBsp);
+        _origSpawn = hooks.InstallSceneSpawnTile(&OnSpawnTile);
+        _origDelete = hooks.InstallSceneDeleteTile(&OnDeleteTile);
         if (_tileData == null || _origLoad == null || _origReload == null || _origInitBsp == null
             || _origSpawn == null || _origDelete == null)
         {
@@ -150,7 +143,7 @@ internal static unsafe class AreaBorder
     /// corner tile replays along both -- which is what makes every outer cell the replay of exactly ONE
     /// engine tile (its clamp onto the engine ring). Grid width and height come off the live area.</summary>
     private static void Steps(Vector3 p, out int sx, out int sy)
-        => Steps(p, *(int*)(_area + AreaWidth), *(int*)(_area + AreaHeight), out sx, out sy);
+        => Steps(p, new CNWCArea(_area).TileWidth, new CNWCArea(_area).TileHeight, out sx, out sy);
 
     internal static void Steps(Vector3 p, int w, int h, out int sx, out int sy)
     {

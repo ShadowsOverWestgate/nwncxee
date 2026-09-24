@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -16,7 +17,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Outermost on the send: the lightmap hold chains at 0 and may swallow the message, and this
     /// handler must have raised its flag before that happens.</summary>
     private const int AreaLoadedPriority = 50;
-    private static IntPtr* _areaLoadedSlot;
+    private static SendAreaLoadedFn* _areaLoadedSlot;
 
     /// <summary>Raised on the game thread inside message handling, consumed at the render-thread frame
     /// anchor: the revoke walks tables the draw side reads and tears down pass state, and the middle of a
@@ -27,7 +28,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void OnSendAreaLoaded(IntPtr msg)
     {
         _areaEdgePending = true;
-        if (_areaLoadedSlot != null) ((delegate* unmanaged<IntPtr, void>)*_areaLoadedSlot)(msg);
+        if (_areaLoadedSlot != null) (*_areaLoadedSlot)(msg);
     }
 
     /// <summary>Consumed at the frame anchor, ahead of the world walk and the enrolment that refill

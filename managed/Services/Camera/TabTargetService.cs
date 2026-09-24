@@ -58,14 +58,9 @@ public sealed unsafe class TabTargetService : IExtenderService
 {
     private static ExtenderLog? _log;
     private static bool _ready;
-    private static IntPtr* _next;
-    private static delegate* unmanaged<IntPtr, IntPtr, int> _defaultActionOrig;
-    private static delegate* unmanaged<IntPtr, int, int, int, int, IntPtr> _guiHitOrig;
-    private static delegate* unmanaged<int*, byte*> _keyboardState;
-    private static delegate* unmanaged<byte*, int> _keyFromName;
-    private static delegate* unmanaged<int> _modState;
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
-        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
+    private static WinMessageHandlerFn* _next;
+    private static PerformDefaultActionOnObjectFn _defaultActionOrig;
+    private static GuiObjectHitCheckFn _guiHitOrig;
     private static IntPtr _colEnemy, _colFriend, _colNeutral, _colPlaceable, _colDoor;
 
     /// <summary>Between the mouse-look layer (100) and the framework input layer (0).</summary>
@@ -131,7 +126,7 @@ public sealed unsafe class TabTargetService : IExtenderService
         CameraKnobs.Declare();
         TabTargetCore.SelfCheck(log);
         TabTarget.G.Status = Report;
-        if (_getGameObject == null) return;
+        if (EngineFn.GetGameObject == null) return;
         if (!EngineLayout.Require(log, "TabTarget", "CNWCObject", "CNWCArea", "CNWCCreature", "CGameObject", "CClientExoAppInternal",
                                   "CActionTarget", "Camera", "CNWCModule", "CClientExoApp", "CGuiMan")) return;
         if (!SymbolMap.Require(log, "TabTarget", SymbolMap.WinMessageHandler, SymbolMap.PerformDefaultActionOnObject,
@@ -142,17 +137,12 @@ public sealed unsafe class TabTargetService : IExtenderService
         if (!AimAssist.Ready || !MouseLookService.PicksHooked)
         { log.Info("TabTarget: standing down (the action camera's target-mode or pick hooks are not up)"); return; }
 
-        _keyboardState = (delegate* unmanaged<int*, byte*>)Native.Sym(SymbolMap.SdlGetKeyboardState);
-        _keyFromName = (delegate* unmanaged<byte*, int>)Native.Sym(SymbolMap.SdlGetKeyFromName);
-        _modState = (delegate* unmanaged<int>)Native.Sym(SymbolMap.SdlGetModState);
         _colEnemy = Native.Sym(SymbolMap.HiliteEnemy); _colFriend = Native.Sym(SymbolMap.HiliteFriend);
         _colNeutral = Native.Sym(SymbolMap.HiliteNeutral); _colPlaceable = Native.Sym(SymbolMap.HilitePlaceable);
         _colDoor = Native.Sym(SymbolMap.HiliteDoor);
-        _defaultActionOrig = (delegate* unmanaged<IntPtr, IntPtr, int>)hooks.Install(SymbolMap.PerformDefaultActionOnObject,
-            (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int>)&OnDefaultAction);
-        _guiHitOrig = (delegate* unmanaged<IntPtr, int, int, int, int, IntPtr>)hooks.Install(SymbolMap.GuiObjectHitCheck,
-            (IntPtr)(delegate* unmanaged<IntPtr, int, int, int, int, IntPtr>)&OnGuiHitCheck);
-        _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, ChainPriority);
+        _defaultActionOrig = hooks.InstallPerformDefaultActionOnObject(&OnDefaultAction);
+        _guiHitOrig = hooks.InstallGuiObjectHitCheck(&OnGuiHitCheck);
+        _next = hooks.ChainWinMessageHandler(&OnWinMessage, ChainPriority);
         if (_defaultActionOrig == null || _guiHitOrig == null || _next == null)
         { log.Info("TabTarget: standing down (a hook install was refused)"); return; }
         KeysChanged();
@@ -182,7 +172,7 @@ public sealed unsafe class TabTargetService : IExtenderService
         int sym = *(int*)(ev + EvSymOff);
         if (_cycleCode != 0 && sym == _cycleCode)
         {
-            Cycle((_modState() & KmodShift) != 0);
+            Cycle((EngineFn.SdlGetModState() & KmodShift) != 0);
             return 0;
         }
         if (_clearCode != 0 && sym == _clearCode && Lock != 0)
@@ -265,9 +255,9 @@ public sealed unsafe class TabTargetService : IExtenderService
     private static CNWCObject Resolve(IntPtr app, uint id, out byte kind)
     {
         kind = 0;
-        IntPtr go = _getGameObject(app, id);
-        if (go == IntPtr.Zero) return default;
-        var obj = new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(go).AsNWCObjectFn)(go));
+        CGameObject go = new CClientExoApp(app).GetGameObject(id);
+        if (go.IsNull) return default;
+        CNWCObject obj = go.AsNWCObject();
         if (obj.IsNull) return default;
         kind = obj.Type;
         return kind is TabTargetCore.TypeCreature or TabTargetCore.TypePlaceable or TabTargetCore.TypeDoor ? obj : default;
@@ -280,7 +270,7 @@ public sealed unsafe class TabTargetService : IExtenderService
         CNWCObject obj = Resolve(app, id, out kind);
         if (obj.IsNull || obj.Visible == 0) return default;
         CNWCObject hil = kind != TabTargetCore.TypePlaceable ? obj
-            : new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(obj.Ptr).AsNWCPlaceableFn)(obj.Ptr));
+            : new CGameObject(obj.Ptr).AsNWCPlaceable();
         return hil.IsNull || hil.Highlightable == 0 ? default : obj;
     }
 
@@ -335,7 +325,7 @@ public sealed unsafe class TabTargetService : IExtenderService
         if (!InView(module, obj)) { Clear(); _drops++; return; }
         Hilite(obj, kind);
         // The Tab plate: MouseOver(1) is a no-op while the plate is already up, so per frame is free.
-        ((delegate* unmanaged<IntPtr, int, void>)obj.MouseOverFn)(obj.Ptr, 1);
+        obj.MouseOver(1);
     }
 
     /// <summary>Is the object's ground point inside the viewport? A target that left the screen (the player turned
@@ -374,12 +364,12 @@ public sealed unsafe class TabTargetService : IExtenderService
         uint id = Lock;
         IntPtr app = CameraService.App();
         if (id == 0 || app == IntPtr.Zero) return;
-        IntPtr go = _getGameObject(app, id);
-        if (go == IntPtr.Zero) return;
-        var obj = new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(go).AsNWCObjectFn)(go));
+        CGameObject go = new CClientExoApp(app).GetGameObject(id);
+        if (go.IsNull) return;
+        CNWCObject obj = go.AsNWCObject();
         if (obj.IsNull) return;
-        ((delegate* unmanaged<IntPtr, byte, int>)obj.UnHiliteFn)(obj.Ptr, LockChannel);
-        ((delegate* unmanaged<IntPtr, void>)obj.MouseOffFn)(obj.Ptr);
+        obj.UnHilite(LockChannel);
+        obj.MouseOff();
     }
 
     // ---- click-to-lock ----
@@ -432,7 +422,7 @@ public sealed unsafe class TabTargetService : IExtenderService
     private static void Arm(IntPtr self)
     {
         int n = 0;
-        byte* state = _keyboardState(&n);
+        byte* state = EngineFn.SdlGetKeyboardState(&n);
         int key = _lastKeyDown;
         _pendingKey = key > 0 && key < n && state[key] != 0 ? key : 0;
         _pending = self;
@@ -501,13 +491,13 @@ public sealed unsafe class TabTargetService : IExtenderService
     private static int Code(string? name)
     {
         name = (name ?? "").Trim();
-        if (name.Length == 0 || _keyFromName == null) return 0;
+        if (name.Length == 0 || EngineFn.SdlGetKeyFromName == null) return 0;
         // SDL_GetKeyFromName answers a one-character name with that character, but a key event's sym is the
         // LOWER-case letter: "F" would never match the F key.
         if (name.Length == 1) name = name.ToLowerInvariant();
         byte[] utf8 = System.Text.Encoding.UTF8.GetBytes(name + "\0");
         int code;
-        fixed (byte* p = utf8) code = _keyFromName(p);
+        fixed (byte* p = utf8) code = EngineFn.SdlGetKeyFromName(p);
         if (code == 0) _log?.Info($"TabTarget: '{name}' is not an SDL key name; nothing bound");
         return code;
     }
@@ -520,7 +510,7 @@ public sealed unsafe class TabTargetService : IExtenderService
         Clear();
     }
 
-    private static int Forward(IntPtr ev) => ((delegate* unmanaged<IntPtr, int>)(*_next))(ev);
+    private static int Forward(IntPtr ev) => (*_next)(ev);
 
     private static string Report() => !_ready ? "stood down"
         : FormattableString.Invariant($"{(TabTarget.Enabled.V ? "on" : "off")}, cast {TabTarget.Cast.Choices[Math.Max(0, TabTarget.Cast.ChoiceIndex)]}; lock {(Lock == 0 ? "none" : $"0x{Lock:x}")}, camera {_aim}, pending {(_pending == IntPtr.Zero ? "no" : "yes")}; {_cycles} cycle(s), {_clicks} click-lock(s), {_clears} clear(s), {_drops} dropped off-screen; fired {_lockFires} at the lock, {_cursorFires} at the cursor, {_releaseFires} on release");

@@ -129,13 +129,24 @@ loading, discovery, install ordering -- is done for you.
 
 ## Engine memory reads
 
-Outside Alloy, read engine fields through the typed views in `CX.Engine`
+Read engine fields through the typed views in `CX.Engine`
 (`new CNWCCreature(obj).Stats.FirstName`), not `*(T*)(ptr + EngineLayout.X)`.
 A view member exists once its row is typed: `Field<T>` in `EngineLayout.cs`, where `T` is
-the primitive, or the target's view for a pointer to a class. `build.sh` regenerates
-`Framework/Engine/Views.g.cs` (`tools/engine/views.py`); never edit it by hand, and settle a
-merge conflict in it by rerunning the script. **Touch a file, port its reads** -- no backlog
-beyond that (CX-30). Alloy's hot loops stay on raw pointers.
+the primitive, the target's view for a pointer to a class, or a value type (`Quat`);
+`count: n` makes it an embedded array (`Span<T>`). A class the engine frees under us is
+listed `TRANSIENT` in the generator and its view is a `ref struct` (#193). Concept members
+go in a hand-written `partial` of the view.
+
+Call engine functions the same way: the signature is declared once, `[Fn("R(T name, ...)")]` on
+the `SymbolMap` symbol or `sig:` on a `vtbl.*` row, and the generator emits `EngineFn.X`, the
+`XFn` pointer type, `hooks.InstallX(&OnX)` / `hooks.ChainX(...)`, and `view.X(...)` for a
+`View this` first parameter; `sret(View this, ...)` orders the hidden buffer per OS. No
+hand-written `delegate* unmanaged` outside `Graphics/Gl.cs` unless its signature differs per OS.
+
+`build.sh` regenerates `Framework/Engine/Views.g.cs` (`tools/engine/views.py`); never edit it
+by hand, and settle a merge conflict in it by rerunning the script. **Touch a file, port its
+reads** -- no backlog beyond that (CX-30). Views inline to the raw load, so hot loops use them
+too; resolve an `EngineFn` pointer once into a static field there.
 
 ## Comment rule
 

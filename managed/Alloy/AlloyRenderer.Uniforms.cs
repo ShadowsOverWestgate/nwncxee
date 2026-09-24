@@ -1,6 +1,8 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -30,18 +32,17 @@ public sealed unsafe partial class AlloyRenderer
     internal static string DescribeWind()
     {
         var w = AreaWind();
-        float z = _runtime == null ? 0f : *(float*)(_runtime + RtAreaWind + 8);
-        int t = _runtime == null ? 0 : *(int*)(_runtime + RtTimeOfDay);
+        float z = _runtime == null ? 0f : Rt.AreaWind.Z;
+        int t = _runtime == null ? 0 : Rt.TimeOfDay;
         return $"wind raw={w.Length():F3} (x={w.X:F3} y={w.Y:F3} z={z:F3}) timeofday={t}";
     }
 
     /// <summary>The engine's world clock as the shaders see it, for the census. Everything time-varying in
     /// an owned stage derives from this int, so a frozen value is a frozen world.</summary>
-    internal static int TimeOfDay => _runtime == null ? 0 : *(int*)(_runtime + RtTimeOfDay);
+    internal static int TimeOfDay => _runtime == null ? 0 : Rt.TimeOfDay;
 
     private static Vector2 AreaWind()
-        => _runtime == null ? default
-         : new Vector2(*(float*)(_runtime + RtAreaWind), *(float*)(_runtime + RtAreaWind + 4));
+        => _runtime == null ? default : new Vector2(Rt.AreaWind.X, Rt.AreaWind.Y);
 
     /// <summary>#132: the scene's fog colour, linearised. The block stores it display-space -- the stock
     /// shaders lerp toward it AFTER RevertColorSpace -- and the Alloy frame is linear end to end, so the
@@ -86,7 +87,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform4f(loc.FogOrigin, origin.X, origin.Y, origin.Z, radial ? 1f : 0f);
         // The height layer is anchored to the player's feet: an area carries no ground plane to read, and
         // the runtime block is where the engine keeps the one position that tracks them.
-        float playerZ = _runtime == null ? 0f : ((float*)(_runtime + RtPlayerPos))[2];
+        float playerZ = _runtime == null ? 0f : Rt.PlayerPos.Z;
         SceneFog.Upload(loc, playerZ, _capturing);
     }
 
@@ -112,14 +113,15 @@ public sealed unsafe partial class AlloyRenderer
         UploadTargetShape(loc);
         UploadVanillaEnv(loc);
         if (_runtime == null) return;
-        Gl.Uniform1i(loc.Time, *(int*)(_runtime + RtTimeOfDay));
+        ShaderExposedRuntimeData rt = Rt;
+        Gl.Uniform1i(loc.Time, rt.TimeOfDay);
 
-        Gl.Uniform3fv(loc.Wind, 1, (float*)(_runtime + RtAreaWind));
-        Gl.Uniform1i(loc.Flags, *(int*)(_runtime + RtAreaFlags));
-        Gl.Uniform3fv(loc.Cam, 1, (float*)(_runtime + RtCamPos));
-        Gl.Uniform3fv(loc.CamFocus, 1, (float*)(_runtime + RtCamFocus));
-        Gl.Uniform3fv(loc.Player, 1, (float*)(_runtime + RtPlayerPos));
-        px[0] = *(float*)(_runtime + RtCamDist); px[1] = *(float*)(_runtime + RtCamPitch);
+        Gl.Uniform3fv(loc.Wind, 1, (float*)Unsafe.AsPointer(ref rt.AreaWind));
+        Gl.Uniform1i(loc.Flags, rt.AreaFlags);
+        Gl.Uniform3fv(loc.Cam, 1, (float*)Unsafe.AsPointer(ref rt.CamPos));
+        Gl.Uniform3fv(loc.CamFocus, 1, (float*)Unsafe.AsPointer(ref rt.CamFocus));
+        Gl.Uniform3fv(loc.Player, 1, (float*)Unsafe.AsPointer(ref rt.PlayerPos));
+        px[0] = rt.CamDist; px[1] = rt.CamPitch;
         Gl.Uniform2fv(loc.KhCam, 1, px);
     }
 

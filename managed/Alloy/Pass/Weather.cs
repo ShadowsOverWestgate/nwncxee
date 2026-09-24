@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -21,18 +22,16 @@ internal static unsafe partial class Weather
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled;
     internal static readonly Knob<string> RainRows, SnowRows, SnowSkip;
-    private static delegate* unmanaged<IntPtr, IntPtr, IntPtr> _origTileSet;
+    private static TileSetGetFn _origTileSet;
     private static string _tileset = "";
     /// <summary>The current area's tileset is on the no-cover list: its tiles carry their own snow.</summary>
     internal static bool TilesetSkipsSnow;
 
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, byte, float, int> _origSet;
-    private static delegate* unmanaged<IntPtr, byte, void> _origStart, _origStop;
+    private static AreaSetWeatherFn _origSet;
+    private static AreaStartWeatherFn _origStart;
+    private static AreaStopWeatherFn _origStop;
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr> _getModule =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
-    private static readonly int ModuleArea = EngineLayout.ModuleCurrentArea;
     private static bool _off;
     /// <summary>Row -> kind, 32 rows: weathertypes.2da has 11 on SoW, 3 stock.</summary>
     private static readonly Kind[] _kinds = new Kind[32];
@@ -110,16 +109,12 @@ internal static unsafe partial class Weather
         _log = log;
         if (!SymbolMap.Require(log, "Weather", SymbolMap.AreaSetWeather, SymbolMap.AppManager, SymbolMap.GetModule))
         { _off = true; return; }
-        _origSet = (delegate* unmanaged<IntPtr, byte, float, int>)hooks.Install(
-            SymbolMap.AreaSetWeather, (IntPtr)(delegate* unmanaged<IntPtr, byte, float, int>)&OnSetWeather);
+        _origSet = hooks.InstallAreaSetWeather(&OnSetWeather);
         if (_origSet == null) { _off = true; log.Info("Weather: SetWeather did not hook -- weather stays vanilla"); return; }
-        _origStart = (delegate* unmanaged<IntPtr, byte, void>)hooks.Install(
-            SymbolMap.AreaStartWeather, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnStartWeather);
-        _origStop = (delegate* unmanaged<IntPtr, byte, void>)hooks.Install(
-            SymbolMap.AreaStopWeather, (IntPtr)(delegate* unmanaged<IntPtr, byte, void>)&OnStopWeather);
+        _origStart = hooks.InstallAreaStartWeather(&OnStartWeather);
+        _origStop = hooks.InstallAreaStopWeather(&OnStopWeather);
         if (SymbolMap.Require(log, "Weather", SymbolMap.TileSetGet))
-            _origTileSet = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)hooks.Install(
-                SymbolMap.TileSetGet, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr>)&OnGetTileSet);
+            _origTileSet = hooks.InstallTileSetGet(&OnGetTileSet);
         InstallDraw(log);
         log.Info($"Weather: armed and {(Enabled.V ? "ON" : "IDLE")} -- rain rows {RainRows.V}, snow rows {SnowRows.V}");
     }
@@ -180,11 +175,12 @@ internal static unsafe partial class Weather
         if (_off || _origSet == null || Type == 0 || Density <= 0f) return;
         IntPtr mgr = _appMgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)_appMgr;
         IntPtr app = mgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)mgr;
-        IntPtr mod = app == IntPtr.Zero ? IntPtr.Zero : _getModule(app);
-        IntPtr area = mod == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(mod + ModuleArea);
+        CNWCModule mod = app == IntPtr.Zero ? default : new CClientExoApp(app).GetModule();
+        IntPtr area = mod.IsNull ? IntPtr.Zero : mod.CurrentArea.Ptr;
         if (area == IntPtr.Zero || area != _area) return;
         // Through the hook, so the capture and the silence decision are the one code path.
-        ((delegate* unmanaged<IntPtr, byte, float, int>)&OnSetWeather)(area, Type, Density * 100f);
+        AreaSetWeatherFn set = &OnSetWeather;
+        set(area, Type, Density * 100f);
     }
 
     internal static string Describe() => _off ? "UNAVAILABLE"

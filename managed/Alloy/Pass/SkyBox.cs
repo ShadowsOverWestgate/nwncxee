@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -39,40 +40,15 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class SkyBox
 {
-    /// <summary>Scene fields, all Ghidra <c>Scene::RenderSkyBoxes</c> / <c>SetSkyBox</c> @0x45e260 /
-    /// <c>SetSkyAlpha</c> @0x45f100: four skybox gobs from +0x18, the cross-fade gob at +0x38, the fade
-    /// parameter t at +0x40, the current and desired slot indices (-1 = none) at +0x44/+0x48, and the
-    /// "skybox off" byte at +0x4c that <c>TurnOffSkyBox</c> sets.</summary>
-    private static readonly int SceneGobs = EngineLayout.SceneSkyGobs, SceneFadeGob = EngineLayout.SceneSkyFadeGob,
-                               SceneT = EngineLayout.SceneSkyT, SceneCur = EngineLayout.SceneSkyCur,
-                               SceneDesired = EngineLayout.SceneSkyDesired, SceneOff = EngineLayout.SceneSkyOff;
-    /// <summary>The alpha multiplier <c>PartTriMesh::Mat</c> reads off the instance, and the field
-    /// <c>RenderSkyBoxes</c> writes the cross-fade into. Same offset <c>EngineLayout.GobAlpha</c> names.</summary>
-    private static readonly int GobAlpha = EngineLayout.GobAlpha;
     /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1), stride 0x58, top at
     /// +0x18. <c>RenderSkyBoxes</c> replaces the PROJECTION (push/identity/SetPerspectiveTransform @0x466aa2)
     /// and leaves the model stack alone, so this top is the base every composed sky matrix sits on -- and it
     /// is the same value at the Alloy slot, because every engine walk brackets its own model writes with
     /// Push/PopCurrentMatrix.</summary>
     private const int ModeModel = 2;
-    private static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
-    /// <summary>Where <c>RenderSkyBoxes</c> parks every sky gob: <c>Gob::SetPosition(Scene+0x190)</c>, a
-    /// <c>Vector</c>, called once per gob per frame right before <c>Gob::Render</c>.</summary>
-    private static readonly int SceneSkyPos = EngineLayout.SceneSkyPos;
-    /// <summary>Gob fields: the position <c>SetPosition</c> writes (+0xa8, the additive term of
-    /// <c>GetAdjustedPosition</c>), the "visible" byte <c>Gob::Render</c> gates on (+0x1a4), and the
-    /// attachment link (+0x450) whose chain multiplies a further lerped scale into the gob's own.</summary>
-    private static readonly int GobPos = EngineLayout.GobPosition, GobVisible = EngineLayout.GobVisible,
-                               GobAttach = EngineLayout.GobAttach;
-    /// <summary>Part fields <c>Gob::PartDraw</c> and <c>Part::GetWorld</c> read: the draw gate at +0x34, the
-    /// uniform scale at +0x2c and the parent link at +0x48. Position (+0x10) and orientation (+0x1c) are the
-    /// other two, and <c>GetWorld</c> composes those for us.</summary>
-    private static readonly int PartVisible = EngineLayout.PartVisible, PartScale = EngineLayout.PartScale,
-                               PartParent = EngineLayout.PartParent;
-    /// <summary>Part vtable slot 0x60, <c>Part::AsPartTriMesh</c> -- the same discriminator
-    /// <see cref="SceneWalk"/> uses, and the one that keeps a sky gob's lights and dummies out of the
-    /// table.</summary>
-    private static readonly int PartVtblAsTriMesh = CX.Framework.EngineLayout.PartAsTriMeshSlot;
+    /// <summary>A STRIDE, not a field: the byte distance between one <c>m_aurMtxStack</c> entry and the
+    /// next, which is what picks the model stack out of the global array.</summary>
+    private static readonly int StackStride = EngineLayout.MtxStackStride;
     /// <summary>A skybox model is a handful of parts and there are at most three gobs in play -- 11 was the
     /// most ever logged. Sized as a ceiling anyway (one Part struct is small), because a sky handed back for
     /// want of a slot is a whole-screen artifact.</summary>
@@ -113,10 +89,10 @@ internal static unsafe class SkyBox
     private static ExtenderLog? _log;
     /// <summary><c>Part::GetWorld(Vector&amp;, Quaternion&amp;)</c> -- no Part subclass overrides vtable slot
     /// 0x20, so this is called by symbol rather than through a vptr.</summary>
-    private static delegate* unmanaged<IntPtr, Vector3*, float*, void> _getWorld;
+    private static PartGetWorldFn _getWorld;
     /// <summary><c>Gob::GetAdjustedScale</c> -- a plain float return, which is why the scale comes from here
     /// while the position and orientation come from <see cref="_getWorld"/>'s out parameters.</summary>
-    private static delegate* unmanaged<IntPtr, float> _gobScale;
+    private static GobGetAdjustedScaleFn _gobScale;
     /// <summary>#136: <c>GLRender::m_pCurrentCustomProgram</c> -- the PROG_FIXED the material bind left
     /// current, and the program id at <c>+0x64</c> inside it. Read at the swallow, in engine context.</summary>
     private static IntPtr* _curCustom;
@@ -124,10 +100,8 @@ internal static unsafe class SkyBox
     /// <c>GLRender::GlUseProgramConditionally(uint)</c> -- between them, the custom-program branch of
     /// <c>GLRender::SetProgram</c> @0x4cf9c8. See <see cref="NoteEngineDraw"/> for why we make that call
     /// ourselves.</summary>
-    private static delegate* unmanaged<IntPtr, void> _setUniforms;
-    private static delegate* unmanaged<uint, void> _useProgram;
-    /// <summary>Program id inside PROG_FIXED, from <c>SetProgram</c>'s own <c>mov 0x64(%rax),%eax</c>.</summary>
-    private static readonly int ProgId = EngineLayout.ProgFixedId;
+    private static GlSetUniformsFn _setUniforms;
+    private static GlUseProgramConditionallyFn _useProgram;
 
     /// <summary>#136: true only while <see cref="RspShim"/> is running the sky's SIMULATION vcall. The
     /// swallow reads it to tell a sky draw from every other engine draw in the window -- there is no other
@@ -152,11 +126,11 @@ internal static unsafe class SkyBox
     {
         _log = log;
         _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
-        _getWorld = (delegate* unmanaged<IntPtr, Vector3*, float*, void>)Native.Sym(SymbolMap.PartGetWorld);
-        _gobScale = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.GobGetAdjustedScale);
+        _getWorld = EngineFn.PartGetWorld;
+        _gobScale = EngineFn.GobGetAdjustedScale;
         _curCustom = (IntPtr*)Native.Sym(SymbolMap.GlCurrentCustomProgram);
-        _setUniforms = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GlSetUniforms);
-        _useProgram = (delegate* unmanaged<uint, void>)Native.Sym(SymbolMap.GlUseProgramConditionally);
+        _setUniforms = EngineFn.GlSetUniforms;
+        _useProgram = EngineFn.GlUseProgramConditionally;
         if (_curCustom == null || _setUniforms == null || _useProgram == null)
             log.Info("SkyBox: GLRender::m_pCurrentCustomProgram/SetUniforms/GlUseProgramConditionally "
                    + "unresolved -- a dynamic sky's own program cannot be hosted, so an unported sky stays "
@@ -176,22 +150,22 @@ internal static unsafe class SkyBox
         _count = 0;
         if (_off || Disabled || scene == IntPtr.Zero) { Scene = IntPtr.Zero; return; }
         Scene = scene;
-        _base = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
-        Vector3 cam = *(Vector3*)(scene + SceneSkyPos);
+        _base = new aurMatrixStack((IntPtr)(_stacks + ModeModel * StackStride)).Top;
+        Vector3 cam = new CX.Engine.Scene(scene).SkyPos;
         Span<Role> roles = stackalloc Role[3];
         int n = Roles(scene, roles);
         for (int r = 0; r < n; r++)
         {
-            IntPtr gob = roles[r].Gob;
-            if (gob == IntPtr.Zero || *(byte*)(gob + GobVisible) == 0) continue;
+            var g = new CX.Engine.Gob(roles[r].Gob);
+            if (g.IsNull || g.Visible == 0) continue;
             // ponytail: a gob with an attachment chain has a further lerped scale factor folded in by
             // Gob::Render @0x45235b, and this side does not walk it. A skybox gob is created free-standing
             // by Scene::SetSkyBox, so the chain is expected to be null -- refuse the whole sky rather than
             // draw it at a scale we did not measure. `sky attached=` on the period line is the trip-wire;
             // if it ever moves, replicate the @0x452370 loop (LerpFloat::Lerped is exported).
-            if (*(IntPtr*)(gob + GobAttach) != IntPtr.Zero) { _attached++; _count = 0; return; }
-            float gs = _gobScale(gob);
-            Tree(*(IntPtr*)(gob + GobPartTree), gob, gs, cam);
+            if (!g.Attach.IsNull) { _attached++; _count = 0; return; }
+            float gs = _gobScale(g.Ptr);
+            Tree(new GobRef(g.Ptr).PartTree, g.Ptr, gs, cam);
         }
     }
 
@@ -204,13 +178,12 @@ internal static unsafe class SkyBox
         _stack[sp++] = root;
         while (sp > 0)
         {
-            IntPtr part = _stack[--sp];
-            if (*(byte*)(part + PartVisible) == 0) continue;
-            IntPtr tri = ((delegate* unmanaged<IntPtr, IntPtr>)
-                          (*(IntPtr*)(*(IntPtr*)part + PartVtblAsTriMesh)))(part);
-            if (tri != IntPtr.Zero) Capture(tri, gob, gobScale, cam);
-            IntPtr* kids = *(IntPtr**)(part + PartChildren);
-            int k = *(int*)(part + PartChildCount);
+            var part = new CX.Engine.Part(_stack[--sp]);
+            if (part.Visible == 0) continue;
+            PartTriMesh tri = part.AsPartTriMesh();
+            if (!tri.IsNull) Capture(tri.Ptr, gob, gobScale, cam);
+            IntPtr* kids = (IntPtr*)part.Children;
+            int k = part.ChildCount;
             if (kids == null) continue;
             for (int i = 0; i < k; i++)
             {
@@ -224,29 +197,31 @@ internal static unsafe class SkyBox
     private static void Capture(IntPtr tri, IntPtr gob, float gobScale, Vector3 cam)
     {
         if (_count >= MaxParts) return;
-        IntPtr vp = *(IntPtr*)(tri + PartNode), mat = *(IntPtr*)(tri + PartMaterial);
+        var pr = new PartRef(tri);
+        IntPtr vp = pr.Node.Ptr, mat = pr.Material.Ptr;
         if (vp == IntPtr.Zero || mat == IntPtr.Zero) return;
-        IntPtr vdo = *(IntPtr*)(vp + VpVdo);
-        int item = *(int*)(vp + VpItem);
+        var vprim = new VertexPrimitive(vp);
+        IntPtr vdo = vprim.Vdo.Ptr;
+        int item = vprim.Item;
         // The same three refusals SceneWalk.TryBind makes: no resident geometry yet, or a VDO this renderer
         // cannot draw from its own tables. Reached without a draw, which is the whole point of #261.
-        if (vdo == IntPtr.Zero || item < 0 || *(int*)(vdo + VdoMode) != 1) return;
-        IntPtr mdl = *(IntPtr*)(tri + AlloyRenderer.PartMdlNode);
+        if (vdo == IntPtr.Zero || item < 0 || new VdoRef(vdo).Mode != 1) return;
+        IntPtr mdl = pr.Mdl.Ptr;
         if (mdl == IntPtr.Zero) return;
 
         Vector3 pos; float* q = stackalloc float[4];
         _getWorld(tri, &pos, q);
         // The camera-parking correction. See the class remarks: gob+0xa8 enters GetAdjustedPosition purely
         // additively, so this replaces the previous frame's parked position with this frame's.
-        pos += cam - *(Vector3*)(gob + GobPos);
+        pos += cam - new CX.Engine.Gob(gob).Position;
         // Quaternions are stored (w, x, y, z); System.Numerics takes (x, y, z, w).
         var rot = new Quaternion(q[1], q[2], q[3], q[0]);
         float scale = gobScale;
-        for (IntPtr p = tri; p != IntPtr.Zero; p = *(IntPtr*)(p + PartParent)) scale *= *(float*)(p + PartScale);
+        for (var p = new CX.Engine.Part(tri); !p.IsNull; p = p.Parent) scale *= p.Scale;
 
         ref Part e = ref _parts[_count++];
         e.Tri = tri; e.Node = vp; e.Mat = mat; e.Gob = gob;
-        e.Vdo = vdo; e.Item = item; e.Prim = *(int*)(mdl + MdlPrimType);
+        e.Vdo = vdo; e.Item = item; e.Prim = new MdlNode(mdl).PrimType;
         e.Ported = !AlloyCensus.HasUnportedShader(mat);
         e.EngProg = 0;   // filled by NoteEngineDraw when the sim tick reaches this part's draw
         e.Vao = -1;
@@ -280,18 +255,21 @@ internal static unsafe class SkyBox
     internal static int Roles(IntPtr scene, Span<Role> into)
     {
         int n = 0;
-        if (scene == IntPtr.Zero || *(byte*)(scene + SceneOff) != 0) return 0;
-        float t = *(float*)(scene + SceneT);
-        int cur = *(int*)(scene + SceneCur), want = *(int*)(scene + SceneDesired);
+        if (scene == IntPtr.Zero) return 0;
+        var sc = new CX.Engine.Scene(scene);
+        if (sc.SkyOff != 0) return 0;
+        float t = sc.SkyT;
+        int cur = sc.SkyCur, want = sc.SkyDesired;
+        Span<IntPtr> sky = sc.SkyGobs;
         if (cur != -1)
-            into[n++] = new Role { Gob = *(IntPtr*)(scene + SceneGobs + cur * 8), Alpha = 1f - t,
+            into[n++] = new Role { Gob = sky[cur], Alpha = 1f - t,
                                    Src = BlendSrcAlpha, Dst = BlendZero };
         if (t > 0f && want != -1)
-            into[n++] = new Role { Gob = *(IntPtr*)(scene + SceneGobs + want * 8), Alpha = t,
+            into[n++] = new Role { Gob = sky[want], Alpha = t,
                                    Src = BlendSrcAlpha, Dst = BlendOverAlpha };
-        IntPtr fade = *(IntPtr*)(scene + SceneFadeGob);
-        if (fade != IntPtr.Zero)
-            into[n++] = new Role { Gob = fade, Alpha = *(float*)(fade + GobAlpha),
+        var fade = sc.SkyFadeGob;
+        if (!fade.IsNull)
+            into[n++] = new Role { Gob = fade.Ptr, Alpha = fade.Alpha,
                                    Src = BlendSrcAlpha, Dst = BlendOverAlpha };
         return n;
     }
@@ -316,7 +294,7 @@ internal static unsafe class SkyBox
         if (_curCustom == null || _setUniforms == null || _useProgram == null) return;
         IntPtr prog = *_curCustom;
         if (prog == IntPtr.Zero) return;
-        uint id = *(uint*)(prog + ProgId);
+        uint id = new GLRender__PROG_FIXED(prog).ProgramId;
         if (id == 0) return;
         // Match FIRST. The global is whatever the last material bind left there, and a part the Alloy pass
         // can shade for itself must never inherit a neighbour's program -- so only a part that actually
@@ -392,32 +370,35 @@ internal static unsafe class SkyBox
         for (int i = 0; i < 0x60; i++) scene[i] = 0;
         Span<Role> r = stackalloc Role[3];
         IntPtr s = (IntPtr)scene;
-        void Gob(int slot, nint v) => *(nint*)(scene + SceneGobs + slot * 8) = v;
+        var sc = new CX.Engine.Scene(s);
+        void Gob(int slot, nint v) => sc.SkyGobs[slot] = v;
 
-        *(int*)(scene + SceneCur) = -1; *(int*)(scene + SceneDesired) = -1;
+        sc.SkyCur = -1; sc.SkyDesired = -1;
         check.Expect(Roles(s, r) == 0, "no current sky and no fade gob draws nothing");
 
-        Gob(1, 0x1000); *(int*)(scene + SceneCur) = 1;
+        Gob(1, 0x1000); sc.SkyCur = 1;
         check.Expect(Roles(s, r) == 1 && r[0].Gob == 0x1000 && r[0].Alpha == 1f && r[0].Dst == BlendZero,
           "a settled sky is one opaque-alpha replace draw");
 
-        *(byte*)(scene + SceneOff) = 1;
+        sc.SkyOff = 1;
         check.Expect(Roles(s, r) == 0, "TurnOffSkyBox wins over everything");
-        *(byte*)(scene + SceneOff) = 0;
+        sc.SkyOff = 0;
 
-        Gob(2, 0x2000); *(int*)(scene + SceneDesired) = 2; *(float*)(scene + SceneT) = 0.25f;
+        Gob(2, 0x2000); sc.SkyDesired = 2; sc.SkyT = 0.25f;
         check.Expect(Roles(s, r) == 2 && r[0].Alpha == 0.75f && r[1].Gob == 0x2000 && r[1].Alpha == 0.25f
           && r[1].Dst == BlendOverAlpha, "a cross-fade is (1-t) replace then t blended over, in that order");
 
-        *(float*)(scene + SceneT) = 0f;
+        sc.SkyT = 0f;
         check.Expect(Roles(s, r) == 1, "t at the epsilon leaves the desired sky out -- the engine's own DAT_013eeeb0 test");
 
         // the fade gob is read at +0x108, so it needs a buffer that reaches there -- and its alpha is the
         // one Roles output that comes off the gob rather than off the Scene, so assert the value too
-        byte* fadeGob = stackalloc byte[GobAlpha + 4];
-        for (int i = 0; i < GobAlpha + 4; i++) fadeGob[i] = 0;
-        *(float*)(fadeGob + GobAlpha) = 0.5f;
-        *(nint*)(scene + SceneFadeGob) = (nint)fadeGob;
+        // a SIZE, not a field read: the fake Gob has to reach past its own alpha field
+        int fadeGobBytes = EngineLayout.GobAlpha + 4;
+        byte* fadeGob = stackalloc byte[fadeGobBytes];
+        for (int i = 0; i < fadeGobBytes; i++) fadeGob[i] = 0;
+        new CX.Engine.Gob((IntPtr)fadeGob).Alpha = 0.5f;
+        sc.SkyFadeGob = new CX.Engine.Gob((IntPtr)fadeGob);
         check.Expect(Roles(s, r) == 2 && r[1].Gob == (IntPtr)fadeGob && r[1].Alpha == 0.5f && r[1].Dst == BlendOverAlpha,
           "the skyfade gob draws last, over-blended, on its own alpha");
 

@@ -48,14 +48,14 @@ def pe_exports(path):
 # function puts sret first on BOTH platforms, so "fixing" one would be introducing the bug.
 INSTANCE = re.compile(r"@@[QAI]E[AB]A")
 
-# Each row here has had its argument order decided AT THE CALL SITE. Value = where to look.
+# A row declared [Fn("sret(View this, ...)")] is handled by tools/engine/views.py, which orders the buffer
+# per OS. Each row below instead had its argument order decided AT THE CALL SITE. Value = where to look.
 SRET_HANDLED = {
     "GetEmitterLighting":      "managed/Alloy/Core/EmitterLighting.cs",
     "SceneGetWindVector":      "managed/Alloy/Scene/DanglyPhysics.cs (Wind)",
     "TlkGetSimpleString":      "managed/Services/CombatText/CombatTextNative.cs",
-    "GetServerNetworkAddress": "managed/Framework/PlayerIdentity.cs",
-    "GuiEditGetText":          "managed/Services/Chat/PromptCommandService.cs",
 }
+SRET_DECLARED = set(re.findall(r'\[Fn\("sret\([^"]*"\)\]\s*public const string (\w+)', SRC.read_text()))
 
 
 def demangle(mangled):
@@ -84,12 +84,12 @@ def check_sret(rows):
         if not returns_class_by_value(dem):
             continue
         seen.add(key)
-        if key not in SRET_HANDLED:
+        if key not in SRET_HANDLED and key not in SRET_DECLARED:
             print(f"UNHANDLED sret ORDER  {key}\n      {dem}\n"
-                  f"      Win64 passes (this, sret, ...); Itanium (sret, this, ...). Branch at the call\n"
-                  f"      site, then add {key!r} to SRET_HANDLED in this file.")
+                  f"      Win64 passes (this, sret, ...); Itanium (sret, this, ...). Declare it\n"
+                  f"      [Fn(\"sret(View this, ...)\")] in SymbolMap, which orders the buffer per OS.")
             bad += 1
-    for key in SRET_HANDLED.keys() - seen:
+    for key in (SRET_HANDLED.keys() | SRET_DECLARED) - seen:
         print(f"STALE SRET_HANDLED  {key} no longer returns a class by value -- drop the entry")
         bad += 1
     print(f"{len(seen)} by-value-return row(s), {bad} bad")

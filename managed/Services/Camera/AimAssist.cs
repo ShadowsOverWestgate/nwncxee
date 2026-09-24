@@ -35,9 +35,10 @@ internal static unsafe class AimAssist
     /// narrower gate: the cursor-manager chain only.</summary>
     private static bool _ready, _cursorReady;
 
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
-        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
-    private static delegate* unmanaged<IntPtr, void> _activateOrig, _lmouse;
+    /// <summary>Resolved once: the walk runs every frame the action camera is held.</summary>
+    private static readonly GetGameObjectFn _getGameObject = EngineFn.GetGameObject;
+    private static ActivateTargetModeFn _activateOrig;
+    private static ActionTargetLMouseDownFn _lmouse;
 
     /// <summary>Object type bytes worth aiming at. The walk's fourth type, item (6, the loose-loot class the
     /// pickup cursor is for), has no constant on purpose: loot is picked by pointing, not by aiming.</summary>
@@ -86,9 +87,8 @@ internal static unsafe class AimAssist
         if (!SymbolMap.Require(log, "MouseLook.assist", SymbolMap.ActivateTargetMode, SymbolMap.ActionTargetLMouseDown,
                                SymbolMap.GetGameObject, SymbolMap.GetModule, SymbolMap.AppManager)) return;
 
-        _lmouse = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ActionTargetLMouseDown);
-        _activateOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.ActivateTargetMode,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnActivateTargetMode);
+        _lmouse = EngineFn.ActionTargetLMouseDown;
+        _activateOrig = hooks.InstallActivateTargetMode(&OnActivateTargetMode);
         _ready = _activateOrig != null && _lmouse != null;
         if (!_ready) { log.Info("MouseLook.assist: standing down (ActivateTargetMode install refused)"); return; }
 
@@ -161,9 +161,9 @@ internal static unsafe class AimAssist
         {
             uint id = ids[i];
             if (id == playerId || id == TypingSignal.ObjectInvalid) continue;
-            IntPtr go = _getGameObject(app, id);
-            if (go == IntPtr.Zero) continue;
-            var obj = new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(go).AsNWCObjectFn)(go));
+            var go = new CGameObject(_getGameObject(app, id));
+            if (go.IsNull) continue;
+            CNWCObject obj = go.AsNWCObject();
             if (obj.IsNull || obj.Visible == 0) continue;
             byte type = obj.Type;
             float lift;
@@ -174,8 +174,7 @@ internal static unsafe class AimAssist
                 case TypeDoor: lift = DoorLift; break;
                 default: continue;
             }
-            CNWCObject hil = type != TypePlaceable ? obj
-                : new CNWCObject(((delegate* unmanaged<IntPtr, IntPtr>)new CGameObject(obj.Ptr).AsNWCPlaceableFn)(obj.Ptr));
+            CNWCObject hil = type != TypePlaceable ? obj : new CGameObject(obj.Ptr).AsNWCPlaceable();
             if (hil.IsNull || hil.Highlightable == 0) continue;
             Vector3 w = obj.Position;
             if (!view.Screen(new Vector3(w.X, w.Y, w.Z + lift), out float sx, out float sy, out float ez)) continue;
@@ -269,10 +268,8 @@ internal unsafe struct Projector
         if (cam.IsNull || cx <= 0 || cy <= 0) return false;
         float fov = cam.ViewAngle;
         if (!(fov > 0f)) return false;
-        float* pos = (float*)(cam.Ptr + EngineLayout.CamPos);
-        float* q = (float*)(cam.Ptr + EngineLayout.CamRot);
-        Quaternion rot = new(q[1], q[2], q[3], q[0]);
-        p._eye = new Vector3(pos[0], pos[1], pos[2]);
+        Quaternion rot = cam.Rot;
+        p._eye = cam.Pos;
         p._fwd = Vector3.Transform(new Vector3(0f, 0f, -1f), rot);
         p._right = Vector3.Transform(new Vector3(1f, 0f, 0f), rot);
         p._up = Vector3.Transform(new Vector3(0f, 1f, 0f), rot);

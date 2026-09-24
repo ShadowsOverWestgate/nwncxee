@@ -4,6 +4,7 @@ using System.Numerics;
 using System.Threading;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -78,7 +79,7 @@ internal static unsafe partial class OwnedTextures
         var savedQArr = (IntPtr[])_rebuildQ.Clone();
         var savedBuild = _buildAndStore;
         _rebuildTried.Clear(); _rebuildN = 0; _dripFrame = 0;
-        _buildAndStore = (delegate* unmanaged<IntPtr, void>)1;   // armed, never called: nothing here drains
+        _buildAndStore = (AurTextureBuildAndStoreFn)1;   // armed, never called: nothing here drains
         IntPtr probe = (IntPtr)0x5A1;
         NoteUnbuilt(probe);
         ok &= _rebuildN == 1;

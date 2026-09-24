@@ -34,7 +34,6 @@ public sealed unsafe class UiInputService : IExtenderService
     // while an edit box has focus. NUI runs a parallel SDL pump, so a key typed in a NUI field still reaches us.
     private const int NkActiveWindowOff = 0x6730, NkWinEditActiveOff = 0x18c;
     // Native (vanilla) dialog probe: *(gui+0x70) non-null while a native conversation panel is up.
-    private const int ExoAppInternalOff = 0x8, InGameGuiOff = 0x90, DialogPanelOff = 0x70;
     private const int UiCursorId = 3;   // engine walk/default ground pointer
 
     private static bool _focused = true;
@@ -43,58 +42,41 @@ public sealed unsafe class UiInputService : IExtenderService
     private static IntPtr _exoInputGlobal, _appMgr;
     // Resolved at type init, not Initialize: the engine-GUI probes serve MouseLookService before Initialize runs (#539).
     private static readonly IntPtr _nuklearGlobal = Native.Sym(SymbolMap.Nuklear);
-    private static readonly delegate* unmanaged<IntPtr, int> _nkAnyHovered =
-        (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.NkWindowIsAnyHovered);   // nk_window_is_any_hovered
+    private static readonly NkWindowIsAnyHoveredFn _nkAnyHovered = EngineFn.NkWindowIsAnyHovered;
     private static readonly IntPtr _guiManGlobal = Native.Sym(SymbolMap.GuiMan);         // &g_pGuiMan
-    private static readonly delegate* unmanaged<IntPtr, int, int, int, int, IntPtr> _guiHitCheck =
-        (delegate* unmanaged<IntPtr, int, int, int, int, IntPtr>)Native.Sym(SymbolMap.GuiObjectHitCheck);   // CGuiMan::GuiObjectHitCheck
-    private static delegate* unmanaged<IntPtr, int> _getKbMode;
-    private static delegate* unmanaged<int> _modState;
-    private static delegate* unmanaged<IntPtr, void> _kbOn, _kbOff;
-    private static delegate* unmanaged<void> _turnOffModal;
-    private static delegate* unmanaged<int*, int*, uint> _sdlGetMouseState;
-    private static delegate* unmanaged<IntPtr, void> _nkCopyEvent;   // nk_sdl_copy_event
     private static bool _kbHeld;   // our view of the engine keyboard-capture gate; edges drive the modal reset
 
     // Trampolines to the engine originals.
-    private static delegate* unmanaged<uint, uint, int> _keyOrig;
+    private static HandleWMKeyDownFn _keyOrig;
     /// <summary>Chain slot on the SDL pump (#539: MouseLookService sits above us); <c>*_winMsg</c> is the next layer.</summary>
-    private static IntPtr* _winMsg;
-    private static delegate* unmanaged<IntPtr, void> _gainOrig, _lostOrig;
-    private static delegate* unmanaged<IntPtr, int, void> _origUpdateCursor;
-    private static delegate* unmanaged<IntPtr, int, int, int, int, int, void> _origSetCursor;
+    private static WinMessageHandlerFn* _winMsg;
+    private static OnGainFocusFn _gainOrig;
+    private static OnLostFocusFn _lostOrig;
+    private static UpdateMouseCursorAppearanceFn _origUpdateCursor;
+    private static SetMouseCursorFn _origSetCursor;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
         _exoInputGlobal  = Native.Sym(SymbolMap.ExoInput);
         _appMgr          = Native.Sym(SymbolMap.AppManager);
-        _getKbMode       = (delegate* unmanaged<IntPtr, int>)Native.Sym(SymbolMap.GetKeyboardMode);
-        _modState        = (delegate* unmanaged<int>)Native.Sym(SymbolMap.SdlGetModState);
-        _kbOn            = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOn);
-        _kbOff           = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.KeyboardModeOff);
-        _turnOffModal    = (delegate* unmanaged<void>)Native.Sym(SymbolMap.TurnOffKeyboardModal);
-        _sdlGetMouseState = (delegate* unmanaged<int*, int*, uint>)Native.Sym(SymbolMap.SdlGetMouseState);
-        _nkCopyEvent     = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.NkSdlCopyEvent);
 
         UiHost.KeyboardGate = KbGate;   // centralized engine keyboard gate (#64 AC3): one owner for all consumers
 
-        _keyOrig    = (delegate* unmanaged<uint, uint, int>)hooks.Install(SymbolMap.HandleWMKeyDown,   (IntPtr)(delegate* unmanaged<uint, uint, int>)&OnKeyDown);
-        _winMsg     = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 0);
-        _gainOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnGainFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnGain);
-        _lostOrig   = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.OnLostFocus,          (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnLost);
+        _keyOrig    = hooks.InstallHandleWMKeyDown(&OnKeyDown);
+        _winMsg     = hooks.ChainWinMessageHandler(&OnWinMessage, 0);
+        _gainOrig   = hooks.InstallOnGainFocus(&OnGain);
+        _lostOrig   = hooks.InstallOnLostFocus(&OnLost);
 
         // Cursor fold needs BOTH hooks: OnUpdateCursor decides "over UI", OnSetMouseCursor forces the pointer.
         // A Zero trampoline means Install did not hook the symbol (prepare failed / unresolved), so the handler is
         // never active -- but only arm the fold when both resolved, mirroring the old CursorService clean bail, so
         // OnUpdateCursor does no useless work when the forcing half is missing.
-        var updTramp = hooks.Install(SymbolMap.UpdateMouseCursorAppearance, (IntPtr)(delegate* unmanaged<IntPtr, int, void>)&OnUpdateCursor);
-        if (updTramp != IntPtr.Zero)
+        _origUpdateCursor = hooks.InstallUpdateMouseCursorAppearance(&OnUpdateCursor);
+        if (_origUpdateCursor != null)
         {
-            _origUpdateCursor = (delegate* unmanaged<IntPtr, int, void>)updTramp;
-            var setTramp = hooks.Install(SymbolMap.SetMouseCursor, (IntPtr)(delegate* unmanaged<IntPtr, int, int, int, int, int, void>)&OnSetMouseCursor);
-            _origSetCursor = (delegate* unmanaged<IntPtr, int, int, int, int, int, void>)setTramp;
-            _cursorFoldActive = setTramp != IntPtr.Zero;
+            _origSetCursor = hooks.InstallSetMouseCursor(&OnSetMouseCursor);
+            _cursorFoldActive = _origSetCursor != null;
             if (!_cursorFoldActive)
                 log.Info("UiInputService: cursor fold disabled (SetMouseCursor hook unavailable)");
         }
@@ -116,16 +98,16 @@ public sealed unsafe class UiInputService : IExtenderService
         if (inst == IntPtr.Zero) return;
         if (on)
         {
-            if (_kbOn != null) _kbOn(inst);
+            if (EngineFn.KeyboardModeOn != null) EngineFn.KeyboardModeOn(inst);
             // TurnOffKeyboardModal double-derefs g_pAppManager unguarded -> gate on a live app manager.
-            if (!_kbHeld && _turnOffModal != null && _appMgr != IntPtr.Zero && *(IntPtr*)_appMgr != IntPtr.Zero)
-                _turnOffModal();
+            if (!_kbHeld && EngineFn.TurnOffKeyboardModal != null && _appMgr != IntPtr.Zero && *(IntPtr*)_appMgr != IntPtr.Zero)
+                EngineFn.TurnOffKeyboardModal();
         }
-        else if (_kbOff != null) _kbOff(inst);
+        else if (EngineFn.KeyboardModeOff != null) EngineFn.KeyboardModeOff(inst);
         _kbHeld = on;
     }
 
-    private static int RawMods() => _modState != null ? _modState() : 0;
+    private static int RawMods() => EngineFn.SdlGetModState != null ? EngineFn.SdlGetModState() : 0;
 
     /// <summary>Raw-key probe, reporting the framework-level gates. OFF by default -- it logs every keydown,
     /// so the whole point of the feature (not being a keylogger) forbids it as a default. Flipped by
@@ -194,7 +176,7 @@ public sealed unsafe class UiInputService : IExtenderService
                         // feed, which hangs off CExoInput::AddEvent below us -- its mouse position would freeze
                         // and NuiHovered() would then answer from wherever the pointer last was NOT over us.
                         // Hand it the motion directly; it is state, not an action, so nothing acts twice.
-                        if (_nkCopyEvent != null) _nkCopyEvent(ev);
+                        if (EngineFn.NkSdlCopyEvent != null) EngineFn.NkSdlCopyEvent(ev);
                         return 0;
                     }
                     break;
@@ -231,7 +213,7 @@ public sealed unsafe class UiInputService : IExtenderService
                     break;
             }
         }
-        return _winMsg != null ? ((delegate* unmanaged<IntPtr, int>)(*_winMsg))(ev) : 0;
+        return _winMsg != null ? (*_winMsg)(ev) : 0;
     }
 
     // ---- focus edges ----------------------------------------------------------------------------
@@ -251,7 +233,7 @@ public sealed unsafe class UiInputService : IExtenderService
             return;
         }
         int mx = 0, my = 0;
-        if (_sdlGetMouseState != null) _sdlGetMouseState(&mx, &my);
+        if (EngineFn.SdlGetMouseState != null) EngineFn.SdlGetMouseState(&mx, &my);
         bool overUi = UiHost.HitTest(mx, my) != null;   // any window's UI under the pointer (US #11)
         if (overUi != _prevOverUi)
         {
@@ -310,9 +292,9 @@ public sealed unsafe class UiInputService : IExtenderService
     /// <summary>The wheel event carries no position: the same exemption at SDL's pointer.</summary>
     private static bool MenuWindowUnderPointer()
     {
-        if (!GearSurface || _sdlGetMouseState == null) return false;
+        if (!GearSurface || EngineFn.SdlGetMouseState == null) return false;
         int mx = 0, my = 0;
-        _sdlGetMouseState(&mx, &my);
+        EngineFn.SdlGetMouseState(&mx, &my);
         return UiHost.HitTest(mx, my) != null;
     }
 
@@ -323,11 +305,10 @@ public sealed unsafe class UiInputService : IExtenderService
     /// bites live, pass fresh=1 with the SDL coords (Y flipped via GuiManVpH) instead.</summary>
     private static IntPtr VanillaGuiAt(int mask)
     {
-        if (_guiManGlobal == IntPtr.Zero || _guiHitCheck == null) return IntPtr.Zero;
-        IntPtr gm = *(IntPtr*)_guiManGlobal;
-        if (gm == IntPtr.Zero) return IntPtr.Zero;
-        var man = new CGuiMan(gm);
-        return _guiHitCheck(gm, man.MouseX, man.MouseY, 0, mask);
+        if (_guiManGlobal == IntPtr.Zero || EngineFn.GuiObjectHitCheck == null) return IntPtr.Zero;
+        var man = new CGuiMan(*(IntPtr*)_guiManGlobal);
+        if (man.IsNull) return IntPtr.Zero;
+        return man.GuiObjectHitCheck(man.MouseX, man.MouseY, 0, mask);
     }
 
     private static bool NuiEditFocused()
@@ -341,9 +322,9 @@ public sealed unsafe class UiInputService : IExtenderService
 
     private static bool KeyboardModeActive()
     {
-        if (_exoInputGlobal == IntPtr.Zero || _getKbMode == null) return false;
+        if (_exoInputGlobal == IntPtr.Zero || EngineFn.GetKeyboardMode == null) return false;
         IntPtr inst = *(IntPtr*)_exoInputGlobal;
-        return inst != IntPtr.Zero && _getKbMode(inst) != 0;
+        return inst != IntPtr.Zero && EngineFn.GetKeyboardMode(inst) != 0;
     }
 
     private static bool NativeDialogOpen()
@@ -351,8 +332,8 @@ public sealed unsafe class UiInputService : IExtenderService
         if (_appMgr == IntPtr.Zero) return false;
         IntPtr mgr = *(IntPtr*)_appMgr;                if (mgr == IntPtr.Zero) return false;
         IntPtr app = *(IntPtr*)mgr;                    if (app == IntPtr.Zero) return false;
-        IntPtr intern = *(IntPtr*)(app + ExoAppInternalOff); if (intern == IntPtr.Zero) return false;
-        IntPtr gui = *(IntPtr*)(intern + InGameGuiOff);
-        return gui != IntPtr.Zero && *(IntPtr*)(gui + DialogPanelOff) != IntPtr.Zero;
+        CClientExoAppInternal intern = new CClientExoApp(app).Internal; if (intern.IsNull) return false;
+        CGuiInGame gui = intern.InGameGui;
+        return !gui.IsNull && gui.Dialog != IntPtr.Zero;
     }
 }

@@ -59,8 +59,8 @@ offset	MdlNode	kind	0x98	0x98	# MdlNodeKind
 offset	MdlNode	controllers	0x78	0x78	# MdlNodeControllers
 offset	MdlNode	controllerCount	0x80	0x80	# MdlNodeControllerCount
 offset	NewController	keyCount	0x4	0x4	# NewControllerKeyCount
-offset	MdlNode	matrix	0x18	0x18	# NodeMatrix
-offset	MdlNode	flags	0x80	0x80	# NodeFlags
+offset	VertexPrimitive	matrix	0x18	0x18	# NodeMatrix
+offset	VertexPrimitive	flags	0x80	0x80	# NodeFlags
 offset	MdlNode	primType	0x270	0x270	# MdlPrimType
 offset	MdlNodeTriMesh	renderGate	0x118	0x118	# MdlRenderGate
 offset	MdlNodeTriMesh	renderGeom	0x278	0x278	# MdlRenderGeom

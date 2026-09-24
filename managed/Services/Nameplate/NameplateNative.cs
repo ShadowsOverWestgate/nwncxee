@@ -118,12 +118,10 @@ public static unsafe class NameplateNative
     private const int ResRefScratch = 32;
 
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
-        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr> _getModule =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
-    private static readonly delegate* unmanaged<float*, void> _getViewPort =
-        (delegate* unmanaged<float*, void>)Native.Sym(SymbolMap.GetViewPort);
+    // Resolved once: the object resolve runs per plated object per frame.
+    private static readonly GetGameObjectFn _getGameObject = EngineFn.GetGameObject;
+    private static readonly GetModuleFn _getModule = EngineFn.GetModule;
+    private static readonly GetViewPortFn _getViewPort = EngineFn.GetViewPort;
 
     /// <summary>Whether the engine chain we need resolved at all. False headless (run-demo) and under a
     /// client that does not export these -- every accessor below then answers its neutral value.</summary>
@@ -194,8 +192,7 @@ public static unsafe class NameplateNative
         if (b != IntPtr.Zero) *(int*)(b + BubbleLiveText) = 0;
     }
 
-    private static readonly delegate* unmanaged<IntPtr, void> _unToggleOff =
-        (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GuiPanelUnToggleOff);
+    private static readonly GuiPanelUnToggleOffFn _unToggleOff = EngineFn.GuiPanelUnToggleOff;
 
     /// <summary>Clear the bubble's hide bit so <c>UpdatePopUpBubble</c> projects its anchor again (#591). A bubble
     /// that idled under the vanilla mode carries the bit (<c>ToggleOff</c>), and the mode-0 walk only deactivates
@@ -436,10 +433,8 @@ public static unsafe class NameplateNative
         return sb.ToString();
     }
 
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr, void> _getObjectName =
-        (delegate* unmanaged<IntPtr, uint, IntPtr, void>)Native.Sym(SymbolMap.GetObjectName);
-    private static readonly delegate* unmanaged<IntPtr, void> _exoDtor =
-        (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ExoStringDtor);
+    private static readonly GetObjectNameFn _getObjectName = EngineFn.GetObjectName;
+    private static readonly ExoStringDtorFn _exoDtor = EngineFn.ExoStringDtor;
 
     /// <summary>The engine's display name for any object id -- what a placeable, door or item has instead of
     /// creature stats. <c>GetObjectName</c> writes into a CALLER-owned CExoString that must be zeroed first
@@ -464,6 +459,8 @@ public static unsafe class NameplateNative
         if (obj == IntPtr.Zero || _layoutRot) return "";
         IntPtr vtbl = *(IntPtr*)obj;
         if (vtbl == IntPtr.Zero) return "";
+        // Left raw: a vtbl slot returning a class BY VALUE -- the hidden buffer swaps places per ABI, which the
+        // generated `sig:` call (no sret form) cannot express (CX-37).
         var getPortrait = (delegate* unmanaged<IntPtr, IntPtr, byte, void>)new CNWCObject(obj).GetPortraitFn;
         if (getPortrait == null) return "";
         byte* buf = stackalloc byte[ResRefScratch];

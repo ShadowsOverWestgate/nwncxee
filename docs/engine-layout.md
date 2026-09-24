@@ -531,7 +531,7 @@ over six classes for the constructor store runs.
 | rows | verdict | the function that measured them |
 |---|---|---|
 | `Scene` `drawBuckets` `0x208`, `envMap` `0x1e8` | `Same` | `Scene::Scene` constructs `DrawBucketManager` in place at `this+0x208` on both, with an identical `0x178..0x1f8` store run below it; `Scene::Render` assigns the `SafePointer<CAurTexture>` at `0x1e8` from `GetEnvMapResRef` on both |
-| `MdlNode` `matrix` `0x18`, `primType` `0x270` | `Same` | `Scene::RenderDrawBucket` passes `node+0x18` to `SetModelMatrix`; `RenderFlat` passes `node+0x270` as argument 3 of `RenderVertexData` |
+| `VertexPrimitive` `matrix` `0x18`, `flags` `0x80`; `MdlNode` `primType` `0x270` | `Same` | `Scene::RenderDrawBucket` reads `part+0x88` (the part's `VertexPrimitive`) into the register it then derefs -- `& 0x1e` on `+0x80`, `+0x18` handed to `SetModelMatrix` -- and takes the `MdlNode` at `part+0x8` separately two instructions later; `RenderFlat` passes `node+0x270` as argument 3 of `RenderVertexData`. CX-39 re-keyed the first two from `MdlNode` to `VertexPrimitive` with the values unchanged, which also retires the `0x80` collision with `MdlNode.controllerCount` |
 | `MdlNodeSkin` `bindRot` `0x2f0`, `bindPos` `0x300` | `Same` | `PartSkin::PostProcess` — the gather loop adds to both lists at those offsets |
 | `MdlNodeSkin` `boneMap` `0x320` | `Same` | `ExecuteSkinGPU`, a **free function**: 64 iterations, stride 2, from `node+800` |
 | `MdlNodeDanglyMesh` ×5 (`0x2c8`…`0x2e0`) | `Same` | `MdlNodeDanglyMesh::InternalParseField`, each field pinned by its own `.mdl` keyword string; `PartDanglyMesh::Animate` reads all four back. `constraintCount` is the `List<T>`'s own `+8`, measured on `ExecuteSkinGPU`'s typed `List<Vector>*` parameter on both builds |

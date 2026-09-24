@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using CX.Engine;
@@ -44,10 +43,10 @@ internal static unsafe partial class RadialTree
     private const int MaxLabelLines = 16;
 
     private static readonly IntPtr[] _vptr = new IntPtr[(int)RootKind.ChatWindow + 1];
-    private static delegate* unmanaged<IntPtr, int, int> _createSubMenu;
-    private static delegate* unmanaged<IntPtr, int> _recursiveAutoDelete;
-    private static delegate* unmanaged<IntPtr, int> _getTextLineCount;
-    private static delegate* unmanaged<IntPtr, int, IntPtr> _getTextLine;
+    private static RadialCreateSubMenuFn _createSubMenu;
+    private static RadialRecursiveAutoDeleteFn _recursiveAutoDelete;
+    private static StringGobGetTextLineCountFn _getTextLineCount;
+    private static StringGobGetTextLineFn _getTextLine;
     private static IntPtr* _eventObject;
     private static int* _ctorCounter;
     private static int* _menuDepth;
@@ -60,10 +59,10 @@ internal static unsafe partial class RadialTree
     /// <see cref="SymbolMap.Require"/>, so this is belt and braces).</summary>
     public static bool Init(ExtenderLog log)
     {
-        _createSubMenu = (delegate* unmanaged<IntPtr, int, int>)SymbolMap.Resolve(SymbolMap.RadialCreateSubMenu, log);
-        _recursiveAutoDelete = (delegate* unmanaged<IntPtr, int>)SymbolMap.Resolve(SymbolMap.RadialRecursiveAutoDelete, log);
-        _getTextLineCount = (delegate* unmanaged<IntPtr, int>)SymbolMap.Resolve(SymbolMap.StringGobGetTextLineCount, log);
-        _getTextLine = (delegate* unmanaged<IntPtr, int, IntPtr>)SymbolMap.Resolve(SymbolMap.StringGobGetTextLine, log);
+        _createSubMenu = (RadialCreateSubMenuFn)SymbolMap.Resolve(SymbolMap.RadialCreateSubMenu, log);
+        _recursiveAutoDelete = (RadialRecursiveAutoDeleteFn)SymbolMap.Resolve(SymbolMap.RadialRecursiveAutoDelete, log);
+        _getTextLineCount = (StringGobGetTextLineCountFn)SymbolMap.Resolve(SymbolMap.StringGobGetTextLineCount, log);
+        _getTextLine = (StringGobGetTextLineFn)SymbolMap.Resolve(SymbolMap.StringGobGetTextLine, log);
         _eventObject = (IntPtr*)SymbolMap.Resolve(SymbolMap.GuiCurrentEventObject, log);
         _menuDepth = (int*)SymbolMap.Resolve(SymbolMap.RadialMenuDepth, log);
         _ctorCounter = (int*)SymbolMap.Resolve(SymbolMap.RadialCtorCounter, log);
@@ -132,18 +131,18 @@ internal static unsafe partial class RadialTree
         IntPtr creator = menu + EngineLayout.RadialCreator + i * stride;
         bool hasEntry = *(IntPtr*)entry != entry;
         bool hasCreator = *(IntPtr*)creator != creator;
-        IntPtr child = Unsafe.Add(ref m.SubMenu, i).Ptr;
+        IntPtr child = m.SubMenu[i].Ptr;
         SlotKind kind = hasCreator || child != IntPtr.Zero ? SlotKind.Creator : hasEntry ? SlotKind.Entry : SlotKind.Empty;
         IntPtr obj = hasEntry ? *(IntPtr*)entry : IntPtr.Zero;
         IntPtr fn = hasEntry ? *(IntPtr*)(entry + 8) : IntPtr.Zero;
         IntPtr adj = hasEntry && !OperatingSystem.IsWindows() ? *(IntPtr*)(entry + 16) : IntPtr.Zero;
-        var icon = new CGuiIcon(Unsafe.Add(ref m.Icon, i));
+        var icon = new CGuiIcon(m.Icon[i]);
         return new RadialSlot(i, kind,
-            ReadLabel(Unsafe.Add(ref m.Text, i)),
-            ReadIcon(icon.Ptr),
+            ReadLabel(m.Text[i]),
+            ReadIcon(icon),
             icon.IsNull ? "" : ReadAur(icon.CountLabel),
-            (Unsafe.Add(ref m.Flags, i) & 1) != 0,
-            Unsafe.Add(ref m.Param, i),
+            (m.Flags[i] & 1) != 0,
+            m.Param[i],
             obj, fn, adj, child);
     }
 
@@ -156,6 +155,7 @@ internal static unsafe partial class RadialTree
     private static string ReadAur(IntPtr aur)
     {
         if (aur == IntPtr.Zero || _getTextLineCount == null || _getTextLine == null) return "";
+        // The reader's `this` is a this-ADJUSTMENT, not a field: the object base on Linux, the sub-object on MSVC.
         IntPtr gob = aur - EngineLayout.StringGobReaderAdjust;
         int n = _getTextLineCount(gob);
         if (n <= 0) return "";
@@ -171,10 +171,10 @@ internal static unsafe partial class RadialTree
         for (int k = 0; k < 4096 && p[k] != 0; k++) sb.Append((char)p[k]);
     }
 
-    private static string ReadIcon(IntPtr icon)
+    private static string ReadIcon(CGuiIcon icon)
     {
-        if (icon == IntPtr.Zero) return "";
-        byte* p = (byte*)(icon + EngineLayout.GuiIconResRef);
+        if (icon.IsNull) return "";
+        Span<byte> p = icon.Resref;
         int n = 0;
         while (n < ResRefLen && p[n] != 0) n++;
         if (n == 0) return "";
@@ -191,7 +191,7 @@ internal static unsafe partial class RadialTree
         if (_createSubMenu == null || (uint)i >= SlotCount) return IntPtr.Zero;
         _createSubMenu(menu, i);
         var m = new CRadialMenu(menu);
-        CRadialMenu child = Unsafe.Add(ref m.SubMenu, i);
+        CRadialMenu child = m.SubMenu[i];
         if (!child.IsNull) child.Parent = menu;
         return child.Ptr;
     }
@@ -229,7 +229,7 @@ internal static unsafe partial class RadialTree
         if (obj == entry) return false;
         IntPtr fn = *(IntPtr*)(entry + 8);
         var m = new CRadialMenu(menu);
-        long param = Unsafe.Add(ref m.Param, i);
+        long param = m.Param[i];
         IntPtr self = obj;
         if (!OperatingSystem.IsWindows())
         {

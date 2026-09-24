@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 
@@ -10,7 +11,7 @@ namespace CX.Services.Anim;
 internal static unsafe class PoseMath
 {
     /// <summary><c>Part::GetWorld</c>, set by <see cref="PoseService"/> before anything is chained.</summary>
-    internal static delegate* unmanaged<IntPtr, Vector3*, float*, void> GetWorld;
+    internal static PartGetWorldFn GetWorld;
 
     /// <summary>Game Programming Gems 4's SmoothCD: a critically damped spring, stable at any <paramref name="dt"/>.</summary>
     internal static void Smooth(ref float x, ref float v, float target, float dt, float time)

@@ -32,12 +32,10 @@ public sealed unsafe class PromptCommandService : IExtenderService
     private const uint ConsoleChannel = 0x10000000;
 
     private static ExtenderLog? _log;
-    private static IntPtr* _slot;
+    private static ChatHandleEnterFn* _slot;
     /// <summary>Not a pointer field: the CGuiEdit is EMBEDDED in the prompt, so this is the address of a
     /// subobject, which no view accessor can hand out.</summary>
     private static readonly int EditOff = EngineLayout.ChatPromptEdit;
-    private static delegate* unmanaged<IntPtr, IntPtr, void> _getText;
-    private static delegate* unmanaged<IntPtr, void> _exoDtor;
     private static IntPtr _appMgr;
     /// <summary>The <c>""</c> handed to <c>CAurString::SetText</c>: the engine passes a string literal there, so the
     /// callee may keep the pointer -- give it memory that never moves.</summary>
@@ -47,6 +45,8 @@ public sealed unsafe class PromptCommandService : IExtenderService
     /// which SysV passes in memory like the real thing. Win64 hands a pointer to a copy instead.</summary>
     [StructLayout(LayoutKind.Sequential, Size = 24)]
     private struct CResRef24 { public ulong A, B, C; }
+    // Left raw: AppendToMsgBuffer's last parameter has a DIFFERENT shape per ABI, so no single
+    // [Fn] signature describes it (CX-37).
 #if WINDOWS
     private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, IntPtr, void> _append;
 #else
@@ -67,15 +67,13 @@ public sealed unsafe class PromptCommandService : IExtenderService
         if (!SymbolMap.Require(log, "PromptCommandService", RequiredSymbols)) return;
         if (!EngineLayout.Require(log, "PromptCommandService", "CGuiInGameChatPrompt", "CGuiEdit", "CAurString",
                                   "CClientExoApp", "CClientExoAppInternal")) return;
-        _getText = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GuiEditGetText);
-        _exoDtor = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.ExoStringDtor);
         _appMgr = Native.Sym(SymbolMap.AppManager);
 #if WINDOWS
         _append = (delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, IntPtr, void>)Native.Sym(SymbolMap.AppendToMsgBuffer);
 #else
         _append = (delegate* unmanaged<IntPtr, IntPtr, uint, uint, int, CResRef24, void>)Native.Sym(SymbolMap.AppendToMsgBuffer);
 #endif
-        _slot = hooks.Chain(SymbolMap.ChatHandleEnter, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnEnter, EnterPriority);
+        _slot = hooks.ChainChatHandleEnter(&OnEnter, EnterPriority);
         log.Info(_slot != null ? "PromptCommandService: vanilla prompt dispatch chained on HandleEnter"
                                : "PromptCommandService: HandleEnter chain refused (single-owner hook on the symbol)");
     }
@@ -85,7 +83,7 @@ public sealed unsafe class PromptCommandService : IExtenderService
     {
         string line = ReadLine(prompt + EditOff);
         bool hit = CommandRegistry.Global.Knows(line) && Clear(prompt + EditOff);
-        if (_slot != null) ((delegate* unmanaged<IntPtr, void>)*_slot)(prompt);
+        if (_slot != null) (*_slot)(prompt);
         if (!hit) return;
         if (CommandRegistry.Global.TryDispatch(line, out string? reply) && reply != null) Echo(reply);
     }
@@ -96,7 +94,7 @@ public sealed unsafe class PromptCommandService : IExtenderService
     {
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;   // the dtor below frees whatever buffer lands here
-        if (OperatingSystem.IsWindows()) _getText(edit, (IntPtr)exo); else _getText((IntPtr)exo, edit);
+        new CGuiEdit(edit).GuiEditGetText(exo);
         byte* buf = *(byte**)exo;
         uint len = *(uint*)(exo + 8);
         var sb = new StringBuilder((int)Math.Min(len, 4096));
@@ -105,7 +103,7 @@ public sealed unsafe class PromptCommandService : IExtenderService
             if (buf[k] == '\n' || buf[k] == '\r') break;
             sb.Append((char)buf[k]);
         }
-        _exoDtor((IntPtr)exo);
+        EngineFn.ExoStringDtor((IntPtr)exo);
         return sb.ToString();
     }
 
@@ -120,8 +118,7 @@ public sealed unsafe class PromptCommandService : IExtenderService
         if (str.IsNull) return false;
         _probeOk ??= EngineLayout.Probe("CAurString", str.Ptr, _log);
         if (_probeOk == false) return false;
-        var setText = (delegate* unmanaged<IntPtr, IntPtr, void>)str.SetTextFn;
-        setText(str.Ptr, _empty);
+        str.SetText(_empty);
         return true;
     }
 

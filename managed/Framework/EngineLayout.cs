@@ -67,28 +67,28 @@ public static unsafe class EngineLayout
     // Measured, not assumed -- tools/abi/vtable-slots.py prints both tables side by side.
 
     /// <summary>Part::AsPartTriMesh() -- the type filter SkyBox/BucketGate/GrassField run a part through.</summary>
-    public static readonly int PartAsTriMeshSlot = Field("Part", "vtbl.AsPartTriMesh", Expect.VtblSlot);
+    public static readonly int PartAsTriMeshSlot = Field("Part", "vtbl.AsPartTriMesh", Expect.VtblSlot, sig: "PartTriMesh()");
 
     /// <summary>Part::AsPartBeam() -- same filter for the beam overlays (#130).</summary>
-    public static readonly int PartAsPartBeamSlot = Field("Part", "vtbl.AsPartBeam", Expect.VtblSlot);
+    public static readonly int PartAsPartBeamSlot = Field("Part", "vtbl.AsPartBeam", Expect.VtblSlot, sig: "PartBeam()");
 
     /// <summary>Part::PostProcess(Part*).</summary>
-    public static readonly int PartPostProcessSlot = Field("Part", "vtbl.PostProcess", Expect.VtblSlot);
+    public static readonly int PartPostProcessSlot = Field("Part", "vtbl.PostProcess", Expect.VtblSlot, sig: "void(Part part)");
 
     /// <summary>CAurTexture::AsCAurTextureBasic().</summary>
-    public static readonly int TexAsBasicSlot = Field("CAurTexture", "vtbl.AsCAurTextureBasic", Expect.VtblSlot);
+    public static readonly int TexAsBasicSlot = Field("CAurTexture", "vtbl.AsCAurTextureBasic", Expect.VtblSlot, sig: "CAurTextureBasic()");
 
     /// <summary>CAurTexture::GetReferencedTexture() -- the indirection every tid read goes through first.</summary>
-    public static readonly int TexReferencedSlot = Field("CAurTexture", "vtbl.GetReferencedTexture", Expect.VtblSlot);
+    public static readonly int TexReferencedSlot = Field("CAurTexture", "vtbl.GetReferencedTexture", Expect.VtblSlot, sig: "CAurTexture()");
 
     /// <summary>VertexPrimitive::SetupArrays() -- virtual on purpose: Skinned/Anim/Dangly each override it.</summary>
-    public static readonly int VpSetupArraysSlot = Field("VertexPrimitive", "vtbl.SetupArrays", Expect.VtblSlot);
+    public static readonly int VpSetupArraysSlot = Field("VertexPrimitive", "vtbl.SetupArrays", Expect.VtblSlot, sig: "void()");
 
     /// <summary>CAurBehavior::AsBehaviorCameraFollow() -- the camera-follow type filter (#65).</summary>
-    public static readonly int BehaviorAsFollowSlot = Field("CAurBehavior", "vtbl.AsBehaviorCameraFollow", Expect.VtblSlot);
+    public static readonly int BehaviorAsFollowSlot = Field("CAurBehavior", "vtbl.AsBehaviorCameraFollow", Expect.VtblSlot, sig: "CAurBehaviorCameraFollow()");
 
     /// <summary>CycleTIDTextureController::Control() -- one animated-texture tick.</summary>
-    public static readonly int CycleControlSlot = Field("CycleTIDTextureController", "vtbl.Control", Expect.VtblSlot);
+    public static readonly int CycleControlSlot = Field("CycleTIDTextureController", "vtbl.Control", Expect.VtblSlot, sig: "void()");
 
     // ================= Alloy: the Scene walk (#436, batch 1 of #429 section 2) =================
     // Measured 2026-09-11 with tools/ghidra/FieldDump.java over both programs in ~/ghidra/nwn-linux.rep,
@@ -123,7 +123,7 @@ public static unsafe class EngineLayout
 
     /// <summary>Scene -&gt; LightManager* (<c>Scene::RenderSinglePass</c> @0x46e5f0 calls
     /// <c>GetShadowLights(*(this + 0x158))</c>).</summary>
-    public static readonly int SceneLightManager = Field("Scene", "lightManager");
+    public static readonly int SceneLightManager = Field<CX.Engine.LightManager>("Scene", "lightManager");
 
     /// <summary>Scene -&gt; the embedded <c>DrawBucketManager</c> (0x310 bytes, constructed in place by
     /// <c>Scene::Scene</c> @0x4724f0; every <c>AddPartToBucket</c> call passes <c>this+0x208</c>).
@@ -135,7 +135,7 @@ public static unsafe class EngineLayout
     /// <summary>Scene vtable slot 81 -- <c>Scene::IsAnimating</c> @0x45e000. Vanilla gates the whole dangly
     /// solve on it, which is what stops cloaks swaying behind a paused menu. Both tables printed by
     /// <c>tools/abi/vtable-slots.py Scene</c>, and the -8 is the virtual-dtor rule #433 measured.</summary>
-    public static readonly int SceneIsAnimatingSlot = Field("Scene", "vtbl.IsAnimating", Expect.VtblSlot);
+    public static readonly int SceneIsAnimatingSlot = Field("Scene", "vtbl.IsAnimating", Expect.VtblSlot, sig: "byte()");
 
     // ---- Gob (identical 0x0..0x4b8: 28 offsets paired over 50 functions, no conflict) ----
 
@@ -152,10 +152,10 @@ public static unsafe class EngineLayout
     /// <summary>Gob -&gt; node pointer, and the same field the fade owner is read through. MUST be non-null
     /// before appending to the gobbucket: the sort comparator <c>FUN_0055e070</c> blindly derefs
     /// <c>*(gob+0x68)+0x8e</c> (the render path null-checks it, the sort does not).</summary>
-    public static readonly int GobNode = Field<IntPtr>("Gob", "node");
+    public static readonly int GobNode = Field<CX.Engine.Model>("Gob", "node");
     /// <summary>Gob -&gt; Part* part-tree root. <c>ProcessGob</c>/<c>AddPartsTreeToDrawBuckets</c> walk it;
     /// guard non-null so a geometry-less gob is skipped, not dereferenced.</summary>
-    public static readonly int GobPartTree = Field<IntPtr>("Gob", "partTree");
+    public static readonly int GobPartTree = Field<CX.Engine.Part>("Gob", "partTree");
     /// <summary>#256: the two LOD-alternate part-tree roots beside <see cref="GobPartTree"/>.
     /// <c>Gob::SetLODModel</c> @0x43e6a0 ROTATES the three against each other every frame, per visible gob,
     /// with no construction, no destruction and no epoch bump.</summary>
@@ -163,19 +163,19 @@ public static unsafe class EngineLayout
     /// <inheritdoc cref="GobLodRoot1"/>
     public static readonly int GobLodRoot2 = Field("Gob", "lodRoot2");
     /// <summary>Gob -&gt; world position (float x@+0xa8, y@+0xac, z@+0xb0).</summary>
-    public static readonly int GobPosition = Field("Gob", "position");
+    public static readonly int GobPosition = Field<System.Numerics.Vector3>("Gob", "position");
     /// <inheritdoc cref="GobHighlight"/>
     public static readonly int GobColourMul = Field<short>("Gob", "colourMul");
     /// <inheritdoc cref="GobHighlight"/>
     public static readonly int GobSelfIllum = Field<short>("Gob", "selfIllum");
     /// <inheritdoc cref="GobHighlight"/>
-    public static readonly int GobColour = Field("Gob", "colour");
+    public static readonly int GobColour = Field<System.Numerics.Vector3>("Gob", "colour");
     /// <inheritdoc cref="GobHighlight"/>
     public static readonly int GobAlpha = Field<float>("Gob", "alpha");
     /// <inheritdoc cref="GobHighlight"/>
     public static readonly int GobFadeAlpha = Field<float>("Gob", "fadeAlpha");
     /// <inheritdoc cref="GobHighlight"/>
-    public static readonly int GobEmissive = Field("Gob", "emissive");
+    public static readonly int GobEmissive = Field<System.Numerics.Vector3>("Gob", "emissive");
     /// <summary>#256: Gob -&gt; <c>CExoArrayList&lt;Part*&gt;</c> of the roots this gob APPENDED at runtime
     /// (items +0x130, count +0x138), parallel to the <c>Model*</c> array at +0x120. <c>Gob::Append</c>
     /// @0x4422a0 pushes here; <c>Gob::Amputate</c> @0x443fa0 removes.</summary>
@@ -186,7 +186,7 @@ public static unsafe class EngineLayout
     /// <c>ProcessStaticObject</c> @0x5619e0 stores the tile here (and the gob back at <c>tile+0x40</c>);
     /// <c>Gob::Gob</c> @0x540a00 zeroes it and only tile code ever writes it, so a non-null field is a
     /// positive "this gob is tileset geometry, not an object".</summary>
-    public static readonly int GobTileData = Field("Gob", "tileData");
+    public static readonly int GobTileData = Field<CX.Engine.TileData>("Gob", "tileData");
     /// <summary>#128: the per-gob environment-map override flag <c>PartTriMesh::Draw</c> @0x4513d0 reads.</summary>
     public static readonly int GobEnvOverride = Field<IntPtr>("Gob", "envOverride");
 
@@ -204,10 +204,10 @@ public static unsafe class EngineLayout
     /// <summary>#262: MdlNode -&gt; its parent MdlNode. <c>GatherBones</c> @0x482b10 admits a child part only
     /// when this matches the walked part's own node, which is what keeps the traversal INDEX equal to the
     /// engine's.</summary>
-    public static readonly int MdlNodeParent = Field<IntPtr>("MdlNode", "parent");
+    public static readonly int MdlNodeParent = Field<CX.Engine.MdlNode>("MdlNode", "parent");
     /// <summary>MdlNode -&gt; the node name (<c>char[]</c>) <c>FindPart</c> @0x43c5b0 strcasecmp-s through
     /// <see cref="PartNodeLink"/>. #397 forensics only.</summary>
-    public static readonly int MdlNodeName = Field("MdlNode", "name");
+    public static readonly int MdlNodeName = Field<byte>("MdlNode", "name");
     /// <summary>The class-kind bits <c>MdlNode::AsMdlNodeTriMesh</c> tests: the cast succeeds iff
     /// <c>(byte &amp; 0x21) == 0x21</c>. The whole function is that one test on both builds -- Linux
     /// @0x43adf0 reads it as a dword, Windows (rva 0x8c360) as a byte, same offset, same mask.</summary>
@@ -216,7 +216,7 @@ public static unsafe class EngineLayout
     public const int MdlNodeKindTriMesh = 0x21;
     /// <summary>#659: MdlNode -&gt; its <c>NewController</c> array (data +0x78, count +0x80, stride
     /// <see cref="NewControllerStride"/>). <c>MdlNode::InternalControl</c> @0x4990c0 is the loop, byte-for-byte
-    /// the same on both builds. NOTE: +0x80 is the same word <see cref="NodeFlags"/> reads as a matrix gate.</summary>
+    /// the same on both builds.</summary>
     public static readonly int MdlNodeControllers = Field("MdlNode", "controllers");
     /// <inheritdoc cref="MdlNodeControllers"/>
     public static readonly int MdlNodeControllerCount = Field("MdlNode", "controllerCount");
@@ -226,19 +226,21 @@ public static unsafe class EngineLayout
     public const int NewControllerStride = 0xc;
     /// <inheritdoc cref="NewControllerStride"/>
     public static readonly int NewControllerKeyCount = Field("NewController", "keyCount");
-    /// <summary>MdlNode -&gt; model matrix (row-major float[16]). RenderDrawBucket @0x46d060 passes exactly
-    /// that address to <c>RenderInterface::SetModelMatrix</c>. #448: <c>Scene::RenderDrawBucket</c>
-    /// (@0x46d060 / rva 0xcd210) passes <c>node+0x18</c> to <c>SetModelMatrix</c> under the same
-    /// <c>node+0x80 &amp; 0x1e</c> gate on both builds, and <c>MdlNode::MdlNode</c> (@0x43aab0 / rva 0x87290)
-    /// has an identical 0x0..0x98 store run.</summary>
-    public static readonly int NodeMatrix = Field("MdlNode", "matrix");
-    /// <summary>MdlNode -&gt; matrix flags; only a matrix-class part (<c>node+0x80 &amp; 0x1e</c>) gets its
-    /// matrix pushed.</summary>
-    public static readonly int NodeFlags = Field<byte>("MdlNode", "flags");
+    /// <summary>VertexPrimitive -&gt; model matrix (row-major float[16]). #448: <c>Scene::RenderDrawBucket</c>
+    /// (@0x46d060 / rva 0xcd210) passes <c>vp+0x18</c> to <c>SetModelMatrix</c> under the same
+    /// <c>vp+0x80 &amp; 0x1e</c> gate on both builds.
+    /// <para>The owning class is the VERTEX PRIMITIVE, not the MdlNode the row was first keyed to: the
+    /// disassembly reads <c>part+0x88</c> (<see cref="PartNode"/>) into the register it then derefs, and
+    /// takes the MdlNode at <c>part+0x8</c> separately two instructions later. Re-keyed with the values
+    /// unchanged, which also retires the collision with <see cref="MdlNodeControllerCount"/> at +0x80.</para></summary>
+    public static readonly int NodeMatrix = Field<System.Numerics.Matrix4x4>("VertexPrimitive", "matrix");
+    /// <summary>VertexPrimitive -&gt; matrix flags; only a matrix-class part (<c>vp+0x80 &amp; 0x1e</c>) gets
+    /// its matrix pushed. <inheritdoc cref="NodeMatrix"/></summary>
+    public static readonly int NodeFlags = Field<byte>("VertexPrimitive", "flags");
     /// <summary>#256: the primitive-type index, argument 3 of the engine's own <c>RenderVertexData</c> call.
     /// Read out of <c>RenderFlat</c> (@0x450eb0 / rva 0xa4710) as <c>node+0x270</c> on both builds -- Ghidra
     /// even types the Windows read <c>AuroraPrimitiveTypes*</c> (#448).</summary>
-    public static readonly int MdlPrimType = Field("MdlNode", "primType");
+    public static readonly int MdlPrimType = Field<int>("MdlNode", "primType");
 
     /// <summary>#338: the render gate <c>PartTriMesh::IsPartRenderable</c> @0x450e60 reads off the part's
     /// node -- zero here refuses the draw outright.</summary>
@@ -248,7 +250,7 @@ public static unsafe class EngineLayout
     /// <summary>#338: the short that picks which of the two gate branches runs.</summary>
     public static readonly int MdlRenderKind = Field<short>("MdlNodeTriMesh", "renderKind");
     /// <summary>The pool token holding a dangly mesh's REST positions.</summary>
-    public static readonly int MdlRestPool = Field("MdlNodeTriMesh", "restPool");
+    public static readonly int MdlRestPool = Field<uint>("MdlNodeTriMesh", "restPool");
     /// <summary>Vertex count beside <see cref="MdlRestPool"/>.</summary>
     public static readonly int MdlVertexCount = Field<ushort>("MdlNodeTriMesh", "vertexCount");
     /// <summary>The per-group index counts (<c>int[]</c>) and how many groups there are. With
@@ -281,7 +283,7 @@ public static unsafe class EngineLayout
     /// METHOD touches it on either build because the only reader is the free function
     /// <c>ExecuteSkinGPU</c> (@0x482800 / rva 0xdeb90), whose 64-iteration stride-2 walk starts at
     /// <c>node+800</c> on both.</summary>
-    public static readonly int SkinBoneMap = Field("MdlNodeSkin", "boneMap");
+    public static readonly int SkinBoneMap = Field<short>("MdlNodeSkin", "boneMap");
 
     /// <summary>The dangly solve's own parameters, from <c>MdlNodeDanglyMesh::InternalParseField</c>
     /// (@0x44da00 / rva 0x99e20): the per-vertex constraint array and its count, then displacement,
@@ -293,15 +295,15 @@ public static unsafe class EngineLayout
     /// <c>{data +0, count +8}</c> on both builds, measured on a <c>List</c> the decompiler TYPES as one --
     /// <c>ExecuteSkinGPU</c>'s <c>List&lt;Vector&gt;*</c> parameter, whose count it reads at <c>+8</c> on each
     /// build.</summary>
-    public static readonly int MdlConstraints = Field("MdlNodeDanglyMesh", "constraints");
+    public static readonly int MdlConstraints = Field<IntPtr>("MdlNodeDanglyMesh", "constraints");
     /// <inheritdoc cref="MdlConstraints"/>
-    public static readonly int MdlConstraintCount = Field("MdlNodeDanglyMesh", "constraintCount");
+    public static readonly int MdlConstraintCount = Field<int>("MdlNodeDanglyMesh", "constraintCount");
     /// <inheritdoc cref="MdlConstraints"/>
-    public static readonly int MdlDisplacement = Field("MdlNodeDanglyMesh", "displacement");
+    public static readonly int MdlDisplacement = Field<float>("MdlNodeDanglyMesh", "displacement");
     /// <inheritdoc cref="MdlConstraints"/>
-    public static readonly int MdlTightness = Field("MdlNodeDanglyMesh", "tightness");
+    public static readonly int MdlTightness = Field<float>("MdlNodeDanglyMesh", "tightness");
     /// <inheritdoc cref="MdlConstraints"/>
-    public static readonly int MdlPeriod = Field("MdlNodeDanglyMesh", "period");
+    public static readonly int MdlPeriod = Field<float>("MdlNodeDanglyMesh", "period");
 
     // ---- Part (identical 0x0..0x58) ----
 
@@ -309,20 +311,20 @@ public static unsafe class EngineLayout
     /// bone solve composes: <c>Vector</c> position at +0x10, <c>Quaternion</c> orientation at +0x1c stored
     /// (w,x,y,z). <c>Part::GetWorld</c> and <c>Part::GetLocal</c> touch the same eight offsets on both
     /// builds -- the compilers only order them differently, which is why the strict pairing dropped them.</summary>
-    public static readonly int PartPos = Field("Part", "pos");
+    public static readonly int PartPos = Field<System.Numerics.Vector3>("Part", "pos");
     /// <inheritdoc cref="PartPos"/>
-    public static readonly int PartRot = Field("Part", "rot");
+    public static readonly int PartRot = Field<CX.Engine.Quat>("Part", "rot");
     /// <summary>#256: Part -&gt; child array (items +0x38, count +0x40). Written by
     /// <c>CreateInstanceTreeR</c> @0x43c6b0 and freed by <c>Part::~Part</c> @0x437720.</summary>
     public static readonly int PartChildren = Field<IntPtr>("Part", "children");
     /// <inheritdoc cref="PartChildren"/>
     public static readonly int PartChildCount = Field<int>("Part", "childCount");
     /// <summary>The parent back-pointer <c>SkinPose</c> walks UP as well as down.</summary>
-    public static readonly int PartParent = Field<IntPtr>("Part", "parent");
+    public static readonly int PartParent = Field<CX.Engine.Part>("Part", "parent");
     /// <summary>Part -&gt; Gob* (the instance the part belongs to; null for world geometry).</summary>
-    public static readonly int PartGob = Field<IntPtr>("Part", "gob");
+    public static readonly int PartGob = Field<CX.Engine.Gob>("Part", "gob");
     /// <summary>Part -&gt; Material*. Ghidra RenderDrawBucket @0x46d060 / PartTriMesh::Draw @0x4513d0.</summary>
-    public static readonly int PartMaterial = Field<IntPtr>("Part", "material");
+    public static readonly int PartMaterial = Field<CX.Engine.Material>("Part", "material");
 
     // ---- PartTriMesh (segmented: its own block starts at 0x64 and runs +0x4, then +0x8 from 0x88) ----
     // The constructor is the anchor: Linux zeroes 0x64,0x6c,0x74,0x7c,0x84,0x8c as six 8-byte stores
@@ -337,16 +339,16 @@ public static unsafe class EngineLayout
     /// floats, so a GOB part carries zeros here forever.</para>
     /// <para>Windows: the ctor block above, plus <c>PartTriMesh::WithinRange</c> reading the six floats at
     /// 0x68..0x7c where Linux reads 0x64..0x78. Two witnesses, and it agrees with #430's hand pairing.</para></summary>
-    public static readonly int PartBboxMin = Field("PartTriMesh", "bboxMin");
+    public static readonly int PartBboxMin = Field<System.Numerics.Vector3>("PartTriMesh", "bboxMin");
     /// <inheritdoc cref="PartBboxMin"/>
-    public static readonly int PartBboxMax = Field("PartTriMesh", "bboxMax");
+    public static readonly int PartBboxMax = Field<System.Numerics.Vector3>("PartTriMesh", "bboxMax");
     /// <summary>Part -&gt; its <c>VertexPrimitive</c>, and NOT a node despite the name (#134: the vtables
     /// prove it, and its +0x10 is the back-pointer to the part itself). Paired twice on PartTriMesh and once
     /// on PartSkin, all +0x8.</summary>
-    public static readonly int PartNode = Field<IntPtr>("PartTriMesh", "vertexPrimitive");
+    public static readonly int PartNode = Field<CX.Engine.VertexPrimitive>("PartTriMesh", "vertexPrimitive");
     /// <summary>Part -&gt; TileData* (Ghidra CheckFadePlane @0x47bf30). The constructor's single 8-byte
     /// write, Linux 0x98 against Windows 0xa0.</summary>
-    public static readonly int PartTile = Field<IntPtr>("PartTriMesh", "tile");
+    public static readonly int PartTile = Field<CX.Engine.TileData>("PartTriMesh", "tile");
     /// <summary>#338: <c>part[0x96]</c>, the merged-away marker every <c>Part::Draw</c> override and
     /// <c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880 check before drawing anything.</summary>
     public static readonly int PartRenderFlag = Field<byte>("PartTriMesh", "renderFlag");
@@ -362,25 +364,25 @@ public static unsafe class EngineLayout
     /// position floats, tests the quaternion's x/y/z against zero and stores both back, identically shaped on
     /// each build, at +0xb4/+0xc0 on Linux and +0xc0/+0xcc on Windows. The class's own fields shift +0xc, not
     /// the +0x8 of its PartTriMesh base.</para></summary>
-    public static readonly int PartPrevPos = Field("PartDanglyMesh", "prevPos");
+    public static readonly int PartPrevPos = Field<System.Numerics.Vector3>("PartDanglyMesh", "prevPos");
     /// <inheritdoc cref="PartPrevPos"/>
-    public static readonly int PartPrevRot = Field("PartDanglyMesh", "prevRot");
+    public static readonly int PartPrevRot = Field<CX.Engine.Quat>("PartDanglyMesh", "prevRot");
 
     // ---- PartLight (own block from 0x64 runs +0x4; 0x64/0x68/0x6c paired, the rest is that segment) ----
 
     /// <summary>PartLight RGB. The direction is <see cref="LightDir"/> and NOT this -- reading the other
     /// pair extrudes the static projections the wrong way.</summary>
-    public static readonly int LightColour = Field("PartLight", "colour");
+    public static readonly int LightColour = Field<System.Numerics.Vector3>("PartLight", "colour");
     /// <summary>The MDL light node's <c>radius</c> controller (Ghidra <c>MdlNodeLight::InternalParseField</c>
     /// @0x44baf0). Directionals (sun/moon) carry ~100000 and points ~10, so it is also the discriminator.</summary>
-    public static readonly int LightRange = Field("PartLight", "range");
+    public static readonly int LightRange = Field<float>("PartLight", "range");
     /// <summary>Engine shadow-caster flag.</summary>
-    public static readonly int LightCastShadows = Field("PartLight", "castShadows");
+    public static readonly int LightCastShadows = Field<int>("PartLight", "castShadows");
     /// <summary>The <c>shadowradius</c> controller beside <see cref="LightRange"/>
     /// (<c>PartLight::PartLight</c> @0x43d1d0 defaults it to -1). Shadow-only, diagnostics here.</summary>
     public static readonly int LightRangeAlt = Field("PartLight", "rangeAlt");
     /// <summary>Light kind: 0 = point/directional, and a discriminant that must be zero for the walk.</summary>
-    public static readonly int LightKind = Field("PartLight", "kind");
+    public static readonly int LightKind = Field<int>("PartLight", "kind");
     /// <summary>Enable flags -- either set means active.</summary>
     public static readonly int LightFlagA = Field("PartLight", "flagA");
     /// <inheritdoc cref="LightFlagA"/>
@@ -391,7 +393,7 @@ public static unsafe class EngineLayout
     /// <summary>Intensity; the lit radius is <c>range * intensity</c> (GetLightAdjustedRadius).</summary>
     public static readonly int LightIntensity = Field("PartLight", "intensity");
     /// <summary>World position, and the direction <c>BSPCreateStaticProjections</c> bakes against.</summary>
-    public static readonly int LightDir = Field("PartLight", "pos");
+    public static readonly int LightDir = Field<System.Numerics.Vector3>("PartLight", "pos");
 
     // ---- LightManager (identical 0x0..0xc0) ----
 
@@ -416,7 +418,7 @@ public static unsafe class EngineLayout
     /// Camera's own accessors; they are NOT Gob's position/orientation, which sit 8 bytes lower.</summary>
     public static readonly int CamPos = Field<System.Numerics.Vector3>("Camera", "pos");
     /// <inheritdoc cref="CamPos"/>
-    public static readonly int CamRot = Field("Camera", "rot");
+    public static readonly int CamRot = Field<CX.Engine.Quat>("Camera", "rot");
     /// <summary>CAurCamera -&gt; current behavior host, a <c>CAurBehavior*</c>; its
     /// <see cref="BehaviorAsFollowSlot"/> is <c>AsBehaviorCameraFollow()</c>. Paired three times at delta 0,
     /// and the highest field in the base region that is.</summary>
@@ -453,9 +455,9 @@ public static unsafe class EngineLayout
     /// <summary>The material's own env map (<c>Material::HasEnvMap</c> @0x4c6180 tests exactly this field).
     /// NOT one of the numbered texture slots, so <c>GetTexture</c> never reaches it. Compared only, never
     /// dereferenced: a <c>CAurTexture*</c> is borrowed.</summary>
-    public static readonly int MatEnvMap = Field<IntPtr>("Material", "envMap");
+    public static readonly int MatEnvMap = Field<CX.Engine.CAurTexture>("Material", "envMap");
     /// <summary>Material -&gt; SharedMaterial* override.</summary>
-    public static readonly int MatShared = Field<IntPtr>("Material", "shared");
+    public static readonly int MatShared = Field<CX.Engine.SharedMaterial>("Material", "shared");
 
     // SharedMaterial is the one class here where the evidence points AT divergence without resolving it:
     // Windows SharedMaterial functions touch 0x190/0x1a1/0x1b2 -- the 0x11 resref stride, +0x8 from Linux's
@@ -507,7 +509,7 @@ public static unsafe class EngineLayout
     /// <c>strncpy(this + 0x88, name, 0x1f)</c>). #430 read all thirteen of the class's functions by hand:
     /// every offset 0x28..0xec agrees, and the Windows-only 0x90/0xa0 are MSVC splitting Linux's 16-byte SSE
     /// stores, not layout.</summary>
-    public static readonly int TexBasicName = Field("CAurTextureBasic", "name");
+    public static readonly int TexBasicName = Field<byte>("CAurTextureBasic", "name");
 
     // ---- VertexDataObject (0x8 delta 0; 0x14..0x44 +0x4; 0x48 and up back to delta 0) ----
 
@@ -555,15 +557,15 @@ public static unsafe class EngineLayout
     /// resident yet". #448: <c>RenderFlat</c> (@0x450eb0 / rva 0xa4710) passes <c>vp+0x58</c> and
     /// <c>vp+0x60</c> as those same two arguments on both builds, and <c>PartDanglyMesh::Animate</c> reads
     /// the pair again at the same offsets -- the class needs no method of its own to be measured.</summary>
-    public static readonly int VpVdo = Field("VertexPrimitive", "vdo");
+    public static readonly int VpVdo = Field<CX.Engine.VertexDataObject>("VertexPrimitive", "vdo");
     /// <inheritdoc cref="VpVdo"/>
-    public static readonly int VpItem = Field("VertexPrimitive", "item");
+    public static readonly int VpItem = Field<int>("VertexPrimitive", "item");
     /// <summary>VertexPrimitive -&gt; the <c>MdlNodeTriMesh</c> it draws, and the <c>Part*</c> list of the
     /// siblings merged into it (<c>CombineParts</c>) with its count. <c>SetupArrays</c> sums its geometry
     /// totals over this node first and then over <c>*(list[i] + </c><see cref="PartNodeLink"/><c>)</c> for
     /// <c>i &lt; count</c>; a NEGATIVE count skips the walk outright and the totals stay zero. Same function
     /// pair as <see cref="MdlIndexCount"/>, same offsets on both builds.</summary>
-    public static readonly int VpNode = Field<IntPtr>("VertexPrimitive", "node");
+    public static readonly int VpNode = Field<CX.Engine.MdlNode>("VertexPrimitive", "node");
     /// <inheritdoc cref="VpNode"/>
     public static readonly int VpCombineList = Field<IntPtr>("VertexPrimitive", "combineList");
     /// <inheritdoc cref="VpNode"/>
@@ -572,11 +574,11 @@ public static unsafe class EngineLayout
     /// <see cref="VpdVelocity"/> is the velocity array, NOT the VertexPrimitive itself (verified at
     /// 0x49bd85: the engine calls this and indexes +0xa0 off the RESULT). Both tables printed by
     /// <c>tools/abi/vtable-slots.py VertexPrimitive</c>: -8, like the other eight.</summary>
-    public static readonly int VpAsDanglySlot = Field("VertexPrimitive", "vtbl.AsDangly", Expect.VtblSlot);
+    public static readonly int VpAsDanglySlot = Field("VertexPrimitive", "vtbl.AsDangly", Expect.VtblSlot, sig: "IntPtr()");
     /// <summary>The engine's own per-vertex velocity array, which the dangly solve integrates in place.
     /// #448: <c>PartDanglyMesh::Animate</c> (@0x49bbb0 / rva 0x4ef50) null-checks <c>vpd+0xa0</c>, calls
     /// <c>GenerateVelocityArray</c> when it is null and then indexes it by vertex -- at 0xa0 on both.</summary>
-    public static readonly int VpdVelocity = Field("VertexPrimitiveDangly", "velocity");
+    public static readonly int VpdVelocity = Field<IntPtr>("VertexPrimitiveDangly", "velocity");
 
     /// <summary>#256: the BSP node's inventory pointer, and inside it the
     /// <c>CExoArrayList&lt;PartTriMesh*&gt;</c> of tile geometry (items +0x20, count +0x28).
@@ -602,7 +604,7 @@ public static unsafe class EngineLayout
     /// store -- identical on both builds. TileData needs no method of its own.</summary>
     public static readonly int TileFade = Field<float>("TileData", "fade");
     /// <inheritdoc cref="TileFade"/>
-    public static readonly int TilePendingFade = Field("TileData", "pendingFade");
+    public static readonly int TilePendingFade = Field<float>("TileData", "pendingFade");
 
     /// <summary>The 48 <c>DrawBucket</c> records at <see cref="SceneDrawBuckets"/> are 0x10 apart --
     /// <c>GetDrawBucketByItemType</c> (@0x47bd60 / rva 0xd94d0)'s <c>(type*3 + sub)*0x10</c> stride. A record
@@ -662,19 +664,19 @@ public static unsafe class EngineLayout
     public static readonly int FollowPitchImpulse = Field<float>("CAurBehaviorCameraFollow", "pitchImpulse");
     /// <summary>CAurBehaviorCameraFollow -&gt; yaw / pitch / dist clamp-enabled flags (floats, 0 or 1). Set by
     /// the server's LockCamera* and the lockcamera console var; the same words the photo mode locks with.</summary>
-    public static readonly int FollowYawClamp = Field("CAurBehaviorCameraFollow", "yawClamp");
+    public static readonly int FollowYawClamp = Field<float>("CAurBehaviorCameraFollow", "yawClamp");
     /// <inheritdoc cref="FollowYawClamp"/>
     public static readonly int FollowPitchClamp = Field<float>("CAurBehaviorCameraFollow", "pitchClamp");
     /// <inheritdoc cref="FollowYawClamp"/>
-    public static readonly int FollowDistClamp = Field("CAurBehaviorCameraFollow", "distClamp");
+    public static readonly int FollowDistClamp = Field<float>("CAurBehaviorCameraFollow", "distClamp");
     /// <summary>The clamp ranges: yaw +0x68/+0x6c, pitch +0x74/+0x78, dist +0x80/+0x84 (min, max). The mode
     /// reset pushes the client's [camera.limits] into them with the clamp ENABLED, so "enabled" is normal play;
     /// a server lock writes min = max = the current value (the Windows handler's lock arms, rva 0x77a7f0).</summary>
-    public static readonly int FollowYawMin = Field("CAurBehaviorCameraFollow", "yawMin");
+    public static readonly int FollowYawMin = Field<float>("CAurBehaviorCameraFollow", "yawMin", count: 2);
     /// <inheritdoc cref="FollowYawMin"/>
-    public static readonly int FollowPitchMin = Field("CAurBehaviorCameraFollow", "pitchMin");
+    public static readonly int FollowPitchMin = Field<float>("CAurBehaviorCameraFollow", "pitchMin", count: 2);
     /// <inheritdoc cref="FollowYawMin"/>
-    public static readonly int FollowDistMin = Field("CAurBehaviorCameraFollow", "distMin");
+    public static readonly int FollowDistMin = Field<float>("CAurBehaviorCameraFollow", "distMin", count: 2);
 
     /// <summary>CNWCModule -&gt; the module <c>Camera*</c>. <c>GetModuleCamera</c> (Linux @0x63a930) and the
     /// Windows camera message handler (rva 0x77a7f0) both read <c>GetModule()+0xe8</c>.</summary>
@@ -758,7 +760,7 @@ public static unsafe class EngineLayout
     public static readonly int InternalPlayerCreatureId = Field<uint>("CClientExoAppInternal", "playerCreatureId");
     /// <summary>CClientExoAppInternal -&gt; CNetLayer* (CX-694). <c>CClientExoApp::GetNetLayer</c> (Linux nm 0x6361a0, Windows
     /// rva 0x6abfb0, unexported: anchored in docs/windows-symbols.md) is the one-liner <c>*(*(this+8)+0x18)</c> on both builds.</summary>
-    public static readonly int InternalNetLayer = Field<IntPtr>("CClientExoAppInternal", "netLayer");
+    public static readonly int InternalNetLayer = Field<CX.Engine.CNetLayer>("CClientExoAppInternal", "netLayer");
     /// <summary>CNWCModule -&gt; server-synced game hour (u32). <c>CNWCMessage::HandleServerToPlayerModuleUpdate_Time</c>
     /// (Linux nm 0x76c630, Windows rva 0x7a58e0) stores the flag-2 byte at <c>module+0x16c</c> on both builds.</summary>
     public static readonly int ModuleHour = Field<int>("CNWCModule", "hour");
@@ -777,7 +779,7 @@ public static unsafe class EngineLayout
     /// <summary>Virtual slot of <c>CAurString::SetText(const char*)</c> -- the clear HandleEnter runs on the edit's string
     /// (Linux <c>*vtbl+0xd8</c> = the <c>StringGob</c> thunk <c>_ZThn1216_N9StringGob7SetTextEPKc</c>; Windows <c>+0xd0</c>,
     /// MSVC's single-slot virtual destructor). Both read off the HandleEnter bodies.</summary>
-    public static readonly int AurStringSetTextSlot = Field("CAurString", "vtbl.SetText", Expect.VtblSlot);
+    public static readonly int AurStringSetTextSlot = Field("CAurString", "vtbl.SetText", Expect.VtblSlot, sig: "void(IntPtr text)");
     /// <summary>CGuiInGame -&gt; CPanelQuickBar*. #439: <c>CGuiInGame::Initialize</c> (Linux @0x772600) and its
     /// Windows twin (rva 0x6f9190, the one caller of the CPanelQuickBar ctor) both store the freshly built
     /// panel to +0x60 and then write <c>+0x28 = 1</c>.</summary>
@@ -829,7 +831,7 @@ public static unsafe class EngineLayout
     /// <summary>Part -&gt; its MdlNode. <c>PartEmitter::Initialize</c> @0x4aaaa0 reads it as
     /// <c>MdlNodeEmitter*</c> and <c>Scene::RenderLensFlares</c> @0x471860 as the light's node -- one field,
     /// whichever subclass of node the part instantiates.</summary>
-    public static readonly int PartNodeLink = Field<IntPtr>("Part", "node");
+    public static readonly int PartNodeLink = Field<CX.Engine.MdlNode>("Part", "node");
     /// <summary>Part -&gt; uniform scale, the third term <c>Part::GetWorld</c> composes beside
     /// <see cref="PartPos"/> and <see cref="PartRot"/>. Paired directly on <c>Part::PostProcess</c>.</summary>
     public static readonly int PartScale = Field<float>("Part", "scale");
@@ -843,9 +845,9 @@ public static unsafe class EngineLayout
     /// <c>RenderVertexData(part+0xa0, part+0xa8, 4, 0xffffffff)</c>, so the beam capture needs no funnel arm.
     /// One validated pair, and it maps both offsets at delta 0 -- PartBeam does NOT inherit PartTriMesh's
     /// +0x8 (#430's rule that a class verdict does not travel, running the other way).</summary>
-    public static readonly int BeamVdo = Field("PartBeam", "vdo");
+    public static readonly int BeamVdo = Field<IntPtr>("PartBeam", "vdo");
     /// <inheritdoc cref="BeamVdo"/>
-    public static readonly int BeamItem = Field("PartBeam", "item");
+    public static readonly int BeamItem = Field<int>("PartBeam", "item");
 
     // ---- PartLight: one more field in the +0x4 block ----
 
@@ -855,7 +857,7 @@ public static unsafe class EngineLayout
     /// @0x4c2050 scales the area terms by +0x90. #441 opened expecting one of the two to be wrong; the
     /// <c>PartLight</c> constructor @0x43d1d0 stores 8 bytes at 0x8c and again at 0x9c, so both dwords exist.
     /// Windows by the class's uniform +0x4: the ctor's whole run moves 0x64..0xb7 to 0x68..0xbb.</summary>
-    public static readonly int LightFlareFade = Field("PartLight", "flareFade");
+    public static readonly int LightFlareFade = Field<float>("PartLight", "flareFade");
 
     // ---- PartEmitter: four segments and a sign change (#430's worst case, now measured) ----
     // Anchored on eight function pairs (RenderEmitter, RenderNothing, GetTileAlpha, chkRandom,
@@ -865,53 +867,53 @@ public static unsafe class EngineLayout
     // The -0x8 is corroborated by the object's own end: moveParticle pairs 0x1f8 -> 0x1f0.
 
     /// <summary>Blend mode: 1 = punch-through, 0 = normal alpha, anything else = additive.</summary>
-    public static readonly int EmBlend = Field("PartEmitter", "blend");
+    public static readonly int EmBlend = Field<int>("PartEmitter", "blend");
     /// <summary>Alpha at the end and the start of life (in that order in memory).</summary>
-    public static readonly int EmAlphaEnd = Field("PartEmitter", "alphaEnd");
+    public static readonly int EmAlphaEnd = Field<float>("PartEmitter", "alphaEnd");
     /// <inheritdoc cref="EmAlphaEnd"/>
-    public static readonly int EmAlphaStart = Field("PartEmitter", "alphaStart");
+    public static readonly int EmAlphaStart = Field<float>("PartEmitter", "alphaStart");
     /// <summary>Colour at the end and the start of life, three floats each.</summary>
-    public static readonly int EmColorEnd = Field("PartEmitter", "colorEnd");
+    public static readonly int EmColorEnd = Field<System.Numerics.Vector3>("PartEmitter", "colorEnd");
     /// <inheritdoc cref="EmColorEnd"/>
-    public static readonly int EmColorStart = Field("PartEmitter", "colorStart");
+    public static readonly int EmColorStart = Field<System.Numerics.Vector3>("PartEmitter", "colorStart");
     /// <summary>UV-grid animation: frames per second, then the end and start frame indices. A zero fps or
     /// equal ends means the frame index never advances.</summary>
-    public static readonly int EmFps = Field("PartEmitter", "fps");
+    public static readonly int EmFps = Field<float>("PartEmitter", "fps");
     /// <inheritdoc cref="EmFps"/>
-    public static readonly int EmFrameEnd = Field("PartEmitter", "frameEnd");
+    public static readonly int EmFrameEnd = Field<float>("PartEmitter", "frameEnd");
     /// <inheritdoc cref="EmFps"/>
-    public static readonly int EmFrameStart = Field("PartEmitter", "frameStart");
+    public static readonly int EmFrameStart = Field<float>("PartEmitter", "frameStart");
     /// <summary>Particle lifetime. Zero draws nothing at all -- the engine's own early-out.</summary>
-    public static readonly int EmLife = Field("PartEmitter", "life");
+    public static readonly int EmLife = Field<float>("PartEmitter", "life");
     /// <summary>Quad half-extents before the 0.5 and the Gob scale: X at start/end, then Y at start/end.
     /// All four move together in <c>RenderEmitter</c>'s own read run.</summary>
-    public static readonly int EmSizeStartX = Field("PartEmitter", "sizeStartX");
+    public static readonly int EmSizeStartX = Field<float>("PartEmitter", "sizeStartX");
     /// <inheritdoc cref="EmSizeStartX"/>
-    public static readonly int EmSizeEndX = Field("PartEmitter", "sizeEndX");
+    public static readonly int EmSizeEndX = Field<float>("PartEmitter", "sizeEndX");
     /// <inheritdoc cref="EmSizeStartX"/>
-    public static readonly int EmSizeStartY = Field("PartEmitter", "sizeStartY");
+    public static readonly int EmSizeStartY = Field<float>("PartEmitter", "sizeStartY");
     /// <inheritdoc cref="EmSizeStartX"/>
-    public static readonly int EmSizeEndY = Field("PartEmitter", "sizeEndY");
+    public static readonly int EmSizeEndY = Field<float>("PartEmitter", "sizeEndY");
     /// <summary>The second fade owner the draw early-out tests, beside the Gob's own
     /// <see cref="GobTileData"/>. The only witness of the +0x8 segment's low end, and it has three
     /// (GetTileAlpha, RenderNothing, RenderEmitter all pair 0xf8 -&gt; 0x100).</summary>
-    public static readonly int EmTileOwner = Field("PartEmitter", "tileOwner");
+    public static readonly int EmTileOwner = Field<CX.Engine.TileData>("PartEmitter", "tileOwner");
     /// <summary><c>Particle**</c>, and the count. The array is dense: index i is drawn as quad i.</summary>
-    public static readonly int EmParts = Field("PartEmitter", "parts");
+    public static readonly int EmParts = Field<IntPtr>("PartEmitter", "parts");
     /// <inheritdoc cref="EmParts"/>
-    public static readonly int EmCount = Field("PartEmitter", "count");
+    public static readonly int EmCount = Field<int>("PartEmitter", "count");
     /// <summary>Render type -- which billboard basis the quads get.</summary>
-    public static readonly int EmType = Field("PartEmitter", "type");
+    public static readonly int EmType = Field<int>("PartEmitter", "type");
     /// <summary>The Material whose slot-0 texture every quad samples. First field of the -0x8 segment.</summary>
-    public static readonly int EmMaterial = Field("PartEmitter", "material");
+    public static readonly int EmMaterial = Field<CX.Engine.Material>("PartEmitter", "material");
     /// <summary>Interpolation domain (a SHORT, not an int): 0 interpolates over the particle's INDEX in the
     /// array, non-zero over its age. Reading it as an int folds in the two bytes above and turns every
     /// index-interpolated emitter into an age-interpolated one.</summary>
-    public static readonly int EmLifeInterp = Field("PartEmitter", "lifeInterp");
+    public static readonly int EmLifeInterp = Field<short>("PartEmitter", "lifeInterp");
     /// <summary>The emitter's own orientation quaternion, stored (w, x, y, z).</summary>
-    public static readonly int EmOrient = Field("PartEmitter", "orient");
+    public static readonly int EmOrient = Field<CX.Engine.Quat>("PartEmitter", "orient");
     /// <summary>Emitter world position, the point the particle tint is sampled at.</summary>
-    public static readonly int EmPos = Field("PartEmitter", "pos");
+    public static readonly int EmPos = Field<System.Numerics.Vector3>("PartEmitter", "pos");
 
     // ---- Particle (identical 0x0..0x77) ----
     // Two anchors, and both are exact: Particle::Particle touches the same thirteen offsets on both builds,
@@ -919,25 +921,25 @@ public static unsafe class EngineLayout
 
     /// <summary>Position, and the position the previous simulation step left. The previous one is only read
     /// by the motion-blurred type, where it is the far edge of a stretched quad.</summary>
-    public static readonly int ParticlePos = Field("Particle", "pos");
+    public static readonly int ParticlePos = Field<System.Numerics.Vector3>("Particle", "pos");
     /// <inheritdoc cref="ParticlePos"/>
-    public static readonly int ParticlePrevPos = Field("Particle", "prevPos");
+    public static readonly int ParticlePrevPos = Field<System.Numerics.Vector3>("Particle", "prevPos");
     /// <summary>Roll about the billboard normal, in radians (the engine feeds it to <c>sincosf</c> after
     /// halving, i.e. as a quaternion half-angle).</summary>
-    public static readonly int ParticleRoll = Field("Particle", "roll");
+    public static readonly int ParticleRoll = Field<float>("Particle", "roll");
     /// <summary>The particle's own orientation quaternion, (w, x, y, z) -- render type 5's whole basis.</summary>
-    public static readonly int ParticleQuat = Field("Particle", "quat");
+    public static readonly int ParticleQuat = Field<CX.Engine.Quat>("Particle", "quat");
     /// <summary>UV-grid frame index, and the age at which it last advanced. Both are WRITTEN by the vertex
     /// build: owning the build means owning that advance, or every animated particle freezes.</summary>
-    public static readonly int ParticleFrame = Field("Particle", "frame");
+    public static readonly int ParticleFrame = Field<int>("Particle", "frame");
     /// <inheritdoc cref="ParticleFrame"/>
-    public static readonly int ParticleFrameTime = Field("Particle", "frameTime");
+    public static readonly int ParticleFrameTime = Field<float>("Particle", "frameTime");
     /// <summary>The splat normal, used as the billboard's reference axis on a splat emitter.</summary>
-    public static readonly int ParticleSplatNormal = Field("Particle", "splatNormal");
+    public static readonly int ParticleSplatNormal = Field<System.Numerics.Vector3>("Particle", "splatNormal");
     /// <summary>Splat flag (one byte) and age.</summary>
-    public static readonly int ParticleSplat = Field("Particle", "splat");
+    public static readonly int ParticleSplat = Field<byte>("Particle", "splat");
     /// <inheritdoc cref="ParticleSplat"/>
-    public static readonly int ParticleAge = Field("Particle", "age");
+    public static readonly int ParticleAge = Field<float>("Particle", "age");
 
     // ---- MdlNodeEmitter (a +0x4 segment, and a boundary nobody has pinned) ----
 
@@ -945,9 +947,9 @@ public static unsafe class EngineLayout
     /// <para>Windows from the constructor, which pairs 0xa4 -&gt; 0xa8 and 0xb0 -&gt; 0xb4 and so brackets
     /// both of these inside one +0x4 run; every one of the class's 22 Enable/Is accessors pairs its flags
     /// word 0x170 -&gt; 0x174, which is the same +0x4 higher up.</para></summary>
-    public static readonly int EmitterGridX = Field("MdlNodeEmitter", "gridX");
+    public static readonly int EmitterGridX = Field<int>("MdlNodeEmitter", "gridX");
     /// <inheritdoc cref="EmitterGridX"/>
-    public static readonly int EmitterGridY = Field("MdlNodeEmitter", "gridY");
+    public static readonly int EmitterGridY = Field<int>("MdlNodeEmitter", "gridY");
     /// <summary>Non-zero DISABLES back-face culling (the engine reads it as
     /// <c>if (node+0x164 == 0) Enable(CULL_FACE) else Disable(CULL_FACE)</c>).
     /// <para>#448 found the second reader the ctor's ambiguity was waiting on: <c>PartEmitter::RenderEmitter</c>
@@ -955,7 +957,7 @@ public static unsafe class EngineLayout
     /// <c>*(int*)(node + off) == 0</c> into <c>Enable(3)</c>/<c>Disable(3)</c>, at 0x164 on Linux and 0x168
     /// on Windows. That is +0x4, the same as the ctor's 0x154 and 0x16c neighbours -- so the store the
     /// Windows decompiler folded onto 0x160 was the artefact, not the map.</para></summary>
-    public static readonly int EmitterNoCull = Field("MdlNodeEmitter", "noCull");
+    public static readonly int EmitterNoCull = Field<int>("MdlNodeEmitter", "noCull");
 
     // ---- MdlNodeLight: the lens-flare declaration (no validated pair on either build) ----
 
@@ -968,22 +970,22 @@ public static unsafe class EngineLayout
     /// divisor, the count is the loop bound, the sizes array scales the screen offset and the shifts array is
     /// added to the colour as three floats. The class diverges in two segments -- the radius is +0x4, the
     /// three above it +0x8.</para></summary>
-    public static readonly int FlareRadius = Field("MdlNodeLight", "flareRadius");
+    public static readonly int FlareRadius = Field<float>("MdlNodeLight", "flareRadius");
     /// <inheritdoc cref="FlareRadius"/>
-    public static readonly int FlareCount = Field("MdlNodeLight", "flareCount");
+    public static readonly int FlareCount = Field<int>("MdlNodeLight", "flareCount");
     /// <inheritdoc cref="FlareRadius"/>
-    public static readonly int FlareSizes = Field("MdlNodeLight", "flareSizes");
+    public static readonly int FlareSizes = Field<IntPtr>("MdlNodeLight", "flareSizes");
     /// <inheritdoc cref="FlareRadius"/>
-    public static readonly int FlareShifts = Field("MdlNodeLight", "flareShifts");
+    public static readonly int FlareShifts = Field<IntPtr>("MdlNodeLight", "flareShifts");
 
     // ---- MdlNodeTriMesh: the faces the grass binner reads ----
 
     /// <summary>MdlNodeTriMesh -&gt; faces (items +0xb0, count +0xb8), the array <c>Scene::AddFacesToBins</c>
     /// @0x460ef0 and <c>CAurTriangleList::AddTriangle</c> @0x4b5650 bin the engine's own grass from.
     /// <c>InternalGenVertices</c> pairs both offsets at delta 0, and <c>BuildVertexIndices</c> agrees.</summary>
-    public static readonly int MeshFaces = Field("MdlNodeTriMesh", "faces");
+    public static readonly int MeshFaces = Field<IntPtr>("MdlNodeTriMesh", "faces");
     /// <inheritdoc cref="MeshFaces"/>
-    public static readonly int MeshFaceCount = Field("MdlNodeTriMesh", "faceCount");
+    public static readonly int MeshFaceCount = Field<int>("MdlNodeTriMesh", "faceCount");
 
     /// <summary>One <c>MaxFace</c> record: material index at +0x10, the three vertex indices as u16 at
     /// +0x1a/+0x1c/+0x1e, 0x20 bytes a record.
@@ -994,11 +996,11 @@ public static unsafe class EngineLayout
     /// is read off the Windows arithmetic and never carried over.</para></summary>
     public static readonly int FaceStride = Field("MaxFace", "stride");
     /// <inheritdoc cref="FaceStride"/>
-    public static readonly int FaceVertA = Field("MaxFace", "vertA");
+    public static readonly int FaceVertA = Field<ushort>("MaxFace", "vertA");
     /// <inheritdoc cref="FaceStride"/>
-    public static readonly int FaceVertB = Field("MaxFace", "vertB");
+    public static readonly int FaceVertB = Field<ushort>("MaxFace", "vertB");
     /// <inheritdoc cref="FaceStride"/>
-    public static readonly int FaceVertC = Field("MaxFace", "vertC");
+    public static readonly int FaceVertC = Field<ushort>("MaxFace", "vertC");
     /// <summary>Stride of the host-side shadow of a vertex pool: positions 12 bytes apart. Same kind of
     /// unowned record as <see cref="FaceStride"/>, and read the same way -- on the caller. The tangent-basis
     /// worker (Linux @0x456190, reached from <c>MdlNodeTriMesh::CalculateTangentSpaceBasis</c> @0x457710;
@@ -1013,28 +1015,28 @@ public static unsafe class EngineLayout
     /// <c>SetSkyAlpha</c> @0x45f100 share: four skybox gobs from +0x18, the cross-fade gob at +0x38, the fade
     /// parameter t at +0x40, the current and desired slot indices (-1 = none) at +0x44/+0x48, and the
     /// "skybox off" byte at +0x4c that <c>TurnOffSkyBox</c> sets.</summary>
-    public static readonly int SceneSkyGobs = Field("Scene", "skyGobs");
+    public static readonly int SceneSkyGobs = Field<CX.Engine.Gob>("Scene", "skyGobs", count: 4);
     /// <inheritdoc cref="SceneSkyGobs"/>
-    public static readonly int SceneSkyFadeGob = Field("Scene", "skyFadeGob");
+    public static readonly int SceneSkyFadeGob = Field<CX.Engine.Gob>("Scene", "skyFadeGob");
     /// <inheritdoc cref="SceneSkyGobs"/>
-    public static readonly int SceneSkyT = Field("Scene", "skyT");
+    public static readonly int SceneSkyT = Field<float>("Scene", "skyT");
     /// <inheritdoc cref="SceneSkyGobs"/>
-    public static readonly int SceneSkyCur = Field("Scene", "skyCur");
+    public static readonly int SceneSkyCur = Field<int>("Scene", "skyCur");
     /// <inheritdoc cref="SceneSkyGobs"/>
-    public static readonly int SceneSkyDesired = Field("Scene", "skyDesired");
+    public static readonly int SceneSkyDesired = Field<int>("Scene", "skyDesired");
     /// <inheritdoc cref="SceneSkyGobs"/>
-    public static readonly int SceneSkyOff = Field("Scene", "skyOff");
+    public static readonly int SceneSkyOff = Field<byte>("Scene", "skyOff");
     /// <summary>Where <c>RenderSkyBoxes</c> parks every sky gob: <c>Gob::SetPosition(Scene+0x190)</c>, a
     /// <c>Vector</c>, called once per gob per frame right before <c>Gob::Render</c>. Paired twice.</summary>
-    public static readonly int SceneSkyPos = Field("Scene", "skyPos");
+    public static readonly int SceneSkyPos = Field<System.Numerics.Vector3>("Scene", "skyPos");
     /// <summary>Scene -&gt; the light a shadow view is currently being baked for.</summary>
-    public static readonly int SceneCurrentLight = Field("Scene", "currentLight");
+    public static readonly int SceneCurrentLight = Field<CX.Engine.PartLight>("Scene", "currentLight");
     /// <summary>Scene's shadow-light list (<c>PartLight**</c> at +0x60, count at +0x68) -- the one
     /// <c>Scene::RenderBeams</c> @0x46aba0 scans for the beam direction. NOT the LightManager's master list
     /// at <see cref="LmMasterData"/>, and not <see cref="SceneLightManager"/>.</summary>
-    public static readonly int SceneShadowLights = Field("Scene", "shadowLights");
+    public static readonly int SceneShadowLights = Field<IntPtr>("Scene", "shadowLights");
     /// <inheritdoc cref="SceneShadowLights"/>
-    public static readonly int SceneShadowLightCount = Field("Scene", "shadowLightCount");
+    public static readonly int SceneShadowLightCount = Field<int>("Scene", "shadowLightCount");
     /// <summary><c>Scene+0x1e8</c>: the scene's environment map, a <c>SafePointer&lt;CAurTexture&gt;</c> whose
     /// first word is the borrowed texture. <c>Scene::Render</c> @0x5762d0 fills it once per scene from the
     /// TILESET's own resref (<c>CNWTileSet::GetEnvMapResRef</c>) and falls back to
@@ -1043,7 +1045,7 @@ public static unsafe class EngineLayout
     /// at <c>this+0x1e8</c> from <c>GetEnvMapResRef</c> and falls back to
     /// <c>AurTextureGetFallbackEnvironmentMap</c> at the same offset on both builds; <c>RenderFlat</c> binds
     /// <c>currentscene+0x1e8</c> on both. The Scene ctor zeroes 0x1e8 on both.</para></summary>
-    public static readonly int SceneEnvMap = Field("Scene", "envMap");
+    public static readonly int SceneEnvMap = Field<CX.Engine.CAurTexture>("Scene", "envMap");
 
     // ---- Gob: four more fields and one vtable slot ----
 
@@ -1051,23 +1053,23 @@ public static unsafe class EngineLayout
     /// <c>Gob::GetBoundingBox</c> @0x436ee0 is a plain read of exactly these two, no recompute, and it pairs
     /// at delta 0. Only the EXTENT is used (the pair's space is not established, and the extent is the same
     /// either way); it is centred on <see cref="GobPosition"/>, which is unambiguously world.</summary>
-    public static readonly int GobBoundsMin = Field("Gob", "boundsMin");
+    public static readonly int GobBoundsMin = Field<System.Numerics.Vector3>("Gob", "boundsMin");
     /// <inheritdoc cref="GobBoundsMin"/>
-    public static readonly int GobBoundsMax = Field("Gob", "boundsMax");
+    public static readonly int GobBoundsMax = Field<System.Numerics.Vector3>("Gob", "boundsMax");
     /// <summary>The "visible" byte <c>Gob::Render</c> gates on.</summary>
     public static readonly int GobVisible = Field<byte>("Gob", "visible");
     /// <summary>Gob -&gt; the attachment link whose chain multiplies a further lerped scale into the gob's
     /// own. Paired three times at delta 0, and the highest Gob field #436 measured.</summary>
-    public static readonly int GobAttach = Field<IntPtr>("Gob", "attach");
+    public static readonly int GobAttach = Field<CX.Engine.CAurBehavior>("Gob", "attach");
     /// <summary>CAurBehavior -&gt; the SafePointer&lt;CAurObject&gt; naming the object the behaviour hangs its gob
     /// off: the parent for the five CAurBehaviorAttach* classes (body parts, held items), the follow target
     /// for the camera ones, zero for Navigate. The raw pointer is the SafePointer's first word. Both ctors
     /// write it at +0x20 (Linux @0x5a2d50, Windows @0x140053b30, #490).</summary>
-    public static readonly int BehaviorTarget = Field<IntPtr>("CAurBehavior", "target");
+    public static readonly int BehaviorTarget = Field<CX.Engine.Gob>("CAurBehavior", "target");
     /// <summary><c>Gob::GetAdjustedScale() const</c> -- the scale every emitter size term is multiplied by.
     /// Printed on both sides by <c>tools/abi/vtable-slots.py Gob</c>; -8, like every other slot (#433).</summary>
     public static readonly int GobAdjustedScaleSlot =
-        Field("Gob", "vtbl.GetAdjustedScale", Expect.VtblSlot);
+        Field("Gob", "vtbl.GetAdjustedScale", Expect.VtblSlot, sig: "float()");
 
     // ---- TileData: three fields the constructor pairs exactly ----
     // TileData::TileData writes 0x0..0xcb on both builds and agrees store for store outside 0x58..0x7c,
@@ -1077,14 +1079,14 @@ public static unsafe class EngineLayout
     /// <summary>TileData -&gt; its surviving parts (<c>CExoArrayList&lt;Part*&gt;</c>, items +0x30, count
     /// +0x38): the array <c>Scene::SpawnTile</c> @0x474470 walks and <c>ProcessStaticParts</c> @0x470970
     /// fills.</summary>
-    public static readonly int TileParts = Field("TileData", "parts");
+    public static readonly int TileParts = Field<IntPtr>("TileData", "parts");
     /// <inheritdoc cref="TileParts"/>
-    public static readonly int TilePartCount = Field("TileData", "partCount");
+    public static readonly int TilePartCount = Field<int>("TileData", "partCount");
     /// <summary>The fade factor <c>PartEmitter::RenderEmitter</c> @0x4ad4c0 declines on: below 1.0 the engine
     /// draws the emitter not at all. Reached through <see cref="GobTileData"/> or
     /// <see cref="EmTileOwner"/>. A THIRD float, distinct from <see cref="TileFade"/> and
     /// <see cref="TilePendingFade"/>, which <c>HandleFadingInBucket</c> @0x47f670 drives.</summary>
-    public static readonly int TileGeomFade = Field("TileData", "geomFade");
+    public static readonly int TileGeomFade = Field<float>("TileData", "geomFade");
     /// <summary>#546: the fog-of-war flag <c>AuroraSetTileFoggedByWar</c> @0x453320 writes (one byte, with
     /// <see cref="TileGeomFade"/> zeroed beside it); while set, the @0x481000 visitor holds the ramp at 0.
     /// Alloy reads the ramp, not the flag: the flag has no expression the ramp does not already carry.
@@ -1095,23 +1097,23 @@ public static unsafe class EngineLayout
 
     /// <summary><c>CAurTriangleBin</c>: the triangle-list array at +0x38 and its count at +0x40, from
     /// <c>RenderGrassPolys</c> @0x4b5410. Nine of the class's functions pair, every one at delta 0.</summary>
-    public static readonly int BinLists = Field("CAurTriangleBin", "lists");
+    public static readonly int BinLists = Field<IntPtr>("CAurTriangleBin", "lists");
     /// <inheritdoc cref="BinLists"/>
-    public static readonly int BinListCount = Field("CAurTriangleBin", "listCount");
+    public static readonly int BinListCount = Field<int>("CAurTriangleBin", "listCount");
 
     /// <summary><c>CAurTriangleList</c>: the flat vertex array (three vec3 per face, stride 0x24) with its
     /// FLOAT count at +8, the parallel per-face blade counts at +0x30 with their count at +0x38, and the
     /// grass material index at +0x40 -- <c>RenderGrassPolys</c> compares exactly that against the material it
     /// is drawing. Seven paired functions, all delta 0, bracketing 0x40 between 0x3c and 0x48.</summary>
-    public static readonly int ListVerts = Field("CAurTriangleList", "verts");
+    public static readonly int ListVerts = Field<IntPtr>("CAurTriangleList", "verts");
     /// <inheritdoc cref="ListVerts"/>
-    public static readonly int ListVertFloats = Field("CAurTriangleList", "vertFloats");
+    public static readonly int ListVertFloats = Field<int>("CAurTriangleList", "vertFloats");
     /// <inheritdoc cref="ListVerts"/>
-    public static readonly int ListBlades = Field("CAurTriangleList", "blades");
+    public static readonly int ListBlades = Field<IntPtr>("CAurTriangleList", "blades");
     /// <inheritdoc cref="ListVerts"/>
-    public static readonly int ListBladeCount = Field("CAurTriangleList", "bladeCount");
+    public static readonly int ListBladeCount = Field<int>("CAurTriangleList", "bladeCount");
     /// <inheritdoc cref="ListVerts"/>
-    public static readonly int ListMat = Field("CAurTriangleList", "mat");
+    public static readonly int ListMat = Field<int>("CAurTriangleList", "mat");
 
     /// <summary><c>CAurGrassInfo</c>, 0x54 bytes: 32-char texture name, density, blade height (the quad is
     /// height wide AND height tall), diffuse and ambient colours, and the four 2x2-atlas selection
@@ -1120,20 +1122,20 @@ public static unsafe class EngineLayout
     /// builds -- 0x0 and 0x50 as single bytes, 0x20..0x4f as floats (Windows splits the 8-byte stores at
     /// 0x40 and 0x48, which is a decompiler difference, not a layout one). One anchor rather than #430's
     /// preferred pair, because there is no second function to be had.</para></summary>
-    public static readonly int GrassInfoName = Field("CAurGrassInfo", "name");
+    public static readonly int GrassInfoName = Field<byte>("CAurGrassInfo", "name");
     /// <summary>Blades per face in <c>AddTriangle</c> are <c>|cross| * 0.5 * density</c>, i.e. face area
     /// times this.</summary>
-    public static readonly int GrassInfoDensity = Field("CAurGrassInfo", "density");
+    public static readonly int GrassInfoDensity = Field<float>("CAurGrassInfo", "density");
     /// <inheritdoc cref="GrassInfoName"/>
-    public static readonly int GrassInfoHeight = Field("CAurGrassInfo", "height");
+    public static readonly int GrassInfoHeight = Field<float>("CAurGrassInfo", "height");
     /// <inheritdoc cref="GrassInfoName"/>
-    public static readonly int GrassInfoDiffuse = Field("CAurGrassInfo", "diffuse");
+    public static readonly int GrassInfoDiffuse = Field<System.Numerics.Vector3>("CAurGrassInfo", "diffuse");
     /// <inheritdoc cref="GrassInfoName"/>
-    public static readonly int GrassInfoAmbient = Field("CAurGrassInfo", "ambient");
+    public static readonly int GrassInfoAmbient = Field<System.Numerics.Vector3>("CAurGrassInfo", "ambient");
     /// <inheritdoc cref="GrassInfoName"/>
-    public static readonly int GrassInfoProb = Field("CAurGrassInfo", "prob");
+    public static readonly int GrassInfoProb = Field<float>("CAurGrassInfo", "prob", count: 4);
     /// <inheritdoc cref="GrassInfoName"/>
-    public static readonly int GrassInfoInUse = Field("CAurGrassInfo", "inUse");
+    public static readonly int GrassInfoInUse = Field<byte>("CAurGrassInfo", "inUse");
     /// <summary>Record size of <see cref="GrassInfoName"/>'s class -- the stride <c>g_GrassInfo</c> is
     /// indexed by. A SIZE, and the one row here resting on an ABI argument rather than a reading: the ctor
     /// puts the last member (a byte) at 0x50 on both, the largest member is a float, and the class has no
@@ -1147,7 +1149,7 @@ public static unsafe class EngineLayout
     /// <para>All seven of the class's functions pair, and the union of what they touch is 0x18..0x57 on both
     /// builds and nothing else -- which measures the top AND the stride, since the stride is the class's own
     /// size.</para></summary>
-    public static readonly int MtxStackTop = Field("aurMatrixStack", "top");
+    public static readonly int MtxStackTop = Field<System.Numerics.Matrix4x4>("aurMatrixStack", "top");
     /// <inheritdoc cref="MtxStackTop"/>
     public static readonly int MtxStackStride = Field("aurMatrixStack", "stride");
 
@@ -1159,15 +1161,15 @@ public static unsafe class EngineLayout
     /// <para>#443 resolved what #441 could not: <c>Material::InitSharedMaterial</c> writes the pointer at
     /// +0x118 and the count at +0x120 on BOTH builds, and Windows <c>CheckAndBindCustomShader</c> reads the
     /// same pair Linux's <c>SetMaterialParam</c> does. Two function pairs, no inference.</para></summary>
-    public static readonly int MatParams = Field("Material", "params");
+    public static readonly int MatParams = Field<IntPtr>("Material", "params");
     /// <inheritdoc cref="MatParams"/>
-    public static readonly int MatParamCount = Field("Material", "paramCount");
+    public static readonly int MatParamCount = Field<int>("Material", "paramCount");
     /// <summary>The shared half of <see cref="MatParams"/>. <c>SharedMaterial::Init</c> reads
     /// <c>1d8:4 / 1d0:8</c> on both builds, and Windows <c>ParseField</c> reads the same pair -- a direct
     /// pairing, not the neighbour corroboration #436 and #441 rightly refused.</summary>
-    public static readonly int SharedParams = Field("SharedMaterial", "params");
+    public static readonly int SharedParams = Field<IntPtr>("SharedMaterial", "params");
     /// <inheritdoc cref="SharedParams"/>
-    public static readonly int SharedParamCount = Field("SharedMaterial", "paramCount");
+    public static readonly int SharedParamCount = Field<int>("SharedMaterial", "paramCount");
 
     /// <summary>One <c>MaterialParameter</c>: name at +0, value at +0x44, type at +0x5c (0 = float),
     /// component count at +0x60 as a ushort, 100 bytes a record.
@@ -1176,11 +1178,11 @@ public static unsafe class EngineLayout
     /// (@0x4c5480 / @0x82aa0). That one function walks the whole record: <c>+0x5c</c> the discriminator,
     /// <c>+0x44</c> the value, <c>+0x60</c> the ushort component count, <c>+0x54/+0x58</c> the two cached
     /// uniform locations, and <c>lVar += 100</c> a record -- byte for byte the same on both.</para></summary>
-    public static readonly int ParamValue = Field("MaterialParameter", "value");
+    public static readonly int ParamValue = Field<float>("MaterialParameter", "value");
     /// <inheritdoc cref="ParamValue"/>
-    public static readonly int ParamType = Field("MaterialParameter", "type");
+    public static readonly int ParamType = Field<int>("MaterialParameter", "type");
     /// <inheritdoc cref="ParamValue"/>
-    public static readonly int ParamComps = Field("MaterialParameter", "comps");
+    public static readonly int ParamComps = Field<ushort>("MaterialParameter", "comps");
     /// <inheritdoc cref="ParamValue"/>
     public static readonly int ParamStride = Field("MaterialParameter", "stride");
 
@@ -1189,16 +1191,16 @@ public static unsafe class EngineLayout
     /// strip loops on them. #446: width is the row-index MULTIPLIER and height the loop bound on both --
     /// <c>(height - 1) * width</c> is the last row's first tile in either decompilation, and the record it
     /// indexes is the same 0x60-byte stride off the tile array at CNWCArea+0x298.</summary>
-    public static readonly int AreaTileWidth = Field("CNWCArea", "tileWidth");
+    public static readonly int AreaTileWidth = Field<int>("CNWCArea", "tileWidth");
     /// <inheritdoc cref="AreaTileWidth"/>
-    public static readonly int AreaTileHeight = Field("CNWCArea", "tileHeight");
+    public static readonly int AreaTileHeight = Field<int>("CNWCArea", "tileHeight");
 
     /// <summary>The GL program id inside a <c>GLRender::PROG_FIXED</c> record, from
     /// <c>GLRender::SetProgram</c> (@0x4cf940 / rva 0xb7a40). Every function that touches a PROG_FIXED takes
     /// it as an ARGUMENT rather than <c>this</c>, so the sweep never reaches it -- #448 read the caller: on
     /// both builds <c>SetProgram</c> takes <c>prog+0x64</c> as the id it hands to <c>glUseProgram</c>, and
     /// the stock-shader table it indexes has the same <c>0x1ef8</c> record stride on each.</summary>
-    public static readonly int ProgFixedId = Field("GLRender::PROG_FIXED", "programId");
+    public static readonly int ProgFixedId = Field<uint>("GLRender::PROG_FIXED", "programId");
 
     /// <summary>A <c>List&lt;T&gt;</c> / <c>CExoArrayList&lt;T&gt;</c> in this engine is {element pointer,
     /// count}: the symbol's own address is the list, not the elements. Both builds, every paired list in the
@@ -1219,55 +1221,55 @@ public static unsafe class EngineLayout
 
     /// <summary>The decoded image buffer. <c>ConstructImage</c> fills it, <c>FreeImage</c> releases it, and
     /// <c>BuildAndStoreTexture</c> refuses without it -- all three read +0x58 on both builds.</summary>
-    public static readonly int TexBasicImage = Field("CAurTextureBasic", "image");
+    public static readonly int TexBasicImage = Field<IntPtr>("CAurTextureBasic", "image");
 
     /// <summary>The GL name the engine bound for a single-cell texture. <c>Reset</c> clears it and
     /// <c>glImageBasic</c> writes it, both at +0x6c on both builds.</summary>
-    public static readonly int TexBasicGlId = Field("CAurTextureBasic", "glId");
+    public static readonly int TexBasicGlId = Field<int>("CAurTextureBasic", "glId");
 
     /// <summary>#265's discriminator: the compressed byte count, zero for a sheet that came down the
     /// UNCOMPRESSED path. <c>ConstructImage</c> writes it, <c>BuildAndStoreTexture</c> and
     /// <c>GetMemoryUsage</c> read it -- +0x70 on both.</summary>
-    public static readonly int TexBasicCompressedSize = Field("CAurTextureBasic", "compressedSize");
+    public static readonly int TexBasicCompressedSize = Field<int>("CAurTextureBasic", "compressedSize");
 
     /// <summary>Sheet dimensions and bytes per texel. <c>CheckAttributes</c> reads and rewrites all three
     /// on both builds, which is as clean a pair as this class offers.</summary>
-    public static readonly int TexBasicWidth = Field("CAurTextureBasic", "width");
+    public static readonly int TexBasicWidth = Field<int>("CAurTextureBasic", "width");
     /// <inheritdoc cref="TexBasicWidth"/>
-    public static readonly int TexBasicHeight = Field("CAurTextureBasic", "height");
+    public static readonly int TexBasicHeight = Field<int>("CAurTextureBasic", "height");
     /// <inheritdoc cref="TexBasicWidth"/>
-    public static readonly int TexBasicBpp = Field("CAurTextureBasic", "bpp");
+    public static readonly int TexBasicBpp = Field<int>("CAurTextureBasic", "bpp");
 
     /// <summary>The format/kind word, 4 for a PLT. <c>glImageBasic</c> takes the GPU-composite branch on
     /// <c>== 4</c> and nothing else, so this is the ONLY test separating a build Alloy must copy from one it
     /// has already uploaded (#282). <c>FreeImage</c> and <c>glImageBasic</c> read +0x84 on both.</summary>
-    public static readonly int TexBasicPltKind = Field("CAurTextureBasic", "pltKind");
+    public static readonly int TexBasicPltKind = Field<int>("CAurTextureBasic", "pltKind");
 
     /// <summary><c>uint*</c>, the <c>numX*numY</c> GL names <c>glImageBasic</c> generates, one per cell.
     /// <c>Reset</c> frees and nulls it at +0x50 on both builds.</summary>
-    public static readonly int TexBasicCellNames = Field("CAurTextureBasic", "cellNames");
+    public static readonly int TexBasicCellNames = Field<IntPtr>("CAurTextureBasic", "cellNames");
 
     /// <summary>The PLT layer scheme (<c>int*</c>) and its <c>short</c> count -- the other half of the
     /// engine's own texture identity. <c>SetScheme</c> writes both and <c>CalculateHashID</c> reads both,
     /// at +0x48/+0xd4 on either build.</summary>
-    public static readonly int TexBasicSchemes = Field("CAurTextureBasic", "schemes");
+    public static readonly int TexBasicSchemes = Field<IntPtr>("CAurTextureBasic", "schemes");
     /// <inheritdoc cref="TexBasicSchemes"/>
-    public static readonly int TexBasicSchemeCount = Field("CAurTextureBasic", "schemeCount");
+    public static readonly int TexBasicSchemeCount = Field<short>("CAurTextureBasic", "schemeCount");
 
     /// <summary>The <c>short</c> atlas grid the engine de-atlases into one GL texture per cell.
     /// <c>Reset</c> and the destructor read both on both builds (MSVC emits them in the other order, which
     /// is scheduling, not layout).</summary>
-    public static readonly int TexBasicNumX = Field("CAurTextureBasic", "numX");
+    public static readonly int TexBasicNumX = Field<short>("CAurTextureBasic", "numX");
     /// <inheritdoc cref="TexBasicNumX"/>
-    public static readonly int TexBasicNumY = Field("CAurTextureBasic", "numY");
+    public static readonly int TexBasicNumY = Field<short>("CAurTextureBasic", "numY");
 
     /// <summary>The mean-alpha cache and the animation controller pointer. The constructor writes the whole
     /// 0x28..0x37 region on both builds (Linux as two 8-byte stores, Windows as four dwords -- the #441
     /// lesson), <c>ConstructImage</c> rewrites +0x30 and <c>ParseField</c> walks +0x38, both at both
     /// ends.</summary>
-    public static readonly int TexBasicAlphaMean = Field("CAurTextureBasic", "alphaMean");
+    public static readonly int TexBasicAlphaMean = Field<float>("CAurTextureBasic", "alphaMean");
     /// <inheritdoc cref="TexBasicAlphaMean"/>
-    public static readonly int TexBasicController = Field("CAurTextureBasic", "controller");
+    public static readonly int TexBasicController = Field<IntPtr>("CAurTextureBasic", "controller");
 
     /// <summary>The RESOLVED texture name -- <c>char[0x20]</c> that <c>LoadImage</c> fills and
     /// <c>CAurTexture::Restore</c> re-acquires by, stable across a delete/rebuild, which is what makes it an
@@ -1276,19 +1278,19 @@ public static unsafe class EngineLayout
     /// name at +0x88 and this one at +0xa8, and both constructors write both runs (0x88..0xa7 and
     /// 0xa8..0xc7). #441's rule again -- two files naming "the name" at different offsets were two fields,
     /// not one error.</para></summary>
-    public static readonly int TexBasicResolvedName = Field("CAurTextureBasic", "resolvedName");
+    public static readonly int TexBasicResolvedName = Field<byte>("CAurTextureBasic", "resolvedName");
 
     /// <summary>The four state bytes <c>UnbuiltDiag</c> reads: cube map, image constructed, "no image and no
     /// controller", and never-build. <c>Reset</c> writes 0xe6/0xe7 (Windows as ONE 2-byte store over the
     /// pair), <c>BuildAndStoreTexture</c> reads 0xe6/0xe8 and <c>glImageBasic</c> 0xe3 -- all on both
     /// builds.</summary>
-    public static readonly int TexBasicFlagCube = Field("CAurTextureBasic", "flagCube");
+    public static readonly int TexBasicFlagCube = Field<byte>("CAurTextureBasic", "flagCube");
     /// <inheritdoc cref="TexBasicFlagCube"/>
-    public static readonly int TexBasicFlagBuilt = Field("CAurTextureBasic", "flagBuilt");
+    public static readonly int TexBasicFlagBuilt = Field<byte>("CAurTextureBasic", "flagBuilt");
     /// <inheritdoc cref="TexBasicFlagCube"/>
-    public static readonly int TexBasicFlagNoImage = Field("CAurTextureBasic", "flagNoImage");
+    public static readonly int TexBasicFlagNoImage = Field<byte>("CAurTextureBasic", "flagNoImage");
     /// <inheritdoc cref="TexBasicFlagCube"/>
-    public static readonly int TexBasicFlagNeverBuild = Field("CAurTextureBasic", "flagNeverBuild");
+    public static readonly int TexBasicFlagNeverBuild = Field<byte>("CAurTextureBasic", "flagNeverBuild");
 
     // ---- CAurTexture's vtable: the ten accessors TexScan reads a sheet through (#219) ----
     // All -8 for #433's virtual-destructor reason EXCEPT GetCompressedSize(), where MSVC's overload
@@ -1296,58 +1298,58 @@ public static unsafe class EngineLayout
     // than by applying the rule: tools/abi/vtable-slots.py CAurTexture prints both tables.
 
     /// <summary><c>GetImage()</c> -- the pixel pointer every scan starts from.</summary>
-    public static readonly int TexGetImageSlot = Field("CAurTexture", "vtbl.GetImage", Expect.VtblSlot);
+    public static readonly int TexGetImageSlot = Field("CAurTexture", "vtbl.GetImage", Expect.VtblSlot, sig: "IntPtr()");
     /// <summary><c>GetWidth()</c> / <c>GetHeight()</c> / <c>GetBPP()</c> -- the sheet's shape.</summary>
-    public static readonly int TexGetWidthSlot = Field("CAurTexture", "vtbl.GetWidth", Expect.VtblSlot);
+    public static readonly int TexGetWidthSlot = Field("CAurTexture", "vtbl.GetWidth", Expect.VtblSlot, sig: "int()");
     /// <inheritdoc cref="TexGetWidthSlot"/>
-    public static readonly int TexGetHeightSlot = Field("CAurTexture", "vtbl.GetHeight", Expect.VtblSlot);
+    public static readonly int TexGetHeightSlot = Field("CAurTexture", "vtbl.GetHeight", Expect.VtblSlot, sig: "int()");
     /// <inheritdoc cref="TexGetWidthSlot"/>
-    public static readonly int TexGetBppSlot = Field("CAurTexture", "vtbl.GetBPP", Expect.VtblSlot);
+    public static readonly int TexGetBppSlot = Field("CAurTexture", "vtbl.GetBPP", Expect.VtblSlot, sig: "int()");
     /// <summary><c>GetNumX()</c> / <c>GetNumY()</c> -- the atlas grid an uncompressed sheet is cut on.</summary>
-    public static readonly int TexGetNumXSlot = Field("CAurTexture", "vtbl.GetNumX", Expect.VtblSlot);
+    public static readonly int TexGetNumXSlot = Field("CAurTexture", "vtbl.GetNumX", Expect.VtblSlot, sig: "int()");
     /// <inheritdoc cref="TexGetNumXSlot"/>
-    public static readonly int TexGetNumYSlot = Field("CAurTexture", "vtbl.GetNumY", Expect.VtblSlot);
+    public static readonly int TexGetNumYSlot = Field("CAurTexture", "vtbl.GetNumY", Expect.VtblSlot, sig: "int()");
     /// <summary><c>GetCompressedSize()</c>, the no-argument overload -- and the one slot in this table that
     /// does NOT move. MSVC emits the overload set <c>(int,int)</c>-then-<c>()</c> where Itanium emits
     /// <c>()</c>-then-<c>(int,int)</c>, so the swap gives back exactly the pointer the virtual destructor
     /// took away. Identify it by signature; "the Nth GetCompressedSize" is meaningless.</summary>
-    public static readonly int TexCompressedSizeSlot = Field("CAurTexture", "vtbl.GetCompressedSize", Expect.VtblSlot);
+    public static readonly int TexCompressedSizeSlot = Field("CAurTexture", "vtbl.GetCompressedSize", Expect.VtblSlot, sig: "int()");
     /// <summary><c>GetNumMipHeaderBytes()</c> -- the header run to skip before the first texel.</summary>
-    public static readonly int TexHeaderSkipSlot = Field("CAurTexture", "vtbl.GetNumMipHeaderBytes", Expect.VtblSlot);
+    public static readonly int TexHeaderSkipSlot = Field("CAurTexture", "vtbl.GetNumMipHeaderBytes", Expect.VtblSlot, sig: "int()");
     /// <summary><c>GetMipMap()</c>.</summary>
-    public static readonly int TexMipMapSlot = Field("CAurTexture", "vtbl.GetMipMap", Expect.VtblSlot);
+    public static readonly int TexMipMapSlot = Field("CAurTexture", "vtbl.GetMipMap", Expect.VtblSlot, sig: "int()");
     /// <summary><c>GetCompressionFormat()</c> -- the index into <c>textureFormatTranslationTable</c>
     /// @0x12f5080 where 7 = DXT1 and 8 = DXT5.</summary>
-    public static readonly int TexFormatSlot = Field("CAurTexture", "vtbl.GetCompressionFormat", Expect.VtblSlot);
+    public static readonly int TexFormatSlot = Field("CAurTexture", "vtbl.GetCompressionFormat", Expect.VtblSlot, sig: "int()");
 
     // ---- Scene's vtable: the slots RspShim calls through (#132/#232/#233/#235) ----
     // Displacements from the loaded vptr, exactly as Scene::RenderSinglePass uses them. All -8.
 
     /// <summary><c>Scene::DoBinBucket()</c> -- the per-bucket draw RSP runs for each of the sixteen.</summary>
-    public static readonly int SceneDoBinBucketSlot = Field("Scene", "vtbl.DoBinBucket", Expect.VtblSlot);
+    public static readonly int SceneDoBinBucketSlot = Field("Scene", "vtbl.DoBinBucket", Expect.VtblSlot, sig: "void()");
     /// <summary><c>Scene::RenderBeams()</c> (#130).</summary>
-    public static readonly int SceneRenderBeamsSlot = Field("Scene", "vtbl.RenderBeams", Expect.VtblSlot);
+    public static readonly int SceneRenderBeamsSlot = Field("Scene", "vtbl.RenderBeams", Expect.VtblSlot, sig: "void()");
     /// <summary><c>Scene::DoEmitterBucket()</c> (#131).</summary>
-    public static readonly int SceneDoEmitterBucketSlot = Field("Scene", "vtbl.DoEmitterBucket", Expect.VtblSlot);
+    public static readonly int SceneDoEmitterBucketSlot = Field("Scene", "vtbl.DoEmitterBucket", Expect.VtblSlot, sig: "void()");
     /// <summary><c>Scene::RenderLensFlares()</c>.</summary>
-    public static readonly int SceneRenderLensFlaresSlot = Field("Scene", "vtbl.RenderLensFlares", Expect.VtblSlot);
+    public static readonly int SceneRenderLensFlaresSlot = Field("Scene", "vtbl.RenderLensFlares", Expect.VtblSlot, sig: "void()");
     /// <summary><c>Scene::FadeDoors()</c> -- #132's frame anchor: the one RSP item that runs every frame.</summary>
-    public static readonly int SceneFadeDoorsSlot = Field("Scene", "vtbl.FadeDoors", Expect.VtblSlot);
+    public static readonly int SceneFadeDoorsSlot = Field("Scene", "vtbl.FadeDoors", Expect.VtblSlot, sig: "void()");
     /// <summary><c>Scene::DoFog()</c>.</summary>
-    public static readonly int SceneDoFogSlot = Field("Scene", "vtbl.DoFog", Expect.VtblSlot);
+    public static readonly int SceneDoFogSlot = Field("Scene", "vtbl.DoFog", Expect.VtblSlot, sig: "void()");
     /// <summary><c>Scene::DoHighlightGob()</c> and <c>Scene::DoHighlightTriggers(bool)</c> -- #232/#233's
     /// two overlays, which RSP calls unconditionally and which self-gate inside.</summary>
-    public static readonly int SceneDoHighlightGobSlot = Field("Scene", "vtbl.DoHighlightGob", Expect.VtblSlot);
+    public static readonly int SceneDoHighlightGobSlot = Field("Scene", "vtbl.DoHighlightGob", Expect.VtblSlot, sig: "void()");
     /// <inheritdoc cref="SceneDoHighlightGobSlot"/>
-    public static readonly int SceneDoHighlightTriggersSlot = Field("Scene", "vtbl.DoHighlightTriggers", Expect.VtblSlot);
+    public static readonly int SceneDoHighlightTriggersSlot = Field("Scene", "vtbl.DoHighlightTriggers", Expect.VtblSlot, sig: "void(byte kind)");
 
     /// <summary><c>LightManager::EnableLights()</c> -- RSP's very first call, and load-bearing: #234 found
     /// the owned pass dark without it.</summary>
-    public static readonly int LightMgrEnableLightsSlot = Field("LightManager", "vtbl.EnableLights", Expect.VtblSlot);
+    public static readonly int LightMgrEnableLightsSlot = Field("LightManager", "vtbl.EnableLights", Expect.VtblSlot, sig: "void()");
 
     /// <summary><c>Gob::GetAttachedGobs(List&lt;CAurObject*&gt;&amp;)</c> -- fills a malloc'd
     /// {Gob** data, int count} the caller frees. NOT the head/tail list <c>Gob::CollectLights</c> walks.</summary>
-    public static readonly int GobAttachedGobsSlot = Field("Gob", "vtbl.GetAttachedGobs", Expect.VtblSlot);
+    public static readonly int GobAttachedGobsSlot = Field("Gob", "vtbl.GetAttachedGobs", Expect.VtblSlot, sig: "void(IntPtr list)");
 
     // ---- the Scene highlight list, and the gob flag the walk reads (#232) ----
 
@@ -1355,17 +1357,17 @@ public static unsafe class EngineLayout
     /// <c>CExoArrayList&lt;Gob*&gt;</c> (items +0x80, count +0x88) and a parallel RGB <c>Vector</c> array at
     /// +0x90, stride 0xc. <c>Scene::DoHighlightGob</c> reads all three at both ends, and both constructors
     /// write all three -- two pairs.</summary>
-    public static readonly int SceneHiliteGobs = Field("Scene", "hiliteGobs");
+    public static readonly int SceneHiliteGobs = Field<IntPtr>("Scene", "hiliteGobs");
     /// <inheritdoc cref="SceneHiliteGobs"/>
-    public static readonly int SceneHiliteCount = Field("Scene", "hiliteCount");
+    public static readonly int SceneHiliteCount = Field<int>("Scene", "hiliteCount");
     /// <inheritdoc cref="SceneHiliteGobs"/>
-    public static readonly int SceneHiliteColors = Field("Scene", "hiliteColors");
+    public static readonly int SceneHiliteColors = Field<IntPtr>("Scene", "hiliteColors");
 
     /// <summary>The gob byte <c>Scene::DoHighlightGob</c> tests before recursing into attached children.
     /// <c>Gob::SetPropagateHighlightEffects</c> is its only writer on either build, which is also what
     /// NAMES it: the pre-#443 comment called it "the visible byte", and the visible byte is
     /// <see cref="GobVisible"/> at +0x1a4.</summary>
-    public static readonly int GobPropagateHilite = Field("Gob", "propagateHilite");
+    public static readonly int GobPropagateHilite = Field<byte>("Gob", "propagateHilite");
 
     // ---- CNWCAnimBase: the highlight CHANNELS (#336) ----
     // No CNWC* class is name-exported on Windows, so the class sweep dumps it EMPTY. #446 took #420's RVA
@@ -1380,13 +1382,13 @@ public static unsafe class EngineLayout
     /// +0x60[ch] (12 bytes), "also add a glow gob" at +0xb0[ch] -- and <c>RefreshHilite</c> takes the LOWEST
     /// active slot as the winner. Tab and mouseover arrive on channel 2, every VFX on 3, which is why a Tab
     /// over a glowing creature shows the Tab colour. The Linux constructor writes +0x9c and +0xc8.</summary>
-    public static readonly int AnimHiliteActive = Field("CNWCAnimBase", "hiliteActive");
+    public static readonly int AnimHiliteActive = Field<int>("CNWCAnimBase", "hiliteActive", count: 5);
     /// <inheritdoc cref="AnimHiliteActive"/>
-    public static readonly int AnimHiliteGlow = Field("CNWCAnimBase", "hiliteGlow");
+    public static readonly int AnimHiliteGlow = Field<int>("CNWCAnimBase", "hiliteGlow", count: 5);
     /// <summary>CNWCAnimBase -&gt; its <c>Gob*</c>: the one the winning hilite channel is published against
     /// (<c>RefreshHilite</c> guards the whole body on it), and the one <c>CNWCAnimBase::SetPosition</c> @0x9c9d60
     /// / Windows rva 0x9680a0 forwards to (#663). With <see cref="ObjAnimBase"/> this is the id -&gt; Gob walk.</summary>
-    public static readonly int AnimGob = Field("CNWCAnimBase", "gob");
+    public static readonly int AnimGob = Field<CX.Engine.Gob>("CNWCAnimBase", "gob");
 
     // ---- GLRender's pool descriptor table (#260) ----
 
@@ -1449,23 +1451,23 @@ public static unsafe class EngineLayout
     /// <summary><c>moduleTimeIntoTransition</c> (float), seconds into the current hour transition.</summary>
     public static readonly int RtModuleTimeIntoTransition = Field<float>("ShaderExposedRuntimeData", "moduleTimeIntoTransition");
     /// <summary>Time of day, 0..1 -- what the sky and the wind phase run off.</summary>
-    public static readonly int RtTimeOfDay = Field("ShaderExposedRuntimeData", "timeOfDay");
+    public static readonly int RtTimeOfDay = Field<int>("ShaderExposedRuntimeData", "timeOfDay");
     /// <summary>The area wind vector (#123).</summary>
-    public static readonly int RtAreaWind = Field("ShaderExposedRuntimeData", "areaWind");
+    public static readonly int RtAreaWind = Field<System.Numerics.Vector3>("ShaderExposedRuntimeData", "areaWind");
     /// <summary>The area flag word the roof-fade and interior tests read.</summary>
-    public static readonly int RtAreaFlags = Field("ShaderExposedRuntimeData", "areaFlags");
+    public static readonly int RtAreaFlags = Field<int>("ShaderExposedRuntimeData", "areaFlags");
     /// <summary>The controlled character's position.</summary>
-    public static readonly int RtPlayerPos = Field("ShaderExposedRuntimeData", "playerPos");
+    public static readonly int RtPlayerPos = Field<System.Numerics.Vector3>("ShaderExposedRuntimeData", "playerPos");
     /// <summary>The camera EYE position.</summary>
-    public static readonly int RtCamPos = Field("ShaderExposedRuntimeData", "camPos");
+    public static readonly int RtCamPos = Field<System.Numerics.Vector3>("ShaderExposedRuntimeData", "camPos");
     /// <summary>Camera pitch and player-camera distance -- #124's keyhole aperture inputs.</summary>
-    public static readonly int RtCamPitch = Field("ShaderExposedRuntimeData", "camPitch");
+    public static readonly int RtCamPitch = Field<float>("ShaderExposedRuntimeData", "camPitch");
     /// <inheritdoc cref="RtCamPitch"/>
-    public static readonly int RtCamDist = Field("ShaderExposedRuntimeData", "camDist");
+    public static readonly int RtCamDist = Field<float>("ShaderExposedRuntimeData", "camDist");
     /// <summary>#347: the camera PIVOT, uploaded under the name <c>cameraFocus</c>. Not the eye
     /// (<see cref="RtCamPos"/>): in chase cam the pivot sits on the controlled character at roughly chest
     /// height, which is what content measures a sight range against.</summary>
-    public static readonly int RtCamFocus = Field("ShaderExposedRuntimeData", "camFocus");
+    public static readonly int RtCamFocus = Field<System.Numerics.Vector3>("ShaderExposedRuntimeData", "camFocus");
 
     // ---- the rest ----
 
@@ -1477,7 +1479,7 @@ public static unsafe class EngineLayout
     /// 0x7c, Windows from 0x80. So the field is +0x4 with the bbox, and the extra four bytes the boundary
     /// adds are the alignment pad Windows needs between the float block ending at 0x8c and the 8-aligned
     /// <see cref="PartNode"/> pointer at 0x90; the constructors' store runs say the same.</para></summary>
-    public static readonly int PartSelfIllum = Field("PartTriMesh", "selfIllum");
+    public static readonly int PartSelfIllum = Field<System.Numerics.Vector3>("PartTriMesh", "selfIllum");
 
     /// <summary>The node material colours <c>PartTriMesh::MatStatic</c> @0x450560 hands to
     /// <c>SetMaterialv</c>: prop 2 takes +0xe8 and prop 1 takes +0xf4, so the enum runs
@@ -1486,9 +1488,9 @@ public static unsafe class EngineLayout
     /// (0xe8, 0xf0, 0xf4, 0xfc, 0x100, 0x108, 0x10c) on both builds.
     /// <para>Filed under the subclass that declares them, not <c>MdlNode</c>: #436's rule is that a class
     /// verdict does not travel, and it does not travel downward either.</para></summary>
-    public static readonly int MdlDiffuse = Field("MdlNodeTriMesh", "diffuse");
+    public static readonly int MdlDiffuse = Field<System.Numerics.Vector3>("MdlNodeTriMesh", "diffuse");
     /// <inheritdoc cref="MdlDiffuse"/>
-    public static readonly int MdlAmbient = Field("MdlNodeTriMesh", "ambient");
+    public static readonly int MdlAmbient = Field<System.Numerics.Vector3>("MdlNodeTriMesh", "ambient");
 
     /// <summary>Stride between the texture slots of a <c>Material</c> -- a <c>SafePointer</c>, pointer plus
     /// a refcount int. The constructor writes slots at 0x00/0x10/../0x60 on both builds and Windows
@@ -1514,9 +1516,9 @@ public static unsafe class EngineLayout
     /// <summary><c>CRes::GetData</c> and <c>CRes::GetSize</c> -- the raw file bytes of a serviced .shd and
     /// their length. One-line accessors reading +0x20 and +0x30 on both builds: the cleanest pair in the
     /// batch.</summary>
-    public static readonly int CResData = Field("CRes", "data");
+    public static readonly int CResData = Field<IntPtr>("CRes", "data");
     /// <inheritdoc cref="CResData"/>
-    public static readonly int CResSize = Field("CRes", "size");
+    public static readonly int CResSize = Field<int>("CRes", "size");
 
     // ---- the occlusion fade (#537): the camera flags, the hit record, the gob's object kind ----
 
@@ -1543,7 +1545,7 @@ public static unsafe class EngineLayout
     /// <summary>CClientExoAppInternal -&gt; six int key booleans in a row: forward run (action 0x5a "Drive Mode Forward
     /// Run"; flags run 0x03, or walk 0x01 under the Shift walk modifier <c>creature+0x2b0</c>), backward, turn left,
     /// turn right, strafe left, strafe right (+0x1b8..+0x1cc). <c>ClearDriveMode</c> zeroes +0x1b4..+0x1cf in one go.</summary>
-    public static readonly int InternalDriveKeys = Field("CClientExoAppInternal", "driveKeys", Expect.Byte01);
+    public static readonly int InternalDriveKeys = Field<int>("CClientExoAppInternal", "driveKeys", Expect.Byte01, count: 6);
     /// <summary>CClientExoAppInternal -&gt; microsecond stamp of the last drive packet (the 500 ms keep-alive
     /// compares against it); rewritten on every send, so a change across the call means a packet went out.</summary>
     public static readonly int InternalDriveLastSend = Field<long>("CClientExoAppInternal", "driveLastSend");
@@ -1636,25 +1638,25 @@ public static unsafe class EngineLayout
     /// <c>ColourArg</c> shape of #420 (SysV xmm0/xmm1, Win64 a pointer to a copy).</summary>
     public static readonly int ObjHiliteSlot = Field("CNWCObject", "vtbl.Hilite", Expect.VtblSlot);
     /// <inheritdoc cref="ObjHiliteSlot"/>
-    public static readonly int ObjUnHiliteSlot = Field("CNWCObject", "vtbl.UnHilite", Expect.VtblSlot);
+    public static readonly int ObjUnHiliteSlot = Field("CNWCObject", "vtbl.UnHilite", Expect.VtblSlot, sig: "int(byte channel)");
     /// <summary>Virtual slots of <c>CNWCObject::MouseOver(int)</c> and <c>MouseOff()</c>: the creature and door arms
     /// of <c>HiliteAreaObjects</c> call Linux <c>vtbl+0x110</c> / <c>+0x118</c>, Windows <c>+0x108</c> / <c>+0x110</c>
     /// (rva 0x7db2f0), with <c>(this, 1)</c> on the way in and <c>(this)</c> on the way out. MouseOver(1) is what
     /// raises the feedback plate (<c>ShowFeedbackBubbleText</c>, the flag <see cref="CreaturePlated"/>), MouseOff
     /// what drops it -- the tab-target lock's plate (CX-636).</summary>
-    public static readonly int ObjMouseOverSlot = Field("CNWCObject", "vtbl.MouseOver", Expect.VtblSlot);
+    public static readonly int ObjMouseOverSlot = Field("CNWCObject", "vtbl.MouseOver", Expect.VtblSlot, sig: "void(int on)");
     /// <inheritdoc cref="ObjMouseOverSlot"/>
-    public static readonly int ObjMouseOffSlot = Field("CNWCObject", "vtbl.MouseOff", Expect.VtblSlot);
+    public static readonly int ObjMouseOffSlot = Field("CNWCObject", "vtbl.MouseOff", Expect.VtblSlot, sig: "void()");
     /// <summary>Virtual slot of <c>CGameObject::AsNWCObject()</c> -- what the area walk calls on every id it
     /// resolves. Linux <c>vtbl+0x20</c>, Windows <c>vtbl+0x18</c>: the usual Itanium two-dtor-slot shift.</summary>
-    public static readonly int GameObjAsNWCObjectSlot = Field("CGameObject", "vtbl.AsNWCObject", Expect.VtblSlot);
+    public static readonly int GameObjAsNWCObjectSlot = Field("CGameObject", "vtbl.AsNWCObject", Expect.VtblSlot, sig: "CNWCObject()");
     /// <summary>Virtual slot of <c>CGameObject::AsNWCPlaceable()</c> -- the walk's placeable branch tests
     /// <see cref="ObjHighlightable"/> on what THIS answers rather than on the CNWCObject (Linux @0x711b17 calls
     /// <c>vtbl+0xa8</c> then reads <c>+0x11c</c> on the result, Windows rva 0x7db2f0 the same through
     /// <c>vtbl+0xa0</c>). The base answers null and <c>CNWCPlaceable</c>'s override is an identity
     /// <c>return this</c> (@0x7ecc20), so it is a type test that happens to hand back the same address; mirroring
     /// it keeps a non-placeable carrying type byte 9 out. The -8 is the usual MSVC one-destructor-slot shift.</summary>
-    public static readonly int GameObjAsNWCPlaceableSlot = Field("CGameObject", "vtbl.AsNWCPlaceable", Expect.VtblSlot);
+    public static readonly int GameObjAsNWCPlaceableSlot = Field("CGameObject", "vtbl.AsNWCPlaceable", Expect.VtblSlot, sig: "CNWCObject()");
 
     // ---- what the player is doing right now: the action camera's crosshair feedback (docs/research/action-camera-feedback.md) ----
     // Measured 2026-09-17 by decompiling the same function on both programs, never by extrapolating a class delta.
@@ -1711,7 +1713,7 @@ public static unsafe class EngineLayout
     /// frame (WalkUpdateLocationDistance starts from it) and <c>MoveCreatureToPosition</c> lerps the displayed +0x38
     /// toward it; the update handler and EvaluateNewWayPoints overwrite it from the server. Every drive line test
     /// starts here. Linux +0x2e0, Windows +0x2c0 (the WalkUpdateLocation bodies, CX-682).</summary>
-    public static readonly int CreatureDesiredPos = Field("CNWCCreature", "desiredPos");
+    public static readonly int CreatureDesiredPos = Field<System.Numerics.Vector3>("CNWCCreature", "desiredPos");
     /// <summary>CNWCCreature -&gt; int 0/1 "I am driving": set by ClientSideWalkCommand in drive mode and by a server
     /// update that says so, cleared when the walk ends. Linux +0x318, Windows +0x2f8. No Byte01 probe: the ctor
     /// is not known to zero it.</summary>
@@ -1722,7 +1724,7 @@ public static unsafe class EngineLayout
     /// <summary>Pathfind block -&gt; two consecutive floats (+0xe0, +0xe4) that ClientSideWalkCommand, WalkPlayerToPoint
     /// and EvaluateNewWayPoints hand <c>CNWCArea::TestDirectLine</c> as its 4th and 5th arguments (personal space and
     /// height, order as the engine passes them). Same on both builds (WalkPlayerToPoint rva 0x6f3650).</summary>
-    public static readonly int PathfindSpaceArgs = Field("CPathfindInformation", "spaceArgs");
+    public static readonly int PathfindSpaceArgs = Field<float>("CPathfindInformation", "spaceArgs", count: 2);
     /// <summary>Virtual slot of <c>CNWCCreature::SetPosition(Vector)</c>: MoveCreatureToPosition calls Linux
     /// <c>vtbl+0x130</c> (@0x71cd70), Windows <c>+0x128</c> (rva 0x804840), the class's usual -8. The Vector crosses by
     /// value (SysV xmm0/xmm1, Win64 a pointer to a copy).</summary>
@@ -1757,7 +1759,7 @@ public static unsafe class EngineLayout
     /// that calls it on both builds, <c>CNWCCreature::LookAt</c> (Linux @0x726890 uses +0x148, Windows rva
     /// 0x803f20 uses +0x140): the -8 every virtual destructor costs MSVC.</summary>
     public static readonly int CreatureGetModelSlot =
-        Field("CNWCCreature", "vtbl.GetModel", Expect.VtblSlot);
+        Field("CNWCCreature", "vtbl.GetModel", Expect.VtblSlot, sig: "IntPtr(byte part, int flag)");
 
     /// <summary>LookAtAnimation -&gt; the "finished" byte <c>Deactivate</c> sets and <c>Gob::Animate</c> deletes
     /// the object on. Control's own gate: set, the aim block is skipped for the release latch at +0x68.</summary>
@@ -1778,7 +1780,7 @@ public static unsafe class EngineLayout
     /// (<c>CNWCCreature::LoadModel</c> @0x72a4b0), 9 placeable (@0x7ec500), 10 door (@0x755ec0), through
     /// vtable <c>SetExternalDataType</c>. The accessor pair is one line on both builds: Linux @0x444720,
     /// Windows rva 0x48450 read <c>+0x498</c>.</summary>
-    public static readonly int GobExternalType = Field("Gob", "externalType");
+    public static readonly int GobExternalType = Field<int>("Gob", "externalType");
     /// <summary>The <see cref="GobExternalType"/> a creature's gob carries.</summary>
     public const int GobKindCreature = 5;
     /// <summary>The <see cref="GobExternalType"/> a placeable's gob carries.</summary>
@@ -1786,17 +1788,17 @@ public static unsafe class EngineLayout
 
     /// <summary>CX-29: Gob -&gt; the Scene it animates in. <c>Gob::Animate</c> reads it for the wind manager at
     /// <c>scene+0x160</c> (Linux @0x49d8c0, Windows @0x14004dbd0, both <c>this+0x88</c>).</summary>
-    public static readonly int GobScene = Field("Gob", "scene");
+    public static readonly int GobScene = Field<IntPtr>("Gob", "scene");
     /// <summary>CX-29: Gob -&gt; its <c>CExoArrayList&lt;AnimRun*&gt;</c> (items +0xe0, count +0xe8), newest last:
     /// <c>Gob::Animate</c> fires <c>"start%s"</c> on the LAST entry's animation name on both builds (Linux
     /// @0x49d8c0, Windows @0x14004dbd0), so the last run is the animation being blended TO.</summary>
-    public static readonly int GobAnimRuns = Field("Gob", "animRuns");
+    public static readonly int GobAnimRuns = Field<IntPtr>("Gob", "animRuns");
     /// <inheritdoc cref="GobAnimRuns"/>
-    public static readonly int GobAnimRunCount = Field("Gob", "animRunCount");
+    public static readonly int GobAnimRunCount = Field<int>("Gob", "animRunCount");
     /// <summary>CX-29: AnimRun -&gt; its <c>Animation*</c> (first word), and Animation -&gt; the name
     /// (<c>char[]</c>, inline): <c>sprintf("start%s", *run + 0x10)</c> and the <c>"loop%s"</c>/<c>"done%s"</c>
     /// events read it there in <c>Gob::Animate</c> on both builds.</summary>
-    public static readonly int AnimRunAnimation = Field("AnimRun", "animation");
+    public static readonly int AnimRunAnimation = Field<IntPtr>("AnimRun", "animation");
     /// <inheritdoc cref="AnimRunAnimation"/>
     public static readonly int AnimationName = Field("Animation", "name");
     /// <summary>AnimRun -&gt; its playback rate (float, signed): <c>Gob::Animate</c> advances <c>+0x14</c> by
@@ -1806,7 +1808,7 @@ public static unsafe class EngineLayout
     public static readonly int AnimRunRate = Field("AnimRun", "rate");
     /// <summary>AnimRun -&gt; its blend weight, 0..1 while fading in, counting down while fading out
     /// (<c>Gob::Animate</c>, both builds; same research, Q1).</summary>
-    public static readonly int AnimRunBlend = Field("AnimRun", "blend");
+    public static readonly int AnimRunBlend = Field<float>("AnimRun", "blend");
     /// <summary>AnimRun -&gt; flags (bit <c>0x1</c> = fading out), the current time in seconds, and the blend
     /// duration in seconds (<c>Gob::Animate</c> / <c>Gob::PlayAnimation</c>, the same offsets on both builds;
     /// docs/research/procedural-anim-locomotion.md, Q1).</summary>
@@ -1818,22 +1820,22 @@ public static unsafe class EngineLayout
     /// <summary>Gob -&gt; the <c>CNWCObject*</c> behind <c>SetExternalData</c>, the pointer just before
     /// <see cref="GobExternalType"/>: <c>Gob::GetExternalData</c> reads <c>+0x490</c> on both builds (Linux
     /// @0x444700, Windows rva 0x58d00; docs/research/procedural-anim-combat.md §4).</summary>
-    public static readonly int GobExternalData = Field("Gob", "externalData");
+    public static readonly int GobExternalData = Field<IntPtr>("Gob", "externalData");
 
     /// <summary>CNWCCreature -&gt; the object id it is locked onto in combat (<c>0x7f000000</c> = none), written by
     /// every creature update and read by <c>SetDesiredOrientationForLock</c> to face the victim. Linux +0x3c8,
     /// Windows +0x3a8 (docs/research/procedural-anim-combat.md §1.1).</summary>
-    public static readonly int CreatureLockTarget = Field("CNWCCreature", "lockTarget");
+    public static readonly int CreatureLockTarget = Field<uint>("CNWCCreature", "lockTarget");
 
     /// <summary>CNWCCombatAttackData -&gt; the attacker's object id (<c>0x7f000000</c> on a projectile's synthetic
     /// record), the damage (i16), and the result byte (1 hit, 3 critical on the projectile path). The class is
     /// identical on both builds; the rows rest on the wire order the creature update handler reads it in
     /// (docs/research/procedural-anim-combat.md §2.1).</summary>
-    public static readonly int AtkAttacker = Field("CNWCCombatAttackData", "attacker");
+    public static readonly int AtkAttacker = Field<uint>("CNWCCombatAttackData", "attacker");
     /// <inheritdoc cref="AtkAttacker"/>
-    public static readonly int AtkDamage = Field("CNWCCombatAttackData", "damage");
+    public static readonly int AtkDamage = Field<short>("CNWCCombatAttackData", "damage");
     /// <inheritdoc cref="AtkAttacker"/>
-    public static readonly int AtkResult = Field("CNWCCombatAttackData", "result");
+    public static readonly int AtkResult = Field<byte>("CNWCCombatAttackData", "result");
 
     /// <summary>CHitInfo, the record <c>Scene::HitCheck</c> fills. <c>Reset</c> (@0x45fa90 / rva 0xd3090)
     /// writes the mode at +0 and zeroes the ignore count at +0x18; <c>ClearOutput</c> (@0x45fa20 / rva
@@ -1842,15 +1844,15 @@ public static unsafe class EngineLayout
     /// to skip. Identical on both builds. The object is 0x80 bytes (Reset's highest store is +0x7d).</summary>
     public static readonly int HitInfoMode = Field("CHitInfo", "mode");
     /// <inheritdoc cref="HitInfoMode"/>
-    public static readonly int HitInfoIgnoreList = Field("CHitInfo", "ignoreList");
+    public static readonly int HitInfoIgnoreList = Field<IntPtr>("CHitInfo", "ignoreList");
     /// <inheritdoc cref="HitInfoMode"/>
-    public static readonly int HitInfoIgnoreCount = Field("CHitInfo", "ignoreCount");
+    public static readonly int HitInfoIgnoreCount = Field<int>("CHitInfo", "ignoreCount");
     /// <inheritdoc cref="HitInfoMode"/>
     public static readonly int HitInfoKind = Field("CHitInfo", "kind");
     /// <inheritdoc cref="HitInfoMode"/>
     public static readonly int HitInfoPoint = Field("CHitInfo", "point");
     /// <inheritdoc cref="HitInfoMode"/>
-    public static readonly int HitInfoGob = Field("CHitInfo", "gob");
+    public static readonly int HitInfoGob = Field<IntPtr>("CHitInfo", "gob");
     /// <inheritdoc cref="HitInfoMode"/>
     public const int SizeOfHitInfo = 0x80;
 
@@ -1871,24 +1873,24 @@ public static unsafe class EngineLayout
     // probe (logs=1) reads a root on each platform.
 
     /// <summary>CRadialMenu: <c>CGuiTextBubble* m_pText[8]</c> -- the slot labels.</summary>
-    public static readonly int RadialText = Field<IntPtr>("CRadialMenu", "text");
+    public static readonly int RadialText = Field<IntPtr>("CRadialMenu", "text", count: 8);
     /// <summary>CRadialMenu: entry callback[8], stride <see cref="RadialCallbackStride"/>. Unset = the object word is
     /// the slot's own address (self-pointer sentinel) and fn is <c>HandleUninitializedCallback</c>.</summary>
     public static readonly int RadialEntry = Field("CRadialMenu", "entry");
     /// <summary>Bytes per callback slot: Itanium <c>{obj, fn, adj}</c> vs MSVC <c>{obj, fn}</c>.</summary>
     public static readonly int RadialCallbackStride = Field("CRadialMenu", "callbackStride");
     /// <summary>CRadialMenu: <c>long m_nParam[8]</c> -- shared by the entry and the creator of a slot.</summary>
-    public static readonly int RadialParam = Field<long>("CRadialMenu", "param");
+    public static readonly int RadialParam = Field<long>("CRadialMenu", "param", count: 8);
     /// <summary>CRadialMenu: <c>uint flags[8]</c>; bit 0 = disabled (<c>DisableEntry</c>).</summary>
-    public static readonly int RadialFlags = Field<uint>("CRadialMenu", "flags");
+    public static readonly int RadialFlags = Field<uint>("CRadialMenu", "flags", count: 8);
     /// <summary>CRadialMenu: creator callback[8], same stride and sentinel as <see cref="RadialEntry"/>.</summary>
     public static readonly int RadialCreator = Field("CRadialMenu", "creator");
     /// <summary>CRadialMenu: <c>CRadialMenu* m_pSubMenu[8]</c> -- the materialized child, null until CreateSubMenu.</summary>
-    public static readonly int RadialSubMenu = Field<CX.Engine.CRadialMenu>("CRadialMenu", "subMenu");
+    public static readonly int RadialSubMenu = Field<CX.Engine.CRadialMenu>("CRadialMenu", "subMenu", count: 8);
     /// <summary>CRadialMenu: <c>CRadialMenu* m_pParent</c>, set by HandleMenuAction on descent.</summary>
     public static readonly int RadialParent = Field<IntPtr>("CRadialMenu", "parent");
     /// <summary>CRadialMenu: <c>CGuiIcon* m_pIcon[8]</c>; the resref is the CResRef at CGuiIcon+0x8.</summary>
-    public static readonly int RadialIcon = Field<IntPtr>("CRadialMenu", "icon");
+    public static readonly int RadialIcon = Field<IntPtr>("CRadialMenu", "icon", count: 8);
     /// <summary>CRadialMenu: menu X / Y (int), filled by <c>Activate</c> from <c>CGuiMan::GetMousePos</c>.</summary>
     public static readonly int RadialMenuX = Field<int>("CRadialMenu", "menuX");
     /// <inheritdoc cref="RadialMenuX"/>
@@ -1902,7 +1904,7 @@ public static unsafe class EngineLayout
     /// <summary>CGuiIcon: the icon's <c>CResRef</c> (16 bytes) that <c>Initialize</c> (Linux @0x58cc20, Windows rva
     /// 0x1e4430: the first store on both, then the three size ints at +0x1c/+0x20/+0x24) and
     /// <c>ReplacePrimaryIconTexture</c> (@0x58cd30 / rva 0x1e4690) read.</summary>
-    public static readonly int GuiIconResRef = Field("CGuiIcon", "resref");
+    public static readonly int GuiIconResRef = Field<byte>("CGuiIcon", "resref", count: 16);
     /// <summary>CGuiIcon: the uses-left count label, a <c>CAurString*</c> (null when none). <c>SetCountText</c> (Linux
     /// @0x58d130, Windows rva 0x1e4720) tests, feeds and stores it at +0x40 on both; <c>CreateCountLabel</c> @0x58ce80
     /// makes it with <c>NewCAurString(1)</c>, so it is the same StringGob sub-object the bubble label is.</summary>
@@ -1952,13 +1954,13 @@ public static unsafe class EngineLayout
     public static readonly int LayeredIconScheme = Field<IntPtr>("CLayeredIcon", "scheme");
     /// <summary>CCompositeIcon: the second and third <c>CResRef</c> (17 bytes each, the first is the base's +0x8),
     /// bound to <c>gui_replace02</c> / <c>gui_replace03</c> of the <c>GUI_ICON_%dX%dLC</c> model -- bottom to top.</summary>
-    public static readonly int CompositeIconResRef2 = Field("CCompositeIcon", "resref2");
+    public static readonly int CompositeIconResRef2 = Field<byte>("CCompositeIcon", "resref2", count: 17);
     /// <inheritdoc cref="CompositeIconResRef2"/>
-    public static readonly int CompositeIconResRef3 = Field("CCompositeIcon", "resref3");
+    public static readonly int CompositeIconResRef3 = Field<byte>("CCompositeIcon", "resref3", count: 17);
     /// <summary>CArmorIcon: six <c>CResRef</c> layers at stride <see cref="ArmorIconResRefStride"/> (+0x48..+0xae),
     /// an empty one skipped; the shared scheme (<c>int</c> count, <c>unsigned short*</c>) and the optional per-layer
     /// scheme table (<c>count</c> shorts per EXISTING layer, null = every layer shares the one scheme).</summary>
-    public static readonly int ArmorIconResRefs = Field("CArmorIcon", "resrefs");
+    public static readonly int ArmorIconResRefs = Field<byte>("CArmorIcon", "resrefs", count: 102);   // ArmorIconLayers * ArmorIconResRefStride
     /// <summary><c>sizeof(CResRef)</c> as the armour layer array packs it (17 bytes, unaligned) and the layer count
     /// (the ctor's zero loop stops at +0xae = 0x48 + 6 * 0x11 on both builds). Values, not places -- no row.</summary>
     public const int ArmorIconResRefStride = 0x11;
@@ -1980,7 +1982,7 @@ public static unsafe class EngineLayout
     public static readonly int GameObjType = Field<byte>("CGameObject", "type");
     /// <summary>Virtual slot of <c>CGameObject::AsNWCItem()</c>, the cast the same two bodies make after the type
     /// test: Linux <c>vtbl+0x70</c>, Windows <c>vtbl+0x68</c> (the usual one-destructor-slot shift).</summary>
-    public static readonly int GameObjAsNWCItemSlot = Field("CGameObject", "vtbl.AsNWCItem", Expect.VtblSlot);
+    public static readonly int GameObjAsNWCItemSlot = Field("CGameObject", "vtbl.AsNWCItem", Expect.VtblSlot, sig: "IntPtr()");
 
     // ================= engine constants that are not offsets =================
     // They rode into this table with #436 because the file they lived in was the offset file. They are
@@ -2113,7 +2115,9 @@ public static unsafe class EngineLayout
 
     /// <summary>Declare a row: its value for this OS is the running build's (<see cref="ClientBuilds"/>).
     /// No value reads as 0 and counts as missing, which <see cref="Require"/> refuses.</summary>
-    private static int Field(string cls, string field, Expect probe = Expect.None)
+    /// <param name="sig">A <c>vtbl.*</c> row's signature, <c>"R(T name, ...)"</c> without <c>this</c>: for
+    /// <c>tools/engine/views.py</c>, which emits the typed virtual call.</param>
+    private static int Field(string cls, string field, Expect probe = Expect.None, string? sig = null)
     {
         (int? linux, int? win) = ClientBuilds.Offset(cls, field);
         int? mine = OperatingSystem.IsWindows() ? win : linux;
@@ -2125,7 +2129,9 @@ public static unsafe class EngineLayout
 
     /// <summary>A row whose field holds a <typeparamref name="T"/> -- an engine view (<c>CX.Engine</c>) for a pointer to a
     /// class, else the primitive. The type is for <c>tools/engine/views.py</c>, which emits the typed accessor.</summary>
-    private static int Field<T>(string cls, string field, Expect probe = Expect.None) where T : unmanaged
+    /// <param name="count">Non-zero: the field is an embedded array of that many <typeparamref name="T"/>, and the
+    /// view gets a <c>Span</c> over it.</param>
+    private static int Field<T>(string cls, string field, Expect probe = Expect.None, int count = 0) where T : allows ref struct
         => Field(cls, field, probe);
 
     /// <summary>Every declared (class, field), for <see cref="ClientBuilds"/>' completeness check.</summary>

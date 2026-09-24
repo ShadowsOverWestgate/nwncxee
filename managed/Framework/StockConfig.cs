@@ -24,12 +24,6 @@ namespace CX.Framework;
 /// </remarks>
 public static unsafe class StockConfig
 {
-    private static readonly delegate* unmanaged<IntPtr, byte*, byte, byte> _getBool =
-        (delegate* unmanaged<IntPtr, byte*, byte, byte>)Native.Sym(SymbolMap.ExoConfigGetBool);
-    private static readonly delegate* unmanaged<IntPtr, byte*, byte, long> _getLong =
-        (delegate* unmanaged<IntPtr, byte*, byte, long>)Native.Sym(SymbolMap.ExoConfigGetLong);
-    private static readonly delegate* unmanaged<IntPtr, byte*, byte, double> _getDouble =
-        (delegate* unmanaged<IntPtr, byte*, byte, double>)Native.Sym(SymbolMap.ExoConfigGetDouble);
     private static readonly IntPtr _exoBaseSym = Native.Sym(SymbolMap.ExoBase);
 
     /// <summary>Size of a <c>std::string</c> header on both ABIs (libstdc++ 8+8+16, MSVC 16+8+8).</summary>
@@ -40,21 +34,22 @@ public static unsafe class StockConfig
     private const int MaxKey = 96;
 
     /// <summary>Did the three <c>Get</c> instantiations resolve? False = every read answers "unknown".</summary>
-    public static bool Resolved => _getBool != null && _getLong != null && _getDouble != null;
+    public static bool Resolved => EngineFn.ExoConfigGetBool != null && EngineFn.ExoConfigGetLong != null
+                                  && EngineFn.ExoConfigGetDouble != null;
 
     /// <summary>The live <c>CExoConfig*</c>, or Zero before the engine has one that can answer: pre-main
     /// (<c>g_pExoBase</c> null), or between the config's ctor and its <c>Initialize</c>, when the working
     /// table is still null and a <c>Get(key, false)</c> would dereference it.</summary>
-    private static IntPtr Instance()
+    private static CExoConfig Instance()
     {
-        if (_exoBaseSym == IntPtr.Zero) return IntPtr.Zero;
+        if (_exoBaseSym == IntPtr.Zero) return default;
         IntPtr exoBase = *(IntPtr*)_exoBaseSym;
-        if (exoBase == IntPtr.Zero) return IntPtr.Zero;
+        if (exoBase == IntPtr.Zero) return default;
         CExoConfig cfg = new CExoBase(exoBase).Config;
-        if (cfg.IsNull) return IntPtr.Zero;
+        if (cfg.IsNull) return default;
         bool initializing = cfg.Initializing != 0;
-        if (!initializing && cfg.WorkingTable == IntPtr.Zero) return IntPtr.Zero;
-        return cfg.Ptr;
+        if (!initializing && cfg.WorkingTable == IntPtr.Zero) return default;
+        return cfg;
     }
 
     /// <summary>Write a <c>std::string</c> header for <paramref name="key"/> into <paramref name="hdr"/>
@@ -81,36 +76,36 @@ public static unsafe class StockConfig
     /// unresolved), and <paramref name="v"/> is then untouched.</summary>
     public static bool TryGetBool(ReadOnlySpan<byte> key, ref bool v)
     {
-        IntPtr cfg = Instance();
-        if (cfg == IntPtr.Zero || _getBool == null || key.Length > MaxKey) return false;
+        CExoConfig cfg = Instance();
+        if (cfg.IsNull || EngineFn.ExoConfigGetBool == null || key.Length > MaxKey) return false;
         byte* chars = stackalloc byte[MaxKey + 1]; byte* hdr = stackalloc byte[StringHeader];
         key.CopyTo(new Span<byte>(chars, MaxKey)); chars[key.Length] = 0;
         Forge(hdr, chars, key.Length);
-        v = _getBool(cfg, hdr, 0) != 0;
+        v = cfg.ExoConfigGetBool(hdr, 0) != 0;
         return true;
     }
 
     /// <summary>Read a key bound as <c>long</c> (<c>__int64</c> on Windows -- the same instantiation).</summary>
     public static bool TryGetLong(ReadOnlySpan<byte> key, ref long v)
     {
-        IntPtr cfg = Instance();
-        if (cfg == IntPtr.Zero || _getLong == null || key.Length > MaxKey) return false;
+        CExoConfig cfg = Instance();
+        if (cfg.IsNull || EngineFn.ExoConfigGetLong == null || key.Length > MaxKey) return false;
         byte* chars = stackalloc byte[MaxKey + 1]; byte* hdr = stackalloc byte[StringHeader];
         key.CopyTo(new Span<byte>(chars, MaxKey)); chars[key.Length] = 0;
         Forge(hdr, chars, key.Length);
-        v = _getLong(cfg, hdr, 0);
+        v = cfg.ExoConfigGetLong(hdr, 0);
         return true;
     }
 
     /// <summary>Read a key bound as <c>double</c>.</summary>
     public static bool TryGetDouble(ReadOnlySpan<byte> key, ref double v)
     {
-        IntPtr cfg = Instance();
-        if (cfg == IntPtr.Zero || _getDouble == null || key.Length > MaxKey) return false;
+        CExoConfig cfg = Instance();
+        if (cfg.IsNull || EngineFn.ExoConfigGetDouble == null || key.Length > MaxKey) return false;
         byte* chars = stackalloc byte[MaxKey + 1]; byte* hdr = stackalloc byte[StringHeader];
         key.CopyTo(new Span<byte>(chars, MaxKey)); chars[key.Length] = 0;
         Forge(hdr, chars, key.Length);
-        v = _getDouble(cfg, hdr, 0);
+        v = cfg.ExoConfigGetDouble(hdr, 0);
         return true;
     }
 

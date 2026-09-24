@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
 using CX.Services.Chat.Core;
@@ -60,7 +61,7 @@ internal static unsafe class UpperBody
     private const byte TypeCreature = 5;
     private const float Omega = 2f * MathF.PI * HitHz;
 
-    private static delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject;
+    private static GetGameObjectFn _getGameObject;
     private static IntPtr* _hitNext;
     private static bool _aimReady;
     /// <summary>Object ids resolve (the aim target, the player's position for the detail distance).</summary>
@@ -82,11 +83,13 @@ internal static unsafe class UpperBody
         if (EngineLayout.Require(log, "Pose.aim", "CNWCObject", "CNWCCreature", "CGameObject")
             && SymbolMap.Require(log, "Pose.aim", SymbolMap.GetGameObject, SymbolMap.AppManager))
         {
-            _getGameObject = (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
+            _getGameObject = EngineFn.GetGameObject;
             _aimReady = _getGameObject != null;
         }
         if (!EngineLayout.Require(log, "Pose.hit", "CNWCCombatAttackData", "CNWCCreature")
             || !SymbolMap.Require(log, "Pose.hit", SymbolMap.SpawnHitVisuals)) return;
+        // Left raw: the push vector is a DIFFERENT type per ABI (VecArg), so no single [Fn] signature
+        // describes the symbol (CX-37).
         _hitNext = hooks.Chain(SymbolMap.SpawnHitVisuals,
             (IntPtr)(delegate* unmanaged<IntPtr, byte, IntPtr, VecArg, IntPtr, void>)&OnSpawnHitVisuals, 50);
         log.Info(_hitNext == null ? "Pose: hit reactions standing down (SpawnHitVisuals chain refused)"
@@ -105,10 +108,11 @@ internal static unsafe class UpperBody
         if (flag != 1 || ad == IntPtr.Zero || creature == IntPtr.Zero || !(AnimKnobs.Hit.V > 0f)) return;
         IntPtr gob = PoseService.GobOf(creature);
         if (gob == IntPtr.Zero) return;
-        bool ranged = *(uint*)(ad + AtkAttacker) == TypingSignal.ObjectInvalid;
+        bool ranged = new CNWCCombatAttackData(ad).Attacker == TypingSignal.ObjectInvalid;
         Vector3 push = ranged ? new Vector3(v.X, v.Y, 0f) : new Vector3(-v.X, -v.Y, 0f);
         if (push.LengthSquared() < 1e-8f) return;
-        float mag = Magnitude(*(short*)(ad + AtkDamage), *(byte*)(ad + AtkResult) == ResultCrit) * (AnimKnobs.Hit.V / 100f);
+        var atk = new CNWCCombatAttackData(ad);
+        float mag = Magnitude(atk.Damage, atk.Result == ResultCrit) * (AnimKnobs.Hit.V / 100f);
         PoseService.Kick(gob, Vector3.Normalize(push), mag);
         Hits++;
     }
@@ -149,7 +153,7 @@ internal static unsafe class UpperBody
         float aimT = s.AimPitch, aimW = 0f;
         if (!gated && AnimKnobs.Aim.V && _aimReady && creature != IntPtr.Zero)
         {
-            int anim = *(short*)(creature + ObjAnimation);
+            int anim = new CNWCObject(creature).Animation;
             if (IsAttack(anim) && Target(creature, hip, out Vector3 at))
             {
                 Vector3 d = at - rootW;
@@ -188,11 +192,11 @@ internal static unsafe class UpperBody
     /// is not the torso's child is left alone.</summary>
     internal static void Write(IntPtr torso, IntPtr neck, Vector3 fwdH, Vector3 right, Vector2 t, Vector2 n)
     {
-        IntPtr parent = *(IntPtr*)(torso + PartParent);
+        IntPtr parent = new Part(torso).Parent.Ptr;
         if (parent == IntPtr.Zero) return;
         World(parent, out _, out Quaternion qp);
         World(torso, out _, out Quaternion qt);
-        bool hasNeck = neck != IntPtr.Zero && *(IntPtr*)(neck + PartParent) == torso;
+        bool hasNeck = neck != IntPtr.Zero && new Part(neck).Parent.Ptr == torso;
         Quaternion qn = Quaternion.Identity;
         if (hasNeck) World(neck, out _, out qn);
         Quaternion r = Tip(right, fwdH, t.X, t.Y);
@@ -225,7 +229,7 @@ internal static unsafe class UpperBody
 
     private static bool LookChain(in PoseService.Bones b)
         => b.Torso != IntPtr.Zero && b.Neck != IntPtr.Zero && b.Head != IntPtr.Zero
-           && *(IntPtr*)(b.Head + PartParent) == b.Neck && *(IntPtr*)(b.Neck + PartParent) == b.Torso;
+           && new Part(b.Head).Parent.Ptr == b.Neck && new Part(b.Neck).Parent.Ptr == b.Torso;
 
     /// <summary>The head's yaw (positive = left) and pitch (positive = up) relative to the neck, past
     /// <see cref="LookDeadzone"/>: what the engine's look-at (or an animation's big head turn) put there. False
@@ -247,7 +251,7 @@ internal static unsafe class UpperBody
     /// looks -- is unchanged. Runs before <see cref="Write"/>, which the head then follows as a child.</summary>
     internal static void ShareLook(in PoseService.Bones b, float yaw, float pitch)
     {
-        IntPtr parent = *(IntPtr*)(b.Torso + PartParent);
+        IntPtr parent = new Part(b.Torso).Parent.Ptr;
         if (parent == IntPtr.Zero) return;
         World(parent, out _, out Quaternion qp);
         World(b.Torso, out _, out Quaternion qt);
@@ -278,18 +282,18 @@ internal static unsafe class UpperBody
     private static bool Target(IntPtr creature, float hip, out Vector3 at)
     {
         at = default;
-        uint id = *(uint*)(creature + CreatureLockTarget);
+        uint id = new CNWCCreature(creature).LockTarget;
         if (id == TypingSignal.ObjectInvalid) return false;
         IntPtr app = CameraService.App();
         if (app == IntPtr.Zero) return false;
         IntPtr go = _getGameObject(app, id);
         if (go == IntPtr.Zero) return false;
-        IntPtr obj = ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)go + GameObjAsNWCObjectSlot)))(go);
+        IntPtr obj = new CGameObject(go).AsNWCObject().Ptr;
         if (obj == IntPtr.Zero || obj == creature) return false;
-        if (*(byte*)(obj + ObjType) == TypeCreature)
+        if (new CNWCObject(obj).Type == TypeCreature)
         {
             IntPtr g = PoseService.GobOf(obj);
-            IntPtr root = g == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(g + GobPartTree);
+            IntPtr root = g == IntPtr.Zero ? IntPtr.Zero : new Gob(g).PartTree.Ptr;
             if (root != IntPtr.Zero) { World(root, out at, out _); return true; }
         }
         float* p = (float*)(obj + ObjPosition);

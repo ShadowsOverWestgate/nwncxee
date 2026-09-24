@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Services.Hotkeys;
@@ -29,10 +30,6 @@ internal static unsafe class HotkeyConsent
     private const uint OkStrRef = 0x2052, CancelStrRef = 0x2053;
 
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<nuint, IntPtr> _new;
-    private static delegate* unmanaged<IntPtr, void> _ctor;
-    private static delegate* unmanaged<IntPtr, IntPtr, uint, uint, void> _activate;   // (this, &CExoString, ok, cancel)
-    private static delegate* unmanaged<int, byte*> _keyName;
     private static IntPtr _guiManSym;                    // &g_pGuiMan -- read its value, never deref as an object
     private static bool _ready;
 
@@ -44,13 +41,10 @@ internal static unsafe class HotkeyConsent
     public static void Init(ExtenderLog log)
     {
         _log = log;
-        _new       = (delegate* unmanaged<nuint, IntPtr>)Native.Sym(SymbolMap.OperatorNew);
-        _ctor      = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.OkCancelCtor);
-        _activate  = (delegate* unmanaged<IntPtr, IntPtr, uint, uint, void>)Native.Sym(SymbolMap.OkCancelActivate);
-        _keyName   = (delegate* unmanaged<int, byte*>)Native.Sym(SymbolMap.SdlGetKeyName);
         _guiManSym = Native.Sym(SymbolMap.GuiMan);
 
-        _ready = _new != null && _ctor != null && _activate != null && _guiManSym != IntPtr.Zero;
+        _ready = EngineFn.OperatorNew != null && EngineFn.OkCancelCtor != null && EngineFn.OkCancelActivate != null
+                 && _guiManSym != IntPtr.Zero;
         if (!_ready)
             _log?.Info("HotkeyConsent: native modal unavailable on this client -- new binds will be refused");
     }
@@ -94,17 +88,18 @@ internal static unsafe class HotkeyConsent
             return false;
         }
 
-        IntPtr panel = _new((nuint)PanelSize);
+        IntPtr panel = EngineFn.OperatorNew((nuint)PanelSize);
         if (panel == IntPtr.Zero) return false;
-        _ctor(panel);
+        EngineFn.OkCancelCtor(panel);
         *(IntPtr*)(panel + CtxOff) = panel;              // benign non-null context; our callback ignores it
+        // Left raw: a callback pointer stored INTO an engine struct field, tied to no symbol (CX-37).
         *(IntPtr*)(panel + CbOff)  = (IntPtr)(delegate* unmanaged<IntPtr, int, void>)&OnAnswer;
         // Mirror each platform's real code: Linux HandleQuitClick zeroes +0x90; the MSVC path doesn't.
         if (!OperatingSystem.IsWindows())
             *(IntPtr*)(panel + PadOff) = IntPtr.Zero;
 
         IntPtr msg = Native.NewExoString(Describe(additions));
-        _activate(panel, msg, OkStrRef, CancelStrRef);   // Linux overload copies the text; does not own msg
+        EngineFn.OkCancelActivate(panel, msg, OkStrRef, CancelStrRef);   // Linux overload copies the text; does not own msg
         Native.FreeExoString(msg);
 
         _pending = additions;
@@ -208,9 +203,9 @@ internal static unsafe class HotkeyConsent
                 _ => $"Mouse {btn}",
             };
         }
-        if (_keyName != null)
+        if (EngineFn.SdlGetKeyName != null)
         {
-            byte* p = _keyName(code);
+            byte* p = EngineFn.SdlGetKeyName(code);
             string s = p != null ? Marshal.PtrToStringUTF8((IntPtr)p) ?? "" : "";
             if (s.Length > 0) return s;
         }

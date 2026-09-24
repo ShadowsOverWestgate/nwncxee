@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using CX.Services.Perf;
@@ -41,58 +42,35 @@ namespace CX.Alloy;
 /// <c>PartLight+0xa8</c>'s frozen shadow-fade weight ever surfaces, close it with RE.</para></summary>
 internal static unsafe class RspShim
 {
-    /// <summary>Scene vtable slot DISPLACEMENTS, i.e. the offsets from the loaded vptr exactly as
-    /// <c>Scene::RenderSinglePass</c> @0x46e5f0 uses them (the byte offset into <c>_ZTV5Scene</c> is 0x10
-    /// more, for offset-to-top + typeinfo). Verified against the table rather than taken from the ADR.
-    /// Called through the LIVE vptr, as RSP does, so a derived Scene's override is honoured -- and every one
-    /// of these targets is a patched hook site, so the anchor, the bucket gate and the emitter suppression
-    /// all fire from here for free.</summary>
-    private static readonly int VtDoBinBucket = EngineLayout.SceneDoBinBucketSlot,
-        VtRenderBeams = EngineLayout.SceneRenderBeamsSlot, VtDoEmitterBucket = EngineLayout.SceneDoEmitterBucketSlot,
-        VtRenderLensFlares = EngineLayout.SceneRenderLensFlaresSlot, VtFadeDoors = EngineLayout.SceneFadeDoorsSlot,
-        VtDoFog = EngineLayout.SceneDoFogSlot;
+    // The Scene vtable calls RSP makes are declared on their EngineLayout rows (`sig:`) and reached as
+    // Scene view methods -- each through the LIVE vptr, as RSP does, so a derived Scene's override is
+    // honoured, and every one of those targets is a patched hook site, so the anchor, the bucket gate and
+    // the emitter suppression all fire from here for free.
+    //
+    // #232/#233: the overlay pair RSP calls between bucket 7 and the shadow block (at 0x46e9fb and
+    // 0x46ea15/0x46ee97) it calls UNCONDITIONALLY -- the punch list's "gate" column describes gates INSIDE
+    // them (Scene+0x88 for the gob, the trigger-bucket count for the other) -- so the shim calls them the
+    // same way and lets each self-gate. The third, Scene::DoTriggerBucket (0x1f0, punch-list item 14), is
+    // NOT replicated: it draws the entries whose PartTrigger+0xd8 is clear, and every trigger the client
+    // displays has it set. See the punch list for the chain that proves it.
 
-    /// <summary>#232/#233: the overlay slots RSP calls between bucket 7 and the shadow block, at 0x46e9fb
-    /// and 0x46ea15/0x46ee97. RSP calls them UNCONDITIONALLY -- the punch list's "gate" column describes
-    /// gates INSIDE them (<c>Scene+0x88</c> for the gob, the trigger-bucket count for the other) -- so the
-    /// shim calls them the same way and lets each self-gate.
-    /// <para>The third slot RSP calls here, <c>Scene::DoTriggerBucket</c> (0x1f0, punch-list item 14), is
-    /// NOT replicated: it draws the entries whose <c>PartTrigger+0xd8</c> is clear, and every trigger the
-    /// client displays has it set. See the punch list for the chain that proves it.</para></summary>
-    private static readonly int VtDoHighlightGob = EngineLayout.SceneDoHighlightGobSlot,
-                               VtDoHighlightTriggers = EngineLayout.SceneDoHighlightTriggersSlot;
-
-    /// <summary>#235: <c>LightManager</c> vptr displacement of <c>EnableLights()</c>, RSP's very first call
-    /// (@0x46e6a5). Verified against <c>_ZTV12LightManager</c> @0x186e2a0, not taken from the ADR.</summary>
-    private static readonly int VtEnableLights = EngineLayout.LightMgrEnableLightsSlot;
-
-    /// <summary>Count of highlight gobs; the array and its colours sit either side of it, all three read by
-    /// <c>Scene::DoHighlightGob</c> itself.</summary>
-    private static readonly int SceneHighlightGobs = EngineLayout.SceneHiliteCount;
-
-    /// <summary><c>CExoArrayList&lt;Part*&gt;</c> count, at <c>+8</c> of the list head.</summary>
+    /// <summary><c>CExoArrayList&lt;Part*&gt;</c> count, at <c>+8</c> of the list head. Stays raw: the
+    /// trigger bucket is a bare list head at a global address, not an engine object a view sits on.</summary>
     private static readonly int ListCount = EngineLayout.ListItemCount;
-
-    /// <summary>Scene -&gt; LightManager* and Scene -&gt; the focus position, read off the
-    /// <c>focuslighting</c> block at 0x46ebd7..0x46ec46. The focus position is the same field
-    /// <c>RenderSkyBoxes</c> parks every sky gob on (<see cref="EngineLayout.SceneSkyPos"/>), which is why
-    /// the sky follows the camera.</summary>
-    private static readonly int SceneLightManager = EngineLayout.SceneLightManager,
-                               SceneFocusPos = EngineLayout.SceneSkyPos;
 
 
     private static ExtenderLog? _log;
     /// <summary>#456: the LightManager layout probe's one-shot latch.</summary>
     private static bool _probedLightMgr;
-    private static delegate* unmanaged<IntPtr, void> _skyBoxes;
-    private static delegate* unmanaged<IntPtr, IntPtr, void> _collectLights;
+    private static RenderSkyBoxesFn _skyBoxes;
+    private static GobCollectLightsFn _collectLights;
     private static IntPtr* _focusObject;
     private static float* _focusLighting;
-    private static IntPtr* _vdoSlot, _vdoBottomSlot;
+    private static GlRenderVertexDataFn* _vdoSlot, _vdoBottomSlot;
     private static int* _fullDynamicLighting;
     private static byte* _triggerBucket;
-    private static delegate* unmanaged<IntPtr, uint, uint, uint, void> _origStream;
-    private static delegate* unmanaged<int, void> _riEnable, _riDisable;
+    private static GlRenderVertexStreamDataFn _origStream;
+    private static RiEnableFn _riEnable, _riDisable;
     /// <summary><c>GLRender::m_pCurrentCustomProgram</c> -- the latch both draw funnels read. Cleared at the
     /// shim's exit; see <see cref="EngineOverlays"/>.</summary>
     private static IntPtr* _curCustom;
@@ -165,9 +143,10 @@ internal static unsafe class RspShim
         // #232/#233: the overlay displacements must be distinct from each other AND from the six the shim
         // already calls. A duplicated displacement is a silent wrong virtual -- FadeDoors run twice, say --
         // which reads as a rendering oddity rather than as the typo it is.
-        ReadOnlySpan<int> slots = stackalloc int[] { VtDoBinBucket, VtRenderBeams, VtDoEmitterBucket,
-                                                     VtRenderLensFlares, VtFadeDoors, VtDoFog,
-                                                     VtDoHighlightGob, VtDoHighlightTriggers };
+        ReadOnlySpan<int> slots = stackalloc int[] { EngineLayout.SceneDoBinBucketSlot, EngineLayout.SceneRenderBeamsSlot,
+                                                     EngineLayout.SceneDoEmitterBucketSlot, EngineLayout.SceneRenderLensFlaresSlot,
+                                                     EngineLayout.SceneFadeDoorsSlot, EngineLayout.SceneDoFogSlot,
+                                                     EngineLayout.SceneDoHighlightGobSlot, EngineLayout.SceneDoHighlightTriggersSlot };
         for (int i = 0; i < slots.Length && ok; i++)
             for (int j = i + 1; j < slots.Length; j++)
                 if (slots[i] == slots[j]) { ok = false; break; }
@@ -184,8 +163,8 @@ internal static unsafe class RspShim
     {
         _log = log;
         if (!_checkOk) return;   // SelfCheck runs unconditionally, early in AlloyRenderer.Initialize
-        _skyBoxes = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.RenderSkyBoxes);
-        _collectLights = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GobCollectLights);
+        _skyBoxes = EngineFn.RenderSkyBoxes;
+        _collectLights = EngineFn.GobCollectLights;
         EmitterLighting.Resolve();
         _focusObject = (IntPtr*)Native.Sym(SymbolMap.SceneFocusObject);
         _focusLighting = (float*)Native.Sym(SymbolMap.FocusLighting);
@@ -194,8 +173,8 @@ internal static unsafe class RspShim
         // #237: the epilogue's two entry points. Deliberately NOT in the `missing` list below -- a shim that
         // cannot restore five enable bits is still a shim that draws the frame, and standing the cutover down
         // over its epilogue would be the worse trade.
-        _riEnable = (delegate* unmanaged<int, void>)Native.Sym(SymbolMap.RiEnable);
-        _riDisable = (delegate* unmanaged<int, void>)Native.Sym(SymbolMap.RiDisable);
+        _riEnable = EngineFn.RiEnable;
+        _riDisable = EngineFn.RiDisable;
         _curCustom = (IntPtr*)Native.Sym(SymbolMap.GlCurrentCustomProgram);
         // Named, not counted: "an engine symbol did not resolve" is unactionable, and this list is the only
         // place that knows which one. glBindFramebuffer is deliberately NOT here -- see Ready.
@@ -213,13 +192,9 @@ internal static unsafe class RspShim
             return;
         }
 
-        _vdoSlot = hooks.Chain(SymbolMap.GlRenderVertexData,
-            (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)&OnVdoDraw, SwallowPriority);
-        _vdoBottomSlot = hooks.Chain(SymbolMap.GlRenderVertexData,
-            (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)&OnVdoBottom, BottomPriority);
-        _origStream = (delegate* unmanaged<IntPtr, uint, uint, uint, void>)hooks.Install(
-            SymbolMap.GlRenderVertexStreamData,
-            (IntPtr)(delegate* unmanaged<IntPtr, uint, uint, uint, void>)&OnStreamDraw);
+        _vdoSlot = hooks.ChainGlRenderVertexData(&OnVdoDraw, SwallowPriority);
+        _vdoBottomSlot = hooks.ChainGlRenderVertexData(&OnVdoBottom, BottomPriority);
+        _origStream = hooks.InstallGlRenderVertexStreamData(&OnStreamDraw);
         if (_vdoSlot == null || _vdoBottomSlot == null || _origStream == null)
         {
             log.Info("RspShim: a draw-funnel hook failed -- the cutover stands down rather than replace "
@@ -256,12 +231,12 @@ internal static unsafe class RspShim
         // The shadow bracket runs inside the anchor too (measured: anchor tracked Zone.Shadow tick for
         // tick, 2026-08-31) -- net it out the same way, or the shim re-reports the whole CasterPass CPU.
         long shadow0 = FrameZones.Ticks(FrameZones.Zone.Shadow);
-        IntPtr vptr = *(IntPtr*)scene;
+        var sc = new Scene(scene);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         // #232/#233: decided BEFORE the anchor, because the answer has to reach PostChain's resolve, which
         // runs inside it. Both counts are already final here -- Scene::AddPartsToDrawBuckets fills the
         // trigger bucket and Scene::AddHighlightGob the gob array, both outside RSP and ahead of it.
-        WantsEngineOverlays = *(int*)(scene + SceneHighlightGobs) != 0
+        WantsEngineOverlays = sc.HiliteCount != 0
                               || *(int*)(_triggerBucket + ListCount) != 0;
         // ...and cleared BEFORE the bracket, not after it: only this frame's blit may arm it. A frame that
         // bails out of DrawOwned early (nothing enrolled, a PostChain refusal, no 4.6 context) never reaches
@@ -275,11 +250,11 @@ internal static unsafe class RspShim
         // left them (zero for any light added since), which is wrong-looking lighting, not a missing draw.
         if (*_fullDynamicLighting != 0)
         {
-            IntPtr lm = *(IntPtr*)(scene + SceneLightManager);
+            LightManager lm = sc.LightManager;
             // #456: the EIGHTH VtblSlot class -- the ticket's list of seven missed it, and a slot Alloy
             // calls every frame is exactly what the probe vocabulary reaches.
-            AlloyProbe.Once(ref _probedLightMgr, "LightManager", lm, _log);
-            if (lm != IntPtr.Zero) Vt(*(IntPtr*)lm, VtEnableLights, lm);
+            AlloyProbe.Once(ref _probedLightMgr, "LightManager", lm.Ptr, _log);
+            if (!lm.IsNull) lm.EnableLights();
         }
         InWindow = true;
         // BEFORE the anchor, exactly as RSP orders it (@0x46e736, one instruction group ahead of FadeDoors
@@ -288,7 +263,7 @@ internal static unsafe class RspShim
         // it is RSP bookkeeping like every other item here: EngineOverlays below runs real engine draws
         // through GLRender::SetUniforms, which fogs from m_fog. Dropped, those overlays would fog off
         // whatever RenderDrawBucket's per-item write left there last (0x46d63d writes a SCALED colour).
-        Vt(vptr, VtDoFog, scene);              // scene fog -> GLRender::m_fog, for the engine's own overlay draws
+        sc.DoFog();                            // scene fog -> GLRender::m_fog, for the engine's own overlay draws
         // #261, and it is the whole of the particle lag. DoEmitterBucket is the only caller of
         // PartEmitter::AnimateParticles, and RSP runs it at step 28 -- AFTER the anchor, so an Alloy frame
         // drew the positions the PREVIOUS frame's simulation left. Under the cutover the order is Alloy's
@@ -296,7 +271,7 @@ internal static unsafe class RspShim
         // are swallowed by the funnels, exactly as they were at step 28, and the walk is where the
         // population and the engine's back-to-front sort come from.
         long s0 = Stopwatch.GetTimestamp();
-        Vt(vptr, VtDoEmitterBucket, scene);
+        sc.DoEmitterBucket();
         long s1 = Stopwatch.GetTimestamp(); _stepTicks[0] += s1 - s0;
         // #322 (review): the child brackets netted out of the ANCHOR step are sampled across the anchor
         // vcall alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
@@ -316,7 +291,7 @@ internal static unsafe class RspShim
         // vcall alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
         // here goes negative the moment any Alloy/Shadow bracket runs outside the anchor.
         long ca1 = FrameZones.Ticks(FrameZones.Zone.Alloy), cs1 = FrameZones.Ticks(FrameZones.Zone.Shadow);
-        Vt(vptr, VtFadeDoors, scene);          // door fade + hit-test alpha -- AND #132's anchor: Alloy draws here
+        sc.FadeDoors();                        // door fade + hit-test alpha -- AND #132's anchor: Alloy draws here
         long anchorChild = FrameZones.Ticks(FrameZones.Zone.Alloy) - ca1
                          + FrameZones.Ticks(FrameZones.Zone.Shadow) - cs1;
         long s3 = Stopwatch.GetTimestamp();
@@ -324,7 +299,7 @@ internal static unsafe class RspShim
         // walk leaves behind -- DoBinBucket @0x474c50 iterates the `binbucket` global (wind update, camera
         // distance, the grass sort) and FocusLighting is Scene field arithmetic of our own -- so with the
         // walk gone they simply run in RSP's relative order and nothing else moves.
-        Vt(vptr, VtDoBinBucket, scene);        // grass wind + per-bin LOD distance
+        sc.DoBinBucket();                      // grass wind + per-bin LOD distance
         long s4 = Stopwatch.GetTimestamp(); _stepTicks[3] += s4 - s3;
         FocusLighting(scene);                  // the focuslighting write, at RSP's step
         // #261 took the beam POPULATION off this call -- Beams.Enroll reads bucket 15 itself. The vcall
@@ -332,8 +307,8 @@ internal static unsafe class RspShim
         // left is the state prologue/epilogue (blend, depth mask, global colour) that RSP's later steps and
         // EngineOverlays below both inherit.
         long s5 = Stopwatch.GetTimestamp();
-        Vt(vptr, VtRenderBeams, scene);
-        Vt(vptr, VtRenderLensFlares, scene);   // flare occlusion fade
+        sc.RenderBeams();
+        sc.RenderLensFlares();                 // flare occlusion fade
         InWindow = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         // #456: HERE and not one line earlier -- the bracket has closed, so this is the ENGINE's context and
@@ -341,7 +316,7 @@ internal static unsafe class RspShim
         // the 2D UI) then lands on top of the owned frame instead of beside it.
         PresentTarget.HandBack();
         long s6 = Stopwatch.GetTimestamp(); _stepTicks[4] += s6 - s5;
-        EngineOverlays(vptr, scene);
+        EngineOverlays(scene);
         Epilogue();
         _stepTicks[5] += Stopwatch.GetTimestamp() - s6;
         if (!_barLogged && PostChain.Resolves > 0) Bar();
@@ -406,8 +381,9 @@ internal static unsafe class RspShim
     /// stencil pass still runs), isolating the glow from the gob's emissive/colour-shift fold.</summary>
     internal static bool GlowReplay => Renderer.HlGlow.V;
 
-    private static void EngineOverlays(IntPtr vptr, IntPtr scene)
+    private static void EngineOverlays(IntPtr scene)
     {
+        var sc = new Scene(scene);
         // The custom-program LATCH, cleared before any engine draw issues again. Both funnels open with
         // `if (m_pCurrentCustomProgram) SetProgram(0xe)` (RenderVertexData @0x4d05a8, RenderVertexStreamData
         // @0x4d0cd6), and shader type 0xe means "use whatever that global points at". Its only clearers are
@@ -424,8 +400,8 @@ internal static unsafe class RspShim
         bool ownedHighlight = Highlight.TakeHighlightDrawn();
         if (!WantsEngineOverlays || !PostChain.DefaultDepthOk) return;
         if (!GlowReplay) { }
-        else if (!ownedHighlight) Vt(vptr, VtDoHighlightGob, scene);
-        else GlowRemainder(vptr, scene);
+        else if (!ownedHighlight) sc.DoHighlightGob();
+        else GlowRemainder(scene);
         // The trigger highlight is a STENCIL pass and needs one: SetShadowStencilBuffer @0x460c30 is
         // ClearStencilValue(0x7f) + SetStencilMask(0xff) + Clear(4), so it clears whatever framebuffer is
         // bound (no FBO of its own to bind, which is why this replay works at all) -- but the mask it then
@@ -433,8 +409,8 @@ internal static unsafe class RspShim
         if (!PostChain.DefaultStencilOk) return;
         // RSP calls this twice, with the bool that selects which half of the trigger bucket to draw: 0 at
         // 0x46ea15 and 1 at 0x46ee97 (read from the disassembly -- the decompiler drops the argument).
-        VtB(vptr, VtDoHighlightTriggers, scene, 0);
-        VtB(vptr, VtDoHighlightTriggers, scene, 1);
+        sc.DoHighlightTriggers(0);
+        sc.DoHighlightTriggers(1);
     }
 
     /// <summary>#232 second mode, the remainder: a highlighted gob with no Alloy draw records (an invisible
@@ -448,14 +424,15 @@ internal static unsafe class RspShim
     /// glow runs instead -- a doubled highlight on a hundred-object sweep beats losing the invisible ones.</para></summary>
     private const int GlowCap = 128;
 
-    private static void GlowRemainder(IntPtr vptr, IntPtr scene)
+    private static void GlowRemainder(IntPtr scene)
     {
-        int n = *(int*)(scene + Highlight.SceneHlCount);
+        var sc = new Scene(scene);
+        int n = sc.HiliteCount;
         int handled = Highlight.HandledCount;
         if (n <= 0 || handled >= n) return;   // everything owned: no glow at all
-        if (n > GlowCap) { Vt(vptr, VtDoHighlightGob, scene); return; }
-        IntPtr* gobs = *(IntPtr**)(scene + Highlight.SceneHlGobs);
-        float* cols = (float*)*(IntPtr*)(scene + Highlight.SceneHlColors);
+        if (n > GlowCap) { sc.DoHighlightGob(); return; }
+        IntPtr* gobs = (IntPtr*)sc.HiliteGobs;
+        float* cols = (float*)sc.HiliteColors;
         IntPtr* savedGobs = stackalloc IntPtr[GlowCap];
         float* savedCols = stackalloc float[GlowCap * 3];
         new Span<IntPtr>(gobs, n).CopyTo(new Span<IntPtr>(savedGobs, n));
@@ -473,20 +450,12 @@ internal static unsafe class RspShim
             cols[m * 3 + 2] = savedCols[i * 3 + 2];
             m++;
         }
-        *(int*)(scene + Highlight.SceneHlCount) = m;
-        if (m > 0) Vt(vptr, VtDoHighlightGob, scene);
+        sc.HiliteCount = m;
+        if (m > 0) sc.DoHighlightGob();
         new Span<IntPtr>(savedGobs, n).CopyTo(new Span<IntPtr>(gobs, n));
         new Span<float>(savedCols, n * 3).CopyTo(new Span<float>(cols, n * 3));
-        *(int*)(scene + Highlight.SceneHlCount) = n;
+        sc.HiliteCount = n;
     }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void VtB(IntPtr vptr, int slot, IntPtr scene, byte arg)
-        => ((delegate* unmanaged<IntPtr, byte, void>)(*(IntPtr*)(vptr + slot)))(scene, arg);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void Vt(IntPtr vptr, int slot, IntPtr scene)
-        => ((delegate* unmanaged<IntPtr, void>)(*(IntPtr*)(vptr + slot)))(scene);
 
     /// <summary>Item 5 of ADR 0016's bookkeeping list, replicated from RSP @0x46ebd7..0x46ec46: collect the
     /// focus object's lights into a stack list, ask the scene's LightManager what that position is lit by,
@@ -503,8 +472,9 @@ internal static unsafe class RspShim
         IntPtr* list = stackalloc IntPtr[2];
         list[0] = IntPtr.Zero; list[1] = IntPtr.Zero;
         _collectLights(focus, (IntPtr)list);
-        EmitterLighting.V3 result = EmitterLighting.At(*(EmitterLighting.V3*)(scene + SceneFocusPos),
-                                                       *(IntPtr*)(scene + SceneLightManager), (IntPtr)list);
+        var sc = new Scene(scene);
+        EmitterLighting.V3 focusPos = *(EmitterLighting.V3*)Unsafe.AsPointer(ref sc.SkyPos);
+        EmitterLighting.V3 result = EmitterLighting.At(focusPos, sc.LightManager.Ptr, (IntPtr)list);
         _focusLighting[0] = result.X; _focusLighting[1] = result.Y; _focusLighting[2] = result.Z;
         if (list[0] != IntPtr.Zero) NativeMemory.Free((void*)list[0]);
     }
@@ -528,7 +498,7 @@ internal static unsafe class RspShim
         // #260's tagging: outside the window the ENGINE is drawing for itself -- the UI, the menu, a GUI 3D
         // panel -- so the pools this VDO names are the ones that question is about.
         else OwnedBuffers.NoteEngineDraw(vdo);
-        var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_vdoSlot;
+        GlRenderVertexDataFn next = *_vdoSlot;
         if (next != null) next(vdo, item, prim, size, offset);
     }
 
@@ -538,7 +508,7 @@ internal static unsafe class RspShim
     private static void OnVdoBottom(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
         if (InWindow) _passed++;
-        var next = (delegate* unmanaged<IntPtr, uint, uint, uint, uint, void>)*_vdoBottomSlot;
+        GlRenderVertexDataFn next = *_vdoBottomSlot;
         if (next != null) next(vdo, item, prim, size, offset);
     }
 

@@ -1,4 +1,5 @@
 using System;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -41,8 +42,8 @@ internal static unsafe class PostStack
     internal const float EngineGamma = 2.2f;
 
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<uint, int> _gspI;
-    private static delegate* unmanaged<uint, float> _gspF;
+    private static RiGetGlobalShaderParamiFn _gspI;
+    private static RiGetGlobalShaderParamfFn _gspF;
     /// <summary><c>enableFBeffects</c>, the engine's console gate on the whole framebuffer-effect walk
     /// (<c>DoFrameBufferEffects</c> returns at once when it is 0). Null reads as on.</summary>
     private static int* _fbEffects;
@@ -130,8 +131,8 @@ internal static unsafe class PostStack
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _gspI = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
-        _gspF = (delegate* unmanaged<uint, float>)Native.Sym(SymbolMap.RiGetGlobalShaderParamf);
+        _gspI = EngineFn.RiGetGlobalShaderParami;
+        _gspF = EngineFn.RiGetGlobalShaderParamf;
         _fbEffects = (int*)Native.Sym(SymbolMap.EnableFBEffects);
         _fbMask = (uint*)Native.Sym(SymbolMap.FbEffectsMask);
         FbPostStage.Attach(log);

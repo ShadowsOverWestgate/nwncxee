@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -18,28 +19,16 @@ namespace CX.Alloy;
 internal static unsafe partial class GrassField
 {
     /// <summary>Size of the synthetic list block's header: OUR allocation, not an engine offset, but it has
-    /// to clear every <c>CAurTriangleList</c> field Bake reads (<see cref="ListVerts"/> .. <see cref="ListMat"/>),
-    /// so it is derived from the last of them rather than written down twice.</summary>
-    private static readonly int BorderHeader = (EngineLayout.ListMat + 4 + 7) & ~7;
+    /// to clear every <c>CAurTriangleList</c> field Bake reads (<see cref="EngineLayout.ListVerts"/> ..
+    /// <see cref="EngineLayout.ListMat"/>), so it is derived from the last of them rather than written down twice.</summary>
+    private static readonly int BorderHeader = (EngineLayout.ListMat + 4 + 7) & ~7;   // a SIZE, not a field read
     private const int MaxBorderLists = 16384, MaxBorderFaces = 4096;
-    /// <summary>TileData -&gt; its surviving parts (<c>CExoArrayList&lt;Part*&gt;</c>, items +0x30, count +0x38):
-    /// the array <c>Scene::SpawnTile</c> @0x474470 walks and <c>ProcessStaticParts</c> @0x470970 fills.</summary>
-    private static readonly int TileDataParts = EngineLayout.TileParts,
-                               TileDataPartCount = EngineLayout.TilePartCount;
-    /// <summary>MdlNodeTriMesh -&gt; faces (+0xb0, count +0xb8, 0x20-byte <c>MaxFace</c>: material int at +0x10,
-    /// vertex indices as three u16 at +0x1a/+0x1c/+0x1e) and its vertex pool id (+0x280), whose host shadow
-    /// holds positions 12 bytes apart. All read off <c>Scene::AddFacesToBins</c> @0x460ef0 and
-    /// <c>CAurTriangleList::AddTriangle</c> @0x4b5650, which bin the engine's own grass from exactly these.</summary>
-    private static readonly int NodeFaces = EngineLayout.MeshFaces, NodeFaceCount = EngineLayout.MeshFaceCount,
-                               NodePool = EngineLayout.MdlRestPool, FaceStride = EngineLayout.FaceStride,
-                               FaceA = EngineLayout.FaceVertA, FaceB = EngineLayout.FaceVertB,
-                               FaceC = EngineLayout.FaceVertC, PoolStride = EngineLayout.PoolPosStride;
+    /// <summary>Two STRIDES, not fields: the <c>MaxFace</c> record size and the vertex pool's position
+    /// stride, both of which index rather than name a place inside an object.</summary>
+    private static readonly int FaceStride = EngineLayout.FaceStride, PoolStride = EngineLayout.PoolPosStride;
     /// <summary>The tileset's own grass material: <c>CNWCArea::LoadArea</c> registers the <c>.set</c>'s
     /// <c>[GRASS]</c> block as <c>AurGrassAddInfo(3, ...)</c>; server overrides take other slots.</summary>
     private const int TilesetGrassMaterial = 3;
-    /// <summary>CAurGrassInfo -&gt; density (+0x20): blades per face in <c>AddTriangle</c> are
-    /// <c>|cross| * 0.5 * density</c>, i.e. face area times it.</summary>
-    private static readonly int InfoDensity = EngineLayout.GrassInfoDensity;
     /// <summary>A face is ground when its unit normal's |z| clears this. Grass stands upright from wherever
     /// its root is, so a wall-ish face with a grass texture (a raised tile's skirt) would sprout sideways.</summary>
     private const float MinUpNormal = 0.5f;
@@ -52,18 +41,18 @@ internal static unsafe partial class GrassField
     private static string[] _borderTex = Array.Empty<string>();
     private static readonly float[] _scratchV = new float[MaxBorderFaces * 9];
     private static readonly int[] _scratchB = new int[MaxBorderFaces];
-    private static delegate* unmanaged<IntPtr, Vector3*, IntPtr> _bspTile;
-    private static delegate* unmanaged<uint, byte*> _getPool;
-    private static delegate* unmanaged<IntPtr, Vector3*, float*, void> _getWorld;
+    private static SceneBspGetTileDataFn _bspTile;
+    private static GlGetPoolFn _getPool;
+    private static PartGetWorldFn _getWorld;
 
     private static void BorderInstall(ExtenderLog log)
     {
         // Restart knobs: Boot, not V -- the ring is binned at area load from what this session started with.
         _borderGrass = Grass.Border.Boot;
         _borderTex = Grass.BorderTex.Boot.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        _bspTile = (delegate* unmanaged<IntPtr, Vector3*, IntPtr>)Native.Sym(SymbolMap.SceneBspGetTileData);
-        _getPool = (delegate* unmanaged<uint, byte*>)Native.Sym(SymbolMap.GlGetPool);
-        _getWorld = (delegate* unmanaged<IntPtr, Vector3*, float*, void>)Native.Sym(SymbolMap.PartGetWorld);
+        _bspTile = EngineFn.SceneBspGetTileData;
+        _getPool = EngineFn.GlGetPool;
+        _getWorld = EngineFn.PartGetWorld;
         if (_bspTile == null || _getPool == null || _getWorld == null || _borderTex.Length == 0)
         {
             _borderGrass = false;
@@ -76,40 +65,41 @@ internal static unsafe partial class GrassField
     {
         if (_off || !_borderGrass) return;
         if (_blCount >= MaxBorderLists) { _borderOver++; return; }
-        IntPtr td = _bspTile(scene, &pos);
-        if (td == IntPtr.Zero) return;
-        byte* info = GrassInfo(TilesetGrassMaterial);
-        if (info == null) return;
-        float density = *(float*)(info + InfoDensity);
+        var td = new TileData(_bspTile(scene, &pos));
+        if (td.IsNull) return;
+        CAurGrassInfo info = GrassInfo(TilesetGrassMaterial);
+        if (info.IsNull) return;
+        float density = info.Density;
         if (!(density > 0f)) return;
 
         int faces = 0;
         Vector3 min = new(float.MaxValue), max = new(float.MinValue);
-        IntPtr* parts = *(IntPtr**)(td + TileDataParts);
-        int partCount = *(int*)(td + TileDataPartCount);
+        IntPtr* parts = (IntPtr*)td.Parts;
+        int partCount = td.PartCount;
         if (parts == null) return;
         for (int i = 0; i < partCount && faces < MaxBorderFaces; i++)
         {
             IntPtr part = parts[i];
             if (part == IntPtr.Zero || !Renderable(part)) continue;
-            IntPtr tri = ((delegate* unmanaged<IntPtr, IntPtr>)*(IntPtr*)(*(IntPtr*)part + PartAsTriMeshVtbl))(part);
-            if (tri == IntPtr.Zero) continue;
-            if (!IsGrassTexture(AlloyCensus.TexName(new PartRef(tri).Material.Texture(0).Ptr))) continue;
-            IntPtr node = *(IntPtr*)(tri + AlloyRenderer.PartMdlNode);
-            if (node == IntPtr.Zero) continue;
-            byte* host = _getPool(*(uint*)(node + NodePool));
-            byte* face = *(byte**)(node + NodeFaces);
-            int faceCount = *(int*)(node + NodeFaceCount);
+            PartTriMesh tri = new CX.Engine.Part(part).AsPartTriMesh();
+            if (tri.IsNull) continue;
+            if (!IsGrassTexture(AlloyCensus.TexName(new PartRef(tri.Ptr).Material.Texture(0).Ptr))) continue;
+            var node = new MdlNodeTriMesh(new PartRef(tri.Ptr).Mdl.Ptr);
+            if (node.IsNull) continue;
+            byte* host = _getPool(node.RestPool);
+            byte* face = (byte*)node.Faces;
+            int faceCount = node.FaceCount;
             if (host == null || face == null || faceCount <= 0) continue;
             Vector3 wp; float* q = stackalloc float[4];
-            _getWorld(tri, &wp, q);
+            _getWorld(tri.Ptr, &wp, q);
             // Quaternions are stored (w, x, y, z); System.Numerics takes (x, y, z, w).
             var rot = new Quaternion(q[1], q[2], q[3], q[0]);
             for (int f = 0; f < faceCount && faces < MaxBorderFaces; f++, face += FaceStride)
             {
-                Vector3 a = wp + Vector3.Transform(*(Vector3*)(host + *(ushort*)(face + FaceA) * PoolStride), rot);
-                Vector3 b = wp + Vector3.Transform(*(Vector3*)(host + *(ushort*)(face + FaceB) * PoolStride), rot);
-                Vector3 c = wp + Vector3.Transform(*(Vector3*)(host + *(ushort*)(face + FaceC) * PoolStride), rot);
+                var mf = new MaxFace((IntPtr)face);
+                Vector3 a = wp + Vector3.Transform(*(Vector3*)(host + mf.VertA * PoolStride), rot);
+                Vector3 b = wp + Vector3.Transform(*(Vector3*)(host + mf.VertB * PoolStride), rot);
+                Vector3 c = wp + Vector3.Transform(*(Vector3*)(host + mf.VertC * PoolStride), rot);
                 Vector3 n = Vector3.Cross(b - a, c - a);
                 float len = n.Length();
                 if (!(len > 0f) || MathF.Abs(n.Z) < MinUpNormal * len) continue;
@@ -129,14 +119,15 @@ internal static unsafe partial class GrassField
         byte* block = (byte*)NativeMemory.AllocZeroed((nuint)(BorderHeader + faces * 9 * sizeof(float) + faces * sizeof(int)));
         float* verts = (float*)(block + BorderHeader);
         int* blades2 = (int*)(verts + faces * 9);
-        *(float**)(block + ListVerts) = verts;
-        *(int*)(block + ListVertFloats) = faces * 9;
-        *(int**)(block + ListBlades) = blades2;
-        *(int*)(block + ListBladeCount) = faces;
-        *(int*)(block + ListMat) = TilesetGrassMaterial;
+        var tl = new CAurTriangleList((IntPtr)block);
+        tl.Verts = (IntPtr)verts;
+        tl.VertFloats = faces * 9;
+        tl.Blades = (IntPtr)blades2;
+        tl.BladeCount = faces;
+        tl.Mat = TilesetGrassMaterial;
         _scratchV.AsSpan(0, faces * 9).CopyTo(new Span<float>(verts, faces * 9));
         _scratchB.AsSpan(0, faces).CopyTo(new Span<int>(blades2, faces));
-        float height = *(float*)(info + InfoHeight);
+        float height = info.Height;
         int k = _blCount++;
         _bl[k] = (IntPtr)block;
         _blMin[k] = min - new Vector3(height, height, 0f);
@@ -202,10 +193,10 @@ internal static unsafe partial class GrassField
     /// absorbed it -- reading both would scatter every face twice.</summary>
     private static bool Renderable(IntPtr part)
     {
-        if (*(byte*)(part + EngineLayout.PartRenderFlag) == 0) return false;
-        IntPtr n = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
-        if (n == IntPtr.Zero || *(int*)(n + EngineLayout.MdlRenderGate) == 0) return false;
-        if (*(short*)(n + EngineLayout.MdlRenderKind) == 0) return *(IntPtr*)(n + EngineLayout.MdlRenderGeom) != IntPtr.Zero;
+        if (new PartTriMesh(part).RenderFlag == 0) return false;
+        var n = new MdlNodeTriMesh(new PartRef(part).Mdl.Ptr);
+        if (n.IsNull || n.RenderGate == 0) return false;
+        if (n.RenderKind == 0) return n.RenderGeom != IntPtr.Zero;
         return true;
     }
 

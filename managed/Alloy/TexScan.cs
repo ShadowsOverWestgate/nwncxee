@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Numerics;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -19,11 +20,6 @@ namespace CX.Alloy;
 /// image. The engine never uploads DXT3.</para></summary>
 internal static unsafe class TexScan
 {
-    private static readonly int VtPixels = EngineLayout.TexGetImageSlot, VtWidth = EngineLayout.TexGetWidthSlot,
-        VtHeight = EngineLayout.TexGetHeightSlot, VtBpp = EngineLayout.TexGetBppSlot,
-        VtNumX = EngineLayout.TexGetNumXSlot, VtNumY = EngineLayout.TexGetNumYSlot,
-        VtCompressed = EngineLayout.TexCompressedSizeSlot, VtHeaderSkip = EngineLayout.TexHeaderSkipSlot,
-        VtMipmaps = EngineLayout.TexMipMapSlot, VtFormat = EngineLayout.TexFormatSlot;
     private const int FmtDxt1 = 7, FmtDxt5 = 8;
     /// <summary>The last engine format code the compressed branch did not recognise; for the funnel diagnostic.</summary>
     internal static int LastRefusedFormat = -1;
@@ -53,12 +49,13 @@ internal static unsafe class TexScan
     internal static string Describe(IntPtr tex)
     {
         if (tex == IntPtr.Zero) return "eng=?";
-        return $"eng {I(tex, VtWidth)}x{I(tex, VtHeight)} bpp={I(tex, VtBpp)} cells={I(tex, VtNumX)}x{I(tex, VtNumY)} "
-             + $"cmp={I(tex, VtCompressed)} fmt={I(tex, VtFormat)} mips={I(tex, VtMipmaps) & 0xff} img={(P(tex, VtPixels) != IntPtr.Zero ? 1 : 0)}";
+        var t = new CAurTexture(tex);
+        return $"eng {t.GetWidth()}x{t.GetHeight()} bpp={t.GetBPP()} cells={t.GetNumX()}x{t.GetNumY()} "
+             + $"cmp={t.GetCompressedSize()} fmt={t.GetCompressionFormat()} mips={t.GetMipMap() & MipCountMask} img={(t.GetImage() != IntPtr.Zero ? 1 : 0)}";
     }
 
-    private static IntPtr P(IntPtr t, int slot) => ((delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)t + slot)))(t);
-    private static int I(IntPtr t, int slot) => ((delegate* unmanaged<IntPtr, int>)(*(IntPtr*)(*(IntPtr*)t + slot)))(t);
+    /// <summary>The mip-chain count occupies the low byte of what <c>GetMipMap</c> returns.</summary>
+    private const int MipCountMask = 0xff;   // not-an-offset: the low byte of the mip word
 
     /// <summary>Scan one cell of the texture's decoded image. False = no image to read (already freed, or a
     /// layout this scanner does not know), and the consumers fall back to their safe verdicts.</summary>
@@ -66,23 +63,24 @@ internal static unsafe class TexScan
     {
         r = default;
         if (tex == IntPtr.Zero) return false;
-        byte* px = (byte*)P(tex, VtPixels);
+        var t = new CAurTexture(tex);
+        byte* px = (byte*)t.GetImage();
         if (px == null) return false;
-        int w = I(tex, VtWidth), h = I(tex, VtHeight);
+        int w = t.GetWidth(), h = t.GetHeight();
         if (w <= 0 || h <= 0) return false;
-        r.Mips = (I(tex, VtMipmaps) & 0xff) != 0;
+        r.Mips = (t.GetMipMap() & MipCountMask) != 0;
         int cut = (int)(alphaCut * 255f);
-        if (I(tex, VtCompressed) > 0)
+        if (t.GetCompressedSize() > 0)
         {
-            int fmt = I(tex, VtFormat);
-            byte* data = px + I(tex, VtHeaderSkip);
+            int fmt = t.GetCompressionFormat();
+            byte* data = px + t.GetNumMipHeaderBytes();
             r.W = w; r.H = h;
             if (fmt == FmtDxt1) ScanDxt(data, w, h, false, cut, ref r);
             else if (fmt == FmtDxt5) ScanDxt(data, w, h, true, cut, ref r);
             else { LastRefusedFormat = fmt; return false; }
             return true;
         }
-        int bpp = I(tex, VtBpp), nx = Math.Max(I(tex, VtNumX), 1), ny = Math.Max(I(tex, VtNumY), 1);
+        int bpp = t.GetBPP(), nx = Math.Max(t.GetNumX(), 1), ny = Math.Max(t.GetNumY(), 1);
         int cw = w / nx, ch = h / ny;
         if (cw <= 0 || ch <= 0 || cell < 0 || cell >= nx * ny || bpp < 1 || bpp > 4) return false;
         int x0 = (cell % nx) * cw, y0 = (cell / nx) * ch;

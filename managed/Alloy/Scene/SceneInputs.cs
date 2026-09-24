@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 
@@ -67,10 +68,6 @@ public sealed unsafe class SceneInputs : IExtenderService
     // `/shadow nearradius` dials went with the work they gated.
 
     // ---- the camera-follow anchor chain (#65) ----
-    /// <summary>Behavior-host vtable slot for <c>AsBehaviorCameraFollow()</c> -- pure <c>return this</c> for a follow
-    /// cam, null otherwise (a base-class type filter). Replicated exactly from ManageSceneBSP's own devirt call, so
-    /// non-follow cameras (free-cam/cutscene) safely yield null.</summary>
-    private static readonly int BehaviorAsFollowVtbl = CX.Framework.EngineLayout.BehaviorAsFollowSlot;
 
     // One map centre per presented frame, shared by the re-walk and published as FrameInputs.Focus for
     // CasterPass's cascade fit. Player-anchored when the controlled creature is reachable, else the
@@ -82,7 +79,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     // m_nFlags@+8 -> CNWCArea::LoadArea reads it into +8), bit 0 = interior.
     private static bool _interior;                    // current area is interior (recomputed once per frame)
     private static IntPtr _appMgr;                    // &g_pAppManager (deref per use)
-    private static delegate* unmanaged<IntPtr, IntPtr> _getModule;
+    private static GetModuleFn _getModule;
     private static bool _interiorLogged;              // log interior/exterior transitions
     /// <summary><c>/shadow trace 1</c>: periodic trace of the light walk -- allocates log strings; diagnosis only.</summary>
     private static bool _trace => Shadows.Trace.V;
@@ -117,9 +114,10 @@ public sealed unsafe class SceneInputs : IExtenderService
         if (!_enabled) return;
 
         _appMgr = Native.Sym(SymbolMap.AppManager);
-        _getModule = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
-        _getGspF = (delegate* unmanaged<uint, float>)Native.Sym(SymbolMap.RiGetGlobalShaderParamf);
-        _getAdjRadius = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.GetLightAdjustedRadius);
+        _getModule = EngineFn.GetModule;
+        _getGspF = EngineFn.RiGetGlobalShaderParamf;
+        // Resolved once into a static: asked per area light per frame.
+        _getAdjRadius = EngineFn.GetLightAdjustedRadius;
 
         // Camera-follow anchor: the real PC position, camera- and shadow-path-independent (Scene+0x58 reads null
         // under the vanilla-stencil full kill). CurrentCamera is a global pointer slot -- store its address, deref per frame.
@@ -414,10 +412,10 @@ public sealed unsafe class SceneInputs : IExtenderService
     }
 
     /// <summary>RenderInterface::GetGlobalShaderParamf -- param 0x12 = the engine's light-radius multiplier.</summary>
-    private static delegate* unmanaged<uint, float> _getGspF;
+    private static RiGetGlobalShaderParamfFn _getGspF;
     /// <summary>GetLightAdjustedRadius -- the engine's own lit-radius calculation, called rather than
     /// re-derived so the Alloy pass cannot drift from it.</summary>
-    private static delegate* unmanaged<IntPtr, float> _getAdjRadius;
+    private static GetLightAdjustedRadiusFn _getAdjRadius;
     private static int _walkDiagTick;
 
     /// <summary>Light-cull mode (<c>/shadow lightcull</c>): 0 = keep every area light, 1 = camera-distance
@@ -797,17 +795,15 @@ public sealed unsafe class SceneInputs : IExtenderService
         if (cam == IntPtr.Zero) return null;
         IntPtr host = *(IntPtr*)((byte*)cam + CameraBehaviorHost);
         if (host == IntPtr.Zero) return null;
-        IntPtr vtbl = *(IntPtr*)host;
-        if (vtbl == IntPtr.Zero) return null;
+        var hv = new CAurBehavior(host);
+        if (*(IntPtr*)host == IntPtr.Zero) return null;
         AlloyProbe.Once(ref _probedBehavior, "CAurBehavior", host, _log);
-        var asFollow = (delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)((byte*)vtbl + BehaviorAsFollowVtbl));
-        if (asFollow == null) return null;
-        IntPtr behavior = asFollow(host);
-        if (behavior == IntPtr.Zero) return null;   // non-follow camera -> caller uses sticky/camera-ground
-        IntPtr target = *(IntPtr*)((byte*)behavior + BehaviorTargetObj);
+        if (hv.AsBehaviorCameraFollowFn == IntPtr.Zero) return null;
+        CAurBehaviorCameraFollow behavior = hv.AsBehaviorCameraFollow();
+        if (behavior.IsNull) return null;   // non-follow camera -> caller uses sticky/camera-ground
+        IntPtr target = *(IntPtr*)((byte*)behavior.Ptr + BehaviorTargetObj);
         if (target == IntPtr.Zero) return null;
-        float* p = (float*)((byte*)target + EngineLayout.GobPosition);
-        return new Vector3(p[0], p[1], p[2]);
+        return new Gob(target).Position;
     }
 
     /// <summary>Per-presented-frame edge from the UiHost roll-call: re-arm the once-per-frame walk and

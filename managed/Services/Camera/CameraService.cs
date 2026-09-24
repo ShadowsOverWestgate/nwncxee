@@ -35,12 +35,13 @@ namespace CX.Services.Camera;
 public sealed unsafe class CameraService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static IntPtr* _next;
+    private static CameraFollowControlFn* _next;
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr> _getModule =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
-        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
+    /// <summary>Resolved once: <see cref="Module"/> and <see cref="PlayerCreature"/> are read from inside the
+    /// camera solve, so neither takes the lazy resolve's compare per call.</summary>
+    private static readonly GetModuleFn _getModule = EngineFn.GetModule;
+    /// <inheritdoc cref="_getModule"/>
+    private static readonly GetGameObjectFn _getGameObject = EngineFn.GetGameObject;
 
     /// <summary>Why the layer is (or is not) touching the pose this frame.</summary>
     internal enum Gate { Active, NoModule, NotWorldCamera, Dialog, Cutscene, ClearView, Attached, Locked, Mode, Off }
@@ -85,15 +86,6 @@ public sealed unsafe class CameraService : IExtenderService
     private static float _fovWritten = float.NaN, _fovFirst = float.NaN;
     private static bool _live, _probeOk;
 
-    // The clamp triples are read as (enabled, min, max) at the row and the row + 4, so they stay raw offsets.
-    private static readonly int YawClampOff = EngineLayout.FollowYawClamp;
-    private static readonly int PitchClampOff = EngineLayout.FollowPitchClamp;
-    private static readonly int DistClampOff = EngineLayout.FollowDistClamp;
-    private static readonly int YawMinOff = EngineLayout.FollowYawMin;
-    private static readonly int PitchMinOff = EngineLayout.FollowPitchMin;
-    private static readonly int DistMinOff = EngineLayout.FollowDistMin;
-    private static readonly int CamRotOff = EngineLayout.CamRot;
-
     /// <summary>The Camera object sits 8 bytes before the CAurObject the behavior owns (<c>Camera::SetFollow</c>
     /// passes <c>this+8</c> on both builds).</summary>
     private const int CameraFromOwner = 8;
@@ -118,8 +110,7 @@ public sealed unsafe class CameraService : IExtenderService
         if (!SymbolMap.Require(log, "CameraService", SymbolMap.CameraFollowControl, SymbolMap.AppManager,
                                SymbolMap.GetModule, SymbolMap.GetGameObject)) return;
 
-        _next = hooks.Chain(SymbolMap.CameraFollowControl,
-                            (IntPtr)(delegate* unmanaged<IntPtr, float, int>)&OnControl, 10);
+        _next = hooks.ChainCameraFollowControl(&OnControl, 10);
         if (_next == null) { log.Info("CameraService: standing down (Control chain refused)"); return; }
 
         FrameRegistry.Global.Register(FramePhase.PostPresent, 50, OnFrameEnd, "CameraService", log);
@@ -140,7 +131,7 @@ public sealed unsafe class CameraService : IExtenderService
             && b.Dist < _distAfter - 1e-4f) { if (_offsetOn) _pullInsOffset++; else _pullIns++; }
         // Before the solve: the velocity is consumed by this call (the engine's chase writes it in the same slot).
         if (target != IntPtr.Zero && _probeOk && !FreeCameraService.Active) Recenter(self, dt);
-        int r = ((delegate* unmanaged<IntPtr, float, int>)(*_next))(self, dt);
+        int r = (*_next)(self, dt);
         _calls++;
         if (target == IntPtr.Zero) { _distAfter = float.NaN; return r; }
         _distAfter = b.Dist;
@@ -222,7 +213,7 @@ public sealed unsafe class CameraService : IExtenderService
         // The curve stays inside the behavior's own pitch range (settings.tml [camera.limits] lands there), not a
         // range of ours: a max past 90 is the player's to have.
         float lo = PitchFloor, hi = PitchCeil;
-        if (b.PitchClamp != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
+        if (b.PitchClamp != 0f) { lo = b.PitchMin[0]; hi = b.PitchMin[1]; }
         float pitch = Math.Clamp(_sPitch + m.PitchCurve.V * (_sDist - m.PitchRef.V), lo, hi);
         _outPitch = pitch;
         Quaternion q = Pose(_sYaw, pitch);
@@ -232,9 +223,7 @@ public sealed unsafe class CameraService : IExtenderService
         _wantNoCollision = _offsetOn;
         if (_offsetOn) pos = SpringArm(self, focus, pos + offX * Right(q) + offY * Vector3.UnitZ, dt);
         else _arm = 1f;
-        // Camera+0xbc holds (w, x, y, z): Control's own position formula reads it in that order.
-        float* rot = (float*)(cam + CamRotOff);
-        rot[0] = q.W; rot[1] = q.X; rot[2] = q.Y; rot[3] = q.Z;
+        c.Rot = q;
         c.Pos = pos;
         _pos = pos;
         // No magic zero (ADR 0025): the slider is written whenever the layer drives the mode.
@@ -345,7 +334,7 @@ public sealed unsafe class CameraService : IExtenderService
         var b = new CAurBehaviorCameraFollow(self);
         float d = b.Dist;
         float lo = PitchFloor, hi = PitchCeil;
-        if (b.PitchClamp != 0f) { lo = *(float*)(self + PitchMinOff); hi = *(float*)(self + PitchMinOff + 4); }
+        if (b.PitchClamp != 0f) { lo = b.PitchMin[0]; hi = b.PitchMin[1]; }
         basePitch = Math.Clamp(basePitch, lo, hi);
         float e = Elevation(basePitch);
         if (MathF.Abs(e) <= band) return basePitch;
@@ -431,14 +420,14 @@ public sealed unsafe class CameraService : IExtenderService
         if (mod.FindClearView != 0) return Gate.ClearView;
         if (mod.CameraAttached != intern.PlayerCreatureId) return Gate.Attached;
         // Clamps are ENABLED in normal play (the mode reset pushes [camera.limits] in); a lock is min == max.
-        if (Locked(self, YawClampOff, YawMinOff) || Locked(self, PitchClampOff, PitchMinOff)
-            || Locked(self, DistClampOff, DistMinOff)) return Gate.Locked;
+        var b = new CAurBehaviorCameraFollow(self);
+        if (Locked(b.YawClamp, b.YawMin) || Locked(b.PitchClamp, b.PitchMin) || Locked(b.DistClamp, b.DistMin)) return Gate.Locked;
         if ((uint)mode >= 3u) return Gate.Mode;
         return CameraModes.ByMode[mode].Enabled.V ? Gate.Active : Gate.Off;
     }
 
-    private static bool Locked(IntPtr self, int clampOff, int minOff) =>
-        *(float*)(self + clampOff) != 0f && *(float*)(self + minOff) >= *(float*)(self + minOff + 4);
+    /// <summary>A locked axis: the clamp is on and its range (min, max) has collapsed.</summary>
+    private static bool Locked(float clamp, Span<float> range) => clamp != 0f && range[0] >= range[1];
 
     internal static IntPtr App()
     {

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -215,8 +216,9 @@ public static unsafe class TextRig
     /// context, created once and never deleted.</summary>
     internal static uint _psamp;
 
-    internal static readonly delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr> _aurGet =
-        (delegate* unmanaged<byte*, IntPtr, byte*, int*, int, byte, IntPtr>)Native.Sym(SymbolMap.AurTextureGet);
+    /// <summary>Resolved once: the portrait path runs per drawn plate, so the lazy resolve's compare does not
+    /// belong in it. Null when the client does not export the resman getter.</summary>
+    internal static readonly AurTextureGetFn _aurGet = EngineFn.AurTextureGet;
 
     /// <summary>Cold init: load the font, bake the atlas (incl. its solid-white chrome texel). GL state
     /// is driven directly at draw time (snapshot/restore), so nothing to resolve here.</summary>

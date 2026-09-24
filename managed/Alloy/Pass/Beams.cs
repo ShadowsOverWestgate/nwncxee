@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -30,18 +31,8 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class Beams
 {
-    /// <summary>The only two fields <c>PartBeam::Draw</c> @0x450120 reads -- its whole body is
-    /// <c>RenderVertexData(part+0xa0, part+0xa8, 4, 0xffffffff)</c>. So the capture needs no funnel arm: the
-    /// draw's arguments are readable straight off the part.</summary>
-    private static readonly int PartVdo = EngineLayout.BeamVdo, PartItem = EngineLayout.BeamItem;
     /// <summary>The Aurora primitive id <c>PartBeam::Draw</c> hard-codes.</summary>
     private const int BeamPrim = 4;
-    /// <summary>Scene's shadow-light list, the one <c>RenderBeams</c> scans for the beam direction.</summary>
-    private static readonly int SceneLights = EngineLayout.SceneShadowLights,
-                               SceneLightCount = EngineLayout.SceneShadowLightCount;
-    /// <summary>The flag <c>RenderBeams</c>'s scan skips a light on when it is zero. One field with two
-    /// readers: <see cref="EngineLayout.LightCastShadows"/> is the same dword.</summary>
-    private static readonly int LightLive = EngineLayout.LightCastShadows;
     /// <summary><c>projectionWorldZClip</c>: the world z every back-facing beam vertex is extruded down to.
     /// <para><c>RenderBeams</c> @0x46add0 is <c>movss xmm0,[0x12f04a4]; mov edi,1; call SetShaderParamf</c> --
     /// the <c>edi</c> is the shader-constant INDEX and the value is the .rodata float, <b>-20.0</b>. Read the
@@ -76,13 +67,11 @@ internal static unsafe class Beams
     /// <see cref="SkyBox"/> reads). Read once per enrollment -- see the class remarks for why the top is the
     /// same value at the Alloy slot as it is at <c>RenderBeams</c>'s.</summary>
     private const int ModeModel = 2;
-    private static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
+    /// <summary>A STRIDE, not a field: the byte distance between one <c>m_aurMtxStack</c> entry and the next.</summary>
+    private static readonly int StackStride = EngineLayout.MtxStackStride;
     /// <summary>The embedded <c>DrawBucketManager</c> and the bucket <c>RenderBeams</c> asks it for.</summary>
     private const int BeamBucket = 0xf;   // not-an-offset: a draw-bucket index, not a place in memory
     private static readonly int SceneDrawBuckets = EngineLayout.SceneDrawBuckets;
-    /// <summary>Part vtable slot 0x90, <c>Part::AsPartBeam</c> -- dumped from <c>_ZTV8PartBeam</c>, and the
-    /// call <c>RenderBeams</c> @0x46ad90 makes on every bucket item before touching it as a beam.</summary>
-    private static readonly int PartVtblAsPartBeam = CX.Framework.EngineLayout.PartAsPartBeamSlot;
 
     /// <summary>One enrolled beam. Rebuilt from the bucket every frame, so there is no liveness field: an
     /// entry exists exactly while the engine's own classification holds it.</summary>
@@ -155,7 +144,7 @@ internal static unsafe class Beams
         if (_off || Disabled || scene == IntPtr.Zero) return;
         if (scene != _scene) { Forget(); _scene = scene; }
         _count = 0;
-        _model = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
+        _model = new aurMatrixStack((IntPtr)(_stacks + ModeModel * StackStride)).Top;
         IntPtr mgr = scene + SceneDrawBuckets;
         for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
         {
@@ -167,21 +156,21 @@ internal static unsafe class Beams
             {
                 IntPtr item = items[i];
                 if (item == IntPtr.Zero) continue;
-                IntPtr beam = ((delegate* unmanaged<IntPtr, IntPtr>)
-                               (*(IntPtr*)(*(IntPtr*)item + PartVtblAsPartBeam)))(item);
-                if (beam != IntPtr.Zero) Capture(beam);
+                PartBeam beam = new CX.Engine.Part(item).AsPartBeam();
+                if (!beam.IsNull) Capture(beam.Ptr);
             }
         }
     }
 
     private static void Capture(IntPtr part)
     {
-        IntPtr vdo = *(IntPtr*)(part + PartVdo);
-        int item = *(int*)(part + PartItem);
+        var pb = new PartBeam(part);
+        IntPtr vdo = pb.Vdo;
+        int item = pb.Item;
         // Only the indexed-static path, which is what every resident VDO in this renderer is. A refusal now
         // costs exactly one missing shaft: under the cutover the engine draws nothing, so there is no
         // whole-class fallback to protect and no reason to stand the pass down for it.
-        if (vdo == IntPtr.Zero || *(int*)(vdo + VdoMode) != 1) { _refused++; return; }
+        if (vdo == IntPtr.Zero || new VdoRef(vdo).Mode != 1) { _refused++; return; }
         if (_count >= MaxBeams) { _refused++; return; }
         int v = VdoSlot(vdo);
         if (v < 0) { _refused++; return; }
@@ -271,18 +260,19 @@ internal static unsafe class Beams
     {
         dir = default;
         if (scene == IntPtr.Zero) return false;
-        IntPtr* lights = *(IntPtr**)(scene + SceneLights);
-        int n = *(int*)(scene + SceneLightCount);
+        var sc = new CX.Engine.Scene(scene);
+        IntPtr* lights = (IntPtr*)sc.ShadowLights;
+        int n = sc.ShadowLightCount;
         if (lights == null || n <= 0) return false;
         for (int i = 0; i < n; i++)
         {
-            IntPtr l = lights[i];
-            if (l == IntPtr.Zero) continue;
+            var l = new PartLight(lights[i]);
+            if (l.IsNull) continue;
             // Beams are extruded from the FIRST scene light that clears the directional range, which is
             // what makes them sun shafts rather than per-lamp volumes.
-            if (*(float*)(l + LightRange) < DirectionalRange) continue;
-            if (*(int*)(l + LightLive) == 0 || *(int*)(l + LightKind) != 0) continue;
-            var d = *(Vector3*)(l + LightDir);
+            if (l.Range < DirectionalRange) continue;
+            if (l.CastShadows == 0 || l.Kind != 0) continue;
+            Vector3 d = l.Pos;
             if (d.LengthSquared() <= 0f) return false;
             dir = -Vector3.Normalize(d);
             return true;
@@ -445,14 +435,16 @@ internal static unsafe class Beams
         for (int i = 0; i < LightBytes; i++) { a[i] = 0; b[i] = 0; }
         IntPtr* list = stackalloc IntPtr[2];
         list[0] = (IntPtr)a; list[1] = (IntPtr)b;
-        *(IntPtr**)(scene + SceneLights) = list;
-        *(int*)(scene + SceneLightCount) = 2;
         IntPtr s = (IntPtr)scene;
+        var sc = new CX.Engine.Scene(s);
+        sc.ShadowLights = (IntPtr)list;
+        sc.ShadowLightCount = 2;
 
         void Light(byte* l, float range, int live, int kind, float x, float y, float z)
         {
-            *(float*)(l + LightRange) = range; *(int*)(l + LightLive) = live; *(int*)(l + LightKind) = kind;
-            *(Vector3*)(l + LightDir) = new Vector3(x, y, z);
+            var lv = new PartLight((IntPtr)l);
+            lv.Range = range; lv.CastShadows = live; lv.Kind = kind;
+            lv.Pos = new Vector3(x, y, z);
         }
 
         Light(a, 10f, 1, 0, 0f, 0f, 1f);      // a point light: too short a range
@@ -466,7 +458,7 @@ internal static unsafe class Beams
         check.Expect(!Direction(s, out _), "...and so is one whose +0x80 discriminant is non-zero");
         Light(b, 100000f, 1, 0, 0f, 0f, 0f);
         check.Expect(!Direction(s, out _), "a zero direction is refused rather than normalised into a NaN");
-        *(int*)(scene + SceneLightCount) = 0;
+        sc.ShadowLightCount = 0;
         check.Expect(!Direction(s, out _), "an empty light list draws no beams -- which is every interior");
 
         // The vertex stage's extrusion, mirrored: a frontal vertex sits at the minimum offset, a back-facing

@@ -21,26 +21,8 @@ public sealed unsafe partial class ChatService
         TypingSignal.SelfCheck(log);   // chat-bar focus/unfocus latch (off-device)
         RegisterCommands();            // #165: chat's own commands go on the shared registry like anyone's
 
-        _startText = (delegate* unmanaged<void>)Native.Sym(SymbolMap.SdlStartTextInput);
-        _getClip   = (delegate* unmanaged<IntPtr>)Native.Sym(SymbolMap.SdlGetClipboardText);
-        _setClip   = (delegate* unmanaged<byte*, int>)Native.Sym(SymbolMap.SdlSetClipboardText);
-        _sdlFree   = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.SdlFree);
-
-        // Outbound send parity (#22). Each CExoString arg is a non-trivial C++ class -> passed by
-        // invisible reference, so the ABI slot is a pointer; the callee copies and we own+free it (#14).
-        _sendTalk    = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatTalk);
-        _sendShout   = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatShout);
-        _sendWhisper = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatWhisper);
-        _sendParty   = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatParty);
-        _sendDM      = (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatDM);
-        _sendTell    = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, void>)Native.Sym(SymbolMap.SendChatTell);
-        _sendTellId  = (delegate* unmanaged<IntPtr, uint, IntPtr, void>)Native.Sym(SymbolMap.SendChatTellId);
-
-        // Chat-bar focus/unfocus parity: our window skip-originals every vanilla site that emitted it.
-        _notifyGui = (delegate* unmanaged<IntPtr, int, int, uint, IntPtr, void>)Native.Sym(SymbolMap.NotifyServerGuiEvent);
-
-        var getByName = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.GetPlayerByPlayerName);
-        var getByCreature = (delegate* unmanaged<IntPtr, IntPtr, IntPtr>)Native.Sym(SymbolMap.GetPlayerByCreatureName);
+        GetPlayerByPlayerNameFn getByName = EngineFn.GetPlayerByPlayerName;
+        GetPlayerByCreatureNameFn getByCreature = EngineFn.GetPlayerByCreatureName;
         if (getByName != null || getByCreature != null)
         {
             _playerResolver = new NativePlayerResolver(getByName, getByCreature);
@@ -50,19 +32,15 @@ public sealed unsafe partial class ChatService
         // Own the three chat openers with skip-original handlers: install the hook but never call
         // through the trampoline, so the vanilla focus slot stays null and never grabs the keyboard.
         // Whichever opener the Enter path enters is patched at its entry, so all three flip IsTyping.
-        _ = hooks.Install(SymbolMap.SetFocusChatPrompt, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnOpenFocus);
-        _ = hooks.Install(SymbolMap.ShowChatPrompt,     (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnOpenShow);
-        _ = hooks.Install(SymbolMap.PrepChatPromptForTell, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnOpenTell);
-        _ = hooks.Install(SymbolMap.ChatPromptSetFocus, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnOpenSetFocus);
+        _ = hooks.InstallSetFocusChatPrompt(&OnOpenFocus);
+        _ = hooks.InstallShowChatPrompt(&OnOpenShow);
+        _ = hooks.InstallPrepChatPromptForTell(&OnOpenTell);
+        _ = hooks.InstallChatPromptSetFocus(&OnOpenSetFocus);
     }
 
     /// <summary>The one chat input line; the native shell drives it, all logic is in Core.</summary>
     public static readonly EditBuffer Edit = new();
 
-    private static delegate* unmanaged<IntPtr, void> _sdlFree;
-    private static delegate* unmanaged<void> _startText;
-    private static delegate* unmanaged<IntPtr> _getClip;
-    private static delegate* unmanaged<byte*, int> _setClip;
 
     // SDL_Keymod bits (match HotkeyInputService): Ctrl/Shift both sides.
     private const int KmodShift = 0x0003;
@@ -170,7 +148,7 @@ public sealed unsafe partial class ChatService
         IsTyping = true;
         if (TypingSignal.Focus()) NotifyChatBar(TypingSignal.EventFocus, target.SendChannel);
         Edit.Clear();
-        if (_startText != null) _startText();
+        if (EngineFn.SdlStartTextInput != null) EngineFn.SdlStartTextInput();
         KeyboardMode(true);
         Rebuild();
     }
@@ -321,12 +299,12 @@ public sealed unsafe partial class ChatService
 
     private static void Copy()
     {
-        if (_setClip == null || !Edit.HasSelection) return;
+        if (EngineFn.SdlSetClipboardText == null || !Edit.HasSelection) return;
         byte[] u = Encoding.UTF8.GetBytes(Edit.SelectedText);
         Span<byte> buf = stackalloc byte[u.Length + 1];
         u.CopyTo(buf);
         buf[u.Length] = 0;
-        fixed (byte* b = buf) _setClip(b);
+        fixed (byte* b = buf) EngineFn.SdlSetClipboardText(b);
     }
 
     /// <summary>Ctrl+X: copy the selection to the clipboard, then delete it (Backspace removes a selection).</summary>
@@ -340,14 +318,14 @@ public sealed unsafe partial class ChatService
 
     private static void Paste()
     {
-        if (_getClip == null) return;
-        IntPtr p = _getClip();
+        if (EngineFn.SdlGetClipboardText == null) return;
+        IntPtr p = EngineFn.SdlGetClipboardText();
         if (p == IntPtr.Zero) return;
         byte* s = (byte*)p;
         int n = 0;
         while (s[n] != 0) n++;
         Edit.InsertUtf8(new ReadOnlySpan<byte>(s, n));
-        if (_sdlFree != null) _sdlFree(p);   // SDL_GetClipboardText returns SDL-malloc'd memory
+        if (EngineFn.SdlFree != null) EngineFn.SdlFree(p);   // SDL_GetClipboardText returns SDL-malloc'd memory
         Rebuild();   // Ctrl+V early-returns from RouteKey before its trailing Rebuild -> redraw the footer here
     }
 
@@ -356,7 +334,7 @@ public sealed unsafe partial class ChatService
     /// when neither a field nor chat wants it. Called after any settings interaction that may start/end an edit.</summary>
     private static void SyncFieldKeyboard()
     {
-        if (_settings.Editing) { KeyboardMode(true); if (_startText != null) _startText(); }
+        if (_settings.Editing) { KeyboardMode(true); if (EngineFn.SdlStartTextInput != null) EngineFn.SdlStartTextInput(); }
         else if (!IsTyping) KeyboardMode(false);
     }
 

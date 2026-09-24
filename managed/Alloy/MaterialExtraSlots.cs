@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -42,29 +43,26 @@ public sealed unsafe class MaterialExtraSlots : IExtenderService
     /// <summary>Native, so the fixed buffers are addressable; freed by <see cref="Forget"/>.</summary>
     private static readonly Dictionary<IntPtr, IntPtr> _table = new();
     private static readonly object _lock = new();
-    private static delegate* unmanaged<IntPtr, byte*, void> _origParse;
-    private static delegate* unmanaged<IntPtr, byte*, void> _origInit;
-    private static delegate* unmanaged<IntPtr, uint, IntPtr> _origDtor;
-    private static delegate* unmanaged<byte*, IntPtr> _loadTexture;
-    private static delegate* unmanaged<IntPtr, void> _release;
+    private static SharedMaterialParseFieldFn _origParse;
+    private static SharedMaterialInitFn _origInit;
+    private static SharedMaterialDtorFn _origDtor;
+    private static LoadTextureFn _loadTexture;
+    private static AurTextureReleaseFn _release;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         SelfCheck(log);
-        _loadTexture = (delegate* unmanaged<byte*, IntPtr>)Native.Sym(SymbolMap.LoadTexture);
-        _release = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.AurTextureRelease);
+        _loadTexture = EngineFn.LoadTexture;
+        _release = EngineFn.AurTextureRelease;
         if (_loadTexture == null || _release == null)
         { log.Info("MaterialExtraSlots: LoadTexture/AurTextureRelease unresolved -- texture11+ stand down"); return; }
         // The death notice FIRST: without it the table would fill and hold ADDREF'd textures nobody evicts,
         // so neither of the other two hooks may install unless this one did.
-        _origDtor = (delegate* unmanaged<IntPtr, uint, IntPtr>)hooks.Install(
-            SymbolMap.SharedMaterialDtor, (IntPtr)(delegate* unmanaged<IntPtr, uint, IntPtr>)&OnDtor);
+        _origDtor = hooks.InstallSharedMaterialDtor(&OnDtor);
         if (_origDtor == null)
         { log.Info("MaterialExtraSlots: ~SharedMaterial unhooked -- texture11+ stand down rather than leak"); return; }
-        _origParse = (delegate* unmanaged<IntPtr, byte*, void>)hooks.Install(
-            SymbolMap.SharedMaterialParseField, (IntPtr)(delegate* unmanaged<IntPtr, byte*, void>)&OnParseField);
-        _origInit = (delegate* unmanaged<IntPtr, byte*, void>)hooks.Install(
-            SymbolMap.SharedMaterialInit, (IntPtr)(delegate* unmanaged<IntPtr, byte*, void>)&OnInit);
+        _origParse = hooks.InstallSharedMaterialParseField(&OnParseField);
+        _origInit = hooks.InstallSharedMaterialInit(&OnInit);
         log.Info(_origParse != null && _origInit != null
             ? $"MaterialExtraSlots: armed -- texture{First}..texture{First + Count - 1} are extender-owned"
             : "MaterialExtraSlots: ParseField/Init unhooked -- texture11+ read as empty");

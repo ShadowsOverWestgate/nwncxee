@@ -34,10 +34,7 @@ namespace CX.Services.Camera;
 public sealed unsafe class FreeCameraService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static IntPtr* _next;
-    private static delegate* unmanaged<IntPtr, void> _toggleOff, _unToggleOff;
-    private static delegate* unmanaged<int, int> _setRelative;
-    private static delegate* unmanaged<IntPtr, int, int, void> _warp;
+    private static WinMessageHandlerFn* _next;
 
     private const uint SdlWindowEvent = 0x200, SdlKeyDown = 0x300, SdlKeyUp = 0x301, SdlMouseMotion = 0x400, SdlMouseDown = 0x401, SdlMouseUp = 0x402, SdlMouseWheel = 0x403;
     /// <summary>SDL_KeyboardEvent: repeat byte at +0xd, keysym.scancode at +0x10; button/motion rows as MouseLook's; wheel y at +0x14.</summary>
@@ -47,10 +44,6 @@ public sealed unsafe class FreeCameraService : IExtenderService
     private const int ScEscape = 41, ScSpace = 44, ScC = 6, ScZ = 29, ScX = 27, ScLShift = 225, ScRShift = 229;
     private const int Fwd = 0, Back = 1, TurnL = 2, TurnR = 3, StrafeL = 4, StrafeR = 5;
     private const float Deg = MathF.PI / 180f, PitchFloor = 1f, PitchCeil = 179f, FastMul = 4f, RollRate = 60f;
-
-    private static readonly int CamRotOff = EngineLayout.CamRot;
-    /// <summary>The six drive-key slots are an int array read by index, so this one stays a raw offset.</summary>
-    private static readonly int KeysOff = EngineLayout.InternalDriveKeys;
 
     /// <summary>Why the free camera left (or refused), for the frame-end notice.</summary>
     private enum Why { None, User, Gate, Combat, NoCreature, Leash }
@@ -78,11 +71,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
         if (!EngineLayout.Require(log, "FreeCamera", "CNWCCreature", "CNWCObject", "CNWCModule", "CClientExoAppInternal", "CGuiInGame", "Camera")) return;
         if (!SymbolMap.Require(log, "FreeCamera", SymbolMap.WinMessageHandler, SymbolMap.GuiInGameToggleOff, SymbolMap.GuiInGameUnToggleOff,
                                SymbolMap.SdlSetRelativeMouseMode, SymbolMap.SdlWarpMouseInWindow, SymbolMap.GetModule, SymbolMap.AppManager, SymbolMap.GetGameObject)) return;
-        _toggleOff = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GuiInGameToggleOff);
-        _unToggleOff = (delegate* unmanaged<IntPtr, void>)Native.Sym(SymbolMap.GuiInGameUnToggleOff);
-        _setRelative = (delegate* unmanaged<int, int>)Native.Sym(SymbolMap.SdlSetRelativeMouseMode);
-        _warp = (delegate* unmanaged<IntPtr, int, int, void>)Native.Sym(SymbolMap.SdlWarpMouseInWindow);
-        _next = hooks.Chain(SymbolMap.WinMessageHandler, (IntPtr)(delegate* unmanaged<IntPtr, int>)&OnWinMessage, 110);
+        _next = hooks.ChainWinMessageHandler(&OnWinMessage, 110);
         if (_next == null) { log.Info("FreeCamera: standing down (WinMessageHandler chain refused)"); return; }
         _armed = true;
         FrameRegistry.Global.Register(FramePhase.PostPresent, 51, OnFrameEnd, "FreeCamera", log);
@@ -105,7 +94,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
         mod.ChaseSuppressed = 1;
         mod.ChaseWasIdle = 0;
 
-        int* keys = (int*)(new CClientExoApp(CameraService.App()).Internal.Ptr + KeysOff);
+        Span<int> keys = new CClientExoApp(CameraService.App()).Internal.DriveKeys;
         float f = (keys[Fwd] != 0 ? 1f : 0f) - (keys[Back] != 0 ? 1f : 0f);
         float s = (keys[StrafeR] != 0 ? 1f : 0f) - (keys[StrafeL] != 0 ? 1f : 0f);
         float t = (keys[TurnL] != 0 ? 1f : 0f) - (keys[TurnR] != 0 ? 1f : 0f);
@@ -129,10 +118,8 @@ public sealed unsafe class FreeCameraService : IExtenderService
         else _leashed = false;
         _pos = want;
 
-        Quaternion q = PoseRoll(_yaw, _pitch, _roll);
-        float* rot = (float*)(cam + CamRotOff);
-        rot[0] = q.W; rot[1] = q.X; rot[2] = q.Y; rot[3] = q.Z;
         var c = new EngCamera(cam);
+        c.Rot = PoseRoll(_yaw, _pitch, _roll);
         c.Pos = _pos;
         c.ViewAngle = _fov;
     }
@@ -162,7 +149,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
         EngCamera cam = module == IntPtr.Zero ? default : new CNWCModule(module).Camera;
         if (!cam.IsNull) cam.ViewAngle = _fovEntry;
         _up = _down = _rollL = _rollR = false; _ate = 0;
-        if (_weHidUi) { IntPtr gui = Gui(); if (gui != IntPtr.Zero) _unToggleOff(gui); _weHidUi = false; }
+        if (_weHidUi) { IntPtr gui = Gui(); if (gui != IntPtr.Zero) new CGuiInGame(gui).GuiInGameUnToggleOff(); _weHidUi = false; }
         if (why != Why.User) _pending = why;
         AlloyRenderer.CameraCut();
     }
@@ -202,7 +189,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
                 if (b is not (SdlButtonLeft or SdlButtonMiddle or SdlButtonRight) || _looking) break;
                 if (UiInputService.EngineGuiWantsPress() || UiHost.HitTest(mx, my) != null) break;
                 _ate |= (byte)(1 << b);
-                if (b == SdlButtonRight) { _looking = true; _originX = mx; _originY = my; _setRelative(1); }
+                if (b == SdlButtonRight) { _looking = true; _originX = mx; _originY = my; EngineFn.SdlSetRelativeMouseMode(1); }
                 return 0;   // left: no click-to-move; middle: the engine's orbit would move the behavior, not us
             }
             case SdlMouseUp:
@@ -236,11 +223,11 @@ public sealed unsafe class FreeCameraService : IExtenderService
     {
         if (!_looking) return;
         _looking = false;
-        _setRelative(0);
-        _warp(IntPtr.Zero, _originX, _originY);
+        EngineFn.SdlSetRelativeMouseMode(0);
+        EngineFn.SdlWarpMouseInWindow(IntPtr.Zero, _originX, _originY);
     }
 
-    private static int Forward(IntPtr ev) => ((delegate* unmanaged<IntPtr, int>)(*_next))(ev);
+    private static int Forward(IntPtr ev) => (*_next)(ev);
 
     private static void OnFrameEnd()
     {
@@ -274,7 +261,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
         _roll = FreeCam.Roll.V;
         _leashed = false; _pending = Why.None; _ate = 0;
         IntPtr gui = Gui();
-        if (gui != IntPtr.Zero && new CGuiInGame(gui).ToggledOff == 0) { _toggleOff(gui); _weHidUi = true; }
+        if (gui != IntPtr.Zero && new CGuiInGame(gui).ToggledOff == 0) { new CGuiInGame(gui).GuiInGameToggleOff(); _weHidUi = true; }
         Active = true; _entries++;
         // The open panel owns the keyboard: the move keys would never reach the engine's drive key table.
         KnobPanelService.Close();

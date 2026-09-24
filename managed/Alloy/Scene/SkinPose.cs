@@ -1,4 +1,6 @@
 using System;
+using System.Runtime.CompilerServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -47,32 +49,38 @@ internal static unsafe class SkinPose
     /// hole. The refusal is still the honest answer for this frame; what changed is that the part is
     /// <see cref="NoteUnprepared"/>ed here and <see cref="DripPrepares"/> runs the repair on an Alloy edge,
     /// so the next frame solves.</para></summary>
+    /// <summary>The part's LOCAL transform as the quaternion helpers want it: a pointer into the object,
+    /// because every one of them reads (w,x,y,z) / (x,y,z) by index. The offsets are the view's
+    /// (<see cref="EngineLayout.PartPos"/>, <see cref="EngineLayout.PartRot"/>); the lea is free.</summary>
+    private static float* Pos(IntPtr part) => (float*)Unsafe.AsPointer(ref new Part(part).Pos);
+    /// <inheritdoc cref="Pos"/>
+    private static float* Rot(IntPtr part) => (float*)Unsafe.AsPointer(ref new Part(part).Rot);
+
     internal static bool Solve(IntPtr part, float* dst)
     {
-        IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
+        var skin = new MdlNodeSkin(new Part(part).Node.Ptr);
         // No node is not a repairable state -- PostProcess dereferences it unguarded -- so it is never noted.
-        if (node == IntPtr.Zero) { NoBind++; return false; }
-        int bones = *(short*)(node + EngineLayout.SkinBoneCount);
-        IntPtr bindRot = *(IntPtr*)(node + EngineLayout.SkinBindRot);
-        IntPtr bindPos = *(IntPtr*)(node + EngineLayout.SkinBindPos);
+        if (skin.IsNull) { NoBind++; return false; }
+        int bones = skin.BoneCount;
+        IntPtr bindRot = skin.BindRot;
+        IntPtr bindPos = skin.BindPos;
         if (bones <= 0 || bindRot == IntPtr.Zero || bindPos == IntPtr.Zero)
         { NoBind++; NoteUnprepared(part); return false; }
 
         // RenderSkinned's first act: the inverse of the root -> this-part chain, accumulated from the LEAF
         // upward, which is what makes the gathered transforms land in the skinmesh's own space.
-        float* p = (float*)(part + EngineLayout.PartPos);
-        float* q = (float*)(part + EngineLayout.PartRot);
+        float* p = Pos(part);
+        float* q = Rot(part);
         QConj(q, out float aw, out float ax, out float ay, out float az);
         QRot(aw, ax, ay, az, -p[0], -p[1], -p[2], out float px, out float py, out float pz);
         IntPtr root = part;
         int rise = 0;
-        for (IntPtr up = *(IntPtr*)(part + EngineLayout.PartParent); up != IntPtr.Zero;
-             up = *(IntPtr*)(up + EngineLayout.PartParent))
+        for (IntPtr up = new Part(part).Parent.Ptr; up != IntPtr.Zero; up = new Part(up).Parent.Ptr)
         {
             if (++rise > MaxDepth) { Overflow++; return false; }
             root = up;
-            float* up_ = (float*)(up + EngineLayout.PartPos);
-            QConj((float*)(up + EngineLayout.PartRot), out float cw, out float cx, out float cy, out float cz);
+            float* up_ = Pos(up);
+            QConj(Rot(up), out float cw, out float cx, out float cy, out float cz);
             QRot(cw, cx, cy, cz, -up_[0], -up_[1], -up_[2], out float tx, out float ty, out float tz);
             QRot(aw, ax, ay, az, tx, ty, tz, out float rx, out float ry, out float rz);
             px += rx; py += ry; pz += rz;
@@ -87,7 +95,7 @@ internal static unsafe class SkinPose
         // lists; -1 (and anything past what was gathered) is an unused slot. The lists are mutated in place
         // exactly as the engine mutates them -- one gathered index is addressed by at most one slot, so the
         // difference is unobservable, but replicating it removes the question.
-        short* map = (short*)(node + EngineLayout.SkinBoneMap);
+        short* map = (short*)Unsafe.AsPointer(ref skin.BoneMap);
         bool sawZero = false;
         fixed (float* gp = _gPos)
         fixed (float* gr = _gRot)
@@ -184,14 +192,13 @@ internal static unsafe class SkinPose
     private static void Prepare(int e, IntPtr part)
     {
         if (!PartTable.EntryLive(e, part) || !PartTable.Skinned(e)) { _prepDead++; return; }
-        IntPtr node = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
-        if (node == IntPtr.Zero) { _prepDead++; return; }
-        if (*(short*)(node + EngineLayout.SkinBoneCount) > 0) { _prepWon++; return; }
-        if (*(IntPtr*)(node + EngineLayout.SkinTempArrays) == IntPtr.Zero) { _prepNoData++; return; }
+        var skin = new MdlNodeSkin(new Part(part).Node.Ptr);
+        if (skin.IsNull) { _prepDead++; return; }
+        if (skin.BoneCount > 0) { _prepWon++; return; }
+        if (skin.TempArrays == IntPtr.Zero) { _prepNoData++; return; }
         _prepCalls++;
-        IntPtr slot = *(IntPtr*)(*(IntPtr*)part + EngineLayout.PartPostProcessSlot);
-        ((delegate* unmanaged<IntPtr, IntPtr, void>)slot)(part, part);
-        if (*(short*)(node + EngineLayout.SkinBoneCount) > 0) _prepWon++;
+        new Part(part).PostProcess(new Part(part));
+        if (skin.BoneCount > 0) _prepWon++;
     }
 
     /// <summary>The part table was wiped, so every queued index names a record that no longer exists. The
@@ -217,8 +224,8 @@ internal static unsafe class SkinPose
                                float qw, float qx, float qy, float qz)
     {
         if (_gFull) return;
-        float* lp = (float*)(part + EngineLayout.PartPos);
-        float* lq = (float*)(part + EngineLayout.PartRot);
+        float* lp = Pos(part);
+        float* lq = Rot(part);
         QRot(qw, qx, qy, qz, lp[0], lp[1], lp[2], out float rx, out float ry, out float rz);
         px += rx; py += ry; pz += rz;
         QMul(qw, qx, qy, qz, lq[0], lq[1], lq[2], lq[3], out qw, out qx, out qy, out qz);
@@ -227,17 +234,18 @@ internal static unsafe class SkinPose
         _gPos[i * 3] = px; _gPos[i * 3 + 1] = py; _gPos[i * 3 + 2] = pz;
         _gRot[i * 4] = qw; _gRot[i * 4 + 1] = qx; _gRot[i * 4 + 2] = qy; _gRot[i * 4 + 3] = qz;
 
-        IntPtr* kids = *(IntPtr**)(part + EngineLayout.PartChildren);
-        int n = *(int*)(part + EngineLayout.PartChildCount);
+        var pv = new Part(part);
+        IntPtr* kids = (IntPtr*)pv.Children;
+        int n = pv.ChildCount;
         if (kids == null) return;
-        IntPtr myNode = *(IntPtr*)(part + AlloyRenderer.PartMdlNode);
+        IntPtr myNode = pv.Node.Ptr;
         _gDepth++;
         for (int k = 0; k < n && !_gFull; k++)
         {
             IntPtr kid = kids[k];
             if (kid == IntPtr.Zero) continue;
-            IntPtr kn = *(IntPtr*)(kid + AlloyRenderer.PartMdlNode);
-            if (kn == IntPtr.Zero || *(IntPtr*)(kn + EngineLayout.MdlNodeParent) != myNode) continue;
+            MdlNode kn = new Part(kid).Node;
+            if (kn.IsNull || kn.Parent.Ptr != myNode) continue;
             Gather(kid, px, py, pz, qw, qx, qy, qz);
         }
         _gDepth--;

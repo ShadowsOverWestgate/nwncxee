@@ -1,3 +1,5 @@
+using CX.Engine;
+
 namespace CX.Framework;
 
 /// <summary>
@@ -8,11 +10,6 @@ namespace CX.Framework;
 public static unsafe class ClientApi
 {
     private static readonly IntPtr AppMgr = Native.Sym(SymbolMap.AppManager);
-    private static readonly delegate* unmanaged<IntPtr, IntPtr> GetMsg =
-        (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetNWCMessage);
-    private static readonly delegate* unmanaged<IntPtr, byte, byte, byte*, uint, void> SendMsg =
-        (delegate* unmanaged<IntPtr, byte, byte, byte*, uint, void>)Native.Sym(SymbolMap.SendPlayerToServerMessage);
-
     /// <summary>
     /// A live CNWCMessage* captured from a hook that is handed one (inbound `self` / login `this`).
     /// Preferred over resolving GetNWCMessage(*g_pAppManager) -- exactly the engine's own object, no
@@ -28,15 +25,15 @@ public static unsafe class ClientApi
     public static IntPtr Message()
     {
         if (LiveMessage != IntPtr.Zero) return LiveMessage;
-        if (AppMgr == IntPtr.Zero || GetMsg == null) return IntPtr.Zero;
+        if (AppMgr == IntPtr.Zero || EngineFn.GetNWCMessage == null) return IntPtr.Zero;
         IntPtr app = *(IntPtr*)AppMgr;
-        return app == IntPtr.Zero ? IntPtr.Zero : GetMsg(app);
+        return app == IntPtr.Zero ? IntPtr.Zero : new CClientExoApp(app).GetNWCMessage();
     }
 
     public static void Send(byte major, byte minor, byte* payload, uint len)
     {
         IntPtr msg = Message();
-        if (msg != IntPtr.Zero && SendMsg != null) SendMsg(msg, major, minor, payload, len);
+        if (msg != IntPtr.Zero && EngineFn.SendPlayerToServerMessage != null) EngineFn.SendPlayerToServerMessage(msg, major, minor, payload, len);
     }
 
     /// <summary>

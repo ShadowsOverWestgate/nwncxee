@@ -40,16 +40,12 @@ namespace CX.Services.Camera;
 public sealed unsafe class CameraDriveService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, void> _orig;
+    private static UpdateDriveModeFn _orig;
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
-        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
+    /// <summary>Resolved once: the drive step runs inside ProcessInput every frame.</summary>
+    private static readonly GetGameObjectFn _getGameObject = EngineFn.GetGameObject;
 
-    /// <summary>The six key slots are an int array read by index, so they stay a raw offset.</summary>
-    private static readonly int KeysOff = EngineLayout.InternalDriveKeys;
-    private static readonly int CamRotOff = EngineLayout.CamRot;
-
-    /// <summary>Key slots at <see cref="EngineLayout.InternalDriveKeys"/>, in the engine's order.</summary>
+    /// <summary>Key slots of <see cref="CClientExoAppInternal.DriveKeys"/>, in the engine's order.</summary>
     private const int Fwd = 0, Back = 1, TurnL = 2, TurnR = 3, StrafeL = 4, StrafeR = 5, KeyCount = 6;
     /// <summary><c>CNWCCreature</c> control flag bit UpdateDriveMode and DrivePlayer both require.</summary>
     private const byte PlayerControlled = 2;
@@ -89,8 +85,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
         if (!EngineLayout.Require(log, "CameraDrive", "CClientExoAppInternal", "CNWCObject", "CNWCCreature", "CNWCModule", "Camera")) return;
         if (!SymbolMap.Require(log, "CameraDrive", SymbolMap.UpdateDriveMode, SymbolMap.AppManager, SymbolMap.GetGameObject,
                                SymbolMap.GetModule, SymbolMap.SendPlayerToServerMessage)) return;
-        _orig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.UpdateDriveMode,
-                                                                   (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnUpdateDriveMode);
+        _orig = hooks.InstallUpdateDriveMode(&OnUpdateDriveMode);
         if (_orig == null) { log.Info("CameraDrive: standing down (UpdateDriveMode hook refused)"); return; }
         KnobSurface.Note(Report);
         log.Info("CameraDrive: pre-hooked CClientExoAppInternal::UpdateDriveMode");
@@ -106,7 +101,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
             _log?.Info(_probeOk ? "CameraDrive: first UpdateDriveMode -- hook is LIVE" : "CameraDrive: layout probe failed -- engine drive untouched");
         }
         var a = new CClientExoAppInternal(app);
-        int* keys = (int*)(app + KeysOff);
+        Span<int> keys = a.DriveKeys;
         if (FreeCameraService.Active)
         {
             // #543: the keys fly the camera; the engine sees none held (a drive under way is aborted, once).
@@ -175,10 +170,9 @@ public sealed unsafe class CameraDriveService : IExtenderService
             return;
         }
 
-        // Camera+0xbc is (w, x, y, z); pitch is about the camera's X, so its right stays on the ground plane
-        // and forward-on-the-ground is up x right = (-right.y, right.x).
-        float* rot = (float*)(cam + CamRotOff);
-        Vector3 r = CameraService.Right(new Quaternion(rot[1], rot[2], rot[3], rot[0]));
+        // Pitch is about the camera's X, so its right stays on the ground plane and forward-on-the-ground
+        // is up x right = (-right.y, right.x).
+        Vector3 r = CameraService.Right(new CX.Engine.Camera(cam).Rot);
         var obj = new CNWCObject(cre);
         long now = Environment.TickCount64;
         // Face mode: the creature faces the camera and the engine's own back/strafe bits carry the direction.

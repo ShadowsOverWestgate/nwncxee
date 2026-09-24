@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Numerics;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -152,7 +153,7 @@ internal static unsafe class AlloyLights
     /// <summary><c>GetGlobalShaderParami(7)</c> = the preamble's <c>SHADER_QUALITY_MODE</c>
     /// (LoadAndCompileSingleShader @0x4d34b0); the subsurface term compiles in above 1.</summary>
     private const uint QualityParam = 7;
-    private static delegate* unmanaged<uint, int> _gspI;
+    private static RiGetGlobalShaderParamiFn _gspI;
     /// <summary>The stock energy factor for the subsurface term at wrap <paramref name="w"/>:
     /// fEnergyPreservation / (1 + w) = 2 / (2 + PI * w).</summary>
     internal static float SssK(float w) => 2f / (2f + MathF.PI * w);
@@ -286,7 +287,7 @@ internal static unsafe class AlloyLights
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _gspI = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
+        _gspI = EngineFn.RiGetGlobalShaderParami;
         log.Info($"AlloyLights: {DescribeAtten()} -- /light retunes every dial live");
     }
 

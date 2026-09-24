@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Services.Perf;
@@ -11,28 +12,21 @@ namespace CX.Services.Perf;
 /// return <c>long</c> so a void, int or pointer result rides through rax intact. Hot, allocation-free.</summary>
 public sealed unsafe class EngineZonesService : IExtenderService
 {
-    private static delegate* unmanaged<IntPtr, int, long> _net;
-    private static delegate* unmanaged<IntPtr, uint, long> _res;
-    private static delegate* unmanaged<IntPtr, long> _ai;
-    private static delegate* unmanaged<IntPtr, float, long> _gui;
+    private static NetProcessReceivedFramesFn _net;
+    private static ResManUpdateFn _res;
+    private static ClientAiUpdateStateFn _ai;
+    private static GuiUpdateAndRenderFn _gui;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         if (!Alloy.Renderer.EngineZones.Boot) { log.Info("EngineZones: off (alloy.enginezones=0)"); return; }
-        _net = (delegate* unmanaged<IntPtr, int, long>)hooks.Install(
-            SymbolMap.NetProcessReceivedFrames, (IntPtr)(delegate* unmanaged<IntPtr, int, long>)&OnNet);
-        _res = (delegate* unmanaged<IntPtr, uint, long>)hooks.Install(
-            SymbolMap.ResManUpdate, (IntPtr)(delegate* unmanaged<IntPtr, uint, long>)&OnRes);
-        _ai = (delegate* unmanaged<IntPtr, long>)hooks.Install(
-            SymbolMap.ClientAiUpdateState, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnAi);
-        _gui = (delegate* unmanaged<IntPtr, float, long>)hooks.Install(
-            SymbolMap.GuiUpdateAndRender, (IntPtr)(delegate* unmanaged<IntPtr, float, long>)&OnGui);
-        _demand = (delegate* unmanaged<IntPtr, IntPtr, long>)hooks.Install(
-            SymbolMap.ResManDemand, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, long>)&OnDemand);
-        _bsp = (delegate* unmanaged<IntPtr, long>)hooks.Install(
-            SymbolMap.ManageSceneBSP, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnBsp);
-        _buckets = (delegate* unmanaged<IntPtr, long>)hooks.Install(
-            SymbolMap.AddPartsToDrawBuckets, (IntPtr)(delegate* unmanaged<IntPtr, long>)&OnBuckets);
+        _net = hooks.InstallNetProcessReceivedFrames(&OnNet);
+        _res = hooks.InstallResManUpdate(&OnRes);
+        _ai = hooks.InstallClientAiUpdateState(&OnAi);
+        _gui = hooks.InstallGuiUpdateAndRender(&OnGui);
+        _demand = hooks.InstallResManDemand(&OnDemand);
+        _bsp = hooks.InstallManageSceneBSP(&OnBsp);
+        _buckets = hooks.InstallAddPartsToDrawBuckets(&OnBuckets);
         // 2 by default (2026-09-06, live: Buckets 0,7 -> 0,2-0,3ms, gob parts intact); 0 is the A/B, 1 the
         // experiment that empties the world of gob parts.
         int skip = Alloy.Renderer.SkipBuckets.Boot;
@@ -54,8 +48,9 @@ public sealed unsafe class EngineZonesService : IExtenderService
                  (_bucketsCadence ? $" -- alloy.skipbuckets=2: the tile-part loops of AddPartsToDrawBuckets run every {BucketsEvery}th frame while Alloy draws (alloy.skipbuckets=0 restores them)" : ""));
     }
 
-    private static delegate* unmanaged<IntPtr, IntPtr, long> _demand;
-    private static delegate* unmanaged<IntPtr, long> _bsp, _buckets;
+    private static ResManDemandFn _demand;
+    private static ManageSceneBSPFn _bsp;
+    private static AddPartsToDrawBucketsFn _buckets;
 
     /// <summary>The world scene's render preparation, timed and not subtracted. A GUI 3D panel's Scene has
     /// no tile BSP root and is left out, so the two zones read the world walk alone.</summary>

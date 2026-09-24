@@ -26,7 +26,7 @@ namespace CX.Services.Camera;
 internal static unsafe class ActionFeedback
 {
     private static bool _ready;
-    private static IntPtr* _next;
+    private static SendPlayerToServerMessageFn* _next;
 
     // ---- the wire frame (docs/research/action-camera-feedback.md §1) ----
 
@@ -77,8 +77,7 @@ internal static unsafe class ActionFeedback
         if (!EngineLayout.Require(log, "MouseLook.feedback", "CGuiInGame", "CPanelActionQueue", "CNWCCreature")) return;
         if (!SymbolMap.Require(log, "MouseLook.feedback", SymbolMap.SendPlayerToServerMessage)) return;
 
-        _next = hooks.Chain(SymbolMap.SendPlayerToServerMessage,
-            (IntPtr)(delegate* unmanaged<IntPtr, byte, byte, byte*, uint, int>)&OnSend, 50);
+        _next = hooks.ChainSendPlayerToServerMessage(&OnSend, 50);
         _ready = _next != null;
         log.Info(_ready ? "MouseLook.feedback: chained CNWCMessage::SendPlayerToServerMessage; crosshair answers the action queue"
                         : "MouseLook.feedback: standing down (SendPlayerToServerMessage chain refused)");
@@ -90,7 +89,7 @@ internal static unsafe class ActionFeedback
     private static int OnSend(IntPtr self, byte major, byte minor, byte* buf, uint len)
     {
         if (buf != null && (major == MajorInput || major == MajorGroupInput)) Latch(minor, buf, len);
-        return ((delegate* unmanaged<IntPtr, byte, byte, byte*, uint, int>)(*_next))(self, major, minor, buf, len);
+        return (*_next)(self, major, minor, buf, len);
     }
 
     private static void Latch(byte minor, byte* buf, uint len)

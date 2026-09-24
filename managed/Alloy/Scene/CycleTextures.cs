@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 
@@ -28,10 +29,10 @@ internal static unsafe class CycleTextures
     private static readonly IntPtr[] _dirty = new IntPtr[Cap];
     private static int _n, _dirtyN;
     private static readonly object _lock = new();
-    private static delegate* unmanaged<IntPtr, IntPtr> _getController;
+    private static AurTextureGetControllerFn _getController;
     private static IntPtr _vtbl;
     private static int* _enabled;
-    private static delegate* unmanaged<IntPtr, void> _origDtor;
+    private static AurTextureDtorFn _origDtor;
     /// <summary>Name steps observed (the live-confirm number), registrations refused by the cap, and
     /// controllers of another class seen on an owned diffuse (the hole this table does not fill).</summary>
     internal static long Steps, Overflow, OtherClass;
@@ -47,11 +48,10 @@ internal static unsafe class CycleTextures
         _log = log;
         if (Ready) return;
         // CX-25: no death notice, no table -- a ref kept without one is the crash this hook exists for.
-        _origDtor = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.AurTextureDtor, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnTextureDtor);
-        _getController = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.AurTextureGetController);
+        _origDtor = hooks.InstallAurTextureDtor(&OnTextureDtor);
+        _getController = EngineFn.AurTextureGetController;
         IntPtr v = Native.Sym(SymbolMap.CycleTidControllerVtbl);
-        // Itanium ABI: an object's first word is the vtable symbol + 0x10.
+        // Itanium ABI: an object's first word is the vtable symbol + 0x10. An (abi) row, not a class field.
         _vtbl = v == IntPtr.Zero ? IntPtr.Zero : v + EngineLayout.VtblSymbolHeader;
         _enabled = (int*)Native.Sym(SymbolMap.EnableTextureControllers);
         if (!Ready) log.Info("CycleTextures: AurTextureGetController, the CycleTID vtable or ~CAurTexture unresolved -- cycle textures stay frozen on Alloy parts");
@@ -116,7 +116,7 @@ internal static unsafe class CycleTextures
                 }
                 AlloyProbe.Once(ref _probedCtl, "CycleTIDTextureController", ctl, _log);
                 int old = AurTex.Tid(r);
-                ((delegate* unmanaged<IntPtr, void>)*(IntPtr*)(*(IntPtr*)ctl + CX.Framework.EngineLayout.CycleControlSlot))(ctl);
+                new CycleTIDTextureController(ctl).Control();
                 if (_ref[i] == r && AurTex.Tid(r) != old) { _dirty[_dirtyN++] = ctl; Steps++; }   // r may have died inside Control
             }
         }

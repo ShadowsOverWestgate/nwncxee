@@ -12,12 +12,9 @@ public static unsafe class PlayerIdentity
 {
     private const int MaxNameLen = 128, MaxPlayers = 256;
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
-    /// <summary>CNetLayer::GetServerNetworkAddress() returns a CExoString by value (sret): Itanium orders it
-    /// <c>(sret, this)</c>, Win64 <c>(this, sret)</c>. The callee, not the caller, destroys the string.</summary>
-    private static readonly delegate* unmanaged<IntPtr, IntPtr, void> _serverAddress =
-        (delegate* unmanaged<IntPtr, IntPtr, void>)Native.Sym(SymbolMap.GetServerNetworkAddress);
-    private static readonly delegate* unmanaged<IntPtr, uint, IntPtr> _getGameObject =
-        (delegate* unmanaged<IntPtr, uint, IntPtr>)Native.Sym(SymbolMap.GetGameObject);
+    /// <summary>Present iff the client exports <see cref="SymbolMap.GetServerNetworkAddress"/>; the by-value call
+    /// itself has no pointer to null-check, the generator hides the per-OS sret order behind it.</summary>
+    private static readonly IntPtr _serverAddress = Native.Sym(SymbolMap.GetServerNetworkAddress);
     private const byte TypeCreature = 5;
 
     /// <summary>The live CClientExoApp, or zero before the app exists.</summary>
@@ -42,12 +39,12 @@ public static unsafe class PlayerIdentity
     public static string ServerAddress()
     {
         CClientExoAppInternal intern = Internal();
-        if (intern.IsNull || _serverAddress == null) return "";
-        IntPtr net = intern.NetLayer;
-        if (net == IntPtr.Zero) return "";
+        if (intern.IsNull || _serverAddress == IntPtr.Zero) return "";
+        CNetLayer net = intern.NetLayer;
+        if (net.IsNull) return "";
         byte* exo = stackalloc byte[16];
         for (int i = 0; i < 16; i++) exo[i] = 0;   // the dtor below frees whatever buffer lands here
-        if (OperatingSystem.IsWindows()) _serverAddress(net, (IntPtr)exo); else _serverAddress((IntPtr)exo, net);
+        net.GetServerNetworkAddress(exo);
         string s = Text(*(byte**)exo, *(uint*)(exo + 8));
         Native.DestroyExoString((IntPtr)exo);
         return s;
@@ -77,12 +74,13 @@ public static unsafe class PlayerIdentity
     public static IntPtr Creature()
     {
         IntPtr app = App();
-        if (app == IntPtr.Zero || _getGameObject == null) return IntPtr.Zero;
-        CClientExoAppInternal intern = new CClientExoApp(app).Internal;
+        if (app == IntPtr.Zero || EngineFn.GetGameObject == null) return IntPtr.Zero;
+        var exoApp = new CClientExoApp(app);
+        CClientExoAppInternal intern = exoApp.Internal;
         if (intern.IsNull) return IntPtr.Zero;
         uint localObj = intern.PlayerCreatureId;
         if (localObj == 0) return IntPtr.Zero;
-        var obj = new CNWCObject(_getGameObject(app, localObj));
+        var obj = new CNWCObject(exoApp.GetGameObject(localObj).Ptr);
         if (obj.IsNull || obj.Type != TypeCreature) return IntPtr.Zero;
         return new CNWCCreature(obj.Ptr).Stats.IsNull ? IntPtr.Zero : obj.Ptr;
     }

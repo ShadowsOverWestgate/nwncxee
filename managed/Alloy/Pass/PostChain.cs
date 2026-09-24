@@ -1,6 +1,7 @@
 using System;
 using System.Globalization;
 using System.Numerics;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 
@@ -104,7 +105,7 @@ internal static unsafe class PostChain
     /// <c>RevertColorSpace</c> the identity when it is 0. Asked once per pass in <see cref="Precheck"/>: it
     /// is a settings-driven global and reading it is one call. Unresolved means "on", which is what this
     /// client measures (#102) and what every shipped .shd is written against.</summary>
-    private static delegate* unmanaged<uint, int> _gammaParam;
+    private static RiGetGlobalShaderParamiFn _gammaParam;
     private const uint GammaParam = 0;
 
     /// <summary>The mid-grey the log-average is steered to, in the linear scale the resolve works in.</summary>
@@ -141,7 +142,7 @@ internal static unsafe class PostChain
         // The one boot decision in this class: since #132 there is no Alloy frame without the resolve, so
         // alloy.hdr=0 is not a look toggle but a stand-down of the whole Alloy frame -- Restart, read through Boot.
         _on = Renderer.Hdr.Boot;
-        _gammaParam = (delegate* unmanaged<uint, int>)Native.Sym(SymbolMap.RiGetGlobalShaderParami);
+        _gammaParam = EngineFn.RiGetGlobalShaderParami;
         if (_gammaParam == null)
             log.Info("PostChain: RenderInterface::GetGlobalShaderParami unresolved -- the resolve encodes "
                    + "unconditionally, which is what this client measures anyway (#102)");

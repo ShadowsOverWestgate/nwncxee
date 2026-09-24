@@ -1,4 +1,6 @@
 using System;
+using System.Runtime.CompilerServices;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -18,9 +20,11 @@ namespace CX.Alloy;
 /// function or can fail is a METHOD with a verb -- <see cref="TextureRef.ResolveName"/> is the canonical
 /// one. So much of this codebase is about WHEN a deref is safe that hiding a vtable call behind an
 /// innocent-looking property would be worse than the raw pointers were.</para>
-/// <para>The offsets are not restated here. Each ref reads them from wherever their RE provenance was
-/// written down (<see cref="EngineLayout"/>, or the walker that first established one) -- a second copy of
-/// an offset is the drift this file exists to stop.</para></summary>
+/// <para><b>CX-39.</b> The offsets are gone from this file: every read below goes through the generated
+/// view in <see cref="CX.Engine"/> (<c>tools/engine/views.py</c> from <see cref="EngineLayout"/>'s rows),
+/// which is the same single load. What stays here is what a generated view cannot say -- the null-guarded
+/// chases, the concepts the engine has no class for (<see cref="PartRef.IsInstance"/>,
+/// <see cref="GobRef.OwnerFades"/>), and the verbs that call native code.</para></summary>
 internal readonly unsafe ref struct PartRef
 {
     private readonly IntPtr _p;
@@ -28,23 +32,29 @@ internal readonly unsafe ref struct PartRef
     internal IntPtr Ptr => _p;
     internal bool IsNull => _p == IntPtr.Zero;
 
-    internal MaterialRef Material => new(_p == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(_p + EngineLayout.PartMaterial));
-    internal GobRef Gob => new(_p == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(_p + EngineLayout.PartGob));
+    /// <summary>The <c>Part</c> base this ref reads through.</summary>
+    internal Part View => new(_p);
+    /// <summary>The <c>PartTriMesh</c> block: the LAYOUT view, for a part already known to be one. The
+    /// engine's own subclass cast is <see cref="EngineLayout.PartAsTriMeshSlot"/>.</summary>
+    internal PartTriMesh Tri => new(_p);
+
+    internal MaterialRef Material => new(_p == IntPtr.Zero ? IntPtr.Zero : View.Material.Ptr);
+    internal GobRef Gob => new(_p == IntPtr.Zero ? IntPtr.Zero : View.Gob.Ptr);
     /// <summary>The part's <c>VertexPrimitive</c>, which despite the name is what carries the model matrix
     /// and the bucket flags -- see <see cref="EngineLayout.PartNode"/> for why the name stays.</summary>
-    internal NodeRef Node => new(_p == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(_p + EngineLayout.PartNode));
+    internal NodeRef Node => new(_p == IntPtr.Zero ? IntPtr.Zero : Tri.VertexPrimitive.Ptr);
     /// <summary>The MATERIAL node at part+0x8, which is a different object from <see cref="Node"/> and
     /// carries the ambient/diffuse terms MatStatic sets.</summary>
-    internal MdlRef Mdl => new(_p == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(_p + AlloyRenderer.PartMdlNode));
-    internal IntPtr Tile => _p == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(_p + EngineLayout.PartTile);
+    internal MdlRef Mdl => new(_p == IntPtr.Zero ? IntPtr.Zero : View.Node.Ptr);
+    internal IntPtr Tile => _p == IntPtr.Zero ? IntPtr.Zero : Tri.Tile.Ptr;
 
-    internal float Alpha => *(float*)(_p + EngineLayout.PartAlpha);
+    internal float Alpha => Tri.Alpha;
     /// <summary>Raw BITS of the texture-rotation angle: it is compared, never arithmetic, and a float
     /// compare on a group key would make NaN a group of its own.</summary>
-    internal int TexRotateBits => *(int*)(_p + EngineLayout.PartTexRotate);
-    internal float* SelfIllum => (float*)(_p + AlloyRenderer.PartSelfIllum);
-    internal float* BboxMin => (float*)(_p + EngineLayout.PartBboxMin);
-    internal float* BboxMax => (float*)(_p + EngineLayout.PartBboxMax);
+    internal int TexRotateBits => Tri.TexRotate;
+    internal float* SelfIllum => (float*)Unsafe.AsPointer(ref Tri.SelfIllum);
+    internal float* BboxMin => (float*)Unsafe.AsPointer(ref Tri.BboxMin);
+    internal float* BboxMax => (float*)Unsafe.AsPointer(ref Tri.BboxMax);
     internal IntPtr Vtbl => *(IntPtr*)_p;
 
     /// <summary>Is this part an INSTANCE -- does it hang off a Gob? See <see cref="EngineLayout.PartGob"/>;
@@ -59,17 +69,20 @@ internal readonly unsafe ref struct MaterialRef
     internal IntPtr Ptr => _p;
     internal bool IsNull => _p == IntPtr.Zero;
 
-    internal SharedRef Shared => new(_p == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(_p + EngineLayout.MatShared));
+    /// <summary>The <c>Material</c> this ref reads through.</summary>
+    internal Material View => new(_p);
+
+    internal SharedRef Shared => new(_p == IntPtr.Zero ? IntPtr.Zero : View.Shared.Ptr);
     /// <summary>The material's own env map. Compared, never dereferenced -- a <c>CAurTexture*</c> is
     /// borrowed. See <see cref="EngineLayout.MatEnvMap"/>.</summary>
-    internal IntPtr EnvMap => _p == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(_p + EngineLayout.MatEnvMap);
-    internal int SrcBlend => *(int*)(_p + EngineLayout.MatSrcBlend);
-    internal int DstBlend => *(int*)(_p + EngineLayout.MatDstBlend);
+    internal IntPtr EnvMap => _p == IntPtr.Zero ? IntPtr.Zero : View.EnvMap.Ptr;
+    internal int SrcBlend => View.SrcBlend;
+    internal int DstBlend => View.DstBlend;
     /// <summary>A BYTE, not the int at the same offset: the only reader hashes it into a group key as a
     /// byte, and a widened load would fold three neighbouring bytes into that key.</summary>
-    internal byte BlendFlag => *(byte*)(_p + EngineLayout.MatBlendFlag);
-    internal IntPtr Params => *(IntPtr*)(_p + AlloyRenderer.MatParams);
-    internal int ParamCount => *(int*)(_p + AlloyRenderer.MatParamCount);
+    internal byte BlendFlag => View.BlendFlag;
+    internal IntPtr Params => View.Params;
+    internal int ParamCount => View.ParamCount;
 
     /// <summary>A numbered texture slot, live. A METHOD, not a property: it calls
     /// <c>Material::GetTexture</c>, and the result is a BORROWED <c>CAurTexture*</c> that dies at the next
@@ -84,7 +97,7 @@ internal readonly unsafe ref struct MaterialRef
     internal TextureRef Texture(int slot)
     {
         if (_p == IntPtr.Zero) return new(IntPtr.Zero);
-        IntPtr shared = *(IntPtr*)(_p + EngineLayout.MatShared);
+        IntPtr shared = View.Shared.Ptr;
         if (shared != IntPtr.Zero)
         {
             IntPtr over = *(IntPtr*)(shared + SharedSlot0 + slot * MatSlotStride);
@@ -105,6 +118,8 @@ internal readonly unsafe ref struct MaterialRef
     /// <summary>#275: a <c>.mtr</c> slot by its index, engine (<c>texture0..10</c>) or extender-owned (11+).</summary>
     internal TextureRef TextureAt(int n)
         => n >= MaterialExtraSlots.First ? MaterialExtraSlots.Texture(Shared.Ptr, n) : Texture(n);
+    /// <summary>A slot TABLE's geometry, not a field: the stride between two slots and where the shared
+    /// table starts. No view shape describes an index into an inline array of pointers.</summary>
     private static readonly int MatSlotStride = EngineLayout.MatSlotStride, SharedSlot0 = EngineLayout.SharedSlot0;
 }
 
@@ -115,20 +130,23 @@ internal readonly unsafe ref struct SharedRef
     internal IntPtr Ptr => _p;
     internal bool IsNull => _p == IntPtr.Zero;
 
-    internal bool Transparency => *(byte*)(_p + EngineLayout.SharedTransparency) != 0;
-    internal int SampleFb => *(int*)(_p + EngineLayout.SharedSampleFb);
-    internal bool Volumetric => *(byte*)(_p + EngineLayout.SharedVolumetric) != 0;
+    /// <summary>The <c>SharedMaterial</c> this ref reads through.</summary>
+    internal SharedMaterial View => new(_p);
+
+    internal bool Transparency => View.Transparency != 0;
+    internal int SampleFb => View.SampleFb;
+    internal bool Volumetric => View.Volumetric != 0;
     /// <summary>#292: the <c>twosided</c> keyword -- draw this material's faces with culling OFF. See
     /// <see cref="EngineLayout.SharedTwoSided"/> for the engine's own three-sub-list spelling of it.</summary>
-    internal bool TwoSided => *(byte*)(_p + EngineLayout.SharedTwoSided) != 0;
+    internal bool TwoSided => View.TwoSided != 0;
     /// <summary>Is a <c>customShaderVS</c>/<c>FS</c> resref named at all? The first byte of the inline
     /// 17-byte buffer -- an empty VS name is the "pure texture redirect" test.</summary>
-    internal bool HasVs => *(byte*)(_p + EngineLayout.SharedVsName) != 0;
-    internal bool HasFs => *(byte*)(_p + EngineLayout.SharedFsName) != 0;
-    internal byte* VsName => (byte*)(_p + EngineLayout.SharedVsName);
-    internal byte* FsName => (byte*)(_p + EngineLayout.SharedFsName);
-    internal IntPtr Params => *(IntPtr*)(_p + AlloyRenderer.SharedParams);
-    internal int ParamCount => *(int*)(_p + AlloyRenderer.SharedParamCount);
+    internal bool HasVs => View.VsName != 0;
+    internal bool HasFs => View.FsName != 0;
+    internal byte* VsName => (byte*)Unsafe.AsPointer(ref View.VsName);
+    internal byte* FsName => (byte*)Unsafe.AsPointer(ref View.FsName);
+    internal IntPtr Params => View.Params;
+    internal int ParamCount => View.ParamCount;
 }
 
 internal readonly unsafe ref struct GobRef
@@ -138,26 +156,29 @@ internal readonly unsafe ref struct GobRef
     internal IntPtr Ptr => _p;
     internal bool IsNull => _p == IntPtr.Zero;
 
-    internal IntPtr Node => *(IntPtr*)(_p + EngineLayout.GobNode);
-    internal IntPtr PartTree => *(IntPtr*)(_p + EngineLayout.GobPartTree);
-    internal float* Position => (float*)(_p + EngineLayout.GobPosition);
+    /// <summary>The <c>Gob</c> this ref reads through.</summary>
+    internal Gob View => new(_p);
 
-    internal bool Highlight => *(byte*)(_p + EngineLayout.GobHighlight) != 0;
-    internal bool SceneTint => *(byte*)(_p + EngineLayout.GobSceneTint) != 0;
+    internal IntPtr Node => View.Node.Ptr;
+    internal IntPtr PartTree => View.PartTree.Ptr;
+    internal float* Position => (float*)Unsafe.AsPointer(ref View.Position);
+
+    internal bool Highlight => View.Highlight != 0;
+    internal bool SceneTint => View.SceneTint != 0;
     /// <summary>The short that ARMS the colour/alpha modulation below; the values are meaningless without
     /// it (PartTriMesh::Mat @0x450960 reads it first).</summary>
-    internal bool ColourMulArmed => *(short*)(_p + EngineLayout.GobColourMul) != 0;
-    internal bool SelfIllumArmed => *(short*)(_p + EngineLayout.GobSelfIllum) != 0;
-    internal float Alpha => *(float*)(_p + EngineLayout.GobAlpha);
-    internal float FadeAlpha => *(float*)(_p + EngineLayout.GobFadeAlpha);
-    internal float* Colour => (float*)(_p + EngineLayout.GobColour);
-    internal float* Emissive => (float*)(_p + EngineLayout.GobEmissive);
-    internal GobRef FadeOwner => new(*(IntPtr*)(_p + EngineLayout.GobNode));
-    internal IntPtr EnvOverride => *(IntPtr*)(_p + EngineLayout.GobEnvOverride);
+    internal bool ColourMulArmed => View.ColourMul != 0;
+    internal bool SelfIllumArmed => View.SelfIllum != 0;
+    internal float Alpha => View.Alpha;
+    internal float FadeAlpha => View.FadeAlpha;
+    internal float* Colour => (float*)Unsafe.AsPointer(ref View.Colour);
+    internal float* Emissive => (float*)Unsafe.AsPointer(ref View.Emissive);
+    internal GobRef FadeOwner => new(View.Node.Ptr);
+    internal IntPtr EnvOverride => View.EnvOverride;
     /// <summary>Bit 3 of the OWNER's flag byte, which is what arms the second alpha multiply. Named for what
     /// it decides rather than where it sits, because the owner is a gob and the byte is not on the gob whose
-    /// alpha it gates.</summary>
-    internal bool OwnerFades => (*(byte*)(_p + EngineLayout.NodeOwnerFlags) & AlloyCensus.GobOwnerFadeBit) != 0;
+    /// alpha it gates -- it is a <c>Model</c>, which is why this one read goes through that view.</summary>
+    internal bool OwnerFades => (new Model(_p).OwnerFlags & AlloyCensus.GobOwnerFadeBit) != 0;
 }
 
 internal readonly unsafe ref struct NodeRef
@@ -167,14 +188,20 @@ internal readonly unsafe ref struct NodeRef
     internal IntPtr Ptr => _p;
     internal bool IsNull => _p == IntPtr.Zero;
 
-    internal float* Matrix => (float*)(_p + EngineLayout.NodeMatrix);
+    /// <summary>The <c>VertexPrimitive</c> this ref reads through.</summary>
+    internal VertexPrimitive View => new(_p);
+
+    internal float* Matrix => (float*)Unsafe.AsPointer(ref View.Matrix);
     /// <summary>The same 16 floats as a value. The raw bytes already read as the transpose GLSL wants, so
     /// this is a copy and not a conversion -- every caller that wanted one was casting the pointer back.</summary>
-    internal System.Numerics.Matrix4x4 Model => *(System.Numerics.Matrix4x4*)Matrix;
-    internal byte Flags => *(byte*)(_p + EngineLayout.NodeFlags);
+    internal System.Numerics.Matrix4x4 Model => View.Matrix;
+    internal byte Flags => View.Flags;
     /// <summary>The <c>SetModelMatrix</c> half of RenderDrawBucket's matrix-class condition -- the flag bits
     /// alone; the other half is <see cref="PartRef.IsInstance"/>.</summary>
-    internal bool MatrixClass => (Flags & 0x1e) != 0;
+    internal bool MatrixClass => (Flags & MatrixClassBits) != 0;
+    /// <summary>The bits <c>Scene::RenderDrawBucket</c> @0x46d060 tests on <see cref="EngineLayout.NodeFlags"/>
+    /// before it pushes a matrix. A mask, not-an-offset: it names bits, not a place in memory.</summary>
+    private const int MatrixClassBits = 0x1e;   // not-an-offset: the matrix-class mask
 }
 
 internal readonly unsafe ref struct MdlRef
@@ -184,8 +211,12 @@ internal readonly unsafe ref struct MdlRef
     internal IntPtr Ptr => _p;
     internal bool IsNull => _p == IntPtr.Zero;
 
-    internal float* Ambient => (float*)(_p + AlloyRenderer.MdlAmbient);
-    internal float* Diffuse => (float*)(_p + AlloyRenderer.MdlDiffuse);
+    /// <summary>The <c>MdlNodeTriMesh</c> block this ref reads through -- the part's material node, already
+    /// known to be a tri-mesh by the caller that fetched it.</summary>
+    internal MdlNodeTriMesh View => new(_p);
+
+    internal float* Ambient => (float*)Unsafe.AsPointer(ref View.Ambient);
+    internal float* Diffuse => (float*)Unsafe.AsPointer(ref View.Diffuse);
 }
 
 internal readonly unsafe ref struct VdoRef
@@ -195,22 +226,25 @@ internal readonly unsafe ref struct VdoRef
     internal IntPtr Ptr => _p;
     internal bool IsNull => _p == IntPtr.Zero;
 
-    internal uint Vao => *(uint*)(_p + EngineLayout.VdoVao);
+    /// <summary>The <c>VertexDataObject</c> this ref reads through.</summary>
+    internal VertexDataObject View => new(_p);
+
+    internal uint Vao => View.Vao;
     /// <summary>1 = indexed static, which is the only mode this renderer can replay.</summary>
-    internal int Mode => *(int*)(_p + EngineLayout.VdoMode);
-    internal long VertItems => (long)*(IntPtr*)(_p + EngineLayout.VdoVertItems);
-    internal int VertCount => *(int*)(_p + EngineLayout.VdoVertCount);
-    internal long ElemItems => (long)*(IntPtr*)(_p + EngineLayout.VdoElemItems);
-    internal int ElemCount => *(int*)(_p + EngineLayout.VdoElemCount);
+    internal int Mode => View.Mode;
+    internal long VertItems => (long)View.VertItems;
+    internal int VertCount => View.VertCount;
+    internal long ElemItems => (long)View.ElemItems;
+    internal int ElemCount => View.ElemCount;
 
     /// <summary>#284: <c>Build</c> ran and gave this VDO an element stream. See
     /// <see cref="EngineLayout.VdoIndexed"/> for why the VAO drip refuses without it.</summary>
-    internal bool Indexed => *(byte*)(_p + EngineLayout.VdoIndexed) != 0;
-    internal uint ElemToken => *(uint*)(_p + EngineLayout.VdoElemToken);
-    internal uint VertToken => *(uint*)(_p + EngineLayout.VdoVertToken);
-    internal uint DynToken => *(uint*)(_p + EngineLayout.VdoDynToken);
-    internal uint VertMask => *(uint*)(_p + EngineLayout.VdoVertMask);
-    internal uint DynMask => *(uint*)(_p + EngineLayout.VdoDynMask);
+    internal bool Indexed => View.Indexed != 0;
+    internal uint ElemToken => View.ElemToken;
+    internal uint VertToken => View.VertToken;
+    internal uint DynToken => View.DynToken;
+    internal uint VertMask => View.VertMask;
+    internal uint DynMask => View.DynMask;
 }
 
 /// <summary>Everything a VAO-cache slot's harvest depends on, read off the live VDO: the engine VAO it was
@@ -238,6 +272,9 @@ internal readonly unsafe ref struct TextureRef
     internal TextureRef(IntPtr p) => _p = p;
     internal IntPtr Ptr => _p;
     internal bool IsNull => _p == IntPtr.Zero;
+
+    /// <summary>The <c>CAurTexture</c> this ref reads through -- the vtable slots the verbs below call.</summary>
+    internal CAurTexture View => new(_p);
 
     /// <summary>The texture's name, through <c>GetReferenced</c> then <c>AsBasic</c>. Two vtable calls.</summary>
     internal string ResolveName() => AlloyCensus.TexName(_p);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 
 namespace CX.Ui;
@@ -66,19 +67,16 @@ public sealed unsafe class SelectableText
         return start + count;
     }
 
-    private static readonly delegate* unmanaged<byte*, int> _setClip =
-        (delegate* unmanaged<byte*, int>)Native.Sym(SymbolMap.SdlSetClipboardText);
-
     /// <summary>Copy plain text to the system clipboard (SDL_SetClipboardText). No-op (false) for empty text or an
     /// unresolved symbol (run-demo / non-Linux). Callers pass already color-stripped prose.</summary>
     public static bool Copy(string text)
     {
-        if (_setClip == null || text.Length == 0) return false;
+        if (EngineFn.SdlSetClipboardText == null || text.Length == 0) return false;
         byte[] u = Encoding.UTF8.GetBytes(text);
         Span<byte> buf = stackalloc byte[u.Length + 1];
         u.CopyTo(buf);
         buf[u.Length] = 0;
-        fixed (byte* b = buf) _setClip(b);
+        fixed (byte* b = buf) EngineFn.SdlSetClipboardText(b);
         return true;
     }
 

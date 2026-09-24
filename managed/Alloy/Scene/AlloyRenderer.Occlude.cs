@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
 using static CX.Framework.EngineLayout;
@@ -39,7 +40,7 @@ public sealed unsafe partial class AlloyRenderer
 
     private static IntPtr* _occCamera;
     private static IntPtr _occAppMgr;
-    private static delegate* unmanaged<IntPtr, IntPtr> _occGetModule;
+    private static GetModuleFn _occGetModule;
 
     /// <summary>This frame's hits: the placeable gob each ray landed on.</summary>
     private static readonly IntPtr[] _occHitGob = new IntPtr[OccMaxHits];
@@ -57,7 +58,7 @@ public sealed unsafe partial class AlloyRenderer
         SceneRay.Init();
         _occCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
         _occAppMgr = Native.Sym(SymbolMap.AppManager);
-        _occGetModule = (delegate* unmanaged<IntPtr, IntPtr>)Native.Sym(SymbolMap.GetModule);
+        _occGetModule = EngineFn.GetModule;
         _occArmed = SceneRay.Armed && _occCamera != null && _occAppMgr != IntPtr.Zero && _occGetModule != null && _runtime != null;
         _occWhy = _occArmed ? "armed" : "symbols unresolved";
         log.Info($"AlloyRenderer: walls.fade {(Walls.Fade.V ? "on" : "off")} ({_occWhy})");
@@ -83,8 +84,8 @@ public sealed unsafe partial class AlloyRenderer
         if (cam == IntPtr.Zero) return IntPtr.Zero;
         IntPtr host = *(IntPtr*)(cam + CameraBehaviorHost);
         if (host == IntPtr.Zero) return IntPtr.Zero;
-        var asFollow = (delegate* unmanaged<IntPtr, IntPtr>)(*(IntPtr*)(*(IntPtr*)host + BehaviorAsFollowSlot));
-        IntPtr behavior = asFollow == null ? IntPtr.Zero : asFollow(host);
+        var hv = new CAurBehavior(host);
+        IntPtr behavior = hv.AsBehaviorCameraFollowFn == IntPtr.Zero ? IntPtr.Zero : hv.AsBehaviorCameraFollow().Ptr;
         return behavior == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)(behavior + BehaviorTargetObj);
     }
 
@@ -105,7 +106,7 @@ public sealed unsafe partial class AlloyRenderer
         IntPtr player = OccludeTargetGob();
         if (player == IntPtr.Zero) return;
         _occFrames++;
-        Vector3 focus = *(Vector3*)(_runtime + RtCamFocus), cam = FrameInputs.CameraPos;
+        Vector3 focus = Rt.CamFocus, cam = FrameInputs.CameraPos;
         Vector3 d = cam - focus;
         float len = d.Length();
         if (len < 0.05f) return;

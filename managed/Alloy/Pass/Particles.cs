@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -42,62 +43,13 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe partial class Particles
 {
-    // ---- PartEmitter, from PartEmitter::RenderEmitter @0x4ad4c0 and PartEmitter::Initialize @0x4aaaa0 ----
+    // Every emitter, particle, node and material field this pass reads is a member of its CX.Engine view
+    // (PartEmitter, Particle, MdlNodeEmitter, Material); the RE provenance lives on the EngineLayout rows
+    // those are generated from, and PartEmitter::RenderEmitter @0x4ad4c0 is the function they all came off.
 
-    /// <summary>The MdlNodeEmitter this emitter instantiates -- the model-side flags live there.</summary>
-    private static readonly int EmNode = EngineLayout.PartNodeLink;
-    /// <summary>The owning Gob. Null is legal (a free-standing emitter); when set, its vtable slot +0x2d8
-    /// supplies the scale every size term is multiplied by.</summary>
-    private static readonly int EmGob = EngineLayout.PartGob;
-    /// <summary>Blend mode: 1 = punch-through, 0 = normal alpha, anything else = additive. This is the field
-    /// the ticket's "preserve the punch-through mode" is about, and unlike grass its depth write is
-    /// deliberate.</summary>
-    private static readonly int EmBlend = EngineLayout.EmBlend;
-    /// <summary>Alpha at the end and the start of life (in that order in memory).</summary>
-    private static readonly int EmAlphaEnd = EngineLayout.EmAlphaEnd, EmAlphaStart = EngineLayout.EmAlphaStart;
-    /// <summary>Colour at the end and the start of life, three floats each.</summary>
-    private static readonly int EmColorEnd = EngineLayout.EmColorEnd, EmColorStart = EngineLayout.EmColorStart;
-    /// <summary>The second fade owner the early-out tests, alongside the Gob's own (see
-    /// <see cref="GobFadeOwner"/>).</summary>
-    private static readonly int EmTileOwner = EngineLayout.EmTileOwner;
-    /// <summary>UV-grid animation: frames per second, then the end and start frame indices. A zero fps or
-    /// equal ends means the frame index never advances.</summary>
-    private static readonly int EmFps = EngineLayout.EmFps, EmFrameEnd = EngineLayout.EmFrameEnd,
-                               EmFrameStart = EngineLayout.EmFrameStart;
-    /// <summary>Particle lifetime. Zero draws nothing at all -- the engine's own early-out.</summary>
-    private static readonly int EmLife = EngineLayout.EmLife;
-    /// <summary>Quad half-extents before the 0.5 and the Gob scale: X at start/end, then Y at start/end.
-    /// </summary>
-    private static readonly int EmSizeStartX = EngineLayout.EmSizeStartX, EmSizeEndX = EngineLayout.EmSizeEndX,
-                               EmSizeStartY = EngineLayout.EmSizeStartY, EmSizeEndY = EngineLayout.EmSizeEndY;
-    /// <summary><c>Particle**</c>, and the count. The array is dense: index i is drawn as quad i.</summary>
-    private static readonly int EmParts = EngineLayout.EmParts, EmCount = EngineLayout.EmCount;
-    /// <summary>Render type -- which billboard basis the quads get. See <see cref="Basis"/>.</summary>
-    private static readonly int EmType = EngineLayout.EmType;
-    /// <summary>The Material whose slot-0 texture every quad samples.</summary>
-    private static readonly int EmMaterial = EngineLayout.EmMaterial;
-    /// <summary>Interpolation domain (a SHORT, not an int): 0 interpolates over the particle's INDEX in the
-    /// array, non-zero over its age. Reading it as an int folds in the two bytes above and turns every
-    /// index-interpolated emitter into an age-interpolated one.</summary>
-    private static readonly int EmLifeInterp = EngineLayout.EmLifeInterp;
-    /// <summary>The emitter's own orientation quaternion, stored (w, x, y, z) -- the basis render type 1
-    /// billboards against.</summary>
-    private static readonly int EmOrient = EngineLayout.EmOrient;
-    /// <summary>Emitter world position, the point the tint is sampled at.</summary>
-    private static readonly int EmPos = EngineLayout.EmPos;
-
-    // ---- Material, for #148's emissive parameter. Same records AlloyRenderer.ReadMaterial walks. ----
-
-    /// <summary>The two <c>List&lt;MaterialParameter&gt;</c> the .mtr's
-    /// declared values reach. Shared first, instance second, so a per-part override still wins -- the
-    /// instance list is only SIZED to the shared count and carries defaults until something overrides.
-    /// </summary>
-    private static readonly int MatParams = EngineLayout.MatParams, MatParamCount = EngineLayout.MatParamCount,
-                               SharedParams = EngineLayout.SharedParams, SharedParamCount = EngineLayout.SharedParamCount;
-    /// <summary>MaterialParameter: name at +0, value at +0x44, type at +0x5c (0 = float), component count at
-    /// +0x60 as a ushort, 100 bytes a record.</summary>
-    private static readonly int ParamValue = EngineLayout.ParamValue, ParamType = EngineLayout.ParamType,
-                               ParamComps = EngineLayout.ParamComps, ParamStride = EngineLayout.ParamStride;
+    /// <summary>A RECORD SIZE, not a field: the stride of the <c>List&lt;MaterialParameter&gt;</c> the
+    /// emissive scan walks.</summary>
+    private static readonly int ParamStride = EngineLayout.ParamStride;
     /// <summary>A list longer than this is a bad pointer, not a .mtr.</summary>
     private const int MaxParams = 64;
     /// <summary>#148: the .mtr parameter an effect declares to say how bright it really is. Named the way
@@ -107,53 +59,6 @@ internal static unsafe partial class Particles
     /// <summary>Refuse an absurd declaration rather than hand the bloom a value that blows the whole frame
     /// out. Ten is already four stops over white.</summary>
     private const float MaxEmissive = 10f;
-
-    /// <summary>The fade chain <c>RenderEmitter</c> opens with: a Gob's fade owner sits at Gob+0x1a8 and the
-    /// factor itself at owner+0xc8. Below 1.0 the engine draws the emitter not at all -- so an emitter in a
-    /// fading tile is DECLINED rather than owned, and the engine's own early-out draws the same nothing.
-    /// </summary>
-    private static readonly int GobFadeOwner = EngineLayout.GobTileData, FadeFactor = EngineLayout.TileGeomFade;
-    /// <summary>Gob vtable slot for the scale every size term is multiplied by.</summary>
-    private static readonly int GobScaleSlot = EngineLayout.GobAdjustedScaleSlot;
-
-    // ---- MdlNodeEmitter ----
-
-    /// <summary>UV grid: columns then rows. Zero means one, and a grid of 1x1 skips the animation entirely.
-    /// </summary>
-    private static readonly int NodeGridX = EngineLayout.EmitterGridX, NodeGridY = EngineLayout.EmitterGridY;
-    /// <summary>Non-zero DISABLES back-face culling (the engine reads it as
-    /// <c>if (node+0x164 == 0) Enable(CULL_FACE) else Disable(CULL_FACE)</c>). Reproduced rather than assumed
-    /// off, because the quad winding below is the engine's own.</summary>
-    private static readonly int NodeNoCull = EngineLayout.EmitterNoCull;
-
-    // ---- Particle ----
-
-    /// <summary>Position, and the position the previous simulation step left. The previous one is only read
-    /// by the motion-blurred type, where it is the far edge of a stretched quad.</summary>
-    private static readonly int PPos = EngineLayout.ParticlePos, PPrevPos = EngineLayout.ParticlePrevPos;
-    /// <summary>Roll about the billboard normal, in radians (the engine feeds it to <c>sincosf</c> after
-    /// halving, i.e. as a quaternion half-angle).</summary>
-    private static readonly int PRoll = EngineLayout.ParticleRoll;
-    /// <summary>The particle's own orientation quaternion, (w, x, y, z) -- render type 5's whole basis.
-    /// </summary>
-    private static readonly int PQuat = EngineLayout.ParticleQuat;
-    /// <summary>UV-grid frame index, and the age at which it last advanced. Both are WRITTEN by the vertex
-    /// build: owning the build means owning that advance, or every animated particle freezes.</summary>
-    private static readonly int PFrame = EngineLayout.ParticleFrame, PFrameTime = EngineLayout.ParticleFrameTime;
-    /// <summary>The splat normal, used as the billboard's reference axis on a splat emitter.</summary>
-    private static readonly int PSplatNormal = EngineLayout.ParticleSplatNormal;
-    /// <summary>Splat flag (one byte) and age.</summary>
-    private static readonly int PSplat = EngineLayout.ParticleSplat, PAge = EngineLayout.ParticleAge;
-
-    // ---- Camera / Scene ----
-
-    /// <summary>The camera's orientation quaternion at <c>*CurrentCamera + 0xbc</c>, stored (w, x, y, z).
-    /// Read at the Alloy slot, which runs inside the world Scene's own render, so it is that Scene's camera
-    /// and not the UI frame's (the trap #99 named applies at PRESENT time, not here).</summary>
-    private static readonly int CamQuat = EngineLayout.CamRot;
-    /// <summary>The Scene's LightManager, whose master list the tint lookup scans -- a
-    /// <c>LightManager*</c>, not a light list (#441 corrected the name).</summary>
-    private static readonly int SceneLights = EngineLayout.SceneLightManager;
 
     // ---- the engine's own literals, read out of .rodata rather than guessed ----
 
@@ -229,7 +134,8 @@ internal static unsafe partial class Particles
     /// rather than open-coded because <see cref="Beams"/> and <see cref="SkyBox"/> name the same trio, and a
     /// layout correction that misses one site is the kind that is found by looking at the screen.</summary>
     private const int ModeModel = 2;
-    private static readonly int StackStride = EngineLayout.MtxStackStride, StackTop = EngineLayout.MtxStackTop;
+    /// <summary>A STRIDE, not a field: the byte distance between one <c>m_aurMtxStack</c> entry and the next.</summary>
+    private static readonly int StackStride = EngineLayout.MtxStackStride;
     /// <summary>The SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
     /// 5-7 the caster's, 12-16 <see cref="CullPass"/>'s; 10/11 are the record and index buffers the vertex
     /// stage names, and #288's two descriptor buffers take the next free pair above the cull's.</summary>
@@ -334,9 +240,10 @@ internal static unsafe partial class Particles
     private static int _drawN;
 
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, void> _origRender, _origDtor;
-    private static delegate* unmanaged<IntPtr, int, long> _getTexture;
-    private static delegate* unmanaged<IntPtr, uint, int, void> _bindInUnit;
+    private static RenderEmitterFn _origRender;
+    private static PartEmitterDtorFn _origDtor;
+    private static MatGetTextureFn _getTexture;
+    private static AurTextureBindInUnitFn _bindInUnit;
     /// <summary>#237: the engine's bound-texture cache, snapshot-restored across the draw loop. See
     /// <see cref="SymbolMap.GlBoundTextures"/> for why a pass that draws in its own context has to.</summary>
     private static ulong* _engBoundTex;
@@ -344,8 +251,10 @@ internal static unsafe partial class Particles
     /// <summary>Entries in <c>GLRender::m_boundTextures</c>, from the 0x10-iteration clear loop in
     /// <c>GLRender::ResetRenderStates</c> @0x4d1810.</summary>
     private const int EngTexStages = 16;
-    private static delegate* unmanaged<IntPtr, float> _tileAlpha, _gobAlpha;
-    private static delegate* unmanaged<IntPtr, byte> _isSplat, _isTinted;
+    private static EmitterGetTileAlphaFn _tileAlpha;
+    private static EmitterGetGobAlphaFn _gobAlpha;
+    private static EmitterIsSplatFn _isSplat;
+    private static EmitterIsTintedFn _isTinted;
     private static IntPtr* _currentScene, _currentCamera;
     private static byte* _stacks;
 
@@ -432,15 +341,15 @@ internal static unsafe partial class Particles
         _log = log;
         SceneDepth.Attach(log);
 
-        _getTexture = (delegate* unmanaged<IntPtr, int, long>)Native.Sym(SymbolMap.MatGetTexture);
-        _bindInUnit = (delegate* unmanaged<IntPtr, uint, int, void>)Native.Sym(SymbolMap.AurTextureBindInUnit);
+        _getTexture = EngineFn.MatGetTexture;
+        _bindInUnit = EngineFn.AurTextureBindInUnit;
         _engBoundTex = (ulong*)Native.Sym(SymbolMap.GlBoundTextures);
         _engActiveStage = (uint*)Native.Sym(SymbolMap.GlActiveTextureStage);
         _engStageEnabled = (uint*)Native.Sym(SymbolMap.GlEnabledTextureStages);
-        _tileAlpha = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.EmitterGetTileAlpha);
-        _gobAlpha = (delegate* unmanaged<IntPtr, float>)Native.Sym(SymbolMap.EmitterGetGobAlpha);
-        _isSplat = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.EmitterIsSplat);
-        _isTinted = (delegate* unmanaged<IntPtr, byte>)Native.Sym(SymbolMap.EmitterIsTinted);
+        _tileAlpha = EngineFn.EmitterGetTileAlpha;
+        _gobAlpha = EngineFn.EmitterGetGobAlpha;
+        _isSplat = EngineFn.EmitterIsSplat;
+        _isTinted = EngineFn.EmitterIsTinted;
         EmitterLighting.Resolve();
         _currentScene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
         _currentCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
@@ -455,10 +364,8 @@ internal static unsafe partial class Particles
             return;
         }
 
-        _origRender = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.RenderEmitter, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRenderEmitter);
-        _origDtor = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.PartEmitterDtor, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnEmitterDtor);
+        _origRender = hooks.InstallRenderEmitter(&OnRenderEmitter);
+        _origDtor = hooks.InstallPartEmitterDtor(&OnEmitterDtor);
         if (_origRender == null || _origDtor == null)
         {
             _off = true;
@@ -542,7 +449,7 @@ internal static unsafe partial class Particles
             // a new emitter would hand it a slice the allocator has already handed to someone else -- two
             // emitters writing one block, with the hash layer making the wrong one sticky.
             _tab[s].RecBase = 0; _tab[s].RecCap = 0; _tab[s].Hash = 0;
-            _tab[s].Emissive = ReadEmissive(*(IntPtr*)(em + EmMaterial));
+            _tab[s].Emissive = ReadEmissive(new PartEmitter(em).Material);
             _captured++;
         }
         ref Emit e = ref _tab[s];
@@ -551,7 +458,7 @@ internal static unsafe partial class Particles
         // RenderEmitter pushes nothing, so the top of the model stack IS the transform the engine's own
         // draw ran under. Almost always identity -- particles simulate in world space -- but reading it
         // costs nothing and an emitter under a transform would otherwise land at the origin.
-        e.Model = *(Matrix4x4*)(_stacks + ModeModel * StackStride + StackTop);
+        e.Model = new aurMatrixStack((IntPtr)(_stacks + ModeModel * StackStride)).Top;
         e.Ident = e.Model.IsIdentity;
         if (_orderN < MaxEmitters) _order[_orderN++] = s;
         return s;
@@ -808,24 +715,26 @@ internal static unsafe partial class Particles
 
         // RenderEmitter's own opening early-out: a fading Gob or tile draws NO particles at all. Declining
         // is the cheapest reproduction -- the engine takes the same exit.
-        IntPtr gob = *(IntPtr*)(em + EmGob);
-        if (gob != IntPtr.Zero)
+        var e = new PartEmitter(em);
+        var g = new CX.Engine.Part(em).Gob;
+        if (!g.IsNull)
         {
-            IntPtr owner = *(IntPtr*)(gob + GobFadeOwner);
-            if (owner != IntPtr.Zero && *(float*)(owner + FadeFactor) < 1f) { _decFade++; return false; }
+            TileData owner = g.TileData;
+            if (!owner.IsNull && owner.GeomFade < 1f) { _decFade++; return false; }
         }
-        IntPtr tile = *(IntPtr*)(em + EmTileOwner);
-        if (tile != IntPtr.Zero && *(float*)(tile + FadeFactor) < 1f) { _decFade++; return false; }
+        TileData tile = e.TileOwner;
+        if (!tile.IsNull && tile.GeomFade < 1f) { _decFade++; return false; }
 
-        int type = *(int*)(em + EmType);
+        int type = e.Type;
         // Type 3 pairs each particle with the NEXT one, so the last has no partner and the loop runs one
         // short. The engine does the same subtraction.
-        count = *(int*)(em + EmCount) - (type == 3 ? 1 : 0);
-        if (count < 1 || *(float*)(em + EmLife) == 0f) { _decEmpty++; return false; }
-        if (*(IntPtr*)(em + EmParts) == IntPtr.Zero) { _decEmpty++; return false; }
-        if (*(IntPtr*)(em + EmNode) == IntPtr.Zero) { _decEmpty++; return false; }
+        count = e.Count - (type == 3 ? 1 : 0);
+        if (count < 1 || e.Life == 0f) { _decEmpty++; return false; }
+        if (e.Parts == IntPtr.Zero) { _decEmpty++; return false; }
+        IntPtr node = new CX.Engine.Part(em).Node.Ptr;
+        if (node == IntPtr.Zero) { _decEmpty++; return false; }
 
-        IntPtr mat = *(IntPtr*)(em + EmMaterial);
+        IntPtr mat = e.Material.Ptr;
         if (mat == IntPtr.Zero) { _decEmpty++; return false; }
         // A material naming its own program is not this shader's to draw -- and unlike world geometry, where
         // an unported shader costs a small shading difference on one part, a particle effect authored around
@@ -843,9 +752,9 @@ internal static unsafe partial class Particles
         tex = AurTex.Tid(texObj);
         if (tex == 0) { _decTex++; return false; }
 
-        int blend = *(int*)(em + EmBlend);
+        int blend = e.Blend;
         cls = blend == 1 ? ClsPunch : blend == 0 ? ClsBlend : ClsAdd;
-        cull = *(int*)(*(IntPtr*)(em + EmNode) + NodeNoCull) == 0 ? 1 : 0;
+        cull = new MdlNodeEmitter(node).NoCull == 0 ? 1 : 0;
         return true;
     }
 
@@ -929,8 +838,8 @@ internal static unsafe partial class Particles
     /// <paramref name="axisY"/> is q(0,1,0) and <paramref name="axisX"/> is q(1,0,0).</para></summary>
     private static void Basis(IntPtr cam, out Vector3 fwd, out Vector4 q, out Vector3 axisY, out Vector3 axisX)
     {
-        float* c = (float*)(cam + CamQuat);
-        float w = c[0], x = c[1], y = c[2], z = c[3];
+        Quat c = new CX.Engine.Camera(cam).Rot;
+        float w = c.W, x = c.X, y = c.Y, z = c.Z;
         q = new Vector4(w, x, y, z);
         fwd = AxisZ(w, x, y, z);
         axisY = new Vector3(2f * (x * y - z * w), 1f - 2f * (x * x + z * z), 2f * (y * z + x * w));
@@ -958,9 +867,10 @@ internal static unsafe partial class Particles
                                     Vector3 camFwd, Vector4 camQ, Vector3 axisY, Vector3 axisX,
                                     Vector3 eye, bool drawsLit)
     {
-        IntPtr node = *(IntPtr*)(em + EmNode);
-        int type = *(int*)(em + EmType);
-        float life = *(float*)(em + EmLife);
+        var emv = new PartEmitter(em);
+        IntPtr node = new CX.Engine.Part(em).Node.Ptr;
+        int type = emv.Type;
+        float life = emv.Life;
         bool splat = _isSplat(node) != 0;
         // #148: the CPU tint and the fragment's clustered lighting are the SAME quantity computed two ways --
         // one sample at the emitter's origin against the whole scene's lights, versus a per-fragment walk of
@@ -970,29 +880,24 @@ internal static unsafe partial class Particles
         bool tinted = !drawsLit && _isTinted(node) != 0;
 
         // scale: the Gob's, through the vtable slot RenderEmitter calls. No Gob means 1.
-        IntPtr gob = *(IntPtr*)(em + EmGob);
-        float scale = 1f;
-        if (gob != IntPtr.Zero)
-        {
-            IntPtr* vt = *(IntPtr**)gob;
-            var getScale = (delegate* unmanaged<IntPtr, float>)vt[GobScaleSlot / 8];
-            scale = getScale(gob);
-        }
+        var gob = new CX.Engine.Part(em).Gob;
+        float scale = gob.IsNull ? 1f : gob.GetAdjustedScale();
 
         // ---- per-emitter terms, all hoisted exactly as the engine hoists them ----
 
         // the interpolation parameter's rate: over the particle's INDEX, or over its age
-        bool byAge = *(short*)(em + EmLifeInterp) != 0;
-        float rate = !byAge ? 1f / *(int*)(em + EmCount)
+        bool byAge = emv.LifeInterp != 0;
+        float rate = !byAge ? 1f / emv.Count
                             : life > 0f ? 1f / life : NoLifeRate;
 
         // colour, optionally run through the scene lighting at the emitter's position first
-        Vector3 cStart = *(Vector3*)(em + EmColorStart), cEnd = *(Vector3*)(em + EmColorEnd);
+        Vector3 cStart = emv.ColorStart, cEnd = emv.ColorEnd;
         if (tinted)
         {
-            EmitterLighting.V3 wp = *(EmitterLighting.V3*)(em + EmPos);
+            Vector3 p3 = emv.Pos;
+            EmitterLighting.V3 wp = new() { X = p3.X, Y = p3.Y, Z = p3.Z };
             IntPtr scene = *_currentScene;
-            IntPtr lights = scene != IntPtr.Zero ? *(IntPtr*)(scene + SceneLights) : IntPtr.Zero;
+            IntPtr lights = scene != IntPtr.Zero ? new CX.Engine.Scene(scene).LightManager.Ptr : IntPtr.Zero;
             // The engine does not null-check the list because at its call site there always is one. Ours
             // runs a pass later, where an area transition can have taken it -- and the scan walks it
             // unconditionally, so a null would be a wild read rather than a black tint.
@@ -1009,25 +914,26 @@ internal static unsafe partial class Particles
 
         // alpha: the emitter's own pair, folded with the tile's and the Gob's
         float aScene = _tileAlpha(em) * _gobAlpha(em);
-        float aStart = Sat(*(float*)(em + EmAlphaStart) * aScene) * ByteScale;
-        float aEnd = Sat(*(float*)(em + EmAlphaEnd) * aScene) * ByteScale;
-        bool lerpAlpha = *(float*)(em + EmAlphaStart) != *(float*)(em + EmAlphaEnd);
+        float aStart = Sat(emv.AlphaStart * aScene) * ByteScale;
+        float aEnd = Sat(emv.AlphaEnd * aScene) * ByteScale;
+        bool lerpAlpha = emv.AlphaStart != emv.AlphaEnd;
 
         // half-extents; the engine only interpolates a dimension whose two ends actually differ
-        float sx0 = *(float*)(em + EmSizeStartX), sx1 = *(float*)(em + EmSizeEndX);
-        float sy0 = *(float*)(em + EmSizeStartY), sy1 = *(float*)(em + EmSizeEndY);
+        float sx0 = emv.SizeStartX, sx1 = emv.SizeEndX;
+        float sy0 = emv.SizeStartY, sy1 = emv.SizeEndY;
         float wStart = sx0 * scale * Half, wEnd = sx1 * scale * Half;
         float hStart = sy0 * scale * Half, hEnd = sy1 * scale * Half;
         bool lerpW = !splat && sx0 != sx1;
         bool lerpH = !splat && sy0 != sy1 && (sy0 != 0f || sy1 != 0f);
 
         // UV grid
-        int gx = *(int*)(node + NodeGridX), gy = *(int*)(node + NodeGridY);
+        var ne = new MdlNodeEmitter(node);
+        int gx = ne.GridX, gy = ne.GridY;
         bool grid = Grid.V && (gx > 1 || gy > 1);
         if (Diag.V)
         {
             if ((uint)type < 7) _cType[type]++;
-            int blend = *(int*)(em + EmBlend);
+            int blend = emv.Blend;
             _cCls[blend == 1 ? ClsPunch : blend == 0 ? ClsBlend : ClsAdd]++;
             if (splat) _cSplat++;
             if (tinted) _cTinted++;
@@ -1036,9 +942,9 @@ internal static unsafe partial class Particles
         if (gx == 0) gx = 1;
         if (gy == 0) gy = 1;
         float du = 1f / gx, dv = 1f / gy;
-        float fps = *(float*)(em + EmFps);
+        float fps = emv.Fps;
         float period = fps > 0f ? 1f / fps : 0f;
-        float frameStart = *(float*)(em + EmFrameStart), frameEnd = *(float*)(em + EmFrameEnd);
+        float frameStart = emv.FrameStart, frameEnd = emv.FrameEnd;
 
         // #148: softness, hoisted with everything else the engine hoists. S is the largest half-extent the
         // emitter can REACH, so an end size only counts when the engine would actually interpolate to it --
@@ -1056,9 +962,9 @@ internal static unsafe partial class Particles
         Vector3 fwd = camFwd; Vector4 q = camQ;
         if (type == 1)
         {
-            float* o = (float*)(em + EmOrient);
-            q = new Vector4(o[0], o[1], o[2], o[3]);
-            fwd = AxisZ(o[0], o[1], o[2], o[3]);
+            Quat o = emv.Orient;
+            q = new Vector4(o.W, o.X, o.Y, o.Z);
+            fwd = AxisZ(o.W, o.X, o.Y, o.Z);
         }
         else if (type == 2)
         {
@@ -1070,15 +976,15 @@ internal static unsafe partial class Particles
         // nothing when the viz dial is off and it is the difference between "particles are wrong" and
         // "Motion_Blur is wrong", which are questions of very different size.
         float vizType = type;
-        IntPtr* parts = *(IntPtr**)(em + EmParts);
+        IntPtr* parts = (IntPtr*)emv.Parts;
         float u0 = 0f, u1 = 1f, v0 = 0f, v1 = 1f;
         float* p = dst;
 
         for (int i = 0; i < count; i++)
         {
-            IntPtr pt = parts[i];
-            if (pt == IntPtr.Zero) continue;
-            bool pSplat = *(byte*)(pt + PSplat) != 0;
+            var pt = new Particle(parts[i]);
+            if (pt.IsNull) continue;
+            bool pSplat = pt.Splat != 0;
 
             float t = 0f;
             float halfW = wStart, halfH = hStart;
@@ -1086,7 +992,7 @@ internal static unsafe partial class Particles
             uint cr = (uint)(long)cStart.X, cg = (uint)(long)cStart.Y, cb = (uint)(long)cStart.Z;
             if (life > 0f)
             {
-                t = MathF.Min(1f, (byAge ? *(float*)(pt + PAge) : i) * rate);
+                t = MathF.Min(1f, (byAge ? pt.Age : i) * rate);
                 float it = 1f - t;
                 if (lerpColor)
                 {
@@ -1110,7 +1016,7 @@ internal static unsafe partial class Particles
             uint col = (cr & 0xff) | ((cg & 0xff) << 8) | ((cb & 0xff) << 16) | ((ca & 0xff) << 24);
             uint colFar = col;
 
-            Vector3 pos = *(Vector3*)(pt + PPos);
+            Vector3 pos = pt.Pos;
             // The particle's OWN position, kept aside: the linked type reassigns `pos` to the next particle
             // in the chain, and taking the view direction from that would anchor the normal one segment
             // along the chain from the quad it shades.
@@ -1125,12 +1031,12 @@ internal static unsafe partial class Particles
                 // back to this one -- so the near edge of a linked quad is the next particle, not this one,
                 // and reading it the other way round shifts a lightning bolt one segment along itself.
                 Vector3 d;
-                if (type == 6) { far = *(Vector3*)(pt + PPrevPos); d = pos - far; }
+                if (type == 6) { far = pt.PrevPos; d = pos - far; }
                 else
                 {
-                    IntPtr nxt = parts[i + 1];
-                    if (nxt == IntPtr.Zero) continue;
-                    far = pos; pos = *(Vector3*)(nxt + PPos); d = pos - far;
+                    var nxt = new Particle(parts[i + 1]);
+                    if (nxt.IsNull) continue;
+                    far = pos; pos = nxt.Pos; d = pos - far;
                 }
                 float s = Vector3.Dot(axisX, d), c = Vector3.Dot(axisY, d);
                 float inv = Rsqrt(s * s + c * c);
@@ -1149,9 +1055,9 @@ internal static unsafe partial class Particles
             }
             else if (type == 5)
             {
-                float* pq = (float*)(pt + PQuat);
-                right = AxisX(pq[0], pq[1], pq[2], pq[3]);
-                up = AxisZ(pq[0], pq[1], pq[2], pq[3]);
+                Quat pq = pt.Quat;
+                right = AxisX(pq.W, pq.X, pq.Y, pq.Z);
+                up = AxisZ(pq.W, pq.X, pq.Y, pq.Z);
             }
             else
             {
@@ -1161,18 +1067,18 @@ internal static unsafe partial class Particles
                 // splat state (a landed splat rolls about its own contact normal, against its own
                 // quaternion), while the CROSS follows the emitter's, because a splat emitter's quads lie in
                 // the ground plane whether or not this particular particle has landed yet.
-                float roll = *(float*)(pt + PRoll) * Half;
+                float roll = pt.Roll * Half;
                 float sn = MathF.Sin(roll), cs = MathF.Cos(roll);
-                Vector3 spinAxis = pSplat ? *(Vector3*)(pt + PSplatNormal) : fwd;
-                // Field by field, not one Vector4 load: the quaternion sits at a 4-byte-aligned engine
-                // offset and a 16-byte vector load off it is a fault waiting for the wrong allocation.
-                float* pq2 = (float*)(pt + PQuat);
-                Vector4 spinOn = pSplat ? new Vector4(pq2[0], pq2[1], pq2[2], pq2[3]) : q;
+                Vector3 spinAxis = pSplat ? pt.SplatNormal : fwd;
+                // Through Quat, not one Vector4 load: the quaternion sits at a 4-byte-aligned engine offset
+                // and Vector4's 16-byte alignment is a fault waiting for the wrong allocation.
+                Quat pq2 = pt.Quat;
+                Vector4 spinOn = pSplat ? new Vector4(pq2.W, pq2.X, pq2.Y, pq2.Z) : q;
                 Vector4 spin = QMul(new Vector4(cs, sn * spinAxis.X, sn * spinAxis.Y, sn * spinAxis.Z), spinOn);
                 right = AxisX(spin.X, spin.Y, spin.Z, spin.W);
                 // type 4 stands the quad up against world Z instead of against the camera
                 up = type == 4 ? new Vector3(0f, 0f, flip)
-                               : Vector3.Cross(splat ? *(Vector3*)(pt + PSplatNormal) : fwd, right);
+                               : Vector3.Cross(splat ? pt.SplatNormal : fwd, right);
             }
 
             right *= halfW;
@@ -1236,14 +1142,14 @@ internal static unsafe partial class Particles
     /// and declined flips brightness with it. Rare (declining is a custom shader, a missing texture or a
     /// fading tile, none of which toggle frame to frame) and not worth a mechanism; named because the
     /// symptom would otherwise read as a flickering bug.</para></summary>
-    private static float ReadEmissive(IntPtr mat)
+    private static float ReadEmissive(CX.Engine.Material mat)
     {
-        if (mat == IntPtr.Zero) return 1f;
+        if (mat.IsNull) return 1f;
         float v = 1f;
-        IntPtr shared = *(IntPtr*)(mat + MatShared);
-        if (shared != IntPtr.Zero)
-            Scan(*(IntPtr*)(shared + SharedParams), *(int*)(shared + SharedParamCount), ref v);
-        Scan(*(IntPtr*)(mat + MatParams), *(int*)(mat + MatParamCount), ref v);
+        var mr = new MaterialRef(mat.Ptr);
+        SharedRef shared = mr.Shared;
+        if (!shared.IsNull) Scan(shared.Params, shared.ParamCount, ref v);
+        Scan(mr.Params, mr.ParamCount, ref v);
         return v <= 0f ? 1f : MathF.Min(v, MaxEmissive);
     }
 
@@ -1253,9 +1159,10 @@ internal static unsafe partial class Particles
         for (int k = 0; k < count; k++)
         {
             byte* rec = (byte*)list + (long)k * ParamStride;
-            if (*(int*)(rec + ParamType) != 0) continue;         // 1 = int-valued; this one is a float
-            if (*(ushort*)(rec + ParamComps) < 1) continue;
-            if (AlloyRenderer.NameIs(rec, EmissiveParam)) v = *(float*)(rec + ParamValue);
+            var mp = new MaterialParameter((IntPtr)rec);
+            if (mp.Type != 0) continue;                          // 1 = int-valued; this one is a float
+            if (mp.Comps < 1) continue;
+            if (AlloyRenderer.NameIs(rec, EmissiveParam)) v = mp.Value;
         }
     }
 
@@ -1285,15 +1192,15 @@ internal static unsafe partial class Particles
     /// <para>Ascending (start &lt;= end) counts up and wraps back to start past the end; descending counts
     /// down and wraps past it the other way. Both come straight off the engine's two branches.</para>
     /// </summary>
-    private static void Frame(IntPtr pt, float period, float frameStart, float frameEnd,
+    private static void Frame(Particle pt, float period, float frameStart, float frameEnd,
                               float du, float dv, int gx, int cells,
                               out float u0, out float u1, out float v0, out float v1)
     {
-        int idx = *(int*)(pt + PFrame);
+        int idx = pt.Frame;
         float f = idx;
         if (period != 0f && frameStart != frameEnd)
         {
-            float elapsed = *(float*)(pt + PAge) - *(float*)(pt + PFrameTime);
+            float elapsed = pt.Age - pt.FrameTime;
             if (elapsed >= period)
             {
                 if (frameStart <= frameEnd)
@@ -1306,8 +1213,8 @@ internal static unsafe partial class Particles
                     idx += (int)(-elapsed / period);
                     if (idx < frameEnd) idx = (int)frameStart;
                 }
-                *(int*)(pt + PFrame) = idx;
-                *(float*)(pt + PFrameTime) = *(float*)(pt + PAge);
+                pt.Frame = idx;
+                pt.FrameTime = pt.Age;
                 f = idx;
             }
         }

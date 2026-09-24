@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using CX.Engine;
@@ -36,7 +35,7 @@ internal static unsafe partial class RadialTree
     {
         if (i != 1) return 0;
         var m = new CRadialMenu(menu);
-        Unsafe.Add(ref m.SubMenu, i) = new CRadialMenu(_fakeChild);
+        m.SubMenu[i] = new CRadialMenu(_fakeChild);
         return 1;
     }
 
@@ -91,10 +90,10 @@ internal static unsafe partial class RadialTree
             IntPtr e0 = (IntPtr)(menu + EngineLayout.RadialEntry);
             *(IntPtr*)e0 = (IntPtr)handlerObj;
             *(IntPtr*)(e0 + 8) = (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler;
-            root.Param = 0x123456789L;
-            root.Text = (IntPtr)bubble;
-            root.Icon = (IntPtr)icon;
-            "IR_CAST\0"u8.CopyTo(new Span<byte>(icon + EngineLayout.GuiIconResRef, ResRefLen));
+            root.Param[0] = 0x123456789L;
+            root.Text[0] = (IntPtr)bubble;
+            root.Icon[0] = (IntPtr)icon;
+            "IR_CAST\0"u8.CopyTo(new CGuiIcon((IntPtr)icon).Resref);
             "Cast "u8.CopyTo(new Span<byte>(line0, 32));
             "Spell"u8.CopyTo(new Span<byte>(line1, 32));
             _line0 = (IntPtr)line0; _line1 = (IntPtr)line1; _fakeGob = (IntPtr)gob;
@@ -110,8 +109,8 @@ internal static unsafe partial class RadialTree
             // slot 1: a creator (submenu), disabled; slot 2: a materialized child with no creator.
             IntPtr c1 = (IntPtr)(menu + EngineLayout.RadialCreator + stride);
             *(IntPtr*)c1 = (IntPtr)handlerObj;
-            Unsafe.Add(ref root.Flags, 1) = 1;
-            Unsafe.Add(ref root.SubMenu, 2) = new CRadialMenu((IntPtr)fakeVt);
+            root.Flags[1] = 1;
+            root.SubMenu[2] = new CRadialMenu((IntPtr)fakeVt);
 
             // slot 3 (Itanium only): a virtual entry -- odd fn = vtable byte offset 0x28 + 1, adj 0x10, so this =
             // obj + 0x10 and the vtable is read from there.
@@ -128,7 +127,7 @@ internal static unsafe partial class RadialTree
                 *(IntPtr*)(handlerObj + ObjAdj) = (IntPtr)handlerVt;
                 *(IntPtr*)(handlerVt + 0x28) = (IntPtr)(delegate* unmanaged<IntPtr, long, void>)&FakeHandler;
             }
-            Unsafe.Add(ref root.Param, 3) = -7;
+            root.Param[3] = -7;
 
             check.Expect(Classify((IntPtr)menu) == RootKind.Door, "a planted vptr classifies as the kind it was planted for");
             *(IntPtr*)menu = (IntPtr)handlerVt;

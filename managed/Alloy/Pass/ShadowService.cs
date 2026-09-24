@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
 
@@ -38,9 +39,6 @@ public sealed unsafe class ShadowService : IExtenderService
 {
     private const int ShadowDraws = 5;
 
-    /// <summary>Scene's "current shadow light" slot, set per-light by RenderShadows.</summary>
-    private static readonly int SceneCurrentLight = EngineLayout.SceneCurrentLight;
-
     /// <summary><c>shadow.mode</c> (Restart): 0 = never suppress (pure vanilla stencil), 1 = always suppress the
     /// sun/moon and keep point-light stencils, 2 = full kill, <see cref="ModeAuto"/> = the default -- suppress
     /// each half exactly while the owned replacement for it is on screen.</summary>
@@ -65,11 +63,11 @@ public sealed unsafe class ShadowService : IExtenderService
     /// the engine's own stencil shadows come back with the rest of vanilla rendering.</summary>
     private static bool Vanilla => !CX.Alloy.AlloyGate.Alloy;
 
-    private static delegate* unmanaged<IntPtr, void> _staticOrig;
-    private static delegate* unmanaged<IntPtr, void> _dynOrig;
-    private static delegate* unmanaged<IntPtr, IntPtr, void> _gobOrig;
-    private static delegate* unmanaged<IntPtr, IntPtr, void> _meshOrig;
-    private static delegate* unmanaged<IntPtr, int, int, void> _planesOrig;
+    private static RenderStaticShadowsFn _staticOrig;
+    private static RenderDynamicShadowsFn _dynOrig;
+    private static DoGobShadowsFn _gobOrig;
+    private static DoDynamicMeshProjectionsFn _meshOrig;
+    private static RenderShadowPlanesFn _planesOrig;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
@@ -86,21 +84,16 @@ public sealed unsafe class ShadowService : IExtenderService
         // environment shadows). No per-light context -- a fixed directional pass.
         // The trampoline is KEPT, not discarded: an Idle or Incapable frame has to be able to call it, and a
         // silently missing static-shadow pass reads as "vanilla just looks like that".
-        _staticOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.RenderStaticShadows,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRenderStaticShadows);
+        _staticOrig = hooks.InstallRenderStaticShadows(&OnRenderStaticShadows);
         hooked += _staticOrig != null ? 1 : 0;
 
-        _dynOrig = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.RenderDynamicShadows, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnRenderDynamicShadows);
+        _dynOrig = hooks.InstallRenderDynamicShadows(&OnRenderDynamicShadows);
         hooked += _dynOrig != null ? 1 : 0;
-        _gobOrig = (delegate* unmanaged<IntPtr, IntPtr, void>)hooks.Install(
-            SymbolMap.DoGobShadows, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnDoGobShadows);
+        _gobOrig = hooks.InstallDoGobShadows(&OnDoGobShadows);
         hooked += _gobOrig != null ? 1 : 0;
-        _meshOrig = (delegate* unmanaged<IntPtr, IntPtr, void>)hooks.Install(
-            SymbolMap.DoDynamicMeshProjections, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnDoDynamicMeshProjections);
+        _meshOrig = hooks.InstallDoDynamicMeshProjections(&OnDoDynamicMeshProjections);
         hooked += _meshOrig != null ? 1 : 0;
-        _planesOrig = (delegate* unmanaged<IntPtr, int, int, void>)hooks.Install(
-            SymbolMap.RenderShadowPlanes, (IntPtr)(delegate* unmanaged<IntPtr, int, int, void>)&OnRenderShadowPlanes);
+        _planesOrig = hooks.InstallRenderShadowPlanes(&OnRenderShadowPlanes);
         hooked += _planesOrig != null ? 1 : 0;
 
         string what = _mode switch
@@ -119,7 +112,7 @@ public sealed unsafe class ShadowService : IExtenderService
     /// <see cref="EngineLayout.DirectionalRange"/>. Null-safe (a null light is treated as non-directional so the
     /// caller can choose the safe branch).</summary>
     private static bool IsDirectional(IntPtr light)
-        => light != IntPtr.Zero && *(float*)((byte*)light + LightRange) > DirectionalRange;
+        => light != IntPtr.Zero && new PartLight(light).Range > DirectionalRange;
 
     /// <summary><c>RenderStaticShadows()</c>: the directional environment stencil, suppressed in both modes
     /// (the shadow map replaces it) -- and called straight through while vanilla. Dropping the draw is
@@ -137,7 +130,7 @@ public sealed unsafe class ShadowService : IExtenderService
     private static void OnRenderDynamicShadows(IntPtr self)
     {
         if (_dynOrig == null) return;
-        IntPtr light = *(IntPtr*)((byte*)self + SceneCurrentLight);
+        IntPtr light = new Scene(self).CurrentLight.Ptr;
         if (!(IsDirectional(light) ? SuppressSun : SuppressPoint(light))) _dynOrig(self);
     }
 

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using static CX.Framework.EngineLayout;
@@ -65,17 +66,13 @@ public sealed unsafe class DrawFunnelService : IExtenderService
 
         SkyBox.Install(log, hooks);   // #261: resolves symbols only -- there is no sky hook any more
         // Chained, not Install()ed: Repack has several subscribers (#88).
-        _repackSlot = hooks.Chain(SymbolMap.VdoRepack,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnVdoRepack, RepackPriority);
+        _repackSlot = hooks.ChainVdoRepack(&OnVdoRepack, RepackPriority);
         // #145: the death notice. Every other gate infers liveness (a sighting window, an identity compare
         // against fields that a freed block may still be holding); this one is told.
-        _origPartDtor = (delegate* unmanaged<IntPtr, void>)hooks.Install(
-            SymbolMap.PartDtor, (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnPartDtor);
+        _origPartDtor = hooks.InstallPartDtor(&OnPartDtor);
         // #397 diagnostic: the equipment-swap pair, cold, first GobWatchMax events per session.
-        _origAppend = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, int>)hooks.Install(
-            SymbolMap.GobAppend, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, IntPtr, int>)&OnGobAppend);
-        _origAmputate = (delegate* unmanaged<IntPtr, IntPtr, int>)hooks.Install(
-            SymbolMap.GobAmputate, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, int>)&OnGobAmputate);
+        _origAppend = hooks.InstallGobAppend(&OnGobAppend);
+        _origAmputate = hooks.InstallGobAmputate(&OnGobAmputate);
         // The record tables arm here, and the census and the gate ride on them.
         PartTable.Active = _repackSlot != null && _origPartDtor != null;
         log.Info(PartTable.Active
@@ -88,8 +85,8 @@ public sealed unsafe class DrawFunnelService : IExtenderService
               : "DrawFunnels: hook install failed -- Alloy unavailable");
     }
 
-    private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, int> _origAppend;
-    private static delegate* unmanaged<IntPtr, IntPtr, int> _origAmputate;
+    private static GobAppendFn _origAppend;
+    private static GobAmputateFn _origAmputate;
     private static int _gobWatchLeft = GobWatchMax;
     private const int GobWatchMax = 200;
 
@@ -99,7 +96,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     private static int OnGobAppend(IntPtr gob, IntPtr model, IntPtr node)
     {
         int r = _origAppend != null ? _origAppend(gob, model, node) : 0;
-        if (_gobWatchLeft > 0) { _gobWatchLeft--; _log?.Info($"[gobwatch] Append gob=0x{gob:x} model={Marshal.PtrToStringAnsi(model)} node={Marshal.PtrToStringAnsi(node)} -> {r} (roots now {*(int*)(gob + GobAppendCount)})"); }
+        if (_gobWatchLeft > 0) { _gobWatchLeft--; _log?.Info($"[gobwatch] Append gob=0x{gob:x} model={Marshal.PtrToStringAnsi(model)} node={Marshal.PtrToStringAnsi(node)} -> {r} (roots now {new Gob(gob).AppendCount})"); }
         return r;
     }
 
@@ -107,22 +104,22 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     [UnmanagedCallersOnly]
     private static int OnGobAmputate(IntPtr gob, IntPtr name)
     {
-        int before = *(int*)(gob + GobAppendCount);
+        int before = new Gob(gob).AppendCount;
         int r = _origAmputate != null ? _origAmputate(gob, name) : 0;
-        if (_gobWatchLeft > 0) { _gobWatchLeft--; _log?.Info($"[gobwatch] Amputate gob=0x{gob:x} name={Marshal.PtrToStringAnsi(name)} -> {r} (roots {before} -> {*(int*)(gob + GobAppendCount)})"); }
+        if (_gobWatchLeft > 0) { _gobWatchLeft--; _log?.Info($"[gobwatch] Amputate gob=0x{gob:x} name={Marshal.PtrToStringAnsi(name)} -> {r} (roots {before} -> {new Gob(gob).AppendCount})"); }
         return r;
     }
 
     /// <summary>Chain priority (#88): Repack is shared, and we sit under the shadow pipeline.</summary>
     private const int RepackPriority = 50;
-    private static IntPtr* _repackSlot;
+    private static VdoRepackFn* _repackSlot;
 
     /// <summary>Repack observer: items of this VDO just moved -- force every member on it to re-read its
     /// draw arguments before it can batch again.</summary>
     [UnmanagedCallersOnly]
     private static void OnVdoRepack(IntPtr vdo)
     {
-        var next = (delegate* unmanaged<IntPtr, void>)*_repackSlot;
+        VdoRepackFn next = *_repackSlot;
         if (next != null) next(vdo);
         OwnedBuffers.NoteRepack();   // #260: the arena argument's other rate -- see OwnedBuffers.NoteRepack
 
@@ -134,7 +131,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         if (stale > 0) SceneWalk.NoteStale();
     }
 
-    private static delegate* unmanaged<IntPtr, void> _origPartDtor;
+    private static PartDtorFn _origPartDtor;
     /// <summary>#145: parts destroyed out from under a recorded entry, this session. The [batch] line prints
     /// it, and a count that stays 0 across an area transition means the hook is not firing -- which looks
     /// exactly like "fixed" from the outside, so it is the number to read.</summary>

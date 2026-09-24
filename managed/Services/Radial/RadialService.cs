@@ -53,8 +53,8 @@ namespace CX.Services.Radial;
 public sealed unsafe partial class RadialService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static delegate* unmanaged<IntPtr, void> _orig;
-    private static IntPtr* _loadBarSlot;
+    private static RadialActivateInternalFn _orig;
+    private static StartLoadBarFn* _loadBarSlot;
     private static IntPtr _guiMan;
     /// <summary>The one-shot layout probe ran (first open).</summary>
     private static bool _probed;
@@ -166,10 +166,8 @@ public sealed unsafe partial class RadialService : IExtenderService
         };
         FrameRegistry.Global.Register(FramePhase.PostPresent, ServicePriority, Service, "Radial.service", log);
 
-        _orig = (delegate* unmanaged<IntPtr, void>)hooks.Install(SymbolMap.RadialActivateInternal,
-            (IntPtr)(delegate* unmanaged<IntPtr, void>)&OnActivateInternal);
-        _loadBarSlot = hooks.Chain(SymbolMap.StartLoadBar,
-            (IntPtr)(delegate* unmanaged<IntPtr, int, IntPtr, int, IntPtr>)&OnStartLoadBar, LoadBarPriority);
+        _orig = hooks.InstallRadialActivateInternal(&OnActivateInternal);
+        _loadBarSlot = hooks.ChainStartLoadBar(&OnStartLoadBar, LoadBarPriority);
         log.Info($"RadialService: ActivateInternal hooked (radial.enabled={(RadialKnobs.Enabled.V ? "on" : "off")}, cascade window registered); " +
                  $"StartLoadBar chained={(_loadBarSlot != null ? "yes" : "no")}");
     }
@@ -231,7 +229,7 @@ public sealed unsafe partial class RadialService : IExtenderService
             _log?.Info("[radial] area edge with a held tree -- releasing");
             Close(CloseArea);
         }
-        var next = (delegate* unmanaged<IntPtr, int, IntPtr, int, IntPtr>)*_loadBarSlot;
+        StartLoadBarFn next = *_loadBarSlot;
         return next != null ? next(app, state, image, rebuild) : IntPtr.Zero;
     }
 

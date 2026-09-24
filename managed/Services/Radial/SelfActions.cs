@@ -44,8 +44,8 @@ internal static unsafe class SelfActions
 
     /// <summary>Resolved handler addresses, <see cref="Table"/> order; zero = unresolved.</summary>
     private static IntPtr[] _addr = Array.Empty<IntPtr>();
-    private static delegate* unmanaged<nuint, IntPtr> _new;
-    private static delegate* unmanaged<IntPtr, uint, ushort> _targetIsValid;
+    private static OperatorNewFn _new;
+    private static SpellMenuTargetIsValidFn _targetIsValid;
 #if WINDOWS
     private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr> _creatureCtor;
     private static delegate* unmanaged<IntPtr, IntPtr, uint, IntPtr, int, IntPtr> _spellCtor;
@@ -67,8 +67,8 @@ internal static unsafe class SelfActions
         if (!SymbolMap.Require(log, "SelfActions", RequiredSymbols)) return Ready = false;
         _addr = new IntPtr[Table.Length];
         for (int i = 0; i < Table.Length; i++) _addr[i] = SymbolMap.Resolve(Table[i].Symbol, log);
-        _new = (delegate* unmanaged<nuint, IntPtr>)SymbolMap.Resolve(SymbolMap.OperatorNew, log);
-        _targetIsValid = (delegate* unmanaged<IntPtr, uint, ushort>)SymbolMap.Resolve(SymbolMap.SpellMenuTargetIsValid, log);
+        _new = (OperatorNewFn)SymbolMap.Resolve(SymbolMap.OperatorNew, log);
+        _targetIsValid = (SpellMenuTargetIsValidFn)SymbolMap.Resolve(SymbolMap.SpellMenuTargetIsValid, log);
 #if WINDOWS
         _creatureCtor = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr>)SymbolMap.Resolve(SymbolMap.CreatureMenuCtor, log);
         _spellCtor = (delegate* unmanaged<IntPtr, IntPtr, uint, IntPtr, int, IntPtr>)SymbolMap.Resolve(SymbolMap.SpellMenuCtor, log);
@@ -139,18 +139,17 @@ internal static unsafe class SelfActions
             if (!_warned) { _warned = true; _log?.Info("[radial] self pin: no local creature with stats, rows greyed (logged once)"); }
             return IntPtr.Zero;
         }
-        float* pos = (float*)(creature + EngineLayout.ObjPosition);
+        // A local copy: the ctors take the Vector BY VALUE, an ABI that differs per OS.
+        System.Numerics.Vector3 pos = new CNWCObject(creature).Position;
         IntPtr m = _new((nuint)(spell ? EngineLayout.SpellMenuSize : EngineLayout.CreatureMenuSize));
         if (m == IntPtr.Zero) return IntPtr.Zero;
 #if WINDOWS
-        float* vec = stackalloc float[3];
-        vec[0] = pos[0]; vec[1] = pos[1]; vec[2] = pos[2];
-        if (spell) _spellCtor(m, (IntPtr)vec, new CNWCObject(creature).Id, IntPtr.Zero, 0);
-        else _creatureCtor(m, creature, (IntPtr)vec);
+        if (spell) _spellCtor(m, (IntPtr)(&pos), new CNWCObject(creature).Id, IntPtr.Zero, 0);
+        else _creatureCtor(m, creature, (IntPtr)(&pos));
 #else
-        double xy = BitConverter.Int64BitsToDouble(*(long*)pos);   // SysV: a 3-float aggregate rides xmm0 (x|y) + xmm1 (z)
-        if (spell) _spellCtor(xy, pos[2], m, new CNWCObject(creature).Id, IntPtr.Zero, 0);
-        else _creatureCtor(xy, pos[2], m, creature);
+        double xy = BitConverter.Int64BitsToDouble(*(long*)&pos);   // SysV: a 3-float aggregate rides xmm0 (x|y) + xmm1 (z)
+        if (spell) _spellCtor(xy, pos.Z, m, new CNWCObject(creature).Id, IntPtr.Zero, 0);
+        else _creatureCtor(xy, pos.Z, m, creature);
 #endif
         new CRadialMenu(m).AutoDelete = 1;
         _log?.Info($"[radial] self stand-in {(spell ? "spell" : "creature")}=0x{(long)m:x} target=0x{new CNWCObject(creature).Id:x}");

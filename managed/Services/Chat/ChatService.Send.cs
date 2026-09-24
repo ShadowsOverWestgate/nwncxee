@@ -22,11 +22,11 @@ public sealed unsafe partial class ChatService
     // ponytail: exact-case match (engine strcmp); own roster walk (+0x38/+0x40) with case-folding if players trip
     private sealed class NativePlayerResolver : IPlayerResolver
     {
-        private readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _getByName;
-        private readonly delegate* unmanaged<IntPtr, IntPtr, IntPtr> _getByCreatureName;
+        private readonly GetPlayerByPlayerNameFn _getByName;
+        private readonly GetPlayerByCreatureNameFn _getByCreatureName;
 
-        public NativePlayerResolver(delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByName,
-                                    delegate* unmanaged<IntPtr, IntPtr, IntPtr> getByCreatureName)
+        public NativePlayerResolver(GetPlayerByPlayerNameFn getByName,
+                                    GetPlayerByCreatureNameFn getByCreatureName)
         { _getByName = getByName; _getByCreatureName = getByCreatureName; }
 
         private static IntPtr App() => PlayerIdentity.App();
@@ -215,26 +215,17 @@ public sealed unsafe partial class ChatService
         Rebuild();
     }
 
-    // Chat senders (#22). Talk/Shout/Whisper/Party/DM: (this CNWCMessage*, CExoString*). Tell also
-    // takes the target playerId: (this, uint playerId, CExoString*).
-    private static delegate* unmanaged<IntPtr, IntPtr, void> _sendTalk, _sendShout, _sendWhisper, _sendParty, _sendDM;
-    private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, void> _sendTell;
-    private static delegate* unmanaged<IntPtr, uint, IntPtr, void> _sendTellId;
-
-    // CGuiInGame::NotifyServerAboutGuiEvent(this, type, integer, oid, Vector const&). `this` is dead in
-    // the callee (rdi is clobbered before any read) and the not-in-a-module guard is inside it.
-    private static delegate* unmanaged<IntPtr, int, int, uint, IntPtr, void> _notifyGui;
-
     /// <summary>Tell the server the chat bar took or gave back the keyboard, the way vanilla's chat
     /// prompt does (ChatBarFocus / ChatBarUnFocus; servers draw a "typing" indicator from it). The
     /// latch suppresses repeats; the engine call drops the packet when we are not in a module.
     /// Cold -- only reached from the input thread's open/close.</summary>
     private static void NotifyChatBar(int eventType, Channel ch)
     {
-        if (_notifyGui == null) return;
+        if (EngineFn.NotifyServerGuiEvent == null) return;
         float* pos = stackalloc float[3];   // Vector const& -- vanilla passes {0,0,0} at every chat-bar site
         pos[0] = 0f; pos[1] = 0f; pos[2] = 0f;
-        _notifyGui(IntPtr.Zero, eventType, TypingSignal.ModeOf(ch), TypingSignal.ObjectInvalid, (IntPtr)pos);
+        // `this` is dead in the callee (rdi is clobbered before any read) and the not-in-a-module guard is inside it.
+        EngineFn.NotifyServerGuiEvent(IntPtr.Zero, eventType, TypingSignal.ModeOf(ch), TypingSignal.ObjectInvalid, (IntPtr)pos);
     }
 
     /// <summary>Put a line in the local chat store without touching the wire -- command feedback the player
@@ -259,28 +250,28 @@ public sealed unsafe partial class ChatService
         {
             switch (ch)
             {
-                case Channel.Talk    when _sendTalk    != null: _sendTalk(msg, exo); break;
-                case Channel.Shout   when _sendShout   != null: _sendShout(msg, exo); break;
-                case Channel.Whisper when _sendWhisper != null: _sendWhisper(msg, exo); break;
-                case Channel.Party   when _sendParty   != null: _sendParty(msg, exo); break;
-                case Channel.DM      when _sendDM      != null: _sendDM(msg, exo); break;
+                case Channel.Talk    when EngineFn.SendChatTalk    != null: EngineFn.SendChatTalk(msg, exo); break;
+                case Channel.Shout   when EngineFn.SendChatShout   != null: EngineFn.SendChatShout(msg, exo); break;
+                case Channel.Whisper when EngineFn.SendChatWhisper != null: EngineFn.SendChatWhisper(msg, exo); break;
+                case Channel.Party   when EngineFn.SendChatParty   != null: EngineFn.SendChatParty(msg, exo); break;
+                case Channel.DM      when EngineFn.SendChatDM      != null: EngineFn.SendChatDM(msg, exo); break;
                 case Channel.Tell:
                     if (tellName == null) { _log?.Info("[chat] tell dropped: no target name"); break; }
                     // Vanilla /t path: resolve client-side to the playerId (CNWCPlayer+0x8) and send the
                     // id-based form. The name-based TellName form is resolved server-side by FIRST name
                     // only, so full character names always miss -- keep it only as a fallback.
-                    if (_playerResolver?.Resolve(tellName) is uint pid && _sendTellId != null)
+                    if (_playerResolver?.Resolve(tellName) is uint pid && EngineFn.SendChatTellId != null)
                     {
                         _log?.Info($"[chat] tell SENDING via id: name=\"{tellName}\" pid={pid}");
                         TellTarget.Sent(_playerResolver.NameOf(pid) ?? tellName, wire);   // canonical pin name
-                        _sendTellId(msg, pid, exo);
+                        EngineFn.SendChatTellId(msg, pid, exo);
                     }
-                    else if (_sendTell != null)
+                    else if (EngineFn.SendChatTell != null)
                     {
                         IntPtr nameExo = Native.NewExoString(tellName);
                         _log?.Info($"[chat] tell SENDING via TellName fallback: name=\"{tellName}\"");
                         TellTarget.Sent(tellName, wire);
-                        try { _sendTell(msg, nameExo, exo); }
+                        try { EngineFn.SendChatTell(msg, nameExo, exo); }
                         finally { Native.FreeExoString(nameExo); }
                     }
                     else _log?.Info($"[chat] tell dropped: sender symbols unresolved");

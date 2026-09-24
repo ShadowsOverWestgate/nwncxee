@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
 using CX.Services.Camera;
@@ -331,9 +332,9 @@ public sealed unsafe partial class AlloyRenderer
         // weapon piece on a hand), so the owner rule below applies to the root, not to the attachment.
         for (int hop = 0; hop < 8; hop++)
         {
-            IntPtr behavior = *(IntPtr*)(g + EngineLayout.GobAttach);
-            if (behavior == IntPtr.Zero) break;
-            IntPtr parent = *(IntPtr*)(behavior + EngineLayout.BehaviorTarget);
+            CAurBehavior behavior = new Gob(g).Attach;
+            if (behavior.IsNull) break;
+            IntPtr parent = behavior.Target.Ptr;
             if (parent == IntPtr.Zero) break;
             g = parent;
         }
@@ -354,9 +355,9 @@ public sealed unsafe partial class AlloyRenderer
         for (int hop = 0; hop < 8 && g != IntPtr.Zero; hop++)
         {
             if (SceneRay.IsCreature(g)) return true;
-            IntPtr behavior = *(IntPtr*)(g + EngineLayout.GobAttach);
-            if (behavior == IntPtr.Zero) return false;
-            g = *(IntPtr*)(behavior + EngineLayout.BehaviorTarget);
+            CAurBehavior behavior = new Gob(g).Attach;
+            if (behavior.IsNull) return false;
+            g = behavior.Target.Ptr;
         }
         return false;
     }
