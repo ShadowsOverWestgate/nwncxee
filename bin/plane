@@ -655,6 +655,8 @@ def decision_line(name, item_url, gist, base_url, workspace, identifiers=None):
 
     The gist goes through the same inline Markdown as a body. It is written as
     a list item's text, so a gist that starts with `#` or `-` stays words.
+    The link leads the line because `append_decision` tells a map's own line
+    for an item from a mention of it by that (PLAT-290).
     """
     gist = " ".join((gist or "").split())
     item = markdown_to_html(f"- {gist}", base_url, workspace, identifiers)
@@ -704,8 +706,9 @@ def append_decision(map_html, line_html, item_url):
     sections in any order. The line goes at the end of the first list after
     the heading; with no list, a new one starts right after the heading; with
     no section, one goes in before "Not yet specified", or at the end. A body
-    whose section already links to `item_url` comes back as it was, so a
-    re-run after a failure finishes the job without a second line.
+    whose section already has a line led by a link to `item_url` comes back
+    as it was, so a re-run after a failure finishes the job without a second
+    line.
     """
     body = map_html or ""
     tags = _Tags(body).tags
@@ -731,7 +734,11 @@ def append_decision(map_html, line_html, item_url):
     opened, closed, level, _ = section
     after_heading = body.index(">", tags[closed][0]) + 1
     stop = next((tags[h[0]][0] for h in headings if h[0] > closed and h[2] <= level), end)
-    if re.search(re.escape(item_url.rstrip("/")) + r"/?[\"']", body[after_heading:stop]):
+    # Indexed means a line that opens with a link to the item: only tags, no
+    # words, before it, so a title bolded in the editor still counts. A link in
+    # some other line's gist is a mention, not the line (PLAT-290).
+    leading_link = r"<li\b[^>]*>(?:\s*</?(?!a\b)[a-z][^>]*>)*\s*<a\b[^>]*\bhref=[\"']"
+    if re.search(leading_link + re.escape(item_url.rstrip("/")) + r"/?[\"']", body[after_heading:stop]):
         return body
     # The section's list is the first one that opens inside it; its own close
     # tag is found by depth, so a list nested in a decision does not end it.
