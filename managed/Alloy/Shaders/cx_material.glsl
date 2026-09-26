@@ -115,8 +115,8 @@ vec2 CxEnvBrdf(float NoV, float perceptual)
 
 /// Multiple-scattering compensation (Fdez-Aguera 2019): a single-scatter GGX lobe loses the light that
 /// bounces between microfacets, so rough metal reads dark. 1 + F0 (1/Ess - 1), Ess the lobe's directional
-/// albedo at F0 = 1.
-float CxMultiScatter(float f0, float NoV, float perceptual)
+/// albedo at F0 = 1. Per channel: a coloured metal loses the most in the channel it reflects most.
+vec3 CxMultiScatter(vec3 f0, float NoV, float perceptual)
 {
     vec2 ab = CxEnvBrdf(NoV, perceptual);
     return 1.0 + f0 * (1.0 / max(ab.x + ab.y, 0.05) - 1.0);
@@ -151,7 +151,8 @@ float CxAmbientShape(vec3 N)
 }
 
 /// Per-fragment material state CxLoopSpec reads, set by the lit main before the first light.
-vec3 cxSpecScale;               // specColor x view-side normalisation x multiscatter x coat transmission
+vec3 cxSpecScale;               // specColor (engine model only) x view-side normalisation x multiscatter x coat transmission
+vec3 cxF0; float cxSpec;        // modern model: per-channel F0 and the scalar CxSpecLobe's Fresnel was built on
 float cxCoat, cxCoatRough;      // clear-coat weight and alpha; 0 weight = no coat
 vec3 cxSheen; float cxSheenRough;   // sheen colour (linear) and alpha; 0 alpha = no sheen
 
@@ -179,6 +180,13 @@ float CxSheenLobe(vec3 N, vec3 V, vec3 L, float a)
 vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L)
 {
     vec3 s = lobe * cxSpecScale;
+    // Schlick per channel, F0 + (1 - F0) Fc, so coloured specular whitens at grazing. The lobe carries the
+    // engine's scalar mix(spec, 1, Fc) with the hue outside it, which never leaves the specular colour.
+    if (uMaterial.x > 0.5)
+    {
+        float fc = CxFresnel(clamp(dot(normalize(V + L), V), 0.0, 1.0));
+        s *= mix(cxF0, vec3(1.0), fc) / max(mix(cxSpec, 1.0, fc), 1e-4);
+    }
     if (cxCoat > 0.0) s += vec3(cxCoat * CxCoatLobe(N, V, L, cxCoatRough));
     if (cxSheenRough > 0.0) s += cxSheen * CxSheenLobe(N, V, L, cxSheenRough);
     return s;

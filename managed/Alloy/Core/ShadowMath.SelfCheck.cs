@@ -43,6 +43,10 @@ public static partial class ShadowMath
             check.Expect(CascadeRadius(i, cascades, maxDist) > CascadeRadius(i - 1, cascades, maxDist), $"cascade {i} radius grows");
         check.Expect(CascadeRadius(cascades - 1, cascades, maxDist) == maxDist, "outermost cascade == max distance");
         check.Expect(CascadeRadius(0, 1, maxDist) == maxDist, "single cascade == max distance");
+        bool upX = false;
+        check.Expect(!LatchUpX(ref upX, new Vector3(0.2f, 0f, -0.98f)) && LatchUpX(ref upX, new Vector3(0.1f, 0f, -0.995f))
+                     && LatchUpX(ref upX, new Vector3(0.17f, 0f, -0.985f)) && !LatchUpX(ref upX, new Vector3(0.25f, 0f, -0.97f)),
+                     "up-axis latch: enters at 0.99, holds across the band, leaves under 0.98");
         Vector3 sun = Normalize(new Vector3(0.4f, 0.3f, -0.86f));
         Vector3 anchor = new(112f, -34f, 6f);
         for (int i = 0; i + 1 < cascades; i++)

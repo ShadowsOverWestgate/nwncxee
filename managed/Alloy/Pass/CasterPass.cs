@@ -92,8 +92,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
     internal static readonly float[] CascadeVp = new float[MaxCascades * 16];
     /// <summary>World units per shadow texel per cascade -- the receiver's normal-offset scale.</summary>
     internal static readonly float[] CascadeTexel = new float[MaxCascades];
-    /// <summary>Depth range per cascade in world units (<c>2 * radius + margin</c>, per
-    /// <see cref="ShadowMath.DirectionalLightViewProj"/>) -- what turns the receiver's world-unit depth bias
+    /// <summary>Depth range per cascade in world units (<c>2 * radius</c>: the upstream margin is depth-clamped,
+    /// not ranged, see <see cref="ShadowMath.DirectionalLightViewProj"/>) -- what turns the receiver's world-unit depth bias
     /// into the device units its comparison runs in.</summary>
     internal static readonly float[] CascadeRange = new float[MaxCascades];
     /// <summary>Local-light cube ceiling: how long the receiver's <c>uLocalLight</c> array is, and the most
@@ -320,6 +320,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// the cascade's radius away; the receiver selects by the fit itself, so nothing else must know.</para></summary>
     private static readonly float[] _sunFitC = new float[MaxCascades * 3];
     private static readonly bool[] _sunFitValid = new bool[MaxCascades];
+    /// <summary>The sun's <see cref="ShadowMath.LatchUpX"/> latch.</summary>
+    private static bool _sunUpX;
     /// <summary>Re-latch when the focus has drifted this fraction of the cascade radius from the latched
     /// centre. Small on purpose: the receiver's cross-fade weights are computed from the LIVE focus
     /// (<see cref="SunFocusLive"/>), and its full-handover point (90% of the fit radius) is only guaranteed
@@ -988,6 +990,10 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // the dirty window, and this bracket runs after the sweep has already read _vDirty off it.
         OwnedBuffers.ClearDirty();
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+        // Casters in front of a view's near plane are CLAMPED to it instead of clipped: an up-light caster
+        // still occludes (depth 0 beats every receiver), so the sun cascades need no depth range spent on it.
+        // Context state the engine never sets; disabled again before Leave.
+        Gl.Enable(Gl.DEPTH_CLAMP);
         _qShadowOn = _qShadow.Begin(Gl.TIME_ELAPSED);
         // #286: ONE staging for the whole frame, after the bones (the skin drop is a per-frame fact) and
         // inside the bracket (the mask resolve issues Alloy's texture copy). Every view below is then a
@@ -1053,6 +1059,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         if (_qShadowOn) { _qShadow.End(Gl.TIME_ELAPSED); _qShadowOn = false; }
         LastShadowMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000f / System.Diagnostics.Stopwatch.Frequency;
         _viewSum += LastViews;
+        Gl.Disable(Gl.DEPTH_CLAMP);
         GlContextService.Leave();
     }
 
@@ -1080,6 +1087,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             Array.Clear(_sunWinBaked);
             _sunWinFrames = 0;
         }
+        bool upX = ShadowMath.LatchUpX(ref _sunUpX, dir);
         for (int i = 0; i < _cascades; i++)
         {
             SunDynMask[i] = 0f;
@@ -1099,7 +1107,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
             if (!_sunFitValid[i]) c = focus;
             else if ((focus - c).LengthSquared() > slack * slack && (_sunLatch == 0 || latched < _sunLatch || i == _cascades - 1))
             { c = focus; latched++; FrameZones.Count(FrameZones.Ev.SunLatch); }
-            Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, c, radius, margin, _mapSize);
+            // depth range only across the fit sphere: the upstream margin is the CULL's (RenderView, InFit), and
+            // DEPTH_CLAMP pancakes what stands in it onto the near plane
+            Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, c, radius, 0f, _mapSize, upX);
             bool combined = !split || _sunCombined[i];
             // #282 terms 1+2: the fit itself, as ONE compare on the snapped matrix for both modes. The
             // matrix is a pure function of (dir, latched centre, radius, margin, map size), so it covers
@@ -1155,7 +1165,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 _sunFitValid[i] = true;
                 fixed (float* pub = CascadeVp) *(Matrix4x4*)(pub + i * 16) = vp;
                 CascadeTexel[i] = 2f * radius / _mapSize;
-                CascadeRange[i] = 2f * radius + margin;
+                CascadeRange[i] = 2f * radius;
                 done++;
             }
             // #306: the dynamic layer bakes EVERY frame it has movers -- no predicate, its whole content is

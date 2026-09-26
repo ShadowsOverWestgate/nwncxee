@@ -10,12 +10,14 @@ vec4 CxFeatPos(CxDraw d, vec3 aPos, out float anchorZ)
     int feat = int(d.feat.x);
     if (feat >= CX_FEAT_WINDGRASS && feat <= CX_FEAT_WINDPLANT)
     {
-        float wind = sqrt(dot(uAreaWind.x, uAreaWind.y));
+        // stock shd_windgrass_vs.shd is sqrt(x*y): NaN, and the part gone, when the signs differ; abs keeps
+        // stock's magnitude everywhere stock worked
+        float wind = sqrt(abs(uAreaWind.x * uAreaWind.y));
         if (wind == 0.0) wind = 0.356;
         bool plant = feat == CX_FEAT_WINDPLANT;
         float strength = d.feat.z / (plant ? 1000.0 : 100.0);
         float speed = d.feat.y * (feat == CX_FEAT_WINDGRASS ? 20000.0 : 7000.0);
-        float phase = (d.model * pos).y * (plant ? 2.0 : 1.0) * float(uTimeOfDay) / speed;
+        float phase = (d.model * pos).y * (plant ? 2.0 : 1.0) * CxClock() / speed;
         float force = sin(phase) * strength;
         // leaves have no roots to anchor, so a flat multiplier where the others take a gradient
         force *= feat == CX_FEAT_WINDLEAF ? 5.0 : clamp(aPos.z, 0.0, 1.0) * 10.0;

@@ -21,13 +21,15 @@ public static partial class ShadowMath
     /// (0), far reaches the sphere's far tangent (<c>2*radius + upstreamMargin</c>). Maps world points into
     /// light clip space -- the transform the depth pass renders with and the receiver samples.
     /// </summary>
-    public static Matrix4x4 DirectionalLightViewProj(Vector3 lightDir, Vector3 center, float radius, float upstreamMargin, int mapSize = 0)
+    /// <param name="upX">the caller's <see cref="LatchUpX"/> verdict; null picks by the bare threshold.</param>
+    public static Matrix4x4 DirectionalLightViewProj(Vector3 lightDir, Vector3 center, float radius, float upstreamMargin, int mapSize = 0,
+                                                     bool? upX = null)
     {
         Vector3 dir = Normalize(lightDir);
         // Orthonormal light basis (right, up, dir). Snap the centre to whole shadow-texel steps in the
         // right/up plane so the map doesn't crawl/shimmer as the (moving) centre slides sub-texel -- the
         // classic CSM texel snap. mapSize<=0 disables it (the pure-math SelfCheck cases).
-        Vector3 up = PerpendicularUp(dir);
+        Vector3 up = upX is bool x ? (x ? Vector3.UnitX : Vector3.UnitZ) : PerpendicularUp(dir);
         Vector3 right = Normalize(Vector3.Cross(up, dir));
         up = Vector3.Cross(dir, right);
         if (mapSize > 0)
@@ -279,5 +281,18 @@ public static partial class ShadowMath
     /// <summary>An up vector not parallel to the light, so LookAt doesn't degenerate. Prefers world up (+Z,
     /// NWN Z-up); falls back to +X when the light is near-vertical.</summary>
     private static Vector3 PerpendicularUp(Vector3 dir) =>
-        MathF.Abs(dir.Z) < 0.99f ? new Vector3(0f, 0f, 1f) : new Vector3(1f, 0f, 0f);
+        MathF.Abs(dir.Z) < UpXEnter ? new Vector3(0f, 0f, 1f) : new Vector3(1f, 0f, 0f);
+
+    /// <summary>|dir.Z| at which the light basis switches to the +X up, and the lower one it switches back at.</summary>
+    private const float UpXEnter = 0.99f, UpXLeave = 0.98f;
+
+    /// <summary>Hysteresis on the +Z/+X up switch, one latch per light. The switch turns the basis 90 degrees,
+    /// which moves the texel snap grid and re-keys every bake, so a light hovering at the threshold (near-vertical
+    /// rain under a gusting wind, the sun at zenith) must not flip on every frame it crosses it.</summary>
+    public static bool LatchUpX(ref bool upX, Vector3 lightDir)
+    {
+        float z = MathF.Abs(Normalize(lightDir).Z);
+        if (upX ? z < UpXLeave : z >= UpXEnter) upX = !upX;
+        return upX;
+    }
 }

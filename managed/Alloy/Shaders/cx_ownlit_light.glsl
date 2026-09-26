@@ -8,10 +8,11 @@
     // after the weather splice, so a puddle's 0.12 is widened too
     if (uMaterial.z > 0.5) rough = sqrt(min(rough * rough + aaKernel, 1.0));
     cxCoat = 0.0; cxCoatRough = 0.0; cxSheen = vec3(0.0); cxSheenRough = 0.0;
-    float coatT = 1.0, msc = 1.0;
+    float coatT = 1.0;
+    vec3 msc = vec3(1.0);
     if (uMaterial.x > 0.5)
     {
-        msc = CxMultiScatter(spec, NoV, sqrt(rough));
+        msc = CxMultiScatter(F0, NoV, sqrt(rough));
         cxCoat = clamp(d.ext0.z, 0.0, 1.0);
         if (cxCoat > 0.0)
         {
@@ -27,7 +28,8 @@
             cxSheenRough = max(sp * sp, CX_ALPHA_MIN);
         }
     }
-    cxSpecScale = specColor * CxSpecBase(NoV, rough) * msc * coatT;
+    cxF0 = F0; cxSpec = spec;
+    cxSpecScale = (uMaterial.x > 0.5 ? vec3(1.0) : specColor) * CxSpecBase(NoV, rough) * msc * coatT;
     // the diffuse share: the engine's (1 - fSpecularity); a physical metal has none at all. The max()
     // keeps a dielectric at 0.96 and still lets the wet splice's raised specularity take its share.
     float kd = physical ? (1.0 - metal) * (1.0 - max(spec * (1.0 - metal), CX_DIELECTRIC_F0)) : 1.0 - spec;
@@ -119,7 +121,8 @@
                : uMaterial.x > 0.5 ? metal : 0.0;
     if (uCapture == 0 && uProbeMips > 0.0 && envW > 0.0)
     {
-        vec3 env = textureLod(uProbe, reflect(-V, N), rough * (uProbeMips - 1.0)).rgb;
+        // mip by PERCEPTUAL roughness (sqrt of the engine's alpha), the unit the DFG fit below reads too
+        vec3 env = textureLod(uProbe, reflect(-V, N), sqrt(rough) * (uProbeMips - 1.0)).rgb;
         if (uMaterial.x > 0.5)
         {
             vec2 ab = CxEnvBrdf(NoV, sqrt(rough));
@@ -133,7 +136,7 @@
     if (cxCoat > 0.0 && uCapture == 0 && uProbeMips > 0.0)
     {
         vec2 cab = CxEnvBrdf(NoV, sqrt(cxCoatRough));
-        vec3 cenv = textureLod(uProbe, reflect(-V, N), cxCoatRough * (uProbeMips - 1.0)).rgb;
+        vec3 cenv = textureLod(uProbe, reflect(-V, N), sqrt(cxCoatRough) * (uProbeMips - 1.0)).rgb;
         specLight += (ambient + diffuse) * cenv * (cxCoat * (CX_DIELECTRIC_F0 * cab.x + cab.y)
                      * CxSpecOcclusion(NoV, occl, cxCoatRough)) * uProbeGain;
     }

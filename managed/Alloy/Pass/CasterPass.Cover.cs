@@ -26,6 +26,8 @@ public sealed unsafe partial class CasterPass
     private static Vector3 _coverC;
     private static bool _coverBaked, _coverCValid, _coverNew;
     private static int _coverStamp = -1;
+    /// <summary>The cover light's <see cref="ShadowMath.LatchUpX"/> latch: rain falls within a few degrees of vertical.</summary>
+    private static bool _coverUpX;
 
     /// <summary>The shadow bracket's cover slot: bake or hold. <paramref name="sun"/> is the cascades' own
     /// exterior gate -- the array only exists past it, and an interior has no sky to fall from.</summary>
@@ -37,7 +39,8 @@ public sealed unsafe partial class CasterPass
         float slack = radius * CoverSlack;
         Vector3 c = _coverCValid ? _coverC : focus;
         if (!_coverCValid || (focus - c).LengthSquared() > slack * slack) c = focus;
-        Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, c, radius, margin, _mapSize);
+        Matrix4x4 vp = ShadowMath.DirectionalLightViewProj(dir, c, radius, margin, _mapSize,
+                                                         ShadowMath.LatchUpX(ref _coverUpX, dir));
         bool stale = _frameInvalidate || !_coverBaked || vp != _coverKeyVp;
         if (!stale) { CoverHeld++; CoverVp = vp; _coverStamp = _frameSeq; return; }
         if (RenderView(_depthTex, _mapSize, CoverLayer, &vp, dir, c, radius, margin, point: false,

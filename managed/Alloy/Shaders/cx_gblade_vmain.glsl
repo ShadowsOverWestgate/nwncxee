@@ -52,7 +52,7 @@ void main()
     vec2 dir = uAreaWind.xy;
     float mag = length(dir);
     if (mag < 1e-4) { dir = vec2(0.7071, 0.7071); mag = 0.35; } else dir /= mag;
-    float tw = float(uTimeOfDay) * uWindSpeed, phase = dot(root.xy, vec2(0.21, 0.17));
+    float tw = CxClock() * uWindSpeed, phase = dot(root.xy, vec2(0.21, 0.17));
     float sway = (sin(tw * 1.7 + phase) + 0.4 * sin(tw * 3.9 + phase * 2.3)) * 0.5;
     lean += dir * sway * clamp(iParam.w * mag * uWindGain, 0.0, 1.0) * 0.45 * h;
     vec2 puv = (root.xy - uPushWindow.xy) * uPushWindow.z;

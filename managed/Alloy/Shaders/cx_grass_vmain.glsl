@@ -34,7 +34,7 @@ void main()
     float mag = length(dir);
     if (mag < 1e-4) { dir = vec2(0.7071, 0.7071); mag = 0.35; }
     else dir /= mag;
-    float t = float(uTimeOfDay) * uWindSpeed;
+    float t = CxClock() * uWindSpeed;
     // Two frequencies so the field ripples instead of pulsing, phased by world position so
     // neighbouring blades lean together and distant ones do not.
     float phase = dot(iPos.xy, vec2(0.21, 0.17));

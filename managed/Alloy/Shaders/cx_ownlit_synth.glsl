@@ -19,6 +19,12 @@ void main()
         frag = vec4(n, 1.0 - n, 0.0, 1.0);
         return;
     }
+    // Every explicit derivative BEFORE the first discard: a killed lane leaves its quad neighbours' dFdx
+    // undefined, and the anchor and keyhole discards below are per-fragment.
+    float aoSlope = fwidth(gl_FragCoord.z);
+    float aaKernel = CxSpecAAKernel(normalize(vNrm));
+    vec3 dp1 = dFdx(vWorld), dp2 = dFdy(vWorld);
+    vec2 du1 = dFdx(vUV), du2 = dFdy(vUV);
     CxDraw d = uDraw[vDraw];
     int feat = int(d.feat.x);
     // #123, shd_roofkn's fragment half: the toolset "vertex anchor" is a scrap of mesh authored high
@@ -53,7 +59,7 @@ void main()
     if (feat == CX_FEAT_FLOWMAP && (slots & CX_SLOT_FLOW) != 0)
     {
         vec2 flow = texture(uFlowTex, uv, uLodBias).rg * 2.0 - 1.0;
-        float t1 = (float(uTimeOfDay) / 1000.0) / 5.0;
+        float t1 = (CxClock() / 1000.0) / 5.0;
         float c1 = fract(t1), c2 = fract(t1 + 2.5);
         uvA = uv - d.feat.y * flow * c1;
         uvB = uv - d.feat.y * flow * c2;
@@ -77,9 +83,6 @@ void main()
     // for a prepassed fragment this equality is exact and the epsilon is only for the depth encode.
     float aoDepth = texelFetch(uSceneDepth, ivec2(gl_FragCoord.xy), 0).r;
     float aoDz = abs(aoDepth - gl_FragCoord.z);
-    // outside every branch: fwidth in non-uniform control flow has no defined neighbourhood
-    float aoSlope = fwidth(gl_FragCoord.z);
-    float aaKernel = CxSpecAAKernel(normalize(vNrm));
     bool aoMine = uSsaoOn > 0 && aoDz < CX_AO_DEPTH_EPS;
     if (aoMine) occl *= mix(1.0, CxSsaoAt(ivec2(gl_FragCoord.xy), aoDepth, aoSlope), uAlphaCut >= 0.0 ? uAoCutout : 1.0);
     if ((slots & (CX_SLOT_NORMAL | CX_SLOT_HEIGHT)) != 0)
@@ -92,8 +95,6 @@ void main()
         // -- the stock stage has to undo it by hand (inc_standard.shd, transpose(mat2(m_texture))).
         // ponytail: four derivatives on normal-mapped fragments. Harvest locations 4/5 into the owned
         // VAO if the quality ever asks for it.
-        vec3 dp1 = dFdx(vWorld), dp2 = dFdy(vWorld);
-        vec2 du1 = dFdx(uv), du2 = dFdy(uv);
         vec3 p2 = cross(dp2, N), p1 = cross(N, dp1);
         vec3 T = p2 * du1.x + p1 * du2.x;
         vec3 B = p2 * du1.y + p1 * du2.y;

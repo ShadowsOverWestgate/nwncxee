@@ -369,10 +369,15 @@ def physical_cases():
         a, b = env_brdf(nov, pr)
         cases.append((f"env brdf fit A (NoV {nov}, rough {pr})", f"CxEnvBrdf({nov}, {pr}).x", a))
         cases.append((f"env brdf fit B (NoV {nov}, rough {pr})", f"CxEnvBrdf({nov}, {pr}).y", b))
-        cases.append((f"multiscatter (F0 1, NoV {nov}, rough {pr})", f"CxMultiScatter(1.0, {nov}, {pr})",
+        cases.append((f"multiscatter (F0 1, NoV {nov}, rough {pr})", f"CxMultiScatter(vec3(1.0), {nov}, {pr}).x",
                       1.0 + (1.0 / max(a + b, 0.05) - 1.0)))
     # a dielectric-free lobe gains nothing, and a fully open, head-on view is never specular-occluded
-    cases.append(("multiscatter is 1 at F0 0", "CxMultiScatter(0.0, 0.5, 0.7)", 1.0))
+    cases.append(("multiscatter is 1 at F0 0", "CxMultiScatter(vec3(0.0), 0.5, 0.7).x", 1.0))
+    # per channel: a coloured F0 gains in the channel it reflects and not in the one it does not
+    a, b = env_brdf(0.5, 0.3)
+    cases.append(("multiscatter is per channel (R of a red F0)", "CxMultiScatter(vec3(1.0, 0.0, 0.0), 0.5, 0.3).r",
+                  1.0 + (1.0 / max(a + b, 0.05) - 1.0)))
+    cases.append(("multiscatter is per channel (G of a red F0)", "CxMultiScatter(vec3(1.0, 0.0, 0.0), 0.5, 0.3).g", 1.0))
     cases.append(("specular occlusion is 1 unoccluded", "CxSpecOcclusion(1.0, 1.0, 0.3)", 1.0))
     return cases
 

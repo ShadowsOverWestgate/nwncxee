@@ -131,7 +131,7 @@ internal static unsafe class PostChain
     private static float _scale => Renderer.Scale.V;
     internal const float MinScale = 0.25f, MaxScale = 2f;
 
-    private static int _dSrc, _dLod, _dTexel, _dFirst, _dThresh;
+    private static int _dSrc, _dLod, _dTexel, _dFirst, _dThresh, _dExposure, _dAuto;
     private static int _uSrc, _uLod, _uTexel;
     private static int _cHdr, _cBloom, _cDepth, _cStrength, _cMode, _cKnee, _cDither, _cViz, _cExposure, _cAcesMix, _cSkyRaw,
                        _cSkyBand, _cInvVp, _cEye;
@@ -639,6 +639,10 @@ internal static unsafe class PostChain
         // it and the chain samples its own attachment: undefined, and black on the drivers that enforce it.
         Gl.UseProgram(_progDown);
         Gl.Uniform1i(_dSrc, (int)BloomUnit);
+        // the threshold is on the EXPOSED brightness, so what blooms tracks what the resolve will show
+        Gl.Uniform1f(_dExposure, Post.Exposure.V);
+        if (_autoThisPass) Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindExposure, _autoBuf);
+        Gl.Uniform1i(_dAuto, _autoThisPass ? 1 : 0);
         for (int i = 0; i < _levels; i++)
         {
             int sw = i == 0 ? _w : LevelW(i - 1), sh = i == 0 ? _h : LevelH(i - 1);
@@ -847,6 +851,7 @@ internal static unsafe class PostChain
         _dSrc = GlProgram.Loc(_progDown, "uSrc"); _dLod = GlProgram.Loc(_progDown, "uLod");
         _dTexel = GlProgram.Loc(_progDown, "uTexel"); _dFirst = GlProgram.Loc(_progDown, "uFirst");
         _dThresh = GlProgram.Loc(_progDown, "uThresh");
+        _dExposure = GlProgram.Loc(_progDown, "uExposure"); _dAuto = GlProgram.Loc(_progDown, "uAuto");
         _uSrc = GlProgram.Loc(_progUp, "uSrc"); _uLod = GlProgram.Loc(_progUp, "uLod");
         _uTexel = GlProgram.Loc(_progUp, "uTexel");
         _cHdr = GlProgram.Loc(_progComposite, "uHdr"); _cBloom = GlProgram.Loc(_progComposite, "uBloom");

@@ -28,7 +28,7 @@ float CxWeatherImpactFade(vec3 worldPos, vec3 V)
 // water but the wave, and what the eye sees is the highlight rippling. Returns the tilt.
 vec2 CxWeatherImpact(vec2 p, float rate)
 {
-    float t = mod(float(uTimeOfDay), 3600000.0) * 0.001;   // hour wrap keeps fract() fine-grained
+    float t = CxClock() * 0.001;
     vec2 r = vec2(0.0);
     for (int i = 0; i < 2; i++)
     {

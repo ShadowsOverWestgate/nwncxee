@@ -17,9 +17,9 @@ public sealed unsafe partial class AlloyRenderer
     /// the speed, which is what <see cref="WaterBodies"/> projects fetch onto and what the wave model scales
     /// by. Zero before the runtime block resolves, and a still area is genuinely zero; the shader decides
     /// what a dead calm looks like, not this.
-    /// <para>Deliberately NOT <c>sqrt(dot(w.x, w.y))</c>. That spelling appears in the #123 feature port and
-    /// in the stock <c>shd_windgrass_vs.shd</c> it reproduces, where it means <c>sqrt(x*y)</c> and goes NaN
-    /// the moment the components differ in sign. Faithful there, wrong here.</para></summary>
+    /// <para>Deliberately NOT <c>sqrt(dot(w.x, w.y))</c>, the stock <c>shd_windgrass_vs.shd</c> spelling: it
+    /// means <c>sqrt(x*y)</c> and goes NaN the moment the components differ in sign. The #123 feature port
+    /// takes <c>sqrt(abs(x*y))</c>, stock's magnitude without the NaN.</para></summary>
     /// <summary>The RAW engine wind magnitude, which is what vanilla's water shader squares into its own
     /// wave amplitude (<c>fAreaWindForce = dot(areaGlobalWind, areaGlobalWind)</c>). No conversion any
     /// more -- #339 deleted the sea-state model that needed metres per second.</summary>

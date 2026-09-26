@@ -232,7 +232,7 @@ internal static unsafe partial class GrassField
     private struct Loc
     {
         public int Look, Segments, Width;
-        public int Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
+        public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
         public int PushTex, PushGain, PushWindow;
         public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN, Sss, Reach;
         public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn, SunFocus, SunRadius;
@@ -1177,6 +1177,7 @@ internal static unsafe partial class GrassField
                 Gl.UseProgram(_progDepth);
                 SharedUniforms(in _locD, in _featLocD, &vp, &eye, _shadowNear, _shadowFar, false, pw, viewport, vlit: false);
                 Gl.Uniform1i(_locD.Cast, 1);
+                Gl.Uniform1i(_locD.Frame, 0);   // a cascade bake is held across frames: a moving dither would freeze mid-step
                 Gl.Uniform1i(_locD.SoftEdge, 0);
                 DrawSlots(tids, in _locD, depth: true);
             }
@@ -1228,6 +1229,7 @@ internal static unsafe partial class GrassField
         Gl.Uniform2f(loc.Snow, SnowThinShare(Weather.Snow, Weather.CurrentKind == Weather.Kind.Snow ? Weather.Density : 0f), Weather.Snow * Grass.SnowLook.V);
         Gl.Uniform3fv(loc.Eye, 1, (float*)eye);
         Gl.Uniform2f(loc.Fade, nearDist, farDist);
+        Gl.Uniform1i(loc.Frame, PostChain.TaaOn ? AlloyRenderer.FrameSeq & 63 : 0);
         Gl.Uniform4f(loc.Lod, Grass.Lod.V, Grass.LodMin.V, Grass.LodWidth.V, Grass.LodHeight.V);
         Gl.Uniform1i(loc.Tex, 0);
         Gl.Uniform1f(loc.WindGain, Grass.Wind.V);
@@ -1674,7 +1676,7 @@ internal static unsafe partial class GrassField
     private static Loc Locate(uint prog)
         => new Loc
         {
-            Vp = GlProgram.Loc(prog, "uVP"), Eye = GlProgram.Loc(prog, "uEyePos"),
+            Vp = GlProgram.Loc(prog, "uVP"), Eye = GlProgram.Loc(prog, "uEyePos"), Frame = GlProgram.Loc(prog, "uFrame"),
             Fade = GlProgram.Loc(prog, "uFade"), Tex = GlProgram.Loc(prog, "uTex"),
             Lod = GlProgram.Loc(prog, "uLod"), Shade = GlProgram.Loc(prog, "uShade"),
             Look = GlProgram.Loc(prog, "uLook"), Segments = GlProgram.Loc(prog, "uSegments"), Width = GlProgram.Loc(prog, "uWidth"),

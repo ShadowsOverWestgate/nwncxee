@@ -54,7 +54,7 @@ vec3 vSurfaceNormalWorld;
 /// of them is a per-frame constant, so computing it here is the same value and one varying fewer.
 void CxSetupVertexWind()
 {
-    fTick = float(uTimeOfDay) * (0.001 * CX_ANIMATION_SPEED);
+    fTick = CxClock() * (0.001 * CX_ANIMATION_SPEED);
     fAreaWindForce = dot(uAreaWind, uAreaWind);
     vAreaWindDirection = fAreaWindForce > 0.0 ? uAreaWind * inversesqrt(fAreaWindForce)
                                               : vec3(0.707, 0.707, 0.0);
