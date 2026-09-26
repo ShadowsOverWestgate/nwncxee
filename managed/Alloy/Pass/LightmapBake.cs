@@ -139,9 +139,7 @@ internal static unsafe partial class LightmapBake
     private static int _cubeSize;
     private static uint _progBake, _progFinish;
     private static int _bDepth;
-    private static int _bSlot, _bRect, _bLight, _bColor, _bMode, _bCubeTex, _bDynTex, _bCubeLight, _bCubePlane, _bCubeCount,
-                       _bCubeSoft, _bCubeFloor, _bCubePcss, _bCubeDynPage, _bCubeFade, _bSoftWorld,
-                       _bFalloff, _bWrap, _bAtten, _bHot, _bWrapN, _bSss, _bReach, _bGrid, _bTile, _bZ;
+    private static int _bSlot, _bRect, _bLight, _bColor, _bMode, _bCubeTex, _bDynTex, _bCubeCount, _bSoftWorld;
     private static int _fA, _fB;
     private static bool _built;
 
@@ -855,23 +853,24 @@ internal static unsafe partial class LightmapBake
         Vector3 c = _setCol[l];
         Gl.Uniform4f(_bLight, pos.X, pos.Y, pos.Z, far);
         Gl.Uniform3f(_bColor, c.X, c.Y, c.Z);
-        int* vp = stackalloc int[4] { 0, 0, PageSize, PageSize };
-        AlloyLights.SetDrawUniforms(_bGrid, _bTile, _bZ, _bFalloff, _bWrap, _bAtten, _bHot, _bWrapN, _bSss, vp, 1f, 100f, _bReach);
         BindNullCubes();
         Gl.ActiveTexture(Gl.TEXTURE0 + AlloyRenderer.CubeUnit); Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, _cube);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.Uniform4f(_bCubeLight, pos.X, pos.Y, pos.Z, far);
-        Gl.Uniform2f(_bCubePlane, MathF.Max(BakeNear, CasterPass.CubeNearPlane), 1f / _cubeSize);
         Gl.Uniform1i(_bCubeCount, 1);
+        // CX-43: the scratch cube as slot 0 of the pass block; the colour pass's next bind puts its own back.
+        byte* b = AlloyRenderer.PassBegin();
+        int* vp = stackalloc int[4] { 0, 0, PageSize, PageSize };
+        AlloyLights.FillDraw(b, vp, 1f, 100f);
+        AlloyRenderer.PassVec(b, AlloyRenderer.PbLight, pos.X, pos.Y, pos.Z, far);
+        *(Vector2*)(b + AlloyRenderer.PbLocalPlane) = new Vector2(MathF.Max(BakeNear, CasterPass.CubeNearPlane), 1f / _cubeSize);
         // the disc everywhere (no screen to stand it down against), the near skip, no cap; PCSS off:
         // the bake has no raw view of its cube -- a fixed disc at the softness knob. ponytail: bind the
         // scratch cube through the raw sampler too if the bake's penumbra ever needs to match the live one.
-        Gl.Uniform4f(_bCubeSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, 0f, 0f);
-        Gl.Uniform1f(_bCubeFloor, AlloyLights.ShadowFloor);
-        Gl.Uniform4f(_bCubePcss, 0f, 0f, Shadows.Taps.V, 0f);
-        float one = 1f, zero = 0f;
-        Gl.Uniform1fv(_bCubeDynPage, 1, &zero);
-        Gl.Uniform1fv(_bCubeFade, 1, &one);
+        AlloyRenderer.PassVec(b, AlloyRenderer.PbLocalSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, 0f, 0f);
+        *(float*)(b + AlloyRenderer.PbLocalFloor) = AlloyLights.ShadowFloor;
+        AlloyRenderer.PassVec(b, AlloyRenderer.PbLocalPcss, 0f, 0f, Shadows.Taps.V, 0f);
+        *(float*)(b + AlloyRenderer.PbFade) = 1f;
+        AlloyRenderer.FlushPassBlock();
         Gl.BindVertexArray(MeshChart.Vao);
         for (int k = 0; k < _bakeRects.Count; k++)
         {
@@ -1150,13 +1149,7 @@ internal static unsafe partial class LightmapBake
         _bSlot = GlProgram.Loc(_progBake, "uSlot"); _bRect = GlProgram.Loc(_progBake, "uRect"); _bDepth = GlProgram.Loc(_progBake, "uBakeDepth");
         _bLight = GlProgram.Loc(_progBake, "uBakeLight"); _bColor = GlProgram.Loc(_progBake, "uBakeColor"); _bMode = GlProgram.Loc(_progBake, "uBakeMode");
         _bCubeTex = GlProgram.Loc(_progBake, "uLocalShadow"); _bDynTex = GlProgram.Loc(_progBake, "uLocalDynShadow");
-        _bCubeLight = GlProgram.Loc(_progBake, "uLocalLight"); _bCubePlane = GlProgram.Loc(_progBake, "uLocalPlane");
-        _bCubeCount = GlProgram.Loc(_progBake, "uLocalCubes"); _bCubeSoft = GlProgram.Loc(_progBake, "uLocalSoft");
-        _bCubeFloor = GlProgram.Loc(_progBake, "uLocalFloor"); _bCubePcss = GlProgram.Loc(_progBake, "uLocalPcss");
-        _bCubeDynPage = GlProgram.Loc(_progBake, "uLocalDynPage"); _bCubeFade = GlProgram.Loc(_progBake, "uLocalFade"); _bSoftWorld = GlProgram.Loc(_progBake, "uLocalSoftWorld");
-        _bFalloff = GlProgram.Loc(_progBake, "uFalloff"); _bWrap = GlProgram.Loc(_progBake, "uWrap"); _bAtten = GlProgram.Loc(_progBake, "uAtten");
-        _bHot = GlProgram.Loc(_progBake, "uHot"); _bWrapN = GlProgram.Loc(_progBake, "uWrapN"); _bSss = GlProgram.Loc(_progBake, "uSss");
-        _bReach = GlProgram.Loc(_progBake, "uReach"); _bGrid = GlProgram.Loc(_progBake, "uGrid"); _bTile = GlProgram.Loc(_progBake, "uTile"); _bZ = GlProgram.Loc(_progBake, "uZ");
+        _bCubeCount = GlProgram.Loc(_progBake, "uLocalCubes"); _bSoftWorld = GlProgram.Loc(_progBake, "uLocalSoftWorld");
         _fA = GlProgram.Loc(_progFinish, "uScrA"); _fB = GlProgram.Loc(_progFinish, "uScrB");
         int prevProg; Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &prevProg);
         Gl.UseProgram(_progBake);

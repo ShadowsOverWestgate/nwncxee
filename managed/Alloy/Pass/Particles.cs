@@ -271,12 +271,7 @@ internal static unsafe partial class Particles
                        _locSoftOn = -1, _locDepthTex = -1, _locEmissive = -1, _locLit = -1, _locViz = -1;
     /// <summary>The light rig's own uniform locations, in the order <see cref="AlloyLights"/> and
     /// <see cref="AlloyRenderer"/> want them handed back.</summary>
-    private static int _lAmbient = -1, _lDiffuse = -1, _lDir = -1, _lGrid = -1, _lTile = -1, _lZ = -1,
-                       _lFalloff = -1, _lWrap = -1, _lAtten = -1, _lHot = -1, _lWrapN = -1, _lSss = -1, _lReach = -1,
-                       _lSunTex = -1, _lSunVp = -1, _lSunTexel = -1, _lSunBias = -1, _lSunCount = -1,
-                       _lSunDynTex = -1, _lSunDyn = -1, _lSunFocus = -1, _lSunRadius = -1,
-                       _lCubeTex = -1, _lCubeLight = -1, _lCubePlane = -1, _lCubeCount = -1, _lCubeSoft = -1, _lCubePcss = -1, _lCubeFloor = -1,
-                       _lCubeDynTex = -1, _lCubeDynPage = -1, _lCubeFade = -1,
+    private static int _lSunTex = -1, _lSunDynTex = -1, _lCubeTex = -1, _lCubeCount = -1, _lCubeDynTex = -1,
                        _lSunMedia = -1, _lLocalMedia = -1;
     /// <summary>The CPU shadow of the record buffer, addressed by <see cref="Emit.RecBase"/>. The build
     /// writes here; only the blocks whose hash moved are sent to GL.</summary>
@@ -566,13 +561,7 @@ internal static unsafe partial class Particles
         if (lit)
         {
             AlloyLights.BindForDraw();
-            AlloyLights.SetDrawUniforms(_lGrid, _lTile, _lZ, _lFalloff, _lWrap, _lAtten, _lHot, _lWrapN, _lSss,
-                                        viewport, near, far, _lReach);
-            AlloyRenderer.UploadAreaTerms(_lAmbient, _lDiffuse, _lDir);
-            AlloyRenderer.UploadSunCascades(_lSunTex, _lSunVp, _lSunTexel, _lSunBias, _lSunCount, _lSunDyn,
-                                            _lSunFocus, _lSunRadius);
-            AlloyRenderer.UploadLocalCubes(_lCubeTex, _lCubeLight, _lCubePlane, _lCubeCount, _lCubeSoft, _lCubePcss,
-                                           _lCubeDynPage, _lCubeFade, _lCubeFloor);
+            AlloyRenderer.BindPass(_lCubeCount, viewport, near, far);
             // #336: /particles shadows 0 -- no cube taps on particle fragments (uLocalCubes 0 makes the
             // receiver answer lit at once). The pass read 1,2-1,8ms GPU at overdraw x0,6-0,9, so the term
             // is per-fragment cost, and the lit path's cube taps are the one heavy thing in it.
@@ -1265,29 +1254,15 @@ internal static unsafe partial class Particles
         _locEmissive = GlProgram.Loc(_prog, "uEmissive");
         _locLit = GlProgram.Loc(_prog, "uLit");
         _locViz = GlProgram.Loc(_prog, "uViz");
-        _lAmbient = GlProgram.Loc(_prog, "uAreaAmbient");
-        _lDiffuse = GlProgram.Loc(_prog, "uAreaDiffuse");
-        _lDir = GlProgram.Loc(_prog, "uAreaDir");
-        _lGrid = GlProgram.Loc(_prog, "uGrid"); _lTile = GlProgram.Loc(_prog, "uTile");
-        _lZ = GlProgram.Loc(_prog, "uZ"); _lFalloff = GlProgram.Loc(_prog, "uFalloff");
-        _lWrap = GlProgram.Loc(_prog, "uWrap"); _lAtten = GlProgram.Loc(_prog, "uAtten");
-        _lHot = GlProgram.Loc(_prog, "uHot"); _lWrapN = GlProgram.Loc(_prog, "uWrapN"); _lSss = GlProgram.Loc(_prog, "uSss"); _lReach = GlProgram.Loc(_prog, "uReach");
-        _lSunTex = GlProgram.Loc(_prog, "uSunShadow"); _lSunVp = GlProgram.Loc(_prog, "uSunVp");
-        _lSunDynTex = GlProgram.Loc(_prog, "uSunDynShadow"); _lSunDyn = GlProgram.Loc(_prog, "uSunDyn");
-        _lSunFocus = GlProgram.Loc(_prog, "uSunFocus"); _lSunRadius = GlProgram.Loc(_prog, "uSunRadius");
-        _lSunTexel = GlProgram.Loc(_prog, "uSunTexel"); _lSunBias = GlProgram.Loc(_prog, "uSunBias");
-        _lSunCount = GlProgram.Loc(_prog, "uSunCascades");
-        _lCubeTex = GlProgram.Loc(_prog, "uLocalShadow"); _lCubeLight = GlProgram.Loc(_prog, "uLocalLight");
-        _lCubePlane = GlProgram.Loc(_prog, "uLocalPlane"); _lCubeCount = GlProgram.Loc(_prog, "uLocalCubes");
-        _lCubeSoft = GlProgram.Loc(_prog, "uLocalSoft"); _lCubeFloor = GlProgram.Loc(_prog, "uLocalFloor"); _lCubePcss = GlProgram.Loc(_prog, "uLocalPcss");
-        _lCubeDynTex = GlProgram.Loc(_prog, "uLocalDynShadow"); _lCubeDynPage = GlProgram.Loc(_prog, "uLocalDynPage"); _lCubeFade = GlProgram.Loc(_prog, "uLocalFade");
+        _lSunTex = GlProgram.Loc(_prog, "uSunShadow"); _lSunDynTex = GlProgram.Loc(_prog, "uSunDynShadow");
+        _lCubeTex = GlProgram.Loc(_prog, "uLocalShadow"); _lCubeDynTex = GlProgram.Loc(_prog, "uLocalDynShadow");
+        _lCubeCount = GlProgram.Loc(_prog, "uLocalCubes");
         _lSunMedia = GlProgram.Loc(_prog, "uSunMedia");
         _lLocalMedia = GlProgram.Loc(_prog, "uLocalMedia");
         // The sampler UNITS, once, at link time rather than per pass. uSunShadow and uLocalShadow are a
         // sampler2DArrayShadow and a samplerCubeArrayShadow; leaving them at their default unit 0 puts three
         // different sampler types on one unit, which GL 4.6 makes an INVALID_OPERATION that discards the
-        // whole draw. The per-pass uploads set them too -- but only inside `if (lit)`, so `/particles lit 0`
-        // would otherwise mean "no particles at all" on a strict driver rather than "unlit particles".
+        // whole draw, so `/particles lit 0` would otherwise mean "no particles at all" on a strict driver.
         Gl.UseProgram(_prog);
         Gl.Uniform1i(_lSunTex, (int)AlloyRenderer.SunUnit);
         Gl.Uniform1i(_lSunDynTex, (int)AlloyRenderer.SunDynUnit);

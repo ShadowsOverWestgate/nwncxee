@@ -32,9 +32,8 @@ uniform int uEnvOk;
 uniform vec2 uNearFar;
 uniform mat4 uView;            // world -> view, this pass's own (see uVP's row-vector note)
 uniform mat4 uProj;
-uniform vec3 uAreaAmbient;
-uniform vec3 uAreaDiffuse;
-uniform vec3 uAreaDir;
+// CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
+#include "cx_pass.glsl"
 // uAreaWind (areaGlobalWind), uTimeOfDay (worldtimerTimeOfDay) and uEyePos come from FeatDecl and
 // KeyFogDecl, which every Alloy fragment stage carries (#341 moved the eye into the fog block, since
 // the fog target is a direction now). The clock is deliberately the GAME one: vswater.shd derives

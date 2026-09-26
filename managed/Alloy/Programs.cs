@@ -72,12 +72,8 @@ internal static unsafe class Programs
     internal static bool _progFailed, _litFailed;
     internal static uint _progWater;
     internal static bool _waterFailed;
-    internal static int _watVp, _watBase, _watTex, _watCut, _watAmbient, _watDiffuse, _watDir,
-                       _watGrid, _watTile, _watZ, _watFalloff, _watWrap, _watAtten, _watHot,
-                       _watWrapN, _watSss, _watReach, _watViz, _watSunTex, _watSunVp, _watSunTexel, _watSunBias,
-                       _watSunCount, _watCubeTex, _watCubeLight, _watCubePlane, _watCubeCount, _watCubeSoft, _watCubePcss,
-                       _watCubeDynTex, _watCubeDynPage, _watCubeFade, _watCubeFloor, _watSunDynTex, _watSunDyn,
-                       _watSunFocus, _watSunRadius,
+    internal static int _watVp, _watBase, _watTex, _watCut, _watViz, _watSunTex,
+                       _watCubeTex, _watCubeCount, _watCubeDynTex, _watSunDynTex,
                        _watCapture, _watSplash, _watFbColor, _watFbDepth, _watNoise, _watEnvMap, _watEnvOk, _watNearFar,
                        _watView, _watProj;
     internal static FeatLoc _watFeat;
@@ -119,23 +115,10 @@ internal static unsafe class Programs
         _progWater = prog;
         _watVp = GlProgram.Loc(prog, "uVP"); _watBase = GlProgram.Loc(prog, "uDrawBase");
         _watTex = GlProgram.Loc(prog, "uTex"); _watCut = GlProgram.Loc(prog, "uAlphaCut");
-        _watAmbient = GlProgram.Loc(prog, "uAreaAmbient"); _watDiffuse = GlProgram.Loc(prog, "uAreaDiffuse");
-        _watDir = GlProgram.Loc(prog, "uAreaDir");
-        _watGrid = GlProgram.Loc(prog, "uGrid"); _watTile = GlProgram.Loc(prog, "uTile");
-        _watZ = GlProgram.Loc(prog, "uZ"); _watFalloff = GlProgram.Loc(prog, "uFalloff");
-        _watWrap = GlProgram.Loc(prog, "uWrap");
-        _watAtten = GlProgram.Loc(prog, "uAtten"); _watHot = GlProgram.Loc(prog, "uHot");
-        _watWrapN = GlProgram.Loc(prog, "uWrapN"); _watSss = GlProgram.Loc(prog, "uSss"); _watReach = GlProgram.Loc(prog, "uReach");
         _watViz = GlProgram.Loc(prog, "uViz");
-        _watSunTex = GlProgram.Loc(prog, "uSunShadow"); _watSunVp = GlProgram.Loc(prog, "uSunVp");
-        _watSunTexel = GlProgram.Loc(prog, "uSunTexel"); _watSunBias = GlProgram.Loc(prog, "uSunBias");
-        _watSunCount = GlProgram.Loc(prog, "uSunCascades");
-        _watSunFocus = GlProgram.Loc(prog, "uSunFocus"); _watSunRadius = GlProgram.Loc(prog, "uSunRadius");
-        _watSunDynTex = GlProgram.Loc(prog, "uSunDynShadow"); _watSunDyn = GlProgram.Loc(prog, "uSunDyn");
-        _watCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _watCubeLight = GlProgram.Loc(prog, "uLocalLight");
-        _watCubePlane = GlProgram.Loc(prog, "uLocalPlane"); _watCubeCount = GlProgram.Loc(prog, "uLocalCubes");
-        _watCubeSoft = GlProgram.Loc(prog, "uLocalSoft"); _watCubeFloor = GlProgram.Loc(prog, "uLocalFloor"); _watCubePcss = GlProgram.Loc(prog, "uLocalPcss");
-        _watCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); _watCubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"); _watCubeFade = GlProgram.Loc(prog, "uLocalFade");
+        _watSunTex = GlProgram.Loc(prog, "uSunShadow"); _watSunDynTex = GlProgram.Loc(prog, "uSunDynShadow");
+        _watCubeTex = GlProgram.Loc(prog, "uLocalShadow"); _watCubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow");
+        _watCubeCount = GlProgram.Loc(prog, "uLocalCubes");
         _watCapture = GlProgram.Loc(prog, "uCapture"); _watSplash = GlProgram.Loc(prog, "uSplash");
         _watFbColor = GlProgram.Loc(prog, "uFbColor"); _watFbDepth = GlProgram.Loc(prog, "uFbDepth");
         _watNoise = GlProgram.Loc(prog, "uNoise");
@@ -436,27 +419,11 @@ internal static unsafe class Programs
         L.Vp = GlProgram.Loc(prog, "uVP"); L.Base = GlProgram.Loc(prog, "uDrawBase");
         L.Tex = GlProgram.Loc(prog, "uTex");
         L.Cut = GlProgram.Loc(prog, "uAlphaCut");
-        L.Ambient = GlProgram.Loc(prog, "uAreaAmbient"); L.Diffuse = GlProgram.Loc(prog, "uAreaDiffuse");
-        L.Dir = GlProgram.Loc(prog, "uAreaDir");
-        L.Grid = GlProgram.Loc(prog, "uGrid"); L.Tile = GlProgram.Loc(prog, "uTile");
-        L.Z = GlProgram.Loc(prog, "uZ"); L.Falloff = GlProgram.Loc(prog, "uFalloff");
-        L.Wrap = GlProgram.Loc(prog, "uWrap");
-        L.Atten = GlProgram.Loc(prog, "uAtten"); L.Hot = GlProgram.Loc(prog, "uHot");
-        L.WrapN = GlProgram.Loc(prog, "uWrapN"); L.Sss = GlProgram.Loc(prog, "uSss");
-        L.Reach = GlProgram.Loc(prog, "uReach");
         L.Viz = GlProgram.Loc(prog, "uViz"); L.Oit = GlProgram.Loc(prog, "uOit"); L.OitDim = GlProgram.Loc(prog, "uOitDim"); L.OitBias = GlProgram.Loc(prog, "uOitBias"); L.OitGob = GlProgram.Loc(prog, "uOitGob");
-        L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunVp = GlProgram.Loc(prog, "uSunVp");
-        L.SunTexel = GlProgram.Loc(prog, "uSunTexel"); L.SunBias = GlProgram.Loc(prog, "uSunBias");
-        L.SunCount = GlProgram.Loc(prog, "uSunCascades");
-        L.SunFocus = GlProgram.Loc(prog, "uSunFocus"); L.SunRadius = GlProgram.Loc(prog, "uSunRadius");
-        L.SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"); L.SunDyn = GlProgram.Loc(prog, "uSunDyn");
-        L.CubeTex = GlProgram.Loc(prog, "uLocalShadow"); L.CubeLight = GlProgram.Loc(prog, "uLocalLight");
-        L.CubePlane = GlProgram.Loc(prog, "uLocalPlane"); L.CubeCount = GlProgram.Loc(prog, "uLocalCubes");
-        L.CubeSoft = GlProgram.Loc(prog, "uLocalSoft"); L.CubeFloor = GlProgram.Loc(prog, "uLocalFloor"); L.CubePcss = GlProgram.Loc(prog, "uLocalPcss");
-        L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"); L.CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"); L.CubeFade = GlProgram.Loc(prog, "uLocalFade");
-        L.Probe = GlProgram.Loc(prog, "uProbe"); L.ProbeMips = GlProgram.Loc(prog, "uProbeMips");
-        L.ProbeGain = GlProgram.Loc(prog, "uProbeGain");
-        L.SceneEnv = GlProgram.Loc(prog, "uSceneEnv");
+        L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunDynTex = GlProgram.Loc(prog, "uSunDynShadow");
+        L.CubeTex = GlProgram.Loc(prog, "uLocalShadow"); L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow");
+        L.CubeCount = GlProgram.Loc(prog, "uLocalCubes");
+        L.Probe = GlProgram.Loc(prog, "uProbe");
         L.Capture = GlProgram.Loc(prog, "uCapture");
         L.LmPages = GlProgram.Loc(prog, "uLmPages"); L.LmMovers = GlProgram.Loc(prog, "uLmMovers");
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");

@@ -8,7 +8,7 @@ using CX.Graphics;
 
 namespace CX.Alloy;
 
-/// <summary>#173: UNIFORM UPLOAD. The per-pass scene terms every Alloy stage shares -- area light, wind, fog, sun cascades, local cubes, the env probe -- pushed to whichever program's locations the caller names, so the lit, water and grass stages upload the same values through one implementation.</summary>
+/// <summary>#173: UNIFORM UPLOAD. The per-pass scene terms every Alloy stage shares: the feature and fog terms pushed to whichever program's locations the caller names, and (CX-43) the area light, sun cascades, local cubes, probe and light curve staged once into the <c>CxPass</c> block.</summary>
 public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>Field offsets inside it, from pairing GLRender::ConnectShaderData (uniform name -&gt;
@@ -177,32 +177,6 @@ public sealed unsafe partial class AlloyRenderer
         }
     }
 
-    /// <summary>The engine's own area terms, captured from SetLightGL's index -1 path. No capture yet (a
-    /// pass before the first EnableLights) leaves the surface on ambient alone rather than unlit black.</summary>
-    internal static void UploadAreaTerms(in LitLoc L) => UploadAreaTerms(L.Ambient, L.Diffuse, L.Dir);
-
-    /// <summary>Point the lit program at <see cref="CasterPass"/>'s cascade array, or tell it there is nothing
-    /// to sample. Everything the receiver needs comes from that pass's published render-time values -- the
-    /// matrices are never re-derived here, and the freshness test is the single gate that covers interiors, a
-    /// vanilla stretch and a disarm alike.</summary>
-    internal static void UploadSunCascades(in LitLoc L)
-        => UploadSunCascades(L.SunTex, L.SunVp, L.SunTexel, L.SunBias, L.SunCount, L.SunDyn,
-                             L.SunFocus, L.SunRadius);
-
-    /// <summary>Point the lit program at <see cref="CasterPass"/>'s local-light cube array, or tell it there
-    /// is nothing to sample. The per-slot position and far plane are the ones each cube was RENDERED with --
-    /// the receiver never re-derives them from the live light, which is what keeps a carried torch's shadow
-    /// attached to the torch. Same freshness gate as the cascades.</summary>
-    internal static void UploadLocalCubes(in LitLoc L)
-        => UploadLocalCubes(L.CubeTex, L.CubeLight, L.CubePlane, L.CubeCount, L.CubeSoft, L.CubePcss,
-                            L.CubeDynPage, L.CubeFade, L.CubeFloor);
-
-    /// <summary>#121: point the lit program at the IBL probe, or tell it there is nothing to sample
-    /// (<c>uProbeMips</c> 0). Unbinding rather than leaving the cube bound during a capture is not
-    /// belt-and-braces: sampling a texture that is an attachment of the framebuffer being written is
-    /// undefined, and the capture draws through this very program.</summary>
-    internal static void UploadProbe(in LitLoc L) => UploadProbe(L.ProbeMips, L.ProbeGain, L.SceneEnv);
-
     /// <summary>ADR 0026: the lit stage's <c>uMaterial</c> -- (modern model, directional ambient, specular AA).
     /// The two refinements ride on the model: off is the stock shading exactly, whatever they are set to.</summary>
     internal static void UploadMaterialModel(int loc)
@@ -211,46 +185,152 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform3f(loc, modern ? 1f : 0f, modern ? Lighting.AmbientDir.V : 0f, modern && Lighting.SpecAa.V ? 1f : 0f);
     }
 
-    /// <summary>#127: the same terms, into whichever program's locations the caller names -- the Alloy grass
-    /// pass runs its own program over the same lights, so the area terms cannot be a property of the lit
-    /// program's uniform cache.</summary>
-    internal static void UploadAreaTerms(int locAmbient, int locDiffuse, int locDir)
+    /// <summary>CX-43: the <c>CxPass</c> block's binding point, <c>layout(std140, binding = 0)</c> in
+    /// <c>cx_pass.glsl</c>. No other Alloy block uses the uniform-buffer namespace.</summary>
+    internal const uint PassBinding = 0;
+    /// <summary>The block's std140 size, 3588 by glslang reflection, rounded to a vec4.</summary>
+    internal const int PassBytes = 3600;
+    /// <summary>Member byte offsets in <c>CxPass</c>, read off glslang's std140 reflection of
+    /// <c>cx_pass.glsl</c>. The declaration is pinned by <see cref="ShaderContract.SelfCheck"/>; reorder a
+    /// member and these move with it. The two float arrays are std140's 16-byte stride.</summary>
+    internal const int PbLight = 0, PbDynPage = 1024, PbFade = 2048, PbSunVp = 3072, PbSunTexel = 3328,
+                       PbSunBias = 3344, PbSunDyn = 3360, PbSunRadius = 3376, PbLocalSoft = 3392, PbLocalPcss = 3408,
+                       PbSunFocus = 3424, PbSunCascades = 3436, PbAmbient = 3440, PbLocalFloor = 3452, PbDiffuse = 3456,
+                       PbProbeMips = 3468, PbDir = 3472, PbProbeGain = 3484, PbLocalPlane = 3488, PbSceneEnv = 3496,
+                       PbTile = 3504, PbGrid = 3520, PbReach = 3532, PbFalloff = 3536, PbWrap = 3548, PbZ = 3552,
+                       PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584;
+    /// <summary>The block as staged and as last sent. Native, allocated once, so a refill allocates nothing.</summary>
+    private static byte* _passStage, _passSent;
+    private static uint _passBuf;
+    /// <summary>This period's <see cref="BindPass"/> calls and the block sends (theirs and the lightmap bake's):
+    /// a pass costs one send, a pass whose terms did not change none, and every other bind is a fill and a compare.</summary>
+    internal static int PassBinds, PassUploads;
+
+    /// <summary>CX-43: this pass's shared scene terms into the <c>CxPass</c> block, then the shadow maps onto
+    /// their units and the program's own <c>uLocalCubes</c>. Called at each program switch that used to upload
+    /// the terms itself; the block goes up only when the refill differs from what is bound, so every switch
+    /// after a pass's first costs a fill and a compare and no GL uniform traffic.</summary>
+    internal static void BindPass(int locCubes, int* viewport, float near, float far)
     {
-        float* v = stackalloc float[3];
-        v[0] = v[1] = v[2] = FrameInputs.HasAreaAmbient ? 0f : DefaultAmbient;
-        if (FrameInputs.HasAreaAmbient)
-        {
-            // AlloyLights.AmbientScale / SunScale are the live /light dials -- applied here, at the upload,
-            // so a retune costs one uniform write and shows on the very next frame.
-            var a = FrameInputs.AreaAmbient * AlloyLights.AmbientScale;
-            v[0] = a.X; v[1] = a.Y; v[2] = a.Z;
-        }
-        else if (!Diag._ambientFallbackLogged)
-        {
-            Diag._ambientFallbackLogged = true;
-            _log?.Info("AlloyRenderer: no area ambient captured yet -- Alloy lit parts on the grey stand-in " +
-                       "(if this persists, SetLightGL's index -1 path never fired)");
-        }
-        Gl.Uniform3fv(locAmbient, 1, v);
-        var d = FrameInputs.HasAreaDiffuse ? FrameInputs.AreaDiffuse * AlloyLights.SunScale : default;
-        v[0] = d.X; v[1] = d.Y; v[2] = d.Z;
-        Gl.Uniform3fv(locDiffuse, 1, v);
-        var dir = FrameInputs.HasAreaDiffuse ? FrameInputs.AreaDiffuseDir : new Vector3(0f, 0f, 1f);
-        v[0] = dir.X; v[1] = dir.Y; v[2] = dir.Z;
-        Gl.Uniform3fv(locDir, 1, v);
+        PassBinds++;
+        byte* b = PassBegin();
+        FillPassBlock(b);
+        AlloyLights.FillDraw(b, viewport, near, far);
+        FlushPassBlock();
+        BindSunMaps();
+        BindCubeMaps();
+        Gl.Uniform1i(locCubes, CasterPass.CubesFresh ? CasterPass.CubeCount : 0);
     }
 
-    /// <summary>#127: the cascade receiver's uniforms, into a named program's locations. Same values, same
-    /// freshness gate; only where they land differs.</summary>
-    internal static void UploadSunCascades(int locTex, int locVp, int locTexel, int locBias, int locCount,
-                                           int locDyn, int locFocus = -1, int locRadius = -1)
+    /// <summary>The staging block, zeroed, for a caller that fills it itself (the lightmap bake's one light).</summary>
+    internal static byte* PassBegin()
     {
-        if (locCount < 0) return;
-        // Bound whether or not the cascades are fresh: the shader skips the fetch at count 0, but the draw
-        // still validates every shadow sampler against its unit (see NullShadow).
+        if (_passStage == null)
+        {
+            _passStage = (byte*)NativeMemory.AllocZeroed(PassBytes);
+            _passSent = (byte*)NativeMemory.AllocZeroed(PassBytes);
+        }
+        new Span<byte>(_passStage, PassBytes).Clear();
+        return _passStage;
+    }
+
+    /// <summary>Send the staged block if it differs from the one bound. Orphan-and-fill in one call, so a
+    /// block the GPU is still reading is never written under it. Rebound with each send (about one per pass),
+    /// so nothing that took binding 0 in between is ever read as the pass terms.</summary>
+    internal static void FlushPassBlock()
+    {
+        if (_passBuf != 0 && new ReadOnlySpan<byte>(_passStage, PassBytes).SequenceEqual(new ReadOnlySpan<byte>(_passSent, PassBytes)))
+            return;
+        if (_passBuf == 0) { uint b; Gl.GenBuffers(1, &b); _passBuf = b; }
+        Gl.BindBuffer(Gl.UNIFORM_BUFFER, _passBuf);
+        Gl.BufferData(Gl.UNIFORM_BUFFER, (IntPtr)PassBytes, _passStage, Gl.DYNAMIC_DRAW);
+        Gl.BindBuffer(Gl.UNIFORM_BUFFER, 0);
+        Gl.BindBufferBase(Gl.UNIFORM_BUFFER, PassBinding, _passBuf);
+        Buffer.MemoryCopy(_passStage, _passSent, PassBytes, PassBytes);
+        PassUploads++;
+    }
+
+    /// <summary>The block's name died with the context; the next send mints a new one.</summary>
+    internal static void PassContextLost() => _passBuf = 0;
+
+    internal static void PassVec(byte* b, int off, Vector3 v) => *(Vector3*)(b + off) = v;
+    internal static void PassVec(byte* b, int off, float x, float y, float z, float w) => *(Vector4*)(b + off) = new Vector4(x, y, z, w);
+
+    /// <summary>Every <c>CxPass</c> member from this pass's state: the engine's area terms, the cascade and
+    /// cube receivers as <see cref="CasterPass"/> published them, and the probe. A stale cascade or cube set
+    /// leaves its half zero, which the receivers read as nothing to sample.</summary>
+    private static void FillPassBlock(byte* b)
+    {
+        if (FrameInputs.HasAreaAmbient)
+            // AlloyLights.AmbientScale / SunScale are the live /light dials -- applied here, so a retune shows
+            // on the very next pass.
+            PassVec(b, PbAmbient, FrameInputs.AreaAmbient * AlloyLights.AmbientScale);
+        else
+        {
+            PassVec(b, PbAmbient, new Vector3(DefaultAmbient));
+            if (!Diag._ambientFallbackLogged)
+            {
+                Diag._ambientFallbackLogged = true;
+                _log?.Info("AlloyRenderer: no area ambient captured yet -- Alloy lit parts on the grey stand-in " +
+                           "(if this persists, SetLightGL's index -1 path never fired)");
+            }
+        }
+        PassVec(b, PbDiffuse, FrameInputs.HasAreaDiffuse ? FrameInputs.AreaDiffuse * AlloyLights.SunScale : default);
+        PassVec(b, PbDir, FrameInputs.HasAreaDiffuse ? FrameInputs.AreaDiffuseDir : new Vector3(0f, 0f, 1f));
+
+        if (CasterPass.CascadesFresh)
+        {
+            int n = CasterPass.CascadeCount;
+            float* texel = (float*)(b + PbSunTexel), bias = (float*)(b + PbSunBias), radius = (float*)(b + PbSunRadius);
+            for (int i = 0; i < n; i++)
+            {
+                texel[i] = CasterPass.CascadeTexel[i];
+                float range = CasterPass.CascadeRange[i];
+                bias[i] = range > 0f ? _sunWorldBias / range : 0f;
+                radius[i] = CasterPass.CascadeFitRadius[i];
+            }
+            fixed (float* vp = CasterPass.CascadeVp) Buffer.MemoryCopy(vp, b + PbSunVp, 256, n * 16 * sizeof(float));
+            fixed (float* dm = CasterPass.SunDynMask) Buffer.MemoryCopy(dm, b + PbSunDyn, 16, 16);
+            PassVec(b, PbSunFocus, CasterPass.SunFocusLive);
+            *(int*)(b + PbSunCascades) = n;
+        }
+
+        if (!_rawProbed) ProbeRawSampler();
+        *(float*)(b + PbLocalFloor) = AlloyLights.ShadowFloor;
+        // #642: source radius (0 = no raw view, no search), temporal phase (golden-ratio turns per frame, 0
+        // with no taa to integrate it), disc taps; w = the view depth past which no cube is read (0 = none)
+        PassVec(b, PbLocalPcss, _rawSampler != 0 ? AlloyLights.ShadowSource : 0f,
+                PostStack.TaaLive ? (_frameSeq * 0.618034f) % 1f : 0f, Shadows.Taps.V, AlloyLights.ShadowDist);
+        // #326: pixels -> world radius per unit view depth, so the shader compares its disc against the
+        // screen without knowing the projection. 0 (no perspective this pass) = the disc everywhere.
+        float discZ = _lodScale > 0f ? AlloyLights.ShadowDiscPx / _lodScale : 0f;
+        PassVec(b, PbLocalSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, discZ, AlloyLights.ShadowCap);
+        if (CasterPass.CubesFresh)
+        {
+            int n = CasterPass.CubeCount;
+            fixed (float* l = CasterPass.CubeLight) Buffer.MemoryCopy(l, b + PbLight, 1024, n * 4 * sizeof(float));
+            float* page = (float*)(b + PbDynPage), fade = (float*)(b + PbFade);
+            for (int i = 0; i < n; i++) { page[i * 4] = CasterPass.CubeDynPage[i]; fade[i * 4] = CasterPass.CubeFade[i]; }
+            *(Vector2*)(b + PbLocalPlane) = new Vector2(CasterPass.CubeNearPlane, 1f / CasterPass.CubeFaceSize);
+        }
+
+        *(float*)(b + PbProbeMips) = ProbeLive ? EnvProbe.Mips : 0f;
+        *(float*)(b + PbProbeGain) = EnvProbe.Gain;
+        *(int*)(b + PbSceneEnv) = _sceneEnv && EnvProbe.AreaWide ? 1 : 0;
+    }
+
+    /// <summary>#121: may this pass sample the IBL probe? Never during a capture: sampling a texture that is an
+    /// attachment of the framebuffer being written is undefined, and the capture draws through the lit program.</summary>
+    private static bool ProbeLive => !_capturing && EnvProbe.Ready && EnvProbe.Tex != 0;
+
+    /// <summary>Point the cascade units at <see cref="CasterPass"/>'s arrays, or at the null stand-ins when they
+    /// are stale -- bound either way, because the draw validates every shadow sampler against its unit even
+    /// when the shader never takes the fetch (see NullShadow).</summary>
+    internal static void BindSunMaps()
+    {
         bool fresh = CasterPass.CascadesFresh;
         Gl.ActiveTexture(Gl.TEXTURE0 + SunUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, fresh ? SunShadowOr(CasterPass.CascadeTex) : SunShadowOr(0));
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, SunShadowOr(fresh ? CasterPass.CascadeTex : 0));
         // #306: the dynamic half rides the same publish, on BOTH units the table assigns it (the grass
         // program's unit 10 is its displacement field, so grass reads the array off unit 13 instead).
         uint dyn = SunShadowOr(fresh ? CasterPass.SunDynTex : 0);
@@ -259,36 +339,6 @@ public sealed unsafe partial class AlloyRenderer
         Gl.ActiveTexture(Gl.TEXTURE0 + SunDynUnitGrass);
         Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, dyn);
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
-        Gl.Uniform1i(locTex, (int)SunUnit);
-        if (!fresh) { Gl.Uniform1i(locCount, 0); return; }
-        int n = CasterPass.CascadeCount;
-        if (locDyn >= 0)
-            fixed (float* dm = CasterPass.SunDynMask) Gl.Uniform4fv(locDyn, 1, dm);
-        fixed (float* vp = CasterPass.CascadeVp) Gl.UniformMatrix4fv(locVp, n, 0, vp);
-        float* pack = stackalloc float[4];
-        for (int i = 0; i < 4; i++) pack[i] = i < n ? CasterPass.CascadeTexel[i] : 0f;
-        Gl.Uniform4fv(locTexel, 1, pack);
-        for (int i = 0; i < 4; i++)
-        {
-            float range = i < n ? CasterPass.CascadeRange[i] : 0f;
-            pack[i] = range > 0f ? _sunWorldBias / range : 0f;
-        }
-        Gl.Uniform4fv(locBias, 1, pack);
-        // #308 follow-up: the cross-fade band's two terms -- the LIVE focus (smooth where the latched fits
-        // step) and the per-cascade fit radius. Absent on a stale content override (location -1), which
-        // degrades to the hard handoff, never to a wrong blend.
-        if (locFocus >= 0)
-        {
-            var fo = CasterPass.SunFocusLive;
-            pack[0] = fo.X; pack[1] = fo.Y; pack[2] = fo.Z;
-            Gl.Uniform3fv(locFocus, 1, pack);
-        }
-        if (locRadius >= 0)
-        {
-            for (int i = 0; i < 4; i++) pack[i] = i < n ? CasterPass.CascadeFitRadius[i] : 0f;
-            Gl.Uniform4fv(locRadius, 1, pack);
-        }
-        Gl.Uniform1i(locCount, n);
     }
 
     /// <summary>1x1 depth-1 (lit) stand-ins with compare on, bound on a shadow unit whenever its map is absent
@@ -338,24 +388,12 @@ public sealed unsafe partial class AlloyRenderer
         _rawSampler = s;
     }
 
-    /// <summary>#127: the local-cube receiver's uniforms, into a named program's locations.</summary>
-    internal static void UploadLocalCubes(int locTex, int locLight, int locPlane, int locCount, int locSoft, int locPcss,
-                                          int locDynPage, int locFade, int locFloor)
+    /// <summary>Point the cube units at <see cref="CasterPass"/>'s static and dynamic arrays (the null stand-in
+    /// when stale, as <see cref="BindSunMaps"/>), and the same two on the #642 raw units when the blocker
+    /// search has its sampler.</summary>
+    internal static void BindCubeMaps()
     {
-        if (locCount < 0) return;
         if (!_rawProbed) ProbeRawSampler();
-        if (locFloor >= 0) Gl.Uniform1f(locFloor, AlloyLights.ShadowFloor);
-        // #642: source radius (0 = no raw view, no search), temporal phase (golden-ratio turns per frame, 0
-        // with no taa to integrate it), disc taps; w = the view depth past which no cube is read (0 = none)
-        if (locPcss >= 0) Gl.Uniform4f(locPcss, _rawSampler != 0 ? AlloyLights.ShadowSource : 0f,
-                                       PostStack.TaaLive ? (_frameSeq * 0.618034f) % 1f : 0f, Shadows.Taps.V, AlloyLights.ShadowDist);
-        // #139: the softness pair goes out even when there are no cubes -- it is program state, not per-cube
-        // state, and a program that only ever sees the no-cubes path would otherwise keep the zeroes.
-        // #326: pixels -> world radius per unit view depth, so the shader compares its disc against the
-        // screen without knowing the projection. 0 (no perspective this pass) = the disc everywhere.
-        float discZ = _lodScale > 0f ? AlloyLights.ShadowDiscPx / _lodScale : 0f;
-        if (locSoft >= 0) Gl.Uniform4f(locSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, discZ, AlloyLights.ShadowCap);
-        // Bound whether or not the cubes are fresh, as the cascades are (see NullShadow).
         bool fresh = CasterPass.CubesFresh;
         uint st = CubeShadowOr(fresh ? CasterPass.CubeTex : 0), dy = CubeShadowOr(fresh ? CasterPass.CubeDynTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + CubeUnit);
@@ -372,29 +410,14 @@ public sealed unsafe partial class AlloyRenderer
             Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, dy);
         }
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
-        Gl.Uniform1i(locTex, (int)CubeUnit);
-        if (!fresh) { Gl.Uniform1i(locCount, 0); return; }
-        int n = CasterPass.CubeCount;
-        fixed (float* l = CasterPass.CubeLight) Gl.Uniform4fv(locLight, n, l);
-        if (locDynPage >= 0)
-            fixed (float* p = CasterPass.CubeDynPage) Gl.Uniform1fv(locDynPage, n, p);
-        if (locFade >= 0)
-            fixed (float* p = CasterPass.CubeFade) Gl.Uniform1fv(locFade, n, p);
-        Gl.Uniform2f(locPlane, CasterPass.CubeNearPlane, 1f / CasterPass.CubeFaceSize);
-        Gl.Uniform1i(locCount, n);
     }
 
-    /// <summary>#129: the same terms into a named program's locations -- the Alloy water stage samples the
-    /// same cube as its reflection fallback, so the probe cannot be a property of the lit program's cache.</summary>
-    private static void UploadProbe(int locMips, int locGain, int locSceneEnv)
+    /// <summary>#121: the IBL probe onto its unit, or nothing -- unbound rather than left bound during a
+    /// capture (<see cref="ProbeLive"/>); <c>uProbeMips</c> 0 in the pass block says the same to the stage.</summary>
+    internal static void BindProbe()
     {
-        if (locMips < 0) return;
-        bool live = !_capturing && EnvProbe.Ready && EnvProbe.Tex != 0;
         Gl.ActiveTexture(Gl.TEXTURE0 + EnvProbe.ProbeUnit);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, live ? EnvProbe.Tex : 0);
+        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, ProbeLive ? EnvProbe.Tex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
-        Gl.Uniform1f(locMips, live ? EnvProbe.Mips : 0f);
-        Gl.Uniform1f(locGain, EnvProbe.Gain);
-        Gl.Uniform1i(locSceneEnv, _sceneEnv && EnvProbe.AreaWide ? 1 : 0);
     }
 }

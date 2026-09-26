@@ -17,9 +17,8 @@ uniform float uShade;                   // #355: past this, no shadow or per-fra
 // -1, which the uniform upload ignores. Grass takes the DISPLAY hook alone: it has no material
 // features to reshade.
 uniform sampler2D uFlowTex;
-uniform vec3 uAreaAmbient;
-uniform vec3 uAreaDiffuse;
-uniform vec3 uAreaDir;
+// CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
+#include "cx_pass.glsl"
 uniform vec3 uMatAmbient;               // the grass material's own ambient (CAurGrassInfo +0x34)
 uniform vec3 uMatDiffuse;               // ... and diffuse (+0x28), WITHOUT vanilla's fade in its alpha
 uniform int uLit;                       // 0 = no cluster build this pass: ambient + sun only

@@ -232,10 +232,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal struct LitLoc
     {
         public int Oit, OitDim, OitBias, OitGob;
-        public int Tex, Vp, Base, Cut, Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Viz, Wrap, Atten, Hot, WrapN, Sss, Ssao, SsaoOn, SsaoHalf, AoDirect, AoCutout,
-                   SunTex, SunVp, SunTexel, SunBias, SunCount, SunFocus, SunRadius, SunDynTex, SunDyn,
-                   CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubePcss, CubeDynTex, CubeDynPage, CubeFade, CubeFloor,
-                   Probe, ProbeMips, ProbeGain, SceneEnv, Capture, Reach,
+        public int Tex, Vp, Base, Cut, Viz, Ssao, SsaoOn, SsaoHalf, AoDirect, AoCutout,
+                   SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex,   // CX-43: the rest of the receiver and the light curve ride CxPass
+                   Probe, Capture,
                    Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm,
                    LmPages, LmMovers,                  // #674
                    LightOcc,                           // light.hidden
@@ -1331,6 +1330,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         CullPass.ContextLost();
         PresentTarget.ContextLost();   // #456: names only -- the images died with the context
         _nullSunShadow = 0; _nullCubeShadow = 0;
+        PassContextLost();
     }
 
     /// <summary>Frame tick from the present (after the bucket walks). Module unload, a PartTable
@@ -1384,7 +1384,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0; Counters._skipUnplaced = 0;
         ResetChasePeriod();
         Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
-        Counters._recWritten = 0; Counters._recStable = 0;
+        Counters._recWritten = 0; Counters._recStable = 0; PassBinds = 0; PassUploads = 0;
         ResetStaticPeriod();
         Counters._nrmDeclared = Counters._nrmBound = 0;
         Array.Clear(Counters._drawsByClass);
@@ -1528,6 +1528,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // of ADR 0017 bought nothing, which no frame-time average would ever say out loud.
                    $"records {(float)Counters._recWritten / Counters._frames:F0}/frame written, " +
                    $"{(float)Counters._recStable / Counters._frames:F0} stable ({_recOwnCap} slots), " +
+                   // CX-43: program switches that took the pass terms, and how many of them had to send the block
+                   $"pass block {(float)PassBinds / Counters._frames:F1} binds/frame, {(float)PassUploads / Counters._frames:F1} sends/frame, " +
                    StaticNote() + ", " +
                    // #330: how much of the engine chase the view bounded away, and the poll audit.
                    ChaseNote() + ", " +

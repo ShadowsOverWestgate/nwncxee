@@ -445,42 +445,25 @@ internal static unsafe class AlloyLights
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindMovers, _bufMovers);
     }
 
-    /// <summary>Grid + depth-range uniforms the lit fragment shader needs to find its own cluster. Called once
-    /// per pass right after the program is bound.</summary>
-    internal static void SetDrawUniforms(int locGrid, int locTile, int locZ, int locFalloff, int locWrap,
-                                         int locAtten, int locHot, int locWrapN, int locSss, int* viewport,
-                                         float near, float far, int locReach = -1)
+    /// <summary>CX-43: the cluster lookup (grid, tile, depth range) and the light curve into the pass block,
+    /// for the viewport and depth range this pass draws with. Each curve term is its own member, so a lane
+    /// added here never changes what an older one means.</summary>
+    internal static void FillDraw(byte* b, int* viewport, float near, float far)
     {
-        if (locReach >= 0) Gl.Uniform1f(locReach, ReachUniform);
         if (near < MinNear) near = MinNear;
-        if (locGrid >= 0) Gl.Uniform3i(locGrid, GridX, GridY, GridZ);
-        if (locTile >= 0)
-        {
-            float* t = stackalloc float[4];
-            t[0] = viewport[0]; t[1] = viewport[1];
-            t[2] = MathF.Max((float)viewport[2] / GridX, 1f);
-            t[3] = MathF.Max((float)viewport[3] / GridY, 1f);
-            Gl.Uniform4fv(locTile, 1, t);
-        }
-        if (locZ >= 0) Gl.Uniform2f(locZ, near, far > near ? far : near * 2f);
-        if (locFalloff >= 0)
-        {
-            LastFalloff = new Vector3(_gain, _srcRadius, _falloffPow);
-            float* f = stackalloc float[3] { _gain, _srcRadius, _falloffPow };
-            Gl.Uniform3fv(locFalloff, 1, f);
-        }
-        // A separate uniform rather than a fourth uFalloff lane on purpose: a content .shd override (#92)
-        // still declaring `vec3 uFalloff` would take a Uniform4fv as INVALID_OPERATION, drop the whole
-        // upload and render every point light black. An added uniform an override does not declare is
-        // location -1 here and a no-op, so the stale override degrades to "no wrap" instead.
-        if (locWrap >= 0) Gl.Uniform1f(locWrap, _wrap);
-        // #140: the engine's own attenuation constants. Same additive-safety reasoning as uWrap -- a
-        // content override (#92) that predates them is location -1 here and keeps whatever curve it shipped
-        // with, rather than being handed a uniform it cannot read.
-        if (locAtten >= 0) Gl.Uniform2f(locAtten, _atten.X, _atten.Y);
-        if (locHot >= 0) Gl.Uniform2f(locHot, _hot, MathF.Max(_hotSize, 1e-4f));
-        if (locWrapN >= 0) Gl.Uniform1f(locWrapN, _wrapN);
-        if (locSss >= 0) Gl.Uniform2f(locSss, _sss, SssOn ? SssK(_sss) : 0f);
+        *(Vector4*)(b + AlloyRenderer.PbTile) = new Vector4(viewport[0], viewport[1],
+            MathF.Max((float)viewport[2] / GridX, 1f), MathF.Max((float)viewport[3] / GridY, 1f));
+        int* grid = (int*)(b + AlloyRenderer.PbGrid);
+        grid[0] = GridX; grid[1] = GridY; grid[2] = GridZ;
+        *(float*)(b + AlloyRenderer.PbReach) = ReachUniform;
+        LastFalloff = new Vector3(_gain, _srcRadius, _falloffPow);
+        *(Vector3*)(b + AlloyRenderer.PbFalloff) = LastFalloff;
+        *(float*)(b + AlloyRenderer.PbWrap) = _wrap;
+        *(Vector2*)(b + AlloyRenderer.PbZ) = new Vector2(near, far > near ? far : near * 2f);
+        *(Vector2*)(b + AlloyRenderer.PbAtten) = new Vector2(_atten.X, _atten.Y);
+        *(Vector2*)(b + AlloyRenderer.PbHot) = new Vector2(_hot, MathF.Max(_hotSize, 1e-4f));
+        *(Vector2*)(b + AlloyRenderer.PbSss) = new Vector2(_sss, SssOn ? SssK(_sss) : 0f);
+        *(float*)(b + AlloyRenderer.PbWrapN) = _wrapN;
     }
 
     /// <summary>#139/#326: the local-cube receiver's three softness terms -- PCF radius in texels, the screen

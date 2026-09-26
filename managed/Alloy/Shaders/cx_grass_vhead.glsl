@@ -24,9 +24,8 @@ uniform int uCast;             // 1 = a shadow view
 uniform float uCastWidth;      // blade width multiplier in a shadow view: a 2-texel blade filters to nothing
 uniform int uLit;              // 0 = no cluster build this pass
 uniform float uShade;          // past this, the sun goes unshadowed (the per-vertex rig still runs)
-uniform vec3 uAreaAmbient;
-uniform vec3 uAreaDiffuse;
-uniform vec3 uAreaDir;
+// CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
+#include "cx_pass.glsl"
 out vec2 vCellUv;              // 0..1 within the blade's atlas cell
 flat out vec2 vCellBase;       // the cell's atlas origin
 flat out float vTuft;          // copies of the cell across this blade

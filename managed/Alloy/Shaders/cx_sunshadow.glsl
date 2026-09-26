@@ -1,16 +1,11 @@
+#include "cx_pass.glsl"
 uniform sampler2DArrayShadow uSunShadow;
-uniform mat4 uSunVp[4];
-uniform vec4 uSunTexel;      // world units per shadow texel, per cascade
-uniform vec4 uSunBias;       // depth bias in DEVICE units, per cascade (world bias / that fit's range)
-uniform int uSunCascades;    // 0 = no cascades to sample this frame (interior, vanilla, not yet drawn)
 
 // #306: the sun's DYNAMIC half -- movers only, re-baked every frame with the SAME per-cascade fit
 // matrix as the static layer, composed by min(): the cube pool's own rule (#305), so the receiver
 // has one composition rule, not two. uSunDyn[i] is 1 when layer i holds a fresh dynamic bake this
-// frame and 0 otherwise -- a program that never sets it reads 0 everywhere and degrades to
-// static-only, exactly as uLocalDynPage does.
+// frame and 0 otherwise.
 uniform sampler2DArrayShadow uSunDynShadow;
-uniform vec4 uSunDyn;
 
 // Cascade edge kept clear of the PCF kernel: a fragment whose taps would straddle the border falls
 // through to the next cascade instead of sampling past the map and reading "unshadowed".
@@ -22,12 +17,10 @@ const float CX_SUN_BORDER = 0.985;
 // latched: a weight keyed on the latched fit jumps at every re-latch, which reads as the whole band
 // flickering while walking. Fade runs from CX_SUN_FADE_LO to CX_SUN_FADE_HI of the cascade's
 // radius; full handover at 90% keeps the weight saturated before the latched fit (drift <= 5% of
-// the radius, CasterPass.SunFitSlack) can run out under the fragment. Both uniforms unset (a stale
-// content override) read 0, and a zero radius disables the blend -- the pre-fade hard handoff.
+// the radius, CasterPass.SunFitSlack) can run out under the fragment. A zero radius disables the
+// blend -- the pre-fade hard handoff.
 const float CX_SUN_FADE_LO = 0.70;
 const float CX_SUN_FADE_HI = 0.90;
-uniform vec3 uSunFocus;      // the LIVE fit focus this frame
-uniform vec4 uSunRadius;     // per-cascade fit radius
 // Shadow-accuracy pass: offsets halved from #308 (see LocalShadowLib); csmbias default halved with them.
 // Sample point pushed along the normal by this many texels. Normal offset does what a depth bias
 // cannot: it scales with the texel a slope actually spans, so acne goes without the detached-shadow

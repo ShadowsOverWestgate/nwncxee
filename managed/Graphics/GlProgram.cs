@@ -17,11 +17,21 @@ internal static unsafe class GlProgram
     /// fall backs, which must not re-take the override they refused.</summary>
     internal static uint Graphics(string vs, string fs, ExtenderLog? log, string what, bool host = true, bool content = true)
     {
-        string cv = content ? ShaderSource.Content(vs, log) : vs, cf = content ? ShaderSource.Content(fs, log) : fs;
+        string cv = content ? Lib(vs, log, what) : vs, cf = content ? Lib(fs, log, what) : fs;
         uint p = Pair(cv, cf, log, what, host);
         if (p != 0 || (ReferenceEquals(cv, vs) && ReferenceEquals(cf, fs))) return p;
         log?.Info($"{what}: a library override .shd broke the build -- rebuilding from the embedded libraries");
         return Pair(vs, fs, log, what, host);
+    }
+
+    /// <summary><see cref="ShaderSource.Content"/>, refused for the embedded libraries when the swap leaves the
+    /// stage reading the pass terms outside the <c>CxPass</c> block (<see cref="ShaderContract.PassSafe"/>).</summary>
+    private static string Lib(string src, ExtenderLog? log, string what)
+    {
+        string c = ShaderSource.Content(src, log);
+        if (ReferenceEquals(c, src) || ShaderContract.PassSafe(c)) return c;
+        log?.Info($"{what}: a library override .shd reads the pass terms outside the CxPass block (predates CX-43) -- using the embedded libraries");
+        return src;
     }
 
     private static uint Pair(string vs, string fs, ExtenderLog? log, string what, bool host)
@@ -35,7 +45,7 @@ internal static unsafe class GlProgram
     /// overrides as in <see cref="Graphics(string, string, ExtenderLog?, string, bool, bool)"/>.</summary>
     internal static uint Graphics(string vs, string gs, string fs, ExtenderLog? log, string what)
     {
-        string cv = ShaderSource.Content(vs, log), cg = ShaderSource.Content(gs, log), cf = ShaderSource.Content(fs, log);
+        string cv = Lib(vs, log, what), cg = Lib(gs, log, what), cf = Lib(fs, log, what);
         uint p = Triple(cv, cg, cf, log, what);
         if (p != 0 || (ReferenceEquals(cv, vs) && ReferenceEquals(cg, gs) && ReferenceEquals(cf, fs))) return p;
         log?.Info($"{what}: a library override .shd broke the build -- rebuilding from the embedded libraries");
@@ -79,6 +89,11 @@ internal static unsafe class GlProgram
         // brackets, so a library override still reaches it
         string? ovs = ShaderResource.Override(vsRef, log), ofs = ShaderResource.Override(fsRef, log);
         vsSource = ShaderSource.Content(ovs ?? vs, log); fsSource = ShaderSource.Content(ofs ?? fs, log);
+        if (!ShaderContract.PassSafe(vsSource) || !ShaderContract.PassSafe(fsSource))
+        {
+            log?.Info($"{what}: an override .shd reads the pass terms outside the CxPass block (predates CX-43) -- building the embedded default");
+            vsSource = vs; fsSource = fs;
+        }
         uint prog = Pair(vsSource, fsSource, log, what, host);
         if (prog != 0 || (ReferenceEquals(vsSource, vs) && ReferenceEquals(fsSource, fs))) return prog;
         log?.Info($"{what}: override .shd failed to build -- falling back to the embedded default");
@@ -94,7 +109,7 @@ internal static unsafe class GlProgram
     /// <see cref="Graphics(string, string, ExtenderLog?, string, bool, bool)"/>.</summary>
     internal static uint Compute(string cs, ExtenderLog? log, string what)
     {
-        string cc = ShaderSource.Content(cs, log);
+        string cc = Lib(cs, log, what);
         uint p = Single(cc, log, what);
         if (p != 0 || ReferenceEquals(cc, cs)) return p;
         log?.Info($"{what}: a library override .shd broke the build -- rebuilding from the embedded libraries");

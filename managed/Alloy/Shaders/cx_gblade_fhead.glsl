@@ -20,9 +20,8 @@ flat in vec3 vMatAmb;
 uniform sampler2D uTex;                 // never sampled: named so a content file that reads it still compiles
 uniform sampler2D uFlowTex;             // likewise (cx_grass_fhead.glsl, #347)
 uniform float uShade;                   // past this, no cascade taps
-uniform vec3 uAreaAmbient;
-uniform vec3 uAreaDiffuse;
-uniform vec3 uAreaDir;
+// CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
+#include "cx_pass.glsl"
 uniform int uLit;
 uniform int uVLit;
 uniform float uRootAo;

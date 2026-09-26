@@ -454,7 +454,7 @@ internal static unsafe class FrameSnapshot
         // reflection's fallback is the shaded surface -- a probe here would be the custom look coming back.
         check.Expect(fs.Contains("CxRayIntersect("), "the stage marches with stock's own ray intersection");
         check.Expect(fs.Contains("texture(uNoise,"), "the wave field reads the engine's noise texture");
-        check.Expect(!fs.Contains("uProbe"), "the probe is NOT the reflection's fallback -- vanilla falls back to the surface");
+        check.Expect(!fs.Contains("samplerCube uProbe"), "the probe is NOT the reflection's fallback -- vanilla falls back to the surface");
         // Colour space: since #132 the whole Alloy frame is linear, so the copy is linear and a decode on
         // read would be a second linearisation. Sampling it in the wrong space is a whole-image error that
         // reads as "the reflection is washed out" (or "far too dark") rather than as a bug, so it is

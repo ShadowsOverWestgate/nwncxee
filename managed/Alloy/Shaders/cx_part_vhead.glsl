@@ -16,9 +16,8 @@ out vec3 vLight;            // #336: ambient + sun + point at this vertex; 1.0 w
 flat out int vType;
 
 uniform int uLit;           // 0 = this draw is self-illuminated (additive, punch-through) or unlit
-uniform vec3 uAreaAmbient;
-uniform vec3 uAreaDiffuse;
-uniform vec3 uAreaDir;
+// CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
+#include "cx_pass.glsl"
 
 vec2 cxClusterXY;
 #define CX_CLUSTER_XY cxClusterXY

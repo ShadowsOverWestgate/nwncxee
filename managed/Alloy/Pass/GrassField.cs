@@ -234,9 +234,7 @@ internal static unsafe partial class GrassField
         public int Look, Segments, Width;
         public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
         public int PushTex, PushGain, PushWindow;
-        public int Ambient, Diffuse, Dir, Grid, Tile, Z, Falloff, Wrap, Atten, Hot, WrapN, Sss, Reach;
-        public int SunTex, SunVp, SunTexel, SunBias, SunCount, SunDynTex, SunDyn, SunFocus, SunRadius;
-        public int CubeTex, CubeLight, CubePlane, CubeCount, CubeSoft, CubePcss, CubeDynTex, CubeDynPage, CubeFade, CubeFloor;
+        public int SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex;   // CX-43: the rest of the receiver rides CxPass
     }
     private static Loc _loc, _locD, _locB, _locBD;
     private static AlloyRenderer.FeatLoc _featLoc, _featLocD, _featLocB, _featLocBD;
@@ -1082,14 +1080,7 @@ internal static unsafe partial class GrassField
         Gl.Uniform1f(loc.GroundTint, Grass.GTint.V);
         Gl.Uniform1i(loc.GroundOn, ground ? 1 : 0);
         Gl.Uniform2f(loc.Look, Grass.Backlight.V, Grass.Sheen.V);
-        if (lightingOn)
-            AlloyLights.SetDrawUniforms(loc.Grid, loc.Tile, loc.Z, loc.Falloff, loc.Wrap,
-                                        loc.Atten, loc.Hot, loc.WrapN, loc.Sss, viewport, near, far, loc.Reach);
-        AlloyRenderer.UploadAreaTerms(loc.Ambient, loc.Diffuse, loc.Dir);
-        AlloyRenderer.UploadSunCascades(loc.SunTex, loc.SunVp, loc.SunTexel, loc.SunBias, loc.SunCount,
-                                        loc.SunDyn, loc.SunFocus, loc.SunRadius);
-        AlloyRenderer.UploadLocalCubes(loc.CubeTex, loc.CubeLight, loc.CubePlane, loc.CubeCount,
-                                       loc.CubeSoft, loc.CubePcss, loc.CubeDynPage, loc.CubeFade, loc.CubeFloor);
+        AlloyRenderer.BindPass(loc.CubeCount, viewport, near, far);
     }
 
     private static void GroundDiagBefore(int* viewport)
@@ -1688,20 +1679,9 @@ internal static unsafe partial class GrassField
             Msaa = GlProgram.Loc(prog, "uMsaa"), Edge = GlProgram.Loc(prog, "uEdge"),
             PushTex = GlProgram.Loc(prog, "uPushTex"), PushGain = GlProgram.Loc(prog, "uPushGain"),
             PushWindow = GlProgram.Loc(prog, "uPushWindow"),
-            Ambient = GlProgram.Loc(prog, "uAreaAmbient"), Diffuse = GlProgram.Loc(prog, "uAreaDiffuse"),
-            Dir = GlProgram.Loc(prog, "uAreaDir"),
-            Grid = GlProgram.Loc(prog, "uGrid"), Tile = GlProgram.Loc(prog, "uTile"),
-            Z = GlProgram.Loc(prog, "uZ"), Falloff = GlProgram.Loc(prog, "uFalloff"),
-            Wrap = GlProgram.Loc(prog, "uWrap"), Atten = GlProgram.Loc(prog, "uAtten"), Hot = GlProgram.Loc(prog, "uHot"), WrapN = GlProgram.Loc(prog, "uWrapN"), Sss = GlProgram.Loc(prog, "uSss"), Reach = GlProgram.Loc(prog, "uReach"),
-            SunTex = GlProgram.Loc(prog, "uSunShadow"), SunVp = GlProgram.Loc(prog, "uSunVp"),
-            SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"), SunDyn = GlProgram.Loc(prog, "uSunDyn"),
-            SunTexel = GlProgram.Loc(prog, "uSunTexel"), SunBias = GlProgram.Loc(prog, "uSunBias"),
-            SunCount = GlProgram.Loc(prog, "uSunCascades"),
-            SunFocus = GlProgram.Loc(prog, "uSunFocus"), SunRadius = GlProgram.Loc(prog, "uSunRadius"),
-            CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeLight = GlProgram.Loc(prog, "uLocalLight"),
-            CubePlane = GlProgram.Loc(prog, "uLocalPlane"), CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
-            CubeSoft = GlProgram.Loc(prog, "uLocalSoft"), CubeFloor = GlProgram.Loc(prog, "uLocalFloor"), CubePcss = GlProgram.Loc(prog, "uLocalPcss"),
-            CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"), CubeDynPage = GlProgram.Loc(prog, "uLocalDynPage"), CubeFade = GlProgram.Loc(prog, "uLocalFade"),
+            SunTex = GlProgram.Loc(prog, "uSunShadow"), SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"),
+            CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"),
+            CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
         };
 
     private static bool EnsureProgramTail(uint prog)

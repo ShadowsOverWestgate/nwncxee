@@ -175,6 +175,8 @@ public static unsafe class Gl
     // clustered forward+ on the Alloy path (#83): compute dispatch, SSBOs and the GPU timer for the
     // cluster-build budget. All 4.6-core, so they exist only inside the #80 share-listed context.
     public const uint COMPUTE_SHADER = 0x91B9, SHADER_STORAGE_BUFFER = 0x90D2;
+    /// <summary>CX-43: the pass block's target (<c>cx_pass.glsl</c>'s <c>CxPass</c>).</summary>
+    public const uint UNIFORM_BUFFER = 0x8A11;
     public const uint SHADER_STORAGE_BARRIER_BIT = 0x2000;
     /// <summary>#243: the two barrier bits the cull dispatch needs after it -- its writes are consumed as
     /// indirect commands and as a parameter-buffer count, neither of which SHADER_STORAGE alone covers.</summary>
@@ -322,7 +324,7 @@ public static unsafe class Gl
     public static delegate* unmanaged<int, int, byte, float*, void> UniformMatrix2fv, UniformMatrix3fv;
     /// <summary>glGetActiveUniform: prog, index, bufSize, length*, size*, type*, name* -- uniform enumeration.</summary>
     public static delegate* unmanaged<uint, uint, int, int*, int*, uint*, byte*, void> GetActiveUniform;
-    // Lighting UBO (ADR 0007 modern path): one std140 block shared by every Alloy program.
+    /// <summary>glBufferSubData: target, offset, size, data.</summary>
     public static delegate* unmanaged<uint, IntPtr, IntPtr, void*, void> BufferSubData;
     /// <summary>glClearBufferSubData (GL 4.3): target, internalformat, offset, size, format, type, data --
     /// a NULL data fills zeros. Server-side, so no client upload into a buffer the GPU may still be reading.</summary>

@@ -22,17 +22,14 @@ uniform sampler2D uRoughTex;   // slot 3: roughness in r
 uniform sampler2D uHeightTex;  // slot 4: height, read for surface occlusion
 uniform sampler2D uIllumTex;   // slot 5: self-illumination
 uniform sampler2D uAoTex;      // #146 slot 7: baked ambient occlusion in r
-uniform vec3 uAreaAmbient;
-uniform vec3 uAreaDiffuse;
-uniform vec3 uAreaDir;         // world-space surface->light for the area directional (sun/moon)
+// CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
+#include "cx_pass.glsl"
 uniform int uViz;              // /alloy viz, see OwnedLitFsMain
 // #121: the per-area IBL probe, holding LINEAR radiance (EnvProbe captures with uCapture = 1, which
 // is what skips the display-space encode below). uProbeMips 0 = nothing captured yet, so no ambient
 // specular at all -- the pre-#121 behaviour, never a half-written cube.
 uniform samplerCube uProbe;
-uniform float uProbeMips;
-uniform float uProbeGain;      // /light probegain, the ambient-specular dial
-uniform int uSceneEnv;         // does the AREA declare an env map (scene+0x1e8)? see below
+// uProbeMips / uProbeGain / uSceneEnv ride the pass block (cx_pass).
 uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe; 2 = a GI probe capture (back faces write alpha 0)
 uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
 uniform int uSsaoOn;           // >0 when this BATCH is in the depth SsaoPass read; <0 names why not (viz 35)

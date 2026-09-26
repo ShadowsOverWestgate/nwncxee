@@ -260,9 +260,10 @@ internal static unsafe class Issue
         // Which program is bound, -1 for neither yet. In the opaque range this switches once (lit batches
         // sort last inside a class -- #292 put the face-culling bit BELOW the lit one precisely so that
         // stays true); in the blended range it can alternate, because there the order is the camera's and
-        // nothing else. ponytail: a lit rebind re-sends the cascade and cube uniforms, so an
-        // alternating blended set pays for them per switch. The set is the small remainder by construction;
-        // if it ever is not, the fix is a second sort digit inside the distance order, not a cache.
+        // nothing else. ponytail: a lit rebind still re-sends the feature, fog and lit-only terms (the pass
+        // block covers the receiver and light curve, CX-43), so an alternating blended set pays for them per
+        // switch. The set is the small remainder by construction; if it ever is not, move those terms into
+        // CxPass or add a second sort digit inside the distance order.
         // #129: three programs now, not two -- fullbright (0), clustered lit (1) and water (2). Keyed on the
         // batch's CLASS for water and on _gLit for the other two, because water is a class the whole way
         // down: its stage samples the framebuffer copy, and no lit batch ever should.
@@ -333,19 +334,13 @@ internal static unsafe class Issue
                     Gl.UniformMatrix4fv(Programs._watProj, 1, 0, _waterProj);
                     Gl.Uniform2f(Programs._watNearFar, _waterNear, _waterFar);
                     AlloyLights.BindForDraw();
-                    AlloyLights.SetDrawUniforms(Programs._watGrid, Programs._watTile, Programs._watZ, Programs._watFalloff, Programs._watWrap,
-                                                Programs._watAtten, Programs._watHot, Programs._watWrapN, Programs._watSss, viewport, near, far, Programs._watReach);
                     Gl.Uniform1i(Programs._watViz, viz);
                     Gl.Uniform1i(Programs._watEnvOk, FrameSnapshot.EnvOk);
                     Gl.Uniform1i(Programs._watCapture, _capturing ? 1 : 0);
                     Gl.Uniform1f(Programs._watSplash, Weather.SplashRate(_capturing));
                     UploadFeatureTerms(Programs._watFeat, viewport);
-                    UploadAreaTerms(Programs._watAmbient, Programs._watDiffuse, Programs._watDir);
-                    UploadSunCascades(Programs._watSunTex, Programs._watSunVp, Programs._watSunTexel, Programs._watSunBias, Programs._watSunCount, Programs._watSunDyn,
-                                      Programs._watSunFocus, Programs._watSunRadius);
-                    UploadLocalCubes(Programs._watCubeTex, Programs._watCubeLight, Programs._watCubePlane, Programs._watCubeCount, Programs._watCubeSoft, Programs._watCubePcss,
-                                     Programs._watCubeDynPage, Programs._watCubeFade, Programs._watCubeFloor);
-                    // The cascade and cube uploads each left their own unit current for a moment; the copy
+                    BindPass(Programs._watCubeCount, viewport, near, far);
+                    // The cascade and cube binds each left their own unit current for a moment; the copy
                     // pair and the noise texture have to be back on their units before the first water draw
                     // samples them.
                     FrameSnapshot.Bind();
@@ -357,18 +352,14 @@ internal static unsafe class Issue
                     Gl.Uniform1i(L.Tex, 0);
                     Gl.UniformMatrix4fv(L.Vp, 1, 0, vpRaw);
                     AlloyLights.BindForDraw();
-                    AlloyLights.SetDrawUniforms(L.Grid, L.Tile, L.Z, L.Falloff, L.Wrap,
-                                                L.Atten, L.Hot, L.WrapN, L.Sss, viewport, near, far, L.Reach);
                     Gl.Uniform1i(L.Viz, viz);
                     Gl.Uniform1f(L.AoCutout, Ao.Cutout.V);
                     OitPass.Upload(L.Oit, L.OitDim, _oitOn);
                     Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
                     LightmapBake.BindForDraw(L.LmPages, L.LmMovers);
                     UploadFeatureTerms(L.Feat, viewport);
-                    UploadAreaTerms(L);
-                    UploadSunCascades(L);
-                    UploadLocalCubes(L);
-                    UploadProbe(L);
+                    BindPass(L.CubeCount, viewport, near, far);
+                    BindProbe();
                     SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
                     Gl.Uniform1i(L.SsaoHalf, SsaoPass.Half ? 1 : 0);
                     Gl.Uniform2f(L.LightOcc, Lighting.HiddenLights.V ? 1f : 0f, GlossyRough);

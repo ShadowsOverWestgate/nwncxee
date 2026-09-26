@@ -1,20 +1,15 @@
+#include "cx_pass.glsl"
 uniform samplerCubeArrayShadow uLocalShadow;
-uniform vec4 uLocalLight[64];   // xyz = the position the cube was baked from, w = its far plane
-uniform vec2 uLocalPlane;       // x = the near plane every cube shares, y = 1 / face size in texels
-uniform int uLocalCubes;        // 0 = no cubes to sample this frame (vanilla, no lights, not yet drawn)
-// #139: x = PCF disc radius in cube texels, y = the world distance inside which a fragment is lit
-// outright. Both default to 0 on a program that never sets them, which IS the pre-#139 behaviour --
-// that is deliberate, so a stale content override degrades to a hard single tap rather than to
-// something wrong.
+// CX-43: per PROGRAM, not in the pass block -- the particle pass zeroes it under /particles shadows 0
+// and the bake reads its one scratch cube. 0 = no cubes to sample (vanilla, no lights, not yet drawn).
+uniform int uLocalCubes;
 uniform float uLocalSoftWorld;   // #674 bake only: the disc is at least this wide in world units (one lightmap texel), else its cube-texel edge aliases against the page
-uniform vec4 uLocalSoft;   // x = disc texels, y = near skip, z = disc stand-down: world radius per unit view depth (0 = none), w = cube taps per fragment (0 = every light)
 
 // #305: the DYNAMIC pool -- movers only, re-baked every frame at reduced resolution, composed with
 // the static cube by min(): depth visibility is a min-of-blockers, so the two arrays compose exactly
 // and NO COPY exists anywhere on the path (#187's composite cache lost to its own per-view copy;
 // this is not that design). uLocalDynPage[slot] carries the pool PAGE PLUS ONE (0 = no movers near
-// that light) -- a program that never sets it reads 0 everywhere, so a stale content override
-// degrades to static-only rather than to sampling page zero.
+// that light).
 uniform samplerCubeArrayShadow uLocalDynShadow;
 // #642: the same two arrays through a sampler object with NO compare, so the blocker search reads a
 // depth rather than a verdict. Bound by layout past the 0..15 table (TextureSlots.LocalShadowRaw);
@@ -22,8 +17,6 @@ uniform samplerCubeArrayShadow uLocalDynShadow;
 // search down (a fixed disc at the ceiling) -- see CasterPass.RawSearch.
 layout(binding = 16) uniform samplerCubeArray uLocalShadowRaw;
 layout(binding = 17) uniform samplerCubeArray uLocalDynShadowRaw;
-uniform float uLocalDynPage[64];
-uniform float uLocalFade[64];   // per-slot shadow strength: a slot fading in after its bake or out after its light left the budget
 
 // Shadow-accuracy pass: every offset/bias below is HALF its #308 value (the stacked push reached 8
 // texels = 0.5-1u of peter-panning on the outer cascades). Creature self-shadowing stays off
@@ -55,17 +48,12 @@ const float CX_LOCAL_DYN_NEAR = 3.0;
 // Unset reads 0, which is the surface behaviour every existing program and every content override
 // already relies on -- the safe default is the one nobody has to declare.
 uniform float uLocalMedia;
-// #641: the shadow floor -- the fraction of a point light's DIFFUSE that still arrives inside its own
-// shadow, standing in for the indirect light Alloy has none of. Pre-scaled by the area ambient on the
-// CPU; the light's own colour rides in the diffuse term it multiplies, so a torch shadow stays warm.
-// Unset reads 0, which is the full-black cutout this shipped with.
-uniform float uLocalFloor;
-
-// #642: x = the light's source radius in world units (the penumbra scale; 0 = no blocker search, the
-// disc sits at its ceiling), y = the temporal rotation phase 0..1 (0 when the taa stage is not live,
-// so the dither is a fixed pattern rather than a shimmer), z = disc taps. All zero on a program that
-// never sets it, which is a fixed disc.
-uniform vec4 uLocalPcss;
+// #641 uLocalFloor: the fraction of a point light's DIFFUSE that still arrives inside its own shadow,
+// standing in for the indirect light Alloy has none of; the light's own colour rides in the diffuse
+// term it multiplies, so a torch shadow stays warm.
+// #642 uLocalPcss: x = the light's source radius in world units (the penumbra scale; 0 = no blocker
+// search, the disc sits at its ceiling), y = the temporal rotation phase 0..1 (0 when the taa stage is
+// not live, so the dither is a fixed pattern rather than a shimmer), z = disc taps.
 // Below this radius (in texels) the disc stands down to the hardware tap: a fragment in contact.
 const float CX_LOCAL_DISC_MIN = 0.25;
 const float CX_LOCAL_DISC_WORLD_MAX = 64.0;   // #674 bake: the world-minimum disc's ceiling in cube texels

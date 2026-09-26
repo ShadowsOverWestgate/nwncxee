@@ -86,7 +86,7 @@ public sealed unsafe partial class CasterPass
                   && AlloyLights.LocalShadowLib.Contains($"uLocalDynPage[{MaxCubes}]")
                   && AlloyLights.LocalShadowLib.Contains("float v = min(vs, vd);")
                   && AlloyLights.LocalShadowLib.Contains("return mix(1.0, min(vs, vd), uLocalFade[slot]);")
-                  && AlloyLights.LocalShadowLib.Contains("uniform vec4 uLocalPcss;")
+                  && AlloyLights.LocalShadowLib.Contains("vec4 uLocalPcss;")
                   && AlloyLights.LocalShadowLib.Contains("if (src <= 0.0) return uLocalSoft.x;")
                   && AlloyLights.LocalShadowLib.Contains($"uLocalFade[{MaxCubes}]")
                   && AlloyLights.LocalShadowLib.Contains("pg > 0.5")

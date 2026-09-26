@@ -1,3 +1,4 @@
+#include "cx_pass.glsl"
 layout(std430, binding = 0) readonly buffer CxLightBuf { vec4 uLights[]; };
 // low 16 bits = lights binned, high 16 = how many of them lead the list before the cold statics
 // (cx_lightbuild). Read through CxClusterN / CxClusterLive, never raw.
@@ -7,34 +8,8 @@ layout(std430, binding = 2) readonly buffer CxClusterIdx { uint uClIdx[]; };
 // its dyn page holds -- a hot light owes nothing outside their shadow cones
 layout(std430, binding = 25) readonly buffer CxDynMovers { vec4 uDynMovers[]; };
 const int CX_DYN_SPHERES = $DYNSPH$;
-uniform ivec3 uGrid;
-uniform vec4 uTile;            // xy = viewport origin in window pixels, zw = pixels per tile
-uniform vec2 uZ;
-// x = peak gain at the source, y = source radius in world units, z = falloff exponent.
-// x = master gain (1 = the engine's own peak), y = sphere-light wrap radius (#139),
-// z = exponent on the rim fade (1 = vanilla exactly).
-uniform vec3 uFalloff;
-// #140: (lightMaxIntensityInv, lightFalloffFactor) -- the engine's own two, read off its global
-// shader params rather than copied. Zero on a stage that never gets them, which the guard below
-// reads as "fall back to the shipped pair" rather than as a divide by nothing.
-uniform vec2 uAtten;
-// #142: (near-field weight, core size as a fraction of the range). Zero on a stage that never gets
-// it, which is #140's curve unchanged.
-uniform vec2 uHot;
-// The cluster bins a light out to uReach * R (/light binreach). Without a matching window here a
-// fragment inside a binned froxel but past the reach got the full curve while its neighbour in the
-// next froxel got nothing: a light popping on along the froxel grid at one distance. 0 = no window.
-uniform float uReach;
-// #139: sphere-light wrap, as a multiple of uFalloff.y. 0 (the value an override that never declares
-// it leaves behind) is the punctual N.L this shipped with.
-uniform float uWrap;
-// #143: the distance-INDEPENDENT wrap floor -- a separate uniform rather than a second lane in
-// uWrap, so a stale override that only declares `float uWrap` still links and still gets #139's
-// behaviour. 0 = off, which is what such an override leaves behind.
-uniform float uWrapN;
-// #375 follow-up: the stock subsurface term as (wrap, energy) -- AlloyLights._sss. (0, 0) on a stage
-// that never declares it, which is the Lambert term alone.
-uniform vec2 uSss;
+// CX-43: the cluster terms (uGrid, uTile, uZ) and the curve (uFalloff, uAtten, uHot, uReach, uWrap,
+// uWrapN, uSss) ride the pass block; cx_pass.glsl says what each lane is.
 // Mirrored lights (light.hidden): x = on, y = the roughness ceiling a surface counts as glossy under.
 uniform vec2 uLightOcc;
 bool CxGlossy(float rough) { return uLightOcc.x > 0.0 && rough < uLightOcc.y; }

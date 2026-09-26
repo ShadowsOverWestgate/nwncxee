@@ -209,6 +209,7 @@ frame and re-mints handles on a changed `CAurTexture*`, which is what makes thos
 | Resource | Created by | Dropped by | Caller |
 |---|---|---|---|
 | `_prog46/_progLit46/_progDepth/_progDepthKey/_progWater`, `_drawBuf/_texHBuf/_slotBuf/_boneBuf`, `_vVao46[]` | `EnsureProgram` / `EnsureTarget` / `UploadDraws` / `EnsureVao` | `AlloyRenderer.ContextLost` | registry `ContextLost` (#242: `ContextLost` also zeroes `_recCapGpu` and bumps the record epoch -- the persistent per-draw records lived in `_drawBuf`/`_texHBuf`, so a name-drop alone would leave every slot believing it was still uploaded); `_progLit46`/`_progWater` are additionally *deleted* and rebuilt by `TakeProgramRebuild` (`Programs.cs:114`) when a compile-time dial moves — the one deletion path that is neither edge |
+| `_passBuf` (CX-43: the `CxPass` uniform block) | `FlushPassBlock`, first send | `AlloyRenderer.ContextLost` (`PassContextLost`) | registry `ContextLost`; the staging pair is native memory kept for the session, and the next send re-mints and re-binds |
 | Water snapshot FBO + colour/depth textures | `FrameSnapshot.Ensure` | `FrameSnapshot.Forget` | registry `ContextLost` |
 | Scene-depth FBO + texture | `SceneDepth.Ensure` | `SceneDepth.Forget` | registry `ContextLost` |
 | Light SSBOs (`_bufLights/_bufCounts/_bufIndices/_bufStats`) | `AlloyLights` | `AlloyLights.Forget` | registry `ContextLost` |

@@ -163,14 +163,8 @@ internal static unsafe partial class Weather
         bool lit = lightingOn && AlloyLights.Ready;
         Gl.Uniform1i(l.Lit, lit ? 1 : 0);
         Gl.Uniform1f(l.Back, snow ? Backscatter.V : 0f);
-        AlloyRenderer.UploadAreaTerms(in L);
-        if (lit)
-        {
-            AlloyLights.BindForDraw();
-            AlloyLights.SetDrawUniforms(L.Grid, L.Tile, L.Z, L.Falloff, L.Wrap, L.Atten, L.Hot, L.WrapN, L.Sss, viewport, near, far, L.Reach);
-            AlloyRenderer.UploadSunCascades(in L);
-            AlloyRenderer.UploadLocalCubes(in L);
-        }
+        AlloyRenderer.BindPass(L.CubeCount, viewport, near, far);
+        if (lit) AlloyLights.BindForDraw();
         Gl.Uniform1f(l.Alpha, snow ? 0.9f : kind == 3 ? MathF.Min(Opacity.V * 2f, 1f) : Opacity.V);
         Gl.Uniform1f(l.Soft, Soft.V);
         Gl.Uniform1i(l.Viz, Viz.V);

@@ -16,9 +16,8 @@ uniform float uCoverLayer;
 uniform float uCoverSoft;    // metres of feather at a cover edge
 uniform int uLit;        // 1 = take the light rig; 0 = flat area terms
 uniform float uBack;     // snow: light from behind the flake glows through it
-uniform vec3 uAreaAmbient;
-uniform vec3 uAreaDiffuse;
-uniform vec3 uAreaDir;
+// CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
+#include "cx_pass.glsl"
 out vec2 vUV;
 out float vViewZ;
 out float vSeed;

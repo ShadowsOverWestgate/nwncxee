@@ -22,9 +22,8 @@ uniform int uCast;
 uniform float uCastWidth;
 uniform int uLit;
 uniform int uGroundOn;         // 1 = the fade goes out through the ground blend; 0 = the blade shrinks instead
-uniform vec3 uAreaAmbient;
-uniform vec3 uAreaDiffuse;
-uniform vec3 uAreaDir;
+// CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
+#include "cx_pass.glsl"
 out vec3 vLight;
 out vec3 vWorld;
 out vec3 vNrm;
