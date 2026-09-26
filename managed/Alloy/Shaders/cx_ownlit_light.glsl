@@ -89,9 +89,10 @@
     // ADR 0026 (light.ambientdir): the probe gives that ambient a direction -- sky above, ground below --
     // at the authored level; the stock wrap's 0.15 stays the floor. Never during the capture itself.
     float ambDir = mix(0.15, 1.0, sunRaw);
+    vec3 ambShape = vec3(ambDir);
     if (uMaterial.y > 0.0 && uCapture == 0 && uProbeMips > 0.0)
-        ambDir = mix(ambDir, max(CxAmbientShape(N), 0.15), uMaterial.y);
-    vec3 ambient = uAreaAmbient * matAmbient * ambDir * occl;
+        ambShape = mix(ambShape, max(CxAmbientShape(N), vec3(0.15)), uMaterial.y);
+    vec3 ambient = uAreaAmbient * matAmbient * ambShape * occl;
     // 34 = the ONLY term occlusion can move inside `total` (the (1-spec) share of the ambient).
     //      Black at both /ao on 0 and /ao on 1 means AO has nothing to scale here, however bright
     //      viz 8 reads -- which no other view in the ladder can say.

@@ -414,5 +414,6 @@ public sealed unsafe partial class AlloyRenderer
         Gl.ActiveTexture(Gl.TEXTURE0 + EnvProbe.ProbeUnit);
         Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, ProbeLive ? EnvProbe.Tex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
+        EnvProbe.BindSh();
     }
 }

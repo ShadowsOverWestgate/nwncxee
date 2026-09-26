@@ -383,7 +383,7 @@ internal static class ShaderContract
                   && OwnedLitFsMain.Contains("vec3 orm = (slots & CX_SLOT_AO) != 0 ? texture(uAoTex, uv, uLodBias).rgb : vec3(1.0);")
                   && OwnedLitFsMain.Contains("occl *= orm.r;")
                   && OwnedLitFsMain.Contains("float ambDir = mix(0.15, 1.0, sunRaw);")
-                  && OwnedLitFsMain.Contains("* ambDir * occl")
+                  && OwnedLitFsMain.Contains("* ambShape * occl")
                   && OwnedVs.Contains("uDrawBase + gl_DrawID") && OwnedLitVs.Contains("uDrawBase + gl_DrawID")
                   // #242: ...and every one of them reaches its record THROUGH the draw-to-slot index. The
                   // records are persistent and indexed by ownership slot now; a stage that still indexed by

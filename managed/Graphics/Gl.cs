@@ -185,6 +185,8 @@ public static unsafe class Gl
     public const uint VERTEX_ATTRIB_ARRAY_BARRIER_BIT = 0x0001;
     /// <summary>CX-51: an image store read back by the next level's dispatch (image) and by the lit stage (fetch).</summary>
     public const uint SHADER_IMAGE_ACCESS_BARRIER_BIT = 0x0020, TEXTURE_FETCH_BARRIER_BIT = 0x0008, WRITE_ONLY = 0x88B9;
+    /// <summary>CX-46: a compute write to a buffer the lit stage then reads as a uniform block (the probe's SH9).</summary>
+    public const uint UNIFORM_BARRIER_BIT = 0x0004;
     /// <summary>Sample counts of an existing attachment: renderbuffer (glGetRenderbufferParameteriv) and
     /// multisample texture (glGetTexLevelParameteriv on TEXTURE_2D_MULTISAMPLE).</summary>
     public const uint NUM_EXTENSIONS = 0x821D, EXTENSIONS = 0x1F03;

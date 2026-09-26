@@ -15,13 +15,15 @@ namespace CX.Alloy;
 /// like from where the player stands.
 /// <para>Cost: capture is the Alloy draw again, six times, into <see cref="Size"/>-square faces -- on an
 /// area change, not per frame (<see cref="Wanted"/>), inside the colour bracket the Alloy pass already
-/// opened. The cube stores LINEAR radiance in RGBA16F: <c>glGenerateMipmap</c> box-filters whatever is in
-/// the texture, and filtering display-space values darkens them, so the capture stage skips its display-space
-/// encode (<c>uCapture</c>) and the sampler needs no linearisation.</para>
-/// <para>ponytail: the roughness blur is the plain mip chain, not a GGX-importance-sampled prefilter. It is
-/// the classic cheap split-sum stand-in and already strictly better than the stock path (which clamps cube
-/// sampling to LOD 0 and gets no blur at all). Upgrade path: a prefilter pass over the chain if rough metal
-/// reads too sharp.</para>
+/// opened. The cube stores LINEAR radiance in RGBA16F: filtering display-space values darkens them, so the
+/// capture stage skips its display-space encode (<c>uCapture</c>) and the sampler needs no linearisation.</para>
+/// <para>CX-46: the capture lands in <see cref="_cap"/>, whose box mip chain only feeds two compute
+/// dispatches after it: <c>cx_probe_ggx</c> GGX-prefilters it into the published <see cref="Tex"/> (level i
+/// = perceptual roughness i / (Mips - 1), the inverse of every sample site's <c>sqrt(rough)</c> mapping) and
+/// <c>cx_probe_sh</c> projects SH9 irradiance into <see cref="_sh"/>, the lit stage's ambient shape. A
+/// driver that cannot run them stands the whole probe down: no silent box-filtered fallback.</para>
+/// <para>ponytail: one probe per area, the reflection vector not parallax-corrected against
+/// <see cref="Origin"/>. A second probe or a box projection is its own ticket.</para>
 /// </summary>
 internal static unsafe class EnvProbe
 {
@@ -31,7 +33,7 @@ internal static unsafe class EnvProbe
     internal static int Size { get; private set; } = 128;
     /// <summary>Levels in the mip chain: roughness 1 maps onto the last one.</summary>
     internal static int Mips { get; private set; }
-    /// <summary>The cube, or 0 when it has not been built. Sampled by the Alloy lit stage on
+    /// <summary>The GGX-prefiltered cube, or 0 when it has not been built. Sampled by the Alloy lit stage on
     /// <see cref="ProbeUnit"/>.</summary>
     internal static uint Tex { get; private set; }
     /// <summary>A capture has COMPLETED. Until then the Alloy pass feeds no ambient specular at all, which
@@ -64,7 +66,23 @@ internal static unsafe class EnvProbe
     /// cannot serve all of one, so the probe follows the player in coarse steps.</summary>
     private const float MoveDist = 30f;
 
+    /// <summary>UBO binding of the SH9 block (<c>cx_material</c>'s <c>CxProbeSh</c>); 0 is the pass block.</summary>
+    internal const uint ShBinding = 1;
+    /// <summary>SSBO binding <c>cx_probe_sh</c> writes the same buffer through: above every other SSBO binding
+    /// (8 is the bindless handle table, 27 the dangly history), so the dispatch clobbers nothing.</summary>
+    private const uint ShOutBinding = 28;
+    /// <summary>9 vec4, std140 = std430 for a vec4 array.</summary>
+    private const int ShBytes = 9 * 16;
+
     private static uint _fbo;
+    /// <summary>The capture target: raw radiance plus its box chain, read only by the two dispatches.</summary>
+    private static uint _cap;
+    /// <summary>The SH9 buffer: written as SSBO <see cref="ShOutBinding"/>, read as UBO <see cref="ShBinding"/>.</summary>
+    private static uint _sh;
+    /// <summary>The two CX-46 compute programs.</summary>
+    private static uint _progGgx, _progSh;
+    /// <summary><c>cx_probe_ggx</c>'s <c>uLevel</c>: the level (so the roughness) being written.</summary>
+    private static int _locLevel;
     /// <summary><c>light.probe</c>: gates <see cref="Wanted"/>, which is re-asked every frame, so the probe
     /// idles rather than un-arming and a re-enable captures at the next edge.</summary>
     private static bool _on => Lighting.Probe.V;
@@ -96,6 +114,25 @@ internal static unsafe class EnvProbe
             // #209: the world edge, which the probe had no slot for at all. Both halves matter -- dropping
             // Ready without the key would re-bake once and then trust the stale key again, and dropping the
             // key without Ready leaves the cube readable until the player walks MoveDist.
+            // CX-46: every probe fetch maps roughness the way cx_probe_ggx baked it -- level i is perceptual
+            // roughness i / (levels - 1), so a site on any other curve samples the wrong lobe.
+            string ggx = ShaderSource.Get("cx_probe_ggx.glsl");
+            check.Expect(ggx.Contains("float perceptual = float(uLevel) / float(max(levels - 1, 1));")
+                         && ggx.Contains("float a = perceptual * perceptual"), "the prefilter bakes perceptual roughness per level");
+            foreach (string stage in new[] { "cx_ownlit_tail.glsl", "cx_ownlit_light.glsl", "cx_grass_fmain.glsl", "cx_gblade_fmain.glsl" })
+            {
+                string src = ShaderSource.Get(stage);
+                int fetches = Count(src, "textureLod(uProbe,"), mapped = Count(src, "textureLod(uProbe, R, sqrt(")
+                              + Count(src, "textureLod(uProbe, reflect(-V, N), sqrt(");
+                check.Expect(fetches > 0 && fetches == mapped && Count(src, "* (uProbeMips - 1.0)).rgb") == fetches,
+                             $"{stage}: every probe fetch uses the prefilter's sqrt(rough) * (uProbeMips - 1) mapping");
+            }
+            string mat = ShaderSource.Get("cx_material.glsl"), sh = ShaderSource.Get("cx_probe_sh.glsl");
+            check.Expect(!mat.Contains("textureLod(uProbe"), "the ambient shape reads the SH9 block, not the cube");
+            check.Expect(mat.Contains($"layout(std140, binding = {ShBinding}) uniform CxProbeSh")
+                         && sh.Contains($"layout(std430, binding = {ShOutBinding}) writeonly buffer"),
+                         "the SH9 block's two bindings match the C# side");
+
             Tex = 9; Ready = true; _bsp = (IntPtr)0x1234;
             Revoke();
             check.Expect(!Ready && _bsp == IntPtr.Zero,
@@ -150,18 +187,20 @@ internal static unsafe class EnvProbe
     {
         vp = ShadowMath.PointLightFaceViewProj(Origin, face, FaceNear, _far);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0,
-                                Gl.TEXTURE_CUBE_MAP_POSITIVE_X + (uint)face, Tex, 0);
+                                Gl.TEXTURE_CUBE_MAP_POSITIVE_X + (uint)face, _cap, 0);
         if (Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
         { Fail("the probe framebuffer is incomplete"); return false; }
         Gl.Clear(Gl.COLOR_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT);
         return true;
     }
 
-    /// <summary>Close the capture: build the mip chain (the roughness blur) and publish the cube.</summary>
+    /// <summary>Close the capture: box-mip it, prefilter it into <see cref="Tex"/> and project its SH9, then
+    /// publish.</summary>
     internal static void End()
     {
-        Gl.GenerateTextureMipmap(Tex);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        Gl.GenerateTextureMipmap(_cap);
+        Prefilter();
         Ready = true;
         Captures++;
         _log?.Info($"EnvProbe: captured area probe #{Captures} at ({Origin.X:F0},{Origin.Y:F0},{Origin.Z:F0}) " +
@@ -172,7 +211,7 @@ internal static unsafe class EnvProbe
     /// owned them is gone -- the names are simply dropped so the next capture builds fresh ones.</summary>
     internal static void Forget()
     {
-        Tex = 0; _fbo = 0; _down.Forget();
+        Tex = _cap = _sh = _progGgx = _progSh = _fbo = 0; _down.Forget();
         Revoke();   // a cube built by a dead context is stale for the world reason too
     }
 
@@ -193,30 +232,75 @@ internal static unsafe class EnvProbe
 
     internal static (float near, float far) FacePlanes => (FaceNear, _far);
 
+    /// <summary>The SH9 block onto <see cref="ShBinding"/>, from every lit-program bind. Created here on first
+    /// use (zeroed) so the block is backed even before a capture; <c>uProbeMips</c> 0 keeps it unread till then.</summary>
+    internal static void BindSh()
+    {
+        if (_sh == 0)
+        {
+            uint b; Gl.CreateBuffers(1, &b);
+            byte* zero = stackalloc byte[ShBytes];
+            new Span<byte>(zero, ShBytes).Clear();
+            Gl.NamedBufferStorage(b, (IntPtr)ShBytes, zero, 0);
+            _sh = b;
+        }
+        Gl.BindBufferBase(Gl.UNIFORM_BUFFER, ShBinding, _sh);
+    }
+
+    /// <summary>The two CX-46 dispatches over the fresh capture: GGX into every level of <see cref="Tex"/>, SH9
+    /// into <see cref="_sh"/>. Compute, so no raster state is touched; the program and the unit are put back.</summary>
+    private static void Prefilter()
+    {
+        int prev; Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &prev);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, _cap);
+        Gl.UseProgram(_progGgx);
+        for (int i = 0; i < Mips; i++)
+        {
+            uint groups = (uint)(Math.Max(Size >> i, 1) + 7) / 8;
+            Gl.Uniform1i(_locLevel, i);
+            Gl.BindImageTexture(0, Tex, i, 1, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
+            Gl.DispatchCompute(groups, groups, 6);
+        }
+        Gl.BindImageTexture(0, 0, 0, 0, 0, Gl.WRITE_ONLY, Gl.RGBA16F);
+        BindSh();
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, ShOutBinding, _sh);
+        Gl.UseProgram(_progSh);
+        Gl.DispatchCompute(1, 1, 1);
+        Gl.MemoryBarrier(Gl.TEXTURE_FETCH_BARRIER_BIT | Gl.UNIFORM_BARRIER_BIT);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, ShOutBinding, 0);
+        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, 0);
+        Gl.UseProgram((uint)prev);
+    }
+
     private static bool Ensure()
     {
         if (_down.Failed) return false;
         if (Tex != 0) return true;
         if (Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null || Gl.ClearColor == null)
         { Fail("a required GL entry point for the probe is missing"); return false; }
+        if (Gl.DispatchCompute == null || Gl.BindImageTexture == null || Gl.MemoryBarrier == null || Gl.CreateBuffers == null)
+        { Fail("compute, image stores or buffer creation are missing, so the probe cannot be prefiltered"); return false; }
+        if (_progGgx == 0)
+        {
+            _progGgx = GlProgram.Compute("cx_probe_ggx", ShaderSource.Get("cx_probe_ggx.glsl"), _log, "EnvProbe GGX prefilter");
+            _progSh = GlProgram.Compute("cx_probe_sh", ShaderSource.Get("cx_probe_sh.glsl"), _log, "EnvProbe SH9 projection");
+            if (_progGgx == 0 || _progSh == 0)
+            { Fail("the prefilter or SH9 program did not build"); return false; }
+            _locLevel = GlProgram.Loc(_progGgx, "uLevel");
+        }
 
         Mips = 1;
         for (int s = Size; s > 1; s >>= 1) Mips++;
 
-        uint t; Gl.CreateTextures(Gl.TEXTURE_CUBE_MAP, 1, &t);
-        Gl.DrainErrors();   // an earlier pass's error must not be read as this allocation's
-        Gl.TextureStorage2D(t, Mips, Gl.RGBA16F, Size, Size);
-        if (Gl.GetError() != 0)
+        uint cap = Cube(), t = Cube();
+        if (cap == 0 || t == 0)
         {
-            Gl.DeleteTextures(1, &t);
-            Fail($"a {Size}x{Size} RGBA16F cube could not be allocated (out of video memory?)");
+            if (cap != 0) Gl.DeleteTextures(1, &cap);
+            if (t != 0) Gl.DeleteTextures(1, &t);
+            Fail($"two {Size}x{Size} RGBA16F cubes could not be allocated (out of video memory?)");
             return false;
         }
-        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR_MIPMAP_LINEAR);
-        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_R, Gl.CLAMP_TO_EDGE);
         // Global state, not a texture parameter: without it a roughness mip fetch near a face border blends
         // against the edge clamp instead of the neighbouring face, which reads as a seam in the reflection.
         Gl.Enable(Gl.TEXTURE_CUBE_MAP_SEAMLESS);
@@ -231,8 +315,32 @@ internal static unsafe class EnvProbe
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, d, 0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
 
-        Tex = t; _fbo = f2;
+        Tex = t; _cap = cap; _fbo = f2;
         return true;
+    }
+
+    /// <summary>One <see cref="Size"/>-square RGBA16F cube with the full chain and trilinear clamp, or 0 when
+    /// the allocation raised.</summary>
+    private static uint Cube()
+    {
+        uint t; Gl.CreateTextures(Gl.TEXTURE_CUBE_MAP, 1, &t);
+        Gl.DrainErrors();   // an earlier pass's error must not be read as this allocation's
+        Gl.TextureStorage2D(t, Mips, Gl.RGBA16F, Size, Size);
+        if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t); return 0; }
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR_MIPMAP_LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_R, Gl.CLAMP_TO_EDGE);
+        return t;
+    }
+
+    /// <summary>Occurrences of <paramref name="what"/> in <paramref name="s"/>, for SelfCheck's source contracts.</summary>
+    private static int Count(string s, string what)
+    {
+        int n = 0;
+        for (int i = s.IndexOf(what, StringComparison.Ordinal); i >= 0; i = s.IndexOf(what, i + what.Length, StringComparison.Ordinal)) n++;
+        return n;
     }
 
     /// <summary>Stand the probe down by name for the session. The Alloy pass keeps drawing; it simply feeds
