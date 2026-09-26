@@ -18,14 +18,10 @@
 
 float CxSqr(float x) { return x * x; }
 
-/// Window-space depth from the copy, linearised to a POSITIVE view-space distance -- stock's
-/// GetDepth, reconstructed from this pass's own near/far rather than from an engine uniform.
-float CxSceneZ(vec2 uv)
-{
-    float d = texture(uFbDepth, uv).x * 2.0 - 1.0;
-    float n = uNearFar.x, f = uNearFar.y;
-    return (2.0 * n * f) / (f + n - d * (f - n));
-}
+#include "cx_raymarch.glsl"
+
+/// The copy's depth as a positive view distance (cx_raymarch), at this pass's own near/far.
+float CxSceneZ(vec2 uv) { return CxMarchZ(uFbDepth, uNearFar, uv); }
 
 /// The copy's colour. #132: linear already, so NO decode -- stock's ApplyColorSpace on this read is
 /// the one line of it that must not survive the port.
@@ -156,88 +152,8 @@ vec3 CxWaterNormal(vec3 vPos)
     return normalize(vNormal);
 }
 
-// ---- the marches: inc_common's GetRayIntersectCoords, on the copy ------------------------------
-
-/// Stock's march, verbatim in method: step along the view-space ray, read the copy's depth at the
-/// projected point, and feed the signed depth difference back as the next step so the iteration
-/// converges on the crossing. Returns (uv, hit view distance, relative error).
-vec4 CxRayIntersect(vec3 vPosViewOrigin, vec3 vRay, float fDepthOffset, float fMaxDistance, int nIterations)
-{
-    vec2 vRayIntersectionCoords = vec2(-1.0);
-
-    float fAngleFactor = mix(1.0, abs(vRay.z), 0.9);
-    fMaxDistance *= fAngleFactor;
-    vRay /= fAngleFactor;
-
-    float fDistanceOffsetMax = fMaxDistance / float(nIterations);
-    float fDepthDeltaMin = 4096.0;
-    float fRayIntersectionDepth = fMaxDistance + vPosViewOrigin.z;
-
-    vec3 vRayMaxProj = mat3(uProj) * (vPosViewOrigin + fMaxDistance * vRay);
-    vec2 vRayCoordsMax = 0.5 * (vRayMaxProj.xy / vRayMaxProj.z) + 0.5;
-    vec3 vPosOriginProj = mat3(uProj) * vPosViewOrigin;
-    vec2 vPosProjOriginCoords = 0.5 * (vPosOriginProj.xy / vPosOriginProj.z) + 0.5;
-
-    float fInterpolationDenominatorInv =
-        1.0 / (1.0 / (vPosViewOrigin.z + vRay.z * fMaxDistance) - 1.0 / vPosViewOrigin.z);
-    float fInterpolationOffset = (1.0 / vPosViewOrigin.z) * fInterpolationDenominatorInv;
-
-    float fDepthDelta = clamp(fDepthOffset, 0.0, fDistanceOffsetMax);
-    float fDistance = 0.0;
-    bool bFoundIntersection = false;
-
-    for (int n = 1; n <= nIterations; n++)
-    {
-        fDistance += clamp(fDepthDelta, -fDistanceOffsetMax, fDistanceOffsetMax);
-        fDistance = max(0.01, fDistance);
-        vec3 vRayThis = fDistance * vRay;
-
-        vec2 vRayCoordsThis = mix(vPosProjOriginCoords, vRayCoordsMax,
-                                  (1.0 / (vPosViewOrigin.z + vRayThis.z)) * fInterpolationDenominatorInv
-                                  - fInterpolationOffset);
-        if (vRayCoordsThis.x > 1.0 || vRayCoordsThis.x < 0.0
-            || vRayCoordsThis.y > 1.0 || vRayCoordsThis.y < 0.0) break;
-
-        float fSampleDepth = CxSceneZ(vRayCoordsThis);
-        fDepthDelta = fSampleDepth + (vPosViewOrigin.z + vRayThis.z);
-
-        if (abs(fDepthDelta) / (fDistance + 1.0) <= abs(fDepthDeltaMin))
-        {
-            vRayIntersectionCoords = vRayCoordsThis;
-            fDepthDeltaMin = fDepthDelta / (fDistance + 1.0);
-            fRayIntersectionDepth = fSampleDepth;
-        }
-        if (fDepthDelta < 0.0) bFoundIntersection = true;
-        if (bFoundIntersection) fDistanceOffsetMax *= 0.5;
-    }
-
-    return vec4(vRayIntersectionCoords.x, vRayIntersectionCoords.y, -fRayIntersectionDepth, fDepthDeltaMin);
-}
-
-vec4 CxReflectionCoords(vec3 vPosViewThis, vec3 vReflect, float fDepthOffset)
-{
-    const int nIterations = 10;
-    float fDepthMax = mix(mix(uNearFar.y, 0.0, 0.5 + 0.5 * vReflect.z), 100.0, 0.1);
-    float fDepthDeltaMax = fDepthMax + vPosViewThis.z;
-    float fMaxDistance = clamp(abs(fDepthDeltaMax), 1.0, 30.0);
-    vec4 c = CxRayIntersect(vPosViewThis, vReflect, fDepthOffset, fMaxDistance, nIterations);
-    return vec4(c.xyz, clamp(abs(c.w / 0.2), 0.0, 1.0));
-}
-
-/// inc_common's GetNormalVector: the VIEW-space normal of whatever the copy's depth holds at these
-/// coordinates, used only to reject a reflection off a surface facing away from the ray. Central
-/// differences here rather than stock's nearest-neighbour pick -- the projection helpers its version
-/// leans on are a bigger port than the term is worth.
-vec3 CxCopyNormal(vec2 uv)
-{
-    vec2 px = uPixel.xy;
-    // View position from a depth sample: the ray through this pixel, scaled to the sampled distance.
-    vec3 dir = vec3((2.0 * uv.x - 1.0) / uProj[0][0], (2.0 * uv.y - 1.0) / uProj[1][1], -1.0);
-    vec3 p  = dir * CxSceneZ(uv);
-    vec3 dx = vec3((2.0 * (uv.x + px.x) - 1.0) / uProj[0][0], dir.y, -1.0) * CxSceneZ(uv + vec2(px.x, 0.0)) - p;
-    vec3 dy = vec3(dir.x, (2.0 * (uv.y + px.y) - 1.0) / uProj[1][1], -1.0) * CxSceneZ(uv + vec2(0.0, px.y)) - p;
-    return normalize(cross(dx, dy));
-}
+/// The copy's normal at uv (cx_raymarch), at this pass's own projection and pixel size.
+vec3 CxCopyNormal(vec2 uv) { return CxMarchNormal(uFbDepth, uProj, uNearFar, uPixel.xy, uv); }
 
 /// inc_common.shd's CalculateEnvironmentTexCoords: the sphere-map lookup stock reflects the
 /// environment with, from the VIEW-space fragment normal and the view position. Verbatim -- the
@@ -361,7 +277,7 @@ void main()
     vec3 vRefractSurface = refract(vViewToSurface_n, normalize(mat3(uView) * vSurfaceNormalWorld), 1.0 / 1.33333);
     vRefraction = vViewToSurface_n + (vRefraction - vRefractSurface);
 
-    vec4 vRefractionCoords = CxRayIntersect(vPosViewThis, vRefraction, fDepthOffset,
+    vec4 vRefractionCoords = CxRayIntersect(uFbDepth, uProj, uNearFar, vPosViewThis, vRefraction, fDepthOffset,
                                               CX_WATER_REFRACTION_MAX_RANGE,
                                               CX_WATER_REFRACTION_ITERATIONS);
     float fRefractionModifier = clamp(1.0 + 10.0 * vRefractionCoords.w, 0.0, 1.0);
@@ -380,7 +296,7 @@ void main()
     vec3 ColorReflection;
     vec3 ColorLiquid = WaterBaseColor.rgb * SubsurfaceLight;
     vec3 vReflect = reflect(vViewToSurface_n, vFragmentNormal);
-    vec4 vReflectedCoords = CxReflectionCoords(vPosViewThis, vReflect, fDepthOffset);
+    vec4 vReflectedCoords = CxReflectionCoords(uFbDepth, uProj, uNearFar, vPosViewThis, vReflect, fDepthOffset);
     float fReflectionMod = clamp(1.0 - vReflectedCoords.w, 0.0, 1.0);
     if (vReflectedCoords.x >= 0.0)
     {

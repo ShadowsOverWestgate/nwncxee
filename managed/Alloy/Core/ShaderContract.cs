@@ -216,7 +216,8 @@ internal static class ShaderContract
             ("uTile", AlloyRenderer.PbTile), ("uGrid", AlloyRenderer.PbGrid), ("uReach", AlloyRenderer.PbReach),
             ("uFalloff", AlloyRenderer.PbFalloff), ("uWrap", AlloyRenderer.PbWrap), ("uZ", AlloyRenderer.PbZ),
             ("uAtten", AlloyRenderer.PbAtten), ("uHot", AlloyRenderer.PbHot), ("uSss", AlloyRenderer.PbSss),
-            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim) };
+            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim),
+            ("uSsrView", AlloyRenderer.PbSsrView), ("uSsrProj", AlloyRenderer.PbSsrProj), ("uSsr", AlloyRenderer.PbSsr) };
         foreach ((string name, int off) in pinned)
         {
             int at = Std140Offset(members, name, out int size);
@@ -452,14 +453,12 @@ internal static class ShaderContract
                   // A stage that lost the sample still renders (flat, as before #121); one that kept the
                   // sample but lost the capture branch samples the cube it is drawing into -- undefined --
                   // and stores display-space values a mip filter then darkens. Both are silent.
-                  && OwnedLitFsMain.Contains("textureLod(uProbe, reflect(-V, N)")
+                  && OwnedLitFsMain.Contains("textureLod(uProbe, R, sqrt(rough)")
                   && OwnedLitFsMain.Contains("uCapture == 0 && uProbeMips > 0.0")
                   && OwnedLitFsMain.Contains("if (uCapture != 0) { frag = vec4(lit, 1.0); return; }")
-                  // ...and the weighting itself: the engine tints the light that is already there. Dropping
-                  // the (ambient + diffuse) factor is what made every stone surface read as wet.
-                  && OwnedLitFsMain.Contains("(ambient + diffuse) * env * F0 * (uProbeGain * envW)")
-                  // ...and the gate that keeps it off the parts the engine binds no env texture for (legacy metal aside, ADR 0026).
-                  && OwnedLitFsMain.Contains("uSceneEnv != 0 || (slots & CX_SLOT_ENV) != 0")
+                  // ...and CX-51's weighting: the screen hit and the probe share one split-sum weight, capped at
+                  // 1 -- anything above it compounds through the SSR history into inf
+                  && OwnedLitFsMain.Contains("specLight += mix(env, ssr.rgb, ssr.a)")
                   // #124/#132: the dissolve and the fog, and the order they apply in. Both are LINEAR now --
                   // #124 welded the engine's keyhole-then-encode-then-fog order and #132 unwelded it, so the
                   // whole tail is one linear expression and the encode is the resolve's. Swap the two and

@@ -61,9 +61,6 @@ vec3 CxSpecColor(vec4 declared, vec3 base, float metal, int slots)
 // the translation happens once, at the material, so the loop, the lightmap, the glossy tests and every
 // weather splice keep reading one convention.
 
-/// The dielectric reflectance at normal incidence a glTF material assumes (IOR 1.5) -- and the stock
-/// fSpecularityMin, so a physical and a legacy dielectric start from the same F0.
-const float CX_DIELECTRIC_F0 = 0.04;
 /// The narrowest lobe a declared roughness may ask for. GGX peaks at 1/alpha^2 times the irradiance, and
 /// the colour target is RGBA16F: 0.02 keeps a sunlit mirror at 2500, far from the 65504 ceiling and from
 /// the bloom fireflies of an infinite peak. In perceptual units that is ~0.14: anything declared below it
@@ -102,16 +99,7 @@ vec3 CxPhysicalPbr(vec4 m0, float ormOn, vec3 orm, vec3 legacy, vec3 base, out v
     return vec3(spec, rough, metal);
 }
 
-/// Karis' analytic fit of the split-sum DFG integral: (scale, bias) on F0 for the directional albedo of a
-/// GGX lobe. `perceptual` is sqrt(alpha).
-vec2 CxEnvBrdf(float NoV, float perceptual)
-{
-    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
-    const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
-    vec4 r = perceptual * c0 + c1;
-    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
-    return vec2(-1.04, 1.04) * a004 + r.zw;
-}
+// CxEnvBrdf (the split-sum DFG fit) lives in cx_ssr.glsl: the grass stages weigh their reflection with it too.
 
 /// Multiple-scattering compensation (Fdez-Aguera 2019): a single-scatter GGX lobe loses the light that
 /// bounces between microfacets, so rough metal reads dark. 1 + F0 (1/Ess - 1), Ess the lobe's directional

@@ -360,6 +360,7 @@ internal static unsafe class Issue
                     UploadFeatureTerms(L.Feat, viewport);
                     BindPass(L.CubeCount, viewport, near, far);
                     BindProbe();
+                    Ssr.Bind();
                     SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
                     Gl.Uniform1i(L.SsaoHalf, SsaoPass.Half ? 1 : 0);
                     Gl.Uniform2f(L.LightOcc, Lighting.HiddenLights.V ? 1f : 0f, GlossyRough);

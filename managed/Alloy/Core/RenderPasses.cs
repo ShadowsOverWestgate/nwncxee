@@ -94,6 +94,15 @@ internal static class RenderPasses
             ContextLost = FrameSnapshot.Forget,
             Stats = FrameSnapshot.Stats,
         }, log);
+        // CX-51: the reflection history -- a copy per frame and the camera it was drawn by.
+        r.Register(new PassLifecycle
+        {
+            Name = "ssr",
+            Attach = Ssr.Attach,
+            Revoke = Ssr.Revoke,
+            ContextLost = Ssr.Forget,
+            Stats = Ssr.Stats,
+        }, log);
         // not a draw pass either -- it replaces the engine's per-frame dangly SOLVE, which is a
         // separate pass from the dangly draw. No GL objects, so no ContextLost; no captured world state,
         // so no Revoke; its only resources are the engine's own buffers.

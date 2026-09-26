@@ -413,6 +413,13 @@ public sealed unsafe partial class AlloyRenderer
                         GpuEnd(GpuTerm.WaterCopy);
                         FrameZones.Add(FrameZones.Zone.Blit, tBlit);
                     }
+                    // CX-51: next frame's reflection history -- whole frame, every frame, its own pair.
+                    if (perspective && !_capturing && Ssr.On)
+                    {
+                        GpuBegin(GpuTerm.Ssr);
+                        Ssr.Take(viewport, &view, &proj, near, far);
+                        GpuEnd(GpuTerm.Ssr);
+                    }
                     break;
                 case PassId.WaterOwned:
                     GpuBegin(GpuTerm.Water);

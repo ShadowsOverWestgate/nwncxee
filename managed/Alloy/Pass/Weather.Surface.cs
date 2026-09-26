@@ -33,6 +33,13 @@ internal static unsafe partial class Weather
     internal static float Snow => _snow;
     internal static float Puddle => _puddle;
 
+    /// <summary>How far wet surfaces darken at full wetness: the lit stage's splice and the grass share it.</summary>
+    internal const float WetDarkening = 0.45f;
+
+    /// <summary>The wetness the lit stage's splice is handed (0 while the weather is off), for stages that
+    /// take no rain occlusion map of their own.</summary>
+    internal static float WetShown => !_off && Enabled.V ? _wet * WetStrength.V : 0f;
+
     private static void DeclareSurfaceKnobs()
     {
         G.Section("Surfaces");
@@ -110,7 +117,7 @@ internal static unsafe partial class Weather
         Gl.Uniform4f(locWeather, on ? _wet * WetStrength.V : 0f, on ? _snow * SnowStrength.V : 0f,
                      on ? _puddle : 0f, on ? Viz.V : 0f);
         float radius = MathF.Max(CoverRange.V, 1f);
-        Gl.Uniform4f(locLook, 0.45f, SnowAlbedo.V, PuddleEdge.V, PuddleCoverage.V);
+        Gl.Uniform4f(locLook, WetDarkening, SnowAlbedo.V, PuddleEdge.V, PuddleCoverage.V);
         Gl.Uniform4f(locSnowLook, SnowSparkle.V, SnowBump.V, SnowPile.V, MathF.Cos(SnowSlope.V * MathF.PI / 180f));
         // z = the drift width in cover-view uv (the fit is 2 x radius across), w = ground variation
         Gl.Uniform4f(locSnowLight, SnowWrap.V, SnowSky.V, SnowPileWidth.V * 0.5f / radius, SnowVary.V);

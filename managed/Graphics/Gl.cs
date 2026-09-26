@@ -183,6 +183,8 @@ public static unsafe class Gl
     public const uint COMMAND_BARRIER_BIT = 0x0040, BUFFER_UPDATE_BARRIER_BIT = 0x0200;
     /// <summary>CX-24: a compute write consumed as a divisor-1 vertex attribute (the grass scatter's stream).</summary>
     public const uint VERTEX_ATTRIB_ARRAY_BARRIER_BIT = 0x0001;
+    /// <summary>CX-51: an image store read back by the next level's dispatch (image) and by the lit stage (fetch).</summary>
+    public const uint SHADER_IMAGE_ACCESS_BARRIER_BIT = 0x0020, TEXTURE_FETCH_BARRIER_BIT = 0x0008, WRITE_ONLY = 0x88B9;
     /// <summary>Sample counts of an existing attachment: renderbuffer (glGetRenderbufferParameteriv) and
     /// multisample texture (glGetTexLevelParameteriv on TEXTURE_2D_MULTISAMPLE).</summary>
     public const uint NUM_EXTENSIONS = 0x821D, EXTENSIONS = 0x1F03;
@@ -435,6 +437,8 @@ public static unsafe class Gl
     // #83 clustered forward+
     public static delegate* unmanaged<uint, uint, uint, void> DispatchCompute;
     public static delegate* unmanaged<uint, void> MemoryBarrier;
+    /// <summary>glBindImageTexture (GL 4.2): unit, texture, level, layered, layer, access, format.</summary>
+    public static delegate* unmanaged<uint, uint, int, byte, int, uint, uint, void> BindImageTexture;
     public static delegate* unmanaged<uint, IntPtr, IntPtr, void*, void> GetBufferSubData;
     public static delegate* unmanaged<int, uint*, void> GenQueries;
     public static delegate* unmanaged<uint, uint, void> BeginQuery;
@@ -631,6 +635,7 @@ public static unsafe class Gl
         DeleteProgram = (delegate* unmanaged<uint, void>)P("glDeleteProgram");
         DispatchCompute = (delegate* unmanaged<uint, uint, uint, void>)P("glDispatchCompute");
         MemoryBarrier = (delegate* unmanaged<uint, void>)P("glMemoryBarrier");
+        BindImageTexture = (delegate* unmanaged<uint, uint, int, byte, int, uint, uint, void>)P("glBindImageTexture");
         GetBufferSubData = (delegate* unmanaged<uint, IntPtr, IntPtr, void*, void>)P("glGetBufferSubData");
         GenQueries = (delegate* unmanaged<int, uint*, void>)P("glGenQueries");
         BeginQuery = (delegate* unmanaged<uint, uint, void>)P("glBeginQuery");

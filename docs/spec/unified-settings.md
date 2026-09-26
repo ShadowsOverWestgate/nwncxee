@@ -494,9 +494,11 @@ Renderer itself.
 | light.falloff | falloff | Rim fade exponent | S | 0.1–4 · 1 | A | L | Lights | 1 = stock falloff exactly. |
 | light.fadeout | fadeout | Departed-light fade | S | 0–120 frames · SceneInputs.FadeFrames | A | L | Lights | Frames a light takes to fade after it leaves. |
 | light.probe | probe + /probe on | Reflections from the scene | T | on | U | L | Reflections | Materials with an environment map reflect a capture of the surroundings instead of the stock sphere map. |
-| light.probegain | /probe gain | Reflection strength | S | 0–4 · 1 | A | L | Reflections | 1 is the stock weighting. |
-| light.probeareawide | /probe areawide | Reflect on every surface | T | off | A | L | Reflections | On, every material reflects the probe, not just those with an env map. |
-| light.probesize | probe_size | Reflection capture size | D | 64 / 128 / 256 / 512 px · 128 | A | R | Reflections | |
+| light.probegain | /probe gain | Reflection strength | S | 0–4 · 0.25 | A | L | Reflections | 1 is the stock weighting. Fainter reflections are also cheaper: too faint a one traces no ray. |
+| light.probesize | probe_size | Reflection capture size | D | 64 / 128 / 256 / 512 px · 64 | A | R | Reflections | |
+| light.ssr | — | Screen-space reflections | T | on | U | L | Reflections | Glossy and rain-wet surfaces also reflect what is on screen -- grass, creatures, anything drawn -- and keep the capture where a reflection leaves the screen. |
+| light.ssrrough | — | Screen-space reflection roughness | S | 0.05–1 · 0.5 | A | L | Reflections | Surfaces rougher than this keep the capture alone. Lower is cheaper. |
+| light.ssrdetail | — | Screen-space reflection detail | D | full / half / quarter · half | A | L | Reflections | The resolution a reflection finds what it hits at. Lower is cheaper and blockier. |
 | light.hidden | — | Hidden lights do not reflect | T | on | U | L | Reflections | A wet or glossy surface mirrors a light only where that light's shadow lets it -- a lamp on a terrace reflects in the street from where the ground sees over the parapet, not from the wall's foot. |
 | light.brdf | — | Modern materials | T | on | U | L | Materials | Energy-conserving highlights, reflections that brighten at grazing angles and fade in crevices, and the extra material layers (metal, clear coat, sheen, glow) a .mtr can declare for Alloy. Off is the stock shading exactly. (ADR 0026) |
 | light.ambientdir | — | Directional ambient | S | 0–1 step 0.05 · 0.5 | U | L | Materials | Ambient light takes its direction from the surroundings (sky above, ground below) at the area's own brightness. 0 is the stock sun-facing shading. Needs Modern materials and Reflections from the scene. |

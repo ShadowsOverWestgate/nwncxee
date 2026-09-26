@@ -96,42 +96,6 @@
     //      Black at both /ao on 0 and /ao on 1 means AO has nothing to scale here, however bright
     //      viz 8 reads -- which no other view in the ladder can say.
     if (uViz == 34) { frag = vec4(ambient * (1.0 - spec), 1.0); return; }
-    // #121: ambient specular -- the term vanilla feeds from the area env map on EVERY lit part
-    // (inc_lighting.shd:456-512 gates it on SPECULAR_LIGHT, not on ENVIRONMENT_MAP) and the owned
-    // pass dropped on all of them. Weighted the ENGINE's way: the env sample TINTS the light already
-    // arriving at this fragment -- `EnvironmentColor = (AmbientLight + DiffuseLight) * envTexel`,
-    // then `* fEnvironmentSpecularity` -- rather than adding radiance on top of it. Added radiance
-    // (the split-sum form this first shipped as) makes a brick road reflect the sky like wet stone
-    // and lights unlit corners out of the probe; this form cannot exceed the light that is there.
-    // ponytail: no split-sum BRDF and no specular Fresnel (inc_lighting.shd:463, SPECULAR_FRESNEL).
-    // /light probegain is the dial if the term wants more presence than the engine gave it.
-    // ...and fed only where the material DECLARES an env map. RenderFlat @0x450eb0 also binds the
-    // area's own env map (currentscene+0x1e8, verified) for plain parts, so being faithful to the
-    // BINDING would put this term on everything in such an area -- and live that reflects the sky off
-    // city cobblestone, which vanilla plainly does not do: its authored spheremap is a dim texel,
-    // while the probe carries real scene radiance. /light probeareawide 1 opts back into the engine's
-    // rule (uSceneEnv); the default is the case the reflection exists for.
-    // ADR 0026: a physical material reflects whether or not it names an env map -- a metal that reflects
-    // nothing is black -- and under the modern model the weight is the split-sum DFG fit with Lagarde's
-    // specular occlusion instead of the bare F0: the grazing reflection vanilla never had, and none of it
-    // inside a crevice. A legacy texel the engine itself derives as metal (3s - 0.6 off its spec map, or
-    // a stated Metallicness) reflects too, weighted by that metalness: a metal pixel of a spec-mapped
-    // part is real metal with no asset work, while matte stone (s <= 0.2, metal 0) stays out.
-    float envW = uSceneEnv != 0 || (slots & CX_SLOT_ENV) != 0 || physical ? 1.0
-               : uMaterial.x > 0.5 ? metal : 0.0;
-    if (uCapture == 0 && uProbeMips > 0.0 && envW > 0.0)
-    {
-        // mip by PERCEPTUAL roughness (sqrt of the engine's alpha), the unit the DFG fit below reads too
-        vec3 env = textureLod(uProbe, reflect(-V, N), sqrt(rough) * (uProbeMips - 1.0)).rgb;
-        if (uMaterial.x > 0.5)
-        {
-            vec2 ab = CxEnvBrdf(NoV, sqrt(rough));
-            // Karis' bias is achromatic -- a metal whitens at grazing -- and the product never exceeds 1:
-            // the tint form's promise is that the reflection is at most the light already there
-            F0 = min((F0 * ab.x + ab.y) * msc, vec3(1.0)) * coatT * CxSpecOcclusion(NoV, occl, rough);
-        }
-        specLight += (ambient + diffuse) * env * F0 * (uProbeGain * envW);
-    }
     // ...and the clear coat reflects on its own lobe, on every material that declares one
     if (cxCoat > 0.0 && uCapture == 0 && uProbeMips > 0.0)
     {

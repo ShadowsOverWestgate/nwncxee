@@ -23,12 +23,14 @@ uniform float uShade;                   // past this, no cascade taps
 uniform int uViz;                       // /alloy viz: 3 = the sun's visibility, as the lit stage's own 3
 // CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
 #include "cx_pass.glsl"
+uniform samplerCube uProbe;               // CX-51: the reflection probe, on the lit stage's unit
+#include "cx_ssr.glsl"
 uniform int uLit;
 uniform int uVLit;
 uniform float uRootAo;
 uniform vec2 uSnow;
 uniform float uGroundTint;
-uniform vec2 uLook;                     // x backlit transmission, y specular sheen
+uniform vec4 uLook;                     // x backlit transmission, y specular sheen, z rain wetness, w its darkening
 uniform sampler2D uGround;
 uniform int uGroundOn;
 out vec4 frag;

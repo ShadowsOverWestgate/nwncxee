@@ -231,7 +231,7 @@ internal static unsafe partial class GrassField
 
     private struct Loc
     {
-        public int Look, Segments, Width;
+        public int Look, Segments, Width, Probe;
         public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Viz, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
         public int PushTex, PushGain, PushWindow;
         public int SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex;   // CX-43: the rest of the receiver rides CxPass
@@ -881,6 +881,9 @@ internal static unsafe partial class GrassField
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.GrassGround);
         Gl.BindTexture(Gl.TEXTURE_2D, FrameSnapshot.ColorTex);
         Gl.ActiveTexture(Gl.TEXTURE0);
+        // CX-51: a blade reflects the screen and the probe as the ground around it does
+        Ssr.Bind();
+        AlloyRenderer.BindProbe();
         AlloyRenderer.GpuBegin(AlloyRenderer.GpuTerm.Grass);
         // Procedural blades: opaque, depth-writing, two-sided, and no discard -- early-Z rejects the field's own
         // overdraw with no prepass.
@@ -1080,7 +1083,7 @@ internal static unsafe partial class GrassField
         Gl.Uniform1f(loc.RootAo, Grass.RootAo.V);
         Gl.Uniform1f(loc.GroundTint, Grass.GTint.V);
         Gl.Uniform1i(loc.GroundOn, ground ? 1 : 0);
-        Gl.Uniform2f(loc.Look, Grass.Backlight.V, Grass.Sheen.V);
+        Gl.Uniform4f(loc.Look, Grass.Backlight.V, Grass.Sheen.V, Weather.WetShown, Weather.WetDarkening);
         AlloyRenderer.BindPass(loc.CubeCount, viewport, near, far);
     }
 
@@ -1671,7 +1674,7 @@ internal static unsafe partial class GrassField
             Vp = GlProgram.Loc(prog, "uVP"), Eye = GlProgram.Loc(prog, "uEyePos"), Frame = GlProgram.Loc(prog, "uFrame"),
             Fade = GlProgram.Loc(prog, "uFade"), Tex = GlProgram.Loc(prog, "uTex"),
             Lod = GlProgram.Loc(prog, "uLod"), Shade = GlProgram.Loc(prog, "uShade"), Viz = GlProgram.Loc(prog, "uViz"),
-            Look = GlProgram.Loc(prog, "uLook"), Segments = GlProgram.Loc(prog, "uSegments"), Width = GlProgram.Loc(prog, "uWidth"),
+            Look = GlProgram.Loc(prog, "uLook"), Probe = GlProgram.Loc(prog, "uProbe"), Segments = GlProgram.Loc(prog, "uSegments"), Width = GlProgram.Loc(prog, "uWidth"),
             Tuft = GlProgram.Loc(prog, "uTuft"), VLit = GlProgram.Loc(prog, "uVLit"), Cast = GlProgram.Loc(prog, "uCast"), CastWidth = GlProgram.Loc(prog, "uCastWidth"), Snow = GlProgram.Loc(prog, "uSnow"),
             RootAo = GlProgram.Loc(prog, "uRootAo"), GroundTint = GlProgram.Loc(prog, "uGroundTint"), Ground = GlProgram.Loc(prog, "uGround"), GroundOn = GlProgram.Loc(prog, "uGroundOn"), GroundViz = GlProgram.Loc(prog, "uGroundViz"), SoftEdge = GlProgram.Loc(prog, "uSoftEdge"),
             MatAmb = GlProgram.Loc(prog, "uMatAmbient"), MatDif = GlProgram.Loc(prog, "uMatDiffuse"),
@@ -1703,6 +1706,7 @@ internal static unsafe partial class GrassField
         Gl.Uniform1i(l.CubeDynTex, (int)AlloyRenderer.CubeDynUnit);
         Gl.Uniform1i(l.PushTex, (int)PushUnit);
         Gl.Uniform1i(l.Ground, (int)TextureSlots.GrassGround);
+        Gl.Uniform1i(l.Probe, (int)EnvProbe.ProbeUnit);
     }
 
     // ---- shaders -----------------------------------------------------------------------------

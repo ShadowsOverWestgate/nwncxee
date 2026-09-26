@@ -1,9 +1,3 @@
-            if (uCapture == 0 && uProbeMips > 0.0 && (wxWet > 0.0 || wxPuddle > 0.0))
-            {
-                float wxFres = 0.04 + 0.96 * pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
-                vec3 wxEnv = textureLod(uProbe, reflect(-V, N), max(rough, 0.45) * (uProbeMips - 1.0)).rgb;
-                specLight += (ambient + diffuse) * wxEnv * wxFres * max(wxWet, wxPuddle) * 3.0;
-            }
             if (wxSnow > 0.0)
             {
                 // scatter: the terminator wraps past the sun-facing edge, the way light travelling inside snow does

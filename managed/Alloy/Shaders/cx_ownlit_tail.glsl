@@ -1,3 +1,20 @@
+    // #121/CX-51: the reflection on EVERY lit surface -- what the screen shows along R, and the probe where it
+    // shows nothing (a miss, off screen, too rough). The material's env map is not consulted: it was the
+    // vanilla renderer's stand-in for exactly this; it still marks legacy content shiny (CxSynthPbr). Both
+    // are radiance under the split-sum weight -- DFG with dielectric Fresnel on legacy content, specular
+    // occlusion, capped at 1 so no bounce through the history adds energy -- so the fallback has no seam.
+    // /light probegain is the dial.
+    if (uCapture == 0)
+    {
+        vec3 R = reflect(-V, N);
+        vec2 reflAb = CxEnvBrdf(NoV, sqrt(rough));
+        vec3 reflF0 = physical ? cxF0 : mix(vec3(CX_DIELECTRIC_F0), cxF0, metal);
+        vec3 reflW = min((reflF0 * reflAb.x + reflAb.y) * msc * CxSpecOcclusion(NoV, occl, rough) * coatT * uProbeGain, vec3(1.0));
+        vec4 ssr = CxSsr(R, rough, max(reflW.r, max(reflW.g, reflW.b)));
+        vec3 env = uProbeMips > 0.0 && ssr.a < 1.0
+                 ? min(textureLod(uProbe, R, sqrt(rough) * (uProbeMips - 1.0)).rgb, vec3(CX_SSR_MAX)) : vec3(0.0);
+        specLight += mix(env, ssr.rgb, ssr.a) * reflW;
+    }
     // 6 = the specular lobe alone: exactly what #120 adds. A part that reads flat in the composite is
     //     either black here (no lobe at all) or washed out by the diffuse, and nothing else tells the
     //     two apart.

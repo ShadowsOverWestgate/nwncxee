@@ -79,15 +79,6 @@ internal static unsafe class EnvProbe
     /// the light already arriving at the fragment, so raising it far past 1 puts the wet-stone look back.</summary>
     internal static float Gain => Lighting.ProbeGain.V;
 
-    /// <summary><c>/light probeareawide 1</c>: also feed the probe to parts whose material declares NO env map, in
-    /// areas that set one on the Scene (<c>scene+0x1e8</c>) -- which is where <c>RenderFlat</c> binds the
-    /// scene's env map to the sampler, so it is the vanilla-faithful reading of the term.
-    /// <para>OFF by default, on live evidence: the engine's authored spheremap is a dim texel that reads as
-    /// nothing on ordinary geometry, while the probe carries real scene radiance -- so being faithful to the
-    /// BINDING made city cobblestone reflect the sky, which vanilla plainly does not do. What is left is the
-    /// case the reflection is actually for: a material that declares an env map (81% of weapon models).</para></summary>
-    internal static bool AreaWide => Lighting.ProbeAreaWide.V;
-
     internal static void Attach(ExtenderLog log)
     {
         _log = log;

@@ -41,6 +41,7 @@ uniform float uAoCutout;       // /ao cutout: how much of it a CUTOUT receiver t
 // -1.0 (no test) on opaque and additive.
 uniform float uAlphaCut;
 layout(location = 0) out vec4 frag;
+#include "cx_ssr.glsl"
 #include "cx_oitout.glsl"
 // Slot mask bits, matching AlloyRenderer's 1 << (slot - 1).
 const int CX_SLOT_NORMAL = 1, CX_SLOT_SPEC = 2, CX_SLOT_ROUGH = 4,

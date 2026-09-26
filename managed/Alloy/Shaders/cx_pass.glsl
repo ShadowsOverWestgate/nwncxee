@@ -26,7 +26,7 @@ layout(std140, binding = 0) uniform CxPass
     vec3 uAreaDir;            // world-space surface->light for the area directional (sun/moon)
     float uProbeGain;         // /light probegain, the ambient-specular dial
     vec2 uLocalPlane;         // x = the near plane every cube shares, y = 1 / face size in texels
-    int uSceneEnv;            // does the AREA declare an env map (scene+0x1e8)?
+    int uSceneEnv;            // does the AREA declare an env map (scene+0x1e8)? No stage reads it since CX-51
     vec4 uTile;               // xy = viewport origin in window pixels, zw = pixels per tile
     ivec3 uGrid;
     float uReach;             // the cluster bins a light out to uReach * R (/light binreach); 0 = no window
@@ -38,5 +38,8 @@ layout(std140, binding = 0) uniform CxPass
     vec2 uSss;                // #375: the stock subsurface term as (wrap, energy)
     float uWrapN;             // #143: the distance-INDEPENDENT wrap floor; 0 = off
     float uDayDim;            // 1 / the daylight ratio: every lamp term's scale, 1 at night and indoors
+    mat4 uSsrView;            // CX-51: world -> view of the reflection history (Ssr), last frame's camera
+    mat4 uSsrProj;            // ...and its projection
+    vec4 uSsr;                // x = roughness cap (0 = no reflections this pass), y = cell visits per ray, z = the history's near, w = finest hi-Z level
 };
 #endif

@@ -20,6 +20,8 @@ uniform float uShade;                   // #355: past this, no shadow or per-fra
 uniform sampler2D uFlowTex;
 // CX-43: uAreaAmbient / uAreaDiffuse / uAreaDir ride the pass block.
 #include "cx_pass.glsl"
+uniform samplerCube uProbe;               // CX-51: the reflection probe, on the lit stage's unit
+#include "cx_ssr.glsl"
 uniform vec3 uMatAmbient;               // the grass material's own ambient (CAurGrassInfo +0x34)
 uniform vec3 uMatDiffuse;               // ... and diffuse (+0x28), WITHOUT vanilla's fade in its alpha
 uniform int uLit;                       // 0 = no cluster build this pass: ambient + sun only
@@ -29,7 +31,7 @@ uniform int uSoftEdge;                  // 1 = blended fringe: the ramp goes out
 uniform float uEdge;                    // cutout ramp width, in units of the analytic one-pixel edge
 uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
 uniform float uRootAo;                  // darkening at the root, 0..1
-uniform vec2 uLook;                     // x backlit transmission, y specular sheen (CX-24)
+uniform vec4 uLook;                     // x backlit transmission, y specular sheen (CX-24), z rain wetness, w its darkening
 uniform vec2 uSnow;                     // y = winter look: straw colour, snow on the tips
 uniform float uGroundTint;              // fraction of the blade's height that fades into the ground under its root
 uniform sampler2D uGround;              // the frame as it stood before the grass: the lit, fogged ground
