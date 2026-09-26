@@ -12,7 +12,10 @@ namespace CX.Alloy;
 /// unexposed. There is no auto exposure: eye adaptation re-graded every area away from the lighting its
 /// builder chose, so the exposure is fixed. <c>acesmix</c> mixes the
 /// ACES curve in LINEAR against the shoulder: 1 is the full fit, whose toe crushes NWN's dim interiors (0.01
-/// linear comes out 2.6x darker, so only specular survives); 0.5 is the live call. <c>dither</c> 1.0 is the
+/// linear comes out 2.6x darker, so only specular survives); 0.5 is the live call. <c>tonemap neutral</c> is
+/// Khronos PBR Neutral (CX-47), no knee or mix: a 0.04 offset below 0.76 whose toe darkens 0.01 linear 16x,
+/// so the dim interior is the A/B leg to watch.
+/// <c>dither</c> 1.0 is the
 /// correct value, not taste: one LSB of triangular-PDF noise is exactly what decorrelates the quantisation
 /// step. <c>taablend</c> is the current frame's share of the blend at rest (0.1 = a ten-frame history);
 /// <c>taau</c> keeps the TAA history at DISPLAY size under a render scale below 1. <c>taa</c> ships ON and is
@@ -33,10 +36,6 @@ internal static class Post
     internal static readonly Knob<bool> Taa, Taau, HalfRes, Stack, FbPost, Motion, ClearViz, SkyRaw;
     internal static readonly Knob<int> Tonemap, Viz;
 
-    /// <summary>The tonemap operators, index-aligned with <see cref="PostChain"/>'s <c>Off</c> /
-    /// <c>Shoulder</c> / <c>Aces</c>; the cfg and chat form is the name (<c>post.tonemap=aces</c>).</summary>
-    private static readonly string[] TonemapNames = { "off", "shoulder", "aces" };
-
     static Post()
     {
         G = KnobGroup.Declare("post", "Graphics", "Post-processing", parent: "alloy.enabled",
@@ -49,9 +48,10 @@ internal static class Post
         G.Section("Bloom");
         Bloom = G.Slider("bloom", "Bloom", 0f, 0.5f, 0.01f, 0.06f, help: "Glow around bright lights. 0 is off.");
         G.Section("Tone");
-        Tonemap = G.Dropdown("tonemap", "Tone mapping", new[] { 0, 1, 2 }, 2,
+        Tonemap = G.Dropdown("tonemap", "Tone mapping", new[] { PostChain.TonemapShoulder, PostChain.TonemapAces, PostChain.TonemapNeutral },
+                             PostChain.TonemapAces,
                              help: "How bright values above white are compressed.",
-                             format: v => (uint)v < 3u ? TonemapNames[v] : "aces");
+                             format: v => v switch { PostChain.TonemapShoulder => "shoulder", PostChain.TonemapNeutral => "neutral", _ => "aces" });
         G.Section("Anti-aliasing");
         Taa = G.Toggle("taa", "Temporal anti-aliasing", true, help: "Smooths edges over several frames.");
         Taa.Changed = () => { if (Taa.V) TaaStage.Reset(); };
@@ -59,8 +59,8 @@ internal static class Post
         Threshold = G.Slider("threshold", "Bloom threshold", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced);
         Knee = G.Slider("knee", "Bloom knee", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced);
         G.Section("Tone");
-        AcesMix = G.Slider("acesmix", "ACES mix", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced);
-        TmKnee = G.Slider("tmknee", "Shoulder knee", 0f, 1f, 0.05f, 0.8f, tier: Tier.Advanced);
+        AcesMix = G.Slider("acesmix", "ACES mix", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced, help: "Only affects ACES tone mapping.");
+        TmKnee = G.Slider("tmknee", "Shoulder knee", 0f, 1f, 0.05f, 0.8f, tier: Tier.Advanced, help: "Only affects shoulder and ACES tone mapping.");
         Dither = G.Slider("dither", "Output dither", 0f, 2f, 0.1f, 1f, tier: Tier.Advanced);
         G.Section("Anti-aliasing");
         // Never 0 (a frozen history would never converge) and never above 0.5 (the raw jitter, "an earthquake").

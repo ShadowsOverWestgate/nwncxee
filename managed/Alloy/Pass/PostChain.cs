@@ -41,11 +41,13 @@ internal static unsafe class PostChain
     /// with a live sampler of a different type is INVALID_OPERATION. See <see cref="TextureSlots"/>.</summary>
     private const uint HdrUnit = TextureSlots.PostHdr, BloomUnit = TextureSlots.PostBloom, DepthUnit = TextureSlots.PostDepth;
 
-    /// <summary>Tonemap operators, <c>post.tonemap</c>'s stored index. Shoulder is the identity below its
-    /// knee; ACES (the default since the #375 follow-ups, at <c>post.acesmix</c> against the shoulder) moves
+    /// <summary>Tonemap operators, <c>post.tonemap</c>'s stored value; the cfg and chat form is the name
+    /// (<c>post.tonemap=aces</c>). There is no off: the shoulder is the identity below its knee and differs
+    /// from a clip only on highlights (a stale <c>post.tonemap=off</c> fails to parse and loads the default); ACES (the default since the #375 follow-ups, at <c>post.acesmix</c> against the shoulder) moves
     /// the midtones, which is Alloy's own look decision -- under the M4 cutover nothing the engine draws
-    /// shares the resolved world any more, so there is no engine-drawn geometry left to disagree with.</summary>
-    internal const int TonemapOff = 0, TonemapShoulder = 1, TonemapAces = 2;
+    /// shares the resolved world any more, so there is no engine-drawn geometry left to disagree with.
+    /// Neutral (CX-47) is Khronos PBR Neutral, fixed: a 0.04 offset whose toe darkens 0.01 linear 16x.</summary>
+    internal const int TonemapShoulder = 1, TonemapAces = 2, TonemapNeutral = 3;
 
     /// <summary>The Alloy colour passes of THIS pass are drawing into the HDR target. Since #132 the owned
     /// frame does not run at all when this is false -- there is no un-resolved variant of it.</summary>
@@ -805,10 +807,9 @@ internal static unsafe class PostChain
     internal static string BloomUpFs => ShaderSource.Get("cx_bloomup_f.glsl");
 
     /// <summary>The resolve: add the bloom, tonemap, and do the frame's ONE encode -- #132's exit step.
-    /// <para><c>uMode</c> 1 (the default) is a shoulder: identity below the knee, asymptotic to 1 above it.
-    /// That shape is the requirement -- engine-drawn geometry shares this framebuffer and never passes
-    /// through here, so a curve that moved the midtones would split the frame in two. 2 is ACES
-    /// (Narkowicz' fit), which does move them: a deliberate whole-frame look, not a default.</para></summary>
+    /// <para><c>uMode</c> 1 is a shoulder: identity below the knee, asymptotic to 1 above it. 2 (the
+    /// default) is ACES (Narkowicz' fit) mixed against that shoulder. 3 is Khronos PBR Neutral: a 0.04 offset
+    /// (quadratic toe below 0.08) up to 0.76, then a hue-preserving roll-off; it reads neither <c>uKnee</c> nor <c>uAcesMix</c>.</para></summary>
     internal static string ResolveFs => ShaderSource.Get("cx_resolve_f.glsl");
 
     /// <summary>Off-device (run-demo.sh): the knob table has the shape the frame relies on and the shoulder
@@ -827,10 +828,12 @@ internal static unsafe class PostChain
         {
             check.Expect(Post.G.Get("hdr") == null && Post.G.Get("scale") == null && Post.G.Get("aotemporal") == null,
               "hdr, scale and aotemporal are not post knobs: hdr is the Renderer's boot setting, the other two are alloy.scale and ao.temporal");
-            check.Expect(Post.Tonemap.Default == TonemapAces && Post.Tonemap.FormatDefault() == "aces" && Post.Tonemap.RangeText() == "off, shoulder, aces",
+            check.Expect(Post.Tonemap.Default == TonemapAces && Post.Tonemap.FormatDefault() == "aces" && Post.Tonemap.RangeText() == "shoulder, aces, neutral",
               "the tonemap knob stores the operator index and formats its name");
-            check.Expect(Post.Tonemap.TryParse("shoulder", out int tm) && tm == TonemapShoulder && Post.Tonemap.TryParse("0", out tm) && tm == TonemapOff,
+            check.Expect(Post.Tonemap.TryParse("shoulder", out int tm) && tm == TonemapShoulder && Post.Tonemap.TryParse("0", out tm) && tm == TonemapShoulder
+              && Post.Tonemap.TryParse("neutral", out tm) && tm == TonemapNeutral,
               "...and parses a name or an index");
+            check.Expect(!Post.Tonemap.TryParse("off", out _), "there is no off: the shoulder is the minimal curve");
             // #389: TAA arms the motion pass and stands SMAA down; both toggle with the one key. The jitter
             // sequence is centred, one render pixel wide, and repeats -- and is exactly zero-width at no size.
             Post.Motion.V = false; Post.Viz.V = 0; Post.Taa.V = true;
@@ -876,6 +879,10 @@ internal static unsafe class PostChain
               "exposure is applied in linear, before the tonemap and the encode");
             check.Expect(ResolveFs.Contains("mix(CxShoulder(c, uKnee), CxAces(c), uAcesMix)"),
               "ACES is mixed against the shoulder, so the darks below the knee are never crushed past the mix");
+            check.Expect(ResolveFs.Contains("else if (uMode == 3) c = CxNeutral(c);")
+              && ResolveFs.IndexOf("else if (uMode == 3) c = CxNeutral(c);", StringComparison.Ordinal)
+              < ResolveFs.IndexOf("vec3 outc = CxEncode(c);", StringComparison.Ordinal),
+              "mode 3 is PBR Neutral, in the tonemap block before the encode");
             // The resolve is the ONLY place the Alloy frame meets 8-bit, so it is the only place a dither
             // can go. A resolve that lost it would band again, and the symptom (faint contour stripes over
             // smooth gradients) reads as a lighting bug rather than as a missing line here.
@@ -915,6 +922,18 @@ internal static unsafe class PostChain
             check.Expect(Shoulder(4f, 0.8f) < 1f && Shoulder(4f, 0.8f) > 0.9f, "shoulder compresses 4.0 into (0.9, 1)");
             check.Expect(Shoulder(100f, 0.8f) < 1f, "shoulder never reaches 1 however bright the input");
             check.Expect(Shoulder(1.5f, 0.8f) < Shoulder(3f, 0.8f), "shoulder stays monotonic, so detail survives it");
+
+            // CX-47: PBR Neutral on a grey, mirroring CxNeutral: the 0.04 offset below 0.76, 1 never reached.
+            static float Neutral(float c)
+            {
+                c -= c < 0.08f ? c - 6.25f * c * c : 0.04f;
+                if (c < 0.76f) return c;
+                const float d = 0.24f;
+                return 1f - d * d / (c + d - 0.76f);
+            }
+            check.Expect(Neutral(0f) == 0f && MathF.Abs(Neutral(0.5f) - 0.46f) < 1e-5f, "neutral keeps black and only offsets the mids");
+            check.Expect(MathF.Abs(Neutral(0.08f) - 0.04f) < 1e-5f, "...with a toe that meets the offset at 0.08");
+            check.Expect(Neutral(100f) < 1f && Neutral(1.5f) < Neutral(3f), "neutral is monotonic and never reaches 1");
         }
         finally
         {

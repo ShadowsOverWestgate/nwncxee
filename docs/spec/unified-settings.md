@@ -609,12 +609,12 @@ Renderer itself.
 |---|---|---|---|---|---|---|---|---|
 | post.exposure | exposure | Exposure | S | 0.25–4 step 0.05 · 1 | U | L | Exposure | Overall brightness before tone mapping. 1 is neutral. |
 | post.bloom | bloom | Bloom | S | 0–0.5 step 0.01 · 0.06 | U | L | Bloom | Glow around bright lights. 0 is off. |
-| post.tonemap | tonemap | Tone mapping | D | off / shoulder / aces · aces | U | L | Tone | How bright values above white are compressed. |
+| post.tonemap | tonemap | Tone mapping | D | shoulder / aces / neutral · aces | U | L | Tone | How bright values above white are compressed. |
 | post.taa | taa | Temporal anti-aliasing | T | on | U | L | Anti-aliasing | Smooths edges over several frames. |
 | post.threshold | threshold | Bloom threshold | S | 0–4 · 1 | A | L | Bloom | |
 | post.knee | knee | Bloom knee | S | 0–1 · 0.5 | A | L | Bloom | |
-| post.acesmix | acesmix | ACES mix | S | 0–1 · 0.5 | A | L | Tone | |
-| post.tmknee | tmknee | Shoulder knee | S | 0–1 · 0.8 | A | L | Tone | |
+| post.acesmix | acesmix | ACES mix | S | 0–1 · 0.5 | A | L | Tone | Only affects ACES tone mapping. |
+| post.tmknee | tmknee | Shoulder knee | S | 0–1 · 0.8 | A | L | Tone | Only affects shoulder and ACES tone mapping. |
 | post.dither | dither | Output dither | S | 0–2 · 1 | A | L | Tone | |
 | post.taablend | taablend | TAA history weight | S | 0.02–0.5 · 0.1 | A | L | Anti-aliasing | |
 | post.taau | taau | Temporal upsampling | T | on | A | L | Anti-aliasing | With render scale below 1. |

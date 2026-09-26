@@ -14,7 +14,7 @@ uniform float uStrength;
 uniform int uMode;
 uniform float uKnee;
 uniform float uExposure;  // scene-referred gain before the tonemap; 1 = identity
-uniform float uAcesMix;   // mode 2: ACES mixed against the shoulder, in linear; 1 = full ACES
+uniform float uAcesMix;   // mode 2 only: ACES mixed against the shoulder, in linear; 1 = full ACES
 uniform float uDither;   // one LSB of the output target, or 0
 uniform int uViz;        // 0 = the frame; 1 = bloom only; 2 = HDR only; 3 = bloom x20; 4 = motion vectors
 #include "cx_postcolor.glsl"
@@ -34,6 +34,21 @@ vec3 CxAces(vec3 c)
 {
     const float a = 2.51, b = 0.03, d = 2.43, e = 0.59, f = 0.14;
     return clamp((c * (a * c + b)) / (c * (d * c + e) + f), 0.0, 1.0);
+}
+
+// CX-47: Khronos PBR Neutral (KhronosGroup/ToneMapping, PBR_Neutral), as the reference writes it. Identity below 0.76 apart from a small toe
+// offset, then a hue-preserving roll-off to 1 that desaturates only what it compresses.
+vec3 CxNeutral(vec3 c)
+{
+    const float start = 0.8 - 0.04, desat = 0.15;
+    float x = min(c.r, min(c.g, c.b));
+    c -= x < 0.08 ? x - 6.25 * x * x : 0.04;
+    float peak = max(c.r, max(c.g, c.b));
+    if (peak < start) return c;
+    const float d = 1.0 - start;
+    float np = 1.0 - d * d / (peak + d - start);
+    c *= np / peak;
+    return mix(c, vec3(np), 1.0 - 1.0 / (desat * (peak - np) + 1.0));
 }
 
 void main()
@@ -82,6 +97,7 @@ void main()
     // ACES against the SHOULDER, not the raw value: the shoulder is the identity below its knee, so
     // the mix keeps the darks the ACES toe would crush and takes only the roll-off and colour.
     else if (uMode == 2) c = mix(CxShoulder(c, uKnee), CxAces(c), uAcesMix);
+    else if (uMode == 3) c = CxNeutral(c);
     vec3 outc = CxEncode(c);
     if (graded < 1.0) outc = mix(raw, outc, graded);
     // Dithered in DISPLAY space, after the encode: this is where the frame meets 8 bits (or, when
