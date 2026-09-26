@@ -60,15 +60,16 @@ public sealed unsafe partial class AlloyRenderer
         // never reaches PassId.FbCopy leaves Alloy water disarmed -- and BucketGate's bucket-6 gate reads
         // the same flag, so water is simply not drawn on exactly those passes (#285: a hole, not vanilla).
         FrameSnapshot.Revoke();
+        if (StreamRing.Refused) _batchUnavailable = true;   // CX-45: the ring failed the renderer (AlloyGate.Fail) when it was refused
         if (Programs._progFailed || _batchUnavailable) return false;   // EndFrame revokes + disarms; never pay the bracket for nothing
         // Checked BEFORE anything stamps OwnGen: BuildBatches marks parts as drawn, which is only honest while
         // the issue phase cannot fail. Missing entry points are the one way it could.
-        if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null)
+        if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null || !StreamRing.EntryPoints)
         {
             // #263: the verdict froze before this frame, so nothing re-reads DrawCapable. Say it here or the
             // world goes bare with no line at all.
             _batchUnavailable = true;
-            AlloyGate.Fail("glMultiDrawElementsBaseVertex or glBindBufferBase is missing");
+            AlloyGate.Fail("glMultiDrawElementsBaseVertex, glBindBufferBase or a stream-ring entry point (buffer storage, map, bind range, fence) is missing");
             return false;
         }
         GpuStatic.Latch();   // the static freeze's own entry points; they do not resolve before a context exists
@@ -222,7 +223,11 @@ public sealed unsafe partial class AlloyRenderer
         if (groups <= 0) { Gl.BindVertexArray(0); GlContextService.Leave(); return false; }
         long tUp = FrameZones.Now;
         StageSky();
-        Issue.UploadDraws();
+        if (!Issue.UploadDraws())
+        {
+            PaintStreamFailures(display);
+            Gl.BindVertexArray(0); GlContextService.Leave(); return false;
+        }
         // #308 follow-up: the shadow bracket already uploaded this frame's block; re-orphaning it
         // here would throw away the very pose the bake just sampled from.
         if (!posedByShadow) Issue.UploadBones();
@@ -522,6 +527,7 @@ public sealed unsafe partial class AlloyRenderer
                     break;
             }
         }
+        PaintStreamFailures(display);
         GpuSpanEnd();
         FrameZones.Add(FrameZones.Zone.Passes, tPasses,
                        FrameZones.Ticks(FrameZones.Zone.Issue) - issue0
@@ -662,6 +668,24 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Enable(Gl.BLEND); _blendOn = true;
     }
 
+    /// <summary>CX-45: a solid red band into the frame target for each upload <see cref="StreamRing"/> failed this
+    /// frame -- top edge the draw slots, left the cull source, right the previous bones. A scissored clear: no
+    /// program, nothing that can itself fail, and the 4.6 context's state is Alloy's alone.</summary>
+    private static void PaintStreamFailures(int* display)
+    {
+        int bands = StreamRing.TakePaint();
+        if (bands == 0) return;
+        int x = display[0], y = display[1], w = display[2], h = display[3], t = Math.Max(8, h / 90);
+        RebindFrameTarget();
+        Gl.ColorMask(1, 1, 1, 1);
+        Gl.ClearColor(1f, 0f, 0f, 1f);
+        Gl.Enable(Gl.SCISSOR_TEST);
+        if ((bands & 1 << (int)StreamRing.Site.DrawSlots) != 0) { Gl.Scissor(x, y + h - t, w, t); Gl.Clear(Gl.COLOR_BUFFER_BIT); }
+        if ((bands & 1 << (int)StreamRing.Site.CullSource) != 0) { Gl.Scissor(x, y, t, h); Gl.Clear(Gl.COLOR_BUFFER_BIT); }
+        if ((bands & 1 << (int)StreamRing.Site.PrevBones) != 0) { Gl.Scissor(x + w - t, y, t, h); Gl.Clear(Gl.COLOR_BUFFER_BIT); }
+        Gl.Disable(Gl.SCISSOR_TEST);
+    }
+
     /// <summary>Does <see cref="BlendedDepthSweep"/> lay this batch's depth? Only through the alpha-testing
     /// feature stage (texture alpha times the per-draw multiplier against the class's 0.2): without that test
     /// a faded-out or fully transparent surface would stamp solid depth over everything drawn after it.
@@ -688,8 +712,7 @@ public sealed unsafe partial class AlloyRenderer
     /// staged records; the caster bracket bound the record buffer, this binds the staged slot order it needs.</summary>
     internal static void DrawWaterOccluders(Matrix4x4* vp)
     {
-        if (_gWaterEnd <= _gBlendEnd || !Programs.EnsureDepthProgram() || _slotBuf == 0) return;
-        Issue.BindStagedSlots();
+        if (_gWaterEnd <= _gBlendEnd || !Programs.EnsureDepthProgram() || !Issue.BindStagedSlots()) return;
         Gl.UseProgram(Programs._progDepth);
         Gl.UniformMatrix4fv(Programs._depthVp, 1, 0, (float*)vp);
         uint boundVao = 0;

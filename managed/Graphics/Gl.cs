@@ -345,6 +345,7 @@ public static unsafe class Gl
         if (grow) NamedBufferData(buf, (IntPtr)Math.Max(bytes, 4), null, DYNAMIC_DRAW);
     }
     public static delegate* unmanaged<uint, uint, uint, void> BindBufferBase;
+    public static delegate* unmanaged<uint, uint, uint, IntPtr, IntPtr, void> BindBufferRange;
     public static delegate* unmanaged<uint, byte*, uint> GetUniformBlockIndex;
     public static delegate* unmanaged<uint, uint, uint, void> UniformBlockBinding;
     public static delegate* unmanaged<uint, uint, byte*, void> BindAttribLocation;
@@ -624,6 +625,7 @@ public static unsafe class Gl
         BufferSubData = (delegate* unmanaged<uint, IntPtr, IntPtr, void*, void>)P("glBufferSubData");
         ClearBufferSubData = (delegate* unmanaged<uint, uint, IntPtr, IntPtr, uint, uint, void*, void>)P("glClearBufferSubData");
         BindBufferBase = (delegate* unmanaged<uint, uint, uint, void>)P("glBindBufferBase");
+        BindBufferRange = (delegate* unmanaged<uint, uint, uint, IntPtr, IntPtr, void>)P("glBindBufferRange");
         GetUniformBlockIndex = (delegate* unmanaged<uint, byte*, uint>)P("glGetUniformBlockIndex");
         UniformBlockBinding = (delegate* unmanaged<uint, uint, uint, void>)P("glUniformBlockBinding");
         Uniform1i = (delegate* unmanaged<int, int, void>)P("glUniform1i");

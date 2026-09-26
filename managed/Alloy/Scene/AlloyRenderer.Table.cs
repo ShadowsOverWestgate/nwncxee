@@ -554,10 +554,8 @@ public sealed unsafe partial class AlloyRenderer
     internal static uint _drawBuf;
     /// <summary>#153: the per-draw texture-handle SSBO (binding <see cref="BindTexH"/>).</summary>
     internal static uint _texHBuf;
-    /// <summary>#242: the per-draw index SSBO (binding <see cref="BindDrawIdx"/>), and how many records the
-    /// GPU side of <see cref="_drawBuf"/>/<see cref="_texHBuf"/> currently holds. A capacity growth
-    /// reallocates both, which is why it forces a wholesale re-send.</summary>
-    internal static uint _slotBuf;
+    /// <summary>#242: how many records the GPU side of <see cref="_drawBuf"/>/<see cref="_texHBuf"/> currently
+    /// holds. A capacity growth reallocates both, which is why it forces a wholesale re-send.</summary>
     internal static int _recCapGpu;
     /// <summary>#137's bone block and the CPU stage behind it. One region, rewritten every colour pass.
     /// #262: the stage is native and GROWS (<c>EnsureBoneSlots</c>) rather than turning a crowd past the
@@ -567,8 +565,7 @@ public sealed unsafe partial class AlloyRenderer
     internal static float* _boneStage;
     internal static int _boneSlots, _boneCap;
     /// <summary>CX-26: last frame's palette, slot for slot beside <see cref="_boneStage"/> (the two swap
-    /// once a frame), for the mover sweep's previous clip position. Uploaded only when a skinned mover draws.</summary>
-    internal static uint _bonePrevBuf;
+    /// once a frame), for the mover sweep's previous clip position. Streamed only when a skinned mover draws.</summary>
     internal static float* _bonePrevStage;
     /// <summary>CX-26: the frame a posed record's palette last differed from the one before it -- the
     /// skinned twin of <c>_recMovedAt</c>, read by the mover pick.</summary>

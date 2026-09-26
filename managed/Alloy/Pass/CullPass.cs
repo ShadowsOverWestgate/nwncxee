@@ -91,7 +91,9 @@ internal static unsafe class CullPass
     private static int _sDrawN, _sCompactBelow;
     private static int _hSrc, _hLevel;
 
-    private static uint _srcBuf, _sphBuf, _keyBuf, _rejBuf;
+    private static uint _sphBuf, _keyBuf, _rejBuf;
+    /// <summary>CX-45: the source list as <see cref="Begin"/> streamed it; the dispatches of the same pass rebind it.</summary>
+    private static StreamRing.Range _src;
     private static readonly uint[] _cmdBuf = new uint[Phases];
     private static readonly uint[] _slotBuf = new uint[Phases];
     private static readonly uint[] _cntBuf = new uint[Phases];
@@ -216,7 +218,7 @@ internal static unsafe class CullPass
     internal static void ContextLost()
     {
         _prog = 0; _progHiZ = 0; _progSort = 0; _failed = false;
-        _srcBuf = 0; _sphBuf = 0; _keyBuf = 0; _rejBuf = 0; _cmdCap = 0; _cntCap = 0; _sphCap = 0;
+        _src = default; _sphBuf = 0; _keyBuf = 0; _rejBuf = 0; _cmdCap = 0; _cntCap = 0; _sphCap = 0;
         Array.Clear(_cmdBuf); Array.Clear(_slotBuf); Array.Clear(_cntBuf);
         Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); _readCap = 0;
         _pyrTex = 0; _pyrFbo = 0; _pyrVao = 0; _pyrW = 0; _pyrH = 0; _pyrLevels = 0; _pyrGen = -1;
@@ -318,11 +320,8 @@ internal static unsafe class CullPass
         _compactBelow = Math.Clamp(compactBelow, 0, groups);
         _eye = eye;
 
-        if (_srcBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _srcBuf = b; }
-        var srcSize = (IntPtr)((long)drawN * SrcUints * sizeof(uint));
-        Gl.NamedBufferData(_srcBuf, srcSize, null, Gl.DYNAMIC_DRAW);
-        Gl.NamedBufferSubData(_srcBuf, IntPtr.Zero, srcSize, src);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
+        if (!StreamRing.Stream(StreamRing.Site.CullSource, BindSrc, src, (long)drawN * SrcUints * sizeof(uint), out _src))
+            return false;   // CX-45: the cull sits this pass out, loudly (StreamRing logs and paints it)
 
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _sphBuf);
 
@@ -350,7 +349,7 @@ internal static unsafe class CullPass
     /// under <c>/alloy cull 0</c> and during a probe capture alike. The spheres are indexed by RECORD slot,
     /// exactly as the records are, and go up whole -- four floats against the record's forty-four, changing
     /// on the same edges, so a dirty list here would be #242's machinery again for a fortieth of the
-    /// traffic.</summary>
+    /// traffic. Not on <see cref="StreamRing"/>: the next frame's shadow gather culls against it (CX-45).</summary>
     internal static void UploadSpheres(float* spheres, int sphereSlots)
     {
         if (sphereSlots <= 0 || Gl.NamedBufferSubData == null) return;
@@ -374,6 +373,7 @@ internal static unsafe class CullPass
         bool stale = phase == PhasePrepass;
         if (stale) RetestPending = false;
         if (_phase == -1 || _drawN <= 0) return;
+        if (!StreamRing.Rebind(StreamRing.Site.CullSource, BindSrc, in _src)) return;   // logged and painted; _phase stays unpublished, so the pass draws unculled
         Gl.ZeroBuffer(_cntBuf[phase], (long)_groups * sizeof(uint));
         bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0
                       && (stale ? Retest && _pyrStale : _pyrGen == gen);
@@ -385,7 +385,7 @@ internal static unsafe class CullPass
         }
 
         Gl.UseProgram(_prog);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
+        _src.Bind(BindSrc);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _sphBuf);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _cmdBuf[phase]);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _slotBuf[phase]);
@@ -432,7 +432,7 @@ internal static unsafe class CullPass
         {
             Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
             Gl.UseProgram(_progSort);
-            Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
+            _src.Bind(BindSrc);
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCmd, _cmdBuf[phase]);
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindOutSlot, _slotBuf[phase]);
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindKey, _keyBuf);

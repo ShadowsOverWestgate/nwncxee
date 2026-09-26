@@ -89,8 +89,11 @@ public sealed unsafe partial class AlloyRenderer
         {
             if (n == 0 || _mvFailed) return;
             if (!_mvBuilt) EnsureMotionProgram();
-            if (_progMotion == 0 || !MotionVectors.BeginMovers(PostChain.DepthTex, viewport)) return;
-            if (skinned) Issue.UploadBoneBlock(ref _bonePrevBuf, _bonePrevStage, BindBonesPrev);   // only a frame a skinned mover draws
+            if (_progMotion == 0) return;
+            // only a frame a skinned mover draws; a failed stream sits the sweep out (StreamRing logs and paints it)
+            if (skinned && !StreamRing.Stream(StreamRing.Site.PrevBones, BindBonesPrev, _bonePrevStage,
+                                              (long)_boneSlots * BoneFloats * sizeof(float), out _)) return;
+            if (!MotionVectors.BeginMovers(PostChain.DepthTex, viewport)) return;
             if (dangly) UploadDanglyPrev();
             Sweep(n, vp, jx, jy, viewport);
             MotionVectors.EndMovers(PostChain.Fbo, viewport);

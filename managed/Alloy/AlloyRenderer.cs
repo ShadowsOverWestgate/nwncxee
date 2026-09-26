@@ -727,6 +727,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // off by default, so a failing table must cost that path and not drop every user back to vanilla.
         StaticSelfCheck(log);
         CullPass.Init(log);
+        StreamRing.Init(log);
         // #170: ahead of every stand-down, matching the host's unconditional calls. The verdict must
         // outlive a renderer that never armed -- /alloy is the report it drives.
         AlloyGate.Arm(log);
@@ -783,7 +784,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // crash on the first world frame, not a misrender, so it joins the gating chain.
         StockConfig.Attach(log);
         if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !MaterialExtSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
-            || !Issue.RunsSelfCheck(log)
+            || !Issue.RunsSelfCheck(log) || !StreamRing.SelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
             || !ShaderContract.SelfCheck(log)
             || !StockConfig.SelfCheck(log)) return;
@@ -1298,12 +1299,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0; Programs._progSkyDecode = 0;
         Highlight.HighlightContextLost();
-        _drawBuf = 0; _texHBuf = 0; _boneBuf = 0; _bonePrevBuf = 0;
+        _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         MotionContextLost();
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
         // capacity so the next upload reallocates rather than writing into a dead name, and the epoch so
         // every record is rebuilt rather than assumed still on the GPU.
-        _slotBuf = 0; _recCapGpu = 0; InvalidateRecords();
+        Issue._slotRange = default; StreamRing.ContextLost(); _recCapGpu = 0; InvalidateRecords();
         // ...and the VAO cache. RevokeAll marks the slots stale, and EnsureVao DELETES a stale non-zero name
         // before rebuilding -- which on a name minted by a context that no longer exists is a delete aimed at
         // whatever the next context recycles that number for.
@@ -1573,6 +1574,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $" (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.
+                   $", {StreamRing.Diag()}" +
                    $", probe {(EnvProbe.Ready ? $"ready ({EnvProbe.Captures} captures)" : "none yet")}" +
                    "; " +
                    AlloyLights.Diag(Counters._clusterOverflow) +

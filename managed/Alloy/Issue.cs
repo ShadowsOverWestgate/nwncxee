@@ -86,9 +86,9 @@ internal static unsafe class Issue
     /// <para>No orphan any more, and that is the trade this makes: a bare <c>BufferSubData</c> over a buffer
     /// the GPU may still be reading can make the driver sync, which is the stall #84's orphan was avoiding.
     /// Orphaning is not available to a persistent buffer -- the whole point is that last frame's contents are
-    /// still there. ponytail: if the Upload zone grows, the upgrade is triple-buffering through GpuRing's
-    /// persistent coherent mapping, which is already bound; it is not a return to the orphan.</para></summary>
-    internal static void UploadDraws()
+    /// still there, which is also why the records are not on <see cref="StreamRing"/> (CX-45).</para>
+    /// <para>False = the slot array did not stream and the colour frame sits out.</para></summary>
+    internal static bool UploadDraws()
     {
         int cap = _recOwnCap + MaxSkyDraws;
         bool grew = false;
@@ -116,14 +116,13 @@ internal static unsafe class Issue
         if (_bindless) UploadHandles(cap, whole);
         if (grew) _recCapGpu = cap;
         _recDirtyN = 0; _recDirtyAll = false;
-        // ...and the one array that IS per draw and per pass. Four bytes each, orphaned like the records
-        // used to be: it is rewritten whole every pass, so last pass's contents are worth nothing.
-        if (_slotBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _slotBuf = b; }
-        var sSize = (IntPtr)((long)_drawN * sizeof(int));
-        Gl.NamedBufferData(_slotBuf, sSize, null, Gl.DYNAMIC_DRAW);
-        fixed (int* p = _dSlot) Gl.NamedBufferSubData(_slotBuf, IntPtr.Zero, sSize, p);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDrawIdx, _slotBuf);
+        // ...and the one array that IS per draw and per pass, rewritten whole every pass: the ring's shape.
+        fixed (int* p = _dSlot)
+            return StreamRing.Stream(StreamRing.Site.DrawSlots, BindDrawIdx, p, (long)_drawN * sizeof(int), out _slotRange);
     }
+
+    /// <summary>CX-45: the staged draw-to-slot array's ring slice, for <see cref="BindStagedSlots"/>.</summary>
+    internal static StreamRing.Range _slotRange;
 
     /// <summary>The handle table alone. Its capacity is tracked apart from the draw records' so the bake can
     /// bring it up to date on a frame the colour bracket has not reached (or refused).</summary>
@@ -162,22 +161,20 @@ internal static unsafe class Issue
 
     /// <summary>#243: put the CPU-staged per-draw index array back on <see cref="BindDrawIdx"/>. The cull
     /// binds its own compacted one for the passes it drives; every other pass reads the staged order.</summary>
-    internal static void BindStagedSlots()
-    {
-        if (_slotBuf != 0) Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDrawIdx, _slotBuf);
-    }
+    internal static bool BindStagedSlots() => StreamRing.Rebind(StreamRing.Site.DrawSlots, BindDrawIdx, in _slotRange);
 
     /// <summary>#137: push this pass's bone snapshots into the bone block. Orphan-then-fill for
     /// <see cref="UploadDraws"/>'s reason. Nothing to upload is the common case (no skinmesh on screen), and
     /// the block stays bound empty rather than unbound -- a stage that declares it must find something there
-    /// even on a frame where no draw reads it.</summary>
+    /// even on a frame where no draw reads it.
+    /// <para>Not on <see cref="StreamRing"/>: the next frame's caster bake reads it when the shadow bracket did not pose (#308).</para></summary>
     internal static void UploadBones()
     {
         if (_skinning) UploadBoneBlock(ref _boneBuf, _boneStage, BindBones);
     }
 
     /// <summary>One bone block, <c>_boneSlots</c> palettes from <paramref name="stage"/>, onto
-    /// <paramref name="binding"/>. Shared by the current palette and CX-26's previous one.</summary>
+    /// <paramref name="binding"/>.</summary>
     internal static void UploadBoneBlock(ref uint buf, float* stage, uint binding)
     {
         if (buf == 0) { uint b; Gl.CreateBuffers(1, &b); buf = b; }
