@@ -130,11 +130,9 @@ internal static unsafe class SceneDepth
         if (_fbo != 0 && _tex != 0 && _w == w && _h == h) return true;
         _w = w; _h = h;
         if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        if (_tex == 0) { uint t; Gl.GenTextures(1, &t); _tex = t; }
-        if (_fbo == 0 || _tex == 0) return Fail("could not create the depth copy target");
-
         bool packed = RenderTarget.Packed(_depFormat);
-        RenderTarget.AllocDepth(_tex, _depFormat, w, h);
+        RenderTarget.AllocDepth(ref _tex, _depFormat, w, h);
+        if (_fbo == 0 || _tex == 0) return Fail("could not create the depth copy target");
 
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         // Colour-less: glDrawBuffer/glReadBuffer NONE is what makes a depth-only FBO complete.

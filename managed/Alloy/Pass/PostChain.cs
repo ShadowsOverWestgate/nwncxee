@@ -357,12 +357,8 @@ internal static unsafe class PostChain
     {
         if (_scratchTex != 0 && w == _scratchW && h == _scratchH && _scratchFormat == _depFormat) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_scratchTex == 0)
-        {
-            uint t; Gl.GenTextures(1, &t); _scratchTex = t;
-            uint f; Gl.GenFramebuffers(1, &f); _scratchFbo = f;
-        }
-        RenderTarget.AllocDepth(_scratchTex, _depFormat, w, h);
+        if (_scratchFbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _scratchFbo = f; }
+        RenderTarget.AllocDepth(ref _scratchTex, _depFormat, w, h);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _scratchFbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _scratchTex, 0);
         bool ok = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) == Gl.FRAMEBUFFER_COMPLETE;
@@ -491,11 +487,9 @@ internal static unsafe class PostChain
     {
         if (_depthTex != 0 && fmt == _depFormat && w == _depW && h == _depH) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_depthTex != 0 && Gl.DeleteTextures != null)
-        { uint old = _depthTex; Gl.DeleteTextures(1, &old); _depthTex = 0; }
-        uint tex; Gl.GenTextures(1, &tex);
-        if (tex == 0) return Refuse("the owned depth texture could not be created");
-        RenderTarget.AllocDepth(tex, fmt, w, h);
+        uint tex = _depthTex;
+        RenderTarget.AllocDepth(ref tex, fmt, w, h);
+        if (tex == 0) { _depthTex = 0; return Refuse("the owned depth texture could not be created"); }
         _depthTex = tex; _depFormat = fmt; _depW = w; _depH = h;
         _log?.Info($"PostChain: owned depth attachment {w}x{h}, internal format 0x{fmt:x} "
                  + "(matched to the engine's, which the resolve blits back into)");
@@ -657,12 +651,12 @@ internal static unsafe class PostChain
     private static int LevelW(int i) => Math.Max(_w >> (i + 1), 1);
     private static int LevelH(int i) => Math.Max(_h >> (i + 1), 1);
 
-    /// <summary>Pin the bound bloom texture to exactly one level, so the level currently attached as the
+    /// <summary>Pin the bloom texture to exactly one level, so the level currently attached as the
     /// draw buffer is outside the sampleable range.</summary>
     private static void Clamp(int level)
     {
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_BASE_LEVEL, level);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, level);
+        Gl.TextureParameteri(_bloomTex, Gl.TEXTURE_BASE_LEVEL, level);
+        Gl.TextureParameteri(_bloomTex, Gl.TEXTURE_MAX_LEVEL, level);
     }
 
     private static bool EnsureTargets(int w, int h)
@@ -682,27 +676,21 @@ internal static unsafe class PostChain
         // worth avoiding even where nothing samples it. A 1-level chain on a tiny target is a no-op bloom.
         if (_levels < 1) _levels = 1;
 
-        uint tex;
-        Gl.GenTextures(1, &tex);
+        uint tex = 0;
         // LINEAR: the resolve and the bloom downsample both read it at an offset, not at texel centres.
-        RenderTarget.AllocColor(tex, true, w, h, Gl.LINEAR);
-        Gl.ActiveTexture(Gl.TEXTURE0 + HdrUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, tex);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, 0);
+        RenderTarget.AllocColor(ref tex, true, w, h, Gl.LINEAR);
         _hdrTex = tex;
 
-        Gl.GenTextures(1, &tex);
-        Gl.ActiveTexture(Gl.TEXTURE0 + BloomUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, tex);
-        for (int i = 0; i < _levels; i++)
-            Gl.TexImage2D(Gl.TEXTURE_2D, i, (int)Gl.RGBA16F, LevelW(i), LevelH(i), 0, Gl.RGBA, Gl.HALF_FLOAT, null);
+        // Level 0 of the chain is half the target, so its storage is sized from LevelW(0)/LevelH(0) and the
+        // mip sizes the immutable allocation derives match LevelW(i)/LevelH(i) exactly.
+        Gl.CreateTextures(Gl.TEXTURE_2D, 1, &tex);
+        Gl.TextureStorage2D(tex, _levels, Gl.RGBA16F, LevelW(0), LevelH(0));
         // LINEAR within a level, never across levels: every read is an explicit textureLod and a mip-filtered
         // minification here would blend in a level the chain has not written yet. Hence MAX_LEVEL rather than
         // a plain shared allocation -- the chain is levelled, so only the clamp half is shared.
-        RenderTarget.Clamp(Gl.LINEAR);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, _levels - 1);
+        RenderTarget.Clamp(tex, Gl.LINEAR);
+        Gl.TextureParameteri(tex, Gl.TEXTURE_MAX_LEVEL, _levels - 1);
         _bloomTex = tex;
-        Gl.ActiveTexture(Gl.TEXTURE0);
 
         if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
         _log?.Info($"PostChain: HDR target {w}x{h} RGBA16F, {_levels}-level bloom chain, with its own " +
@@ -768,7 +756,7 @@ internal static unsafe class PostChain
         _cDither = GlProgram.Loc(_progComposite, "uDither");
         _cViz = GlProgram.Loc(_progComposite, "uViz");
         // Core profile draws nothing with VAO 0 bound, even from a vertex stage that reads no attributes.
-        if (_vao == 0) { uint v; Gl.GenVertexArrays(1, &v); _vao = v; }
+        if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
         return true;
     }
 

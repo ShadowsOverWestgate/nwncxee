@@ -113,7 +113,7 @@ internal static unsafe class EnvProbe
     /// frame floor sits in front of all three.</summary>
     internal static bool Wanted(Vector3 eye, IntPtr bspRoot, int frame)
     {
-        if (!_on || _down.Failed || Gl.GenerateMipmap == null || Gl.ClearColor == null) return false;
+        if (!_on || _down.Failed || Gl.ClearColor == null) return false;
         if (frame - _lastFrame < MinFrames) return false;
         return !Ready || bspRoot != _bsp || Vector3.DistanceSquared(eye, Origin) > MoveDist * MoveDist;
     }
@@ -160,9 +160,7 @@ internal static unsafe class EnvProbe
     /// <summary>Close the capture: build the mip chain (the roughness blur) and publish the cube.</summary>
     internal static void End()
     {
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, Tex);
-        Gl.GenerateMipmap(Gl.TEXTURE_CUBE_MAP);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, 0);
+        Gl.GenerateTextureMipmap(Tex);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         Ready = true;
         Captures++;
@@ -199,39 +197,32 @@ internal static unsafe class EnvProbe
     {
         if (_down.Failed) return false;
         if (Tex != 0) return true;
-        if (Gl.GenTextures == null || Gl.TexImage2D == null || Gl.GenFramebuffers == null
-            || Gl.FramebufferTexture2D == null || Gl.GenerateMipmap == null || Gl.ClearColor == null)
+        if (Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null || Gl.ClearColor == null)
         { Fail("a required GL entry point for the probe is missing"); return false; }
 
         Mips = 1;
         for (int s = Size; s > 1; s >>= 1) Mips++;
 
-        uint t; Gl.GenTextures(1, &t);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, t);
+        uint t; Gl.CreateTextures(Gl.TEXTURE_CUBE_MAP, 1, &t);
         Gl.DrainErrors();   // an earlier pass's error must not be read as this allocation's
-        for (uint f = 0; f < 6; f++)
-            Gl.TexImage2D(Gl.TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, (int)Gl.RGBA16F, Size, Size, 0,
-                          Gl.RGBA, Gl.HALF_FLOAT, null);
+        Gl.TextureStorage2D(t, Mips, Gl.RGBA16F, Size, Size);
         if (Gl.GetError() != 0)
         {
-            Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, 0);
             Gl.DeleteTextures(1, &t);
             Fail($"a {Size}x{Size} RGBA16F cube could not be allocated (out of video memory?)");
             return false;
         }
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR_MIPMAP_LINEAR);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP, Gl.TEXTURE_WRAP_R, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP, Gl.TEXTURE_MAX_LEVEL, Mips - 1);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR_MIPMAP_LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_R, Gl.CLAMP_TO_EDGE);
         // Global state, not a texture parameter: without it a roughness mip fetch near a face border blends
         // against the edge clamp instead of the neighbouring face, which reads as a seam in the reflection.
         Gl.Enable(Gl.TEXTURE_CUBE_MAP_SEAMLESS);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP, 0);
 
-        uint d; Gl.GenTextures(1, &d);
-        RenderTarget.AllocDepth(d, Gl.DEPTH_COMPONENT24, Size, Size);
+        uint d = 0;
+        RenderTarget.AllocDepth(ref d, Gl.DEPTH_COMPONENT24, Size, Size);
 
         uint f2; Gl.GenFramebuffers(1, &f2);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, f2);

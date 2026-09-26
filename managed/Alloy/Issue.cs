@@ -43,13 +43,13 @@ internal static unsafe class Issue
     /// slot was one call each, and radeonsi stages, copies and barriers EVERY call into a buffer the GPU is
     /// still reading (<c>si_buffer_subdata</c> forces DISCARD_RANGE), so the call count is the cost there.
     /// Duplicates collapse. Caller sorts once; both record buffers walk the same list.</summary>
-    private static void UploadRuns(void* data, int recBytes)
+    private static void UploadRuns(uint buf, void* data, int recBytes)
     {
         for (int d = 0; d < _recDirtyN;)
         {
             d = NextRun(_recDirty, _recDirtyN, d, out int first, out int last);
             long off = (long)first * recBytes;
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)off,
+            Gl.NamedBufferSubData(buf, (IntPtr)off,
                              (IntPtr)((long)(last - first + 1) * recBytes), (byte*)data + off);
         }
     }
@@ -92,11 +92,10 @@ internal static unsafe class Issue
     {
         int cap = _recOwnCap + MaxSkyDraws;
         bool grew = false;
-        if (_drawBuf == 0) { uint b; Gl.GenBuffers(1, &b); _drawBuf = b; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _drawBuf);
+        if (_drawBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _drawBuf = b; }
         if (cap > _recCapGpu)
         {
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER,
+            Gl.NamedBufferData(_drawBuf,
                           (IntPtr)((long)cap * DrawFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
             grew = true;
         }
@@ -109,23 +108,20 @@ internal static unsafe class Issue
         fixed (float* p = _dData)
         {
             if (whole)
-                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
-                                 (IntPtr)((long)cap * DrawFloats * sizeof(float)), p);
-            else UploadRuns(p, DrawFloats * sizeof(float));
+                Gl.NamedBufferSubData(_drawBuf, IntPtr.Zero,
+                                      (IntPtr)((long)cap * DrawFloats * sizeof(float)), p);
+            else UploadRuns(_drawBuf, p, DrawFloats * sizeof(float));
         }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDraw, _drawBuf);
         if (_bindless) UploadHandles(cap, whole);
         if (grew) _recCapGpu = cap;
         _recDirtyN = 0; _recDirtyAll = false;
         // ...and the one array that IS per draw and per pass. Four bytes each, orphaned like the records
         // used to be: it is rewritten whole every pass, so last pass's contents are worth nothing.
-        if (_slotBuf == 0) { uint b; Gl.GenBuffers(1, &b); _slotBuf = b; }
+        if (_slotBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _slotBuf = b; }
         var sSize = (IntPtr)((long)_drawN * sizeof(int));
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _slotBuf);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, sSize, null, Gl.DYNAMIC_DRAW);
-        fixed (int* p = _dSlot) Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, sSize, p);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.NamedBufferData(_slotBuf, sSize, null, Gl.DYNAMIC_DRAW);
+        fixed (int* p = _dSlot) Gl.NamedBufferSubData(_slotBuf, IntPtr.Zero, sSize, p);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDrawIdx, _slotBuf);
     }
 
@@ -133,21 +129,19 @@ internal static unsafe class Issue
     /// bring it up to date on a frame the colour bracket has not reached (or refused).</summary>
     internal static void UploadHandles(int cap, bool whole)
     {
-        if (_texHBuf == 0) { uint b; Gl.GenBuffers(1, &b); _texHBuf = b; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _texHBuf);
+        if (_texHBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _texHBuf = b; }
         if (cap > _texHCapGpu)
         {
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)cap * 8 * sizeof(ulong)), null, Gl.DYNAMIC_DRAW);
+            Gl.NamedBufferData(_texHBuf, (IntPtr)((long)cap * 8 * sizeof(ulong)), null, Gl.DYNAMIC_DRAW);
             _texHCapGpu = cap; whole = true;
         }
         fixed (ulong* p = _dTexH)
         {
             if (whole)
-                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)cap * 8 * sizeof(ulong)), p);
+                Gl.NamedBufferSubData(_texHBuf, IntPtr.Zero, (IntPtr)((long)cap * 8 * sizeof(ulong)), p);
             else
-                UploadRuns(p, 8 * sizeof(ulong));
+                UploadRuns(_texHBuf, p, 8 * sizeof(ulong));
         }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindTexH, _texHBuf);
         _texHDirty = false;
     }
@@ -186,14 +180,12 @@ internal static unsafe class Issue
     /// <paramref name="binding"/>. Shared by the current palette and CX-26's previous one.</summary>
     internal static void UploadBoneBlock(ref uint buf, float* stage, uint binding)
     {
-        if (buf == 0) { uint b; Gl.GenBuffers(1, &b); buf = b; }
+        if (buf == 0) { uint b; Gl.CreateBuffers(1, &b); buf = b; }
         var size = (IntPtr)((long)Math.Max(_boneSlots, 1) * BoneFloats * sizeof(float));
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, buf);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, size, null, Gl.DYNAMIC_DRAW);
+        Gl.NamedBufferData(buf, size, null, Gl.DYNAMIC_DRAW);
         if (_boneSlots > 0)
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero,
-                             (IntPtr)((long)_boneSlots * BoneFloats * sizeof(float)), stage);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+            Gl.NamedBufferSubData(buf, IntPtr.Zero,
+                                  (IntPtr)((long)_boneSlots * BoneFloats * sizeof(float)), stage);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, binding, buf);
     }
 
@@ -457,14 +449,8 @@ internal static unsafe class Issue
                 if (want == boundSlot[t]) continue;
                 boundSlot[t] = want;
                 // #151: one DSA call instead of ActiveTexture+Bind+ActiveTexture -- this loop is a third of
-                // the pass's GL traffic. The fallback keeps pre-4.5 drivers drawing.
-                if (Gl.BindTextureUnit != null) Gl.BindTextureUnit(PbrUnit0 + (uint)t, (uint)want);
-                else
-                {
-                    Gl.ActiveTexture(Gl.TEXTURE0 + PbrUnit0 + (uint)t);
-                    Gl.BindTexture(Gl.TEXTURE_2D, (uint)want);
-                    Gl.ActiveTexture(Gl.TEXTURE0);   // unit 0 stays current: the diffuse rebinds there
-                }
+                // the pass's GL traffic.
+                Gl.BindTextureUnit(PbrUnit0 + (uint)t, (uint)want);
             }
             // #243: the same batch, from a list the GPU compacted. The bind set above is unchanged (the
             // cull moves WHICH draws are in the batch, never what state they draw under), and the record

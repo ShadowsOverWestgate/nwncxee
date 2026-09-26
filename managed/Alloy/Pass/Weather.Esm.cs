@@ -34,7 +34,7 @@ internal static unsafe partial class Weather
     internal static void FilterCover(uint array, int layer, int mapSize, float radius)
     {
         _esmValid = false;
-        if (_esmFailed || Gl.TextureView == null || Gl.TexStorage2D == null) return;
+        if (_esmFailed || Gl.TextureView == null) return;
         int size = mapSize < EsmSizeMax ? mapSize : EsmSizeMax;
         if (!EnsureEsm(array, layer, size)) return;
         int* save = stackalloc int[6]; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, save); Gl.GetIntegerv(Gl.VIEWPORT, save + 1);
@@ -97,37 +97,30 @@ internal static unsafe partial class Weather
             _esmProg = GlProgram.Graphics(PostChain.FullscreenVs, EsmFs, _log, "Weather cover filter");
             if (_esmProg == 0) { _esmFailed = true; _log?.Info("Weather: cover filter program failed -- the cover edge falls back to a hard compare"); return false; }
             _esmLocSrc = GlProgram.Loc(_esmProg, "uSrc"); _esmLocStep = GlProgram.Loc(_esmProg, "uStep"); _esmLocC = GlProgram.Loc(_esmProg, "uFirst");
-            uint v; Gl.GenVertexArrays(1, &v); _esmVao = v;
+            uint v; Gl.CreateVertexArrays(1, &v); _esmVao = v;
             uint f; Gl.GenFramebuffers(1, &f); _esmFbo = f;
         }
         if (_esmView == 0 || _esmViewOf != array || _esmLayer != layer)
         {
             if (_esmView != 0) { uint t = _esmView; Gl.DeleteTextures(1, &t); }
-            uint t2; Gl.GenTextures(1, &t2);
+            uint t2; Gl.GenTextures(1, &t2);   // glTextureView wants a name with no object yet: Gen, not Create
             Gl.DrainErrors();
             Gl.TextureView(t2, Gl.TEXTURE_2D, array, Gl.DEPTH_COMPONENT24, 0, 1, (uint)layer, 1);
             if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t2); _esmFailed = true; _log?.Info("Weather: no texture view onto the cover layer -- the cover edge falls back to a hard compare"); return false; }
-            Gl.BindTexture(Gl.TEXTURE_2D, t2);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_COMPARE_MODE, 0);
-            Gl.BindTexture(Gl.TEXTURE_2D, 0);
+            Gl.TextureParameteri(t2, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+            Gl.TextureParameteri(t2, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+            Gl.TextureParameteri(t2, Gl.TEXTURE_COMPARE_MODE, 0);
             _esmView = t2; _esmViewOf = array; _esmLayer = layer;
         }
         if (_esmSize != size)
         {
             if (_esmTex0 != 0) { uint* ts = stackalloc uint[2]; ts[0] = _esmTex0; ts[1] = _esmTex1; Gl.DeleteTextures(2, ts); }
-            uint* n = stackalloc uint[2]; Gl.GenTextures(2, n);
+            uint* n = stackalloc uint[2]; Gl.CreateTextures(Gl.TEXTURE_2D, 2, n);
             for (int i = 0; i < 2; i++)
             {
-                Gl.BindTexture(Gl.TEXTURE_2D, n[i]);
-                Gl.TexStorage2D(Gl.TEXTURE_2D, 1, Gl.RG32F, size, size);
-                Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-                Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-                Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-                Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+                Gl.TextureStorage2D(n[i], 1, Gl.RG32F, size, size);
+                RenderTarget.Clamp(n[i], Gl.LINEAR);
             }
-            Gl.BindTexture(Gl.TEXTURE_2D, 0);
             _esmTex0 = n[0]; _esmTex1 = n[1]; _esmSize = size;
             _log?.Info($"Weather: cover filter {size}x{size} RG32F");
         }

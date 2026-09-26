@@ -130,12 +130,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>This frame's dangly snapshots onto <see cref="BindDanglyPrev"/>. Orphan-then-fill.</summary>
     private static void UploadDanglyPrev()
     {
-        if (_dpBuf == 0) { uint b; Gl.GenBuffers(1, &b); _dpBuf = b; }
+        if (_dpBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _dpBuf = b; }
         var size = (IntPtr)((long)Math.Max(_dpUsed, 1) * sizeof(float));
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _dpBuf);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, size, null, Gl.DYNAMIC_DRAW);
-        if (_dpUsed > 0) Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, size, _dpStage);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.NamedBufferData(_dpBuf, size, null, Gl.DYNAMIC_DRAW);
+        if (_dpUsed > 0) Gl.NamedBufferSubData(_dpBuf, IntPtr.Zero, size, _dpStage);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDanglyPrev, _dpBuf);
     }
 

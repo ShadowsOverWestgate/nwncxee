@@ -68,15 +68,13 @@ internal static unsafe class TaaStage
     private static bool Size(int w, int h)
     {
         if (w <= 0 || h <= 0) return false;
-        if (_hist0 == 0)
+        if (_fbo == 0)
         {
-            uint* t = stackalloc uint[2];
-            Gl.GenTextures(2, t); _hist0 = t[0]; _hist1 = t[1];
             uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
             _sampler = Gl.LinearClampSampler();
         }
-        RenderTarget.AllocColor(_hist0, true, w, h, Gl.NEAREST);
-        RenderTarget.AllocColor(_hist1, true, w, h, Gl.NEAREST);
+        RenderTarget.AllocColor(ref _hist0, true, w, h, Gl.NEAREST);
+        RenderTarget.AllocColor(ref _hist1, true, w, h, Gl.NEAREST);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _hist0, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);

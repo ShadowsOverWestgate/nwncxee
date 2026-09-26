@@ -54,7 +54,7 @@ a frame that is rendering vanilla anyway. It freezes the moment it stops being t
 | 5 | `AlloyRenderer` never armed (hooks did not install) — **after** every opt-out above, because each of them returns from `Initialize` before `_armed` is set, so asking this first reports the mechanism instead of the request | Idle |
 | 5a | the `RenderSinglePass` shim never armed (an engine symbol or draw funnel did not resolve) — same placement, one layer down; since #458 there is no Alloy-inside-the-engine's-frame mode to fall back to | Idle |
 | 6 | no module loaded | Idle |
-| 7 | no GL 4.6 share-listed context — ADR 0010's macOS/old-driver case; the context creation *is* the check | Incapable |
+| 7 | no GL 4.6 share-listed context — ADR 0010's macOS/old-driver case; the context creation *is* the check, and it also refuses a context missing the GL 4.5 DSA entry points Alloy creates and edits through (CX-44) | Incapable |
 | 8 | a program did not build, or `glMultiDrawElementsBaseVertex`/`glBindBufferBase` missing | Incapable |
 | 9 | the HDR target latched a stand-down (`PostChain.Failed`) | Incapable |
 | 10 | the engine's gamma pipeline is off (`GetGlobalShaderParami(0) == 0`) — it gates the Alloy *decodes*, which live in the stages | Incapable |

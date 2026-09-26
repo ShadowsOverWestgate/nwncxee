@@ -48,16 +48,10 @@ internal static unsafe class PresentTarget
         if (!Needed || w <= 0 || h <= 0) return;
         _depthTex = depthTex;
         if (_tex != 0 && w == _w && h == _h) return;
-        if (_tex != 0) { uint t = _tex; Gl.DeleteTextures(1, &t); _tex = 0; }
-        uint tex; Gl.GenTextures(1, &tex);
-        Gl.BindTexture(Gl.TEXTURE_2D, tex);
         // RGBA8: this holds the FINISHED, display-space frame -- the composite has already encoded and
         // dithered it, so anything wider would be storing precision the default framebuffer cannot take.
-        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.RGBA8, w, h, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, null);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, (int)Gl.NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, (int)Gl.NEAREST);
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
-        _tex = tex; _w = w; _h = h;
+        RenderTarget.AllocColor(ref _tex, false, w, h, Gl.NEAREST);
+        _w = w; _h = h;
         if (_fbo46 == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo46 = f; }
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo46);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _tex, 0);

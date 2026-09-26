@@ -378,7 +378,7 @@ internal static unsafe partial class OwnedTextures
         // the engine already holds. The window is the main menu, which Alloy does not draw, and the count
         // says so out loud rather than hiding it. Upgrade path: re-drive AurTextureRefreshAll @0x48f050 from
         // the engine's context once the bracket exists.
-        if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.GetIntegerv == null)
+        if (!GlContextService.Available)
         {
             if (!single) _borrowed.Add(etid);
             return false;
@@ -386,19 +386,20 @@ internal static unsafe partial class OwnedTextures
 
         ulong key = Key(tex, cell);
         uint dst;
-        Gl.GenTextures(1, &dst);
+        Gl.CreateTextures(Gl.TEXTURE_2D, 1, &dst);
         if (dst == 0) { if (!single) _borrowed.Add(etid); return false; }
 
+        // The one bind-to-edit that stays: the ENGINE's upload below writes through the TEXTURE_2D binding,
+        // so the save/restore keeps GLRender's bind cache true. Raw glBindTexture, NOT AurTextureBindTID:
+        // routing our name through its wrapper would leave that cache naming a texture the engine does not own.
         int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
         Gl.DrainErrors(8);   // the verdict below is ours to read, so nobody else's error may be sitting here
-        // Raw glBindTexture, NOT AurTextureBindTID: the engine caches what it thinks is bound, and routing
-        // our name through its wrapper would leave that cache naming a texture the engine does not own.
         Gl.BindTexture(Gl.TEXTURE_2D, dst);
         // ...and always the ALLOCATING form. `true` is the glTexSubImage2D path, which assumes storage a
         // freshly generated name does not have.
         _origCreate(tex, 0, cell);
         uint err = Gl.GetError();          // read BEFORE Measure, whose own queries would mask it
-        long bytes = err == 0 ? Measure() : 0;
+        long bytes = err == 0 ? Measure(dst) : 0;
         bool wantBcn = err == 0 && _bcn && b.CompressedSize == 0;
         TexScan.Result scan = default;
         bool scanned = err == 0 && TexScan.Scan(tex, cell, CoverageAlpha, wantBcn, out scan);
@@ -853,11 +854,11 @@ internal static unsafe partial class OwnedTextures
     }
 
     /// <summary>One frame of the pipeline: uploads first (they free jobs), then fence checks, then new
-    /// readbacks up to the budget. Engine context, on the <see cref="DripRebuilds"/> anchor; the engine's
-    /// bind cache and pixel-store state are restored around every stage.</summary>
+    /// readbacks up to the budget. Engine context, on the <see cref="DripRebuilds"/> anchor; every edit is by
+    /// name, so the engine's bind cache is never touched, and its unpack-buffer binding is restored.</summary>
     private static void DripTranscodes()
     {
-        if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.GetIntegerv == null || Gl.CompressedTexImage2D == null) return;
+        if (!GlContextService.Available) return;
         if (_transN == 0 && !AnyJob()) return;
         long t0 = FrameZones.Now;
         for (int j = 0; j < TransJobs; j++)
@@ -901,18 +902,15 @@ internal static unsafe partial class OwnedTextures
         long total;
         fixed (int* lw = job.Lw, lh = job.Lh) fixed (long* off = job.Off)
             job.Levels = TexScan.Chain(t.W, t.H, t.Mips, MaxLevels, lw, lh, off, out total);
-        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
-        Gl.BindTexture(Gl.TEXTURE_2D, t.Src);
         fixed (int* mn = &job.MinF, mg = &job.MagF, ws = &job.WrapS, wt = &job.WrapT, ml = &job.MaxLevel, an = &job.Aniso)
         {
-            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, mn);
-            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, mg);
-            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, ws);
-            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, wt);
-            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, ml);
-            Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_ANISOTROPY, an);
+            Gl.GetTextureParameteriv(t.Src, Gl.TEXTURE_MIN_FILTER, mn);
+            Gl.GetTextureParameteriv(t.Src, Gl.TEXTURE_MAG_FILTER, mg);
+            Gl.GetTextureParameteriv(t.Src, Gl.TEXTURE_WRAP_S, ws);
+            Gl.GetTextureParameteriv(t.Src, Gl.TEXTURE_WRAP_T, wt);
+            Gl.GetTextureParameteriv(t.Src, Gl.TEXTURE_MAX_LEVEL, ml);
+            Gl.GetTextureParameteriv(t.Src, Gl.TEXTURE_MAX_ANISOTROPY, an);
         }
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
         if (job.Pixels.Length < total) job.Pixels = new byte[total];   // cold: grows to the largest texture seen
         Buffer.BlockCopy(t.Pixels, 0, job.Pixels, 0, t.W * t.H * 4);
         long blk = 0;
@@ -964,37 +962,28 @@ internal static unsafe partial class OwnedTextures
         job.State = JobFree;   // whatever happens below, the job is spent
         _inFlight.Remove(job.Key);
         if (!_res.TryGetValue(job.Key, out Entry e) || e.Owned != job.Src) { _transStale++; return; }
-        uint dst; Gl.GenTextures(1, &dst);
+        uint dst; Gl.CreateTextures(Gl.TEXTURE_2D, 1, &dst);
         if (dst == 0) { _transFailed++; return; }
-        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
+        // DSA uploads still read through PIXEL_UNPACK_BUFFER, so the engine's (if any) steps aside.
         int svUnpackBuf; Gl.GetIntegerv(Gl.PIXEL_UNPACK_BUFFER_BINDING, &svUnpackBuf);
         if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, 0);
         Gl.DrainErrors(8);
-        Gl.BindTexture(Gl.TEXTURE_2D, dst);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, job.MinF);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, job.MagF);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, job.WrapS);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, job.WrapT);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, job.MaxLevel);
-        if (job.Aniso > 0) Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_ANISOTROPY, job.Aniso);
+        Gl.TextureParameteri(dst, Gl.TEXTURE_MIN_FILTER, job.MinF);
+        Gl.TextureParameteri(dst, Gl.TEXTURE_MAG_FILTER, job.MagF);
+        Gl.TextureParameteri(dst, Gl.TEXTURE_WRAP_S, job.WrapS);
+        Gl.TextureParameteri(dst, Gl.TEXTURE_WRAP_T, job.WrapT);
+        if (job.Aniso > 0) Gl.TextureParameteri(dst, Gl.TEXTURE_MAX_ANISOTROPY, job.Aniso);
         uint fmt = job.Bc3 ? Gl.COMPRESSED_RGBA_S3TC_DXT5 : Gl.COMPRESSED_RGB_S3TC_DXT1;
-        // Immutable storage for the whole chain, then one sub-image per level. Defining mutable levels one by
-        // one read as BcnUp 2,5-4,7ms per texture: the driver re-creates the miptree on every level it learns about.
-        bool immutable = Gl.TexStorage2D != null && Gl.CompressedTexSubImage2D != null;
-        if (immutable)
-        {
-            Gl.TexStorage2D(Gl.TEXTURE_2D, job.Levels, fmt, job.Lw[0], job.Lh[0]);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, Math.Min(job.MaxLevel, job.Levels - 1));
-        }
+        // Immutable storage for the whole chain, then one sub-image per level -- never respecify: defining
+        // mutable levels one by one read as BcnUp 2,5-4,7ms per texture, and a mip read after respecification
+        // corrupted every level but the base on AMD/Mesa.
+        Gl.TextureStorage2D(dst, job.Levels, fmt, job.Lw[0], job.Lh[0]);
+        Gl.TextureParameteri(dst, Gl.TEXTURE_MAX_LEVEL, Math.Min(job.MaxLevel, job.Levels - 1));
         fixed (byte* blocks = job.Blocks)
             for (int i = 0; i < job.Levels; i++)
-            {
-                int size = BcnEncode.LevelSize(job.Lw[i], job.Lh[i], job.Bc3);
-                if (immutable) Gl.CompressedTexSubImage2D(Gl.TEXTURE_2D, i, 0, 0, job.Lw[i], job.Lh[i], fmt, size, blocks + job.Off[i]);
-                else Gl.CompressedTexImage2D(Gl.TEXTURE_2D, i, fmt, job.Lw[i], job.Lh[i], 0, size, blocks + job.Off[i]);
-            }
+                Gl.CompressedTextureSubImage2D(dst, i, 0, 0, job.Lw[i], job.Lh[i], fmt,
+                                               BcnEncode.LevelSize(job.Lw[i], job.Lh[i], job.Bc3), blocks + job.Off[i]);
         uint err = Gl.GetError();
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
         if (svUnpackBuf != 0) Gl.BindBuffer(Gl.PIXEL_UNPACK_BUFFER, (uint)svUnpackBuf);
         if (err != 0)
         {
@@ -1222,20 +1211,15 @@ internal static unsafe partial class OwnedTextures
     internal static int WhiteTid()
     {
         if (_white != 0) return (int)_white;
-        if (Gl.GenTextures == null || Gl.BindTexture == null || Gl.TexImage2D == null
-            || Gl.TexParameteri == null || Gl.GetIntegerv == null) return 0;
+        if (!GlContextService.Available) return 0;
         uint t;
-        Gl.GenTextures(1, &t);
+        Gl.CreateTextures(Gl.TEXTURE_2D, 1, &t);
         if (t == 0) return 0;
-        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
-        // Raw glBindTexture, never AurTextureBindTID: the engine caches what it thinks is bound and this
-        // name is not the engine's.
-        Gl.BindTexture(Gl.TEXTURE_2D, t);
         uint white = 0xFFFFFFFF;
-        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.RGBA8, 1, 1, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, &white);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
+        Gl.TextureStorage2D(t, 1, Gl.RGBA8, 1, 1);
+        Gl.TextureSubImage2D(t, 0, 0, 0, 1, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, &white);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
         _owned.Add(t);
         _white = t;
         _log?.Info($"OwnedTextures: minted the white null-texture stand-in (tid {t}) -- a diffuse with no GL id now draws as vanilla draws it");
@@ -1442,33 +1426,32 @@ internal static unsafe partial class OwnedTextures
     private const ulong CellMask = 0xFFFF;   // not-an-offset: key bit field
     private const int MaxCells = (int)CellMask + 1;
 
-    /// <summary>How much VRAM the texture currently bound to <c>GL_TEXTURE_2D</c> occupies, over every level
+    /// <summary>How much VRAM <paramref name="tex"/> occupies, over every level
     /// that has storage. A block format answers directly; anything else is width*height*(sum of the channel
     /// widths). Accounting only -- a driver that answers nothing costs a zero, not a refusal.</summary>
-    private static long Measure()
+    private static long Measure(uint tex)
     {
-        if (Gl.GetTexLevelParameteriv == null) return 0;
         long total = 0;
         for (int level = 0; level < MaxLevels; level++)
         {
             int w = 0, h = 0;
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_WIDTH, &w);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_HEIGHT, &h);
+            Gl.GetTextureLevelParameteriv(tex, level, Gl.TEXTURE_WIDTH, &w);
+            Gl.GetTextureLevelParameteriv(tex, level, Gl.TEXTURE_HEIGHT, &h);
             if (w <= 0 || h <= 0) break;
             int compressed = 0;
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_COMPRESSED, &compressed);
+            Gl.GetTextureLevelParameteriv(tex, level, Gl.TEXTURE_COMPRESSED, &compressed);
             if (compressed != 0)
             {
                 int size = 0;
-                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
+                Gl.GetTextureLevelParameteriv(tex, level, Gl.TEXTURE_COMPRESSED_IMAGE_SIZE, &size);
                 total += size > 0 ? size : 0;
                 continue;
             }
             int r = 0, g = 0, b = 0, a = 0;
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_RED_SIZE, &r);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_GREEN_SIZE, &g);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_BLUE_SIZE, &b);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, level, Gl.TEXTURE_ALPHA_SIZE, &a);
+            Gl.GetTextureLevelParameteriv(tex, level, Gl.TEXTURE_RED_SIZE, &r);
+            Gl.GetTextureLevelParameteriv(tex, level, Gl.TEXTURE_GREEN_SIZE, &g);
+            Gl.GetTextureLevelParameteriv(tex, level, Gl.TEXTURE_BLUE_SIZE, &b);
+            Gl.GetTextureLevelParameteriv(tex, level, Gl.TEXTURE_ALPHA_SIZE, &a);
             total += (long)w * h * (r + g + b + a) / 8;
         }
         return total;
@@ -1697,9 +1680,7 @@ internal static unsafe partial class OwnedTextures
     private static void DrainPltCopies()
     {
         if (_pltQ.Count == 0) return;
-        if (Gl.CopyImageSubData == null || Gl.TexStorage2D == null || Gl.GenTextures == null
-            || Gl.BindTexture == null || Gl.GetIntegerv == null || Gl.GetTexLevelParameteriv == null
-            || Gl.GetTexParameteriv == null || Gl.TexParameteri == null)
+        if (Gl.CopyImageSubData == null || Gl.TextureStorage2D == null)
         {
             foreach (PltCopy q in _pltQ) { _borrowed.Add((int)q.Src); _pltCopyRefused++; }
             _pltQ.Clear();
@@ -1715,9 +1696,7 @@ internal static unsafe partial class OwnedTextures
             return;
         }
 
-        int savedBind; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &savedBind);
         for (int i = 0; i < _pltQ.Count; i++) Copy(_pltQ[i]);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)savedBind);
         _pltQ.Clear();
     }
 
@@ -1735,7 +1714,6 @@ internal static unsafe partial class OwnedTextures
     /// state it was already in -- a refused copy costs the character nothing it had.</summary>
     private static void Copy(PltCopy q)
     {
-        Gl.BindTexture(Gl.TEXTURE_2D, q.Src);
         Gl.DrainErrors(8);   // the verdict below is ours to read
 
         int levels = 0, fmt = 0;
@@ -1743,12 +1721,12 @@ internal static unsafe partial class OwnedTextures
         for (; levels < MaxLevels; levels++)
         {
             int w = 0, h = 0;
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_WIDTH, &w);
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, levels, Gl.TEXTURE_HEIGHT, &h);
+            Gl.GetTextureLevelParameteriv(q.Src, levels, Gl.TEXTURE_WIDTH, &w);
+            Gl.GetTextureLevelParameteriv(q.Src, levels, Gl.TEXTURE_HEIGHT, &h);
             if (w <= 0 || h <= 0) break;
             lw[levels] = w; lh[levels] = h;
         }
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
+        Gl.GetTextureLevelParameteriv(q.Src, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
         // An UNSIZED answer cannot be handed to glTexStorage2D, and guessing a promotion is what changed the
         // sampler swizzle under #211. Refused, named, and left borrowed instead.
         if (levels == 0 || fmt == 0 || fmt == (int)Gl.RGBA || fmt == (int)Gl.RGB)
@@ -1762,15 +1740,14 @@ internal static unsafe partial class OwnedTextures
 
         int* saved = stackalloc int[CarriedParams.Length];
         for (int i = 0; i < CarriedParams.Length; i++)
-            Gl.GetTexParameteriv(Gl.TEXTURE_2D, CarriedParams[i], saved + i);
+            Gl.GetTextureParameteriv(q.Src, CarriedParams[i], saved + i);
 
         uint dst;
-        Gl.GenTextures(1, &dst);
+        Gl.CreateTextures(Gl.TEXTURE_2D, 1, &dst);
         if (dst == 0) { _borrowed.Add((int)q.Src); _pltCopyRefused++; return; }
-        Gl.BindTexture(Gl.TEXTURE_2D, dst);
-        Gl.TexStorage2D(Gl.TEXTURE_2D, levels, (uint)fmt, lw[0], lh[0]);
+        Gl.TextureStorage2D(dst, levels, (uint)fmt, lw[0], lh[0]);
         for (int i = 0; i < CarriedParams.Length; i++)
-            Gl.TexParameteri(Gl.TEXTURE_2D, CarriedParams[i], saved[i]);
+            Gl.TextureParameteri(dst, CarriedParams[i], saved[i]);
         for (int l = 0; l < levels; l++)
             Gl.CopyImageSubData(q.Src, Gl.TEXTURE_2D, l, 0, 0, 0, dst, Gl.TEXTURE_2D, l, 0, 0, 0,
                                 lw[l], lh[l], 1);
@@ -1786,7 +1763,7 @@ internal static unsafe partial class OwnedTextures
             return;
         }
 
-        Replace(q.Key, (int)q.Src, dst, Measure());
+        Replace(q.Key, (int)q.Src, dst, Measure(dst));
         _stats[dst] = new Stat { Holes = 0f };   // PLT composites are opaque; unscanned would read as masked
         _pltCopied++;
         HighWater();

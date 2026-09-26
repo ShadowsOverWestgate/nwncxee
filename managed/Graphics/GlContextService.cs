@@ -22,7 +22,8 @@ public sealed unsafe class GlContextService : IExtenderService
 {
     private const int LogEvery = 900;
     private const ulong TimeoutIgnored = 0xFFFFFFFFFFFFFFFFUL;
-    private const uint GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117, GL_VERSION = 0x1F02, GL_RENDERER = 0x1F01;
+    private const uint GL_SYNC_GPU_COMMANDS_COMPLETE = 0x9117, GL_VERSION = 0x1F02, GL_RENDERER = 0x1F01,
+                       GL_MAJOR_VERSION = 0x821B, GL_MINOR_VERSION = 0x821C;
     /// <summary>The 4.6 context's GL_RENDERER names zink (Mesa's GL-on-Vulkan): the test vehicle whose bindless
     /// teardown faults on a worker thread at texture delete; OwnedTextures reads it to keep such names alive.</summary>
     internal static bool Zink => _zink;
@@ -204,6 +205,16 @@ public sealed unsafe class GlContextService : IExtenderService
         var getString = (delegate* unmanaged<uint, byte*>)GP("glGetString");
         if (_fenceSync == null || _waitSync == null || _deleteSync == null || _flush == null)
         { Fail("a GL entry point did not resolve"); return; }
+        // CX-44: the one DSA stand-down (docs/alloy-refusals.md #7). The ENGINE's context is current here and is
+        // asked too, since the decode/drip edits run in it and GLX pointers alone prove nothing. It is asked for
+        // the extension, not the version: NVIDIA reports a requested 3.3 context as 3.3 yet exposes DSA in it.
+        int major = 0, minor = 0;
+        Gl.GetIntegerv(GL_MAJOR_VERSION, &major); Gl.GetIntegerv(GL_MINOR_VERSION, &minor);
+        bool engDsa = major * 10 + minor >= 45 || Gl.HasExt("GL_ARB_direct_state_access"u8);
+        if (!engDsa || Gl.CreateBuffers == null || Gl.CreateTextures == null
+            || Gl.CreateVertexArrays == null || Gl.NamedBufferData == null || Gl.TextureStorage2D == null
+            || Gl.VertexArrayVertexBuffer == null)
+        { Fail($"the engine's context is GL {major}.{minor} or lacks direct state access (4.5 required)"); return; }
 
         // WGL_CONTEXT_* are numerically identical to the GLX_CONTEXT_* values above (wglext.h), so one
         // attribute list serves both.
@@ -230,7 +241,7 @@ public sealed unsafe class GlContextService : IExtenderService
 
         Context = ctx;
         Available = true;
-        log.Info($"GlContextService: 4.6 core context LIVE (0x{ctx:x}, GL_VERSION='{ver}') -- bracket every frame" +
+        log.Info($"GlContextService: 4.6 core context LIVE (0x{ctx:x}, GL_VERSION='{ver}', engine context {major}.{minor} with DSA) -- bracket every frame" +
                  (dbg ? "; DEBUG context, KHR_debug messages go to this log (alloy.gldebug=1)" : ""));
     }
 

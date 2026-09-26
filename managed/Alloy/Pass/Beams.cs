@@ -207,11 +207,12 @@ internal static unsafe class Beams
         // the current-VDO cache under the caller. Upgrade path if `beams 0 drawn` is ever traced to this:
         // arm the drip at the bucket window's open, not per harvest.
         if (vao == 0 || Gl.GetVertexAttribiv == null) return false;
+        int eb; Gl.GetVertexArrayiv(vao, Gl.ELEMENT_ARRAY_BUFFER_BINDING, &eb);
+        _vElemBuf[s] = (uint)eb;
+        // The attribute READ still binds: no DSA query answers an attribute's buffer name.
         int saved;
         Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &saved);
         Gl.BindVertexArray(vao);
-        int eb; Gl.GetIntegerv(Gl.ELEMENT_ARRAY_BUFFER_BINDING, &eb);
-        _vElemBuf[s] = (uint)eb;
         VertexArrays.Read(EngPos, out _vPos[s]);
         VertexArrays.Read(EngFrontal, out _vFr[s]);
         Gl.BindVertexArray((uint)saved);
@@ -237,12 +238,10 @@ internal static unsafe class Beams
         uint elem = _vElemBuf[v];
         if (elem == 0) return 0;
         var pos = _vPos[v]; var fr = _vFr[v];
-        uint vao; Gl.GenVertexArrays(1, &vao);
-        Gl.BindVertexArray(vao);
-        VertexArrays.Bind(LocPos, in pos);
-        VertexArrays.Bind(LocFrontal, in fr);
-        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, elem);
-        Gl.BindVertexArray(0);
+        uint vao; Gl.CreateVertexArrays(1, &vao);
+        VertexArrays.Bind(vao, LocPos, in pos);
+        VertexArrays.Bind(vao, LocFrontal, in fr);
+        Gl.VertexArrayElementBuffer(vao, elem);
         return vao;
     }
 

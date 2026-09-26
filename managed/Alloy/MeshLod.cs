@@ -207,7 +207,7 @@ internal static unsafe class MeshLod
     /// thread, inside the Alloy bracket, once a frame: this is the only place a GL name is touched.</summary>
     internal static void Pump()
     {
-        if (!_jobs.Running || Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null) return;
+        if (!_jobs.Running || Gl.CreateBuffers == null) return;
         int dirtyFrom = _used;
         while (_jobs.TryTake(out Job j))
         {
@@ -251,24 +251,18 @@ internal static unsafe class MeshLod
     /// built over it stays valid -- and re-sends everything; otherwise only the new tail goes up.</summary>
     private static void Upload(int dirtyFrom)
     {
-        if (_ebo == 0) { uint b; Gl.GenBuffers(1, &b); if (b == 0) return; _ebo = b; _uploaded = 0; }
-        // VAO 0 first: binding an element buffer while one of ours is bound would rewrite ITS element binding.
-        int savedVao; Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &savedVao);
-        Gl.BindVertexArray(0);
-        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
+        if (_ebo == 0) { uint b; Gl.CreateBuffers(1, &b); if (b == 0) return; _ebo = b; _uploaded = 0; }
         fixed (ushort* p = _mirror)
         {
             if (_uploaded < _used && _capacity >= _used)
-                Gl.BufferSubData(Gl.ELEMENT_ARRAY_BUFFER, (IntPtr)((long)dirtyFrom * 2),
+                Gl.NamedBufferSubData(_ebo, (IntPtr)((long)dirtyFrom * 2),
                                  (IntPtr)((long)(_used - dirtyFrom) * 2), p + dirtyFrom);
             else
             {
                 _capacity = _mirror.Length;
-                Gl.BufferData(Gl.ELEMENT_ARRAY_BUFFER, (IntPtr)((long)_capacity * 2), p, Gl.STATIC_DRAW);
+                Gl.NamedBufferData(_ebo, (IntPtr)((long)_capacity * 2), p, Gl.STATIC_DRAW);
             }
         }
-        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, 0);
-        Gl.BindVertexArray((uint)savedVao);
         _uploaded = _used;
     }
 

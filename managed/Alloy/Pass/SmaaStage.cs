@@ -105,11 +105,11 @@ internal static unsafe class SmaaStage
     private static bool Size(int w, int h)
     {
         if (w <= 0 || h <= 0) return false;
-        if (_edges == 0)
+        if (_area == 0)
         {
-            uint* t = stackalloc uint[4];
-            Gl.GenTextures(4, t);
-            _edges = t[0]; _blend = t[1]; _area = t[2]; _search = t[3];
+            uint* t = stackalloc uint[2];
+            Gl.CreateTextures(Gl.TEXTURE_2D, 2, t);
+            _area = t[0]; _search = t[1];
             uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
             _sampler = Gl.LinearClampSampler();
             if (!Table(_area, "SmaaArea", Gl.RG8, Gl.RG, AreaW, AreaH, Gl.LINEAR)
@@ -120,8 +120,8 @@ internal static unsafe class SmaaStage
                 return false;
             }
         }
-        RenderTarget.AllocColor(_edges, false, w, h, Gl.LINEAR);
-        RenderTarget.AllocColor(_blend, false, w, h, Gl.LINEAR);
+        RenderTarget.AllocColor(ref _edges, false, w, h, Gl.LINEAR);
+        RenderTarget.AllocColor(ref _blend, false, w, h, Gl.LINEAR);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _edges, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
@@ -143,15 +143,11 @@ internal static unsafe class SmaaStage
         if (s == null || s.Length != w * h * (format == Gl.RG ? 2 : 1)) return false;
         byte[] bytes = new byte[s.Length];
         s.ReadExactly(bytes);
-        Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindTexture(Gl.TEXTURE_2D, tex);
+        Gl.TextureStorage2D(tex, 1, internalFormat, w, h);
         Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 1);
-        fixed (byte* p = bytes) Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)internalFormat, w, h, 0, format, Gl.UNSIGNED_BYTE, p);
+        fixed (byte* p = bytes) Gl.TextureSubImage2D(tex, 0, 0, 0, w, h, format, Gl.UNSIGNED_BYTE, p);
         Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 4);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, filter);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, filter);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, (int)Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, (int)Gl.CLAMP_TO_EDGE);
+        RenderTarget.Clamp(tex, filter);
         return true;
     }
 

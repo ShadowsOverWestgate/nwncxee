@@ -127,13 +127,8 @@ internal static unsafe class IdTarget
     {
         if (_tex != 0 && w == _w && h == _h) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_tex == 0) { uint t; Gl.GenTextures(1, &t); _tex = t; }
-        Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindTexture(Gl.TEXTURE_2D, _tex);
-        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.R32UI, w, h, 0, Gl.RED_INTEGER, Gl.UNSIGNED_INT, null);
         // an integer texture under LINEAR is incomplete and samples zero
-        RenderTarget.Clamp(Gl.NEAREST);
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        RenderTarget.Create(ref _tex, Gl.R32UI, w, h, Gl.NEAREST);
         _w = w; _h = h; _checked = false;
         _log?.Info($"IdTarget: vis-ID target {w}x{h} R32UI");
         return true;

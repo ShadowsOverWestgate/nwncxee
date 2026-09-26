@@ -497,20 +497,17 @@ internal static unsafe partial class LightmapBake
 
     private static void UploadRecords()
     {
-        if (Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null) return;
         if (_bufChart == 0)
         {
-            uint b; Gl.GenBuffers(1, &b); if (b == 0) return;
+            uint b; Gl.CreateBuffers(1, &b); if (b == 0) return;
             _bufChart = b; _bufFilled = false;
         }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufChart);
         fixed (float* p = _rec)
         {
-            if (!_bufFilled) { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)_rec.Length * 4), p, Gl.DYNAMIC_DRAW); _bufFilled = true; }
+            if (!_bufFilled) { Gl.NamedBufferData(_bufChart, (IntPtr)((long)_rec.Length * 4), p, Gl.DYNAMIC_DRAW); _bufFilled = true; }
             else if (_dirtyHi >= _dirtyLo)
-                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)_dirtyLo * RecFloats * 4), (IntPtr)((long)(_dirtyHi - _dirtyLo + 1) * RecFloats * 4), p + (long)_dirtyLo * RecFloats);
+                Gl.NamedBufferSubData(_bufChart, (IntPtr)((long)_dirtyLo * RecFloats * 4), (IntPtr)((long)(_dirtyHi - _dirtyLo + 1) * RecFloats * 4), p + (long)_dirtyLo * RecFloats);
         }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         _dirtyLo = int.MaxValue; _dirtyHi = -1;
     }
 
@@ -919,7 +916,7 @@ internal static unsafe partial class LightmapBake
         // page's fence still open is polled, never waited on: the render thread does not stall for a cache
         // file, and a page landing that close behind another goes uncached (a miss next session, nothing else).
         if (_fence != IntPtr.Zero) CollectReadback();
-        if (_fence == IntPtr.Zero && Gl.FenceSync != null && Gl.MapBufferRange != null) QueueReadback(x0, y0, x1 - x0, y1 - y0);
+        if (_fence == IntPtr.Zero && Gl.FenceSync != null && Gl.MapNamedBufferRange != null) QueueReadback(x0, y0, x1 - x0, y1 - y0);
         else _uncached += _bakeRects.Count;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         for (int k = 0; k < _bakeRects.Count; k++) { Land(_bakeRects[k], false); _pending--; }
@@ -933,9 +930,9 @@ internal static unsafe partial class LightmapBake
     {
         int bytes = w * h * 8;
         if (bytes <= 0 || _bakeRects.Count == 0) return;
-        if (_pbo == 0) { uint b; Gl.GenBuffers(1, &b); _pbo = b; if (b == 0) return; }
+        if (_pbo == 0) { uint b; Gl.CreateBuffers(1, &b); _pbo = b; if (b == 0) return; }
+        if (bytes > _pboBytes) { Gl.NamedBufferData(_pbo, (IntPtr)bytes, null, Gl.STREAM_READ); _pboBytes = bytes; }
         Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, _pbo);
-        if (bytes > _pboBytes) { Gl.BufferData(Gl.PIXEL_PACK_BUFFER, (IntPtr)bytes, null, Gl.STREAM_READ); _pboBytes = bytes; }
         Gl.ReadBuffer(Gl.COLOR_ATTACHMENT0);
         Gl.ReadPixels(x0, y0, w, h, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, null);
         Gl.ReadBuffer(Gl.COLOR_ATTACHMENT1);
@@ -954,19 +951,18 @@ internal static unsafe partial class LightmapBake
         uint st = Gl.ClientWaitSync(_fence, 0, 0);
         if (st != Gl.ALREADY_SIGNALED && st != Gl.CONDITION_SATISFIED) return;
         Gl.DeleteSync(_fence); _fence = IntPtr.Zero;
-        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, _pbo);
         long total = (long)_uw * _uh * 8;
-        byte* p = (byte*)Gl.MapBufferRange(Gl.PIXEL_PACK_BUFFER, IntPtr.Zero, (IntPtr)total, Gl.MAP_READ_BIT);
+        byte* p = (byte*)Gl.MapNamedBufferRange(_pbo, IntPtr.Zero, (IntPtr)total, Gl.MAP_READ_BIT);
         if (p != null)
         {
             int b = -1;
             for (int i = 0; i < ReadBufs && b < 0; i++) if (_cache.Busy[i] == 0) b = i;
-            if (b < 0) { _uncached += _pendingRead.Count; Gl.UnmapBuffer(Gl.PIXEL_PACK_BUFFER); }
+            if (b < 0) { _uncached += _pendingRead.Count; Gl.UnmapNamedBuffer(_pbo); }
             else
             {
                 if (_readBufs[b] == null || _readBufs[b]!.Length < total) _readBufs[b] = new byte[Math.Max(total, 1 << 20)];
                 fixed (byte* d = _readBufs[b]) Buffer.MemoryCopy(p, d, total, total);
-                Gl.UnmapBuffer(Gl.PIXEL_PACK_BUFFER);
+                Gl.UnmapNamedBuffer(_pbo);
                 var table = new BakeCache.Entry[_pendingRead.Count];   // cold: one per page bake
                 for (int k = 0; k < _pendingRead.Count; k++)
                 {
@@ -976,7 +972,6 @@ internal static unsafe partial class LightmapBake
                 _cache.Save(_readBufs[b]!, b, _uw, _uh, table);
             }
         }
-        Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, 0);
         _pendingRead.Clear();
     }
 
@@ -1010,18 +1005,16 @@ internal static unsafe partial class LightmapBake
             ref Rect r = ref _rects[ri];
             if (data == null) { r.State = RState.Queued; _queuedAt = _frame; continue; }
             uploaded += (long)r.W * r.H * 8;
-            if (!strided) { strided = true; Gl.ActiveTexture(Gl.TEXTURE0); }
+            strided = true;
             Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, uw);
             fixed (byte* p = data)
             {
-                Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _texA);
-                Gl.TexSubImage3D(Gl.TEXTURE_2D_ARRAY, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, p + UnionOffset(0, x, y, uw, uh));
-                Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _texB);
-                Gl.TexSubImage3D(Gl.TEXTURE_2D_ARRAY, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(1, x, y, uw, uh));
+                Gl.TextureSubImage3D(_texA, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, p + UnionOffset(0, x, y, uw, uh));
+                Gl.TextureSubImage3D(_texB, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(1, x, y, uw, uh));
             }
             Land(ri, true); _pending--;
         }
-        if (strided) { Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, 0); Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, 0); }
+        if (strided) Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, 0);
     }
 
     /// <summary>Grow the resident pair by one layer: a new array, the old layers copied across, the old
@@ -1076,57 +1069,49 @@ internal static unsafe partial class LightmapBake
 
     private static uint PageArray(uint format, int layers)
     {
-        uint t; Gl.GenTextures(1, &t);
-        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, t);
+        uint t; Gl.CreateTextures(Gl.TEXTURE_2D_ARRAY, 1, &t);
         Gl.DrainErrors();
-        Gl.TexStorage3D(Gl.TEXTURE_2D_ARRAY, 1, format, PageSize, PageSize, layers);
-        if (Gl.GetError() != 0) { Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, 0); Gl.DeleteTextures(1, &t); return 0; }
-        Gl.TexParameteri(Gl.TEXTURE_2D_ARRAY, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-        Gl.TexParameteri(Gl.TEXTURE_2D_ARRAY, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-        Gl.TexParameteri(Gl.TEXTURE_2D_ARRAY, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_2D_ARRAY, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, 0);
+        Gl.TextureStorage3D(t, 1, format, PageSize, PageSize, layers);
+        if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t); return 0; }
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
         return t;
     }
 
     private static uint Scratch()
     {
-        uint t; Gl.GenTextures(1, &t);
-        Gl.BindTexture(Gl.TEXTURE_2D, t);
+        uint t; Gl.CreateTextures(Gl.TEXTURE_2D, 1, &t);
         Gl.DrainErrors();
-        Gl.TexStorage2D(Gl.TEXTURE_2D, 1, Gl.RGBA16F, PageSize, PageSize);
-        if (Gl.GetError() != 0) { Gl.BindTexture(Gl.TEXTURE_2D, 0); Gl.DeleteTextures(1, &t); return 0; }
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        Gl.TextureStorage2D(t, 1, Gl.RGBA16F, PageSize, PageSize);
+        if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t); return 0; }
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
         return t;
     }
 
     private static uint ScratchDepth()
     {
-        uint t; Gl.GenTextures(1, &t);
-        Gl.BindTexture(Gl.TEXTURE_2D, t);
+        uint t; Gl.CreateTextures(Gl.TEXTURE_2D, 1, &t);
         Gl.DrainErrors();
-        Gl.TexStorage2D(Gl.TEXTURE_2D, 1, Gl.DEPTH_COMPONENT16, PageSize, PageSize);
-        if (Gl.GetError() != 0) { Gl.BindTexture(Gl.TEXTURE_2D, 0); Gl.DeleteTextures(1, &t); return 0; }
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        Gl.TextureStorage2D(t, 1, Gl.DEPTH_COMPONENT16, PageSize, PageSize);
+        if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t); return 0; }
         return t;
     }
 
     private static uint ScratchCube(int size)
     {
-        uint t; Gl.GenTextures(1, &t);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, t);
+        uint t; Gl.CreateTextures(Gl.TEXTURE_CUBE_MAP_ARRAY, 1, &t);
         Gl.DrainErrors();
-        Gl.TexStorage3D(Gl.TEXTURE_CUBE_MAP_ARRAY, 1, Gl.DEPTH_COMPONENT24, size, size, 6);
-        if (Gl.GetError() != 0) { Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, 0); Gl.DeleteTextures(1, &t); return 0; }
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP_ARRAY, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP_ARRAY, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP_ARRAY, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP_ARRAY, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP_ARRAY, Gl.TEXTURE_COMPARE_MODE, (int)Gl.COMPARE_REF_TO_TEXTURE);
-        Gl.TexParameteri(Gl.TEXTURE_CUBE_MAP_ARRAY, Gl.TEXTURE_COMPARE_FUNC, (int)Gl.LEQUAL);
-        Gl.BindTexture(Gl.TEXTURE_CUBE_MAP_ARRAY, 0);
+        Gl.TextureStorage3D(t, 1, Gl.DEPTH_COMPONENT24, size, size, 6);
+        if (Gl.GetError() != 0) { Gl.DeleteTextures(1, &t); return 0; }
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_COMPARE_MODE, (int)Gl.COMPARE_REF_TO_TEXTURE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_COMPARE_FUNC, (int)Gl.LEQUAL);
         return t;
     }
 
@@ -1137,7 +1122,7 @@ internal static unsafe partial class LightmapBake
         if (_down.Failed) return false;
         if (_built) return true;
         _built = true;
-        if (Gl.TexStorage3D == null || Gl.TexSubImage3D == null || Gl.DrawElementsBaseVertex == null || Gl.DrawBuffers == null
+        if (Gl.DrawElementsBaseVertex == null || Gl.DrawBuffers == null
             || Gl.ClearBufferfv == null || Gl.FramebufferTextureLayer == null || Gl.GenFramebuffers == null || Gl.ReadPixels == null)
             return _down.Fail(_log, "a GL entry point the bake needs is missing", "every surface keeps the real-time loop");
         int units = 0; Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &units);

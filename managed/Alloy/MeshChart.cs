@@ -425,7 +425,7 @@ internal static unsafe partial class MeshChart
     /// frame, before <c>BuildBatches</c>: the only place a GL name is touched.</summary>
     internal static void Pump()
     {
-        if (!_jobs.Running || Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null) return;
+        if (!_jobs.Running || Gl.CreateBuffers == null) return;
         if (_deadVerts > MaxArenaVerts / 2 || (_arenaFull && _deadVerts > 0)) Compact();
         int vFrom = _vUsed, iFrom = _iUsed;
         while (_jobs.TryTake(out Job j))
@@ -513,61 +513,53 @@ internal static unsafe partial class MeshChart
         _iUsed += n;
     }
 
-    /// <summary>Both uploads go through COPY_WRITE_BUFFER (OwnedBuffers' convention): no ARRAY_BUFFER shadow
-    /// to desync, no element binding landing in whatever VAO is current. A grow respecifies under the same
-    /// NAME, so the VAO built over it stays valid.</summary>
+    /// <summary>Both uploads are by name, touching no binding. A grow respecifies under the same NAME, so the
+    /// VAO built over it stays valid.</summary>
     private static void UploadVerts(int from)
     {
-        if (_vbo == 0) { uint b; Gl.GenBuffers(1, &b); if (b == 0) return; _vbo = b; _vUploaded = 0; _vCapacity = 0; }
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _vbo);
+        if (_vbo == 0) { uint b; Gl.CreateBuffers(1, &b); if (b == 0) return; _vbo = b; _vUploaded = 0; _vCapacity = 0; }
         fixed (float* p = _vMirror)
         {
             if (_vUploaded < _vUsed && _vCapacity >= _vUsed)
-                Gl.BufferSubData(Gl.COPY_WRITE_BUFFER, (IntPtr)((long)from * Stride * 4),
+                Gl.NamedBufferSubData(_vbo, (IntPtr)((long)from * Stride * 4),
                                  (IntPtr)((long)(_vUsed - from) * Stride * 4), p + (long)from * Stride);
             else
             {
                 _vCapacity = _vMirror.Length / Stride;
-                Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)((long)_vMirror.Length * 4), p, Gl.STATIC_DRAW);
+                Gl.NamedBufferData(_vbo, (IntPtr)((long)_vMirror.Length * 4), p, Gl.STATIC_DRAW);
             }
         }
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
         _vUploaded = _vUsed;
     }
 
     private static void UploadIndices(int from)
     {
-        if (_ebo == 0) { uint b; Gl.GenBuffers(1, &b); if (b == 0) return; _ebo = b; _iUploaded = 0; _iCapacity = 0; }
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _ebo);
+        if (_ebo == 0) { uint b; Gl.CreateBuffers(1, &b); if (b == 0) return; _ebo = b; _iUploaded = 0; _iCapacity = 0; }
         fixed (ushort* p = _iMirror)
         {
             if (_iUploaded < _iUsed && _iCapacity >= _iUsed)
-                Gl.BufferSubData(Gl.COPY_WRITE_BUFFER, (IntPtr)((long)from * 2), (IntPtr)((long)(_iUsed - from) * 2), p + from);
+                Gl.NamedBufferSubData(_ebo, (IntPtr)((long)from * 2), (IntPtr)((long)(_iUsed - from) * 2), p + from);
             else
             {
                 _iCapacity = _iMirror.Length;
-                Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)((long)_iCapacity * 2), p, Gl.STATIC_DRAW);
+                Gl.NamedBufferData(_ebo, (IntPtr)((long)_iCapacity * 2), p, Gl.STATIC_DRAW);
             }
         }
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
         _iUploaded = _iUsed;
     }
 
     /// <summary>ONE VAO for every charted part: the arena carries every stream a stage reads (a program that
     /// wants no normal or UV simply never fetches the location), so there is nothing per VDO slot to vary.
-    /// Saved/restored around the build, as MeshLod's upload is, so the draw loops' bound-VAO latch holds.</summary>
+    /// Built by name, so the draw loops' bound-VAO latch is never disturbed.</summary>
     private static void BuildVao()
     {
-        int saved; Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &saved);
-        uint vao; Gl.GenVertexArrays(1, &vao);
-        Gl.BindVertexArray(vao);
+        uint vao; Gl.CreateVertexArrays(1, &vao);
         const int bytes = Stride * 4;
-        VertexArrays.Bind(AlloyRenderer.LocPos, new VertexStream { Buf = _vbo, Size = 3, Type = Gl.FLOAT, Stride = bytes, Off = 0 });
-        VertexArrays.Bind(AlloyRenderer.LocNrm, new VertexStream { Buf = _vbo, Size = 3, Type = Gl.FLOAT, Stride = bytes, Off = 12 });
-        VertexArrays.Bind(AlloyRenderer.LocUv, new VertexStream { Buf = _vbo, Size = 2, Type = Gl.FLOAT, Stride = bytes, Off = 24 });
-        VertexArrays.Bind(LocChartUv, new VertexStream { Buf = _vbo, Size = 2, Type = Gl.FLOAT, Stride = bytes, Off = 32 });
-        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, _ebo);
-        Gl.BindVertexArray((uint)saved);
+        VertexArrays.Bind(vao, AlloyRenderer.LocPos, new VertexStream { Buf = _vbo, Size = 3, Type = Gl.FLOAT, Stride = bytes, Off = 0 });
+        VertexArrays.Bind(vao, AlloyRenderer.LocNrm, new VertexStream { Buf = _vbo, Size = 3, Type = Gl.FLOAT, Stride = bytes, Off = 12 });
+        VertexArrays.Bind(vao, AlloyRenderer.LocUv, new VertexStream { Buf = _vbo, Size = 2, Type = Gl.FLOAT, Stride = bytes, Off = 24 });
+        VertexArrays.Bind(vao, LocChartUv, new VertexStream { Buf = _vbo, Size = 2, Type = Gl.FLOAT, Stride = bytes, Off = 32 });
+        Gl.VertexArrayElementBuffer(vao, _ebo);
         _vao = vao;
     }
 

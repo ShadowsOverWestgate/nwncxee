@@ -357,10 +357,8 @@ internal static unsafe class AlloyLights
                 // #674: the static bit rides the same lane, +CX_LIGHT_STATIC; the shader decodes w >= 128.
                 if (FrameInputs.AreaLightStatic[i] && !FrameInputs.AreaLightAmbient[i]) d[7] += LightStatic;
             }
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufLights);
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(n * 8 * sizeof(float)), s);
+            Gl.NamedBufferSubData(_bufLights, IntPtr.Zero, (IntPtr)(n * 8 * sizeof(float)), s);
         }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         _uploaded = n;
         LastLightCount = n;
         _radMin = n > 0 ? rmin : 0f; _radMax = rmax; _radMean = n > 0 ? rsum / n : 0f;
@@ -372,8 +370,7 @@ internal static unsafe class AlloyLights
     private static void GrowLightBuffer(int lights)
     {
         _ssboLights = lights;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufLights);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)lights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.NamedBufferData(_bufLights, (IntPtr)((long)lights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         _log?.Info($"AlloyLights: light SSBO grown to {lights} lights");
     }
 
@@ -465,10 +462,8 @@ internal static unsafe class AlloyLights
         if (_moversGen != CasterPass.CubeDynSphereGen)
         {
             _moversGen = CasterPass.CubeDynSphereGen;
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufMovers);
             fixed (float* sp = CasterPass.CubeDynSphere)
-                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(CasterPass.CubeDynSphere.Length * sizeof(float)), sp);
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+                Gl.NamedBufferSubData(_bufMovers, IntPtr.Zero, (IntPtr)(CasterPass.CubeDynSphere.Length * sizeof(float)), sp);
         }
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindMovers, _bufMovers);
     }
@@ -554,13 +549,11 @@ internal static unsafe class AlloyLights
     /// where one small readback is affordable.</summary>
     internal static uint TakeClusterOverflow()
     {
-        if (!Ready || Gl.GetBufferSubData == null) return 0;
+        if (!Ready) return 0;
         uint v = 0;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufStats);
-        Gl.GetBufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)sizeof(uint), &v);
+        Gl.GetNamedBufferSubData(_bufStats, IntPtr.Zero, (IntPtr)sizeof(uint), &v);
         uint zero = 0;
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)sizeof(uint), &zero);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.NamedBufferSubData(_bufStats, IntPtr.Zero, (IntPtr)sizeof(uint), &zero);
         return v;
     }
 
@@ -590,25 +583,19 @@ internal static unsafe class AlloyLights
         _locGrid = GlProgram.Loc(prog, "uGrid");
 
         uint b;
-        Gl.GenBuffers(1, &b); _bufLights = b;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufLights);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(InitialLights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.CreateBuffers(1, &b); _bufLights = b;
+        Gl.NamedBufferData(_bufLights, (IntPtr)(InitialLights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         _ssboLights = InitialLights;
-        Gl.GenBuffers(1, &b); _bufCounts = b;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufCounts);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(ClusterCount * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
-        Gl.GenBuffers(1, &b); _bufIndices = b;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufIndices);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)ClusterCount * ClusterCap * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
-        Gl.GenBuffers(1, &b); _bufMovers = b;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufMovers);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(CasterPass.CubeDynSphere.Length * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.CreateBuffers(1, &b); _bufCounts = b;
+        Gl.NamedBufferData(_bufCounts, (IntPtr)(ClusterCount * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+        Gl.CreateBuffers(1, &b); _bufIndices = b;
+        Gl.NamedBufferData(_bufIndices, (IntPtr)((long)ClusterCount * ClusterCap * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+        Gl.CreateBuffers(1, &b); _bufMovers = b;
+        Gl.NamedBufferData(_bufMovers, (IntPtr)(CasterPass.CubeDynSphere.Length * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         _moversGen = -1;
-        Gl.GenBuffers(1, &b); _bufStats = b;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _bufStats);
+        Gl.CreateBuffers(1, &b); _bufStats = b;
         uint zero = 0;
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)sizeof(uint), &zero, Gl.DYNAMIC_DRAW);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.NamedBufferData(_bufStats, (IntPtr)sizeof(uint), &zero, Gl.DYNAMIC_DRAW);
 
         fixed (uint* q = _query) Gl.GenQueries(2, q);
         _prog = prog;

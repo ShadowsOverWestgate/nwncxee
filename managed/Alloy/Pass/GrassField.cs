@@ -355,8 +355,8 @@ internal static unsafe partial class GrassField
     {
         if (_off || !Grass.Enabled.V || _down.Failed || _binBucket.IsNull) return false;
         if (*_grassEnabled == 0) return false;
-        if (Gl.DrawArraysIndirect == null || Gl.VertexAttribDivisor == null || Gl.DispatchCompute == null
-            || Gl.MemoryBarrier == null || Gl.BindBufferBase == null || Gl.CopyBufferSubData == null)
+        if (Gl.DrawArraysIndirect == null || Gl.DispatchCompute == null
+            || Gl.MemoryBarrier == null || Gl.BindBufferBase == null)
         { _down.Fail(_log, "no indirect-draw or compute entry point", "grass stays vanilla"); return false; }
         if (!EnsureProgram() || !EnsureBuffers()) return false;
         return Grass.Density.V > 0f;
@@ -383,8 +383,8 @@ internal static unsafe partial class GrassField
         // the opposite of the density-0 branch below (nobody draws it, and the stamp is what keeps it that way).
         if (_off || !Grass.Enabled.V || _down.Failed || _binBucket.IsNull) return;
         if (*_grassEnabled == 0) return;      // the player's "Grass Mode" option: off means off, both paths
-        if (Gl.DrawArraysIndirect == null || Gl.VertexAttribDivisor == null || Gl.DispatchCompute == null
-            || Gl.MemoryBarrier == null || Gl.BindBufferBase == null || Gl.CopyBufferSubData == null)
+        if (Gl.DrawArraysIndirect == null || Gl.DispatchCompute == null
+            || Gl.MemoryBarrier == null || Gl.BindBufferBase == null)
         { _down.Fail(_log, "no indirect-draw or compute entry point", "grass stays vanilla"); return; }
         if (!EnsureProgram() || !EnsureBuffers()) return;
         // Density 0 means the player asked for no grass. Stamp the generation and stop: the class is still
@@ -546,17 +546,14 @@ internal static unsafe partial class GrassField
     {
         if (_faces == null || _faceCount <= _uploaded) return;
         int floats = (_faceCount - _uploaded) * FaceFloats;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _faceBuf);
         // The first write after a Forget (area load, /grass density) starts at byte 0, over a range the GPU
         // may still be reading from last frame -- orphan it rather than make the driver serialise, at exactly
         // the two moments this class exists to keep smooth. Every later write is an append past the read range.
         if (_uploaded == 0)
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)MaxFaces * FaceFloats * sizeof(float)), null,
-                          Gl.DYNAMIC_DRAW);
+            Gl.NamedBufferData(_faceBuf, (IntPtr)((long)MaxFaces * FaceFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         fixed (float* src = &_faces[_uploaded * FaceFloats])
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(_uploaded * FaceFloats * sizeof(float)),
-                             (IntPtr)(floats * sizeof(float)), src);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+            Gl.NamedBufferSubData(_faceBuf, (IntPtr)(_uploaded * FaceFloats * sizeof(float)),
+                                  (IntPtr)(floats * sizeof(float)), src);
         _uploaded = _faceCount;
     }
 
@@ -644,11 +641,8 @@ internal static unsafe partial class GrassField
             }
         }
 
-        Gl.ActiveTexture(Gl.TEXTURE0 + PushUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D, _pushTex);
         fixed (byte* p = _push)
-            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.RGBA8, PushRes, PushRes, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
-        Gl.ActiveTexture(Gl.TEXTURE0);
+            Gl.TextureSubImage2D(_pushTex, 0, 0, 0, PushRes, PushRes, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
     }
 
     /// <summary>One gob's radial push, summed into the field in texel space. Linear falloff outward from the
@@ -916,11 +910,7 @@ internal static unsafe partial class GrassField
         {
             _drawnNear += _stat[1]; _drawnFar += _stat[5];
             for (int s = 0; s < _slotCount; s++) _drawnCards += _stat[(2 + s) * 4 + 1];
-            Gl.BindBuffer(Gl.COPY_READ_BUFFER, _cmdBuf);
-            Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _statBuf);
-            Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, IntPtr.Zero, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)));
-            Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
-            Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+            Gl.CopyNamedBufferSubData(_cmdBuf, _statBuf, IntPtr.Zero, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)));
         }
         if (_sampMip != 0) Gl.BindSampler(0, 0);
         Gl.BindBuffer(Gl.DRAW_INDIRECT_BUFFER, 0);
@@ -1008,13 +998,11 @@ internal static unsafe partial class GrassField
     {
         fixed (uint* t = _visTable)
         {
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _patchBuf);
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(n * 8 * sizeof(uint)), t, Gl.DYNAMIC_DRAW);
+            Gl.NamedBufferData(_patchBuf, (IntPtr)(n * 8 * sizeof(uint)), t, Gl.DYNAMIC_DRAW);
         }
         fixed (float* m = _matTable)
         {
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _matBuf);
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(Math.Max(matN, 1) * MatVec4 * 4 * sizeof(float)), m, Gl.DYNAMIC_DRAW);
+            Gl.NamedBufferData(_matBuf, (IntPtr)(Math.Max(matN, 1) * MatVec4 * 4 * sizeof(float)), m, Gl.DYNAMIC_DRAW);
         }
         uint* cmd = stackalloc uint[Cmds * 4];
         for (int c = 0; c < Cmds; c++)
@@ -1023,9 +1011,7 @@ internal static unsafe partial class GrassField
             cmd[c * 4 + 1] = 0; cmd[c * 4 + 2] = 0;
             cmd[c * 4 + 3] = (uint)(c == 0 ? 0 : c == 1 ? _bladeNear : c - 2 < _slotCount ? _slotBase[c - 2] : 0);
         }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _cmdBuf);
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)), cmd);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.NamedBufferSubData(_cmdBuf, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)), cmd);
 
         Gl.UseProgram(_progScatter);
         Gl.Uniform4fv(_locS.Planes, 6, planes);
@@ -1091,13 +1077,10 @@ internal static unsafe partial class GrassField
     {
         _groundDiag--;
         int fb; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &fb);
-        int saved; Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &saved);
-        Gl.BindTexture(Gl.TEXTURE_2D, FrameSnapshot.ColorTex);
         int tw = 0, th = 0, fmt = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &tw);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &th);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, 0x1003 /*TEXTURE_INTERNAL_FORMAT*/, &fmt);
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)saved);
+        Gl.GetTextureLevelParameteriv(FrameSnapshot.ColorTex, 0, Gl.TEXTURE_WIDTH, &tw);
+        Gl.GetTextureLevelParameteriv(FrameSnapshot.ColorTex, 0, Gl.TEXTURE_HEIGHT, &th);
+        Gl.GetTextureLevelParameteriv(FrameSnapshot.ColorTex, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
         _log?.Info($"[grassground] copy taken from fbo {fb} (post hdr fbo {PostChain.Fbo}) at {viewport[2]}x{viewport[3]}, "
                  + $"copy tex {FrameSnapshot.ColorTex} {tw}x{th} fmt 0x{fmt:x} on unit {TextureSlots.GrassGround} (loc {_loc.Ground}), "
                  + $"copies so far {FrameSnapshot.Copies}, pass gen {AlloyRenderer.PassGen}, capturing {AlloyRenderer.Capturing}");
@@ -1278,20 +1261,19 @@ internal static unsafe partial class GrassField
     private static bool _dumpMips;
     private static void DumpMips(int* tids, bool* live)
     {
-        if (Gl.GetTexImage == null) { _log?.Info("[grass] dumpmips: glGetTexImage unavailable"); return; }
         for (int m = 0; m < MaxGrassMaterials; m++)
         {
             if (!live[m] || tids[m] == 0) continue;
-            Gl.BindTexture(Gl.TEXTURE_2D, (uint)tids[m]);
+            uint tm = (uint)tids[m];
             for (int l = 0; l < 16; l++)
             {
                 int w = 0, h = 0, fmt = 0;
-                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, l, Gl.TEXTURE_WIDTH, &w);
-                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, l, Gl.TEXTURE_HEIGHT, &h);
-                Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, l, 0x1003 /*TEXTURE_INTERNAL_FORMAT*/, &fmt);
+                Gl.GetTextureLevelParameteriv(tm, l, Gl.TEXTURE_WIDTH, &w);
+                Gl.GetTextureLevelParameteriv(tm, l, Gl.TEXTURE_HEIGHT, &h);
+                Gl.GetTextureLevelParameteriv(tm, l, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
                 if (w <= 0 || h <= 0) break;
                 var px = new byte[w * h * 4];
-                fixed (byte* pp = px) Gl.GetTexImage(Gl.TEXTURE_2D, l, Gl.RGBA, Gl.UNSIGNED_BYTE, pp);
+                fixed (byte* pp = px) Gl.GetTextureImage(tm, l, Gl.RGBA, Gl.UNSIGNED_BYTE, px.Length, pp);
                 var rgb = new byte[w * h * 3]; var a = new byte[w * h];
                 for (int i = 0; i < w * h; i++) { rgb[i*3] = px[i*4]; rgb[i*3+1] = px[i*4+1]; rgb[i*3+2] = px[i*4+2]; a[i] = px[i*4+3]; }
                 string b = Native.ConfigPath($"cx-grassmip-{m}-L{l}");
@@ -1300,7 +1282,6 @@ internal static unsafe partial class GrassField
                 _log?.Info($"[grass] dumpmips: material {m} tid {tids[m]} level {l} {w}x{h} fmt 0x{fmt:x} -> {b}.ppm/.pgm");
             }
         }
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
     }
 
     /// <summary>Every grass atlas samples an Alloy-built chain: level 0 read back through the driver's own
@@ -1316,12 +1297,12 @@ internal static unsafe partial class GrassField
 
     private static bool HasMips(int tid)
     {
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
+        uint t = (uint)tid;
         int w0 = 0, h0 = 0, fmt = 0, cap = 0, w1 = 0;
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w0);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h0);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, 0x1003 /*TEXTURE_INTERNAL_FORMAT*/, &fmt);
-        Gl.GetTexParameteriv(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, &cap);
+        Gl.GetTextureLevelParameteriv(t, 0, Gl.TEXTURE_WIDTH, &w0);
+        Gl.GetTextureLevelParameteriv(t, 0, Gl.TEXTURE_HEIGHT, &h0);
+        Gl.GetTextureLevelParameteriv(t, 0, Gl.TEXTURE_INTERNAL_FORMAT, &fmt);
+        Gl.GetTextureParameteriv(t, Gl.TEXTURE_MAX_LEVEL, &cap);
         int* lw = stackalloc int[16], lh = stackalloc int[16]; long* off = stackalloc long[16];
         long total = 0;
         int n = w0 > 0 ? TexScan.Chain(w0, h0, true, 16, lw, lh, off, out total) : 0;
@@ -1331,11 +1312,11 @@ internal static unsafe partial class GrassField
         // ten refused uploads, 22k times a minute on SoW = 144 -> 30 fps). Its chain is already
         // TexScan.BuildMips' alpha-weighted one, so there is nothing to rebuild.
         int immutable = 0;
-        Gl.GetTexParameteriv(Gl.TEXTURE_2D, TextureImmutableFormat, &immutable);
+        Gl.GetTextureParameteriv(t, TextureImmutableFormat, &immutable);
         if (immutable != 0) return n > 0;
-        if (n == 0 || Gl.GetTexImage == null || Gl.TexImage2D == null)
+        if (n == 0)
         {
-            Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 1, Gl.TEXTURE_WIDTH, &w1);
+            Gl.GetTextureLevelParameteriv(t, 1, Gl.TEXTURE_WIDTH, &w1);
             _anyFlat |= w1 <= 0;
             return w1 > 0;
         }
@@ -1344,14 +1325,15 @@ internal static unsafe partial class GrassField
         var px = new byte[total];
         fixed (byte* pp = px)
         {
-            Gl.GetTexImage(Gl.TEXTURE_2D, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, pp);
+            Gl.GetTextureImage(t, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, (int)total, pp);
             TexScan.BuildMips(pp, n, lw, lh, off);
             Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 1);
+            // no DSA respecify exists and the name is the engine's: this rides DrawSlot's draw bind of tid
             for (int l = 0; l < n; l++)
                 Gl.TexImage2D(Gl.TEXTURE_2D, l, (int)Gl.RGBA8, lw[l], lh[l], 0, Gl.RGBA, Gl.UNSIGNED_BYTE, pp + off[l]);
             Gl.PixelStorei(Gl.UNPACK_ALIGNMENT, 4);
         }
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, n - 1);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAX_LEVEL, n - 1);
         _mipsBuilt++;
         _log?.Info($"[grass] rebuilt the mip chain of tid {tid}: {w0}x{h0} fmt 0x{fmt:x} -> RGBA8, {n} levels alpha-weighted");
         return true;
@@ -1469,7 +1451,6 @@ internal static unsafe partial class GrassField
     private static bool EnsureBuffers()
     {
         if (_vao != 0) return true;
-        if (Gl.GenVertexArrays == null || Gl.GenBuffers == null) return false;
         _faces ??= new float[MaxFaces * FaceFloats];
 
         // The card template: two crossed quads in blade-local space. x/y span [-0.5, 0.5] (one quad along x,
@@ -1496,45 +1477,35 @@ internal static unsafe partial class GrassField
 
         uint vao;
         uint* b = stackalloc uint[7];
-        Gl.GenVertexArrays(1, &vao);
-        Gl.GenBuffers(7, b);
+        Gl.CreateVertexArrays(1, &vao);
+        Gl.CreateBuffers(7, b);
         for (int i = 0; i < 7; i++)
             if (b[i] == 0) return _down.Fail(_log, "the grass buffers could not be created", "grass stays vanilla");
         if (vao == 0) return _down.Fail(_log, "the grass buffers could not be created", "grass stays vanilla");
         uint template = b[0];
         _faceBuf = b[1]; _patchBuf = b[2]; _matBuf = b[3]; _outBuf = b[4]; _cmdBuf = b[5]; _statBuf = b[6];
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _faceBuf);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)MaxFaces * FaceFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _cmdBuf);
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(Cmds * 4 * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
-        if (Gl.BufferStorage != null && Gl.MapBufferRange != null)
-        {
-            const uint flags = Gl.MAP_READ_BIT | Gl.MAP_PERSISTENT_BIT | Gl.MAP_COHERENT_BIT;
-            Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _statBuf);
-            Gl.BufferStorage(Gl.COPY_WRITE_BUFFER, (IntPtr)(Cmds * 4 * sizeof(uint)), null, flags);
-            _stat = (uint*)Gl.MapBufferRange(Gl.COPY_WRITE_BUFFER, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)), flags);
-            Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
-        }
+        Gl.NamedBufferData(_faceBuf, (IntPtr)((long)MaxFaces * FaceFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.NamedBufferData(_cmdBuf, (IntPtr)(Cmds * 4 * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+        const uint flags = Gl.MAP_READ_BIT | Gl.MAP_PERSISTENT_BIT | Gl.MAP_COHERENT_BIT;
+        Gl.NamedBufferStorage(_statBuf, (IntPtr)(Cmds * 4 * sizeof(uint)), null, flags);
+        _stat = (uint*)Gl.MapNamedBufferRange(_statBuf, IntPtr.Zero, (IntPtr)(Cmds * 4 * sizeof(uint)), flags);
 
-        Gl.BindVertexArray(vao);
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, template);
-        Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)(templateCap * 5 * sizeof(float)), t, Gl.STATIC_DRAW);
-        Gl.VertexAttribPointer(0, 3, Gl.FLOAT, 0, 5 * sizeof(float), (void*)0);
-        Gl.EnableVertexAttribArray(0);
-        Gl.VertexAttribPointer(1, 2, Gl.FLOAT, 0, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-        Gl.EnableVertexAttribArray(1);
-        // the scatter's output, read back as a divisor-1 instance stream: each indirect command's baseInstance
-        // is its material's region, so one VAO serves every slot
-        Gl.BindBuffer(Gl.ARRAY_BUFFER, _outBuf);
-        Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)((long)RecordCap * InstFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
-        for (uint a = 0; a < 3; a++)
+        // binding 0 = the template (attribs 0, 1); binding 1 = the scatter's output, read back as a divisor-1
+        // instance stream (attribs 2..4): each indirect command's baseInstance is its material's region, so one
+        // VAO serves every slot
+        Gl.NamedBufferData(template, (IntPtr)(templateCap * 5 * sizeof(float)), t, Gl.STATIC_DRAW);
+        Gl.VertexArrayVertexBuffer(vao, 0, template, IntPtr.Zero, 5 * sizeof(float));
+        Gl.VertexArrayAttribFormat(vao, 0, 3, Gl.FLOAT, 0, 0);
+        Gl.VertexArrayAttribFormat(vao, 1, 2, Gl.FLOAT, 0, 3 * sizeof(float));
+        Gl.NamedBufferData(_outBuf, (IntPtr)((long)RecordCap * InstFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+        Gl.VertexArrayVertexBuffer(vao, 1, _outBuf, IntPtr.Zero, InstFloats * sizeof(float));
+        Gl.VertexArrayBindingDivisor(vao, 1, 1);
+        for (uint a = 0; a < 5; a++)
         {
-            Gl.VertexAttribPointer(2 + a, 4, Gl.FLOAT, 0, InstFloats * sizeof(float), (void*)(a * 4 * sizeof(float)));
-            Gl.EnableVertexAttribArray(2 + a);
-            Gl.VertexAttribDivisor(2 + a, 1);
+            if (a >= 2) Gl.VertexArrayAttribFormat(vao, a, 4, Gl.FLOAT, 0, (a - 2) * 4 * sizeof(float));
+            Gl.VertexArrayAttribBinding(vao, a, a < 2 ? 0u : 1u);
+            Gl.EnableVertexArrayAttrib(vao, a);
         }
-        Gl.BindVertexArray(0);
         _vao = vao;
 
         // The displacement field. LINEAR so the push varies smoothly between texels (a nearest-sampled one
@@ -1548,16 +1519,11 @@ internal static unsafe partial class GrassField
             { _pushClear[i] = 128; _pushClear[i + 1] = 128; }
         }
         uint tex;
-        Gl.GenTextures(1, &tex);
+        Gl.CreateTextures(Gl.TEXTURE_2D, 1, &tex);
         if (tex != 0)
         {
-            Gl.ActiveTexture(Gl.TEXTURE0 + PushUnit);
-            Gl.BindTexture(Gl.TEXTURE_2D, tex);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-            Gl.ActiveTexture(Gl.TEXTURE0);
+            Gl.TextureStorage2D(tex, 1, Gl.RGBA8, PushRes, PushRes);
+            RenderTarget.Clamp(tex, Gl.LINEAR);
             _pushTex = tex;
         }
         return true;

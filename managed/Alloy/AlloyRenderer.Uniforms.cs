@@ -242,10 +242,8 @@ public sealed unsafe partial class AlloyRenderer
     {
         if (_passBuf != 0 && new ReadOnlySpan<byte>(_passStage, PassBytes).SequenceEqual(new ReadOnlySpan<byte>(_passSent, PassBytes)))
             return;
-        if (_passBuf == 0) { uint b; Gl.GenBuffers(1, &b); _passBuf = b; }
-        Gl.BindBuffer(Gl.UNIFORM_BUFFER, _passBuf);
-        Gl.BufferData(Gl.UNIFORM_BUFFER, (IntPtr)PassBytes, _passStage, Gl.DYNAMIC_DRAW);
-        Gl.BindBuffer(Gl.UNIFORM_BUFFER, 0);
+        if (_passBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _passBuf = b; }
+        Gl.NamedBufferData(_passBuf, (IntPtr)PassBytes, _passStage, Gl.DYNAMIC_DRAW);
         Gl.BindBufferBase(Gl.UNIFORM_BUFFER, PassBinding, _passBuf);
         Buffer.MemoryCopy(_passStage, _passSent, PassBytes, PassBytes);
         PassUploads++;
@@ -353,19 +351,14 @@ public sealed unsafe partial class AlloyRenderer
     private static uint NullShadow(uint target, int layers, ref uint name)
     {
         if (name != 0) return name;
-        // made on whatever unit is active, so that unit's binding is put back: a caller may hold a live map there
-        int prev = 0;
-        Gl.GetIntegerv(target == Gl.TEXTURE_2D_ARRAY ? Gl.TEXTURE_BINDING_2D_ARRAY : Gl.TEXTURE_BINDING_CUBE_MAP_ARRAY, &prev);
-        uint t; Gl.GenTextures(1, &t);
-        Gl.BindTexture(target, t);
-        Gl.TexStorage3D(target, 1, Gl.DEPTH_COMPONENT32F, 1, 1, layers);
+        uint t; Gl.CreateTextures(target, 1, &t);
+        Gl.TextureStorage3D(t, 1, Gl.DEPTH_COMPONENT32F, 1, 1, layers);
         float* one = stackalloc float[6] { 1f, 1f, 1f, 1f, 1f, 1f };
-        Gl.TexSubImage3D(target, 0, 0, 0, 0, 1, 1, layers, Gl.DEPTH_COMPONENT, Gl.FLOAT, one);
-        Gl.TexParameteri(target, Gl.TEXTURE_COMPARE_MODE, (int)Gl.COMPARE_REF_TO_TEXTURE);
-        Gl.TexParameteri(target, Gl.TEXTURE_COMPARE_FUNC, (int)Gl.LEQUAL);
-        Gl.TexParameteri(target, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
-        Gl.TexParameteri(target, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
-        Gl.BindTexture(target, (uint)prev);
+        Gl.TextureSubImage3D(t, 0, 0, 0, 0, 1, 1, layers, Gl.DEPTH_COMPONENT, Gl.FLOAT, one);
+        Gl.TextureParameteri(t, Gl.TEXTURE_COMPARE_MODE, (int)Gl.COMPARE_REF_TO_TEXTURE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_COMPARE_FUNC, (int)Gl.LEQUAL);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
         return name = t;
     }
 

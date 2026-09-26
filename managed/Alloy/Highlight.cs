@@ -162,8 +162,7 @@ internal static unsafe class Highlight
     {
         if (_progHl != 0 && _progHlComp != 0) return true;
         if (_hlFailed) return false;
-        if (Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null || Gl.TexStorage2D == null
-            || Gl.PolygonOffset == null)
+        if (Gl.GenFramebuffers == null || Gl.FramebufferTexture2D == null || Gl.PolygonOffset == null)
         { _hlFailed = true; return false; }
         uint mask = GlProgram.Graphics(DepthVs, HighlightMaskFs, _log, "AlloyRenderer highlight mask program");
         uint comp = GlProgram.Graphics(PostChain.FullscreenVs, HighlightCompFs, _log,
@@ -177,7 +176,7 @@ internal static unsafe class Highlight
         _hlCompMask = GlProgram.Loc(comp, "uMask"); _hlCompUnjitter = GlProgram.Loc(comp, "uUnjitter");
         _hlCompFill = GlProgram.Loc(comp, "uFill");
         _hlCompRadius = GlProgram.Loc(comp, "uRadius");
-        if (_hlVao == 0) { uint v; Gl.GenVertexArrays(1, &v); _hlVao = v; }
+        if (_hlVao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _hlVao = v; }
         return true;
     }
 
@@ -187,15 +186,9 @@ internal static unsafe class Highlight
     {
         if (_hlMaskTex == 0 || w != _hlW || h != _hlH)
         {
-            if (_hlMaskTex != 0) { uint t = _hlMaskTex; Gl.DeleteTextures(1, &t); _hlMaskTex = 0; }
             if (_hlMaskFbo != 0) { uint f = _hlMaskFbo; Gl.DeleteFramebuffers(1, &f); _hlMaskFbo = 0; }
-            uint tex; Gl.GenTextures(1, &tex);
-            Gl.BindTexture(Gl.TEXTURE_2D, tex);
-            Gl.TexStorage2D(Gl.TEXTURE_2D, 1, Gl.RGBA8, w, h);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, (int)Gl.CLAMP_TO_EDGE);
-            Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, (int)Gl.CLAMP_TO_EDGE);
+            uint tex = _hlMaskTex;
+            RenderTarget.AllocColor(ref tex, false, w, h, Gl.LINEAR);
             uint fbo; Gl.GenFramebuffers(1, &fbo);
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, fbo);
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, tex, 0);

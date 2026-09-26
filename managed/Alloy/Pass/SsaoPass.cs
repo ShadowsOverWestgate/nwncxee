@@ -223,23 +223,14 @@ internal static unsafe class SsaoPass
         if (_out != 0 && w == _w && h == _h) return true;
         if (w <= 0 || h <= 0) return false;
         _srcW = srcW; _srcH = srcH;
-        if (_out == 0)
-        {
-            uint* t = stackalloc uint[4];
-            Gl.GenTextures(4, t);
-            _raw = t[0]; _out = t[1]; _hist0 = t[2]; _hist1 = t[3];
-            uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
-        }
-        AllocR8(_raw, w, h);
-        AllocR8(_out, w, h);
+        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
+        RenderTarget.Create(ref _raw, Gl.R8, w, h, Gl.NEAREST);
+        RenderTarget.Create(ref _out, Gl.R8, w, h, Gl.NEAREST);
         // #390: LINEAR -- the reprojected history lands between texels; the blur reads it by texelFetch.
-        foreach (uint hs in stackalloc uint[2] { _hist0, _hist1 })
-        {
-            Gl.BindTexture(Gl.TEXTURE_2D, hs);
-            Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.RG16F, w, h, 0, Gl.RG, Gl.HALF_FLOAT, null);
-            RenderTarget.Clamp(Gl.LINEAR);
-        }
+        RenderTarget.Create(ref _hist0, Gl.RG16F, w, h, Gl.LINEAR);
+        RenderTarget.Create(ref _hist1, Gl.RG16F, w, h, Gl.LINEAR);
         _histValid = false;
+        _liveOut = 0;   // it named one of the deleted targets
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _out, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);
@@ -254,17 +245,6 @@ internal static unsafe class SsaoPass
                  + (half ? $" -- HALF of the {srcW}x{srcH} frame (post.halfres), upsampled depth-aware in the lit stage"
                          : $" -- the {srcW}x{srcH} frame's own extent"));
         return true;
-    }
-
-    private static void AllocR8(uint tex, int w, int h)
-    {
-        Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindTexture(Gl.TEXTURE_2D, tex);
-        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.R8, w, h, 0, Gl.RED, Gl.UNSIGNED_BYTE, null);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
     }
 
     /// <summary>Both programs once per context. The visibility program failing drops the pass with a named

@@ -207,9 +207,7 @@ internal static unsafe class OitPass
         {
             int slot = (int)(_frame % ReadSlots);
             Gl.MemoryBarrier(Gl.BUFFER_UPDATE_BARRIER_BIT);
-            Gl.BindBuffer(Gl.COPY_READ_BUFFER, _heads); Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _readBuf);
-            Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, IntPtr.Zero, (IntPtr)(slot * 4), (IntPtr)4);
-            Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0); Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+            Gl.CopyNamedBufferSubData(_heads, _readBuf, IntPtr.Zero, (IntPtr)(slot * 4), (IntPtr)4);
             _fence[slot] = Gl.FenceSync(Gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
         }
         _linked = false;
@@ -237,21 +235,11 @@ internal static unsafe class OitPass
     {
         if (_accum != 0 && w == _w && h == _h) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_accum == 0)
-        {
-            uint* t = stackalloc uint[2]; Gl.GenTextures(2, t); _accum = t[0]; _reveal = t[1];
-            uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
-        }
+        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
         // 32-bit: the accumulation is HDR colour times a weight up to 3e3, and a few stacked emissive flame
         // layers overflow fp16 to inf -- which resolved as a white patch over the lamp and the torch.
-        Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindTexture(Gl.TEXTURE_2D, _accum);
-        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)RGBA32F, w, h, 0, Gl.RGBA, Gl.FLOAT, null);
-        RenderTarget.Clamp();
-        Gl.BindTexture(Gl.TEXTURE_2D, _reveal);
-        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)R16F, w, h, 0, Gl.RED, Gl.HALF_FLOAT, null);
-        RenderTarget.Clamp();
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        RenderTarget.Create(ref _accum, RGBA32F, w, h, Gl.NEAREST);
+        RenderTarget.Create(ref _reveal, R16F, w, h, Gl.NEAREST);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _accum, 0);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, Gl.TEXTURE_2D, _reveal, 0);
@@ -272,31 +260,26 @@ internal static unsafe class OitPass
     private static bool EnsureLists(int w, int h)
     {
         if (_listsFailed) return false;
-        if (Gl.BufferStorage == null || Gl.ClearBufferSubData == null || Gl.CopyBufferSubData == null || Gl.FenceSync == null || Gl.MapBufferRange == null)
+        if (Gl.FenceSync == null)
         {
             _listsFailed = true;
-            _log?.Info("OitPass: a GL 4.4 entry point is unresolved -- mode 2 resolves the weighted way on this context");
+            _log?.Info("OitPass: glFenceSync is unresolved -- mode 2 resolves the weighted way on this context");
             return false;
         }
         int cap = w * h * Layers;
         if (_nodes != 0 && cap == _cap) return true;
         if (_nodes != 0) { uint* old = stackalloc uint[2] { _nodes, _heads }; Gl.DeleteBuffers(2, old); }
         Gl.DrainErrors();   // drain: the refusal test below must see only this allocation
-        uint* b = stackalloc uint[2]; Gl.GenBuffers(2, b);
+        uint* b = stackalloc uint[2]; Gl.CreateBuffers(2, b);
         _nodes = b[0]; _heads = b[1];
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _nodes);
-        Gl.BufferStorage(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)(cap + 1) * NodeBytes), null, 0);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _heads);
-        Gl.BufferStorage(Gl.SHADER_STORAGE_BUFFER, (IntPtr)HeadBytes(w, h), null, 0);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        Gl.NamedBufferStorage(_nodes, (IntPtr)((long)(cap + 1) * NodeBytes), null, 0);
+        Gl.NamedBufferStorage(_heads, (IntPtr)HeadBytes(w, h), null, 0);
         if (_readBuf == 0)
         {
             const uint flags = Gl.MAP_READ_BIT | Gl.MAP_PERSISTENT_BIT | Gl.MAP_COHERENT_BIT;
-            uint r; Gl.GenBuffers(1, &r); _readBuf = r;
-            Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _readBuf);
-            Gl.BufferStorage(Gl.COPY_WRITE_BUFFER, (IntPtr)(ReadSlots * 4), null, flags);
-            _readMap = (uint*)Gl.MapBufferRange(Gl.COPY_WRITE_BUFFER, IntPtr.Zero, (IntPtr)(ReadSlots * 4), flags);
-            Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+            uint r; Gl.CreateBuffers(1, &r); _readBuf = r;
+            Gl.NamedBufferStorage(_readBuf, (IntPtr)(ReadSlots * 4), null, flags);
+            _readMap = (uint*)Gl.MapNamedBufferRange(_readBuf, IntPtr.Zero, (IntPtr)(ReadSlots * 4), flags);
         }
         if (_progClear == 0)
         {

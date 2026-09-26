@@ -48,12 +48,10 @@ internal static unsafe partial class GrassField
         if (tid == 0) return 0;   // not uploaded yet: a card this frame (which skips it too), asked again next
         c = new Cls { Tid = tid, Name = name, Done = true };
         int w = 0, h = 0;
-        Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_WIDTH, &w);
-        Gl.GetTexLevelParameteriv(Gl.TEXTURE_2D, 0, Gl.TEXTURE_HEIGHT, &h);
-        if (Gl.GetTexImage == null || w < 8 || h < 8 || (long)w * h > 4L << 20)
+        Gl.GetTextureLevelParameteriv((uint)tid, 0, Gl.TEXTURE_WIDTH, &w);
+        Gl.GetTextureLevelParameteriv((uint)tid, 0, Gl.TEXTURE_HEIGHT, &h);
+        if (w < 8 || h < 8 || (long)w * h > 4L << 20)
         {
-            Gl.BindTexture(Gl.TEXTURE_2D, 0);
             _log?.Info($"[grass] material {m} tid {tid}: atlas unreadable ({w}x{h}) -- drawn as cards");
             return 0;
         }
@@ -61,10 +59,9 @@ internal static unsafe partial class GrassField
         Span<GrassAtlas.Cell> cells = stackalloc GrassAtlas.Cell[4];
         fixed (byte* p = px)
         {
-            Gl.GetTexImage(Gl.TEXTURE_2D, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
+            Gl.GetTextureImage((uint)tid, 0, Gl.RGBA, Gl.UNSIGNED_BYTE, px.Length, p);
             GrassAtlas.Classify(p, w, h, cells);
         }
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
         for (int k = 0; k < 4; k++)
         {
             if (cells[k].Blade) c.Kinds |= 1 << k;

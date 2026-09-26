@@ -176,14 +176,13 @@ internal static unsafe class OwnedBuffers
         if (bytes <= 0 || (p.LockFlags & LockNoUpload) != 0) return false;
         byte* host = (byte*)p.Host;
         if (host == null) return false;
-        if (Gl.GenBuffers == null || Gl.BufferData == null || Gl.BufferSubData == null || Gl.BindBuffer == null)
-        { _refused++; return false; }
+        if (!GlContextService.Available) { _refused++; return false; }
 
         uint name = p.Name;
         bool fresh = p.Named == 0;
         if (fresh)
         {
-            Gl.GenBuffers(1, &name);
+            Gl.CreateBuffers(1, &name);
             if (name == 0) { _refused++; return false; }
             p.Name = name;
             p.Named = 1;
@@ -202,51 +201,45 @@ internal static unsafe class OwnedBuffers
     /// base, thereafter sub-data the whole prefix from offset 0 (the offset argument is IGNORED on that
     /// branch, which is the engine's behaviour and not a simplification); neither bit = a static pool,
     /// uploaded exactly once and silent forever after.
-    /// <para>Everything binds to COPY_WRITE_BUFFER rather than the pool's own target, which is the one place
-    /// the takeover is deliberately NOT byte-identical: the engine's <c>UnlockPool</c> ends with
-    /// <c>RenderInterface::BindBuffer(target, name)</c> and leaves the pool bound. Two things make dropping
-    /// that residue safe, and both were checked rather than reasoned about. <c>GLRender::BindBuffer</c>
-    /// @0x4d04a0 caches ARRAY_BUFFER against <c>m_nArrayBufferBound</c>, so skipping the bind leaves the
-    /// shadow and the real state BOTH unmoved -- a desync needs them to disagree. And no consumer relies on
-    /// the residue: <c>GLRender::SetVertexDataObject</c> @0x4cff30 and
-    /// <c>SetVertexStreamDataObject</c> both re-read the pool's name out of the descriptor at +0x0c and bind
-    /// it explicitly, which the xref of the descriptor table confirms is how every draw path reaches it.
-    /// Dropping it also stops an ELEMENT_ARRAY_BUFFER bind -- VAO state -- from landing in whatever VAO the
-    /// engine happened to have current.</para></summary>
+    /// <para>Every upload is by name and binds nothing, which is the one place the takeover is deliberately
+    /// NOT byte-identical: the engine's <c>UnlockPool</c> ends with <c>RenderInterface::BindBuffer(target, name)</c>
+    /// and leaves the pool bound. No consumer relies on that residue: <c>GLRender::SetVertexDataObject</c>
+    /// @0x4cff30 and <c>SetVertexStreamDataObject</c> both re-read the pool's name out of the descriptor at
+    /// +0x0c and bind it explicitly, and <c>GLRender::BindBuffer</c> @0x4d04a0's ARRAY_BUFFER shadow and the
+    /// real state both stay unmoved. It also keeps an ELEMENT_ARRAY_BUFFER bind -- VAO state -- out of
+    /// whatever VAO the engine happened to have current.</para></summary>
     private static void Upload(GlPool p, uint name, byte* host, int bytes, uint size, uint offset)
     {
         uint usage = p.Usage;
         bool dynamic = (usage & UsageDynamic) != 0;
         uint hint = dynamic ? Gl.DYNAMIC_DRAW : Gl.STATIC_DRAW;
         long span = size == WholePool ? bytes : size;
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, name);
         if ((usage & UsageSubData) != 0)
         {
             if (p.Uploaded == 0)
-            { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, null, hint); p.Uploaded = 1; }
+            { Gl.NamedBufferData(name, (IntPtr)bytes, null, hint); p.Uploaded = 1; }
             // The engine reads its own [offset, offset+size) with no bound check, and would over-read the
             // host block if a caller ever paired a whole-pool size with a non-zero offset. Nothing does --
             // CommitElementStreamData @0x45c9c0 unlocks with `xor %edx,%edx` -- but the clamp costs one
             // compare and the alternative is an out-of-bounds read of the engine's heap.
             if (offset > (uint)bytes) span = 0; else if (offset + span > bytes) span = bytes - offset;
-            if (span > 0) Gl.BufferSubData(Gl.COPY_WRITE_BUFFER, (IntPtr)offset, (IntPtr)span, host + offset);
+            if (span > 0) Gl.NamedBufferSubData(name, (IntPtr)offset, (IntPtr)span, host + offset);
             _subUploads++;
         }
         else if (dynamic)
         {
             if (p.Uploaded == 0)
-            { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, host, hint); p.Uploaded = 1; }
+            { Gl.NamedBufferData(name, (IntPtr)bytes, host, hint); p.Uploaded = 1; }
             else
             {
                 if (_orphan != null && *_orphan != 0)
-                    Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, null, hint);
-                Gl.BufferSubData(Gl.COPY_WRITE_BUFFER, IntPtr.Zero, (IntPtr)span, host);
+                    Gl.NamedBufferData(name, (IntPtr)bytes, null, hint);
+                Gl.NamedBufferSubData(name, IntPtr.Zero, (IntPtr)span, host);
                 _subUploads++;
             }
         }
         else if (p.Uploaded == 0)
-        { Gl.BufferData(Gl.COPY_WRITE_BUFFER, (IntPtr)bytes, host, hint); p.Uploaded = 1; }
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+        { Gl.NamedBufferData(name, (IntPtr)bytes, host, hint); p.Uploaded = 1; }
         _uploads++;
         if (size == WholePool) _wholePool++;
     }

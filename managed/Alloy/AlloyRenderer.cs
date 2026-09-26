@@ -617,20 +617,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>Is this extension string in the 4.6 CORE context's list? By enumeration, allocation-free.
     /// Must be called inside the bracket -- it is asking the context Alloy draws in, which is not the
     /// engine's 3.3 one and does not necessarily advertise the same set.</summary>
-    internal static bool HasExt(ReadOnlySpan<byte> want)
-    {
-        if (Gl.GetStringi == null) return false;
-        int n = 0; Gl.GetIntegerv(Gl.NUM_EXTENSIONS, &n);
-        for (uint i = 0; i < (uint)n; i++)
-        {
-            byte* e = Gl.GetStringi(Gl.EXTENSIONS, i);
-            if (e == null) continue;
-            int k = 0;
-            for (; k < want.Length && e[k] != 0; k++) if (e[k] != want[k]) break;
-            if (k == want.Length && e[k] == 0) return true;
-        }
-        return false;
-    }
+    internal static bool HasExt(ReadOnlySpan<byte> want) => Gl.HasExt(want);
 
     /// <summary>#259: what the driver will say about VRAM, probed once inside the bracket. There is no VRAM
     /// query in the client at all (<c>GLRender::GetDeviceInfo_i</c> @0x4d1d10 answers

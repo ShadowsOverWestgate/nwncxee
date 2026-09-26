@@ -1925,7 +1925,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         if (_prog == 0)
         {
             if (Gl.MultiDrawElementsIndirect == null || Gl.BindBufferBase == null
-                || Gl.TexStorage3D == null || Gl.GenFramebuffers == null || Gl.CopyImageSubData == null)
+                || Gl.GenFramebuffers == null || Gl.CopyImageSubData == null)
             { Disarm("a required GL 4.4+ entry point is missing (multidraw-indirect / image copy)"); return false; }
             uint p = GlProgram.Graphics(ShdCastVs, ShaderStages.Source(ShdCastVs),
                                         ShdCastFs, ShaderStages.Source(ShdCastFs),
@@ -2163,24 +2163,21 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <summary>0 = the storage was refused, and the pass has already disarmed itself by name.</summary>
     private static uint DepthArray(uint target, int size, int layers)
     {
-        uint t; Gl.GenTextures(1, &t);
-        Gl.BindTexture(target, t);
+        uint t; Gl.CreateTextures(target, 1, &t);
         Gl.DrainErrors();   // an earlier pass's error must not be read as this allocation's
-        Gl.TexStorage3D(target, 1, Gl.DEPTH_COMPONENT24, size, size, layers);
+        Gl.TextureStorage3D(t, 1, Gl.DEPTH_COMPONENT24, size, size, layers);
         if (Gl.GetError() != 0)
         {
-            Gl.BindTexture(target, 0);
             Gl.DeleteTextures(1, &t);
             Disarm($"a {size}x{size}x{layers} depth array could not be allocated (out of video memory?)");
             return 0;
         }
-        Gl.TexParameteri(target, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
-        Gl.TexParameteri(target, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
-        Gl.TexParameteri(target, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(target, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(target, Gl.TEXTURE_COMPARE_MODE, (int)Gl.COMPARE_REF_TO_TEXTURE);
-        Gl.TexParameteri(target, Gl.TEXTURE_COMPARE_FUNC, (int)Gl.LEQUAL);
-        Gl.BindTexture(target, 0);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_COMPARE_MODE, (int)Gl.COMPARE_REF_TO_TEXTURE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_COMPARE_FUNC, (int)Gl.LEQUAL);
         return t;
     }
 

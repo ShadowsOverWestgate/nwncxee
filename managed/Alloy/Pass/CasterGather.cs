@@ -146,7 +146,7 @@ internal static unsafe class CasterGather
     /// permanent property of the driver and the gather then simply never arms.</summary>
     private static bool Capable()
         => Gl.DispatchCompute != null && Gl.MemoryBarrier != null && Gl.BindBufferBase != null
-           && Gl.MultiDrawElementsIndirectCount != null && Gl.BufferSubData != null && Gl.BufferData != null;
+           && Gl.MultiDrawElementsIndirectCount != null;
 
     /// <summary>Build the dispatch program. Not an overridable stage (ADR 0012's table is what a content
     /// author may restyle): an override here could only delete shadows, and there is no look to restyle.</summary>
@@ -195,13 +195,12 @@ internal static unsafe class CasterGather
 
         long srcWords = (long)drawN * SrcUints;
         bool grow = drawN > _srcCap;
-        if (_srcBuf == 0) { uint b; Gl.GenBuffers(1, &b); _srcBuf = b; grow = true; }
+        if (_srcBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _srcBuf = b; grow = true; }
         if (grow || _srcDirty)
         {
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _srcBuf);
             if (grow)
-            { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)drawN * SrcUints * sizeof(uint)), null, Gl.DYNAMIC_DRAW); _srcCap = drawN; }
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(srcWords * sizeof(uint)), src);
+            { Gl.NamedBufferData(_srcBuf, (IntPtr)((long)drawN * SrcUints * sizeof(uint)), null, Gl.DYNAMIC_DRAW); _srcCap = drawN; }
+            Gl.NamedBufferSubData(_srcBuf, IntPtr.Zero, (IntPtr)(srcWords * sizeof(uint)), src);
             _srcDirty = false;
             Uploads++;
         }
@@ -214,7 +213,6 @@ internal static unsafe class CasterGather
         }
         if (drawN > _cmdCap) _cmdCap = drawN;
         if (groups > _cntCap) _cntCap = groups;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         _drawN = drawN; _groups = groups;
         return true;
     }
@@ -285,7 +283,6 @@ internal static unsafe class CasterGather
     {
         if (!_dispatched || _groups <= 0 || _sampleBuf == 0) return;
         // Sample-only entry points: a driver without them loses the figure, never the shadows.
-        if (Gl.CopyBufferSubData == null || Gl.GetBufferSubData == null) return;
         _dispatched = false;
         int w = _readSeq % 3, r = (_readSeq + 1) % 3;
         _readSeq++;
@@ -303,18 +300,12 @@ internal static unsafe class CasterGather
         // No extra barrier: the dispatch's own MemoryBarrier names BUFFER_UPDATE_BARRIER_BIT, which is the
         // bit that orders shader-storage writes before buffer-copy reads, and it stands between the last
         // dispatch's atomicAdds and this copy in command order.
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, _sampleBuf);
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _readBuf[w]);
-        Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, IntPtr.Zero, IntPtr.Zero,
-                             (IntPtr)((long)(_groups + 1) * sizeof(uint)));
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+        Gl.CopyNamedBufferSubData(_sampleBuf, _readBuf[w], IntPtr.Zero, IntPtr.Zero,
+                                  (IntPtr)((long)(_groups + 1) * sizeof(uint)));
         _readN[w] = _groups; _readDrawN[w] = _drawN; _readViews[w] = _sampleViews; _readRxViews[w] = _sampleRxViews;
         if (_readBuf[r] == 0 || _readN[r] <= 0) return;
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, _readBuf[r]);
         fixed (uint* c = _counts)
-            Gl.GetBufferSubData(Gl.COPY_READ_BUFFER, IntPtr.Zero, (IntPtr)((long)(_readN[r] + 1) * sizeof(uint)), c);
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
+            Gl.GetNamedBufferSubData(_readBuf[r], IntPtr.Zero, (IntPtr)((long)(_readN[r] + 1) * sizeof(uint)), c);
         long kept = 0;
         for (int i = 0; i < _readN[r]; i++) kept += _counts[i];
         // Against the draw count of the frame that WROTE those counts, not this frame's; a layered chunk's
@@ -383,11 +374,10 @@ internal static unsafe class CasterGather
     internal static bool DispatchLayer(float* views, int viewN)
     {
         if (_layerProg == 0 || _drawN <= 0 || viewN <= 0 || CullPass.SphereBuf == 0) return false;
-        if (_viewBuf == 0) { uint b; Gl.GenBuffers(1, &b); _viewBuf = b; _viewCap = 0; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _viewBuf);
+        if (_viewBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _viewBuf = b; _viewCap = 0; }
         if (viewN > _viewCap)
-        { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW); _viewCap = viewN; }
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), views);
+        { Gl.NamedBufferData(_viewBuf, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW); _viewCap = viewN; }
+        Gl.NamedBufferSubData(_viewBuf, IntPtr.Zero, (IntPtr)((long)viewN * ViewFloats * sizeof(float)), views);
 
         _lyAt = (_lyAt + 1) % Rotation;
         long cmds = (long)_drawN * viewN;

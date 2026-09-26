@@ -14,19 +14,16 @@ public static unsafe class GpuRing
     /// corruption, which is strictly worse than a dropped frame's worth of that pass.</summary>
     public const ulong TimeoutNs = 100_000_000UL;
 
-    /// <summary>Create immutable storage of <paramref name="bytes"/> on <paramref name="target"/> and return
-    /// its persistent mapping, or null if the driver refused. Leaves nothing bound.</summary>
+    /// <summary>Create immutable storage of <paramref name="bytes"/> and return its persistent mapping, or null
+    /// if the driver refused. Touches no binding; <paramref name="target"/> is the caller's, kept for its call sites.</summary>
     /// <remarks>The storage and map flags must agree -- a map asking for a bit the store was not created
     /// with fails -- which is the whole reason this is one call and not two.</remarks>
     public static byte* Map(uint target, long bytes, out uint buf)
     {
         const uint flags = Gl.MAP_WRITE_BIT | Gl.MAP_PERSISTENT_BIT | Gl.MAP_COHERENT_BIT;
-        uint b; Gl.GenBuffers(1, &b); buf = b;
-        Gl.BindBuffer(target, buf);
-        Gl.BufferStorage(target, (IntPtr)bytes, null, flags);
-        byte* map = (byte*)Gl.MapBufferRange(target, IntPtr.Zero, (IntPtr)bytes, flags);
-        Gl.BindBuffer(target, 0);
-        return map;
+        uint b; Gl.CreateBuffers(1, &b); buf = b;
+        Gl.NamedBufferStorage(buf, (IntPtr)bytes, null, flags);
+        return (byte*)Gl.MapNamedBufferRange(buf, IntPtr.Zero, (IntPtr)bytes, flags);
     }
 
     /// <summary>Take a region for writing: wait out its fence if one is standing, then clear it. False = the

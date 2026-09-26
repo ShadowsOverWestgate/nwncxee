@@ -490,7 +490,6 @@ internal static unsafe partial class Particles
 
         // #261: build each emitter's records into its OWN persistent block. #288: what this loop stages for
         // the index list is one SPAN an emitter -- the list itself is written by the compute dispatch below.
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _recBuf);
         int at = 0;
         for (int i = 0; i < _drawN; i++)
         {
@@ -511,10 +510,10 @@ internal static unsafe partial class Particles
             if (h != e.Hash)
             {
                 e.Hash = h;
-                Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER,
-                                 (IntPtr)((long)e.RecBase * RecFloats * sizeof(float)),
-                                 (IntPtr)((long)wrote * RecFloats * sizeof(float)),
-                                 _recs + (long)e.RecBase * RecFloats);
+                Gl.NamedBufferSubData(_recBuf,
+                                      (IntPtr)((long)e.RecBase * RecFloats * sizeof(float)),
+                                      (IntPtr)((long)wrote * RecFloats * sizeof(float)),
+                                      _recs + (long)e.RecBase * RecFloats);
                 _blockUploads++;
             }
             else _blockSkips++;
@@ -546,10 +545,8 @@ internal static unsafe partial class Particles
             for (int i = 0; i < _drawN; i++)
                 for (int j = 0; j < _wrote[i]; j++)
                     _idx[_span[i * 4 + 2] + j] = _span[i * 4] + (uint)j;
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _idxBuf);
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, 0, (IntPtr)((long)at * sizeof(uint)), _idx);
+            Gl.NamedBufferSubData(_idxBuf, 0, (IntPtr)((long)at * sizeof(uint)), _idx);
         }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _recBuf);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _idxBuf);
         Gl.UseProgram(_prog);
@@ -1342,7 +1339,6 @@ internal static unsafe partial class Particles
 
         Stage(ref _spanBuf, ref _spanCap, _span, _drawN * 4, BindSpans);
         Stage(ref _grpBuf, ref _grpCap, _grp, groups * 4, BindGroups);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindRecs, _recBuf);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIdx, _idxBuf);
         Gl.UseProgram(_csProg);
@@ -1360,17 +1356,16 @@ internal static unsafe partial class Particles
     /// the four bytes a PARTICLE this replaced.</summary>
     private static void Stage(ref uint buf, ref int cap, uint[] src, int uints, uint binding)
     {
-        if (buf == 0) { uint b; Gl.GenBuffers(1, &b); buf = b; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, buf);
+        if (buf == 0) { uint b; Gl.CreateBuffers(1, &b); buf = b; }
         if (cap < uints)
         {
             int want = cap > 0 ? cap : 256;
             while (want < uints) want *= 2;
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)want * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+            Gl.NamedBufferData(buf, (IntPtr)((long)want * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
             cap = want;
         }
         fixed (uint* p = src)
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)((long)uints * sizeof(uint)), p);
+            Gl.NamedBufferSubData(buf, IntPtr.Zero, (IntPtr)((long)uints * sizeof(uint)), p);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, binding, buf);
     }
 
@@ -1383,7 +1378,7 @@ internal static unsafe partial class Particles
     private static bool EnsureBuffers(int parts)
     {
         if (parts <= 0 || parts > MaxRecs) { if (parts > MaxRecs) _overflow++; return false; }
-        if (_vao == 0) { uint v; Gl.GenVertexArrays(1, &v); _vao = v; }
+        if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
         if (_idxCap < parts)
         {
             int want = _idxCap > 0 ? _idxCap : MinRecs;
@@ -1391,9 +1386,8 @@ internal static unsafe partial class Particles
             if (_idx != null) NativeMemory.Free(_idx);
             _idx = (uint*)NativeMemory.Alloc((nuint)((long)want * sizeof(uint)));
             _idxCap = want;
-            if (_idxBuf == 0) { uint b; Gl.GenBuffers(1, &b); _idxBuf = b; }
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _idxBuf);
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)((long)want * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+            if (_idxBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _idxBuf = b; }
+            Gl.NamedBufferData(_idxBuf, (IntPtr)((long)want * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
         }
         // The record store is sized off the ALLOCATOR's high-water mark, not off this frame's particle
         // count: blocks are persistent, so an emitter that went off screen still owns its slice.
@@ -1406,10 +1400,9 @@ internal static unsafe partial class Particles
             if (_recs != null) NativeMemory.Free(_recs);
             _recs = grown;
             _recsCap = want;
-            if (_recBuf == 0) { uint b; Gl.GenBuffers(1, &b); _recBuf = b; }
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _recBuf);
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER,
-                          (IntPtr)((long)want * RecFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+            if (_recBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _recBuf = b; }
+            Gl.NamedBufferData(_recBuf,
+                               (IntPtr)((long)want * RecFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
             // The new store holds nothing, so every block is stale by construction.
             for (int i = 0; i < _tabN; i++) _tab[i].Hash = 0;
         }

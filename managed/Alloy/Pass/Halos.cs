@@ -95,15 +95,10 @@ internal static unsafe class Halos
         if (_count > _ssboCap)
         {
             _ssboCap = Math.Max(_count, InitialHalos);
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _buf);
-            Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, (IntPtr)(_ssboCap * Floats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
+            Gl.NamedBufferData(_buf, (IntPtr)(_ssboCap * Floats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         }
         fixed (float* s = _stage)
-        {
-            Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _buf);
-            Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, (IntPtr)(_count * Floats * sizeof(float)), s);
-        }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+            Gl.NamedBufferSubData(_buf, IntPtr.Zero, (IntPtr)(_count * Floats * sizeof(float)), s);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindHalos, _buf);
         SceneDepth.Bind();
         Gl.UseProgram(_prog);
@@ -127,7 +122,7 @@ internal static unsafe class Halos
     /// <summary>An attribute-less VAO: the quad corners come from gl_VertexID.</summary>
     private static uint EmptyVao()
     {
-        if (_vao == 0) { uint v; Gl.GenVertexArrays(1, &v); _vao = v; }
+        if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
         return _vao;
     }
 
@@ -137,7 +132,7 @@ internal static unsafe class Halos
         if (_failed || Gl.DrawArraysInstancedBaseInstance == null) return false;
         _prog = GlProgram.Graphics(ShdHaloVs, ShaderStages.Source(ShdHaloVs), ShdHaloFs, ShaderStages.Source(ShdHaloFs), _log, "Halos");
         if (_prog == 0) { _failed = true; _log?.Info("Halos: program build failed -- no halos this session"); return false; }
-        uint b; Gl.GenBuffers(1, &b); _buf = b; _ssboCap = 0;
+        uint b; Gl.CreateBuffers(1, &b); _buf = b; _ssboCap = 0;
         _locView = GlProgram.Loc(_prog, "uView");
         _locProj = GlProgram.Loc(_prog, "uProj");
         _locViz = GlProgram.Loc(_prog, "uViz");

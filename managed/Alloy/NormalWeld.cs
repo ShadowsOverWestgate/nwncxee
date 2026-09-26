@@ -116,9 +116,7 @@ internal static unsafe class NormalWeld
         if (welded == 0) return;
         long off = nrm.Off + (long)(baseVertex + minI) * nrm.Stride;
         long span = (long)(maxI - minI) * nrm.Stride + nrm.Size * 4;
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, nrm.Buf);
-        Gl.BufferSubData(Gl.COPY_WRITE_BUFFER, (IntPtr)off, (IntPtr)span, vertHost + off);
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+        Gl.NamedBufferSubData(nrm.Buf, (IntPtr)off, (IntPtr)span, vertHost + off);
         if (_logLeft-- > 0)
             _log?.Info($"NormalWeld: {welded} welded / {kept} kept of {maxI - minI + 1} verts ({tris} tris, {Angle:F0} deg)");
     }
@@ -156,8 +154,8 @@ internal static unsafe class NormalWeld
         bool ok = true;
         fixed (float* v = verts) fixed (ushort* e = idx)
         {
-            var bind = Gl.BindBuffer; var sub = Gl.BufferSubData;
-            Gl.BindBuffer = &NoBind; Gl.BufferSubData = &NoSub;
+            var sub = Gl.NamedBufferSubData;
+            Gl.NamedBufferSubData = &NoSub;
             // Plain field writes on the knob: nothing runs, nothing is written to the file.
             float save = Angle; int logLeft = _logLeft;
             Renderer.Weld.V = 60f; Run((byte*)e, (byte*)v, 0, 6, 0, pos, nrm);
@@ -167,13 +165,12 @@ internal static unsafe class NormalWeld
             float once = verts[1 * 6 + 5];
             Run((byte*)e, (byte*)v, 0, 6, 0, pos, nrm);                     // idempotent on the welded result
             ok &= verts[1 * 6 + 5] == once;
-            Renderer.Weld.V = save; Gl.BindBuffer = bind; Gl.BufferSubData = sub;
+            Renderer.Weld.V = save; Gl.NamedBufferSubData = sub;
             _logLeft = logLeft; Parts = Welded = Kept = Refused = 0;
         }
         log.Info(ok ? "NormalWeld.SelfCheck: passed" : "NormalWeld.SelfCheck FAIL");
         return ok;
     }
 
-    [System.Runtime.InteropServices.UnmanagedCallersOnly] private static void NoBind(uint a, uint b) { }
     [System.Runtime.InteropServices.UnmanagedCallersOnly] private static void NoSub(uint a, IntPtr b, IntPtr c, void* d) { }
 }

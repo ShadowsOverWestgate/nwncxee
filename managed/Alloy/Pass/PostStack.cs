@@ -318,18 +318,10 @@ internal static unsafe class PostStack
     {
         if (_tex0 != 0 && w == _w && h == _h) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_tex0 != 0 && Gl.DeleteTextures != null)
-        {
-            uint* old = stackalloc uint[2] { _tex0, _tex1 };
-            Gl.DeleteTextures(2, old);
-            _tex0 = 0; _tex1 = 0;
-        }
-        uint* t = stackalloc uint[2];
-        Gl.GenTextures(2, t);
         // RGBA16F for precision, not headroom (ADR 0020): the frame quantises to 8 bits once, at the last write.
-        RenderTarget.AllocColor(t[0], true, w, h, Gl.NEAREST);
-        RenderTarget.AllocColor(t[1], true, w, h, Gl.NEAREST);
-        _tex0 = t[0]; _tex1 = t[1]; _w = w; _h = h;
+        RenderTarget.AllocColor(ref _tex0, true, w, h, Gl.NEAREST);
+        RenderTarget.AllocColor(ref _tex1, true, w, h, Gl.NEAREST);
+        _w = w; _h = h;
         if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
         AttachWrite(_tex0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);

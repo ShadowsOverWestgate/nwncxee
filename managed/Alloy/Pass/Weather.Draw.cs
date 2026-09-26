@@ -123,7 +123,7 @@ internal static unsafe partial class Weather
         SceneDepth.Bind();
         new PassState(depth: true, depthWrite: false, blend: true,
                       blendSrc: AlloyRenderer.GlSrcAlpha, blendDst: Gl.ONE_MINUS_SRC_ALPHA).Apply();
-        if (_vao == 0) { uint v; Gl.GenVertexArrays(1, &v); _vao = v; }
+        if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
         Gl.BindVertexArray(_vao);
         if (count > 0 && Submit(snow ? 2 : 1, count, view, proj, eye, viewport, near, far, lightingOn)) { _count = count; _drawn += count; }
         if (drips > 0 && Submit(3, drips, view, proj, eye, viewport, near, far, lightingOn)) { _drips = drips; _drawn += drips; }

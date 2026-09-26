@@ -139,16 +139,8 @@ internal static unsafe class MotionVectors
     {
         if (_tex != 0 && w == _w && h == _h) return true;
         if (w <= 0 || h <= 0) return false;
-        if (_tex == 0)
-        {
-            uint t; Gl.GenTextures(1, &t); _tex = t;
-            uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
-        }
-        Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindTexture(Gl.TEXTURE_2D, _tex);
-        Gl.TexImage2D(Gl.TEXTURE_2D, 0, (int)Gl.RG16F, w, h, 0, Gl.RG, Gl.HALF_FLOAT, null);
-        RenderTarget.Clamp(Gl.NEAREST);
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
+        RenderTarget.Create(ref _tex, Gl.RG16F, w, h, Gl.NEAREST);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _tex, 0);
         uint status = Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER);

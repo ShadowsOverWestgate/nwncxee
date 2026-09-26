@@ -53,11 +53,12 @@ public sealed unsafe partial class AlloyRenderer
         uint vao = new VdoRef(vdo).Vao;
         if (vao == 0 && DripVao(vdo)) vao = new VdoRef(vdo).Vao;
         if (vao == 0) { HarvestFailed(vdo, 0, 0, false, 0); return false; }
+        int eb; Gl.GetVertexArrayiv(vao, Gl.ELEMENT_ARRAY_BUFFER_BINDING, &eb);
+        _vElemBuf[s] = (uint)eb;
+        // The attribute READ still binds: no DSA query answers an attribute's buffer name.
         int saved;
         Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &saved);
         Gl.BindVertexArray(vao);
-        int eb; Gl.GetIntegerv(Gl.ELEMENT_ARRAY_BUFFER_BINDING, &eb);
-        _vElemBuf[s] = (uint)eb;
         VertexArrays.Read(EngPos, out _vPos[s]);
         VertexArrays.Read(EngUv, out _vUv[s]);
         // #294: disabled, or enabled-but-unbacked? Read() collapses the two and only the first is the
@@ -566,22 +567,20 @@ public sealed unsafe partial class AlloyRenderer
         bool skin = _vSkin[v] && _skinning;
         var pos = _vPos[v]; var uv = _vUv[v]; var nrm = _vNrm[v];
         var bi = _vBi[v]; var bw = _vBw[v];
-        uint vao; Gl.GenVertexArrays(1, &vao);
-        Gl.BindVertexArray(vao);
-        VertexArrays.Bind(LocPos, in pos);
+        uint vao; Gl.CreateVertexArrays(1, &vao);
+        VertexArrays.Bind(vao, LocPos, in pos);
         // #294: unbound, not zero-filled. A disabled location supplies GL's generic constant (0,0,0,1), and
         // nothing on either side of the process ever writes that constant -- so this IS the engine's own UV.
-        if (uv.Present) VertexArrays.Bind(LocUv, in uv);
-        if (_vLit[v]) VertexArrays.Bind(LocNrm, in nrm);
+        if (uv.Present) VertexArrays.Bind(vao, LocUv, in uv);
+        if (_vLit[v]) VertexArrays.Bind(vao, LocNrm, in nrm);
         // #137: and the bone streams, on a skinned VDO. Same "one stream and no more" rule -- these two are
         // the only additions, and both are consumed by the skinning branch the Alloy stages now carry.
         if (skin)
         {
-            VertexArrays.Bind(LocBoneIdx, in bi);
-            VertexArrays.Bind(LocBoneW, in bw);
+            VertexArrays.Bind(vao, LocBoneIdx, in bi);
+            VertexArrays.Bind(vao, LocBoneW, in bw);
         }
-        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, elem);
-        Gl.BindVertexArray(0);
+        Gl.VertexArrayElementBuffer(vao, elem);
         return vao;
     }
 
@@ -608,13 +607,11 @@ public sealed unsafe partial class AlloyRenderer
         uint elem = _vElemBuf[v];
         if (elem == 0) return 0;
         var pos = _vPos[v]; var uv = _vUv[v]; var nrm = _vNrm[v];
-        uint vao; Gl.GenVertexArrays(1, &vao);
-        Gl.BindVertexArray(vao);
-        VertexArrays.Bind(EngLocPos, in pos);
-        if (uv.Present) VertexArrays.Bind(EngLocUv, in uv);
-        if (nrm.Present) VertexArrays.Bind(EngLocNrm, in nrm);
-        Gl.BindBuffer(Gl.ELEMENT_ARRAY_BUFFER, elem);
-        Gl.BindVertexArray(0);
+        uint vao; Gl.CreateVertexArrays(1, &vao);
+        VertexArrays.Bind(vao, EngLocPos, in pos);
+        if (uv.Present) VertexArrays.Bind(vao, EngLocUv, in uv);
+        if (nrm.Present) VertexArrays.Bind(vao, EngLocNrm, in nrm);
+        Gl.VertexArrayElementBuffer(vao, elem);
         _vVaoEng[v] = vao;
         return vao;
     }

@@ -234,9 +234,8 @@ internal static unsafe class CullPass
     /// dispatch cannot run Alloy at all -- see <see cref="AlloyGate"/>.</summary>
     internal static bool Capable()
         => Gl.DispatchCompute != null && Gl.MemoryBarrier != null && Gl.BindBufferBase != null
-           && Gl.MultiDrawElementsIndirectCount != null && Gl.BufferSubData != null
-           && Gl.GenFramebuffers != null && Gl.FramebufferTexture2D != null && Gl.TexStorage2D != null
-           && Gl.CopyBufferSubData != null && Gl.GetBufferSubData != null;
+           && Gl.MultiDrawElementsIndirectCount != null
+           && Gl.GenFramebuffers != null && Gl.FramebufferTexture2D != null;
 
     /// <summary>Build the two programs. Neither is an overridable stage (ADR 0012's table is the set a
     /// content author can restyle): an override here could only make the world invisible, and there is no
@@ -275,7 +274,7 @@ internal static unsafe class CullPass
         _sCompactBelow = GlProgram.Loc(_progSort, "uCompactBelow");
         _hSrc = GlProgram.Loc(_progHiZ, "uSrc");
         _hLevel = GlProgram.Loc(_progHiZ, "uLevel");
-        if (_pyrVao == 0) { uint v; Gl.GenVertexArrays(1, &v); _pyrVao = v; }
+        if (_pyrVao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _pyrVao = v; }
         _log?.Info("CullPass: armed -- GPU frustum + hi-Z cull, GPU back-to-front sort of the blending "
                    + "ranges, glMultiDrawElementsIndirectCount submission");
         return true;
@@ -319,11 +318,10 @@ internal static unsafe class CullPass
         _compactBelow = Math.Clamp(compactBelow, 0, groups);
         _eye = eye;
 
-        if (_srcBuf == 0) { uint b; Gl.GenBuffers(1, &b); _srcBuf = b; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _srcBuf);
+        if (_srcBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _srcBuf = b; }
         var srcSize = (IntPtr)((long)drawN * SrcUints * sizeof(uint));
-        Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, srcSize, null, Gl.DYNAMIC_DRAW);
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, srcSize, src);
+        Gl.NamedBufferData(_srcBuf, srcSize, null, Gl.DYNAMIC_DRAW);
+        Gl.NamedBufferSubData(_srcBuf, IntPtr.Zero, srcSize, src);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, _srcBuf);
 
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSphere, _sphBuf);
@@ -343,7 +341,6 @@ internal static unsafe class CullPass
         Gl.EnsureStorage(ref _keyBuf, (long)drawN * sizeof(float), drawN > _cmdCap);
         if (drawN > _cmdCap) _cmdCap = drawN;
         if (groups > _cntCap) _cntCap = groups;
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
         _phase = -2;   // staged; the first Dispatch publishes a phase
         return true;
     }
@@ -356,13 +353,11 @@ internal static unsafe class CullPass
     /// traffic.</summary>
     internal static void UploadSpheres(float* spheres, int sphereSlots)
     {
-        if (sphereSlots <= 0 || Gl.BufferSubData == null) return;
-        if (_sphBuf == 0) { uint b; Gl.GenBuffers(1, &b); _sphBuf = b; }
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, _sphBuf);
+        if (sphereSlots <= 0 || Gl.NamedBufferSubData == null) return;
+        if (_sphBuf == 0) { uint b; Gl.CreateBuffers(1, &b); _sphBuf = b; }
         var sphSize = (IntPtr)((long)sphereSlots * 4 * sizeof(float));
-        if (sphereSlots > _sphCap) { Gl.BufferData(Gl.SHADER_STORAGE_BUFFER, sphSize, null, Gl.DYNAMIC_DRAW); _sphCap = sphereSlots; }
-        Gl.BufferSubData(Gl.SHADER_STORAGE_BUFFER, IntPtr.Zero, sphSize, spheres);
-        Gl.BindBuffer(Gl.SHADER_STORAGE_BUFFER, 0);
+        if (sphereSlots > _sphCap) { Gl.NamedBufferData(_sphBuf, sphSize, null, Gl.DYNAMIC_DRAW); _sphCap = sphereSlots; }
+        Gl.NamedBufferSubData(_sphBuf, IntPtr.Zero, sphSize, spheres);
     }
 
     /// <summary>The shared sphere buffer's GL name, for the shadow gather's dispatch. 0 until the first
@@ -531,16 +526,15 @@ internal static unsafe class CullPass
                 // exclude the attachment, which is exactly what the clamp is for (PostChain's bloom chain
                 // takes the same trade for the same reason).
                 Gl.BindTexture(Gl.TEXTURE_2D, _pyrTex);
-                Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_BASE_LEVEL, i - 1);
-                Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, i - 1);
+                Gl.TextureParameteri(_pyrTex, Gl.TEXTURE_BASE_LEVEL, i - 1);
+                Gl.TextureParameteri(_pyrTex, Gl.TEXTURE_MAX_LEVEL, i - 1);
                 Gl.Uniform1i(_hLevel, 0);
             }
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         }
         // The dispatch samples arbitrary LODs, so the clamp has to come back off.
-        Gl.BindTexture(Gl.TEXTURE_2D, _pyrTex);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_BASE_LEVEL, 0);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAX_LEVEL, _pyrLevels - 1);
+        Gl.TextureParameteri(_pyrTex, Gl.TEXTURE_BASE_LEVEL, 0);
+        Gl.TextureParameteri(_pyrTex, Gl.TEXTURE_MAX_LEVEL, _pyrLevels - 1);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, restoreFbo);
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
@@ -560,16 +554,14 @@ internal static unsafe class CullPass
         _pyrStale = false;
         int levels = 1;
         while ((w >> levels) > 0 || (h >> levels) > 0) levels++;
-        uint tex; Gl.GenTextures(1, &tex);
-        Gl.BindTexture(Gl.TEXTURE_2D, tex);
-        Gl.TexStorage2D(Gl.TEXTURE_2D, levels, Gl.R32F, w, h);
+        uint tex; Gl.CreateTextures(Gl.TEXTURE_2D, 1, &tex);
+        Gl.TextureStorage2D(tex, levels, Gl.R32F, w, h);
         // NEAREST all the way: an interpolated max is not a max, and a filtered pyramid would cull against
         // depths that are in no texel of it.
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST_MIPMAP_NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        Gl.TextureParameteri(tex, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST_MIPMAP_NEAREST);
+        Gl.TextureParameteri(tex, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
+        Gl.TextureParameteri(tex, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(tex, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
         if (_pyrFbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _pyrFbo = f; }
         _pyrTex = tex; _pyrW = w; _pyrH = h; _pyrLevels = levels;
         _log?.Info($"CullPass: hi-Z pyramid {w}x{h}, {levels} levels (R32F, max reduction)");
@@ -590,20 +582,13 @@ internal static unsafe class CullPass
                _readBuf[w] == 0 || _counts.Length > _readCap);
         _readCap = _counts.Length;
         // #489: the three screen phases' counts back to back -- colour, then prepass phase one, then phase two.
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, _readBuf[w]);
         for (int ph = 0; ph < RingPhases; ph++)
-        {
-            Gl.BindBuffer(Gl.COPY_READ_BUFFER, _cntBuf[ph == 0 ? PhaseColour : ph == 1 ? PhasePrepass : PhaseRetest]);
-            Gl.CopyBufferSubData(Gl.COPY_READ_BUFFER, Gl.COPY_WRITE_BUFFER, IntPtr.Zero, (IntPtr)((long)ph * _groups * sizeof(uint)), bytes);
-        }
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
-        Gl.BindBuffer(Gl.COPY_WRITE_BUFFER, 0);
+            Gl.CopyNamedBufferSubData(_cntBuf[ph == 0 ? PhaseColour : ph == 1 ? PhasePrepass : PhaseRetest], _readBuf[w],
+                                      IntPtr.Zero, (IntPtr)((long)ph * _groups * sizeof(uint)), bytes);
         _readN[w] = _groups; _readDrawN[w] = _drawN;
         if (_readBuf[r] == 0 || _readN[r] <= 0) return;
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, _readBuf[r]);
         fixed (uint* c = _counts)
-            Gl.GetBufferSubData(Gl.COPY_READ_BUFFER, IntPtr.Zero, (IntPtr)((long)RingPhases * _readN[r] * sizeof(uint)), c);
-        Gl.BindBuffer(Gl.COPY_READ_BUFFER, 0);
+            Gl.GetNamedBufferSubData(_readBuf[r], IntPtr.Zero, (IntPtr)((long)RingPhases * _readN[r] * sizeof(uint)), c);
         long kept = 0, pre = 0, re = 0;
         for (int i = 0; i < _readN[r]; i++)
         { kept += _counts[i]; pre += _counts[_readN[r] + i]; re += _counts[2 * _readN[r] + i]; }

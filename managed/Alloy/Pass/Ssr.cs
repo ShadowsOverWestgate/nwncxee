@@ -58,8 +58,8 @@ internal static unsafe class Ssr
     {
         _valid = false;
         if (!On) return;
-        if (Gl.BlitFramebuffer == null || Gl.GenerateMipmap == null || Gl.DispatchCompute == null || Gl.BindImageTexture == null)
-        { _down.Fail(_log, "glBlitFramebuffer, glGenerateMipmap, compute or image stores are missing", "screen-space reflections are off for the session"); return; }
+        if (Gl.BlitFramebuffer == null || Gl.DispatchCompute == null || Gl.BindImageTexture == null)
+        { _down.Fail(_log, "glBlitFramebuffer, compute or image stores are missing", "screen-space reflections are off for the session"); return; }
         if (_progHiZ == 0 && !BuildProgram()) return;
         if (viewport[0] != 0 || viewport[1] != 0) { _down.Refuse(_log, "the pass viewport is offset", "no reflections this frame"); return; }
         int w = viewport[2], h = viewport[3];
@@ -73,10 +73,7 @@ internal static unsafe class Ssr
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)src);
         uint err = Gl.GetError == null ? 0 : Gl.GetError();
         if (err != 0) { _down.Fail(_log, $"the history blit raised 0x{err:x}", "screen-space reflections are off for the session"); return; }
-        Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.BindTexture(Gl.TEXTURE_2D, _col);
-        Gl.GenerateMipmap(Gl.TEXTURE_2D);
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        Gl.GenerateTextureMipmap(_col);
         BuildPyramid(near, far);
         _view = *view; _proj = *proj; _near = near; _far = far;
         _valid = true;
@@ -154,23 +151,22 @@ internal static unsafe class Ssr
         bool packed = RenderTarget.Packed(fmt);
         _depMask = packed ? Gl.STENCIL_BUFFER_BIT | Gl.DEPTH_BUFFER_BIT : Gl.DEPTH_BUFFER_BIT;
         if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        if (_col == 0) { uint t; Gl.GenTextures(1, &t); _col = t; }
-        if (_dep == 0) { uint t; Gl.GenTextures(1, &t); _dep = t; }
-        RenderTarget.AllocColor(_col, hdr, w, h, Gl.LINEAR);
-        Gl.BindTexture(Gl.TEXTURE_2D, _col);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR_MIPMAP_LINEAR);
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
-        RenderTarget.AllocDepth(_dep, fmt, w, h, Gl.NEAREST);
         // immutable storage: a new size is a new name
-        if (_hiz != 0) { uint t = _hiz; Gl.DeleteTextures(1, &t); }
         int levels = 1;
         while ((w >> levels) > 0 || (h >> levels) > 0) levels++;
-        { uint t; Gl.GenTextures(1, &t); _hiz = t; }
-        Gl.BindTexture(Gl.TEXTURE_2D, _hiz);
-        Gl.TexStorage2D(Gl.TEXTURE_2D, levels, Gl.R32F, w, h);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST_MIPMAP_NEAREST);
-        Gl.TexParameteri(Gl.TEXTURE_2D, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
-        Gl.BindTexture(Gl.TEXTURE_2D, 0);
+        uint t;
+        // the colour copy carries the full chain: GenerateTextureMipmap fills it every Take
+        if (_col != 0) { t = _col; Gl.DeleteTextures(1, &t); }
+        Gl.CreateTextures(Gl.TEXTURE_2D, 1, &t); _col = t;
+        Gl.TextureStorage2D(_col, levels, hdr ? Gl.RGBA16F : Gl.RGBA8, w, h);
+        RenderTarget.Clamp(_col, Gl.LINEAR);
+        Gl.TextureParameteri(_col, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR_MIPMAP_LINEAR);
+        RenderTarget.AllocDepth(ref _dep, fmt, w, h, Gl.NEAREST);
+        if (_hiz != 0) { t = _hiz; Gl.DeleteTextures(1, &t); }
+        Gl.CreateTextures(Gl.TEXTURE_2D, 1, &t); _hiz = t;
+        Gl.TextureStorage2D(_hiz, levels, Gl.R32F, w, h);
+        Gl.TextureParameteri(_hiz, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST_MIPMAP_NEAREST);
+        Gl.TextureParameteri(_hiz, Gl.TEXTURE_MAG_FILTER, Gl.NEAREST);
         _levels = levels;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _col, 0);

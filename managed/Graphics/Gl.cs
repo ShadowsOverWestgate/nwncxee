@@ -34,7 +34,7 @@ public static unsafe class Gl
     public const uint POLYGON_OFFSET_FILL = 0x8037;
     public const uint TRIANGLE_STRIP = 0x0005;
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
-    public const uint BYTE = 0x1400;
+    public const uint BYTE = 0x1400, SHORT = 0x1402;
     public const uint ARRAY_BUFFER = 0x8892, STATIC_DRAW = 0x88E4, DYNAMIC_DRAW = 0x88E8;
     /// <summary>#212: the two scratch targets glCopyBufferSubData copies between, and the size query that
     /// says how much. Copy targets exist so a buffer can be read and written without disturbing whatever the
@@ -336,19 +336,13 @@ public static unsafe class Gl
     /// BufferSubData into a buffer the previous dispatch may still read is an implicit sync the spec permits
     /// the driver to take as a stall (Khronos, Buffer Object Streaming); a clear has no such term. Unmeasured.</summary>
     public static void ZeroBuffer(uint buf, long bytes)
-    {
-        BindBuffer(SHADER_STORAGE_BUFFER, buf);
-        ClearBufferSubData(SHADER_STORAGE_BUFFER, R32UI, IntPtr.Zero, (IntPtr)bytes, RED_INTEGER, UNSIGNED_INT, null);
-        BindBuffer(SHADER_STORAGE_BUFFER, 0);
-    }
+        => ClearNamedBufferSubData(buf, R32UI, IntPtr.Zero, (IntPtr)bytes, RED_INTEGER, UNSIGNED_INT, null);
     /// <summary>Mint <paramref name="buf"/> on first use and (re)allocate it as DYNAMIC_DRAW storage when
-    /// <paramref name="grow"/> asks; a fresh name always allocates. Leaves the SSBO binding on the buffer.</summary>
+    /// <paramref name="grow"/> asks; a fresh name always allocates. Touches no binding.</summary>
     public static void EnsureStorage(ref uint buf, long bytes, bool grow)
     {
-        if (buf == 0) { uint b; GenBuffers(1, &b); buf = b; grow = true; }
-        if (!grow) return;
-        BindBuffer(SHADER_STORAGE_BUFFER, buf);
-        BufferData(SHADER_STORAGE_BUFFER, (IntPtr)Math.Max(bytes, 4), null, DYNAMIC_DRAW);
+        if (buf == 0) { uint b; CreateBuffers(1, &b); buf = b; grow = true; }
+        if (grow) NamedBufferData(buf, (IntPtr)Math.Max(bytes, 4), null, DYNAMIC_DRAW);
     }
     public static delegate* unmanaged<uint, uint, uint, void> BindBufferBase;
     public static delegate* unmanaged<uint, byte*, uint> GetUniformBlockIndex;
@@ -487,6 +481,61 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, IntPtr> FenceSync;
     public static delegate* unmanaged<IntPtr, uint, ulong, uint> ClientWaitSync;
     public static delegate* unmanaged<IntPtr, void> DeleteSync;
+
+    // CX-44 direct state access: edits touch no binding, so the engine's bind cache stays true. No fallback;
+    // GlContextService.Available is the one gate (it checks both contexts).
+    public static delegate* unmanaged<int, uint*, void> CreateBuffers, CreateVertexArrays;
+    /// <summary>glCreateTextures: target, n, names. The target is fixed at creation, unlike glGenTextures.</summary>
+    public static delegate* unmanaged<uint, int, uint*, void> CreateTextures;
+    public static delegate* unmanaged<uint, IntPtr, void*, uint, void> NamedBufferData, NamedBufferStorage;
+    public static delegate* unmanaged<uint, IntPtr, IntPtr, void*, void> NamedBufferSubData, GetNamedBufferSubData;
+    public static delegate* unmanaged<uint, uint, IntPtr, IntPtr, IntPtr, void> CopyNamedBufferSubData;
+    public static delegate* unmanaged<uint, uint, IntPtr, IntPtr, uint, uint, void*, void> ClearNamedBufferSubData;
+    public static delegate* unmanaged<uint, IntPtr, IntPtr, uint, void*> MapNamedBufferRange;
+    public static delegate* unmanaged<uint, byte> UnmapNamedBuffer;
+    /// <summary>glTextureStorage2D / 3D: texture, levels, internalFormat, width, height[, depth]. Immutable --
+    /// a resize is delete + create, never a respecify.</summary>
+    public static delegate* unmanaged<uint, int, uint, int, int, void> TextureStorage2D;
+    public static delegate* unmanaged<uint, int, uint, int, int, int, void> TextureStorage3D;
+    /// <summary>glTextureSubImage2D: texture, level, x, y, w, h, format, type, data.</summary>
+    public static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> TextureSubImage2D;
+    /// <summary>glTextureSubImage3D: texture, level, x, y, z, w, h, depth, format, type, data.</summary>
+    public static delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, void*, void> TextureSubImage3D;
+    /// <summary>glCompressedTextureSubImage2D: texture, level, x, y, w, h, format, imageSize, data.</summary>
+    public static delegate* unmanaged<uint, int, int, int, int, int, uint, int, void*, void> CompressedTextureSubImage2D;
+    public static delegate* unmanaged<uint, uint, int, void> TextureParameteri;
+    public static delegate* unmanaged<uint, uint, int*, void> GetTextureParameteriv;
+    public static delegate* unmanaged<uint, int, uint, int*, void> GetTextureLevelParameteriv;
+    /// <summary>glGetTextureImage: texture, level, format, type, bufSize, pixels.</summary>
+    public static delegate* unmanaged<uint, int, uint, uint, int, void*, void> GetTextureImage;
+    public static delegate* unmanaged<uint, void> GenerateTextureMipmap;
+    /// <summary>glVertexArrayVertexBuffer: vaobj, bindingindex, buffer, offset, stride.</summary>
+    public static delegate* unmanaged<uint, uint, uint, IntPtr, int, void> VertexArrayVertexBuffer;
+    /// <summary>glVertexArrayAttribFormat: vaobj, attribindex, size, type, normalized, relativeoffset.</summary>
+    public static delegate* unmanaged<uint, uint, int, uint, byte, uint, void> VertexArrayAttribFormat;
+    /// <summary>glVertexArrayAttribBinding: vaobj, attribindex, bindingindex. glVertexArrayBindingDivisor:
+    /// vaobj, bindingindex, divisor.</summary>
+    public static delegate* unmanaged<uint, uint, uint, void> VertexArrayAttribBinding, VertexArrayBindingDivisor;
+    public static delegate* unmanaged<uint, uint, void> EnableVertexArrayAttrib, VertexArrayElementBuffer;
+    public static delegate* unmanaged<uint, uint, int*, void> GetVertexArrayiv;
+    public static delegate* unmanaged<uint, uint, int*, void> GetNamedRenderbufferParameteriv;
+
+    /// <summary>Does the CURRENT context advertise this extension? Asks whichever context is current, and two
+    /// contexts on one driver need not advertise the same set.</summary>
+    public static bool HasExt(ReadOnlySpan<byte> want)
+    {
+        if (GetStringi == null) return false;
+        int n = 0; GetIntegerv(NUM_EXTENSIONS, &n);
+        for (uint i = 0; i < (uint)n; i++)
+        {
+            byte* e = GetStringi(EXTENSIONS, i);
+            if (e == null) continue;
+            int k = 0;
+            for (; k < want.Length && e[k] != 0; k++) if (e[k] != want[k]) break;
+            if (k == want.Length && e[k] == 0) return true;
+        }
+        return false;
+    }
 
     private static delegate* unmanaged<byte*, IntPtr> _getProc;
     private static bool _ready, _failed;
@@ -659,6 +708,35 @@ public static unsafe class Gl
         FenceSync = (delegate* unmanaged<uint, uint, IntPtr>)P("glFenceSync");
         ClientWaitSync = (delegate* unmanaged<IntPtr, uint, ulong, uint>)P("glClientWaitSync");
         DeleteSync = (delegate* unmanaged<IntPtr, void>)P("glDeleteSync");
+        CreateBuffers = (delegate* unmanaged<int, uint*, void>)P("glCreateBuffers");
+        CreateVertexArrays = (delegate* unmanaged<int, uint*, void>)P("glCreateVertexArrays");
+        CreateTextures = (delegate* unmanaged<uint, int, uint*, void>)P("glCreateTextures");
+        NamedBufferData = (delegate* unmanaged<uint, IntPtr, void*, uint, void>)P("glNamedBufferData");
+        NamedBufferStorage = (delegate* unmanaged<uint, IntPtr, void*, uint, void>)P("glNamedBufferStorage");
+        NamedBufferSubData = (delegate* unmanaged<uint, IntPtr, IntPtr, void*, void>)P("glNamedBufferSubData");
+        GetNamedBufferSubData = (delegate* unmanaged<uint, IntPtr, IntPtr, void*, void>)P("glGetNamedBufferSubData");
+        CopyNamedBufferSubData = (delegate* unmanaged<uint, uint, IntPtr, IntPtr, IntPtr, void>)P("glCopyNamedBufferSubData");
+        ClearNamedBufferSubData = (delegate* unmanaged<uint, uint, IntPtr, IntPtr, uint, uint, void*, void>)P("glClearNamedBufferSubData");
+        MapNamedBufferRange = (delegate* unmanaged<uint, IntPtr, IntPtr, uint, void*>)P("glMapNamedBufferRange");
+        UnmapNamedBuffer = (delegate* unmanaged<uint, byte>)P("glUnmapNamedBuffer");
+        TextureStorage2D = (delegate* unmanaged<uint, int, uint, int, int, void>)P("glTextureStorage2D");
+        TextureStorage3D = (delegate* unmanaged<uint, int, uint, int, int, int, void>)P("glTextureStorage3D");
+        TextureSubImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void>)P("glTextureSubImage2D");
+        TextureSubImage3D = (delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, void*, void>)P("glTextureSubImage3D");
+        CompressedTextureSubImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, int, void*, void>)P("glCompressedTextureSubImage2D");
+        TextureParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glTextureParameteri");
+        GetTextureParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetTextureParameteriv");
+        GetTextureLevelParameteriv = (delegate* unmanaged<uint, int, uint, int*, void>)P("glGetTextureLevelParameteriv");
+        GetTextureImage = (delegate* unmanaged<uint, int, uint, uint, int, void*, void>)P("glGetTextureImage");
+        GenerateTextureMipmap = (delegate* unmanaged<uint, void>)P("glGenerateTextureMipmap");
+        VertexArrayVertexBuffer = (delegate* unmanaged<uint, uint, uint, IntPtr, int, void>)P("glVertexArrayVertexBuffer");
+        VertexArrayAttribFormat = (delegate* unmanaged<uint, uint, int, uint, byte, uint, void>)P("glVertexArrayAttribFormat");
+        VertexArrayAttribBinding = (delegate* unmanaged<uint, uint, uint, void>)P("glVertexArrayAttribBinding");
+        VertexArrayBindingDivisor = (delegate* unmanaged<uint, uint, uint, void>)P("glVertexArrayBindingDivisor");
+        EnableVertexArrayAttrib = (delegate* unmanaged<uint, uint, void>)P("glEnableVertexArrayAttrib");
+        VertexArrayElementBuffer = (delegate* unmanaged<uint, uint, void>)P("glVertexArrayElementBuffer");
+        GetVertexArrayiv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetVertexArrayiv");
+        GetNamedRenderbufferParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetNamedRenderbufferParameteriv");
 
         // FBO procs are NOT in this gate: text/chat rendering must not regress if a client lacks them.
         // SceneInputs null-checks GenFramebuffers/FramebufferTexture2D itself before using the FBO path.

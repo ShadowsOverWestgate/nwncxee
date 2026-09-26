@@ -348,17 +348,16 @@ internal static unsafe class FrameSnapshot
         if (_fbo != 0 && _w == w && _h == h && _hdr == hdr && _colTex != 0 && _depTex != 0) return true;
         _w = w; _h = h; _hdr = hdr;
         if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        if (_colTex == 0) { uint t; Gl.GenTextures(1, &t); _colTex = t; }
-        if (_depTex == 0) { uint t; Gl.GenTextures(1, &t); _depTex = t; }
-        if (_fbo == 0 || _colTex == 0 || _depTex == 0) return Fail("could not create the copy targets");
+        if (_fbo == 0) return Fail("could not create the copy framebuffer");
 
         // #139: RGBA16F while the HDR target is armed, because that is what the copy SOURCE holds -- an 8-bit
         // copy of a linear HDR frame clips every highlight the water would reflect, and those are exactly the
         // pixels a reflection is made of.
         // LINEAR on both: the refraction and the SSR march sample at an offset, not at texel centres.
-        RenderTarget.AllocColor(_colTex, hdr, w, h, Gl.LINEAR);
+        RenderTarget.AllocColor(ref _colTex, hdr, w, h, Gl.LINEAR);
         bool packed = RenderTarget.Packed(_depFormat);
-        RenderTarget.AllocDepth(_depTex, _depFormat, w, h, Gl.LINEAR);
+        RenderTarget.AllocDepth(ref _depTex, _depFormat, w, h, Gl.LINEAR);
+        if (_colTex == 0 || _depTex == 0) return Fail("could not create the copy targets");
 
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _colTex, 0);
