@@ -483,13 +483,6 @@ public sealed unsafe partial class AlloyRenderer
                         MoverMotionPass(&vp, jx, jy, viewport);
                         GpuEnd(GpuTerm.Motion);
                     }
-                    // #491: its own term ahead of Post (queries cannot nest); world scene only.
-                    if (PostChain.AutoWanted && !_capturing && IsWorldScene(_enrollScene))
-                    {
-                        GpuBegin(GpuTerm.Exposure);
-                        PostChain.Adapt();
-                        GpuEnd(GpuTerm.Exposure);
-                    }
                     // #493: the vis-ID viz over the finished frame, before the resolve reads it.
                     if (_lightViz == IdTarget.VizMode && !_capturing) IdTarget.Paint(viewport);
                     GpuBegin(GpuTerm.Post);

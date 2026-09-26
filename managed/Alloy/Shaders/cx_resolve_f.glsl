@@ -14,13 +14,11 @@ uniform float uStrength;
 uniform int uMode;
 uniform float uKnee;
 uniform float uExposure;  // scene-referred gain before the tonemap; 1 = identity
-uniform int uAuto;        // #491: 1 = multiply the adapted gain from the SSBO in as well
 uniform float uAcesMix;   // mode 2: ACES mixed against the shoulder, in linear; 1 = full ACES
 uniform float uDither;   // one LSB of the output target, or 0
 uniform int uViz;        // 0 = the frame; 1 = bloom only; 2 = HDR only; 3 = bloom x20; 4 = motion vectors
 #include "cx_postcolor.glsl"
 #include "cx_postdither.glsl"
-#include "cx_autobuf_read.glsl"
 vec3 CxShoulder(vec3 c, float k)
 {
     if (k <= 0.0) return c;
@@ -71,7 +69,6 @@ void main()
         }
         else graded = 0.0;
         vec3 g = b * uExposure;
-        if (uAuto != 0) g *= uAutoGain;
         raw = CxEncode(c + g);
         if (graded <= 0.0)
         {
@@ -81,7 +78,6 @@ void main()
     }
     c += b;
     c *= uExposure;
-    if (uAuto != 0) c *= uAutoGain;
     if (uMode == 1) c = CxShoulder(c, uKnee);
     // ACES against the SHOULDER, not the raw value: the shoulder is the identity below its knee, so
     // the mix keeps the darks the ACES toe would crush and takes only the roll-off and colour.

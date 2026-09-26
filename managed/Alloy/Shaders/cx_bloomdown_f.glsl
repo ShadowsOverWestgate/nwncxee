@@ -7,8 +7,6 @@ uniform vec2 uTexel;    // 1 / size of the SOURCE level
 uniform int uFirst;     // 1 = this pass reads the HDR colour: apply the threshold
 uniform vec2 uThresh;   // x = brightness threshold, y = soft-knee width
 uniform float uExposure;    // the resolve's gain: the threshold reads the exposed value
-uniform int uAuto;          // 1 = the resolve applies uAutoGain on top
-#include "cx_autobuf_read.glsl"
 
 vec3 T(vec2 o) { return textureLod(uSrc, vUV + o * uTexel, float(uLod)).rgb; }
 
@@ -38,7 +36,7 @@ void main()
     {
         // Unreal's soft-knee curve: nothing below the threshold blooms at all, which is what keeps
         // the effect off engine-drawn geometry's range and off every ordinary lit surface.
-        float br = max(col.r, max(col.g, col.b)) * uExposure * (uAuto != 0 ? uAutoGain : 1.0);
+        float br = max(col.r, max(col.g, col.b)) * uExposure;
         float soft = clamp(br - uThresh.x + uThresh.y, 0.0, 2.0 * uThresh.y);
         soft = soft * soft / (4.0 * uThresh.y);
         col *= max(soft, br - uThresh.x) / max(br, 1e-6);

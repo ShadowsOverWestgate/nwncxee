@@ -9,11 +9,8 @@ namespace CX.Alloy;
 /// <para>Why the defaults: <c>exposure</c> is scene-referred, one linear gain on the resolved frame (bloom
 /// included) BEFORE the tonemap, so blacks stay put and the shoulder takes what it pushes past 1 -- what
 /// makes <c>tonemap aces</c> usable at all, since the Narkowicz fit sits below NWN's radiance levels
-/// unexposed. <c>auto</c> is histogram eye adaptation: a compute histogram of log2 luminance over the HDR
-/// target gives a log-average, a one-thread dispatch eases a gain toward <c>AutoKey / average</c>, and the
-/// resolve multiplies it in AFTER the fixed exposure; off is bit-exact the fixed image. <c>automin/automax</c>
-/// bound the AUTO factor, not the total; <c>autospeed</c> is the rate (1/s) when the gain RISES (into the
-/// dark), <c>autodown</c> when it falls; settle time is about 3/rate seconds (#491). <c>acesmix</c> mixes the
+/// unexposed. There is no auto exposure: eye adaptation re-graded every area away from the lighting its
+/// builder chose, so the exposure is fixed. <c>acesmix</c> mixes the
 /// ACES curve in LINEAR against the shoulder: 1 is the full fit, whose toe crushes NWN's dim interiors (0.01
 /// linear comes out 2.6x darker, so only specular survives); 0.5 is the live call. <c>dither</c> 1.0 is the
 /// correct value, not taste: one LSB of triangular-PDF noise is exactly what decorrelates the quantisation
@@ -31,9 +28,9 @@ namespace CX.Alloy;
 internal static class Post
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<float> Exposure, Bloom, AutoMin, AutoMax, AutoSpeed, AutoDown, Threshold, Knee,
+    internal static readonly Knob<float> Exposure, Bloom, Threshold, Knee,
                                          AcesMix, TmKnee, Dither, TaaBlend, TaaSharp, ToonBands, ToonInk, ToonEdge;
-    internal static readonly Knob<bool> Auto, Taa, Taau, HalfRes, Stack, FbPost, Motion, ClearViz, SkyRaw;
+    internal static readonly Knob<bool> Taa, Taau, HalfRes, Stack, FbPost, Motion, ClearViz, SkyRaw;
     internal static readonly Knob<int> Tonemap, Viz;
 
     /// <summary>The tonemap operators, index-aligned with <see cref="PostChain"/>'s <c>Off</c> /
@@ -49,9 +46,6 @@ internal static class Post
         G.Section("Exposure");
         Exposure = G.Slider("exposure", "Exposure", 0.25f, 4f, 0.05f, 1f,
                             help: "Overall brightness before tone mapping. 1 is neutral.");
-        Auto = G.Toggle("auto", "Auto exposure", true,
-                        help: "The image adapts like an eye: brighter in the dark, dimmer in the light.",
-                        changed: PostChain.AutoRestart);
         G.Section("Bloom");
         Bloom = G.Slider("bloom", "Bloom", 0f, 0.5f, 0.01f, 0.06f, help: "Glow around bright lights. 0 is off.");
         G.Section("Tone");
@@ -61,11 +55,6 @@ internal static class Post
         G.Section("Anti-aliasing");
         Taa = G.Toggle("taa", "Temporal anti-aliasing", true, help: "Smooths edges over several frames.");
         Taa.Changed = () => { if (Taa.V) TaaStage.Reset(); };
-        G.Section("Exposure");
-        AutoMin = G.Slider("automin", "Auto exposure minimum", 0.01f, 1f, 0.01f, 0.5f, tier: Tier.Advanced);
-        AutoMax = G.Slider("automax", "Auto exposure maximum", 1f, 8f, 0.1f, 2f, tier: Tier.Advanced);
-        AutoSpeed = G.Slider("autospeed", "Adapt to dark speed", 0.1f, 10f, 0.1f, 1f, "/s", Tier.Advanced);
-        AutoDown = G.Slider("autodown", "Adapt to light speed", 0.1f, 10f, 0.1f, 3f, "/s", Tier.Advanced);
         G.Section("Bloom");
         Threshold = G.Slider("threshold", "Bloom threshold", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced);
         Knee = G.Slider("knee", "Bloom knee", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced);

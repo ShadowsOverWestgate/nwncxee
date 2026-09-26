@@ -606,14 +606,9 @@ Renderer itself.
 | key | today | label | kind | range · default | tier | eff | section | help |
 |---|---|---|---|---|---|---|---|---|
 | post.exposure | exposure | Exposure | S | 0.25–4 step 0.05 · 1 | U | L | Exposure | Overall brightness before tone mapping. 1 is neutral. |
-| post.auto | auto | Auto exposure | T | on | U | L | Exposure | The image adapts like an eye: brighter in the dark, dimmer in the light. |
 | post.bloom | bloom | Bloom | S | 0–0.5 step 0.01 · 0.06 | U | L | Bloom | Glow around bright lights. 0 is off. |
 | post.tonemap | tonemap | Tone mapping | D | off / shoulder / aces · aces | U | L | Tone | How bright values above white are compressed. |
 | post.taa | taa | Temporal anti-aliasing | T | on | U | L | Anti-aliasing | Smooths edges over several frames. |
-| post.automin | automin | Auto exposure minimum | S | 0.01–1 · 0.5 | A | L | Exposure | |
-| post.automax | automax | Auto exposure maximum | S | 1–8 · 2 | A | L | Exposure | |
-| post.autospeed | autospeed | Adapt to dark speed | S | 0.1–10 /s · 1 | A | L | Exposure | |
-| post.autodown | autodown | Adapt to light speed | S | 0.1–10 /s · 3 | A | L | Exposure | |
 | post.threshold | threshold | Bloom threshold | S | 0–4 · 1 | A | L | Bloom | |
 | post.knee | knee | Bloom knee | S | 0–1 · 0.5 | A | L | Bloom | |
 | post.acesmix | acesmix | ACES mix | S | 0–1 · 0.5 | A | L | Tone | |
