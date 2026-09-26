@@ -42,13 +42,12 @@ The Plane MCP server (`.mcp.json`, `uvx plane-mcp-server`) points at the same in
 for reads and edits the CLI doesn't cover. It reads `PLANE_API_KEY` from the shell
 environment only, not from `plane.env`.
 
-## Closing a work item from a pull request
+## Closing a work item
 
-A merged pull request closes the work items its **body** names, one per line:
-`Closes CX-12`, `Fixes CX-12`, `Resolves: CX-12`. An org-wide webhook does this for every
-repository, this one included. The title and commit messages close nothing, and a bare
-`Part of CX-12` closes nothing. Do not also `bin/plane close` an item the pull request
-closes.
+Plane knows nothing about pull requests: merging one closes nothing, whatever its body
+says. Close the work item yourself once the change it asked for has landed -- `bin/plane
+close CX-12`, or `bin/plane resolve CX-12` when it carries an answer. Name the item in the
+pull request body (`CX-12`) so the link exists for readers.
 
 ## Old `CX-<n>` and `#<n>` references
 
