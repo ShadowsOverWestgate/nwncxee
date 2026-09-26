@@ -14,7 +14,9 @@ void main()
     float ndlRaw = dot(N, uAreaDir);
     float ndl = clamp(ndlRaw, 0.0, 1.0);
     bool near = vDist <= uShade;
-    float sh = near ? CxSunShadow(vWorld, N, ndl, ndl) : 1.0;
+    // a blade is two-sided: shadow it on its sun-facing side, never skip it as back-facing (lit)
+    float sh = near ? CxSunShadow(vWorld, faceforward(N, -uAreaDir, N), 1.0, abs(dot(N, uAreaDir))) : 1.0;
+    if (uViz == 3) { frag = vec4(vec3(sh), 1.0); return; }
     // a little wrap: a blade is thin, light reaches past its terminator
     vec3 sun = uAreaDiffuse * clamp((ndlRaw + 0.3) / 1.3, 0.0, 1.0) * sh;
     vec3 point = uVLit != 0 ? vLight : ((uLit != 0 && near) ? CxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0));

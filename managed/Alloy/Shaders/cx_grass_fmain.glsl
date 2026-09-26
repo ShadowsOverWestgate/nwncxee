@@ -32,8 +32,10 @@ void main()
     // #355: a far blade is a few pixels; the cascade and cluster taps (the frame's costliest term)
     // cannot be seen on it and are not taken. Divergent, but blades cluster by distance.
     bool near = vDist <= uShade;
-    // the one cascade tap: the direct sun, the transmitted sun and the glint all take it
-    float sh = near ? CxSunShadow(vWorld, N, ndl, ndl) : 1.0;
+    // the one cascade tap: the direct sun, the transmitted sun and the glint all take it -- on the blade's
+    // sun-facing side, since a back-facing normal would read as lit and the transmission would glow in shade
+    float sh = near ? CxSunShadow(vWorld, faceforward(N, -uAreaDir, N), 1.0, abs(dot(N, uAreaDir))) : 1.0;
+    if (uViz == 3) { frag = vec4(vec3(sh), 1.0); return; }
     vec3 sunpoint = uAreaDiffuse * ndl * sh
                   + (uVLit != 0 ? vLight : ((uLit != 0 && near) ? CxClusteredDiffuse(vWorld, N, vDepth) : vec3(0.0)));
     // vanilla (inc_lighting.shd:411/:520): the ground's vertex colour joins the DIFFUSE sum as
