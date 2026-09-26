@@ -10,6 +10,7 @@ flat in uint vSeed;
 #include "cx_featdecl.glsl"
 #include "cx_keyfogdecl.glsl"
 uniform sampler2D uTex;
+uniform int uViz;                       // /alloy viz: 9 = the light arriving, as the lit stage's own 9
 uniform float uShade;                   // #355: past this, no shadow or per-fragment cluster taps
 // #347: what VanillaEnvFs aliases as texUnit6. Declared, never bound and never sampled here --
 // nothing spliced into this stage reads it since #350. It is present so a content file that names

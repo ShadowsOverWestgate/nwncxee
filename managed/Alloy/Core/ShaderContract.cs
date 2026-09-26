@@ -216,7 +216,7 @@ internal static class ShaderContract
             ("uTile", AlloyRenderer.PbTile), ("uGrid", AlloyRenderer.PbGrid), ("uReach", AlloyRenderer.PbReach),
             ("uFalloff", AlloyRenderer.PbFalloff), ("uWrap", AlloyRenderer.PbWrap), ("uZ", AlloyRenderer.PbZ),
             ("uAtten", AlloyRenderer.PbAtten), ("uHot", AlloyRenderer.PbHot), ("uSss", AlloyRenderer.PbSss),
-            ("uWrapN", AlloyRenderer.PbWrapN) };
+            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim) };
         foreach ((string name, int off) in pinned)
         {
             int at = Std140Offset(members, name, out int size);
@@ -499,7 +499,9 @@ internal static class ShaderContract
                   && LightmapBake.BakeFs.Contains("CxPointLight(uBakeLight, uBakeColor, vWorld, N, c, L, att, f2, ndlRaw, ndl)")
                   && LightmapBake.BakeFs.Contains("CxPointDiffuse(c, att, ndlRaw, ndl) * mix(uLocalFloor, 1.0, sh)")
                   && OwnedLitFsMain.Contains("bool baked = CxLightmap(uChart[vDraw], vChart, lmIrr, lmDir);")
-                  && OwnedLitFsMain.Contains("lm *= 1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0);")
+                  && OwnedLitFsMain.Contains("lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0)) * uDayDim;")
+                  // the daylight ratio: a loop or baked term that lost it keeps every lamp at night strength at noon
+                  && AlloyLights.FragmentLib.Contains("return acc * uDayDim;")
                   && OwnedLitFsHead.Contains(LightmapBake.ChartBufDecl) && OwnedLitVs.Contains("vChart = aChart;")
                   && LightmapBake.ChartBufDecl.Contains($"binding = {LightmapBake.BindChart})")
                   // #142: the near-field term, and the guard that makes an unset uHot mean "off". A stage

@@ -37,5 +37,6 @@ layout(std140, binding = 0) uniform CxPass
     vec2 uHot;                // #142: (near-field weight, core size as a fraction of the range)
     vec2 uSss;                // #375: the stock subsurface term as (wrap, energy)
     float uWrapN;             // #143: the distance-INDEPENDENT wrap floor; 0 = off
+    float uDayDim;            // 1 / the daylight ratio: every lamp term's scale, 1 at night and indoors
 };
 #endif

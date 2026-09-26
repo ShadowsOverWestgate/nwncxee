@@ -11,7 +11,8 @@ internal static class Lighting
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<float> Gain, Ambient, Sun, Overbright, Sss, Wrap, WrapNdl, Hot, HotSize, Radius, Falloff,
-                                         ProbeGain, BinReach, Flicker, FlickerSpeed, AmbientDir;
+                                         ProbeGain, BinReach, Flicker, FlickerSpeed, AmbientDir,
+                                         Daylight, DayLow, DayHigh;
     internal static readonly Knob<int> Fadeout, ProbeSize, BinCap;
     internal static readonly Knob<bool> Probe, ProbeAreaWide, ReachFade, HiddenLights, Brdf, SpecAa;
 
@@ -19,6 +20,7 @@ internal static class Lighting
     {
         G = KnobGroup.Declare("light", "Graphics", "Lighting", parent: "alloy.enabled",
             header: "Lighting is the lit stage; off is Renderer off.");
+        G.Status = AlloyLights.DayStatus;
 
         G.Section("Lights");
         Gain = G.Slider("gain", "Point-light brightness", 0f, 4f, 0.05f, 1f,
@@ -33,6 +35,13 @@ internal static class Lighting
         Flicker = G.Slider("flicker", "Fire flicker", 0f, 2f, 0.05f, 1f,
                            help: "Animated lights (torches, braziers) keep a steady reach and flicker in brightness instead of pulsing in size. "
                                + "1 flickers as deep as the pulse was made; 0 is the stock pulse.");
+        Daylight = G.Slider("daylight", "Daylight outshines lamps", 1f, 10f, 0.25f, 3f,
+                            help: "How much brighter full daylight is than a lamp. Lamps and their glow fade as the day brightens "
+                                + "and come back at dusk. 1 is the stock game: a torch looks the same at noon as at midnight.");
+        DayLow = G.Slider("daylow", "Daylight starts at", 0f, 1f, 0.01f, 0.1f, tier: Tier.Advanced,
+                          help: "Sun brightness (linear) below which lamps are at full strength.");
+        DayHigh = G.Slider("dayhigh", "Full daylight at", 0f, 2f, 0.01f, 0.6f, tier: Tier.Advanced,
+                           help: "Sun brightness (linear) at which lamps are dimmed the full Daylight amount.");
         FlickerSpeed = G.Slider("flickerspeed", "Flicker speed", 0.1f, 4f, 0.05f, 1f, tier: Tier.Advanced,
                                 help: "Rate of the flicker; 1 is a fireplace.");
         Sss = G.Slider("sss", "Soft skin lighting", 0f, 1f, 0.05f, 0.25f,

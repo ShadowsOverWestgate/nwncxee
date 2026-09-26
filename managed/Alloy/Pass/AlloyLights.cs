@@ -175,6 +175,34 @@ internal static unsafe class AlloyLights
     /// the point lights. 1.0 = the engine's own captured value, untouched.</summary>
     internal static float AmbientScale => Lighting.Ambient.V;
     internal static float SunScale => Lighting.Sun.V;
+    /// <summary>The daylight ratio's lamp side, <c>uDayDim</c>: 1 / k, where k eases from 1 to <c>light.daylight</c>
+    /// as the area directional's linear luminance crosses <c>daylow</c>..<c>dayhigh</c>. Every lamp term (live,
+    /// baked, halo) takes it, so the sun outweighs lamps by day with no rebake and no reliance on HDR or
+    /// auto-exposure. An interior has no sun: 1.</summary>
+    private static float SunLum
+    {
+        get { Vector3 d = FrameInputs.AreaDiffuse; return 0.2126f * d.X + 0.7152f * d.Y + 0.0722f * d.Z; }
+    }
+
+    /// <summary>The <c>light</c> group's status: the sun luminance <see cref="DayDim"/> reads against
+    /// <c>daylow</c>/<c>dayhigh</c>, and the lamp scale it gives -- the numbers the thresholds are tuned from.</summary>
+    internal static string DayStatus() =>
+        $"sun luminance {SunLum:F3} (daylow {Lighting.DayLow.V:F2}, dayhigh {Lighting.DayHigh.V:F2}) -> lamps x{DayDim:F2}" +
+        (FrameInputs.Interior ? " [interior: never dimmed]" : !FrameInputs.HasAreaDiffuse ? " [no area sun read yet]" : "") +
+        $" | diffuse {FrameInputs.AreaDiffuse.X:F3},{FrameInputs.AreaDiffuse.Y:F3},{FrameInputs.AreaDiffuse.Z:F3}" +
+        $" ambient {FrameInputs.AreaAmbient.X:F3},{FrameInputs.AreaAmbient.Y:F3},{FrameInputs.AreaAmbient.Z:F3}";
+
+    internal static float DayDim
+    {
+        get
+        {
+            if (FrameInputs.Interior || !FrameInputs.HasAreaDiffuse) return 1f;
+            float lum = SunLum;
+            float lo = Lighting.DayLow.V, hi = MathF.Max(Lighting.DayHigh.V, lo + 1e-3f);
+            float t = Math.Clamp((lum - lo) / (hi - lo), 0f, 1f);
+            return 1f / (1f + (Lighting.Daylight.V - 1f) * t * t * (3f - 2f * t));
+        }
+    }
     /// <summary>How much of an OVERBRIGHT light's surplus is kept as CENTRE INTENSITY, on top of the reach
     /// the engine already spent it on. Applied by the feed as <c>1 + (maxChannel - 1) * this</c>.
     /// <para>Overbright IS the carried-light discriminator and needs no other: module-placed lights are
@@ -464,6 +492,7 @@ internal static unsafe class AlloyLights
         *(Vector2*)(b + AlloyRenderer.PbHot) = new Vector2(_hot, MathF.Max(_hotSize, 1e-4f));
         *(Vector2*)(b + AlloyRenderer.PbSss) = new Vector2(_sss, SssOn ? SssK(_sss) : 0f);
         *(float*)(b + AlloyRenderer.PbWrapN) = _wrapN;
+        *(float*)(b + AlloyRenderer.PbDayDim) = DayDim;
     }
 
     /// <summary>#139/#326: the local-cube receiver's three softness terms -- PCF radius in texels, the screen

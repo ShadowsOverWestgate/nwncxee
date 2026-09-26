@@ -111,7 +111,7 @@ internal static unsafe class Halos
         Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
         Gl.Uniform1i(_locViz, Effects.HaloViz.V);
         Gl.Uniform1i(_locDepth, (int)SceneDepth.Unit);
-        Gl.Uniform1f(_locGain, Effects.HaloGain.V);
+        Gl.Uniform1f(_locGain, Effects.HaloGain.V * AlloyLights.DayDim);
         new PassState(depth: false, depthWrite: false, blend: true,
                       blendSrc: AlloyRenderer.GlOne, blendDst: AlloyRenderer.GlOne).Apply();
         Gl.BindVertexArray(EmptyVao());

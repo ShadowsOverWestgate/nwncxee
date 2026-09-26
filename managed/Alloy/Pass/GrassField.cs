@@ -232,7 +232,7 @@ internal static unsafe partial class GrassField
     private struct Loc
     {
         public int Look, Segments, Width;
-        public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
+        public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Viz, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
         public int PushTex, PushGain, PushWindow;
         public int SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex;   // CX-43: the rest of the receiver rides CxPass
     }
@@ -1075,6 +1075,7 @@ internal static unsafe partial class GrassField
         Gl.UseProgram(prog);
         SharedUniforms(in loc, in feat, vp, eye, nearDist, farDist, false, pw, viewport, vlit: Grass.VLight.V && lightingOn);
         Gl.Uniform1f(loc.Shade, Grass.Shade.V);
+        Gl.Uniform1i(loc.Viz, AlloyRenderer._lightViz);
         Gl.Uniform1i(loc.Lit, lightingOn ? 1 : 0);
         Gl.Uniform1f(loc.RootAo, Grass.RootAo.V);
         Gl.Uniform1f(loc.GroundTint, Grass.GTint.V);
@@ -1669,7 +1670,7 @@ internal static unsafe partial class GrassField
         {
             Vp = GlProgram.Loc(prog, "uVP"), Eye = GlProgram.Loc(prog, "uEyePos"), Frame = GlProgram.Loc(prog, "uFrame"),
             Fade = GlProgram.Loc(prog, "uFade"), Tex = GlProgram.Loc(prog, "uTex"),
-            Lod = GlProgram.Loc(prog, "uLod"), Shade = GlProgram.Loc(prog, "uShade"),
+            Lod = GlProgram.Loc(prog, "uLod"), Shade = GlProgram.Loc(prog, "uShade"), Viz = GlProgram.Loc(prog, "uViz"),
             Look = GlProgram.Loc(prog, "uLook"), Segments = GlProgram.Loc(prog, "uSegments"), Width = GlProgram.Loc(prog, "uWidth"),
             Tuft = GlProgram.Loc(prog, "uTuft"), VLit = GlProgram.Loc(prog, "uVLit"), Cast = GlProgram.Loc(prog, "uCast"), CastWidth = GlProgram.Loc(prog, "uCastWidth"), Snow = GlProgram.Loc(prog, "uSnow"),
             RootAo = GlProgram.Loc(prog, "uRootAo"), GroundTint = GlProgram.Loc(prog, "uGroundTint"), Ground = GlProgram.Loc(prog, "uGround"), GroundOn = GlProgram.Loc(prog, "uGroundOn"), GroundViz = GlProgram.Loc(prog, "uGroundViz"), SoftEdge = GlProgram.Loc(prog, "uSoftEdge"),

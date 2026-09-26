@@ -188,7 +188,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>CX-43: the <c>CxPass</c> block's binding point, <c>layout(std140, binding = 0)</c> in
     /// <c>cx_pass.glsl</c>. No other Alloy block uses the uniform-buffer namespace.</summary>
     internal const uint PassBinding = 0;
-    /// <summary>The block's std140 size, 3588 by glslang reflection, rounded to a vec4.</summary>
+    /// <summary>The block's std140 size, 3592 by glslang reflection, rounded to a vec4.</summary>
     internal const int PassBytes = 3600;
     /// <summary>Member byte offsets in <c>CxPass</c>, read off glslang's std140 reflection of
     /// <c>cx_pass.glsl</c>. The declaration is pinned by <see cref="ShaderContract.SelfCheck"/>; reorder a
@@ -198,7 +198,7 @@ public sealed unsafe partial class AlloyRenderer
                        PbSunFocus = 3424, PbSunCascades = 3436, PbAmbient = 3440, PbLocalFloor = 3452, PbDiffuse = 3456,
                        PbProbeMips = 3468, PbDir = 3472, PbProbeGain = 3484, PbLocalPlane = 3488, PbSceneEnv = 3496,
                        PbTile = 3504, PbGrid = 3520, PbReach = 3532, PbFalloff = 3536, PbWrap = 3548, PbZ = 3552,
-                       PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584;
+                       PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584, PbDayDim = 3588;
     /// <summary>The block as staged and as last sent. Native, allocated once, so a refill allocates nothing.</summary>
     private static byte* _passStage, _passSent;
     private static uint _passBuf;

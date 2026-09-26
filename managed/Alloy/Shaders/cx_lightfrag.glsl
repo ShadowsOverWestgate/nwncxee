@@ -384,7 +384,9 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     // hardware tap alone -- a highlight has no penumbra worth a blocker search
     if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)
         spec -= mSpc * (1.0 - mix(1.0, CxLocalShadowQ(mSlot, worldPos, N, mNdl, onMover, viewDepth, false), dfade));
-    return acc;
+    // the daylight ratio; lmSub stays in the undimmed units the caller's baked term is compared in
+    spec *= uDayDim;
+    return acc * uDayDim;
 }
 // The pre-#674 signature: an unbaked receiver, every light live.
 vec3 CxClusteredLight(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,

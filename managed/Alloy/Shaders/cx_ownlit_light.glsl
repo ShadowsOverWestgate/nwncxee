@@ -57,7 +57,7 @@
     if (baked)
     {
         lm = CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm));
-        lm *= 1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0);
+        lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0)) * uDayDim;
         point += lm;
         // a glossy receiver took each static light's own lobe in the loop instead (light.hidden)
         if (!CxGlossy(rough)) pointSpec += lm * CxLoopSpec(CxSpecLobe(N, V, lmDir, rough, spec), N, V, lmDir);
