@@ -17,13 +17,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # No path filter on the workflow: a workflow that never starts never reports, and a required check then
+  # blocks the merge. This job decides instead; a skipped `ci` still reports. Anything not provably prose
+  # builds, so a new kind of file costs a build, never a silent skip. third_party/ is excluded because
+  # packaging/licenses.sh reads its markdown.
+  affected:
+    runs-on: nix-docker
+    timeout-minutes: 2
+    outputs:
+      build: ${{ steps.map.outputs.build }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Anything besides prose?
+        id: map
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          files="$(git diff --name-only "$BASE_SHA" HEAD)"
+          code="$(grep -Ev '\.md$|^docs/|^\.claude/|^\.vscode/|^LICENSE$' <<<"$files";
+            grep -E '^third_party/.*\.md$' <<<"$files")" || true
+          [ -n "$files" ] || code="(empty diff: building to be safe)"
+          printf 'needs a build:\n%s\n' "${code:-(nothing)}"
+          echo "build=$([ -n "$code" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
   ci:
+    needs: affected
+    if: needs.affected.outputs.build == 'true'
     runs-on: nix-docker
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           submodules: recursive # funchook pulls diStorm3 as a nested submodule
+
+      # The built libopenal.so.1 (see release.yml): the OpenAL Soft compile runs once per pin, not per PR.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with: { path: build/openal, key: "openal-nix-${{ hashFiles('tools/deps.py') }}-v1" }
+
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with: { path: ~/.cache/cx-deps, key: "cx-deps-${{ hashFiles('tools/deps.py') }}" }
 
       - name: Build + load smoke
         run: |
@@ -34,7 +67,7 @@ jobs:
           PC=$(echo "$P" | grep -- '-dev$' | sed 's|$|/lib/pkgconfig|' | paste -sd:)
           nix shell nixpkgs#dotnet-sdk_10 nixpkgs#cmake nixpkgs#gnumake nixpkgs#clang \
             nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#python3 nixpkgs#pkg-config \
-            --command env PKG_CONFIG_PATH="$PC" CMAKE_PREFIX_PATH="$(echo "$P" | paste -sd:)" bash -c '
+            --command env JOBS=2 PKG_CONFIG_PATH="$PC" CMAKE_PREFIX_PATH="$(echo "$P" | paste -sd:)" bash -c '
               set -euo pipefail
               ./build.sh
               ./run-demo.sh

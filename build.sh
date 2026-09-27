@@ -2,6 +2,8 @@
 set -e
 cd "$(dirname "$0")"
 mkdir -p build
+# Bare `-j` is unbounded under make: OpenAL Soft then forks every TU at once and OOMs the host.
+JOBS=${JOBS:-$(nproc)}
 
 if [ ! -f build/libfunchook.a ] || [ ! -f build/libdistorm.a ]; then
   echo ">> building funchook (once)..."
@@ -9,7 +11,7 @@ if [ ! -f build/libfunchook.a ] || [ ! -f build/libdistorm.a ]; then
   cmake -S third_party/funchook -B build/funchook \
     -DFUNCHOOK_BUILD_SHARED=OFF -DFUNCHOOK_BUILD_STATIC=ON -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DFUNCHOOK_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release >/dev/null
-  cmake --build build/funchook -j >/dev/null
+  cmake --build build/funchook -j"$JOBS" >/dev/null
   cp -a build/funchook/libfunchook.a build/funchook/libdistorm.a build/
 fi
 
@@ -79,7 +81,7 @@ if [ ! -f build/openal/libopenal.so.1 ]; then
     -DALSOFT_INSTALL=OFF -DALSOFT_ENABLE_MODULES=OFF -DALSOFT_UPDATE_BUILD_VERSION=OFF \
     -DALSOFT_REQUIRE_PIPEWIRE=ON -DALSOFT_REQUIRE_PULSEAUDIO=ON -DALSOFT_REQUIRE_ALSA=ON \
     -DALSOFT_STATIC_STDCXX=ON -DALSOFT_STATIC_LIBGCC=ON > build/openal-build.log 2>&1 \
-    && cmake --build build/openal-build -j >> build/openal-build.log 2>&1 \
+    && cmake --build build/openal-build -j"$JOBS" >> build/openal-build.log 2>&1 \
     || { echo "!! OpenAL Soft build failed:"; tail -20 build/openal-build.log; exit 1; }
   mkdir -p build/openal && cp -L build/openal-build/libopenal.so.1 build/openal/libopenal.so.1
 fi

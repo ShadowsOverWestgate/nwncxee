@@ -56,7 +56,7 @@ if [ ! -f build/funchook.lib ] || [ ! -f build/distorm.lib ]; then
   cmake -S third_party/funchook -B build/funchook-win -DCMAKE_TOOLCHAIN_FILE="$PWD/native/win-toolchain.cmake" \
     -DWINSDK="$WABS" -DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DFUNCHOOK_BUILD_SHARED=OFF -DFUNCHOOK_BUILD_STATIC=ON \
     -DFUNCHOOK_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release >/dev/null
-  cmake --build build/funchook-win -j >/dev/null
+  cmake --build build/funchook-win -j"${JOBS:-$(nproc)}" >/dev/null
   cp build/funchook-win/funchook.lib build/funchook-win/distorm.lib build/
 fi
 
