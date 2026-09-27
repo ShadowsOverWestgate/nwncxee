@@ -136,21 +136,39 @@ public static class FrameZones
         Cull,
         /// <summary>Nested in <see cref="Ai"/> (reported for shape, not subtracted): the engine texture
         /// upload funnel -- the engine's own build plus Alloy's owned copy and BCn transcode. First-sight
-        /// work that lands inside the engine's step, which is why Ai read high on hitch frames.</summary>
+        /// work that lands inside the engine's step, which is why Ai read high on hitch frames.
+        /// <para>CX-54 step 0: this is the UPLOAD term of the read / decode / upload split -- the two others
+        /// are <see cref="TexRead"/> and <see cref="TexDecode"/>, and no second bracket spans the same
+        /// call.</para></summary>
         Tex,
         /// <summary>Nested in <see cref="Ai"/>: <c>CExoResMan::Demand</c>, the engine's on-demand resource
         /// load (models, textures, animations on first sight). Outermost call only.</summary>
         Demand,
+        /// <summary>CX-52 step 0: <see cref="Demand"/> split by the outermost resource's restype -- texture
+        /// read vs model parse. <c>DemOther</c> is every restype not named.</summary>
+        DemDds, DemTga, DemPlt, DemMdl, DemOther,
+        /// <summary>CX-52 step 0: <c>AurGetImageWrapper</c>, one texture's read + decode. Minus the texture
+        /// demands above it is the decode alone.</summary>
+        Image,
+        /// <summary>CX-54 step 0: a texture build's READ -- the bytes off disk, hak or NWSync with nothing
+        /// decoded. Two brackets, neither inside the other: <c>CExoResMan::Demand</c> on a DDS/TGA/PLT
+        /// resource minus the <see cref="TexDecode"/> it contains (a TGA is decoded inside its own demand),
+        /// and the engine's compressed-image getter under <see cref="Alloy.DdsReader"/>.</summary>
+        TexRead,
+        /// <summary>CX-54 step 0: a texture build's DECODE -- <c>CResTGA::OnResourceServiced</c>, the PLT
+        /// composite, the DDS re-parse and pad, and the forced-uncompressed BCn unpack. Alloy's and the
+        /// engine's alike, whichever ran.</summary>
+        TexDecode,
         /// <summary>Nested in <see cref="Ai"/>, world scene only: <c>ManageSceneBSP</c> and
         /// <c>Scene::AddPartsToDrawBuckets</c> -- the engine's own render preparation for a 3D frame Alloy
         /// draws. Their sum against Ai is the ceiling on bypassing it (engine-scene-walk-bypass.md).</summary>
         Bsp, Buckets,
-        /// <summary>The BCn transcode pipeline's main-thread work (readback issue, PBO copy-out, compressed
-        /// upload; the encode itself is on its own thread). Runs on the Enroll slot inside Ai and is subtracted
-        /// from BOTH, so it reads on its own.</summary>
+        /// <summary>The BCn transcode's main-thread work: the compressed uploads (mips and encode are on their own
+        /// thread, fed straight from the upload funnel). Runs on the Enroll slot inside Ai and is subtracted from
+        /// BOTH, so it reads on its own.</summary>
         Bcn,
-        /// <summary>Inside <see cref="Bcn"/>: the readback issue, the PBO copy-out, the compressed upload.</summary>
-        BcnRead, BcnMap, BcnUp,
+        /// <summary>Inside <see cref="Bcn"/>: the compressed uploads alone.</summary>
+        BcnUp,
         /// <summary>#386: the prefetch drip's engine builds. On the Enroll slot inside Ai, subtracted from both.</summary>
         Prebuild,
         /// <summary>#674: the lightmap bake's frame step (adopt, pack, the light steps, the readback), inside
@@ -203,6 +221,8 @@ public static class FrameZones
         TexUpload,
         /// <summary>Outermost engine resource demands (<see cref="Zone.Demand"/> is their time).</summary>
         Demands,
+        /// <summary>CX-52 step 0: of <see cref="Demands"/>, the DDS / TGA / PLT / MDL ones.</summary>
+        DdsDemands, TgaDemands, PltDemands, MdlDemands,
         /// <summary>Textures transcoded by the drip (<see cref="Zone.Bcn"/> is their time).</summary>
         Transcode,
         /// <summary>ADR 0023: engine texture builds answered from the cache (no read, decode or upload).</summary>

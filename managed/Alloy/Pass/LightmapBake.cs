@@ -46,7 +46,12 @@ internal static unsafe partial class LightmapBake
     /// few a frame, and a page finished per trickle is a finish pass and a readback per frame.</summary>
     private const int SettleFrames = 30, HoldSettleFrames = 4;
     internal const uint BindChart = 6;
-    internal const uint UnitA = 20, UnitB = 21;
+    internal const uint UnitA = 20, UnitB = 21, UnitC = 22;
+    /// <summary>Bytes per page texel over the three planes: A (RG11B10F irradiance), B (RGBA8 direction) and
+    /// CX-56's C (RGBA8 mover shares) -- the readback, the cache blobs and every upload are sized by it.</summary>
+    internal const int TexelBytes = 12;
+    /// <summary>One resident page over its three planes, in MiB.</summary>
+    private const int PageMiB = (int)((long)PageSize * PageSize * TexelBytes >> 20);
     private const int MaxRects = 1 << 16;
     private const int LogCap = 6;
 
@@ -55,12 +60,16 @@ internal static unsafe partial class LightmapBake
 
     private static ExtenderLog? _log;
     private static readonly StandDown _down = new("LightmapBake");
-    internal static bool Enabled => Lightmap.G.Master is { V: true } && !_down.Failed;
+    /// <summary>CX-56: the <c>LoadArea</c> chain did not take, so nothing can ever close the static set. Not a
+    /// <see cref="StandDown"/>, which <c>ContextLost</c> forgets: a missing symbol does not come back.</summary>
+    private static bool _noLoadEdge;
+    internal static bool Enabled => Lightmap.G.Master is { V: true } && !_down.Failed && !_noLoadEdge;
 
     /// <summary>Per ownership slot: the rect it reads, -1 = never seen (enrol on sight), -2 = seen and refused.</summary>
     private static readonly int[] _slotRect = new int[AlloyRenderer.MaxOwned];
     /// <summary>The CxChartBuf mirror, one vec4 per slot: (page, u0, v0, s), -1 page = unbaked.</summary>
-    private const int RecFloats = 4;
+    /// <summary>Per slot: (page, u0, v0, s), then CX-56's pick -- the four set indices page C's bytes belong to (-1 = none).</summary>
+    private const int RecFloats = 8;
     private static readonly float[] _rec = new float[AlloyRenderer.MaxOwned * RecFloats];
     private static int _dirtyLo = int.MaxValue, _dirtyHi = -1;
     private static uint _bufChart;
@@ -86,6 +95,16 @@ internal static unsafe partial class LightmapBake
         /// <summary>#679: a baseline rect whose readers moved to a finer one; it keeps its page space as their
         /// fallback (an evicted fine rect hands them back) and is no orphan to the repack scans.</summary>
         internal bool Refined;
+        /// <summary>CX-56: this rect came off the area plan, not from an enrolment. It holds its page space
+        /// until a slot claims its key; one nobody claims is counted at the release.</summary>
+        internal bool Adopted;
+        /// <summary>CX-56: an adopted rect a slot has claimed at least once -- the silent hold's progress, counted once.</summary>
+        internal bool Claimed;
+        /// <summary>CX-56: its texels are in a page blob laid out as THIS packing places them -- baked into one
+        /// this visit read back, or landed off a union of the adopted plan. A rect that landed from the
+        /// per-rect index instead is not: that blob holds another packing, so the area plan cannot upload it
+        /// whole and <see cref="AreaSnapRegion"/> re-reads the page it sits on.</summary>
+        internal bool Unioned;
     }
     private static Rect[] _rects = new Rect[1024];
     /// <summary>#679: entries of evicted rects, reused before the table grows (a walk evicts thousands).</summary>
@@ -131,7 +150,7 @@ internal static unsafe partial class LightmapBake
     private static int _layers;
     private static int _cap;
 
-    private static uint _texA, _texB, _scrA, _scrB, _scrZ, _fbo, _cube, _pbo;
+    private static uint _texA, _texB, _texC, _scrA, _scrB, _scrC, _scrZ, _fbo, _cube, _pbo;
     /// <summary>Depth steps the scratch depth holds: light l of a page writes (l + 1) / this under GREATER,
     /// so the pushed triangles (<see cref="BakeGs"/>) that overlap along a shared edge add a light ONCE -- the
     /// second fragment on the texel fails the test. The bake stays additive with no clear per light.</summary>
@@ -139,25 +158,30 @@ internal static unsafe partial class LightmapBake
     private static int _cubeSize;
     private static uint _progBake, _progFinish;
     private static int _bDepth;
-    private static int _bSlot, _bRect, _bLight, _bColor, _bMode, _bCubeTex, _bDynTex, _bCubeCount, _bSoftWorld;
-    private static int _fA, _fB;
+    private static int _bSlot, _bRect, _bLight, _bColor, _bMode, _bCubeTex, _bDynTex, _bCubeCount, _bSoftWorld, _bChan;
+    private static int _fA, _fB, _fC;
     private static bool _built;
 
     /// <summary>The bake in flight: one page, its rect list and light list, a cursor over the lights.</summary>
     private static int _bakePage = -1, _bakeLight, _bakeSteps;
     private static readonly List<int> _bakeRects = new();
     private static readonly List<int> _bakeLights = new();
+    /// <summary>CX-56: each page rect's pick, parallel to <see cref="_bakeRects"/>: which channel a light step writes.</summary>
+    private static readonly List<Pick> _bakePicks = new();
     private static readonly List<int> _pendingRead = new();
     /// <summary>The readback's page rectangle: the union of the rects that landed, which is what the finish
     /// pass touched and what the PBO holds (one ReadPixels pair, not one per rect).</summary>
     private static int _ux0, _uy0, _uw, _uh;
+    /// <summary>The page the readback in flight came off: CX-56's blob header carries it, so the area plan can
+    /// upload the union whole. Captured with the rectangle -- the bake has moved on by the collect.</summary>
+    private static int _uPage;
     private static IntPtr _fence;
     private static int _pboBytes;
     /// <summary>The readback's host copy, handed to the cache thread by slices; re-used once the thread has
     /// written every slice (<see cref="BakeCache.Outstanding"/>), replaced -- rarely -- while it has not.</summary>
     /// <summary>Union readback buffers, a small ring: one is handed to the cache thread per landing and comes
     /// back when its last file is written (<see cref="BakeCache.Busy"/>). A landing with no free buffer goes
-    /// uncached rather than allocate: a fresh 128 MiB buffer per landing was 7.7 GB of garbage a period and a
+    /// uncached rather than allocate: a fresh page-sized buffer per landing was 7.7 GB of garbage a period and a
     /// swap storm (run 6).</summary>
     private const int ReadBufs = 4;
     private static readonly byte[][] _readBufs = new byte[ReadBufs][];
@@ -210,6 +234,7 @@ internal static unsafe partial class LightmapBake
             Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindChart, _bufChart);
             Gl.ActiveTexture(Gl.TEXTURE0 + UnitA); Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _texA);
             Gl.ActiveTexture(Gl.TEXTURE0 + UnitB); Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _texB);
+            Gl.ActiveTexture(Gl.TEXTURE0 + UnitC); Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, _texC);
             Gl.ActiveTexture(Gl.TEXTURE0);
         }
         Gl.Uniform1i(locPages, live ? _layers : 0);
@@ -227,7 +252,8 @@ internal static unsafe partial class LightmapBake
         else if (_slotRect[i] == -2) _drewRefused++;
         else if (_rects[_slotRect[i]].State == RState.Landed) _drewLandedUnbaked++;
         else _drewPending++;
-        if (_slotRect[i] != -1 || !Enabled || SetHash == 0) return;
+        // a plan answer still due: a rect minted now refuses the whole plan (the sweep picks the slot up after)
+        if (_slotRect[i] != -1 || !Enabled || SetHash == 0 || AreaAwaited) return;
         Enrol(i, vao, item, Baseline);
     }
 
@@ -256,6 +282,8 @@ internal static unsafe partial class LightmapBake
             (_owners[ri] ??= new List<int>(2)).Add(i);
             if (_rects[ri].Slot < 0) _rects[ri].Slot = i;
             if (_rects[ri].State == RState.Landed) WriteRecord(i, ri);
+            if (_rects[ri].Adopted && !_rects[ri].Claimed) Claimed(ri);
+            Enrolled(minted: false);   // CX-54: a standing rect is not an arrival -- see Enrolled
             return;
         }
         if (_free.Count == 0 && _rectN == MaxRects) { _slotRect[i] = -2; _refused++; return; }
@@ -265,7 +293,8 @@ internal static unsafe partial class LightmapBake
         _owners[ri]!.Add(i);
         _byKey[key] = ri;
         _slotRect[i] = ri;
-        _toPack.Add(ri); _newAt = _frame; Arrived();
+        _toPack.Add(ri); _newAt = _frame; if (_areaAdopted) _areaNew++;
+        Enrolled(minted: true);
     }
 
     /// <summary>A slot was vacated (or the table wiped): its record reads unbaked from the next upload.</summary>
@@ -275,7 +304,7 @@ internal static unsafe partial class LightmapBake
         int ri = _slotRect[i];
         _slotRect[i] = -1;
         if (ri >= 0) Disown(ri, i);
-        if (_rec[i * RecFloats] >= 0f) SetRecord(i, -1f, 0f, 0f, 0f);
+        if (_rec[i * RecFloats] >= 0f) SetRecord(i, -1f, 0f, 0f, 0f, Pick.None);
     }
 
     /// <summary>Retire a rect that cannot be drawn: its readers forget it and enrol again next frame.</summary>
@@ -376,7 +405,7 @@ internal static unsafe partial class LightmapBake
                     int i = o[k];
                     _slotRect[i] = -1;
                     if (AlloyRenderer.SlotPlacement(i, out int vao, out int item, out _)) Enrol(i, vao, item, Baseline);
-                    if (_slotRect[i] < 0 || _rects[_slotRect[i]].State != RState.Landed) SetRecord(i, -1f, 0f, 0f, 0f);   // no landed baseline: the record named the dropped page
+                    if (_slotRect[i] < 0 || _rects[_slotRect[i]].State != RState.Landed) SetRecord(i, -1f, 0f, 0f, 0f, Pick.None);   // no landed baseline: the record named the dropped page
                 }
                 o.Clear();
             }
@@ -424,6 +453,7 @@ internal static unsafe partial class LightmapBake
         _rectN = 0; _byKey.Clear(); _toPack.Clear(); _free.Clear(); _pending = 0; _placedArea = 0;
         Array.Clear(_shelfY); Array.Clear(_shelfH); Array.Clear(_shelfX); Array.Clear(_pageClass); _packPage = 0; _finePage = 0; _refineCursor = 0;
         AbortBake();
+        AreaSnapAbandon();   // the pages go here: a plan waiting on one more readback is written as it stands
         if (Gl.DeleteTextures != null) DropPages();
         if (_fence != IntPtr.Zero) { _uncached += _pendingRead.Count; if (Gl.DeleteSync != null) Gl.DeleteSync(_fence); _fence = IntPtr.Zero; }
         _pendingRead.Clear();
@@ -471,10 +501,11 @@ internal static unsafe partial class LightmapBake
         return h;
     }
 
-    private static void SetRecord(int i, float page, float x, float y, float s)
+    private static void SetRecord(int i, float page, float x, float y, float s, Pick pick)
     {
         int o = i * RecFloats;
         _rec[o] = page; _rec[o + 1] = x; _rec[o + 2] = y; _rec[o + 3] = s;
+        _rec[o + 4] = pick.L0; _rec[o + 5] = pick.L1; _rec[o + 6] = pick.L2; _rec[o + 7] = pick.L3;
         if (i < _dirtyLo) _dirtyLo = i;
         if (i > _dirtyHi) _dirtyHi = i;
     }
@@ -482,7 +513,22 @@ internal static unsafe partial class LightmapBake
     private static void WriteRecord(int i, int ri)
     {
         ref Rect r = ref _rects[ri];
-        SetRecord(i, r.Page, r.X, r.Y, r.S);
+        SetRecord(i, r.Page, r.X, r.Y, r.S, PickOf(r.C, r.R));
+    }
+
+    /// <summary>CX-56: a rect's four mover lights (<see cref="PickLights"/>), by value.</summary>
+    private struct Pick
+    {
+        internal int L0, L1, L2, L3;
+        internal static readonly Pick None = new() { L0 = -1, L1 = -1, L2 = -1, L3 = -1 };
+        internal readonly int ChannelOf(int l) => l == L0 ? 0 : l == L1 ? 1 : l == L2 ? 2 : l == L3 ? 3 : Channels;
+    }
+
+    private static Pick PickOf(Vector3 c, float r)
+    {
+        Span<int> p = stackalloc int[Channels];
+        PickLights(c, r, p);
+        return new Pick { L0 = p[0], L1 = p[1], L2 = p[2], L3 = p[3] };
     }
 
     /// <summary>A rect landed: every slot reading it takes the page.</summary>
@@ -511,8 +557,8 @@ internal static unsafe partial class LightmapBake
         _dirtyLo = int.MaxValue; _dirtyHi = -1;
     }
 
-    /// <summary>The page cap: <c>lightmap.pages</c>, or 0 = a quarter of the card's memory in 128 MiB pages
-    /// (8 GiB = 16, 16 GiB = 32), 1..<see cref="MaxPages"/>; 2 when the device answers no memory query (#668).
+    /// <summary>The page cap: <c>lightmap.pages</c>, or 0 = a quarter of the card's memory in <see cref="PageMiB"/> pages
+    /// (8 GiB = 10, 16 GiB = 21), 1..<see cref="MaxPages"/>; 2 when the device answers no memory query (#668).
     /// Pages are allocated as rects need them, so the cap costs nothing an area does not use.</summary>
     private static int PageCap()
     {
@@ -520,7 +566,7 @@ internal static unsafe partial class LightmapBake
         if (k > 0) return Math.Min(k, MaxPages);
         long mib = AlloyRenderer.VramTotalMib > 0 ? AlloyRenderer.VramTotalMib : AlloyRenderer.VramFreeMib;
         if (mib <= 0) return 2;
-        return (int)Math.Clamp(mib / 4 / 128, 1, MaxPages);
+        return (int)Math.Clamp(mib / 4 / PageMiB, 1, MaxPages);
     }
 
     /// <summary>Shelf-pack the new rects, tallest first (#668: so the cap drops the smallest last), once no
@@ -535,6 +581,7 @@ internal static unsafe partial class LightmapBake
         int need = (int)Math.Min(_cap, (_placedArea + demand + PagePackTexels - 1) / PagePackTexels);
         if (need > _layers && !Grow(need)) return;
         _toPack.Sort((a, b) => _rects[b].H.CompareTo(_rects[a].H));
+        int placedN = 0;
         for (int k = 0; k < _toPack.Count; k++)
         {
             int ri = _toPack[k];
@@ -561,9 +608,10 @@ internal static unsafe partial class LightmapBake
             placed:
             _repacked = false;
             _placedArea += Area(r);
-            r.State = RState.Probing; _pending++;
+            r.State = RState.Probing; _pending++; placedN++;
             _cache.Probe(ri, r.Key, r.W, r.H);
         }
+        StampPack(placedN);
         _toPack.Clear();
     }
 
@@ -654,13 +702,16 @@ internal static unsafe partial class LightmapBake
     {
         if (!Ensure()) return;
         _frame = frame;
+        _cap = PageCap();
+        InstallAreaCache();   // CX-56: before the sweep -- the plan's set is what arms Enrol at all
         if (_rekeyPending) Rekey();
         Sweep();
         RefineSweep();
-        _cap = PageCap();
         Adopt();
+        AreaUpload();
         Pack();
         CollectReadback();
+        AreaSnap();
         int steps = Hold ? HoldLightsPerFrame : BackgroundLightsPerFrame;
         for (int k = 0; k < steps; k++) if (!Step()) break;
         UploadRecords();
@@ -673,7 +724,7 @@ internal static unsafe partial class LightmapBake
     private static int _sweepAt;
     private static void Sweep()
     {
-        if (SetHash == 0) return;
+        if (SetHash == 0 || AreaAwaited) return;
         int per = Hold ? HoldSweepPerFrame : SweepPerFrame;
         for (int k = 0; k < per; k++)
         {
@@ -682,13 +733,14 @@ internal static unsafe partial class LightmapBake
             if (m.M44 == 0f) continue;   // never staged yet: the record's matrix is unwritten, the staging loop enrols it
             Enrol(i, vao, item);
         }
+        StampSweep(per);
     }
 
     /// <summary>The static set moved under a page in flight: its light indices name other lights now. The
     /// page's rects stay queued and start over against the new set (or re-key away from it).</summary>
     private static void AbortBake()
     {
-        _bakePage = -1; _bakeRects.Clear(); _bakeLights.Clear();
+        _bakePage = -1; _bakeRects.Clear(); _bakeLights.Clear(); _bakePicks.Clear();
     }
 
     /// <summary>One (page, light) step of the bake, or the page's finish when its lights are done. False =
@@ -721,7 +773,7 @@ internal static unsafe partial class LightmapBake
         for (int ri = 0; ri < _rectN; ri++)
             if (_rects[ri].State == RState.Queued && _rects[ri].Page < page) page = _rects[ri].Page;
         if (page == int.MaxValue) return false;
-        _bakeRects.Clear(); _bakeLights.Clear();
+        _bakeRects.Clear(); _bakeLights.Clear(); _bakePicks.Clear();
         for (int ri = 0; ri < _rectN; ri++)
         {
             if (_rects[ri].State != RState.Queued || _rects[ri].Page != page) continue;
@@ -729,7 +781,7 @@ internal static unsafe partial class LightmapBake
             // cannot draw, so it is dropped and its readers re-enrol into a fresh one rather than land black
             ref Rect r = ref _rects[ri];
             if (r.Slot < 0 || !MeshChart.Range(r.Vao, r.Item, 0, out _, out _, out _, out _)) { Drop(ri); continue; }
-            _bakeRects.Add(ri);
+            _bakeRects.Add(ri); _bakePicks.Add(PickOf(r.C, r.R));
         }
         if (_bakeRects.Count == 0) return false;
         for (int l = 0; l < _setN; l++)
@@ -740,10 +792,10 @@ internal static unsafe partial class LightmapBake
             }
         _bakePage = page; _bakeLight = 0;
         _pageT0 = Stopwatch.GetTimestamp();
-        // the scratch pair: A' = sum rgb + coverage alpha, B' = sum luminance * direction
+        // the scratch planes: A' = sum rgb + coverage alpha, B' = sum luminance * direction, C' = per channel the mover's luminance
         BindScratch();
         float* zero = stackalloc float[4] { 0f, 0f, 0f, 0f };
-        Gl.ClearBufferfv(Gl.COLOR, 0, zero); Gl.ClearBufferfv(Gl.COLOR, 1, zero);
+        Gl.ClearBufferfv(Gl.COLOR, 0, zero); Gl.ClearBufferfv(Gl.COLOR, 1, zero); Gl.ClearBufferfv(Gl.COLOR, 2, zero);
         Gl.DepthMask(1); Gl.ClearBufferfv(Gl.DEPTH, 0, zero); Gl.DepthMask(0);
         Gl.UseProgram(_progBake);
         Gl.Uniform1i(_bMode, 0);
@@ -754,7 +806,17 @@ internal static unsafe partial class LightmapBake
         Gl.BindVertexArray(0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         if (_logLeft > 0) LogNearest(page);
-        if (_logLeft > 0) _log?.Info($"LightmapBake: page {page} bake begins -- {_bakeRects.Count} rects, {_bakeLights.Count} static lights"
+        int crowded = 0;
+        if (_logLeft > 0)
+            for (int k = 0; k < _bakeRects.Count; k++)
+            {
+                ref Rect r = ref _rects[_bakeRects[k]];
+                int n = 0;
+                for (int l = 0; l < _setN && n <= Channels; l++) if (Touches(l, r.C, r.R)) n++;
+                if (n > Channels) crowded++;
+            }
+        if (_logLeft > 0) _log?.Info($"LightmapBake: page {page} bake begins -- {_bakeRects.Count} rects, {_bakeLights.Count} static lights, "
+                                     + $"{crowded} rects touched by more than {Channels} (their weaker lights' creature shadows are the live estimate)"
                                      + (_knownLogged ? "" : "; known differences on baked surfaces: no static specular beyond the one directional lobe, non-Static placeables cast no shadow from static lights, a fixed-disc penumbra where the live loop runs PCSS"));
         _knownLogged = true;
         return true;
@@ -801,7 +863,7 @@ internal static unsafe partial class LightmapBake
         new PassState(depth: false, depthWrite: false, blend: true, cull: false, srgb: false, blendSrc: Gl.ONE, blendDst: Gl.ONE).Apply();
     }
 
-    /// <summary>The FBO over a pair of pages as its two colour outputs: the scratch pair (-1) or one resident layer.</summary>
+    /// <summary>The FBO over the three planes as its colour outputs: the scratch set (-1) or one resident layer.</summary>
     private static void AttachPair(int layer)
     {
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
@@ -809,16 +871,18 @@ internal static unsafe partial class LightmapBake
         {
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _scrA, 0);
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, Gl.TEXTURE_2D, _scrB, 0);
+            Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, Gl.TEXTURE_2D, _scrC, 0);
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _scrZ, 0);
         }
         else
         {
             Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, _texA, 0, layer);
             Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, _texB, 0, layer);
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, _texC, 0, layer);
             Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, 0, 0);
         }
-        uint* bufs = stackalloc uint[2] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1 };
-        Gl.DrawBuffers(2, bufs);
+        uint* bufs = stackalloc uint[3] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1, Gl.COLOR_ATTACHMENT2 };
+        Gl.DrawBuffers(3, bufs);
         Gl.Viewport(0, 0, PageSize, PageSize);
     }
 
@@ -872,7 +936,9 @@ internal static unsafe partial class LightmapBake
         for (int k = 0; k < _bakeRects.Count; k++)
         {
             ref Rect r = ref _rects[_bakeRects[k]];
-            if (Touches(l, r.C, r.R)) DrawRect(_bakeRects[k]);
+            if (!Touches(l, r.C, r.R)) continue;
+            Gl.Uniform1i(_bChan, _bakePicks[k].ChannelOf(l));
+            DrawRect(_bakeRects[k]);
         }
         Gl.BindVertexArray(0);
         Gl.DepthFunc(Gl.LEQUAL);   // every later pass assumes LEQUAL (#364)
@@ -904,19 +970,21 @@ internal static unsafe partial class LightmapBake
         Gl.UseProgram(_progFinish);
         Gl.ActiveTexture(Gl.TEXTURE0); Gl.BindTexture(Gl.TEXTURE_2D, _scrA);
         Gl.ActiveTexture(Gl.TEXTURE0 + 1); Gl.BindTexture(Gl.TEXTURE_2D, _scrB);
+        Gl.ActiveTexture(Gl.TEXTURE0 + 2); Gl.BindTexture(Gl.TEXTURE_2D, _scrC);
         Gl.ActiveTexture(Gl.TEXTURE0);
-        Gl.Uniform1i(_fA, 0); Gl.Uniform1i(_fB, 1);
+        Gl.Uniform1i(_fA, 0); Gl.Uniform1i(_fB, 1); Gl.Uniform1i(_fC, 2);
         Gl.BindVertexArray(PostChain.FullscreenVao);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         Gl.Disable(Gl.SCISSOR_TEST);
         Gl.BindVertexArray(0);
+        Gl.ActiveTexture(Gl.TEXTURE0 + 2); Gl.BindTexture(Gl.TEXTURE_2D, 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + 1); Gl.BindTexture(Gl.TEXTURE_2D, 0);
         Gl.ActiveTexture(Gl.TEXTURE0); Gl.BindTexture(Gl.TEXTURE_2D, 0);
         // the readback: the union's raw bits into one PBO, fenced; CollectReadback writes the files. A previous
         // page's fence still open is polled, never waited on: the render thread does not stall for a cache
         // file, and a page landing that close behind another goes uncached (a miss next session, nothing else).
         if (_fence != IntPtr.Zero) CollectReadback();
-        if (_fence == IntPtr.Zero && Gl.FenceSync != null && Gl.MapNamedBufferRange != null) QueueReadback(x0, y0, x1 - x0, y1 - y0);
+        if (_fence == IntPtr.Zero && Gl.FenceSync != null && Gl.MapNamedBufferRange != null) QueueReadback(page, x0, y0, x1 - x0, y1 - y0, _bakeRects);
         else _uncached += _bakeRects.Count;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         for (int k = 0; k < _bakeRects.Count; k++) { Land(_bakeRects[k], false); _pending--; }
@@ -926,10 +994,13 @@ internal static unsafe partial class LightmapBake
         AbortBake();
     }
 
-    private static void QueueReadback(int x0, int y0, int w, int h)
+    /// <summary>One fenced PBO readback of a page region and the rects it holds: <paramref name="rects"/>
+    /// becomes the blob's table at the collect. A page bake reads what it just drew; CX-56's
+    /// <see cref="AreaSnap"/> reads a resident page back whole, off the same one-at-a-time fence.</summary>
+    private static void QueueReadback(int page, int x0, int y0, int w, int h, List<int> rects)
     {
-        int bytes = w * h * 8;
-        if (bytes <= 0 || _bakeRects.Count == 0) return;
+        int bytes = w * h * TexelBytes;
+        if (bytes <= 0 || rects.Count == 0) return;
         if (_pbo == 0) { uint b; Gl.CreateBuffers(1, &b); _pbo = b; if (b == 0) return; }
         if (bytes > _pboBytes) { Gl.NamedBufferData(_pbo, (IntPtr)bytes, null, Gl.STREAM_READ); _pboBytes = bytes; }
         Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, _pbo);
@@ -937,9 +1008,11 @@ internal static unsafe partial class LightmapBake
         Gl.ReadPixels(x0, y0, w, h, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, null);
         Gl.ReadBuffer(Gl.COLOR_ATTACHMENT1);
         Gl.ReadPixels(x0, y0, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, (void*)((long)w * h * 4));
+        Gl.ReadBuffer(Gl.COLOR_ATTACHMENT2);
+        Gl.ReadPixels(x0, y0, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE, (void*)((long)w * h * 8));
         Gl.BindBuffer(Gl.PIXEL_PACK_BUFFER, 0);
-        _ux0 = x0; _uy0 = y0; _uw = w; _uh = h;
-        _pendingRead.Clear(); _pendingRead.AddRange(_bakeRects);
+        _ux0 = x0; _uy0 = y0; _uw = w; _uh = h; _uPage = page;
+        _pendingRead.Clear(); _pendingRead.AddRange(rects);
         _fence = Gl.FenceSync(Gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     }
 
@@ -951,7 +1024,7 @@ internal static unsafe partial class LightmapBake
         uint st = Gl.ClientWaitSync(_fence, 0, 0);
         if (st != Gl.ALREADY_SIGNALED && st != Gl.CONDITION_SATISFIED) return;
         Gl.DeleteSync(_fence); _fence = IntPtr.Zero;
-        long total = (long)_uw * _uh * 8;
+        long total = (long)_uw * _uh * TexelBytes;
         byte* p = (byte*)Gl.MapNamedBufferRange(_pbo, IntPtr.Zero, (IntPtr)total, Gl.MAP_READ_BIT);
         if (p != null)
         {
@@ -968,25 +1041,52 @@ internal static unsafe partial class LightmapBake
                 {
                     ref Rect r = ref _rects[_pendingRead[k]];
                     table[k] = new BakeCache.Entry { Key = r.Key, X = r.X - _ux0, Y = r.Y - _uy0, W = r.W, H = r.H };
+                    r.Unioned = true;
                 }
-                _cache.Save(_readBufs[b]!, b, _uw, _uh, table);
+                AreaUnionBaked(_cache.Save(_readBufs[b]!, b, _uPage, _ux0, _uy0, _uw, _uh, table), _uPage, _ux0, _uy0, _uw, _uh);
             }
         }
-        _pendingRead.Clear();
+        _pendingRead.Clear(); _uSnap = false;
     }
 
-    /// <summary>Once per area, on its first rect: every term of the key, so two sessions' logs say which one
-    /// moved when the second misses the first's files (0 of 7426 hit, run 6, with 18640 v6 files on disk).</summary>
+    /// <summary>Once per area: every term of the key, so two sessions' logs say which one moved when the
+    /// second misses the first's files (0 of 7426 hit, run 6, with 18640 v6 files on disk).
+    /// <para>CX-54 step 0: which rect is sampled is now the LOWEST key of the area, not the first one
+    /// enrolled. The first depended on enrolment order, which a streamed texture or a re-staged part moves,
+    /// so two runs of the same area sampled different rects and the A/B could not tell a moved key term from
+    /// a moved sample. The lowest key is a total order over a set the key does not derive from the textures,
+    /// so it names the same rect in every run. Held until <see cref="FlushKeySample"/> at the hold's
+    /// close, by which time the area's rects have all been offered.</para></summary>
     private static bool _keyLogged;
+    private static bool _keyHave;
+    private static ulong _keyContent, _keyKey;
+    private static Matrix4x4 _keyM;
+    private static Vector3 _keyC;
+    private static float _keyR;
+
+    /// <summary>Whether <paramref name="key"/> replaces the area's sample. Pure: first one in, then strictly
+    /// lower keys.</summary>
+    private static bool KeySampleBeats(bool have, ulong held, ulong key) => !have || key < held;
+
     private static void LogKeySample(ulong content, in Matrix4x4 m, Vector3 c, float r, ulong key)
     {
-        if (_keyLogged) return;
+        if (_keyLogged || !KeySampleBeats(_keyHave, _keyKey, key)) return;
+        _keyHave = true;
+        _keyContent = content; _keyM = m; _keyC = c; _keyR = r; _keyKey = key;
+    }
+
+    /// <summary>Emit the area's key sample, once. Called at the hold's close and again on the world edge, so a
+    /// run with the hold off still writes the line.</summary>
+    private static void FlushKeySample()
+    {
+        if (_keyLogged || !_keyHave) return;
         _keyLogged = true;
+        Vector3 c = _keyC; float r = _keyR;
         int n = 0; for (int i = 0; i < _setN; i++) if (Touches(i, c, r)) n++;
         Vector2 at = AlloyLights.Atten;
-        _log?.Info($"LightmapBake: key sample -- content {content:x16} at ({c.X:F2},{c.Y:F2},{c.Z:F2}) r {r:F2} m41 ({m.M41:F2},{m.M42:F2},{m.M43:F2}) density {Lightmap.Density.V}"
+        _log?.Info($"LightmapBake: key sample (lowest key of the area) -- content {_keyContent:x16} at ({c.X:F2},{c.Y:F2},{c.Z:F2}) r {r:F2} m41 ({_keyM.M41:F2},{_keyM.M42:F2},{_keyM.M43:F2}) density {Lightmap.Density.V}"
                    + $" touching {n} of {_setN} static lights = {TouchingLights(c, r):x16}, look {ShadowLook():x16} (cube {CasterPass.CubeFaceSize}, soft {AlloyLights.ShadowSoft:F3}, floor {AlloyLights.ShadowFloor:F4}, near {AlloyLights.ShadowNearWorld:F3}, atten {at.X:F4}/{at.Y:F4}, reach {AlloyLights.ReachUniform:F3})"
-                   + $" -> key {key:x16}");
+                   + $" -> key {_keyKey:x16}");
     }
 
     /// <summary>Cache answers: a hit is uploaded straight out of its blob's union (row-strided, no copy) into
@@ -997,62 +1097,72 @@ internal static unsafe partial class LightmapBake
     private static void Adopt()
     {
         long uploaded = 0, budget = Hold ? HoldAdoptBytesPerFrame : AdoptBytesPerFrame;
+        long t0 = Held ? Stopwatch.GetTimestamp() : 0;
+        int adopted = 0;
         bool strided = false;
         while (uploaded < budget && _cache.TryTake(out int ri, out ulong key, out byte[]? data, out int x, out int y, out int uw, out int uh))
         {
+            StampProbe();
             // the key guards a stale answer: a Revoke between the probe and the answer re-numbers the rects
             if (ri >= _rectN || _rects[ri].State != RState.Probing || _rects[ri].Key != key) continue;
             ref Rect r = ref _rects[ri];
             if (data == null) { r.State = RState.Queued; _queuedAt = _frame; continue; }
-            uploaded += (long)r.W * r.H * 8;
+            uploaded += (long)r.W * r.H * TexelBytes;
             strided = true;
             Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, uw);
             fixed (byte* p = data)
             {
                 Gl.TextureSubImage3D(_texA, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGB, Gl.UNSIGNED_INT_10F_11F_11F_REV, p + UnionOffset(0, x, y, uw, uh));
                 Gl.TextureSubImage3D(_texB, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(1, x, y, uw, uh));
+                Gl.TextureSubImage3D(_texC, 0, r.X, r.Y, r.Page, r.W, r.H, 1, Gl.RGBA, Gl.UNSIGNED_BYTE, p + UnionOffset(2, x, y, uw, uh));
             }
-            Land(ri, true); _pending--;
+            Land(ri, true); _pending--; adopted++;
         }
         if (strided) Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, 0);
+        if (t0 != 0) StampAdopt(Stopwatch.GetTimestamp() - t0, adopted, uploaded, uploaded >= budget);
     }
 
-    /// <summary>Grow the resident pair by one layer: a new array, the old layers copied across, the old
+    /// <summary>Grow the resident planes by one layer: a new array, the old layers copied across, the old
     /// names deleted. Cold: at most <see cref="MaxPages"/> times a session.</summary>
     private static bool AddLayer() => Grow(_layers + 1);
 
     private static bool Grow(int n)
     {
-        uint a = PageArray(Gl.R11F_G11F_B10F, n), b = PageArray(Gl.RGBA8, n);
-        if (a == 0 || b == 0)
+        uint a = PageArray(Gl.R11F_G11F_B10F, n), b = PageArray(Gl.RGBA8, n), c = PageArray(Gl.RGBA8, n);
+        if (a == 0 || b == 0 || c == 0)
         {
             if (a != 0) Gl.DeleteTextures(1, &a);
             if (b != 0) Gl.DeleteTextures(1, &b);
+            if (c != 0) Gl.DeleteTextures(1, &c);
             return _down.Refuse(_log, $"page {n} could not be allocated (out of video memory?)", "the rest of the area stays unbaked");
         }
         if (_layers > 0 && Gl.CopyImageSubData != null)
         {
             Gl.CopyImageSubData(_texA, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, a, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, PageSize, PageSize, _layers);
             Gl.CopyImageSubData(_texB, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, b, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, PageSize, PageSize, _layers);
+            Gl.CopyImageSubData(_texC, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, c, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, PageSize, PageSize, _layers);
         }
         if (_texA != 0) { uint t = _texA; Gl.DeleteTextures(1, &t); }
         if (_texB != 0) { uint t = _texB; Gl.DeleteTextures(1, &t); }
+        if (_texC != 0) { uint t = _texC; Gl.DeleteTextures(1, &t); }
         int from = _layers;
-        _texA = a; _texB = b; _layers = n;
-        // a fresh layer is black + straight-up: an unbaked texel that somehow gets sampled reads as no light
+        _texA = a; _texB = b; _texC = c; _layers = n;
+        // a fresh layer is black + straight-up + no mover share: an unbaked texel that somehow gets sampled reads as no light
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        uint* bufs = stackalloc uint[2] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1 };
-        Gl.DrawBuffers(2, bufs);
+        uint* bufs = stackalloc uint[3] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1, Gl.COLOR_ATTACHMENT2 };
+        Gl.DrawBuffers(3, bufs);
+        float* none = stackalloc float[4] { 0f, 0f, 0f, 0f };
         float* black = stackalloc float[4] { 0f, 0f, 0f, 1f };
         float* up = stackalloc float[4] { 0.5f, 0.5f, 1f, 1f };
         for (int l = from; l < n; l++)
         {
             Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, _texA, 0, l);
             Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, _texB, 0, l);
-            Gl.ClearBufferfv(Gl.COLOR, 0, black); Gl.ClearBufferfv(Gl.COLOR, 1, up);
+            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, _texC, 0, l);
+            Gl.ClearBufferfv(Gl.COLOR, 0, black); Gl.ClearBufferfv(Gl.COLOR, 1, up); Gl.ClearBufferfv(Gl.COLOR, 2, none);
         }
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        _log?.Info($"LightmapBake: pages {from} -> {n}/{_cap} resident ({n * 128} MiB)");
+        _log?.Info($"LightmapBake: pages {from} -> {n}/{_cap} resident ({n * PageMiB} MiB)");
         return true;
     }
 
@@ -1063,8 +1173,9 @@ internal static unsafe partial class LightmapBake
     {
         if (_texA != 0) { uint t = _texA; Gl.DeleteTextures(1, &t); }
         if (_texB != 0) { uint t = _texB; Gl.DeleteTextures(1, &t); }
-        if (_layers > 0) _log?.Info($"LightmapBake: {_layers} pages freed ({_layers * 128} MiB)");
-        _texA = _texB = 0; _layers = 0;
+        if (_texC != 0) { uint t = _texC; Gl.DeleteTextures(1, &t); }
+        if (_layers > 0) _log?.Info($"LightmapBake: {_layers} pages freed ({_layers * PageMiB} MiB)");
+        _texA = _texB = _texC = 0; _layers = 0;
     }
 
     private static uint PageArray(uint format, int layers)
@@ -1126,8 +1237,8 @@ internal static unsafe partial class LightmapBake
             || Gl.ClearBufferfv == null || Gl.FramebufferTextureLayer == null || Gl.GenFramebuffers == null || Gl.ReadPixels == null)
             return _down.Fail(_log, "a GL entry point the bake needs is missing", "every surface keeps the real-time loop");
         int units = 0; Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &units);
-        if (units <= (int)UnitB)
-            return _down.Fail(_log, $"{units} fragment texture units, the pages need {UnitB + 1}", "every surface keeps the real-time loop");
+        if (units <= (int)UnitC)
+            return _down.Fail(_log, $"{units} fragment texture units, the pages need {UnitC + 1}", "every surface keeps the real-time loop");
         _progBake = GlProgram.Graphics(BakeVs, BakeGs, BakeFs, _log, "LightmapBake bake program");
         _progFinish = GlProgram.Graphics(PostChain.FullscreenVs, FinishFs, _log, "LightmapBake finish program");
         if (_progBake == 0 || _progFinish == 0) return _down.Fail(_log, "the bake or finish program failed to link", "every surface keeps the real-time loop");
@@ -1135,17 +1246,18 @@ internal static unsafe partial class LightmapBake
         _bLight = GlProgram.Loc(_progBake, "uBakeLight"); _bColor = GlProgram.Loc(_progBake, "uBakeColor"); _bMode = GlProgram.Loc(_progBake, "uBakeMode");
         _bCubeTex = GlProgram.Loc(_progBake, "uLocalShadow"); _bDynTex = GlProgram.Loc(_progBake, "uLocalDynShadow");
         _bCubeCount = GlProgram.Loc(_progBake, "uLocalCubes"); _bSoftWorld = GlProgram.Loc(_progBake, "uLocalSoftWorld");
-        _fA = GlProgram.Loc(_progFinish, "uScrA"); _fB = GlProgram.Loc(_progFinish, "uScrB");
+        _bChan = GlProgram.Loc(_progBake, "uBakeChan");
+        _fA = GlProgram.Loc(_progFinish, "uScrA"); _fB = GlProgram.Loc(_progFinish, "uScrB"); _fC = GlProgram.Loc(_progFinish, "uScrC");
         int prevProg; Gl.GetIntegerv(Gl.CURRENT_PROGRAM, &prevProg);
         Gl.UseProgram(_progBake);
         Gl.Uniform1i(_bCubeTex, (int)AlloyRenderer.CubeUnit);
         Gl.Uniform1i(_bDynTex, (int)AlloyRenderer.CubeDynUnit);
         Gl.UseProgram((uint)prevProg);
         uint f; Gl.GenFramebuffers(1, &f); _fbo = f;
-        _scrA = Scratch(); _scrB = Scratch(); _scrZ = ScratchDepth();
+        _scrA = Scratch(); _scrB = Scratch(); _scrC = Scratch(); _scrZ = ScratchDepth();
         _cubeSize = Math.Max(CasterPass.CubeFaceSize, 64);
         _cube = ScratchCube(_cubeSize);
-        if (_fbo == 0 || _scrA == 0 || _scrB == 0 || _scrZ == 0 || _cube == 0)
+        if (_fbo == 0 || _scrA == 0 || _scrB == 0 || _scrC == 0 || _scrZ == 0 || _cube == 0)
             return _down.Fail(_log, "the scratch pages or cube could not be allocated (out of video memory?)", "every surface keeps the real-time loop");
         _log?.Info($"LightmapBake: armed -- page cap {PageCap()}, scratch cube {_cubeSize}, {(Hold ? HoldLightsPerFrame : BackgroundLightsPerFrame)} light steps per frame");
         return true;
@@ -1156,27 +1268,36 @@ internal static unsafe partial class LightmapBake
     internal static void Revoke()
     {
         DropHold();
+        FlushKeySample();
+        // CX-56: the last chance to write this area's plan. The hold's release writes it when there is a hold;
+        // with lightmap.hold 0, or after a skip the background bake then finished, this edge is the only one.
+        AreaWrite(BaselineIn);
+        AreaForget();
         _areaHalve = 0; _refineAt = 0;
         Repack();
         _landed = _landedHits = _refused = _pastCap = _bakeSkips = _uncached = 0; _pageMs = 0; _pageMsN = 0;
-        _logLeft = LogCap; _knownLogged = false; _keyLogged = false;
-        SetHash = 0; _setN = 0; _stN = 0; _seen.Clear(); _seenPtr.Clear(); Reopen(); _edgeSeen = false; _rekeyPending = false;
+        _logLeft = LogCap; _knownLogged = false; _keyLogged = false; _keyHave = false; _keyKey = 0;
+        // CX-56: _loadArmed is deliberately untouched -- it says the CURRENT area's lights are all spawned,
+        // which a revoke does not change, so the set this reopens re-closes on the very next walk.
+        SetHash = 0; _setN = 0; _stN = 0; _seen.Clear(); _seenPtr.Clear(); Reopen(); _rekeyPending = false;
         VoidClasses();
     }
 
     /// <summary>The context is gone: forget every name; the next frame rebuilds and re-packs.</summary>
     internal static void ContextLost()
     {
-        _texA = _texB = _scrA = _scrB = _scrZ = _fbo = _cube = _pbo = _progBake = _progFinish = _bufChart = 0;
+        _texA = _texB = _texC = _scrA = _scrB = _scrC = _scrZ = _fbo = _cube = _pbo = _progBake = _progFinish = _bufChart = 0;
         _layers = 0; _pboBytes = 0; _built = false; _bufFilled = false; _fence = IntPtr.Zero; _qBake = default;
         _down.Forget();
         Revoke();
     }
 
     internal static string Describe()
-        => !Lightmap.G.Master!.V ? "" : _down.Failed ? $"bake FAILED: {_down.Reason}"
-         : $"bake: pages {_layers}/{_cap}, {_landed} rects landed ({_landedHits} from cache), {_pending} pending, {_pastCap} past the cap; "
-           + $"static lights {CensusStatic} (tile {CensusTile}, placeable {CensusPlaceable}) animated {CensusAnimated} dynamic {CensusDynamic}";
+        => !Lightmap.G.Master!.V ? "" : _noLoadEdge ? "bake OFF: CNWCArea::LoadArea did not resolve, so nothing can close the static set"
+         : _down.Failed ? $"bake FAILED: {_down.Reason}"
+         : (LoadRefusals > 0 ? $"bake: {LoadRefusals} area load(s) the engine refused; " : "bake: ")
+           + $"pages {_layers}/{_cap}, {_landed} rects landed ({_landedHits} from cache), {_pending} pending, {_pastCap} past the cap; "
+           + $"static lights {CensusStatic} (tile {CensusTile}, placeable {CensusPlaceable}) animated {CensusAnimated} (anim-driven {CensusAnimRun}) dynamic {CensusDynamic}";
 
     /// <summary>One clause of the Alloy period line.</summary>
     internal static string Stats(int frames)
@@ -1193,8 +1314,11 @@ internal static unsafe partial class LightmapBake
                    + TierStats()
                    + $", charted draws/frame {_drewBaked / frames} baked / {_drewNoRect / frames} no rect / {_drewPending / frames} pending / {_drewRefused / frames} refused"
                    + (_drewLandedUnbaked > 0 ? $" / {_drewLandedUnbaked / frames} LANDED BUT UNBAKED" : "")
-                   + $", census static {CensusStatic} (tile {CensusTile}, placeable {CensusPlaceable}) animated {CensusAnimated} dynamic {CensusDynamic} skipped {CensusSkipped}"
+                   + $", census static {CensusStatic} (tile {CensusTile}, placeable {CensusPlaceable}) animated {CensusAnimated} (anim-driven {CensusAnimRun}) dynamic {CensusDynamic} skipped {CensusSkipped}"
                    + $", alloc bake {_allocRun >> 20} MiB / cache thread {_cache.Allocated >> 20} MiB" 
+                   + (_areaKey != 0 ? $", area cache {(_areaAdopted ? "hit" : "miss")} ({_areaAdoptedRects} adopted, {_areaNew} new)" : "")
+                   + (_areaKeyless + _areaLate + _areaDrift > 0 ? $", area cache refused {_areaKeyless} keyless / {_areaLate} late / {_areaDrift} drifted" : "")
+                   + (_areaSnapped + _areaSnapLost + _areaSnapCapped > 0 ? $", area plan pages read back whole {_areaSnapped} ({_areaSnapLost} lost to the edge, {_areaSnapCapped} plan(s) past the union cap)" : "")
                    + (_clsFull > 0 ? $", {_clsFull} lights past the class table" : "")
                    + (_cslEdges > 0 ? $", {_cslEdges} ComputeStaticLighting edges" : "");
         _drewBaked = _drewNoRect = _drewRefused = _drewPending = _drewLandedUnbaked = 0;
@@ -1224,11 +1348,16 @@ internal static unsafe partial class LightmapBake
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
-        check.Expect(ChartBufDecl.Contains($"binding = {BindChart}") && ChartBufDecl.Contains($"binding = {UnitA}") && ChartBufDecl.Contains($"binding = {UnitB}"),
-          "the GLSL bindings drifted from BindChart/UnitA/UnitB");
+        check.Expect(ChartBufDecl.Contains($"binding = {BindChart}") && ChartBufDecl.Contains($"binding = {UnitA}") && ChartBufDecl.Contains($"binding = {UnitB}")
+                     && ChartBufDecl.Contains($"binding = {UnitC}"),
+          "the GLSL bindings drifted from BindChart/UnitA/UnitB/UnitC");
         check.Expect(ChartBufDecl.Contains($"CX_LM_PAGE = {PageSize}.0") && BakeVs.Contains($"CX_LM_PAGE = {PageSize}.0") && BakeGs.Contains($"CX_LM_PAGE = {PageSize}.0"), "the GLSL page size drifted from PageSize");
         check.Expect(BakeFs.Contains("CxPointLight(") && BakeFs.Contains("CxPointDiffuse(") && BakeFs.Contains("CxLocalShadow("),
           "the bake stage does not run the lit stage's own per-light body");
+        // CX-54 step 0: the key sample must be the area's lowest key whatever order the rects arrive in
+        check.Expect(KeySampleBeats(false, 0ul, ulong.MaxValue), "the first rect offered is not taken as the sample");
+        check.Expect(KeySampleBeats(true, 9ul, 8ul) && !KeySampleBeats(true, 8ul, 9ul) && !KeySampleBeats(true, 8ul, 8ul),
+          "the key sample is not the lowest key of the area, so two runs can sample different rects");
         // the packer, on a scratch page state
         int cap = _cap, layers = _layers, page = _packPage;
         var sy = (int[])_shelfY.Clone(); var sh = (int[])_shelfH.Clone(); var sx = (int[])_shelfX.Clone();
@@ -1273,6 +1402,20 @@ internal static unsafe partial class LightmapBake
         _setCol[0] = new Vector3(0.5f, 1f, 1f);
         check.Expect(k0 != BakeKey(1, Matrix4x4.Identity, new Vector3(5f, 0f, 0f), 1f), "a touching light's colour is in the key");
         _setN = setN;
+        // CX-56: a surface's pick -- the strongest four touching lights, strongest first, ties on position and
+        // never on the order the set lists them in
+        Vector4[] savedP = _setPosR; Vector3[] savedC = _setCol; int savedN = _setN;
+        _setPosR = [new(0f, 0f, 0f, 10f), new(4f, 0f, 0f, 10f), new(1f, 0f, 0f, 10f), new(3f, 0f, 0f, 10f), new(2f, 0f, 0f, 10f), new(50f, 0f, 0f, 10f)];
+        _setCol = [Vector3.One, Vector3.One, Vector3.One, Vector3.One, Vector3.One, Vector3.One]; _setN = 6;
+        Pick pk = PickOf(Vector3.Zero, 0.1f);
+        check.Expect(pk.L0 == 0 && pk.L1 == 2 && pk.L2 == 4 && pk.L3 == 3 && pk.ChannelOf(1) == Channels && pk.ChannelOf(5) == Channels,
+          "the pick is the four nearest touching lights, strongest first; the fifth and an out-of-reach light hold no channel");
+        _setPosR = [new(2f, 0f, 0f, 10f), new(-2f, 0f, 0f, 10f)]; _setN = 2;
+        Pick tie = PickOf(Vector3.Zero, 0.1f);
+        _setPosR = [new(-2f, 0f, 0f, 10f), new(2f, 0f, 0f, 10f)];
+        Pick tieRev = PickOf(Vector3.Zero, 0.1f);
+        check.Expect(tie.L0 == 1 && tieRev.L0 == 0, "an equal-weight tie breaks on position, not on the set's order");
+        _setPosR = savedP; _setCol = savedC; _setN = savedN;
         log.Info(check.Ok ? "LightmapBake.SelfCheck: passed" : "LightmapBake.SelfCheck: FAILED -- see above");
         return check.Ok;
     }

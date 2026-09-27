@@ -106,6 +106,9 @@ internal static unsafe class AlloyLights
     /// The fallback is a peak of 1 falling to 0 at the range -- sane, not a guess at the engine's numbers,
     /// and only ever seen before the render interface is up.</summary>
     private static Vector2 _atten = new(1f, 1f);
+    /// <summary>A real pair has been latched: the lightmap's area key refuses to fold the fallback (the login
+    /// load ran before the first light walk and keyed every area apart from its later visits).</summary>
+    internal static bool AttenLatched { get; private set; }
 
     /// <summary>Latch the engine's attenuation constants from the three global shader params behind them.
     /// Called by the light feed, which already reads 0x12 for the radius.</summary>
@@ -119,6 +122,7 @@ internal static unsafe class AlloyLights
         // one to leave the last good pair standing for, not to render.
         if (!(mi > 0f) || ff < 0f || float.IsNaN(ff)) return;
         _atten = new Vector2(mi, ff);
+        AttenLatched = true;
     }
 
     /// <summary>What the shader is running, for the period log and the /light echo.</summary>
@@ -248,7 +252,7 @@ internal static unsafe class AlloyLights
         // peak is the engine's own max-intensity setting in LINEAR space. Get the sign of the exponent
         // wrong and the peak inverts into a near-zero, which renders as "the lights all went out" with
         // nothing in the log to say why.
-        Vector2 savedAtten = _atten;
+        Vector2 savedAtten = _atten; bool savedLatched = AttenLatched;
         LatchAtten(0.5f, 1.5f, 1f);
         float peak = _atten.X > 0f ? 1f / _atten.X : 0f;
         check.Expect(MathF.Abs(peak - MathF.Pow(1.5f, SrgbGamma)) < 1e-3f, "the curve's peak is param(0x14) linearised");
@@ -268,7 +272,7 @@ internal static unsafe class AlloyLights
         check.Expect(_atten == wide, "a zero intensity setting leaves the last good pair standing");
         LatchAtten(2f, 1f, 1f);
         check.Expect(_atten == wide, "...and so does a min above max, which would invert the falloff");
-        _atten = savedAtten;
+        _atten = savedAtten; AttenLatched = savedLatched;
         log.Info(check.Ok ? "AlloyLights.SelfCheck: passed" : "AlloyLights.SelfCheck: FAILED");
         return check.Ok;
     }
@@ -355,7 +359,7 @@ internal static unsafe class AlloyLights
                 // the same way -- and the walk already resolved the slot by light identity.
                 d[7] = FrameInputs.AreaLightAmbient[i] ? FrameInputs.AmbientSlot : FrameInputs.AreaLightSlot[i];
                 // #674: the static bit rides the same lane, +CX_LIGHT_STATIC; the shader decodes w >= 128.
-                if (FrameInputs.AreaLightStatic[i] && !FrameInputs.AreaLightAmbient[i]) d[7] += LightStatic;
+                if (FrameInputs.AreaLightStatic[i] && !FrameInputs.AreaLightAmbient[i]) d[7] += LightStatic + LightSetStride * (FrameInputs.AreaLightSetIndex[i] + 1);
             }
             Gl.NamedBufferSubData(_bufLights, IntPtr.Zero, (IntPtr)(n * 8 * sizeof(float)), s);
         }
@@ -614,6 +618,9 @@ internal static unsafe class AlloyLights
     internal const float SrgbGamma = 2.2f;
     /// <summary>#674: added to a static light's cube slot in the record's w (GLSL <c>CX_LIGHT_STATIC</c>).</summary>
     internal const float LightStatic = 256f;
+    /// <summary>CX-56: a static light's set index PLUS ONE rides above the static bit in multiples of this (GLSL
+    /// <c>CX_LIGHT_SET</c>); 0 = no set entry. Exact in a float up to 2^24 / 512 = 32768 lights.</summary>
+    internal const float LightSetStride = 512f;
 
     /// <summary>The clustered-lighting helpers the Alloy lit fragment stage is built from. Its sizing
     /// tokens are expanded by <see cref="GlProgram"/> at compile time, like any other stage's.</summary>

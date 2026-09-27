@@ -16,7 +16,8 @@ namespace CX.Alloy;
 /// <para>Invariant the workers rely on: Alloy runs on the engine's main thread inside its frame, so the
 /// engine mutates nothing while a stage runs; and nothing on the main thread writes the texture index, the
 /// handle hash or the ownership tables between <c>Run</c> and its return. A future async loader breaks
-/// exactly that, and this comment is where it must look.</para></summary>
+/// exactly that, and this comment is where it must look. CX-54's <c>cx-load</c> (<see cref="TexLoad"/>) keeps it:
+/// its worker writes none of those tables, and its results are filed on the main thread at the drip.</para></summary>
 internal static class StagePool
 {
     /// <summary>Chunks including the main thread's; the knob's ceiling is one less.</summary>

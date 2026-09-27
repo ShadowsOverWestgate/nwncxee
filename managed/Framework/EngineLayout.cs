@@ -228,6 +228,19 @@ public static unsafe class EngineLayout
     public const int NewControllerStride = 0xc;
     /// <inheritdoc cref="NewControllerStride"/>
     public static readonly int NewControllerKeyCount = Field<short>("NewController", "keyCount");
+    /// <summary>CX-56: MdlNode -&gt; its child nodes (items +0x68, count +0x70). <c>CreateInstanceTreeR</c>
+    /// (Linux @0x43c6b0, Windows rva 0x8dab0) sizes the Part's child array from the count and instances each
+    /// entry, and <c>AnimateHierarchy</c> (Linux @0x499990, Windows rva 0x4fe90) pairs over the same two
+    /// fields -- identical offsets on both builds.</summary>
+    public static readonly int MdlNodeChildren = Field<IntPtr>("MdlNode", "children");
+    /// <inheritdoc cref="MdlNodeChildren"/>
+    public static readonly int MdlNodeChildCount = Field<int>("MdlNode", "childCount");
+    /// <summary>CX-56: the MDL node NUMBER, and the one key an animation is paired to a model by.
+    /// <c>CreateInstanceTreeR</c> ends with <c>part+0x30 = node+0x34</c> (<see cref="PartNodeId"/>) and
+    /// <c>AnimateHierarchy</c> walks the animation's node tree beside the part tree matching exactly that
+    /// pair, scanning the animation's siblings from <c>i % n</c> and wrapping once. Both builds read the same
+    /// two offsets in both functions.</summary>
+    public static readonly int MdlNodeId = Field<int>("MdlNode", "nodeId");
     /// <summary>VertexPrimitive -&gt; model matrix (row-major float[16]). #448: <c>Scene::RenderDrawBucket</c>
     /// (@0x46d060 / rva 0xcd210) passes <c>vp+0x18</c> to <c>SetModelMatrix</c> under the same
     /// <c>vp+0x80 &amp; 0x1e</c> gate on both builds.
@@ -323,6 +336,12 @@ public static unsafe class EngineLayout
     public static readonly int PartChildCount = Field<int>("Part", "childCount");
     /// <summary>The parent back-pointer <c>SkinPose</c> walks UP as well as down.</summary>
     public static readonly int PartParent = Field<CX.Engine.Part>("Part", "parent");
+    /// <inheritdoc cref="MdlNodeId"/>
+    public static readonly int PartNodeId = Field<int>("Part", "nodeId");
+    /// <summary>CX-56: non-zero here and <c>AnimateHierarchy</c> (Linux @0x499990, Windows rva 0x4fe90) does
+    /// NOT run the paired animation node's controllers over this part -- it only recurses into its children.
+    /// <c>Part::Part</c> (Linux @0x43c800) zeroes it. Same offset and same <c>== 0</c> test on both builds.</summary>
+    public static readonly int PartAnimateGate = Field<int>("Part", "animateGate");
     /// <summary>Part -&gt; Gob* (the instance the part belongs to; null for world geometry).</summary>
     public static readonly int PartGob = Field<CX.Engine.Gob>("Part", "gob");
     /// <summary>Part -&gt; Material*. Ghidra RenderDrawBucket @0x46d060 / PartTriMesh::Draw @0x4513d0.</summary>
@@ -1299,6 +1318,20 @@ public static unsafe class EngineLayout
     public static readonly int TexBasicFlagNoImage = Field<byte>("CAurTextureBasic", "flagNoImage");
     /// <inheritdoc cref="TexBasicFlagCube"/>
     public static readonly int TexBasicFlagNeverBuild = Field<byte>("CAurTextureBasic", "flagNeverBuild");
+    /// <summary>CX-52 step 5: the byte <c>AurTextureBuildAndStoreAll</c> @0x48e680 tests per queued entry -- non-zero is
+    /// skipped (not built) and still dropped with the rest when the count goes to 0. Both drains read <c>+0xeb</c>
+    /// (Windows RVA 0xe6910); its writer was not chased.</summary>
+    public static readonly int TexBasicFlagNoDrain = Field<byte>("CAurTextureBasic", "flagNoDrain");
+    /// <summary>CX-52: the TXI <c>filerange</c> count -- non-zero makes <c>LoadImage</c> @0x487980 stack
+    /// <c>%s%d</c> sub-files instead of reading the resolved name once (Windows RVA 0xEC570, identical).</summary>
+    public static readonly int TexBasicFileRange = Field<short>("CAurTextureBasic", "fileRange");
+    /// <summary>CX-52: the TXI bump-map flag -- <c>CheckAttributes</c> @0x485d70 discards a bump image of more
+    /// than one byte per pixel through <c>FreeImage</c> (Windows: inlined in <c>ConstructImage</c>, identical).</summary>
+    public static readonly int TexBasicFlagBump = Field<byte>("CAurTextureBasic", "flagBump");
+    /// <summary>CX-52: how <c>FreeImage</c> @0x485140 frees <see cref="TexBasicImage"/> -- non-zero through
+    /// <c>AurReleaseRaster</c>, zero through the engine's <c>delete[]</c> (<c>AurTextureFreeImage</c> @0x4850f0).
+    /// <c>LoadImage</c> sets it whenever the decoder slot answered (Windows RVA 0xEC570, identical).</summary>
+    public static readonly int TexBasicFlagRasterRelease = Field<byte>("CAurTextureBasic", "flagRasterRelease");
 
     // ---- CAurTexture's vtable: the ten accessors TexScan reads a sheet through (#219) ----
     // All -8 for #433's virtual-destructor reason EXCEPT GetCompressedSize(), where MSVC's overload
@@ -1534,6 +1567,129 @@ public static unsafe class EngineLayout
     public static readonly int CResData = Field<IntPtr>("CRes", "data");
     /// <inheritdoc cref="CResData"/>
     public static readonly int CResSize = Field<int>("CRes", "size");
+    /// <summary>CX-52: <c>CRes</c> carries no restype of its own; it points at its key-table entry, whose
+    /// restype is a ushort (<c>CExoKeyTable::FindKey</c>, entry stride 0x38). Same offsets on both builds.</summary>
+    public static readonly int CResKeyEntry = Field<IntPtr>("CRes", "keyEntry");
+    /// <summary>CX-54 step 0: the first int of the 16-byte <c>RESID</c> the <c>CRes(RESID, CExoString const&amp;)</c>
+    /// constructor copies to <c>+0x0c..0x1b</c> -- the container the resource is read from.
+    /// <c>CExoResMan::Demand</c> dispatches on it (Linux @0x53ae70 / Windows RVA 0x18ef90, both
+    /// <c>*(int*)(pRes + 0xc)</c>): 0 = nowhere (Demand returns at once), 1 = <c>ServiceFromResFile</c> (KEY/BIF),
+    /// 2 = <c>ServiceFromEncapsulated</c> (ERF/hak/mod), 3 = <c>ServiceFromDirectory</c> (loose), 5 =
+    /// <c>ServiceFromManifest</c> (NWSync). NOT the table kind, which <c>BuildNewTable</c> @0x5345a0 writes at
+    /// <c>table+0x20</c> with 2 and 3 the other way round.</summary>
+    public static readonly int CResSourceKind = Field<int>("CRes", "sourceKind");
+    /// <inheritdoc cref="CResKeyEntry"/>
+    public static readonly int KeyEntryResType = Field<ushort>("CKeyTableEntry", "resType");
+    /// <summary>The entry's 16-byte resref leads it (<c>CExoKeyTable::FindKey</c> compares the entry itself as a
+    /// <c>CResRef</c>, Linux @0x631340 / Windows RVA 0x18AD70).</summary>
+    public static readonly int KeyEntryResRef = Field<byte>("CKeyTableEntry", "resRef", count: 16);
+    /// <summary>CX-54: <c>Hash::SHA1</c> is <c>{ bool empty; byte raw[20]; char hex[41]; }</c> -- the ctor
+    /// <c>Hash::SHA1::SHA1(CExoString const&amp;)</c> @0x534cd0 sets <c>+0x0 = 1</c>, zeroes the 20 raw bytes and
+    /// <c>hydro_bin2hex(this + 0x15, 0x29, this + 1, 0x14)</c>, clearing <c>+0x0</c> only once 40 hex digits
+    /// parsed. So <c>empty</c> is INVERTED (non-zero = no hash) and <c>hex</c> is 40 lowercase digits plus a NUL.
+
+
+    public static readonly int Sha1Empty = Field<byte>("Sha1", "empty");
+    /// <inheritdoc cref="Sha1Empty"/>
+    public static readonly int Sha1Hex = Field<byte>("Sha1", "hex", count: 41);
+
+    /// <summary>CX-54: the live <c>CRes*</c> of an entry, or null. <c>CExoKeyTable::GetRes</c> returns exactly
+    /// <c>*(CRes**)(entry+0x18)</c> on Linux @0x531430 and Windows RVA 0x18B1C0. A non-null one means the bytes
+    /// are already in memory, so a worker must not read the file for them.</summary>
+    public static readonly int KeyEntryRes = Field<IntPtr>("CKeyTableEntry", "res");
+    /// <summary>CX-54: the 16-byte <c>RESID</c> -- <c>[0]</c> source kind (1 BIF, 2 ERF/HAK, 3 loose file,
+    /// 5 NWSync), <c>[1]</c> file index in the table's file array, <c>[2]</c> the owning table's id,
+    /// <c>[3]</c> the entry index inside that file. <c>CExoKeyTable::GetResID</c> copies both halves from
+    /// <c>entry+0x20</c> on Linux @0x531460 and Windows RVA 0x18B1E0.</summary>
+    public static readonly int KeyEntryResId = Field<uint>("CKeyTableEntry", "resId", count: 4);
+    /// <summary>CX-54: the table's container kind -- 1 KEY, 2 directory, 3 ERF, 5 manifest, which is what
+    /// <c>CExoResMan::Exists</c> answers and what the texture-format race compares.
+    /// <c>CExoKeyTable::BuildNewTable</c> writes <c>+0x20</c> in all four branches, Linux @0x5345a0 and
+    /// Windows RVA 0x18A690.</summary>
+    public static readonly int KeyTableKind = Field<int>("CExoKeyTable", "kind");
+    /// <summary>CX-54: the table's alias name (<c>"HAK:foo"</c>, <c>"OVERRIDE:"</c>, an NWSync manifest sha1) as a
+    /// <c>CExoString</c>; <see cref="SymbolMap.AliasResolveFileName"/> turns it into a filesystem path.
+    /// <c>BuildNewTable</c> initialises it at <c>+0x28</c> on both builds.</summary>
+    public static readonly int KeyTableName = Field<IntPtr>("CExoKeyTable", "name");
+    /// <summary>CX-54: the table's array of <c>CExoResFile*</c> (KEY) or <c>CExoEncapsulatedFile*</c> (ERF).
+    /// Every <c>ServiceFrom*</c> indexes <c>*(void**)(table+0x50)</c> on both builds.</summary>
+    public static readonly int KeyTableFiles = Field<IntPtr>("CExoKeyTable", "files");
+    /// <summary>CX-54: a BIF's alias name (<c>"HD0LOCINSTALL:data/nwn_base"</c>, no extension) and its parsed
+    /// variable-resource table. <c>CExoResFile::LoadHeader</c> hands <c>this+8</c> to <c>CExoFile</c> on both
+    /// builds; the entry array is <c>+0x40</c> on Linux @0x52f460 and <c>+0x48</c> on Windows RVA 0x18BD80 --
+    /// the one layout divergence in this batch, read straight off both <c>ReadResource</c> bodies.</summary>
+    public static readonly int ResFileName = Field<IntPtr>("CExoResFile", "name");
+    /// <inheritdoc cref="ResFileName"/>
+    public static readonly int ResFileEntries = Field<IntPtr>("CExoResFile", "entries");
+    /// <summary>CX-54: a hak/mod/erf's alias name (copied verbatim from <see cref="KeyTableName"/> by
+    /// <c>AddEncapsulatedContents</c>) and its resource list. Both <c>+0x08</c> and <c>+0x50</c> on Linux
+    /// @0x5340c0 and Windows RVA 0x18CA10.</summary>
+    public static readonly int EncapFileName = Field<IntPtr>("CExoEncapsulatedFile", "name");
+    /// <inheritdoc cref="EncapFileName"/>
+    public static readonly int EncapFileEntries = Field<IntPtr>("CExoEncapsulatedFile", "entries");
+    /// <summary>CX-54: one BIF variable-resource entry, as <c>CExoResFile::LoadHeader</c> expands it -- a
+    /// <c>V1</c> file's 16 on-disk bytes plus a zero compressed flag and the size repeated, or a <c>E1</c>
+    /// file's 0x18 bytes verbatim. <c>ReadResource</c> seeks to <c>+4</c>, reads <c>+8</c> bytes, and takes the
+    /// compressed branch when <c>+0x10</c> is 1, decompressing to <c>+0x14</c>. Identical on both builds.</summary>
+    public static readonly int BifEntryStride = Field("BiffVarResEntry", "stride");
+    /// <inheritdoc cref="BifEntryStride"/>
+    public static readonly int BifEntryOffset = Field<int>("BiffVarResEntry", "offset");
+    /// <inheritdoc cref="BifEntryStride"/>
+    public static readonly int BifEntryStored = Field<int>("BiffVarResEntry", "storedSize");
+    /// <inheritdoc cref="BifEntryStride"/>
+    public static readonly int BifEntryCompressed = Field<int>("BiffVarResEntry", "compressed");
+    /// <inheritdoc cref="BifEntryStride"/>
+    public static readonly int BifEntryPlain = Field<int>("BiffVarResEntry", "plainSize");
+    /// <summary>CX-54: one ERF/HAK resource-list entry. <c>CExoEncapsulatedFile::ReadResource</c> seeks to
+    /// <c>+0</c>, reads <c>+4</c> bytes, takes the compressed branch on <c>+8 == 1</c> and decompresses to
+    /// <c>+0xc</c> (what <c>GetResourceSize</c> returns). Identical on both builds.</summary>
+    public static readonly int ErfEntryStride = Field("ErfResListEntry", "stride");
+    /// <inheritdoc cref="ErfEntryStride"/>
+    public static readonly int ErfEntryOffset = Field<int>("ErfResListEntry", "offset");
+    /// <inheritdoc cref="ErfEntryStride"/>
+    public static readonly int ErfEntryStored = Field<int>("ErfResListEntry", "storedSize");
+    /// <inheritdoc cref="ErfEntryStride"/>
+    public static readonly int ErfEntryCompressed = Field<int>("ErfResListEntry", "compressed");
+    /// <inheritdoc cref="ErfEntryStride"/>
+    public static readonly int ErfEntryPlain = Field<int>("ErfResListEntry", "plainSize");
+    /// <summary>CX-54: <c>CExoBase</c> -&gt; the <c>CExoAliasList*</c> every path resolution goes through.
+    /// <c>BuildNewTable</c> and <c>CExoAliasListInternal::ResolveFileName</c> both load
+    /// <c>*(CExoAliasList**)(g_pExoBase+0x20)</c> on both builds.</summary>
+    public static readonly int ExoBaseAliasList = Field<CX.Engine.CExoAliasList>("CExoBase", "aliasList");
+    /// <summary>CX-55: how many <c>CNWTileData</c> records a loaded tileset has -- the bound
+    /// <c>CNWTileSet::GetTileData(int)</c> tests before indexing its array (Linux @0x5e10d0 <c>+0x4c</c>,
+    /// Windows rva 0x2c67d0 <c>+0x54</c>, one EXOWARNING past it), so the model-prefetch walk stops here
+    /// instead of probing for the end.</summary>
+    public static readonly int TileSetTileCount = Field<int>("CNWTileSet", "tileCount");
+
+    /// <summary>CX-52: the 0x38-byte helper <c>GetCompressedRaster</c> leaks as the owner of a DDS it hands
+    /// out (the pointer stored 8 bytes before the resource) holds its <c>CRes*</c> here --
+    /// <c>LoadCompressedTexture</c> @0x1133ab0 / Windows RVA 0xF3100 both demand <c>*(CRes**)(this+0x18)</c>.</summary>
+    public static readonly int DdsHelperRes = Field<IntPtr>("CAuroraCompressedTextureDDS", "res");
+    /// <summary>CX-52 step 2: <c>CResTGA</c>'s parse state, set by <c>OnResourceServiced</c> (@0x1154a60 / Windows
+    /// RVA 0x1A4730 read and write the same offsets): the header (the resource bytes), the colour map, the pixels
+    /// (in place, or a fresh RLE buffer) and the parsed latch.</summary>
+    public static readonly int TgaHeader = Field<IntPtr>("CResTGA", "header");
+    /// <inheritdoc cref="TgaHeader"/>
+    public static readonly int TgaColorMap = Field<IntPtr>("CResTGA", "colorMap");
+    /// <inheritdoc cref="TgaHeader"/>
+    public static readonly int TgaPixels = Field<IntPtr>("CResTGA", "pixels");
+    /// <inheritdoc cref="TgaHeader"/>
+    public static readonly int TgaParsed = Field<int>("CResTGA", "parsed");
+    /// <summary>CX-52 step 2 ownership: the rest of <c>OnResourceServiced</c>'s writes, same offsets on both OSes:
+    /// <c>owned</c> = the pixels are a <c>new[]</c> of the resource's (<c>OnResourceFreed</c> and the Windows
+    /// dtor <c>delete[]</c> them), <c>colorMapped</c> (type 1/9), <c>compressed</c> (type 9/10), <c>size</c> the
+    /// pixel bytes (the file's bytes past the colour map when uncompressed) and <c>srcSize</c> that file span
+    /// for an RLE one.</summary>
+    public static readonly int TgaOwned = Field<int>("CResTGA", "owned");
+    /// <inheritdoc cref="TgaOwned"/>
+    public static readonly int TgaColorMapped = Field<int>("CResTGA", "colorMapped");
+    /// <inheritdoc cref="TgaOwned"/>
+    public static readonly int TgaCompressed = Field<int>("CResTGA", "compressed");
+    /// <inheritdoc cref="TgaOwned"/>
+    public static readonly int TgaSize = Field<int>("CResTGA", "size");
+    /// <inheritdoc cref="TgaOwned"/>
+    public static readonly int TgaSrcSize = Field<int>("CResTGA", "srcSize");
 
     // ---- the occlusion fade (#537): the camera flags, the hit record, the gob's object kind ----
 
@@ -1607,9 +1763,26 @@ public static unsafe class EngineLayout
     /// <summary>#663/#672: CNWCArea -&gt; the Static-placeable list, a <c>CExoArrayList&lt;unsigned int&gt;</c> of
     /// object ids (data +0x338, count +0x340) filled by <c>AddPlaceableObjectStatic</c> @0x7091c0. No per-object
     /// Static flag exists client-side (+0x1b4 is PLOT); membership here IS the static set. docs/engine-layout.md.</summary>
-    public static readonly int AreaStaticPlaceables = Field("CNWCArea", "staticPlaceables");
+    public static readonly int AreaStaticPlaceables = Field<IntPtr>("CNWCArea", "staticPlaceables");
     /// <inheritdoc cref="AreaStaticPlaceables"/>
-    public static readonly int AreaStaticPlaceableCount = Field("CNWCArea", "staticPlaceableCount");
+    public static readonly int AreaStaticPlaceableCount = Field<int>("CNWCArea", "staticPlaceableCount");
+    /// <summary>CX-55 step 2: the client's message read cursor -- the buffer being read (+0x38), its length
+    /// (+0x40) and the byte offset reached (+0x44). <c>CNWMessage::ReadDWORD/ReadWORD/ReadBYTE/ReadFLOAT</c> are
+    /// plain little-endian loads at the cursor (@0x5e8450 / Windows <c>?ReadDWORD@CNWMessage@@QEAAIH@Z</c> rva
+    /// 0x2d9bc0 read these same three), so a fixed-shape record still ahead in the buffer can be read without
+    /// disturbing the engine's own parse. Only sub-byte widths go through <c>ReadBits</c>.</summary>
+    public static readonly int MsgBuffer = Field<IntPtr>("CNWMessage", "buffer");
+    /// <inheritdoc cref="MsgBuffer"/>
+    public static readonly int MsgLength = Field<uint>("CNWMessage", "length");
+    /// <inheritdoc cref="MsgBuffer"/>
+    public static readonly int MsgCursor = Field<uint>("CNWMessage", "cursor");
+    /// <summary>CX-55 step 2: <c>CNWRules</c> -&gt; its 2DA table (+0x130), and that table -&gt; placeables.2da
+    /// (+0x140). Both hops read straight off <c>g_pRules</c> in <c>CNWCArea::AddPlaceableObjectStatic</c> and
+    /// <c>RespawnStaticPlaceablesForTile</c>, and the Windows decompile of the first (rva 0x7d95a0) takes the
+    /// same two.</summary>
+    public static readonly int RulesTwoDimArrays = Field<IntPtr>("CNWRules", "twoDimArrays");
+    /// <inheritdoc cref="RulesTwoDimArrays"/>
+    public static readonly int TwoDimPlaceables = Field<IntPtr>("CTwoDimArrays", "placeables");
     /// <summary>#663: CNWCObject -&gt; its <c>CNWCAnimBase*</c> (<c>CNWCObject::SetPosition</c> @0x7e9180 / rva
     /// 0x766760 reads it before the anim-base vcall). Hop one of id -&gt; placeable -&gt; anim base -&gt;
     /// <see cref="AnimGob"/>; the gob's composed transform is then <see cref="NodeMatrix"/> off its parts.</summary>
@@ -1819,6 +1992,11 @@ public static unsafe class EngineLayout
     public static readonly int AnimRunAnimation = Field<CX.Engine.Animation>("AnimRun", "animation");
     /// <inheritdoc cref="AnimRunAnimation"/>
     public static readonly int AnimationName = Field<byte>("Animation", "name");
+    /// <summary>CX-56: Animation -&gt; the root of ITS OWN <c>MdlNode</c> tree, the one carrying the animated
+    /// tracks. <c>Gob::Animate</c> calls <c>AnimateHierarchy(gob+0x90, anim+0x50, prev, time, blend)</c> on
+    /// both builds (Linux @0x49d8c0, Windows @0x14004dbd0), so this tree -- not the model's -- holds the
+    /// controllers a running animation writes through.</summary>
+    public static readonly int AnimationNode = Field<CX.Engine.MdlNode>("Animation", "node");
     /// <summary>AnimRun -&gt; its playback rate (float, signed): <c>Gob::Animate</c> advances <c>+0x14</c> by
     /// <c>dt * rate</c>; <c>Gob::PlayAnimation</c> writes it, and <c>CNWCCreature::WalkUpdateLocation</c> re-paces
     /// walk/run through it every AI update. Same offset on both builds
@@ -1835,6 +2013,12 @@ public static unsafe class EngineLayout
     public static readonly int AnimRunTime = Field<float>("AnimRun", "time");
     /// <inheritdoc cref="AnimRunFlags"/>
     public static readonly int AnimRunBlendTime = Field<float>("AnimRun", "blendTime");
+    /// <summary>CX-56: the two <see cref="AnimRunFlags"/> bits that say a run's <see cref="AnimRunBlend"/> is
+    /// not the weight the parts are carrying. <c>Queued</c> holds the whole per-run body of <c>Gob::Animate</c>
+    /// (Linux @0x49d8c0, Windows @0x14004dbd0) behind <c>(flags &amp; 0x20) == 0</c>, so a queued run animates
+    /// nothing; <c>FadingOut</c> counts the weight DOWN by <c>2*dt/blendTime</c> until the run is dropped, and
+    /// a zero blend time puts it at 1.0 for the one frame before that. Identical on both builds.</summary>
+    public const uint AnimRunQueued = 0x20, AnimRunFadingOut = 0x1;
     /// <summary>Gob -&gt; the <c>CNWCObject*</c> behind <c>SetExternalData</c>, the pointer just before
     /// <see cref="GobExternalType"/>: <c>Gob::GetExternalData</c> reads <c>+0x490</c> on both builds (Linux
     /// @0x444700, Windows rva 0x58d00; docs/research/procedural-anim-combat.md §4).</summary>

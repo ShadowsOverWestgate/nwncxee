@@ -13,6 +13,7 @@ uniform int uTimeOfDay;        // worldtimerTimeOfDay, the engine's own int
 // half a frame's sway; the wrap keeps it at 0.25 at the cost of one phase jump an hour.
 float CxClock() { return float(uTimeOfDay % 3600000); }
 uniform float uLodBias;        // #391: log2(render scale), <= 0; every material sample takes it
+uniform float uNow;            // CX-52: TexStream.Clock, the clock a streamed diffuse's arrival is stamped on
 uniform vec3 uAreaWind;        // areaGlobalWind
 uniform int uAreaFlags;        // areaFlags
 uniform vec3 uCamPos;          // cameraPosition

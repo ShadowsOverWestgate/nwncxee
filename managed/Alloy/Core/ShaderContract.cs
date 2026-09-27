@@ -491,18 +491,27 @@ internal static class ShaderContract
                   // bit decodes off the record's w, and a baked receiver skips a static light there -- a loop
                   // that lost the skip lights every baked surface twice, brighter and with nothing in the log.
                   && AlloyLights.FragmentLib.Contains("bool CxPointLight(vec4 pr, vec3 c0, vec3 worldPos, vec3 N,")
-                  && AlloyLights.FragmentLib.Contains("bool isStatic = w >= 128;") && AlloyLights.FragmentLib.Contains("int slot = isStatic ? w - 256 : w;")
+                  && AlloyLights.FragmentLib.Contains("bool isStatic = w >= 128;") && AlloyLights.FragmentLib.Contains("int slot = CxLightSlot(w);")
+                  // CX-56: the bake-set index rides above the static bit (C# encodes it, GLSL decodes it) and a
+                  // surface's pick names page C's bytes by it -- a skew darkens under a mover by another light's share
+                  && AlloyLights.FragmentLib.Contains("const int CX_LIGHT_SET = 512;") && AlloyLights.LightSetStride == 512f
+                  && LightmapBake.Channels == 4 && LightmapBake.ChartBufDecl.Contains("struct CxChart { vec4 rec; vec4 pick; };")
+                  && LightmapBake.BakeFs.Contains("oC = uBakeChan < 4 ? vec4(equal(ivec4(uBakeChan), ivec4(0, 1, 2, 3)))")
+                  && LightmapBake.FinishFs.Contains("oC = clamp(c / max(dot(a.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6), 0.0, 1.0);")
+                  && LightmapBake.ChartBufDecl.Contains($"layout(binding = {LightmapBake.UnitC}) uniform sampler2DArray uLmC;")
                   && AlloyLights.FragmentLib.Contains("bool inPages = isStatic && baked > 0.5;")
                   && AlloyLights.FragmentLib.Contains("if (inPages && !hot && !mirror) continue;")
                   && AlloyLights.FragmentLib.Contains("CX_LIGHT_STATIC = 256.0;") && AlloyLights.LightStatic == 256f
                   && LightmapBake.BakeFs.Contains("CxPointLight(uBakeLight, uBakeColor, vWorld, N, c, L, att, f2, ndlRaw, ndl)")
-                  && LightmapBake.BakeFs.Contains("CxPointDiffuse(c, att, ndlRaw, ndl) * mix(uLocalFloor, 1.0, sh)")
-                  && OwnedLitFsMain.Contains("bool baked = CxLightmap(uChart[vDraw], vChart, lmIrr, lmDir);")
-                  && OwnedLitFsMain.Contains("lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0)) * uDayDim;")
+                  && LightmapBake.BakeFs.Contains("vec3 unsh = CxPointDiffuse(c, att, ndlRaw, ndl);") && LightmapBake.BakeFs.Contains("vec3 lit = unsh * mix(uLocalFloor, 1.0, sh);")
+                  && OwnedLitFsMain.Contains("bool baked = CxLightmap(chart.rec, vChart, lmIrr, lmDir);")
+                  && OwnedLitFsMain.Contains("lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5) + lmSub.y, 1.0)) * uDayDim;")
                   // the daylight ratio: a loop or baked term that lost it keeps every lamp at night strength at noon
                   && AlloyLights.FragmentLib.Contains("return acc * uDayDim;")
                   && OwnedLitFsHead.Contains(LightmapBake.ChartBufDecl) && OwnedLitVs.Contains("vChart = aChart;")
                   && LightmapBake.ChartBufDecl.Contains($"binding = {LightmapBake.BindChart})")
+                  // the live receiver widens a mover's static half to the lightmap texel the bake did: one density
+                  && MeshChart.AtlasTexelsPerUnit == 8f && LightmapBake.ChartBufDecl.Contains("1.0 / (8.0 * rec.w)")
                   // #142: the near-field term, and the guard that makes an unset uHot mean "off". A stage
                   // that lost it renders every light flat at the gain the BODY wants -- which is the exact
                   // symptom the term exists to fix, and says nothing.

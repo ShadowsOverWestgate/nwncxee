@@ -574,6 +574,15 @@ internal static unsafe class SymbolMap
     /// needs the allocating form.</para></summary>
     [Fn("void(IntPtr tex, byte useSubImage, int cell)")]
     public const string RiCreateTexture = "_ZN15RenderInterface13CreateTextureEP11CAurTexturebi";
+    /// <summary><c>RenderInterface::CreateCubeTexture(CAurTexture*, bool, int)</c> @0x45d1f0 -> <c>GLRender</c>'s
+    /// @0x4caab0 (Windows RVA 0xBE930, the GLRender body inlined; <c>glImageBasic</c> calls it on both): the
+    /// cube twin of <see cref="RiCreateTexture"/>. <c>glImageBasic</c> routes a <c>flagCube</c> texture here
+    /// after <c>AurTextureBindTID(name, true)</c> binds the cell to <c>GL_TEXTURE_CUBE_MAP</c>; it cuts the
+    /// image as a vertical strip of six faces (remap {1,0,2,3,4,5}, quarter turns {1,3,0,2,2,0}), writes the
+    /// cube sampler state, uploads each face into whatever is bound there on unit 0, and generates mips when
+    /// the texture asks. Same ABI as <see cref="RiCreateTexture"/>.</summary>
+    [Fn("void(IntPtr tex, byte useSubImage, int cell)")]
+    public const string RiCreateCubeTexture = "_ZN15RenderInterface17CreateCubeTextureEP11CAurTexturebi";
     /// <summary><c>g_bGeneratePLTOnGPU</c> @0x19abd7c (B, a 4-byte int) -- does the engine composite PLT
     /// textures on the GPU? PLT is the LAYERED, colourable format every player character's body uses: skin,
     /// hair, metal, cloth and leather channels tinted per character.
@@ -601,6 +610,49 @@ internal static unsafe class SymbolMap
     /// resident texture in for the whole of that. ABI: <c>(CAurTextureBasic* /*rdi*/)</c>, no return.</summary>
     [Fn("void(IntPtr tex)")]
     public const string AurTextureBuildAndStoreTexture = "_ZN16CAurTextureBasic20BuildAndStoreTextureEv";
+    /// <summary>CX-52 step 5: <c>AurTextureBuildAndStoreAll()</c> @0x48e680 (Windows RVA 0xe6910, same body) -- the
+    /// drain of <see cref="RefreshTextures"/>: builds every queued entry whose <c>+0xeb</c> is clear, newest first,
+    /// sets the count to 0, then re-sorts <c>m_StaticTextureList</c> and rebuilds <c>TextureIndices</c>. Called by
+    /// <c>AurTextureMakeCurrent</c> (every <c>UpdateScreen</c> tick and <c>Scene::Render</c>), <c>RefreshAll</c>, <c>AurResetTexture</c>.</summary>
+    [Fn("void()")]
+    public const string AurTextureBuildAndStoreAll = "_Z26AurTextureBuildAndStoreAllv";
+    /// <summary>CX-52 step 5: the engine's texture build queue, a DATA symbol: <c>List&lt;CAurTextureBasic*&gt;</c> --
+    /// array pointer at +0, int count at +8 (@0x19abe20 / Windows RVA 0x140b328, count read at +8 by both drains).
+    /// <c>AurTextureGet</c> appends on a miss; <c>~CAurTextureBasic</c> @0x486c30 removes itself.</summary>
+    public const string RefreshTextures = "RefreshTextures";
+    /// <summary>CX-52 step 5: <c>CNWCArea::LoadArea(CAurCamera*, CGuiAreaLoadscreen*)</c> @0x70e010 (Windows RVA
+    /// 0x7dba70, anchored by its "CNWCArea::LoadArea() failed" log strings; its one caller tests the int) -- the
+    /// straight-line area parse, run inside <c>HandleServerToPlayerArea</c> with the loadscreen up.</summary>
+    [Fn("int(IntPtr area, IntPtr camera, IntPtr loadscreen)")]
+    public const string AreaLoadArea = "_ZN8CNWCArea8LoadAreaEP10CAurCameraP18CGuiAreaLoadscreen";
+    /// <summary>CX-55 step 2: <c>CNWCArea::AddPlaceableObjectStatic(uint id, ushort appearance, Vector pos,
+    /// Vector orient)</c> @0x7091c0 (Windows RVA 0x7d95a0, docs/windows-symbols.md) -- one call per record of
+    /// <c>LoadArea</c>'s "Static Placeables" block. It reads the appearance row's <c>ModelName</c> out of
+    /// placeables.2da and hands it straight to the scene's add-static-object slot, so the model is read and
+    /// parsed inside the call: an offer for THIS record buys nothing, an offer for the records still sitting in
+    /// the message buys the whole rest of the block.
+    /// <para>ABI: <c>(CNWCArea* this, uint, ushort, Vector, Vector) -> int</c>; the two vectors are a SysV xmm
+    /// pair and a Win64 pointer, which is <see cref="CX.Engine.VectorArg"/>.</para></summary>
+    [Fn("int(IntPtr area, uint id, ushort appearance, VectorArg pos, VectorArg orient)")]
+    public const string AreaAddPlaceableStatic = "_ZN8CNWCArea24AddPlaceableObjectStaticEjt6VectorS0_";
+    /// <summary>CX-55 step 2: <c>C2DA::GetCExoStringEntry(int row, CExoString const&amp; column, CExoString* out)</c>
+    /// @0x543b00 (exported on Windows) -- the table read and nothing else: <c>GetColumnIndex</c>, then the cell,
+    /// no file touched and no resource demanded (an out-of-range row yields the table's default and returns 0).
+    /// The out CExoString is the caller's and engine-heap: zero it before the call (the engine frees a non-null
+    /// buffer first) and free it with <see cref="ExoStringDtor"/>.</summary>
+    [Fn("int(IntPtr twoda, int row, IntPtr column, IntPtr result)")]
+    public const string C2DAGetCExoStringEntry = "_ZN4C2DA18GetCExoStringEntryEiRK10CExoStringPS0_";
+    /// <summary>CX-55 step 2: <c>g_pRules</c> @0x18b9680, a <c>CNWRules*</c>. placeables.2da is two hops off it
+    /// (<see cref="EngineLayout.RulesTwoDimArrays"/> then <see cref="EngineLayout.TwoDimPlaceables"/>) -- the
+    /// same walk <c>AddPlaceableObjectStatic</c> and <c>RespawnStaticPlaceablesForTile</c> make, identical on
+    /// both builds (Windows <c>AddPlaceableObjectStatic</c> rva 0x7d95a0).</summary>
+    public const string Rules = "g_pRules";
+    /// <summary>CX-52 step 5: <c>Material::InitializeTextures(char const*, char const*, char const*, char const*)</c>
+    /// @0x4c73f0 (Windows RVA 0x83c90, exported) -- a model material's first texture requests, four
+    /// <c>AurTextureGetReference</c> calls. What it appends to <see cref="RefreshTextures"/> is world content; the 2D
+    /// GUI never comes through it. ABI: <c>(Material* this, four char*)</c>, no return.</summary>
+    [Fn("void(IntPtr mat, IntPtr t0, IntPtr t1, IntPtr t2, IntPtr t3)")]
+    public const string MaterialInitializeTextures = "_ZN8Material18InitializeTexturesEPKcS1_S1_S1_";
     /// <summary><c>CAurTextureBasic::glImageBasic(bool)</c> @0x48bcf0 -- the other <see cref="PltOnGpu"/>
     /// reader, and the one that routes a PLT texture (<c>+0x84 == 4</c>) around the upload funnel. Hooked
     /// for the same reason and on the same terms as <see cref="AurTextureConstructImage"/>.
@@ -856,6 +908,11 @@ internal static unsafe class SymbolMap
     /// the frame, meaning "whatever the controller says".</para></summary>
     [Fn("void(CAurTexture this, uint unit, int stage)")]
     public const string AurTextureBindInUnit = "_ZN11CAurTexture10BindInUnitEji";
+    /// <summary>CX-52 step 5: <c>CAurTexture::Bind(int)</c> @0x48e0f0 -- <see cref="AurTextureBindInUnit"/>'s twin on
+    /// the active unit, same resolution (vtable+0x18 then +0x10). Both are virtual and no subclass overrides either
+    /// (slots 33/34 of <c>CAurTexture</c> and <c>CAurTextureBasic</c> alike). ABI: <c>(CAurTexture* /*rdi*/, int frame /*esi*/)</c>.</summary>
+    [Fn("void(CAurTexture this, int stage)")]
+    public const string AurTextureBind = "_ZN11CAurTexture4BindEi";
     // ---- #127: the grass site. Grass is NOT a draw-bucket resident -- Scene::RenderSinglePass calls
     //      Scene::DoBinBucket @0x474c50 (vt+0x1c0) under the engine's own Tracy scope "Grass", between the
     //      sky and RenderDynamicGeometry. That placement, plus a depth mask it never sets and a distance
@@ -1471,6 +1528,48 @@ internal static unsafe class SymbolMap
     public const string ResManSetResObject = "_ZN10CExoResMan12SetResObjectERK7CResReftP4CRes";
     [Fn("long(IntPtr resman, IntPtr res)")]
     public const string ResManDemand       = "_ZN10CExoResMan6DemandEP4CRes";
+    /// <summary>CX-54 step 1: the one PURE lookup -- "where does this resref live" with no I/O, no allocation
+    /// and no <c>CRes</c>. It applies the server's <c>GetOverride</c> alias itself (so the RAW resref goes in),
+    /// walks the priority-sorted tables skipping any mid-rebuild, and hands back the winning table and key
+    /// entry. <c>logMissing: false</c> makes it side-effect free; <c>CExoResMan::Exists</c> is this plus a read
+    /// of <see cref="EngineLayout.KeyTableKind"/>. Returns an int through out-params, so there is no
+    /// <c>sret</c> on either OS -- unlike <c>GetResID</c> and <c>GetOverride</c>, which must never be called
+    /// directly (#456).</summary>
+    [Fn("int(IntPtr resman, byte* resref, ushort type, IntPtr* table, IntPtr* entry, byte logMissing)")]
+    public const string ResManGetKeyEntry  = "_ZN10CExoResMan11GetKeyEntryERK7CResReftPP12CExoKeyTablePP14CKeyTableEntryb";
+    /// <summary>CX-54 step 1: alias name plus restype to an absolute filename -- what <c>CExoFileInternal</c>
+    /// itself calls (Linux @0x516dc0, Windows RVA 0x166D20). It finds the <c>':'</c>, resolves the prefix
+    /// through the alias list, appends the remainder and then <c>'.' + GetResourceExtension(restype)</c>.
+    /// Returns a <c>CExoString</c> BY VALUE, so <b>sret</b>, and the buffer is the CALLER's to free
+    /// (<see cref="ExoStringDtor"/>).</summary>
+    [Fn("sret(CExoAliasList this, IntPtr name, ushort resType)")]
+    public const string AliasResolveFileName = "_ZNK13CExoAliasList15ResolveFileNameERK10CExoStringt";
+    /// <summary>CX-52: two of the twelve decoder slots <c>CAuroraInterface::CAuroraInterface()</c> @0x1124ac0
+    /// stores at boot -- DATA symbols holding function pointers, swapped by a store, not a hook. The getter
+    /// (live target <c>GetCompressedRaster</c> @0x1125990) is
+    /// <c>uchar*(const char* name, int* container, int* w, int* h, int* channels, int* level0Size, float* alphaMean)</c>
+    /// and returns level 0 inside the demanded resource; the release (<c>ReleaseRaster</c> @0x1123180) is
+    /// <c>void(void* data, int w, int h, int channelsOrBpp, int level0Size, int container)</c>. Both pointer/int
+    /// only, so one signature serves both ABIs.</summary>
+    public const string AurGetCompressedImage = "AurGetCompressedImage", AurReleaseRaster = "AurReleaseRaster";
+    /// <summary>CX-54: the raster (TGA) slot beside them, live target <c>CAuroraInterface::GetRaster</c> @0x1123080:
+    /// <c>uchar*(const char* name, int* w, int* h, int* bytesPerPixel)</c>. Released through
+    /// <see cref="AurReleaseRaster"/> with level-0 size 0.</summary>
+    public const string AurGetRaster = "AurGetRaster";
+    /// <summary>CX-52 step 0: <c>AurGetImageWrapper</c> @0x484cc0, the one caller of every decoder slot
+    /// (resource read + decode for one texture build). Timed only. Out params: w, h, bpp, level-0 size,
+    /// container, format, alpha mean; the int is the TXI-derived allow-compressed flag.</summary>
+    [Fn("IntPtr(IntPtr name, int* w, int* h, int* bpp, int* size, int* container, int* format, float* alpha, int allowCompressed)")]
+    public const string AurGetImageWrapper = "_Z18AurGetImageWrapperPKcPiS1_S1_S1_PN6Aurora22AuroraContainerFormatsEPNS2_20AuroraTextureFormatsEPfi";
+    /// <summary>CX-52 step 2: the whole TGA decode -- header walk, RLE expand, R/B swap -- runs in this virtual,
+    /// inside <c>CRes::Demand</c>'s servicing (@0x1154a60, Windows RVA 0x1A4730, identical). 1 parsed, 0 refused.</summary>
+    [Fn("int(IntPtr res)")]
+    public const string TgaServiced = "_ZN7CResTGA18OnResourceServicedEv";
+    /// <summary>CX-52 step 2: the PLT composite (@0x4b6580, Windows RVA 0x71360, identical): a fresh
+    /// <c>new[](w*h*4)</c> where each 2-byte {palette index, layer} pixel becomes the 4-byte entry
+    /// <c>palette + (layerRows[layer] &lt;&lt; 10) + index*4</c>. The palette height is unused.</summary>
+    [Fn("IntPtr(byte* px, int w, int h, byte* palette, int paletteHeight, int* layerRows, int layers)")]
+    public const string ImageDecode = "_Z11ImageDecodePhiiS_iPii";
     /// <summary>The two pre-dispatch calls of the world scene render, inside the AI update: the BSP
     /// management (every gob, three passes, the frustum traverse) and the draw-bucket build (the sole
     /// writer of the gob model matrix Alloy draws with). Timed only; see
@@ -1514,6 +1613,97 @@ internal static unsafe class SymbolMap
     public const string AurResFree = "_Z10AurResFreePv";
     [Fn("void(IntPtr res)")]
     public const string CResCtor           = "_ZN4CResC1Ev";
+
+    // ---- CX-55 step 0: the model load funnel, measured. All four are name-exported on nwmain.exe.
+    //      Verified from the Linux decompilation: FindModel -> BinaryFindModel (the name cache) and, on a
+    //      miss, IODispatcher::ReadSync -> AurResGet(name, ".mdl", 0, true) -> the AurGetResource slot,
+    //      which is CAuroraInterface::GetResource. ----
+    /// <summary><c>FindModel(const char*)</c> @0x44c2a0 -- the ONE funnel every model load goes through, and
+    /// the engine's name cache: <c>BinaryFindModel</c> over the sorted global <c>Models</c> answers a hit with
+    /// no I/O, a miss goes to <see cref="IoReadSync"/>. Recurses from inside the parse for a supermodel, so
+    /// only the outermost call is one model asked for.</summary>
+    [Fn("IntPtr(byte* name)")]
+    public const string FindModel = "_Z9FindModelPKc";
+    /// <summary><c>IODispatcher::ReadSync(const char*)</c> @0x4bf670 -- the miss path: one model file read plus
+    /// its parse, returning a <c>MaxTree*</c>. It calls <c>AurResGet(name, ".mdl", 0, true)</c>, then branches on
+    /// the first byte of the 4 <c>AurResGetDataBytes</c> hands back (the compare @0x4bf6e3): 0 = the binary
+    /// reader (nm 0x4bee60, which recurses here for the supermodel and demands every texture slot), anything
+    /// else = <c>AurResFree</c> and the ASCII <c>dofile</c>, which reads the file a second time.</summary>
+    [Fn("IntPtr(IntPtr dispatcher, byte* name)")]
+    public const string IoReadSync = "_ZN12IODispatcher8ReadSyncEPKc";
+    /// <summary><c>CAuroraInterface::GetResource(const char*, const char*, int*)</c> @0x1123fd0 -- STATIC (the
+    /// MSVC export says <c>SA</c>), the <c>AurGetResource</c> function-pointer slot <c>AurResGet</c> calls. This is
+    /// the whole file read of a model. Its return is the resource bytes themselves: <c>AurResGet</c> stores it at
+    /// <c>OpenResource+0x58</c> and <c>AurResGetDataBytes</c> hands that same pointer back, so byte 0 of what this
+    /// returns IS the binary/ASCII discriminator -- the cheapest place to read it.</summary>
+    [Fn("byte*(byte* name, byte* ext, int* size)")]
+    public const string AuroraGetResource = "_ZN16CAuroraInterface11GetResourceEPKcS1_Pi";
+    /// <summary><c>SpawnPartsForTile(...)</c> @0x463450 -- the half of <c>Scene::SpawnTile</c> that loads a tile's
+    /// models. Bracketed by <c>ModelZonesService</c> so a model read can be told apart from a placeable's or a
+    /// creature's. Returns <c>Gob*</c> (the MSVC export carries the return type Itanium drops).</summary>
+    [Fn("IntPtr(byte* resref, IntPtr pos, IntPtr rot, int id, int orientation, IntPtr parts)")]
+    public const string SpawnPartsForTile = "_Z17SpawnPartsForTilePKcRK6VectorRK10QuaternioniiR4ListIP4PartE";
+    // ---- CX-55 step 1: the model file read. AurResGet's function-pointer slot AurGetResource @0x18b9aa0 IS
+    //      CAuroraInterface::GetResource, so every .mdl the engine reads funnels through it, and AurResFree's
+    //      AurReleaseResource slot is its pair. The pointer it answers with carries a 10-byte engine header
+    //      (CAuroraModel::LoadModel @0x1134df0 writes restype 0x7d2 at ptr-10 and the owning CAuroraModel* at
+    //      ptr-8, the same on Windows rva 0xf4a70), which ReleaseResource switches on -- so a buffer of ours
+    //      leaves that header ZERO, and the engine's release is a no-op for it if our chain ever misses. ----
+    /// <summary><c>CAuroraInterface::ReleaseResource(void*)</c> @0x1123b90 -- STATIC, the matching edge that
+    /// <c>AurResFree</c> @0x4335d0 always reaches (<c>AurReleaseResource(res+0x68)</c>, the base pointer
+    /// <see cref="AuroraGetResource"/> returned). Reads <c>*(ushort*)(ptr-10)</c> to pick the resource kind.</summary>
+    [Fn("void(IntPtr data)")]
+    public const string AuroraReleaseResource = "_ZN16CAuroraInterface15ReleaseResourceEPv";
+    /// <summary><c>BinaryFindModel(const char*)</c> @0x448190 -- the model name cache, and nothing else:
+    /// <c>BinarySearchModel</c> @0x448110 <c>strcasecmp</c>s <c>Model+0x10</c> over the sorted global
+    /// <c>Models</c> @0x18da6f0 and reads no file. <c>FindModel</c> @0x44c2a0 calls it first and only loads on
+    /// a zero, which is exactly what makes it the "the engine already has this one" test.</summary>
+    [Fn("IntPtr(byte* name)")]
+    public const string BinaryFindModel = "_Z15BinaryFindModelPKc";
+    /// <summary><c>CNWTileSet::GetTileData(int)</c> @0x5e10d0 -- the i-th <c>CNWTileData</c> of a loaded tileset
+    /// (records of 0xb8 from <c>tileset+0x58</c> / Windows <c>+0x60</c>). Logs an EXOWARNING past the count, so
+    /// callers stop at <see cref="EngineLayout.TileSetTileCount"/>.</summary>
+    [Fn("IntPtr(CNWTileSet this, int id)")]
+    public const string TileSetGetTileData = "_ZN10CNWTileSet11GetTileDataEi";
+    /// <summary><c>CNWTileData::GetModelResRef()</c> @0x632a00 -- the tile's model resref, a <c>CResRef</c> (17
+    /// bytes) returned BY VALUE out of <c>tiledata+0x10</c>; identical offset on Windows rva 0x2c5ea0, and the
+    /// hidden buffer is ordered per OS by the <c>sret</c> declaration (#456).</summary>
+    [Fn("sret(CNWTileData this)")]
+    public const string TileDataGetModelResRef = "_ZN11CNWTileData14GetModelResRefEv";
+    /// <summary><c>CNWTile::SetID(int)</c> @0x632550 -- a one-store setter (<c>tile+0x14 = id</c>), and the
+    /// tile read-ahead's anchor: <c>CNWCArea::LoadArea</c> @0x80ee11 (Windows @0x1407dd382) calls it with the
+    /// tile id it has just read off the message, once per record, before the record's model load. Four callers
+    /// in all, none hot: this loop, <c>CNWCArea::SetTile</c> @0x708e60, and the two server-side twins.</summary>
+    [Fn("void(IntPtr tile, int id)")]
+    public const string NwTileSetID = "_ZN7CNWTile5SetIDEi";
+
+    // ---- CX-55 step 3: the ASCII -> binary compile. The compiler is the ENGINE's own, reader and writer
+    //      paired in one source file (docs/research/ascii-mdl-compile.md); nothing of ours writes an MDL. ----
+    /// <summary><c>compilemodelsinternal(bool asciiOnly, const char* name)</c> @0x448410 -- the guarded wrapper
+    /// the <c>compilemodel</c> console command uses, and the whole compile in one call: it walks the global
+    /// <c>Models</c> for a <c>strncasecmp</c> match on <c>Model+0x10</c>, refuses an already-binary model
+    /// (<c>Model+0x80 != 0</c>) when <paramref name="asciiOnly"/>, refuses one carrying an uninitialized
+    /// skinmesh (<c>modelHasUninitializedSkinmesh</c> @0x44e030, i.e. a skin node whose
+    /// <c>InternalPostProcess</c> never ran -- serialising one would write empty vertex blocks), and otherwise
+    /// calls <c>IODispatcher::Write(MaxTree*, const char*)</c> @0x4bc730 with a null name, so the file lands at
+    /// <c>&lt;MODELCOMPILER alias&gt;/&lt;Model+0x10&gt;.mdl</c>.
+    /// <para>Read-only on the model: the sizer @0x4b99c0 and filler @0x4bbfc0 walk the node tree and write only
+    /// their own accumulator and output blocks, which is why the engine's own <c>compileloadedmodels</c> may run
+    /// over every live model mid-session. The writer emits the <c>{0, modelDataSize, rawDataSize}</c> wrapper
+    /// then the two blocks (@0x4bc560), which is exactly what the binary reader @0x4bee60 copies back out.</para>
+    /// <para>Returns a pointer to a 200-byte static message buffer: <c>"Successfully compiled model %s.\n"</c>,
+    /// <c>"Model compile error: ..."</c>, or <c>"Success: Compiled 0 models.\n"</c> when the name matched
+    /// nothing.</para></summary>
+    [Fn("byte*(byte asciiOnly, byte* name)")]
+    public const string CompileModels = "_Z21compilemodelsinternalbPKc";
+    /// <summary><c>CExoAliasList::GetAliasPath(CExoString const&amp;, int) const</c> @0x516db0 -- the alias table's
+    /// raw directory for an alias name, which is where <c>IODispatcher::Write</c> reads <c>MODELCOMPILER</c>
+    /// from. NOT an sret call: the MSVC mangling says <c>AEBVCExoString@@</c>, a const REFERENCE into the alias
+    /// entry (@0x5179d0 returns <c>entry+0x10</c>), and the disassembly of the call inside <c>Write</c>
+    /// @0x4bc7bf passes <c>(this, &amp;name, 0)</c> and reads <c>{char* at +0, int len at +8}</c> off the
+    /// returned pointer. Nothing to free.</summary>
+    [Fn("IntPtr(CExoAliasList this, IntPtr name, int mode)")]
+    public const string AliasGetAliasPath = "_ZNK13CExoAliasList12GetAliasPathERK10CExoStringi";
 
     // ---- CX-689..CX-693: the radial menu seam (docs/research/radial-menu-reimplementation.md). The whole
     //      CRadialMenu surface is name-exported on Windows; the client roots are identified by vtable compare
@@ -1631,6 +1821,76 @@ internal static unsafe class SymbolMap
     /// <inheritdoc cref="VtCLayeredIcon"/>
     public const string VtCArmorIcon = "_ZTV10CArmorIcon";
 
+    /// <summary><c>CExoResMan::AddManifest(Hash::SHA1 const&amp;, unsigned priority)</c> @0x53bae0 -- the one place a
+    /// NWSync manifest becomes a search source. It copies the hash's hex text out of <c>sha1+0x15</c> and calls
+    /// <c>AddKeyTable(priority, hex, 5, 0, null)</c>, so the kind-5 key table's NAME is that hex (which is what
+    /// <c>ServiceFromManifest</c> @0x53a640 turns back into a <c>Hash::SHA1</c>). Hooked, not called: it is the
+    /// main-thread edge that tells the reader which manifest is live. <c>(this, SHA1 const*, uint) -&gt; int</c>;
+    /// no by-value crossing on either ABI.</summary>
+    [Fn("int(IntPtr resman, IntPtr sha1, uint priority)")]
+    public const string ResManAddManifest = "_ZN10CExoResMan11AddManifestERKN4Hash4SHA1Ej";
+    /// <summary><c>CExoResMan::RemoveManifest(Hash::SHA1 const&amp;)</c> @0x537440 -- the matching edge, same hex read
+    /// then <c>RemoveKeyTable(hex, 5, 1)</c>. <c>(this, SHA1 const*) -&gt; int</c>.</summary>
+    [Fn("int(IntPtr resman, IntPtr sha1)")]
+    public const string ResManRemoveManifest = "_ZN10CExoResMan14RemoveManifestERKN4Hash4SHA1E";
+    /// <summary><c>sqlite3_open_v2(path, &amp;db, flags, vfs)</c>. Alloy opens the NWSync DBs READ-ONLY on its own
+    /// connection, on the worker thread that uses it. The client links SQLite 3.45.3 (THREADSAFE=1) statically and
+    /// name-exports its C API on both binaries; zstd is unexported on Windows and anchored (see the <c>_win</c> rows).</summary>
+    [Fn("int(byte* path, IntPtr* db, int flags, byte* vfs)")]
+    public const string Sqlite3OpenV2 = "sqlite3_open_v2";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("int(IntPtr db)")]
+    public const string Sqlite3CloseV2 = "sqlite3_close_v2";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("int(IntPtr db, byte* sql, int nByte, IntPtr* stmt, byte** tail)")]
+    public const string Sqlite3PrepareV2 = "sqlite3_prepare_v2";
+    /// <summary><c>sqlite3_exec</c> -- used ONLY by the self-check, to build its own fixture DBs.</summary>
+    [Fn("int(IntPtr db, byte* sql, IntPtr cb, IntPtr arg, byte** err)")]
+    public const string Sqlite3Exec = "sqlite3_exec";
+    /// <summary><c>sqlite3_busy_timeout(db, ms)</c>. The engine writes these DBs from its own task threads, so the
+    /// reader sets this explicitly to 0: a locked DB is a counted miss, never a stalled worker.</summary>
+    [Fn("int(IntPtr db, int ms)")]
+    public const string Sqlite3BusyTimeout = "sqlite3_busy_timeout";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("int(IntPtr stmt, int idx, byte* text, int n, IntPtr dtor)")]
+    public const string Sqlite3BindText = "sqlite3_bind_text";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("int(IntPtr stmt, int idx, int v)")]
+    public const string Sqlite3BindInt = "sqlite3_bind_int";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("int(IntPtr stmt)")]
+    public const string Sqlite3Step = "sqlite3_step";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("int(IntPtr stmt)")]
+    public const string Sqlite3Reset = "sqlite3_reset";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("int(IntPtr stmt)")]
+    public const string Sqlite3Finalize = "sqlite3_finalize";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("byte*(IntPtr stmt, int col)")]
+    public const string Sqlite3ColumnText = "sqlite3_column_text";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("void*(IntPtr stmt, int col)")]
+    public const string Sqlite3ColumnBlob = "sqlite3_column_blob";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("int(IntPtr stmt, int col)")]
+    public const string Sqlite3ColumnBytes = "sqlite3_column_bytes";
+    /// <summary><c>sqlite3_threadsafe()</c> -- the compile-time mode, asserted once. The binaries carry
+    /// <c>THREADSAFE=1</c> (serialized), so a private connection per thread is sound.</summary>
+    [Fn("int()")]
+    public const string Sqlite3ThreadSafe = "sqlite3_threadsafe";
+    /// <inheritdoc cref="Sqlite3OpenV2"/>
+    [Fn("byte*(IntPtr db)")]
+    public const string Sqlite3ErrMsg = "sqlite3_errmsg";
+    /// <summary><c>ZSTD_createDCtx()</c> -- one context per reader, never freed, exactly as the engine's own
+    /// <c>ZstdCompressionProvider::DecompressBuffer</c> @0x649270 keeps one in thread-local storage.</summary>
+    [Fn("IntPtr()")]
+    public const string ZstdCreateDCtx = "ZSTD_createDCtx";
+    /// <summary><c>ZSTD_decompressDCtx(dctx, dst, dstCap, src, srcSize)</c> -- returns the produced size, or an
+    /// error code far larger than any real size, so comparing against the expected length is the check.</summary>
+    [Fn("nuint(IntPtr dctx, void* dst, nuint dstCap, void* src, nuint srcSize)")]
+    public const string ZstdDecompressDCtx = "ZSTD_decompressDCtx";
+
     /// <summary>A symbol's Windows resolution. Four forms and no fifth -- the point of #447: a missing key
     /// used to mean both "never looked" and "deliberately Linux-only", so the absence could not be counted.
     /// Now every constant has a row, <see cref="Nm"/>/<see cref="At"/> resolve, <see cref="LinuxOnly"/> is a
@@ -1661,6 +1921,8 @@ internal static unsafe class SymbolMap
         [SwapBuffers]       = Nm("?SwapBuffers@GLRender@@CAXPEAUSDL_Window@@@Z"),
         [SetText]           = Nm("?SetText@CAuroraStringWrapper@@QEAAXI@Z"),
         [ExoStringInit]     = Nm("?InitFromCharArray@CExoString@@AEAAAEAV1@PEBDI@Z"),
+        [C2DAGetCExoStringEntry] = Nm("?GetCExoStringEntry@C2DA@@QEAAHHAEBVCExoString@@PEAV2@@Z"),   // CX-55 step 2
+        [Rules]             = Nm("?g_pRules@@3PEAVCNWRules@@EA"),
         [ExoStringDtor]     = Nm("??1CExoString@@QEAA@XZ"),
         [AppManager]        = Nm("?g_pAppManager@@3PEAVCAppManager@@EA"),
         [ExoBase]           = Nm("?g_pExoBase@@3PEAVCExoBase@@EA"),   // userdir CExoString@0x38 identical on both builds
@@ -1681,6 +1943,8 @@ internal static unsafe class SymbolMap
         [StartLoadBar]                = At(),
         [EndLoadBar]                  = At(),
         [GetLoadBarState]             = At(),
+        [AreaLoadArea]                = At(),   // CX-52 step 5
+        [AreaAddPlaceableStatic]      = At(),   // CX-55 step 2
         [GetNWCMessage]               = At(),
         [SetFocusChatPrompt]          = At(),
         [ChatHandleEnter]             = At(),
@@ -1836,10 +2100,32 @@ internal static unsafe class SymbolMap
         [AddPartsToDrawBuckets] = Nm("?AddPartsToDrawBuckets@Scene@@QEAAXXZ"),
         [AurResFree] = Nm("?AurResFree@@YAXPEAX@Z"),
         [AurResGet] = Nm("?AurResGet@@YAPEAXPEBD0PEAH_N@Z"),
+        // CX-55 step 1: all five name-exported; GetResource/ReleaseResource are statics, so the 10-byte header
+        // and the (name, ext, size) order are the same on both builds (Windows rva 0xf63d0 / 0xf7620).
+        [AuroraGetResource] = Nm("?GetResource@CAuroraInterface@@SAPEAXPEBD0PEAH@Z"),
+        [AuroraReleaseResource] = Nm("?ReleaseResource@CAuroraInterface@@SAXPEAX@Z"),
+        [BinaryFindModel] = Nm("?BinaryFindModel@@YAPEAVModel@@PEBD@Z"),
+        [TileSetGetTileData] = Nm("?GetTileData@CNWTileSet@@QEAAPEAVCNWTileData@@H@Z"),
+        [TileDataGetModelResRef] = Nm("?GetModelResRef@CNWTileData@@QEAA?AVCResRef@@XZ"),
+        [NwTileSetID] = Nm("?SetID@CNWTile@@QEAAXH@Z"),
+        // CX-55 step 3: both name-exported. compilemodelsinternal is a free function (@@YA), so its message
+        // pointer return needs no argument reordering; GetAliasPath returns a const REFERENCE (AEBV), not a
+        // class by value, so there is no hidden buffer to order either (#456).
+        [CompileModels] = Nm("?compilemodelsinternal@@YAPEBD_NPEBD@Z"),
+        [AliasGetAliasPath] = Nm("?GetAliasPath@CExoAliasList@@QEBAAEBVCExoString@@AEBV2@H@Z"),
         [AurResGetData] = Nm("?AurResGetData@@YAPEADH@Z"),
+        // CX-55 step 0: the model load funnel. All four name-exported; the MSVC names carry the return types
+        // (Model*, MaxTree*, Gob*) Itanium drops, and GetResource's `SA` says it is static -- no `this`.
+        [FindModel] = Nm("?FindModel@@YAPEAVModel@@PEBD@Z"),
+        [IoReadSync] = Nm("?ReadSync@IODispatcher@@QEAAPEAVMaxTree@@PEBD@Z"),
+        [SpawnPartsForTile] = Nm("?SpawnPartsForTile@@YAPEAVGob@@PEBDAEBVVector@@AEBVQuaternion@@HHAEAV?$List@PEAVPart@@@@@Z"),
         [AurTextureBindInUnit] = Nm("?BindInUnit@CAurTexture@@UEAAXIH@Z"),
+        [AurTextureBind] = Nm("?Bind@CAurTexture@@UEAAXH@Z"),
         [AurTextureBuildAndStore] = Nm("?BuildAndStore@CAurTexture@@QEAAXXZ"),
         [AurTextureBuildAndStoreTexture] = Nm("?BuildAndStoreTexture@CAurTextureBasic@@QEAAXXZ"),
+        [AurTextureBuildAndStoreAll] = Nm("?AurTextureBuildAndStoreAll@@YAXXZ"),
+        [RefreshTextures] = Nm("?RefreshTextures@@3V?$List@PEAVCAurTextureBasic@@@@A"),
+        [MaterialInitializeTextures] = Nm("?InitializeTextures@Material@@QEAAXPEBD000@Z"),
         [AurTextureConstructImage] = Nm("?ConstructImage@CAurTextureBasic@@QEAAXXZ"),
         [AurTextureGetController] = Nm("?AurTextureGetController@@YAPEAVTextureController@@PEAVCAurTexture@@@Z"),
         [AurTextureDtor] = Nm("??1CAurTexture@@UEAA@XZ"),
@@ -1989,13 +2275,22 @@ internal static unsafe class SymbolMap
         [RenderStaticShadows] = Nm("?RenderStaticShadows@Scene@@EEAAXXZ"),
         [ComputeStaticLighting] = Nm("?ComputeStaticLighting@CAurScene@@UEAAXXZ"),
         [ResManDemand] = Nm("?Demand@CExoResMan@@QEAAPEAXPEAVCRes@@@Z"),
+        [AurGetCompressedImage] = Nm("?AurGetCompressedImage@@3P6APEAEPEBDPEAH1111PEAM@ZEA"),
+        [AurReleaseRaster] = Nm("?AurReleaseRaster@@3P6AXPEAXHHHHH@ZEA"),
+        [AurGetRaster] = Nm("?AurGetRaster@@3P6APEAEPEBDPEAH11@ZEA"),
+        [AurGetImageWrapper] = Nm("?AurGetImageWrapper@@YAPEAEPEBDPEAH111PEAW4AuroraContainerFormats@Aurora@@PEAW4AuroraTextureFormats@2@PEAMH@Z"),
+        [TgaServiced] = Nm("?OnResourceServiced@CResTGA@@UEAAHXZ"),
+        [ImageDecode] = Nm("?ImageDecode@@YAPEAEPEAEHH0HPEAHH@Z"),
         [ResManExists] = Nm("?Exists@CExoResMan@@QEAAHAEBVCResRef@@GPEAI@Z"),
+        [ResManGetKeyEntry] = Nm("?GetKeyEntry@CExoResMan@@QEAAHAEBVCResRef@@GPEAPEAVCExoKeyTable@@PEAPEAVCKeyTableEntry@@_N@Z"),
+        [AliasResolveFileName] = Nm("?ResolveFileName@CExoAliasList@@QEBA?AVCExoString@@AEBV2@G@Z"),
         [ResManGetResObject] = Nm("?GetResObject@CExoResMan@@QEAAPEAVCRes@@AEBVCResRef@@G@Z"),
         [ResManRelease] = Nm("?Release@CExoResMan@@QEAAHPEAVCRes@@@Z"),
         [ResManReleaseObj] = Nm("?ReleaseResObject@CExoResMan@@QEAAHPEAVCRes@@_N@Z"),
         [ResManSetResObject] = Nm("?SetResObject@CExoResMan@@QEAAXAEBVCResRef@@GPEAVCRes@@@Z"),
         [ResManUpdate] = Nm("?Update@CExoResMan@@QEAAXI@Z"),
         [RiCreateTexture] = Nm("?CreateTexture@RenderInterface@@SAXPEAVCAurTexture@@_NH@Z"),
+        [RiCreateCubeTexture] = Nm("?CreateCubeTexture@RenderInterface@@SAXPEAVCAurTexture@@_NH@Z"),
         [RiDeleteTextures] = Nm("?DeleteTextures@RenderInterface@@SAXIPEBI@Z"),
         [RiDisable] = Nm("?Disable@RenderInterface@@SAXW4AuroraEnableEnums@Aurora@@@Z"),
         [RiEnable] = Nm("?Enable@RenderInterface@@SAXW4AuroraEnableEnums@Aurora@@@Z"),
@@ -2071,6 +2366,32 @@ internal static unsafe class SymbolMap
         [VtCLayeredIcon]           = At(),
         [VtCCompositeIcon]         = At(),
         [VtCArmorIcon]             = At(),
+        // --- CX-54 step 3: NWSync read. The manifest edges are shared-engine exports; the sqlite3 C API is
+        //     exported UNMANGLED on nwmain.exe (311 sqlite3_* names, verified against the build 0x68e408bc
+        //     export table), so it resolves by its own name on both platforms.
+        [ResManAddManifest]    = Nm("?AddManifest@CExoResMan@@QEAAHAEBUSHA1@Hash@@I@Z"),
+        [ResManRemoveManifest] = Nm("?RemoveManifest@CExoResMan@@QEAAHAEBUSHA1@Hash@@@Z"),
+        [Sqlite3OpenV2]      = Nm("sqlite3_open_v2"),
+        [Sqlite3CloseV2]     = Nm("sqlite3_close_v2"),
+        [Sqlite3PrepareV2]   = Nm("sqlite3_prepare_v2"),
+        [Sqlite3Exec]        = Nm("sqlite3_exec"),
+        [Sqlite3BusyTimeout] = Nm("sqlite3_busy_timeout"),
+        [Sqlite3BindText]    = Nm("sqlite3_bind_text"),
+        [Sqlite3BindInt]     = Nm("sqlite3_bind_int"),
+        [Sqlite3Step]        = Nm("sqlite3_step"),
+        [Sqlite3Reset]       = Nm("sqlite3_reset"),
+        [Sqlite3Finalize]    = Nm("sqlite3_finalize"),
+        [Sqlite3ColumnText]  = Nm("sqlite3_column_text"),
+        [Sqlite3ColumnBlob]  = Nm("sqlite3_column_blob"),
+        [Sqlite3ColumnBytes] = Nm("sqlite3_column_bytes"),
+        [Sqlite3ThreadSafe]  = Nm("sqlite3_threadsafe"),
+        [Sqlite3ErrMsg]      = Nm("sqlite3_errmsg"),
+        // zstd is statically linked but NOT exported on Windows (0 ZSTD_* names in the export table), so both
+        // rows are anchored inside the exported `?DecompressBuffer@ZstdCompressionProvider@...` @rva 0x1aa230,
+        // whose body is the Linux @0x649270 one call for call: the zero-argument factory whose result is
+        // stashed in TLS and handed to the five-argument decompressor is ZSTD_createDCtx.
+        [ZstdCreateDCtx]     = At(),
+        [ZstdDecompressDCtx] = At(),
     };
 
     /// <summary>Why a symbol does not resolve on Windows, in the words of its own row. A key that is missing

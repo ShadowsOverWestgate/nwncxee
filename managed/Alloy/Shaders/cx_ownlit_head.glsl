@@ -13,6 +13,8 @@ flat in int vDraw;             // this fragment's CxDraw record: the material co
 #include "cx_keyfogdecl.glsl"
 #include "cx_chartbuf.glsl"
 uniform sampler2D uTex;
+#define CX_ARRIVE_SECONDS 0.6   // CX-52: a streamed diffuse's fade-in, see the diffuse sample
+#define CX_ARRIVE_MIPS 6.0      // ...starting this many mips blurred
 uniform sampler2D uFlowTex;    // #123 slot 6: RG flow direction, only ever bound on a flowmap part
 // #120: the five stock .mtr slots beyond the diffuse, on units 3..7 (1 and 2 are the shadow maps).
 // Sampled only where the record's slot mask says the material actually bound one.

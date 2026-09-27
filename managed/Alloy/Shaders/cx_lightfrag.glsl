@@ -209,8 +209,30 @@ vec3 CxPointDiffuse(vec3 c, float att, float ndlRaw, float ndl)
 }
 
 // #674: a static light's record carries its cube slot PLUS this when it is in the lightmap pages
-// (AlloyLights.LightStatic). Decode: w >= 128 is static, slot = w - 256 (-1 survives as 255).
+// (AlloyLights.LightStatic), and CX-56 its bake-set index PLUS ONE times CX_LIGHT_SET above that
+// (AlloyLights.LightSetStride; 0 = no entry). Decode: w >= 128 is static, set = (w - 128) / 512 - 1,
+// slot = w - 256 - 512 * (set + 1).
 const float CX_LIGHT_STATIC = 256.0;
+const int CX_LIGHT_SET = 512;
+int CxLightSet(int w) { return w >= 128 ? (w - 128) / CX_LIGHT_SET - 1 : -1; }
+int CxLightSlot(int w) { return w >= 128 ? w - 256 - CX_LIGHT_SET * (CxLightSet(w) + 1) : w; }
+// CX-56: which of the surface's four mover shares is this light's -- its place in the record's pick, 4 = none.
+int CxPickChan(int set, vec4 pick)
+{
+    if (set < 0) return 4;
+    float f = float(set);
+    return pick.x == f ? 0 : pick.y == f ? 1 : pick.z == f ? 2 : pick.w == f ? 3 : 4;
+}
+// CX-56: what a baked receiver owes a hot static light's movers. With a channel the bake's own answer --
+// the share of the texel a mover in this light's path takes back (lmSub.y, a fraction); with none (not one
+// of the four the surface's pick holds) the live estimate (lmSub.x, luminance). `soft` false = one tap per map.
+void CxMoverOwe(int slot, int ch, float lum, float ndlRaw, bool soft, vec3 worldPos, vec3 N, float dfade,
+                vec4 lmMover, float lmTexel, inout vec3 lmSub)
+{
+    if (slot < 0) return;
+    if (ch < 4) lmSub.y += lmMover[ch] * dfade * uLocalFade[slot] * (1.0 - CxMoverVisQ(slot, worldPos, N, ndlRaw, soft));
+    else if (lum > 0.0) lmSub.x += lum * dfade * (1.0 - CxLocalDynShadowQ(slot, worldPos, N, ndlRaw, soft, lmTexel));
+}
 // #674: lightmap.movers -- 1 = a HOT static light (a mover under it this frame) takes its mover's
 // shadow back out of the baked term; 0 = baked receivers skip static lights outright. Unset reads
 // 0, the off position, which is what a stale content override degrades to.
@@ -222,11 +244,11 @@ uniform int uLmMovers;
 // positions and normals in hand, so there is no eye-space round trip.
 // #674: `baked` > 0.5 = this fragment reads its static light from the lightmap pages, so every static
 // light is skipped here -- except a HOT one under lightmap.movers, whose mover shadow (the dyn page
-// alone, never the static half: the bake already holds that) accumulates into `lmSub` (x occluded, y total) as the
-// contribution to take back out of the baked term (#666: exact wherever the bake had the light
-// unshadowed; over-darkens only down to the floor where static geometry already shadowed the texel).
+// alone, never the static half: the bake already holds that) accumulates into `lmSub` as the part of the
+// baked term to take back: y a fraction of it (CX-56, the light's mover channel `lmMover`), x a luminance
+// (a light with no channel: the live estimate, see CxMoverOwe).
 vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,
-                        float rough, float specularity, float baked, out vec3 spec, out vec3 lmSub)
+                        float rough, float specularity, float baked, float lmTexel, vec4 lmMover, vec4 lmPick, out vec3 spec, out vec3 lmSub)
 {
     spec = vec3(0.0); lmSub = vec3(0.0);
     uint cl = CxCluster(viewDepth);
@@ -256,7 +278,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     vec3 aLit = vec3(0.0), aSpc = vec3(0.0), bLit = vec3(0.0), bSpc = vec3(0.0);
     // the same cap over HOT lights, ranked by the luminance they would take back: the capN strongest
     // get the soft dyn shadow, the rest one tap per map (uncapped, 15 hot lights x 8 taps was the frame)
-    float hA = 0.0, hB = 0.0; int hASlot = -1, hBSlot = -1; float hANdl = 0.0, hBNdl = 0.0;
+    float hA = 0.0, hB = 0.0; int hASlot = -1, hBSlot = -1, hACh = 4, hBCh = 4; float hANdl = 0.0, hBNdl = 0.0;
     for (uint k = 0u; k < n; k++)
     {
         uint li = uClIdx[base + k];
@@ -266,7 +288,8 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         // and the #674 static bit above it
         int w = int(cs.w);
         bool isStatic = w >= 128;
-        int slot = isStatic ? w - 256 : w;
+        int slot = CxLightSlot(w);
+        int ch = CxPickChan(CxLightSet(w), lmPick);
         // a static light on a baked receiver is in the pages already: a cold one costs nothing here,
         // a HOT one (a mover under it) owes its mover's shadow and nothing else...
         bool inPages = isStatic && baked > 0.5;
@@ -312,19 +335,19 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
             // shadowed that light at this texel the subtraction overshoots (clamped at the caller);
             // the exact total needs every static light evaluated live, which was the opaque pass.
             float lum = dot(CxPointDiffuse(c, att, ndlRaw, ndl), vec3(0.2126, 0.7152, 0.0722));
-            int eSlot = slot; float eNdl = ndlRaw, eLum = lum;   // the light this one displaces: itself by default; hard tap, as above
+            int eSlot = slot, eCh = ch; float eNdl = ndlRaw, eLum = lum;   // the light this one displaces: itself by default; hard tap, as above
             if (capN > 0 && lum > hA)
             {
-                if (capN >= 2) { eSlot = hBSlot; eNdl = hBNdl; eLum = hB; hB = hA; hBSlot = hASlot; hBNdl = hANdl; }
-                else { eSlot = hASlot; eNdl = hANdl; eLum = hA; }
-                hA = lum; hASlot = slot; hANdl = ndlRaw;
+                if (capN >= 2) { eSlot = hBSlot; eCh = hBCh; eNdl = hBNdl; eLum = hB; hB = hA; hBSlot = hASlot; hBCh = hACh; hBNdl = hANdl; }
+                else { eSlot = hASlot; eCh = hACh; eNdl = hANdl; eLum = hA; }
+                hA = lum; hASlot = slot; hACh = ch; hANdl = ndlRaw;
             }
             else if (capN >= 2 && lum > hB)
             {
-                eSlot = hBSlot; eNdl = hBNdl; eLum = hB;
-                hB = lum; hBSlot = slot; hBNdl = ndlRaw;
+                eSlot = hBSlot; eCh = hBCh; eNdl = hBNdl; eLum = hB;
+                hB = lum; hBSlot = slot; hBCh = ch; hBNdl = ndlRaw;
             }
-            if (eSlot >= 0 && eLum > 0.0) lmSub.x += eLum * dfade * (1.0 - CxLocalDynShadowQ(eSlot, worldPos, N, eNdl, false));
+            CxMoverOwe(eSlot, eCh, eLum, eNdl, false, worldPos, N, dfade, lmMover, lmTexel, lmSub);
             if (!mirror) continue;
         }
         vec3 dif = c * (att * ndl);
@@ -378,12 +401,15 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         float sh = mix(1.0, CxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth), dfade);
         acc += bLit * mix(uLocalFloor, 1.0, sh); spec += bSpc * sh;
     }
-    if (hASlot >= 0) lmSub.x += hA * dfade * (1.0 - CxLocalDynShadow(hASlot, worldPos, N, hANdl));
-    if (hBSlot >= 0) lmSub.x += hB * dfade * (1.0 - CxLocalDynShadow(hBSlot, worldPos, N, hBNdl));
+    CxMoverOwe(hASlot, hACh, hA, hANdl, true, worldPos, N, dfade, lmMover, lmTexel, lmSub);
+    CxMoverOwe(hBSlot, hBCh, hB, hBNdl, true, worldPos, N, dfade, lmMover, lmTexel, lmSub);
     // the mirror tap: the strongest lobe's shadow, taken back out of the unshadowed sum it went into. The
     // hardware tap alone -- a highlight has no penumbra worth a blocker search
     if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)
         spec -= mSpc * (1.0 - mix(1.0, CxLocalShadowQ(mSlot, worldPos, N, mNdl, onMover, viewDepth, false), dfade));
+    // a baked shadow keeps uLocalFloor of its light (cx_bake_f), so a mover's takes back only the rest
+    // (the channel shares in y were baked without the floor already)
+    lmSub.x *= 1.0 - uLocalFloor;
     // the daylight ratio; lmSub stays in the undimmed units the caller's baked term is compared in
     spec *= uDayDim;
     return acc * uDayDim;
@@ -393,7 +419,7 @@ vec3 CxClusteredLight(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMo
                         float rough, float specularity, out vec3 spec)
 {
     vec3 sub;
-    return CxClusteredLightLm(worldPos, N, V, viewDepth, onMover, rough, specularity, 0.0, spec, sub);
+    return CxClusteredLightLm(worldPos, N, V, viewDepth, onMover, rough, specularity, 0.0, 0.0, vec4(0.0), vec4(-1.0), spec, sub);
 }
 
 // The diffuse half alone, for <c>/alloy viz 1</c> and anything that has no material in hand.
@@ -416,8 +442,7 @@ float CxLocalShadowViz(vec3 worldPos, vec3 N, float viewDepth)
     {
         uint li = uClIdx[base + k];
         vec4 pr = uLights[li * 2u];
-        int slot = int(uLights[li * 2u + 1u].w);
-        if (slot >= 128) slot -= 256;   // #674: the static bit
+        int slot = CxLightSlot(int(uLights[li * 2u + 1u].w));
         if (slot < 0) continue;
         vec3 d = pr.xyz - worldPos;
         if (dot(d, d) > pr.w * pr.w) continue;

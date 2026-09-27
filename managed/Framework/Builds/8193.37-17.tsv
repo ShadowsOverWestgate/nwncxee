@@ -59,6 +59,9 @@ offset	MdlNode	kind	0x98	0x98	# MdlNodeKind
 offset	MdlNode	controllers	0x78	0x78	# MdlNodeControllers
 offset	MdlNode	controllerCount	0x80	0x80	# MdlNodeControllerCount
 offset	NewController	keyCount	0x4	0x4	# NewControllerKeyCount
+offset	MdlNode	children	0x68	0x68	# MdlNodeChildren
+offset	MdlNode	childCount	0x70	0x70	# MdlNodeChildCount
+offset	MdlNode	nodeId	0x34	0x34	# MdlNodeId
 offset	VertexPrimitive	matrix	0x18	0x18	# NodeMatrix
 offset	VertexPrimitive	flags	0x80	0x80	# NodeFlags
 offset	MdlNode	primType	0x270	0x270	# MdlPrimType
@@ -85,6 +88,8 @@ offset	Part	rot	0x1c	0x1c	# PartRot
 offset	Part	children	0x38	0x38	# PartChildren
 offset	Part	childCount	0x40	0x40	# PartChildCount
 offset	Part	parent	0x48	0x48	# PartParent
+offset	Part	nodeId	0x30	0x30	# PartNodeId
+offset	Part	animateGate	0x60	0x60	# PartAnimateGate
 offset	Part	gob	0x50	0x50	# PartGob
 offset	Part	material	0x58	0x58	# PartMaterial
 offset	PartTriMesh	bboxMin	0x64	0x68	# PartBboxMin
@@ -336,6 +341,10 @@ offset	CAurTextureBasic	flagCube	0xe3	0xe3	# TexBasicFlagCube
 offset	CAurTextureBasic	flagBuilt	0xe6	0xe6	# TexBasicFlagBuilt
 offset	CAurTextureBasic	flagNoImage	0xe7	0xe7	# TexBasicFlagNoImage
 offset	CAurTextureBasic	flagNeverBuild	0xe8	0xe8	# TexBasicFlagNeverBuild
+offset	CAurTextureBasic	flagNoDrain	0xeb	0xeb	# TexBasicFlagNoDrain
+offset	CAurTextureBasic	fileRange	0xce	0xce	# TexBasicFileRange
+offset	CAurTextureBasic	flagBump	0xde	0xde	# TexBasicFlagBump
+offset	CAurTextureBasic	flagRasterRelease	0xe9	0xe9	# TexBasicFlagRasterRelease
 offset	CAurTexture	vtbl.GetImage	0x68	0x60	# TexGetImageSlot
 offset	CAurTexture	vtbl.GetWidth	0x78	0x70	# TexGetWidthSlot
 offset	CAurTexture	vtbl.GetHeight	0x80	0x78	# TexGetHeightSlot
@@ -396,6 +405,43 @@ offset	SharedMaterial	resrefStride	0x11	0x11	# SharedNameLen
 offset	CRes	sizeof	0x60	0x60	# SizeOfCRes
 offset	CRes	data	0x20	0x20	# CResData
 offset	CRes	size	0x30	0x30	# CResSize
+offset	CRes	keyEntry	0x28	0x28	# CResKeyEntry
+offset	CRes	sourceKind	0xc	0xc	# CResSourceKind
+offset	CKeyTableEntry	resType	0x32	0x32	# KeyEntryResType
+offset	CKeyTableEntry	resRef	0x0	0x0	# KeyEntryResRef
+offset	Sha1	empty	0x0	0x0	# Sha1Empty
+offset	Sha1	hex	0x15	0x15	# Sha1Hex
+offset	CKeyTableEntry	res	0x18	0x18	# KeyEntryRes
+offset	CKeyTableEntry	resId	0x20	0x20	# KeyEntryResId
+offset	CExoKeyTable	kind	0x20	0x20	# KeyTableKind
+offset	CExoKeyTable	name	0x28	0x28	# KeyTableName
+offset	CExoKeyTable	files	0x50	0x50	# KeyTableFiles
+offset	CExoResFile	name	0x8	0x8	# ResFileName
+offset	CExoResFile	entries	0x40	0x48	# ResFileEntries
+offset	CExoEncapsulatedFile	name	0x8	0x8	# EncapFileName
+offset	CExoEncapsulatedFile	entries	0x50	0x50	# EncapFileEntries
+offset	BiffVarResEntry	stride	0x18	0x18	# BifEntryStride
+offset	BiffVarResEntry	offset	0x4	0x4	# BifEntryOffset
+offset	BiffVarResEntry	storedSize	0x8	0x8	# BifEntryStored
+offset	BiffVarResEntry	compressed	0x10	0x10	# BifEntryCompressed
+offset	BiffVarResEntry	plainSize	0x14	0x14	# BifEntryPlain
+offset	ErfResListEntry	stride	0x10	0x10	# ErfEntryStride
+offset	ErfResListEntry	offset	0x0	0x0	# ErfEntryOffset
+offset	ErfResListEntry	storedSize	0x4	0x4	# ErfEntryStored
+offset	ErfResListEntry	compressed	0x8	0x8	# ErfEntryCompressed
+offset	ErfResListEntry	plainSize	0xc	0xc	# ErfEntryPlain
+offset	CExoBase	aliasList	0x20	0x20	# ExoBaseAliasList
+offset	CNWTileSet	tileCount	0x4c	0x54	# TileSetTileCount
+offset	CAuroraCompressedTextureDDS	res	0x18	0x18	# DdsHelperRes
+offset	CResTGA	header	0x88	0x88	# TgaHeader
+offset	CResTGA	colorMap	0x78	0x78	# TgaColorMap
+offset	CResTGA	pixels	0x80	0x80	# TgaPixels
+offset	CResTGA	parsed	0x6c	0x6c	# TgaParsed
+offset	CResTGA	owned	0x60	0x60	# TgaOwned
+offset	CResTGA	colorMapped	0x64	0x64	# TgaColorMapped
+offset	CResTGA	compressed	0x68	0x68	# TgaCompressed
+offset	CResTGA	size	0x70	0x70	# TgaSize
+offset	CResTGA	srcSize	0x74	0x74	# TgaSrcSize
 offset	CNWCModule	cameraFlags	0x2bc	0x2bc	# ModuleCameraFlags
 offset	CClientExoAppInternal	driveChanged	0x1b0	0x1b0	# InternalDriveChanged
 offset	CClientExoAppInternal	driveWalk	0x1b4	0x1b4	# InternalDriveWalk
@@ -412,6 +458,11 @@ offset	CNWCArea	placeableLightCount	0x330	0x330	# AreaPlaceableLightCount
 offset	CNWCPlaceableObjectLight	gob	0x8	0x8	# PlaceableLightGob
 offset	CNWCArea	staticPlaceables	0x338	0x338	# AreaStaticPlaceables
 offset	CNWCArea	staticPlaceableCount	0x340	0x340	# AreaStaticPlaceableCount
+offset	CNWMessage	buffer	0x38	0x38	# MsgBuffer
+offset	CNWMessage	length	0x40	0x40	# MsgLength
+offset	CNWMessage	cursor	0x44	0x44	# MsgCursor
+offset	CNWRules	twoDimArrays	0x130	0x130	# RulesTwoDimArrays
+offset	CTwoDimArrays	placeables	0x140	0x140	# TwoDimPlaceables
 offset	CNWCObject	animBase	0x78	0x78	# ObjAnimBase
 offset	CNWCCreature	hoveredOid	0x448	0x428	# CreatureHoveredOid
 offset	CClientExoAppInternal	cursorManager	0xc8	0xc8	# InternalCursorManager
@@ -458,6 +509,7 @@ offset	Gob	animRuns	0xe0	0xe0	# GobAnimRuns
 offset	Gob	animRunCount	0xe8	0xe8	# GobAnimRunCount
 offset	AnimRun	animation	0x0	0x0	# AnimRunAnimation
 offset	Animation	name	0x10	0x10	# AnimationName
+offset	Animation	node	0x50	0x50	# AnimationNode
 offset	AnimRun	rate	0x8	0x8	# AnimRunRate
 offset	AnimRun	blend	0x18	0x18	# AnimRunBlend
 offset	AnimRun	flags	0xc	0xc	# AnimRunFlags
@@ -541,6 +593,8 @@ rva	_ZN11CNWCMessage40HandleServerToPlayerUpdate_WorkRemainingEv	0x7b85a0	# Hand
 rva	_ZN13CClientExoApp12StartLoadBarEiPKci	0x6acd20	# StartLoadBar
 rva	_ZN13CClientExoApp10EndLoadBarEv	0x6ab770	# EndLoadBar
 rva	_ZN13CClientExoApp15GetLoadBarStateEv	0x6abe20	# GetLoadBarState
+rva	_ZN8CNWCArea8LoadAreaEP10CAurCameraP18CGuiAreaLoadscreen	0x7dba70	# AreaLoadArea
+rva	_ZN8CNWCArea24AddPlaceableObjectStaticEjt6VectorS0_	0x7d95a0	# AreaAddPlaceableStatic
 rva	_ZN13CClientExoApp13GetNWCMessageEv	0x6abf90	# GetNWCMessage
 rva	_ZN10CGuiInGame18SetFocusChatPromptEv	0x6fae30	# SetFocusChatPrompt
 rva	_ZN20CGuiInGameChatPrompt11HandleEnterEv	0x87b0d0	# ChatHandleEnter
@@ -647,3 +701,5 @@ rva	_ZTV12CLayeredIcon	0xdaf750	# VtCLayeredIcon
 rva	_ZTV14CCompositeIcon	0xdaf708	# VtCCompositeIcon
 rva	_ZTV10CArmorIcon	0xdaf6c0	# VtCArmorIcon
 rva	_ZN12CNWCCreature15SpawnHitVisualsEhP20CNWCCombatAttackData6Vector10CExoString	0x80bb10	# SpawnHitVisuals
+rva	ZSTD_createDCtx	0x9e8350	# ZstdCreateDCtx (CX-54: the zero-arg DCtx factory called by ?DecompressBuffer@ZstdCompressionProvider@NWCompressedBuffer@@ rva 0x1aa230)
+rva	ZSTD_decompressDCtx	0x9e9670	# ZstdDecompressDCtx (CX-54: the 5-arg decompressor in the same body)

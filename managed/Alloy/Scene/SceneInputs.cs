@@ -411,6 +411,20 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     /// <summary>RenderInterface::GetGlobalShaderParamf -- param 0x12 = the engine's light-radius multiplier.</summary>
     private static RiGetGlobalShaderParamfFn _getGspF;
+
+    /// <summary>#140: latch the two constants the engine's point-light attenuation is built from, out of the
+    /// global-param array the radius multiplier comes from (<c>GLRender::SetUniforms</c> @0x4cd341 reads
+    /// 0x12/0x13/0x14 and derives lightFalloffFactor and lightMaxIntensityInv from exactly these). Read on
+    /// every walk -- they are graphics settings the player can change -- and by the area key at
+    /// <c>LoadArea</c>'s return, which on the login load runs before any walk. Returns the radius multiplier.</summary>
+    internal static float LatchAtten()
+    {
+        float radiusMult = _getGspF != null ? _getGspF(0x12) : 1f;
+        if (!(radiusMult > 0f)) radiusMult = 1f;
+        if (_getGspF != null)
+            CX.Alloy.AlloyLights.LatchAtten(_getGspF(0x13), _getGspF(0x14), radiusMult);
+        return radiusMult;
+    }
     /// <summary>GetLightAdjustedRadius -- the engine's own lit-radius calculation, called rather than
     /// re-derived so the Alloy pass cannot drift from it.</summary>
     private static GetLightAdjustedRadiusFn _getAdjRadius;
@@ -442,14 +456,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         if (area.Ptr != _flkArea) { _flkArea = area.Ptr; Array.Clear(_flkId); }
         int count = lm.MasterCount;
         if (lm.MasterData == IntPtr.Zero) count = 0;   // an empty list still walks: the lightmap set closes on "no light"
-        float radiusMult = _getGspF != null ? _getGspF(0x12) : 1f;
-        if (!(radiusMult > 0f)) radiusMult = 1f;
-        // #140: the two constants the engine's own point-light attenuation is built from, from the same
-        // global-param array the radius multiplier comes out of (GLRender::SetUniforms @0x4cd341 reads
-        // 0x12/0x13/0x14 and derives lightFalloffFactor and lightMaxIntensityInv from exactly these).
-        // Read every capture rather than once: they are graphics settings and the player can change them.
-        if (_getGspF != null)
-            CX.Alloy.AlloyLights.LatchAtten(_getGspF(0x13), _getGspF(0x14), radiusMult);
+        float radiusMult = LatchAtten();
         // BOTH snapshots restart here, not at the frame edge. CasterPass consumes the local-light set later
         // in this same pass slot, and the roll-call this service's frame edge rides runs at the present --
         // resetting there handed the cube pass an empty set every frame. The walk is once-per-frame and
@@ -531,7 +538,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             // #674: the bake's snapshot takes the light HERE -- before the engine's nearest-N fade (a light
             // faded out by distance is still in the area) and before the flicker: the fingerprint is over the
             // uncut, steady list, or walking the camera re-keys every bake (#654).
-            bool isStatic = LightmapBake.Record(light, area, pos, adjR, new Vector3(r, g, b), ambient);
+            bool isStatic = LightmapBake.Record(light, area, pos, adjR, new Vector3(r, g, b), ambient, out int setIndex);
             // fade@0x90 (ControlLightsFade) scales the uploaded colour only, never the radius (SetLightGL)
             float lfade = light.Fade;
             if (lfade <= 0f) continue;
@@ -580,7 +587,7 @@ public sealed unsafe class SceneInputs : IExtenderService
             if (!culled)
             {
                 snapIdx = FrameInputs.LightCount;
-                FrameInputs.RecordAreaLight(light.Ptr, pos, upW, color, ambient, isStatic);
+                FrameInputs.RecordAreaLight(light.Ptr, pos, upW, color, ambient, isStatic, setIndex);
                 if (FrameInputs.LightCount == snapIdx) snapIdx = -1;   // snapshot full: the light was dropped
             }
             if (_torchDiag) TrackNearest(light, pos, range, alt, inten, color, adjR, upW, flk, culled, snapIdx);

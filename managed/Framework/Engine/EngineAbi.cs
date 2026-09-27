@@ -15,7 +15,9 @@ public readonly unsafe struct EngineList(IntPtr ptr)
     /// <inheritdoc cref="EngineLayout.ListItems"/>
     public IntPtr Items => *(IntPtr*)(Ptr + EngineLayout.ListItems);
     /// <inheritdoc cref="EngineLayout.ListItemCount"/>
-    public int Count => *(int*)(Ptr + EngineLayout.ListItemCount);
+    public int Count { get => *(int*)(Ptr + EngineLayout.ListItemCount); set => *(int*)(Ptr + EngineLayout.ListItemCount) = value; }
+    /// <summary>Element <paramref name="i"/> of a list of pointers; no bounds check.</summary>
+    public ref IntPtr this[int i] => ref ((IntPtr*)Items)[i];
 }
 
 /// <summary>C++ runtime layouts that belong to no engine class -- the other half of what the generator's

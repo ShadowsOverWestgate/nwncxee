@@ -191,7 +191,15 @@ void main()
     // (inc_standard.shd:253). Linearising the material terms too double-darkened every non-white material.
     vec3 matAmbient = d.amb.rgb;
     vec3 matDiffuse = d.dif.rgb;
-    vec4 texel = texture(uTex, uvA, uLodBias);
+    // CX-52: a diffuse that streamed in over the white stand-in fades in rather than cutting: from the
+    // stand-in through its blurred top mips to full detail. Alpha stays sharp -- a cutout's shape does not blur.
+    float arrive = d.ext2.z > 0.0 ? clamp((uNow - d.ext2.z) / CX_ARRIVE_SECONDS, 0.0, 1.0) : 1.0;
+    vec4 texel = texture(uTex, uvA, uLodBias + (1.0 - arrive) * (1.0 - arrive) * CX_ARRIVE_MIPS);
+    if (arrive < 1.0)
+    {
+        texel.a = texture(uTex, uvA, uLodBias).a;
+        texel.rgb = mix(vec3(1.0), texel.rgb, smoothstep(0.0, 0.35, arrive));
+    }
     if (flowMix > 0.0) texel = mix(texel, texture(uTex, uvB, uLodBias), flowMix);
     // #294: what the diffuse alpha MEANS here, asked once and spent once. On an env-mapped material
     // it is REFLECTIVITY, not coverage -- it becomes envLevel four lines down -- and the engine is

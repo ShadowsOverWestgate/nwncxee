@@ -21,6 +21,10 @@ public static unsafe class Gl
     public const uint TEXTURE_COMPRESSED = 0x86A1, TEXTURE_COMPRESSED_IMAGE_SIZE = 0x86A0,
                       TEXTURE_RED_SIZE = 0x805C, TEXTURE_GREEN_SIZE = 0x805D, TEXTURE_BLUE_SIZE = 0x805E;
     public const uint TEXTURE_WIDTH = 0x1000, TEXTURE_HEIGHT = 0x1001;
+    /// <summary>CX-52 step 4: the internal-format queries the block-format probe asks, and the swizzle the
+    /// engine sets on a one-channel texture.</summary>
+    public const uint INTERNALFORMAT_SUPPORTED = 0x826F, TEXTURE_COMPRESSED_BLOCK_WIDTH = 0x82B1,
+                      TEXTURE_COMPRESSED_BLOCK_HEIGHT = 0x82B2, TEXTURE_COMPRESSED_BLOCK_SIZE = 0x82B3;
     public const uint CULL_FACE = 0x0B44, SCISSOR_TEST = 0x0C11;
     /// <summary>#292: the face <c>glCullFace</c> discards. BACK is the engine's own default
     /// (<c>Scene::RenderDrawBucket</c> @0x46d060 restores <c>SetCullFace(1)</c> on every exit).</summary>
@@ -31,6 +35,7 @@ public static unsafe class Gl
     public const uint DEPTH_CLAMP = 0x864F;
     public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE_MINUS_SRC_COLOR = 0x0301;
     public const uint COLOR_ATTACHMENT1 = 0x8CE1;
+    public const uint COLOR_ATTACHMENT2 = 0x8CE2;
     public const uint POLYGON_OFFSET_FILL = 0x8037;
     public const uint TRIANGLE_STRIP = 0x0005;
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
@@ -509,6 +514,8 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, uint, int, void> TextureParameteri;
     public static delegate* unmanaged<uint, uint, int*, void> GetTextureParameteriv;
     public static delegate* unmanaged<uint, int, uint, int*, void> GetTextureLevelParameteriv;
+    /// <summary>CX-52 step 4: glGetInternalformativ: target, internalformat, pname, count, params.</summary>
+    public static delegate* unmanaged<uint, uint, uint, int, int*, void> GetInternalformativ;
     /// <summary>glGetTextureImage: texture, level, format, type, bufSize, pixels.</summary>
     public static delegate* unmanaged<uint, int, uint, uint, int, void*, void> GetTextureImage;
     public static delegate* unmanaged<uint, void> GenerateTextureMipmap;
@@ -731,6 +738,7 @@ public static unsafe class Gl
         TextureParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glTextureParameteri");
         GetTextureParameteriv = (delegate* unmanaged<uint, uint, int*, void>)P("glGetTextureParameteriv");
         GetTextureLevelParameteriv = (delegate* unmanaged<uint, int, uint, int*, void>)P("glGetTextureLevelParameteriv");
+        GetInternalformativ = (delegate* unmanaged<uint, uint, uint, int, int*, void>)P("glGetInternalformativ");
         GetTextureImage = (delegate* unmanaged<uint, int, uint, uint, int, void*, void>)P("glGetTextureImage");
         GenerateTextureMipmap = (delegate* unmanaged<uint, void>)P("glGenerateTextureMipmap");
         VertexArrayVertexBuffer = (delegate* unmanaged<uint, uint, uint, IntPtr, int, void>)P("glVertexArrayVertexBuffer");

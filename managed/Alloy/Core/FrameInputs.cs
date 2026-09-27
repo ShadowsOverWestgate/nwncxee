@@ -162,6 +162,9 @@ public static class FrameInputs
     /// <summary>#674: this light is in the lightmap pages (the three-branch static rule, classified at the
     /// walk). A baked surface skips it in the real-time loop; uploaded as the static bit in the record's w.</summary>
     public static bool[] AreaLightStatic = new bool[InitialLights];
+    /// <summary>CX-56: a static light's index in the bake's set (-1 = none), uploaded above the static bit: what a
+    /// baked surface's pick names its mover shares by.</summary>
+    public static int[] AreaLightSetIndex = new int[InitialLights];
 
     /// <summary>Area lights that resolved to a real cube slot on the last walk. Zero while cubes render is
     /// exactly the "shadows are on but invisible" state -- the receiver's no-slot path returns full light
@@ -181,10 +184,10 @@ public static class FrameInputs
     {
         Array.Resize(ref AreaLightPosRange, n); Array.Resize(ref AreaLightColor, n);
         Array.Resize(ref AreaLightId, n); Array.Resize(ref AreaLightSlot, n); Array.Resize(ref AreaLightAmbient, n);
-        Array.Resize(ref AreaLightStatic, n);
+        Array.Resize(ref AreaLightStatic, n); Array.Resize(ref AreaLightSetIndex, n);
     }
 
-    public static void RecordAreaLight(IntPtr id, Vector3 pos, float range, Vector3 color, bool ambient = false, bool isStatic = false)
+    public static void RecordAreaLight(IntPtr id, Vector3 pos, float range, Vector3 color, bool ambient = false, bool isStatic = false, int setIndex = -1)
     {
         if (LightCount == AreaLightPosRange.Length) GrowArea(LightCount * 2);
         AreaLightPosRange[LightCount] = new Vector4(pos, range);
@@ -192,6 +195,7 @@ public static class FrameInputs
         AreaLightId[LightCount] = id;
         AreaLightAmbient[LightCount] = ambient;
         AreaLightStatic[LightCount] = isStatic && !ambient;
+        AreaLightSetIndex[LightCount] = setIndex;
         AreaLightSlot[LightCount++] = -1;
     }
 }

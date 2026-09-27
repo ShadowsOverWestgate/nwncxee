@@ -473,6 +473,7 @@ internal static unsafe class Programs
         KhCam = GlProgram.Loc(prog, "uKeyholeCam"),
         Pixel = GlProgram.Loc(prog, "uPixel"),
         LodBias = GlProgram.Loc(prog, "uLodBias"),
+        Now = GlProgram.Loc(prog, "uNow"),
         Eye = GlProgram.Loc(prog, "uEyePos"),
         FogSky = GlProgram.Loc(prog, "uFogSky"),
         FogSkyColor = GlProgram.Loc(prog, "uFogSkyColor"),

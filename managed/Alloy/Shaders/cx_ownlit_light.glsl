@@ -51,13 +51,15 @@
     // comes back out through lmSub. One specular lobe along the dominant direction with the
     // irradiance as its radiance stands in for the per-light lobes the loop no longer runs.
     vec3 lmIrr, lmDir, lmSub;
-    bool baked = CxLightmap(uChart[vDraw], vChart, lmIrr, lmDir);
-    vec3 point = CxClusteredLightLm(vWorld, N, V, vDepth, onMover, rough, spec, baked ? 1.0 : 0.0, pointSpec, lmSub);
+    CxChart chart = uChart[vDraw];
+    bool baked = CxLightmap(chart.rec, vChart, lmIrr, lmDir);
+    vec3 point = CxClusteredLightLm(vWorld, N, V, vDepth, onMover, rough, spec, baked ? 1.0 : 0.0, CxLmTexelWorld(chart.rec),
+                                    baked ? CxLightmapMover(chart.rec, vChart) : vec4(0.0), chart.pick, pointSpec, lmSub);
     vec3 lm = vec3(0.0);
     if (baked)
     {
         lm = CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm));
-        lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5), 1.0)) * uDayDim;
+        lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5) + lmSub.y, 1.0)) * uDayDim;
         point += lm;
         // a glossy receiver took each static light's own lobe in the loop instead (light.hidden)
         if (!CxGlossy(rough)) pointSpec += lm * CxLoopSpec(CxSpecLobe(N, V, lmDir, rough, spec), N, V, lmDir);
@@ -67,7 +69,7 @@
     if (uViz == 43) { frag = vec4(baked ? lm : vec3(1.0, 0.0, 1.0), 1.0); return; }
     if (uViz == 44)
     {
-        vec4 rec = uChart[vDraw];
+        vec4 rec = chart.rec;
         vec2 t = floor(rec.yz + vChart * rec.w);
         frag = vec4(baked ? vec3(mod(t.x + t.y, 2.0) < 1.0 ? 0.3 : 0.7) : vec3(1.0, 0.0, 1.0), 1.0);
         return;

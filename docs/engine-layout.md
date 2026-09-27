@@ -776,3 +776,35 @@ shifts by that same pointer.
 writer set are unknown (`docs/re/nameplate.md` §8.3b), so 0/1 is not something these rows may assert.
 `Gob.inView` is a *byte*: the dword a `Byte01` reads there spans `propagateHilite` at `+0x1c`, so the
 predicate would be judging two fields.
+
+### The tileset row (CX-55)
+
+| class | row | provenance |
+| --- | --- | --- |
+| `CNWTileSet` | `tileCount 0x4c` / `0x54` | the whole body of `CNWTileSet::GetTileData(int)` is the bound test and the index (Linux nm `0x5e10d0`, Windows rva `0x2c67d0`, name-exported `?GetTileData@CNWTileSet@@QEAAPEAVCNWTileData@@H@Z`): `if (id < *(int*)(this + count)) return *(char**)(this + array) + id * 0xb8`. The record array (`0x58` / `0x60`) and its stride (`0xb8` on both) stay off the table on purpose — the exported getter does that arithmetic, so the only thing CX has to know is where to stop |
+
+## CX-55 step 2: the message cursor and placeables.2da
+
+Five rows, every one `Same` and every one read off a decompiled body on both
+builds -- no interpolation, no analogy.
+
+| Row | Linux / Windows | Anchor |
+|---|---|---|
+| `CNWMessage.buffer` | `0x38` / `0x38` | `CNWMessage::ReadDWORD(int)` (Linux nm `0x5e8450`, Windows rva `0x2d9bc0`, name-exported `?ReadDWORD@CNWMessage@@QEAAIH@Z`): `*(uint *)(cursor + *(longlong *)(this + 0x38))`, identical on both. `ReadWORD` (`0x5e8720` / `0x2da450`) and `ExpectType` (`0x5e8300` / `0x2d5560`) read the same three |
+| `CNWMessage.length` | `0x40` / `0x40` | the bound in the same three bodies: a read that would pass `*(uint*)(this+0x40)` advances the cursor and yields 0 |
+| `CNWMessage.cursor` | `0x44` / `0x44` | the byte offset those bodies load, use and then advance by the width read |
+| `CNWRules.twoDimArrays` | `0x130` / `0x130` | `CNWCArea::AddPlaceableObjectStatic` (Linux `0x7091c0`, Windows rva `0x7d95a0`): `*(C2DA **)(*(longlong *)(g_pRules + 0x130) + 0x140)` on both. The Linux disassembly spells the global's own deref out -- `lea g_pRules(%rip),%rcx; mov (%rcx),%rdx; mov 0x130(%rdx),%rdx` -- so the hops are off the `CNWRules*`, not off the global's address |
+| `CTwoDimArrays.placeables` | `0x140` / `0x140` | the second hop of that same expression, in `AddPlaceableObjectStatic` and `RespawnStaticPlaceablesForTile` (`0x708aa0`) alike |
+
+**Why the message is readable ahead.** Every typed read of 8, 16 or 32 bits is a
+plain little-endian load at the cursor; only sub-byte widths go through
+`ReadBits` (a separate bit cursor at `+0x50`/`+0x54`/`+0x5c`), and
+`ReadOBJECTIDClient` (`0x7d7870`) is four raw bytes with no type tag at all. So a
+fixed-shape record array still ahead of the cursor -- which is what `LoadArea`'s
+static-placeable block is -- can be read without touching the engine's parse.
+The one variable is `CNWMessage::ExpectType`: it prefixes one type byte to every
+typed read unless a global says otherwise, which makes the static-placeable
+record either 30 or 37 bytes. That global is a `.bss` neighbour of
+`g_pAppManager`, not a class field, so it is not a row: `ModelLoad.Objects` picks
+the shape by which one reads the appearance the engine just handed it back at the
+cursor, and stands down if neither does.

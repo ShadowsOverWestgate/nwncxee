@@ -22,7 +22,10 @@ internal static unsafe partial class Weather
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled;
     internal static readonly Knob<string> RainRows, SnowRows, SnowSkip;
-    private static TileSetGetFn _origTileSet;
+    /// <summary>Chained, not installed: CX-55's model prefetch is the other consumer of this symbol. The
+    /// priority only fixes the order the two read it in; both forward.</summary>
+    private const int TileSetPriority = 100;
+    private static TileSetGetFn* _tileSetSlot;
     private static string _tileset = "";
     /// <summary>The current area's tileset is on the no-cover list: its tiles carry their own snow.</summary>
     internal static bool TilesetSkipsSnow;
@@ -87,7 +90,7 @@ internal static unsafe partial class Weather
         while (n < 16 && p[n] != 0) n++;
         _tileset = System.Text.Encoding.ASCII.GetString(p, n);
         RecheckTileset();
-        return _origTileSet != null ? _origTileSet(mgr, resref) : IntPtr.Zero;
+        return _tileSetSlot != null ? (*_tileSetSlot)(mgr, resref) : IntPtr.Zero;
     }
 
     private static void ParseRows()
@@ -114,7 +117,7 @@ internal static unsafe partial class Weather
         _origStart = hooks.InstallAreaStartWeather(&OnStartWeather);
         _origStop = hooks.InstallAreaStopWeather(&OnStopWeather);
         if (SymbolMap.Require(log, "Weather", SymbolMap.TileSetGet))
-            _origTileSet = hooks.InstallTileSetGet(&OnGetTileSet);
+            _tileSetSlot = hooks.ChainTileSetGet(&OnGetTileSet, TileSetPriority);
         InstallDraw(log);
         log.Info($"Weather: armed and {(Enabled.V ? "ON" : "IDLE")} -- rain rows {RainRows.V}, snow rows {SnowRows.V}");
     }

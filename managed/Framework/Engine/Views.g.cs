@@ -112,8 +112,14 @@ global using unsafe RiResetRenderStatesFn = delegate* unmanaged<void>;
 global using unsafe RiBindBufferFn = delegate* unmanaged<uint, uint, void>;
 global using unsafe RiDeleteTexturesFn = delegate* unmanaged<uint, uint*, void>;
 global using unsafe RiCreateTextureFn = delegate* unmanaged<nint, byte, int, void>;
+global using unsafe RiCreateCubeTextureFn = delegate* unmanaged<nint, byte, int, void>;
 global using unsafe AurTextureConstructImageFn = delegate* unmanaged<nint, void>;
 global using unsafe AurTextureBuildAndStoreTextureFn = delegate* unmanaged<nint, void>;
+global using unsafe AurTextureBuildAndStoreAllFn = delegate* unmanaged<void>;
+global using unsafe AreaLoadAreaFn = delegate* unmanaged<nint, nint, nint, int>;
+global using unsafe AreaAddPlaceableStaticFn = delegate* unmanaged<nint, uint, ushort, CX.Engine.VectorArg, CX.Engine.VectorArg, int>;
+global using unsafe C2DAGetCExoStringEntryFn = delegate* unmanaged<nint, int, nint, nint, int>;
+global using unsafe MaterialInitializeTexturesFn = delegate* unmanaged<nint, nint, nint, nint, nint, void>;
 global using unsafe AurTextureGlImageBasicFn = delegate* unmanaged<nint, byte, int>;
 global using unsafe OperatorNewArrayFn = delegate* unmanaged<nuint, nint>;
 global using unsafe RenderDynamicShadowsFn = delegate* unmanaged<nint, void>;
@@ -140,6 +146,7 @@ global using unsafe EmitterIsSplatFn = delegate* unmanaged<nint, byte>;
 global using unsafe EmitterIsTintedFn = delegate* unmanaged<nint, byte>;
 global using unsafe GetLensFlareLightsFn = delegate* unmanaged<nint, nint>;
 global using unsafe AurTextureBindInUnitFn = delegate* unmanaged<nint, uint, int, void>;
+global using unsafe AurTextureBindFn = delegate* unmanaged<nint, int, void>;
 global using unsafe DoBinBucketFn = delegate* unmanaged<nint, void>;
 global using unsafe ReloadGrassFn = delegate* unmanaged<nint, void>;
 global using unsafe AreaLoadBorderFn = delegate* unmanaged<nint, nint, float, int>;
@@ -208,6 +215,10 @@ global using unsafe ResManExistsFn = delegate* unmanaged<nint, byte*, ushort, ui
 global using unsafe ResManGetResObjectFn = delegate* unmanaged<nint, byte*, ushort, nint>;
 global using unsafe ResManSetResObjectFn = delegate* unmanaged<nint, byte*, ushort, nint, void>;
 global using unsafe ResManDemandFn = delegate* unmanaged<nint, nint, long>;
+global using unsafe ResManGetKeyEntryFn = delegate* unmanaged<nint, byte*, ushort, nint*, nint*, byte, int>;
+global using unsafe AurGetImageWrapperFn = delegate* unmanaged<nint, int*, int*, int*, int*, int*, int*, float*, int, nint>;
+global using unsafe TgaServicedFn = delegate* unmanaged<nint, int>;
+global using unsafe ImageDecodeFn = delegate* unmanaged<byte*, int, int, byte*, int, int*, int, nint>;
 global using unsafe ManageSceneBSPFn = delegate* unmanaged<nint, long>;
 global using unsafe AddPartsToDrawBucketsFn = delegate* unmanaged<nint, long>;
 global using unsafe ResManReleaseFn = delegate* unmanaged<nint, nint, ulong>;
@@ -216,6 +227,16 @@ global using unsafe AurResGetFn = delegate* unmanaged<byte*, byte*, int*, byte, 
 global using unsafe AurResGetDataFn = delegate* unmanaged<int, byte*>;
 global using unsafe AurResFreeFn = delegate* unmanaged<nint, void>;
 global using unsafe CResCtorFn = delegate* unmanaged<nint, void>;
+global using unsafe FindModelFn = delegate* unmanaged<byte*, nint>;
+global using unsafe IoReadSyncFn = delegate* unmanaged<nint, byte*, nint>;
+global using unsafe AuroraGetResourceFn = delegate* unmanaged<byte*, byte*, int*, byte*>;
+global using unsafe SpawnPartsForTileFn = delegate* unmanaged<byte*, nint, nint, int, int, nint, nint>;
+global using unsafe AuroraReleaseResourceFn = delegate* unmanaged<nint, void>;
+global using unsafe BinaryFindModelFn = delegate* unmanaged<byte*, nint>;
+global using unsafe TileSetGetTileDataFn = delegate* unmanaged<nint, int, nint>;
+global using unsafe NwTileSetIDFn = delegate* unmanaged<nint, int, void>;
+global using unsafe CompileModelsFn = delegate* unmanaged<byte, byte*, byte*>;
+global using unsafe AliasGetAliasPathFn = delegate* unmanaged<nint, nint, int, nint>;
 global using unsafe RadialActivateInternalFn = delegate* unmanaged<nint, void>;
 global using unsafe RadialCreateSubMenuFn = delegate* unmanaged<nint, int, int>;
 global using unsafe RadialRecursiveAutoDeleteFn = delegate* unmanaged<nint, int>;
@@ -223,6 +244,25 @@ global using unsafe StringGobGetTextLineCountFn = delegate* unmanaged<nint, int>
 global using unsafe StringGobGetTextLineFn = delegate* unmanaged<nint, int, nint>;
 global using unsafe SpellMenuTargetIsValidFn = delegate* unmanaged<nint, uint, ushort>;
 global using unsafe AurTextureFindFn = delegate* unmanaged<byte*, byte*, int*, int, byte, nint>;
+global using unsafe ResManAddManifestFn = delegate* unmanaged<nint, nint, uint, int>;
+global using unsafe ResManRemoveManifestFn = delegate* unmanaged<nint, nint, int>;
+global using unsafe Sqlite3OpenV2Fn = delegate* unmanaged<byte*, nint*, int, byte*, int>;
+global using unsafe Sqlite3CloseV2Fn = delegate* unmanaged<nint, int>;
+global using unsafe Sqlite3PrepareV2Fn = delegate* unmanaged<nint, byte*, int, nint*, byte**, int>;
+global using unsafe Sqlite3ExecFn = delegate* unmanaged<nint, byte*, nint, nint, byte**, int>;
+global using unsafe Sqlite3BusyTimeoutFn = delegate* unmanaged<nint, int, int>;
+global using unsafe Sqlite3BindTextFn = delegate* unmanaged<nint, int, byte*, int, nint, int>;
+global using unsafe Sqlite3BindIntFn = delegate* unmanaged<nint, int, int, int>;
+global using unsafe Sqlite3StepFn = delegate* unmanaged<nint, int>;
+global using unsafe Sqlite3ResetFn = delegate* unmanaged<nint, int>;
+global using unsafe Sqlite3FinalizeFn = delegate* unmanaged<nint, int>;
+global using unsafe Sqlite3ColumnTextFn = delegate* unmanaged<nint, int, byte*>;
+global using unsafe Sqlite3ColumnBlobFn = delegate* unmanaged<nint, int, void*>;
+global using unsafe Sqlite3ColumnBytesFn = delegate* unmanaged<nint, int, int>;
+global using unsafe Sqlite3ThreadSafeFn = delegate* unmanaged<int>;
+global using unsafe Sqlite3ErrMsgFn = delegate* unmanaged<nint, byte*>;
+global using unsafe ZstdCreateDCtxFn = delegate* unmanaged<nint>;
+global using unsafe ZstdDecompressDCtxFn = delegate* unmanaged<nint, void*, nuint, void*, nuint, nuint>;
 using System;
 using CX.Framework;
 
@@ -258,6 +298,8 @@ public readonly unsafe partial struct Animation(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.AnimationName"/>
     public ref byte Name => ref *(byte*)(Ptr + EngineLayout.AnimationName);
+    /// <inheritdoc cref="EngineLayout.AnimationNode"/>
+    public MdlNode Node { get => new(*(IntPtr*)(Ptr + EngineLayout.AnimationNode)); set => *(IntPtr*)(Ptr + EngineLayout.AnimationNode) = value.Ptr; }
 }
 
 /// <summary>Typed view of an engine <c>BSPNode*</c>.</summary>
@@ -269,6 +311,25 @@ public readonly unsafe partial struct BSPNode(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.BspNodeData"/>
     public ref IntPtr Data => ref *(IntPtr*)(Ptr + EngineLayout.BspNodeData);
+}
+
+/// <summary>Typed view of an engine <c>BiffVarResEntry*</c>.</summary>
+public readonly unsafe partial struct BiffVarResEntry(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.BifEntryCompressed"/>
+    public ref int Compressed => ref *(int*)(Ptr + EngineLayout.BifEntryCompressed);
+    /// <inheritdoc cref="EngineLayout.BifEntryOffset"/>
+    public ref int Offset => ref *(int*)(Ptr + EngineLayout.BifEntryOffset);
+    /// <inheritdoc cref="EngineLayout.BifEntryPlain"/>
+    public ref int PlainSize => ref *(int*)(Ptr + EngineLayout.BifEntryPlain);
+    /// <inheritdoc cref="EngineLayout.BifEntryStored"/>
+    public ref int StoredSize => ref *(int*)(Ptr + EngineLayout.BifEntryStored);
+    /// <inheritdoc cref="EngineLayout.BifEntryStride"/>
+    public BiffVarResEntry this[int i] => new(Ptr + i * EngineLayout.BifEntryStride);
 }
 
 /// <summary>Typed view of an engine <c>CActionTarget*</c>.</summary>
@@ -414,6 +475,8 @@ public readonly unsafe ref partial struct CAurTexture(IntPtr ptr)
     public CAurTextureBasic AsCAurTextureBasic() => new CAurTextureBasic(((delegate* unmanaged<IntPtr, IntPtr>)AsCAurTextureBasicFn)(Ptr));
     /// <inheritdoc cref="EngineLayout.TexAsBasicSlot"/>
     public IntPtr AsCAurTextureBasicFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.TexAsBasicSlot);
+    /// <inheritdoc cref="SymbolMap.AurTextureBind"/>
+    public void AurTextureBind(int stage) => EngineFn.AurTextureBind(Ptr, stage);
     /// <inheritdoc cref="SymbolMap.AurTextureBindInUnit"/>
     public void AurTextureBindInUnit(uint unit, int stage) => EngineFn.AurTextureBindInUnit(Ptr, unit, stage);
     /// <inheritdoc cref="EngineLayout.TexGetBppSlot"/>
@@ -479,14 +542,22 @@ public readonly unsafe partial struct CAurTextureBasic(IntPtr ptr)
     public ref int CompressedSize => ref *(int*)(Ptr + EngineLayout.TexBasicCompressedSize);
     /// <inheritdoc cref="EngineLayout.TexBasicController"/>
     public ref IntPtr Controller => ref *(IntPtr*)(Ptr + EngineLayout.TexBasicController);
+    /// <inheritdoc cref="EngineLayout.TexBasicFileRange"/>
+    public ref short FileRange => ref *(short*)(Ptr + EngineLayout.TexBasicFileRange);
     /// <inheritdoc cref="EngineLayout.TexBasicFlagBuilt"/>
     public ref byte FlagBuilt => ref *(byte*)(Ptr + EngineLayout.TexBasicFlagBuilt);
+    /// <inheritdoc cref="EngineLayout.TexBasicFlagBump"/>
+    public ref byte FlagBump => ref *(byte*)(Ptr + EngineLayout.TexBasicFlagBump);
     /// <inheritdoc cref="EngineLayout.TexBasicFlagCube"/>
     public ref byte FlagCube => ref *(byte*)(Ptr + EngineLayout.TexBasicFlagCube);
     /// <inheritdoc cref="EngineLayout.TexBasicFlagNeverBuild"/>
     public ref byte FlagNeverBuild => ref *(byte*)(Ptr + EngineLayout.TexBasicFlagNeverBuild);
+    /// <inheritdoc cref="EngineLayout.TexBasicFlagNoDrain"/>
+    public ref byte FlagNoDrain => ref *(byte*)(Ptr + EngineLayout.TexBasicFlagNoDrain);
     /// <inheritdoc cref="EngineLayout.TexBasicFlagNoImage"/>
     public ref byte FlagNoImage => ref *(byte*)(Ptr + EngineLayout.TexBasicFlagNoImage);
+    /// <inheritdoc cref="EngineLayout.TexBasicFlagRasterRelease"/>
+    public ref byte FlagRasterRelease => ref *(byte*)(Ptr + EngineLayout.TexBasicFlagRasterRelease);
     /// <inheritdoc cref="EngineLayout.TexBasicGlId"/>
     public ref int GlId => ref *(int*)(Ptr + EngineLayout.TexBasicGlId);
     /// <inheritdoc cref="EngineLayout.TexBasicHeight"/>
@@ -541,6 +612,17 @@ public readonly unsafe partial struct CAurTriangleList(IntPtr ptr)
     public ref int VertFloats => ref *(int*)(Ptr + EngineLayout.ListVertFloats);
     /// <inheritdoc cref="EngineLayout.ListVerts"/>
     public ref IntPtr Verts => ref *(IntPtr*)(Ptr + EngineLayout.ListVerts);
+}
+
+/// <summary>Typed view of an engine <c>CAuroraCompressedTextureDDS*</c>.</summary>
+public readonly unsafe partial struct CAuroraCompressedTextureDDS(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.DdsHelperRes"/>
+    public ref IntPtr Res => ref *(IntPtr*)(Ptr + EngineLayout.DdsHelperRes);
 }
 
 /// <summary>Typed view of an engine <c>CCachedMouseCursorManager*</c>.</summary>
@@ -675,6 +757,19 @@ public readonly unsafe partial struct CCompositeIcon(IntPtr ptr)
     public Span<byte> Resref3 { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.CompositeIconResRef3), 17); }
 }
 
+/// <summary>Typed view of an engine <c>CExoAliasList*</c>.</summary>
+public readonly unsafe partial struct CExoAliasList(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="SymbolMap.AliasGetAliasPath"/>
+    public IntPtr AliasGetAliasPath(IntPtr name, int mode) => EngineFn.AliasGetAliasPath(Ptr, name, mode);
+    /// <inheritdoc cref="SymbolMap.AliasResolveFileName"/>
+    public void AliasResolveFileName(void* ret, IntPtr name, ushort resType) => EngineFn.AliasResolveFileName(ret, Ptr, name, resType);
+}
+
 /// <summary>Typed view of an engine <c>CExoBase*</c>.</summary>
 public readonly unsafe partial struct CExoBase(IntPtr ptr)
 {
@@ -682,6 +777,8 @@ public readonly unsafe partial struct CExoBase(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ExoBaseAliasList"/>
+    public ref CExoAliasList AliasList => ref *(CExoAliasList*)(Ptr + EngineLayout.ExoBaseAliasList);
     /// <inheritdoc cref="EngineLayout.ExoBaseConfig"/>
     public ref CExoConfig Config => ref *(CExoConfig*)(Ptr + EngineLayout.ExoBaseConfig);
     /// <inheritdoc cref="EngineLayout.ExoBaseUserDir"/>
@@ -705,6 +802,47 @@ public readonly unsafe partial struct CExoConfig(IntPtr ptr)
     public ref byte Initializing => ref *(byte*)(Ptr + EngineLayout.ExoConfigInitializing);
     /// <inheritdoc cref="EngineLayout.ExoConfigWorkingTable"/>
     public ref IntPtr WorkingTable => ref *(IntPtr*)(Ptr + EngineLayout.ExoConfigWorkingTable);
+}
+
+/// <summary>Typed view of an engine <c>CExoEncapsulatedFile*</c>.</summary>
+public readonly unsafe partial struct CExoEncapsulatedFile(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.EncapFileEntries"/>
+    public ref IntPtr Entries => ref *(IntPtr*)(Ptr + EngineLayout.EncapFileEntries);
+    /// <inheritdoc cref="EngineLayout.EncapFileName"/>
+    public ref IntPtr Name => ref *(IntPtr*)(Ptr + EngineLayout.EncapFileName);
+}
+
+/// <summary>Typed view of an engine <c>CExoKeyTable*</c>.</summary>
+public readonly unsafe partial struct CExoKeyTable(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.KeyTableFiles"/>
+    public ref IntPtr Files => ref *(IntPtr*)(Ptr + EngineLayout.KeyTableFiles);
+    /// <inheritdoc cref="EngineLayout.KeyTableKind"/>
+    public ref int Kind => ref *(int*)(Ptr + EngineLayout.KeyTableKind);
+    /// <inheritdoc cref="EngineLayout.KeyTableName"/>
+    public ref IntPtr Name => ref *(IntPtr*)(Ptr + EngineLayout.KeyTableName);
+}
+
+/// <summary>Typed view of an engine <c>CExoResFile*</c>.</summary>
+public readonly unsafe partial struct CExoResFile(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ResFileEntries"/>
+    public ref IntPtr Entries => ref *(IntPtr*)(Ptr + EngineLayout.ResFileEntries);
+    /// <inheritdoc cref="EngineLayout.ResFileName"/>
+    public ref IntPtr Name => ref *(IntPtr*)(Ptr + EngineLayout.ResFileName);
 }
 
 /// <summary>Typed view of an engine <c>CGameObject*</c>.</summary>
@@ -928,6 +1066,23 @@ public readonly unsafe partial struct CHitInfo(IntPtr ptr)
     public ref System.Numerics.Vector3 Point => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.HitInfoPoint);
 }
 
+/// <summary>Typed view of an engine <c>CKeyTableEntry*</c>.</summary>
+public readonly unsafe partial struct CKeyTableEntry(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.KeyEntryRes"/>
+    public ref IntPtr Res => ref *(IntPtr*)(Ptr + EngineLayout.KeyEntryRes);
+    /// <inheritdoc cref="EngineLayout.KeyEntryResId"/>
+    public Span<uint> ResId { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.KeyEntryResId), 4); }
+    /// <inheritdoc cref="EngineLayout.KeyEntryResRef"/>
+    public Span<byte> ResRef { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.KeyEntryResRef), 16); }
+    /// <inheritdoc cref="EngineLayout.KeyEntryResType"/>
+    public ref ushort ResType => ref *(ushort*)(Ptr + EngineLayout.KeyEntryResType);
+}
+
 /// <summary>Typed view of an engine <c>CLayeredIcon*</c>.</summary>
 public readonly unsafe partial struct CLayeredIcon(IntPtr ptr)
 {
@@ -987,6 +1142,10 @@ public readonly unsafe partial struct CNWCArea(IntPtr ptr)
     public ref int PlaceableLightCount => ref *(int*)(Ptr + EngineLayout.AreaPlaceableLightCount);
     /// <inheritdoc cref="EngineLayout.AreaPlaceableLights"/>
     public ref IntPtr PlaceableLights => ref *(IntPtr*)(Ptr + EngineLayout.AreaPlaceableLights);
+    /// <inheritdoc cref="EngineLayout.AreaStaticPlaceableCount"/>
+    public ref int StaticPlaceableCount => ref *(int*)(Ptr + EngineLayout.AreaStaticPlaceableCount);
+    /// <inheritdoc cref="EngineLayout.AreaStaticPlaceables"/>
+    public ref IntPtr StaticPlaceables => ref *(IntPtr*)(Ptr + EngineLayout.AreaStaticPlaceables);
     /// <inheritdoc cref="SymbolMap.TestDirectLine"/>
     public int TestDirectLine(CNWCCreature creature, VectorArg from, VectorArg to, float space, float height, int checkCreatures) => EngineFn.TestDirectLine(Ptr, creature.Ptr, from, to, space, height, checkCreatures);
     /// <inheritdoc cref="EngineLayout.AreaTileHeight"/>
@@ -1249,6 +1408,56 @@ public readonly unsafe partial struct CNWCPlayer(IntPtr ptr)
     public ref uint PlayerId => ref *(uint*)(Ptr + EngineLayout.PlayerId);
 }
 
+/// <summary>Typed view of an engine <c>CNWMessage*</c>.</summary>
+public readonly unsafe partial struct CNWMessage(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.MsgBuffer"/>
+    public ref IntPtr Buffer => ref *(IntPtr*)(Ptr + EngineLayout.MsgBuffer);
+    /// <inheritdoc cref="EngineLayout.MsgCursor"/>
+    public ref uint Cursor => ref *(uint*)(Ptr + EngineLayout.MsgCursor);
+    /// <inheritdoc cref="EngineLayout.MsgLength"/>
+    public ref uint Length => ref *(uint*)(Ptr + EngineLayout.MsgLength);
+}
+
+/// <summary>Typed view of an engine <c>CNWRules*</c>.</summary>
+public readonly unsafe partial struct CNWRules(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.RulesTwoDimArrays"/>
+    public ref IntPtr TwoDimArrays => ref *(IntPtr*)(Ptr + EngineLayout.RulesTwoDimArrays);
+}
+
+/// <summary>Typed view of an engine <c>CNWTileData*</c>.</summary>
+public readonly unsafe partial struct CNWTileData(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="SymbolMap.TileDataGetModelResRef"/>
+    public void TileDataGetModelResRef(void* ret) => EngineFn.TileDataGetModelResRef(ret, Ptr);
+}
+
+/// <summary>Typed view of an engine <c>CNWTileSet*</c>.</summary>
+public readonly unsafe partial struct CNWTileSet(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.TileSetTileCount"/>
+    public ref int TileCount => ref *(int*)(Ptr + EngineLayout.TileSetTileCount);
+    /// <inheritdoc cref="SymbolMap.TileSetGetTileData"/>
+    public IntPtr TileSetGetTileData(int id) => EngineFn.TileSetGetTileData(Ptr, id);
+}
+
 /// <summary>Typed view of an engine <c>CNetLayer*</c>.</summary>
 public readonly unsafe partial struct CNetLayer(IntPtr ptr)
 {
@@ -1336,8 +1545,50 @@ public readonly unsafe partial struct CRes(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.CResData"/>
     public ref IntPtr Data => ref *(IntPtr*)(Ptr + EngineLayout.CResData);
+    /// <inheritdoc cref="EngineLayout.CResKeyEntry"/>
+    public ref IntPtr KeyEntry => ref *(IntPtr*)(Ptr + EngineLayout.CResKeyEntry);
     /// <inheritdoc cref="EngineLayout.CResSize"/>
     public ref int Size => ref *(int*)(Ptr + EngineLayout.CResSize);
+    /// <inheritdoc cref="EngineLayout.CResSourceKind"/>
+    public ref int SourceKind => ref *(int*)(Ptr + EngineLayout.CResSourceKind);
+}
+
+/// <summary>Typed view of an engine <c>CResTGA*</c>.</summary>
+public readonly unsafe partial struct CResTGA(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.TgaColorMap"/>
+    public ref IntPtr ColorMap => ref *(IntPtr*)(Ptr + EngineLayout.TgaColorMap);
+    /// <inheritdoc cref="EngineLayout.TgaColorMapped"/>
+    public ref int ColorMapped => ref *(int*)(Ptr + EngineLayout.TgaColorMapped);
+    /// <inheritdoc cref="EngineLayout.TgaCompressed"/>
+    public ref int Compressed => ref *(int*)(Ptr + EngineLayout.TgaCompressed);
+    /// <inheritdoc cref="EngineLayout.TgaHeader"/>
+    public ref IntPtr Header => ref *(IntPtr*)(Ptr + EngineLayout.TgaHeader);
+    /// <inheritdoc cref="EngineLayout.TgaOwned"/>
+    public ref int Owned => ref *(int*)(Ptr + EngineLayout.TgaOwned);
+    /// <inheritdoc cref="EngineLayout.TgaParsed"/>
+    public ref int Parsed => ref *(int*)(Ptr + EngineLayout.TgaParsed);
+    /// <inheritdoc cref="EngineLayout.TgaPixels"/>
+    public ref IntPtr Pixels => ref *(IntPtr*)(Ptr + EngineLayout.TgaPixels);
+    /// <inheritdoc cref="EngineLayout.TgaSize"/>
+    public ref int Size => ref *(int*)(Ptr + EngineLayout.TgaSize);
+    /// <inheritdoc cref="EngineLayout.TgaSrcSize"/>
+    public ref int SrcSize => ref *(int*)(Ptr + EngineLayout.TgaSrcSize);
+}
+
+/// <summary>Typed view of an engine <c>CTwoDimArrays*</c>.</summary>
+public readonly unsafe partial struct CTwoDimArrays(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.TwoDimPlaceables"/>
+    public ref IntPtr Placeables => ref *(IntPtr*)(Ptr + EngineLayout.TwoDimPlaceables);
 }
 
 /// <summary>Typed view of an engine <c>Camera*</c>.</summary>
@@ -1393,6 +1644,25 @@ public readonly unsafe partial struct DrawBucket(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.BucketStride"/>
     public DrawBucket this[int i] => new(Ptr + i * EngineLayout.BucketStride);
+}
+
+/// <summary>Typed view of an engine <c>ErfResListEntry*</c>.</summary>
+public readonly unsafe partial struct ErfResListEntry(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ErfEntryCompressed"/>
+    public ref int Compressed => ref *(int*)(Ptr + EngineLayout.ErfEntryCompressed);
+    /// <inheritdoc cref="EngineLayout.ErfEntryOffset"/>
+    public ref int Offset => ref *(int*)(Ptr + EngineLayout.ErfEntryOffset);
+    /// <inheritdoc cref="EngineLayout.ErfEntryPlain"/>
+    public ref int PlainSize => ref *(int*)(Ptr + EngineLayout.ErfEntryPlain);
+    /// <inheritdoc cref="EngineLayout.ErfEntryStored"/>
+    public ref int StoredSize => ref *(int*)(Ptr + EngineLayout.ErfEntryStored);
+    /// <inheritdoc cref="EngineLayout.ErfEntryStride"/>
+    public ErfResListEntry this[int i] => new(Ptr + i * EngineLayout.ErfEntryStride);
 }
 
 /// <summary>Typed view of an engine <c>GLRender__PROG_FIXED*</c>.</summary>
@@ -1631,6 +1901,10 @@ public readonly unsafe ref partial struct MdlNode(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.MdlNodeChildCount"/>
+    public ref int ChildCount => ref *(int*)(Ptr + EngineLayout.MdlNodeChildCount);
+    /// <inheritdoc cref="EngineLayout.MdlNodeChildren"/>
+    public ref IntPtr Children => ref *(IntPtr*)(Ptr + EngineLayout.MdlNodeChildren);
     /// <inheritdoc cref="EngineLayout.MdlNodeControllerCount"/>
     public ref int ControllerCount => ref *(int*)(Ptr + EngineLayout.MdlNodeControllerCount);
     /// <inheritdoc cref="EngineLayout.MdlNodeControllers"/>
@@ -1639,6 +1913,8 @@ public readonly unsafe ref partial struct MdlNode(IntPtr ptr)
     public ref byte Kind => ref *(byte*)(Ptr + EngineLayout.MdlNodeKind);
     /// <inheritdoc cref="EngineLayout.MdlNodeName"/>
     public ref byte Name => ref *(byte*)(Ptr + EngineLayout.MdlNodeName);
+    /// <inheritdoc cref="EngineLayout.MdlNodeId"/>
+    public ref int NodeId => ref *(int*)(Ptr + EngineLayout.MdlNodeId);
     /// <inheritdoc cref="EngineLayout.MdlNodeParent"/>
     public MdlNode Parent { get => new(*(IntPtr*)(Ptr + EngineLayout.MdlNodeParent)); set => *(IntPtr*)(Ptr + EngineLayout.MdlNodeParent) = value.Ptr; }
     /// <inheritdoc cref="EngineLayout.MdlPrimType"/>
@@ -1781,6 +2057,8 @@ public readonly unsafe ref partial struct Part(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.PartAnimateGate"/>
+    public ref int AnimateGate => ref *(int*)(Ptr + EngineLayout.PartAnimateGate);
     /// <inheritdoc cref="EngineLayout.PartAsPartBeamSlot"/>
     public PartBeam AsPartBeam() => new PartBeam(((delegate* unmanaged<IntPtr, IntPtr>)AsPartBeamFn)(Ptr));
     /// <inheritdoc cref="EngineLayout.PartAsPartBeamSlot"/>
@@ -1799,6 +2077,8 @@ public readonly unsafe ref partial struct Part(IntPtr ptr)
     public Material Material { get => new(*(IntPtr*)(Ptr + EngineLayout.PartMaterial)); set => *(IntPtr*)(Ptr + EngineLayout.PartMaterial) = value.Ptr; }
     /// <inheritdoc cref="EngineLayout.PartNodeLink"/>
     public MdlNode Node { get => new(*(IntPtr*)(Ptr + EngineLayout.PartNodeLink)); set => *(IntPtr*)(Ptr + EngineLayout.PartNodeLink) = value.Ptr; }
+    /// <inheritdoc cref="EngineLayout.PartNodeId"/>
+    public ref int NodeId => ref *(int*)(Ptr + EngineLayout.PartNodeId);
     /// <inheritdoc cref="EngineLayout.PartParent"/>
     public Part Parent { get => new(*(IntPtr*)(Ptr + EngineLayout.PartParent)); set => *(IntPtr*)(Ptr + EngineLayout.PartParent) = value.Ptr; }
     /// <inheritdoc cref="SymbolMap.PartGetWorld"/>
@@ -2102,6 +2382,19 @@ public readonly unsafe partial struct Scene(IntPtr ptr)
     public ref System.Numerics.Vector3 SkyPos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.SceneSkyPos);
     /// <inheritdoc cref="EngineLayout.SceneSkyT"/>
     public ref float SkyT => ref *(float*)(Ptr + EngineLayout.SceneSkyT);
+}
+
+/// <summary>Typed view of an engine <c>Sha1*</c>.</summary>
+public readonly unsafe partial struct Sha1(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.Sha1Empty"/>
+    public ref byte Empty => ref *(byte*)(Ptr + EngineLayout.Sha1Empty);
+    /// <inheritdoc cref="EngineLayout.Sha1Hex"/>
+    public Span<byte> Hex { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.Sha1Hex), 41); }
 }
 
 /// <summary>Typed view of an engine <c>ShaderExposedRuntimeData*</c>.</summary>
@@ -2779,6 +3072,10 @@ public static unsafe class EngineFn
     private static bool _RiCreateTextureDone;
     /// <inheritdoc cref="SymbolMap.RiCreateTexture"/>
     public static RiCreateTextureFn RiCreateTexture => (RiCreateTextureFn)(_RiCreateTextureDone ? _RiCreateTexture : Resolve(ref _RiCreateTexture, ref _RiCreateTextureDone, SymbolMap.RiCreateTexture));
+    private static IntPtr _RiCreateCubeTexture;
+    private static bool _RiCreateCubeTextureDone;
+    /// <inheritdoc cref="SymbolMap.RiCreateCubeTexture"/>
+    public static RiCreateCubeTextureFn RiCreateCubeTexture => (RiCreateCubeTextureFn)(_RiCreateCubeTextureDone ? _RiCreateCubeTexture : Resolve(ref _RiCreateCubeTexture, ref _RiCreateCubeTextureDone, SymbolMap.RiCreateCubeTexture));
     private static IntPtr _AurTextureConstructImage;
     private static bool _AurTextureConstructImageDone;
     /// <inheritdoc cref="SymbolMap.AurTextureConstructImage"/>
@@ -2787,6 +3084,26 @@ public static unsafe class EngineFn
     private static bool _AurTextureBuildAndStoreTextureDone;
     /// <inheritdoc cref="SymbolMap.AurTextureBuildAndStoreTexture"/>
     public static AurTextureBuildAndStoreTextureFn AurTextureBuildAndStoreTexture => (AurTextureBuildAndStoreTextureFn)(_AurTextureBuildAndStoreTextureDone ? _AurTextureBuildAndStoreTexture : Resolve(ref _AurTextureBuildAndStoreTexture, ref _AurTextureBuildAndStoreTextureDone, SymbolMap.AurTextureBuildAndStoreTexture));
+    private static IntPtr _AurTextureBuildAndStoreAll;
+    private static bool _AurTextureBuildAndStoreAllDone;
+    /// <inheritdoc cref="SymbolMap.AurTextureBuildAndStoreAll"/>
+    public static AurTextureBuildAndStoreAllFn AurTextureBuildAndStoreAll => (AurTextureBuildAndStoreAllFn)(_AurTextureBuildAndStoreAllDone ? _AurTextureBuildAndStoreAll : Resolve(ref _AurTextureBuildAndStoreAll, ref _AurTextureBuildAndStoreAllDone, SymbolMap.AurTextureBuildAndStoreAll));
+    private static IntPtr _AreaLoadArea;
+    private static bool _AreaLoadAreaDone;
+    /// <inheritdoc cref="SymbolMap.AreaLoadArea"/>
+    public static AreaLoadAreaFn AreaLoadArea => (AreaLoadAreaFn)(_AreaLoadAreaDone ? _AreaLoadArea : Resolve(ref _AreaLoadArea, ref _AreaLoadAreaDone, SymbolMap.AreaLoadArea));
+    private static IntPtr _AreaAddPlaceableStatic;
+    private static bool _AreaAddPlaceableStaticDone;
+    /// <inheritdoc cref="SymbolMap.AreaAddPlaceableStatic"/>
+    public static AreaAddPlaceableStaticFn AreaAddPlaceableStatic => (AreaAddPlaceableStaticFn)(_AreaAddPlaceableStaticDone ? _AreaAddPlaceableStatic : Resolve(ref _AreaAddPlaceableStatic, ref _AreaAddPlaceableStaticDone, SymbolMap.AreaAddPlaceableStatic));
+    private static IntPtr _C2DAGetCExoStringEntry;
+    private static bool _C2DAGetCExoStringEntryDone;
+    /// <inheritdoc cref="SymbolMap.C2DAGetCExoStringEntry"/>
+    public static C2DAGetCExoStringEntryFn C2DAGetCExoStringEntry => (C2DAGetCExoStringEntryFn)(_C2DAGetCExoStringEntryDone ? _C2DAGetCExoStringEntry : Resolve(ref _C2DAGetCExoStringEntry, ref _C2DAGetCExoStringEntryDone, SymbolMap.C2DAGetCExoStringEntry));
+    private static IntPtr _MaterialInitializeTextures;
+    private static bool _MaterialInitializeTexturesDone;
+    /// <inheritdoc cref="SymbolMap.MaterialInitializeTextures"/>
+    public static MaterialInitializeTexturesFn MaterialInitializeTextures => (MaterialInitializeTexturesFn)(_MaterialInitializeTexturesDone ? _MaterialInitializeTextures : Resolve(ref _MaterialInitializeTextures, ref _MaterialInitializeTexturesDone, SymbolMap.MaterialInitializeTextures));
     private static IntPtr _AurTextureGlImageBasic;
     private static bool _AurTextureGlImageBasicDone;
     /// <inheritdoc cref="SymbolMap.AurTextureGlImageBasic"/>
@@ -2891,6 +3208,10 @@ public static unsafe class EngineFn
     private static bool _AurTextureBindInUnitDone;
     /// <inheritdoc cref="SymbolMap.AurTextureBindInUnit"/>
     public static AurTextureBindInUnitFn AurTextureBindInUnit => (AurTextureBindInUnitFn)(_AurTextureBindInUnitDone ? _AurTextureBindInUnit : Resolve(ref _AurTextureBindInUnit, ref _AurTextureBindInUnitDone, SymbolMap.AurTextureBindInUnit));
+    private static IntPtr _AurTextureBind;
+    private static bool _AurTextureBindDone;
+    /// <inheritdoc cref="SymbolMap.AurTextureBind"/>
+    public static AurTextureBindFn AurTextureBind => (AurTextureBindFn)(_AurTextureBindDone ? _AurTextureBind : Resolve(ref _AurTextureBind, ref _AurTextureBindDone, SymbolMap.AurTextureBind));
     private static IntPtr _DoBinBucket;
     private static bool _DoBinBucketDone;
     /// <inheritdoc cref="SymbolMap.DoBinBucket"/>
@@ -3163,6 +3484,31 @@ public static unsafe class EngineFn
     private static bool _ResManDemandDone;
     /// <inheritdoc cref="SymbolMap.ResManDemand"/>
     public static ResManDemandFn ResManDemand => (ResManDemandFn)(_ResManDemandDone ? _ResManDemand : Resolve(ref _ResManDemand, ref _ResManDemandDone, SymbolMap.ResManDemand));
+    private static IntPtr _ResManGetKeyEntry;
+    private static bool _ResManGetKeyEntryDone;
+    /// <inheritdoc cref="SymbolMap.ResManGetKeyEntry"/>
+    public static ResManGetKeyEntryFn ResManGetKeyEntry => (ResManGetKeyEntryFn)(_ResManGetKeyEntryDone ? _ResManGetKeyEntry : Resolve(ref _ResManGetKeyEntry, ref _ResManGetKeyEntryDone, SymbolMap.ResManGetKeyEntry));
+    private static IntPtr _AliasResolveFileName;
+    private static bool _AliasResolveFileNameDone;
+    /// <inheritdoc cref="SymbolMap.AliasResolveFileName"/>
+    public static void AliasResolveFileName(void* ret, IntPtr self, IntPtr name, ushort resType)
+    {
+        IntPtr fn = _AliasResolveFileNameDone ? _AliasResolveFileName : Resolve(ref _AliasResolveFileName, ref _AliasResolveFileNameDone, SymbolMap.AliasResolveFileName);
+        if (OperatingSystem.IsWindows()) ((delegate* unmanaged<IntPtr, IntPtr, IntPtr, ushort, void>)fn)(self, (IntPtr)ret, name, resType);
+        else ((delegate* unmanaged<IntPtr, IntPtr, IntPtr, ushort, void>)fn)((IntPtr)ret, self, name, resType);
+    }
+    private static IntPtr _AurGetImageWrapper;
+    private static bool _AurGetImageWrapperDone;
+    /// <inheritdoc cref="SymbolMap.AurGetImageWrapper"/>
+    public static AurGetImageWrapperFn AurGetImageWrapper => (AurGetImageWrapperFn)(_AurGetImageWrapperDone ? _AurGetImageWrapper : Resolve(ref _AurGetImageWrapper, ref _AurGetImageWrapperDone, SymbolMap.AurGetImageWrapper));
+    private static IntPtr _TgaServiced;
+    private static bool _TgaServicedDone;
+    /// <inheritdoc cref="SymbolMap.TgaServiced"/>
+    public static TgaServicedFn TgaServiced => (TgaServicedFn)(_TgaServicedDone ? _TgaServiced : Resolve(ref _TgaServiced, ref _TgaServicedDone, SymbolMap.TgaServiced));
+    private static IntPtr _ImageDecode;
+    private static bool _ImageDecodeDone;
+    /// <inheritdoc cref="SymbolMap.ImageDecode"/>
+    public static ImageDecodeFn ImageDecode => (ImageDecodeFn)(_ImageDecodeDone ? _ImageDecode : Resolve(ref _ImageDecode, ref _ImageDecodeDone, SymbolMap.ImageDecode));
     private static IntPtr _ManageSceneBSP;
     private static bool _ManageSceneBSPDone;
     /// <inheritdoc cref="SymbolMap.ManageSceneBSP"/>
@@ -3195,6 +3541,55 @@ public static unsafe class EngineFn
     private static bool _CResCtorDone;
     /// <inheritdoc cref="SymbolMap.CResCtor"/>
     public static CResCtorFn CResCtor => (CResCtorFn)(_CResCtorDone ? _CResCtor : Resolve(ref _CResCtor, ref _CResCtorDone, SymbolMap.CResCtor));
+    private static IntPtr _FindModel;
+    private static bool _FindModelDone;
+    /// <inheritdoc cref="SymbolMap.FindModel"/>
+    public static FindModelFn FindModel => (FindModelFn)(_FindModelDone ? _FindModel : Resolve(ref _FindModel, ref _FindModelDone, SymbolMap.FindModel));
+    private static IntPtr _IoReadSync;
+    private static bool _IoReadSyncDone;
+    /// <inheritdoc cref="SymbolMap.IoReadSync"/>
+    public static IoReadSyncFn IoReadSync => (IoReadSyncFn)(_IoReadSyncDone ? _IoReadSync : Resolve(ref _IoReadSync, ref _IoReadSyncDone, SymbolMap.IoReadSync));
+    private static IntPtr _AuroraGetResource;
+    private static bool _AuroraGetResourceDone;
+    /// <inheritdoc cref="SymbolMap.AuroraGetResource"/>
+    public static AuroraGetResourceFn AuroraGetResource => (AuroraGetResourceFn)(_AuroraGetResourceDone ? _AuroraGetResource : Resolve(ref _AuroraGetResource, ref _AuroraGetResourceDone, SymbolMap.AuroraGetResource));
+    private static IntPtr _SpawnPartsForTile;
+    private static bool _SpawnPartsForTileDone;
+    /// <inheritdoc cref="SymbolMap.SpawnPartsForTile"/>
+    public static SpawnPartsForTileFn SpawnPartsForTile => (SpawnPartsForTileFn)(_SpawnPartsForTileDone ? _SpawnPartsForTile : Resolve(ref _SpawnPartsForTile, ref _SpawnPartsForTileDone, SymbolMap.SpawnPartsForTile));
+    private static IntPtr _AuroraReleaseResource;
+    private static bool _AuroraReleaseResourceDone;
+    /// <inheritdoc cref="SymbolMap.AuroraReleaseResource"/>
+    public static AuroraReleaseResourceFn AuroraReleaseResource => (AuroraReleaseResourceFn)(_AuroraReleaseResourceDone ? _AuroraReleaseResource : Resolve(ref _AuroraReleaseResource, ref _AuroraReleaseResourceDone, SymbolMap.AuroraReleaseResource));
+    private static IntPtr _BinaryFindModel;
+    private static bool _BinaryFindModelDone;
+    /// <inheritdoc cref="SymbolMap.BinaryFindModel"/>
+    public static BinaryFindModelFn BinaryFindModel => (BinaryFindModelFn)(_BinaryFindModelDone ? _BinaryFindModel : Resolve(ref _BinaryFindModel, ref _BinaryFindModelDone, SymbolMap.BinaryFindModel));
+    private static IntPtr _TileSetGetTileData;
+    private static bool _TileSetGetTileDataDone;
+    /// <inheritdoc cref="SymbolMap.TileSetGetTileData"/>
+    public static TileSetGetTileDataFn TileSetGetTileData => (TileSetGetTileDataFn)(_TileSetGetTileDataDone ? _TileSetGetTileData : Resolve(ref _TileSetGetTileData, ref _TileSetGetTileDataDone, SymbolMap.TileSetGetTileData));
+    private static IntPtr _TileDataGetModelResRef;
+    private static bool _TileDataGetModelResRefDone;
+    /// <inheritdoc cref="SymbolMap.TileDataGetModelResRef"/>
+    public static void TileDataGetModelResRef(void* ret, IntPtr self)
+    {
+        IntPtr fn = _TileDataGetModelResRefDone ? _TileDataGetModelResRef : Resolve(ref _TileDataGetModelResRef, ref _TileDataGetModelResRefDone, SymbolMap.TileDataGetModelResRef);
+        if (OperatingSystem.IsWindows()) ((delegate* unmanaged<IntPtr, IntPtr, void>)fn)(self, (IntPtr)ret);
+        else ((delegate* unmanaged<IntPtr, IntPtr, void>)fn)((IntPtr)ret, self);
+    }
+    private static IntPtr _NwTileSetID;
+    private static bool _NwTileSetIDDone;
+    /// <inheritdoc cref="SymbolMap.NwTileSetID"/>
+    public static NwTileSetIDFn NwTileSetID => (NwTileSetIDFn)(_NwTileSetIDDone ? _NwTileSetID : Resolve(ref _NwTileSetID, ref _NwTileSetIDDone, SymbolMap.NwTileSetID));
+    private static IntPtr _CompileModels;
+    private static bool _CompileModelsDone;
+    /// <inheritdoc cref="SymbolMap.CompileModels"/>
+    public static CompileModelsFn CompileModels => (CompileModelsFn)(_CompileModelsDone ? _CompileModels : Resolve(ref _CompileModels, ref _CompileModelsDone, SymbolMap.CompileModels));
+    private static IntPtr _AliasGetAliasPath;
+    private static bool _AliasGetAliasPathDone;
+    /// <inheritdoc cref="SymbolMap.AliasGetAliasPath"/>
+    public static AliasGetAliasPathFn AliasGetAliasPath => (AliasGetAliasPathFn)(_AliasGetAliasPathDone ? _AliasGetAliasPath : Resolve(ref _AliasGetAliasPath, ref _AliasGetAliasPathDone, SymbolMap.AliasGetAliasPath));
     private static IntPtr _RadialActivateInternal;
     private static bool _RadialActivateInternalDone;
     /// <inheritdoc cref="SymbolMap.RadialActivateInternal"/>
@@ -3223,6 +3618,82 @@ public static unsafe class EngineFn
     private static bool _AurTextureFindDone;
     /// <inheritdoc cref="SymbolMap.AurTextureFind"/>
     public static AurTextureFindFn AurTextureFind => (AurTextureFindFn)(_AurTextureFindDone ? _AurTextureFind : Resolve(ref _AurTextureFind, ref _AurTextureFindDone, SymbolMap.AurTextureFind));
+    private static IntPtr _ResManAddManifest;
+    private static bool _ResManAddManifestDone;
+    /// <inheritdoc cref="SymbolMap.ResManAddManifest"/>
+    public static ResManAddManifestFn ResManAddManifest => (ResManAddManifestFn)(_ResManAddManifestDone ? _ResManAddManifest : Resolve(ref _ResManAddManifest, ref _ResManAddManifestDone, SymbolMap.ResManAddManifest));
+    private static IntPtr _ResManRemoveManifest;
+    private static bool _ResManRemoveManifestDone;
+    /// <inheritdoc cref="SymbolMap.ResManRemoveManifest"/>
+    public static ResManRemoveManifestFn ResManRemoveManifest => (ResManRemoveManifestFn)(_ResManRemoveManifestDone ? _ResManRemoveManifest : Resolve(ref _ResManRemoveManifest, ref _ResManRemoveManifestDone, SymbolMap.ResManRemoveManifest));
+    private static IntPtr _Sqlite3OpenV2;
+    private static bool _Sqlite3OpenV2Done;
+    /// <inheritdoc cref="SymbolMap.Sqlite3OpenV2"/>
+    public static Sqlite3OpenV2Fn Sqlite3OpenV2 => (Sqlite3OpenV2Fn)(_Sqlite3OpenV2Done ? _Sqlite3OpenV2 : Resolve(ref _Sqlite3OpenV2, ref _Sqlite3OpenV2Done, SymbolMap.Sqlite3OpenV2));
+    private static IntPtr _Sqlite3CloseV2;
+    private static bool _Sqlite3CloseV2Done;
+    /// <inheritdoc cref="SymbolMap.Sqlite3CloseV2"/>
+    public static Sqlite3CloseV2Fn Sqlite3CloseV2 => (Sqlite3CloseV2Fn)(_Sqlite3CloseV2Done ? _Sqlite3CloseV2 : Resolve(ref _Sqlite3CloseV2, ref _Sqlite3CloseV2Done, SymbolMap.Sqlite3CloseV2));
+    private static IntPtr _Sqlite3PrepareV2;
+    private static bool _Sqlite3PrepareV2Done;
+    /// <inheritdoc cref="SymbolMap.Sqlite3PrepareV2"/>
+    public static Sqlite3PrepareV2Fn Sqlite3PrepareV2 => (Sqlite3PrepareV2Fn)(_Sqlite3PrepareV2Done ? _Sqlite3PrepareV2 : Resolve(ref _Sqlite3PrepareV2, ref _Sqlite3PrepareV2Done, SymbolMap.Sqlite3PrepareV2));
+    private static IntPtr _Sqlite3Exec;
+    private static bool _Sqlite3ExecDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3Exec"/>
+    public static Sqlite3ExecFn Sqlite3Exec => (Sqlite3ExecFn)(_Sqlite3ExecDone ? _Sqlite3Exec : Resolve(ref _Sqlite3Exec, ref _Sqlite3ExecDone, SymbolMap.Sqlite3Exec));
+    private static IntPtr _Sqlite3BusyTimeout;
+    private static bool _Sqlite3BusyTimeoutDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3BusyTimeout"/>
+    public static Sqlite3BusyTimeoutFn Sqlite3BusyTimeout => (Sqlite3BusyTimeoutFn)(_Sqlite3BusyTimeoutDone ? _Sqlite3BusyTimeout : Resolve(ref _Sqlite3BusyTimeout, ref _Sqlite3BusyTimeoutDone, SymbolMap.Sqlite3BusyTimeout));
+    private static IntPtr _Sqlite3BindText;
+    private static bool _Sqlite3BindTextDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3BindText"/>
+    public static Sqlite3BindTextFn Sqlite3BindText => (Sqlite3BindTextFn)(_Sqlite3BindTextDone ? _Sqlite3BindText : Resolve(ref _Sqlite3BindText, ref _Sqlite3BindTextDone, SymbolMap.Sqlite3BindText));
+    private static IntPtr _Sqlite3BindInt;
+    private static bool _Sqlite3BindIntDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3BindInt"/>
+    public static Sqlite3BindIntFn Sqlite3BindInt => (Sqlite3BindIntFn)(_Sqlite3BindIntDone ? _Sqlite3BindInt : Resolve(ref _Sqlite3BindInt, ref _Sqlite3BindIntDone, SymbolMap.Sqlite3BindInt));
+    private static IntPtr _Sqlite3Step;
+    private static bool _Sqlite3StepDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3Step"/>
+    public static Sqlite3StepFn Sqlite3Step => (Sqlite3StepFn)(_Sqlite3StepDone ? _Sqlite3Step : Resolve(ref _Sqlite3Step, ref _Sqlite3StepDone, SymbolMap.Sqlite3Step));
+    private static IntPtr _Sqlite3Reset;
+    private static bool _Sqlite3ResetDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3Reset"/>
+    public static Sqlite3ResetFn Sqlite3Reset => (Sqlite3ResetFn)(_Sqlite3ResetDone ? _Sqlite3Reset : Resolve(ref _Sqlite3Reset, ref _Sqlite3ResetDone, SymbolMap.Sqlite3Reset));
+    private static IntPtr _Sqlite3Finalize;
+    private static bool _Sqlite3FinalizeDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3Finalize"/>
+    public static Sqlite3FinalizeFn Sqlite3Finalize => (Sqlite3FinalizeFn)(_Sqlite3FinalizeDone ? _Sqlite3Finalize : Resolve(ref _Sqlite3Finalize, ref _Sqlite3FinalizeDone, SymbolMap.Sqlite3Finalize));
+    private static IntPtr _Sqlite3ColumnText;
+    private static bool _Sqlite3ColumnTextDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3ColumnText"/>
+    public static Sqlite3ColumnTextFn Sqlite3ColumnText => (Sqlite3ColumnTextFn)(_Sqlite3ColumnTextDone ? _Sqlite3ColumnText : Resolve(ref _Sqlite3ColumnText, ref _Sqlite3ColumnTextDone, SymbolMap.Sqlite3ColumnText));
+    private static IntPtr _Sqlite3ColumnBlob;
+    private static bool _Sqlite3ColumnBlobDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3ColumnBlob"/>
+    public static Sqlite3ColumnBlobFn Sqlite3ColumnBlob => (Sqlite3ColumnBlobFn)(_Sqlite3ColumnBlobDone ? _Sqlite3ColumnBlob : Resolve(ref _Sqlite3ColumnBlob, ref _Sqlite3ColumnBlobDone, SymbolMap.Sqlite3ColumnBlob));
+    private static IntPtr _Sqlite3ColumnBytes;
+    private static bool _Sqlite3ColumnBytesDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3ColumnBytes"/>
+    public static Sqlite3ColumnBytesFn Sqlite3ColumnBytes => (Sqlite3ColumnBytesFn)(_Sqlite3ColumnBytesDone ? _Sqlite3ColumnBytes : Resolve(ref _Sqlite3ColumnBytes, ref _Sqlite3ColumnBytesDone, SymbolMap.Sqlite3ColumnBytes));
+    private static IntPtr _Sqlite3ThreadSafe;
+    private static bool _Sqlite3ThreadSafeDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3ThreadSafe"/>
+    public static Sqlite3ThreadSafeFn Sqlite3ThreadSafe => (Sqlite3ThreadSafeFn)(_Sqlite3ThreadSafeDone ? _Sqlite3ThreadSafe : Resolve(ref _Sqlite3ThreadSafe, ref _Sqlite3ThreadSafeDone, SymbolMap.Sqlite3ThreadSafe));
+    private static IntPtr _Sqlite3ErrMsg;
+    private static bool _Sqlite3ErrMsgDone;
+    /// <inheritdoc cref="SymbolMap.Sqlite3ErrMsg"/>
+    public static Sqlite3ErrMsgFn Sqlite3ErrMsg => (Sqlite3ErrMsgFn)(_Sqlite3ErrMsgDone ? _Sqlite3ErrMsg : Resolve(ref _Sqlite3ErrMsg, ref _Sqlite3ErrMsgDone, SymbolMap.Sqlite3ErrMsg));
+    private static IntPtr _ZstdCreateDCtx;
+    private static bool _ZstdCreateDCtxDone;
+    /// <inheritdoc cref="SymbolMap.ZstdCreateDCtx"/>
+    public static ZstdCreateDCtxFn ZstdCreateDCtx => (ZstdCreateDCtxFn)(_ZstdCreateDCtxDone ? _ZstdCreateDCtx : Resolve(ref _ZstdCreateDCtx, ref _ZstdCreateDCtxDone, SymbolMap.ZstdCreateDCtx));
+    private static IntPtr _ZstdDecompressDCtx;
+    private static bool _ZstdDecompressDCtxDone;
+    /// <inheritdoc cref="SymbolMap.ZstdDecompressDCtx"/>
+    public static ZstdDecompressDCtxFn ZstdDecompressDCtx => (ZstdDecompressDCtxFn)(_ZstdDecompressDCtxDone ? _ZstdDecompressDCtx : Resolve(ref _ZstdDecompressDCtx, ref _ZstdDecompressDCtxDone, SymbolMap.ZstdDecompressDCtx));
 }
 
 /// <summary>Typed hook installs, one pair per <c>[Fn]</c> symbol.</summary>
@@ -3906,6 +4377,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.RiCreateTexture"/>; returns the slot holding the next layer, or null.</summary>
     public static RiCreateTextureFn* ChainRiCreateTexture(this HookService h, RiCreateTextureFn handler, int priority) =>
         (RiCreateTextureFn*)h.Chain(SymbolMap.RiCreateTexture, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.RiCreateCubeTexture"/>; returns the original, or null.</summary>
+    public static RiCreateCubeTextureFn InstallRiCreateCubeTexture(this HookService h, RiCreateCubeTextureFn handler) =>
+        (RiCreateCubeTextureFn)h.Install(SymbolMap.RiCreateCubeTexture, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.RiCreateCubeTexture"/>; returns the slot holding the next layer, or null.</summary>
+    public static RiCreateCubeTextureFn* ChainRiCreateCubeTexture(this HookService h, RiCreateCubeTextureFn handler, int priority) =>
+        (RiCreateCubeTextureFn*)h.Chain(SymbolMap.RiCreateCubeTexture, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.AurTextureConstructImage"/>; returns the original, or null.</summary>
     public static AurTextureConstructImageFn InstallAurTextureConstructImage(this HookService h, AurTextureConstructImageFn handler) =>
         (AurTextureConstructImageFn)h.Install(SymbolMap.AurTextureConstructImage, (IntPtr)handler);
@@ -3918,6 +4395,36 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.AurTextureBuildAndStoreTexture"/>; returns the slot holding the next layer, or null.</summary>
     public static AurTextureBuildAndStoreTextureFn* ChainAurTextureBuildAndStoreTexture(this HookService h, AurTextureBuildAndStoreTextureFn handler, int priority) =>
         (AurTextureBuildAndStoreTextureFn*)h.Chain(SymbolMap.AurTextureBuildAndStoreTexture, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AurTextureBuildAndStoreAll"/>; returns the original, or null.</summary>
+    public static AurTextureBuildAndStoreAllFn InstallAurTextureBuildAndStoreAll(this HookService h, AurTextureBuildAndStoreAllFn handler) =>
+        (AurTextureBuildAndStoreAllFn)h.Install(SymbolMap.AurTextureBuildAndStoreAll, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AurTextureBuildAndStoreAll"/>; returns the slot holding the next layer, or null.</summary>
+    public static AurTextureBuildAndStoreAllFn* ChainAurTextureBuildAndStoreAll(this HookService h, AurTextureBuildAndStoreAllFn handler, int priority) =>
+        (AurTextureBuildAndStoreAllFn*)h.Chain(SymbolMap.AurTextureBuildAndStoreAll, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AreaLoadArea"/>; returns the original, or null.</summary>
+    public static AreaLoadAreaFn InstallAreaLoadArea(this HookService h, AreaLoadAreaFn handler) =>
+        (AreaLoadAreaFn)h.Install(SymbolMap.AreaLoadArea, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AreaLoadArea"/>; returns the slot holding the next layer, or null.</summary>
+    public static AreaLoadAreaFn* ChainAreaLoadArea(this HookService h, AreaLoadAreaFn handler, int priority) =>
+        (AreaLoadAreaFn*)h.Chain(SymbolMap.AreaLoadArea, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AreaAddPlaceableStatic"/>; returns the original, or null.</summary>
+    public static AreaAddPlaceableStaticFn InstallAreaAddPlaceableStatic(this HookService h, AreaAddPlaceableStaticFn handler) =>
+        (AreaAddPlaceableStaticFn)h.Install(SymbolMap.AreaAddPlaceableStatic, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AreaAddPlaceableStatic"/>; returns the slot holding the next layer, or null.</summary>
+    public static AreaAddPlaceableStaticFn* ChainAreaAddPlaceableStatic(this HookService h, AreaAddPlaceableStaticFn handler, int priority) =>
+        (AreaAddPlaceableStaticFn*)h.Chain(SymbolMap.AreaAddPlaceableStatic, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.C2DAGetCExoStringEntry"/>; returns the original, or null.</summary>
+    public static C2DAGetCExoStringEntryFn InstallC2DAGetCExoStringEntry(this HookService h, C2DAGetCExoStringEntryFn handler) =>
+        (C2DAGetCExoStringEntryFn)h.Install(SymbolMap.C2DAGetCExoStringEntry, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.C2DAGetCExoStringEntry"/>; returns the slot holding the next layer, or null.</summary>
+    public static C2DAGetCExoStringEntryFn* ChainC2DAGetCExoStringEntry(this HookService h, C2DAGetCExoStringEntryFn handler, int priority) =>
+        (C2DAGetCExoStringEntryFn*)h.Chain(SymbolMap.C2DAGetCExoStringEntry, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.MaterialInitializeTextures"/>; returns the original, or null.</summary>
+    public static MaterialInitializeTexturesFn InstallMaterialInitializeTextures(this HookService h, MaterialInitializeTexturesFn handler) =>
+        (MaterialInitializeTexturesFn)h.Install(SymbolMap.MaterialInitializeTextures, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.MaterialInitializeTextures"/>; returns the slot holding the next layer, or null.</summary>
+    public static MaterialInitializeTexturesFn* ChainMaterialInitializeTextures(this HookService h, MaterialInitializeTexturesFn handler, int priority) =>
+        (MaterialInitializeTexturesFn*)h.Chain(SymbolMap.MaterialInitializeTextures, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.AurTextureGlImageBasic"/>; returns the original, or null.</summary>
     public static AurTextureGlImageBasicFn InstallAurTextureGlImageBasic(this HookService h, AurTextureGlImageBasicFn handler) =>
         (AurTextureGlImageBasicFn)h.Install(SymbolMap.AurTextureGlImageBasic, (IntPtr)handler);
@@ -4074,6 +4581,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.AurTextureBindInUnit"/>; returns the slot holding the next layer, or null.</summary>
     public static AurTextureBindInUnitFn* ChainAurTextureBindInUnit(this HookService h, AurTextureBindInUnitFn handler, int priority) =>
         (AurTextureBindInUnitFn*)h.Chain(SymbolMap.AurTextureBindInUnit, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AurTextureBind"/>; returns the original, or null.</summary>
+    public static AurTextureBindFn InstallAurTextureBind(this HookService h, AurTextureBindFn handler) =>
+        (AurTextureBindFn)h.Install(SymbolMap.AurTextureBind, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AurTextureBind"/>; returns the slot holding the next layer, or null.</summary>
+    public static AurTextureBindFn* ChainAurTextureBind(this HookService h, AurTextureBindFn handler, int priority) =>
+        (AurTextureBindFn*)h.Chain(SymbolMap.AurTextureBind, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.DoBinBucket"/>; returns the original, or null.</summary>
     public static DoBinBucketFn InstallDoBinBucket(this HookService h, DoBinBucketFn handler) =>
         (DoBinBucketFn)h.Install(SymbolMap.DoBinBucket, (IntPtr)handler);
@@ -4482,6 +4995,30 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.ResManDemand"/>; returns the slot holding the next layer, or null.</summary>
     public static ResManDemandFn* ChainResManDemand(this HookService h, ResManDemandFn handler, int priority) =>
         (ResManDemandFn*)h.Chain(SymbolMap.ResManDemand, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ResManGetKeyEntry"/>; returns the original, or null.</summary>
+    public static ResManGetKeyEntryFn InstallResManGetKeyEntry(this HookService h, ResManGetKeyEntryFn handler) =>
+        (ResManGetKeyEntryFn)h.Install(SymbolMap.ResManGetKeyEntry, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ResManGetKeyEntry"/>; returns the slot holding the next layer, or null.</summary>
+    public static ResManGetKeyEntryFn* ChainResManGetKeyEntry(this HookService h, ResManGetKeyEntryFn handler, int priority) =>
+        (ResManGetKeyEntryFn*)h.Chain(SymbolMap.ResManGetKeyEntry, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AurGetImageWrapper"/>; returns the original, or null.</summary>
+    public static AurGetImageWrapperFn InstallAurGetImageWrapper(this HookService h, AurGetImageWrapperFn handler) =>
+        (AurGetImageWrapperFn)h.Install(SymbolMap.AurGetImageWrapper, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AurGetImageWrapper"/>; returns the slot holding the next layer, or null.</summary>
+    public static AurGetImageWrapperFn* ChainAurGetImageWrapper(this HookService h, AurGetImageWrapperFn handler, int priority) =>
+        (AurGetImageWrapperFn*)h.Chain(SymbolMap.AurGetImageWrapper, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.TgaServiced"/>; returns the original, or null.</summary>
+    public static TgaServicedFn InstallTgaServiced(this HookService h, TgaServicedFn handler) =>
+        (TgaServicedFn)h.Install(SymbolMap.TgaServiced, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.TgaServiced"/>; returns the slot holding the next layer, or null.</summary>
+    public static TgaServicedFn* ChainTgaServiced(this HookService h, TgaServicedFn handler, int priority) =>
+        (TgaServicedFn*)h.Chain(SymbolMap.TgaServiced, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ImageDecode"/>; returns the original, or null.</summary>
+    public static ImageDecodeFn InstallImageDecode(this HookService h, ImageDecodeFn handler) =>
+        (ImageDecodeFn)h.Install(SymbolMap.ImageDecode, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ImageDecode"/>; returns the slot holding the next layer, or null.</summary>
+    public static ImageDecodeFn* ChainImageDecode(this HookService h, ImageDecodeFn handler, int priority) =>
+        (ImageDecodeFn*)h.Chain(SymbolMap.ImageDecode, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.ManageSceneBSP"/>; returns the original, or null.</summary>
     public static ManageSceneBSPFn InstallManageSceneBSP(this HookService h, ManageSceneBSPFn handler) =>
         (ManageSceneBSPFn)h.Install(SymbolMap.ManageSceneBSP, (IntPtr)handler);
@@ -4530,6 +5067,66 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.CResCtor"/>; returns the slot holding the next layer, or null.</summary>
     public static CResCtorFn* ChainCResCtor(this HookService h, CResCtorFn handler, int priority) =>
         (CResCtorFn*)h.Chain(SymbolMap.CResCtor, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.FindModel"/>; returns the original, or null.</summary>
+    public static FindModelFn InstallFindModel(this HookService h, FindModelFn handler) =>
+        (FindModelFn)h.Install(SymbolMap.FindModel, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.FindModel"/>; returns the slot holding the next layer, or null.</summary>
+    public static FindModelFn* ChainFindModel(this HookService h, FindModelFn handler, int priority) =>
+        (FindModelFn*)h.Chain(SymbolMap.FindModel, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.IoReadSync"/>; returns the original, or null.</summary>
+    public static IoReadSyncFn InstallIoReadSync(this HookService h, IoReadSyncFn handler) =>
+        (IoReadSyncFn)h.Install(SymbolMap.IoReadSync, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.IoReadSync"/>; returns the slot holding the next layer, or null.</summary>
+    public static IoReadSyncFn* ChainIoReadSync(this HookService h, IoReadSyncFn handler, int priority) =>
+        (IoReadSyncFn*)h.Chain(SymbolMap.IoReadSync, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AuroraGetResource"/>; returns the original, or null.</summary>
+    public static AuroraGetResourceFn InstallAuroraGetResource(this HookService h, AuroraGetResourceFn handler) =>
+        (AuroraGetResourceFn)h.Install(SymbolMap.AuroraGetResource, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AuroraGetResource"/>; returns the slot holding the next layer, or null.</summary>
+    public static AuroraGetResourceFn* ChainAuroraGetResource(this HookService h, AuroraGetResourceFn handler, int priority) =>
+        (AuroraGetResourceFn*)h.Chain(SymbolMap.AuroraGetResource, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SpawnPartsForTile"/>; returns the original, or null.</summary>
+    public static SpawnPartsForTileFn InstallSpawnPartsForTile(this HookService h, SpawnPartsForTileFn handler) =>
+        (SpawnPartsForTileFn)h.Install(SymbolMap.SpawnPartsForTile, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SpawnPartsForTile"/>; returns the slot holding the next layer, or null.</summary>
+    public static SpawnPartsForTileFn* ChainSpawnPartsForTile(this HookService h, SpawnPartsForTileFn handler, int priority) =>
+        (SpawnPartsForTileFn*)h.Chain(SymbolMap.SpawnPartsForTile, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AuroraReleaseResource"/>; returns the original, or null.</summary>
+    public static AuroraReleaseResourceFn InstallAuroraReleaseResource(this HookService h, AuroraReleaseResourceFn handler) =>
+        (AuroraReleaseResourceFn)h.Install(SymbolMap.AuroraReleaseResource, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AuroraReleaseResource"/>; returns the slot holding the next layer, or null.</summary>
+    public static AuroraReleaseResourceFn* ChainAuroraReleaseResource(this HookService h, AuroraReleaseResourceFn handler, int priority) =>
+        (AuroraReleaseResourceFn*)h.Chain(SymbolMap.AuroraReleaseResource, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.BinaryFindModel"/>; returns the original, or null.</summary>
+    public static BinaryFindModelFn InstallBinaryFindModel(this HookService h, BinaryFindModelFn handler) =>
+        (BinaryFindModelFn)h.Install(SymbolMap.BinaryFindModel, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.BinaryFindModel"/>; returns the slot holding the next layer, or null.</summary>
+    public static BinaryFindModelFn* ChainBinaryFindModel(this HookService h, BinaryFindModelFn handler, int priority) =>
+        (BinaryFindModelFn*)h.Chain(SymbolMap.BinaryFindModel, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.TileSetGetTileData"/>; returns the original, or null.</summary>
+    public static TileSetGetTileDataFn InstallTileSetGetTileData(this HookService h, TileSetGetTileDataFn handler) =>
+        (TileSetGetTileDataFn)h.Install(SymbolMap.TileSetGetTileData, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.TileSetGetTileData"/>; returns the slot holding the next layer, or null.</summary>
+    public static TileSetGetTileDataFn* ChainTileSetGetTileData(this HookService h, TileSetGetTileDataFn handler, int priority) =>
+        (TileSetGetTileDataFn*)h.Chain(SymbolMap.TileSetGetTileData, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NwTileSetID"/>; returns the original, or null.</summary>
+    public static NwTileSetIDFn InstallNwTileSetID(this HookService h, NwTileSetIDFn handler) =>
+        (NwTileSetIDFn)h.Install(SymbolMap.NwTileSetID, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NwTileSetID"/>; returns the slot holding the next layer, or null.</summary>
+    public static NwTileSetIDFn* ChainNwTileSetID(this HookService h, NwTileSetIDFn handler, int priority) =>
+        (NwTileSetIDFn*)h.Chain(SymbolMap.NwTileSetID, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.CompileModels"/>; returns the original, or null.</summary>
+    public static CompileModelsFn InstallCompileModels(this HookService h, CompileModelsFn handler) =>
+        (CompileModelsFn)h.Install(SymbolMap.CompileModels, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.CompileModels"/>; returns the slot holding the next layer, or null.</summary>
+    public static CompileModelsFn* ChainCompileModels(this HookService h, CompileModelsFn handler, int priority) =>
+        (CompileModelsFn*)h.Chain(SymbolMap.CompileModels, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AliasGetAliasPath"/>; returns the original, or null.</summary>
+    public static AliasGetAliasPathFn InstallAliasGetAliasPath(this HookService h, AliasGetAliasPathFn handler) =>
+        (AliasGetAliasPathFn)h.Install(SymbolMap.AliasGetAliasPath, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AliasGetAliasPath"/>; returns the slot holding the next layer, or null.</summary>
+    public static AliasGetAliasPathFn* ChainAliasGetAliasPath(this HookService h, AliasGetAliasPathFn handler, int priority) =>
+        (AliasGetAliasPathFn*)h.Chain(SymbolMap.AliasGetAliasPath, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.RadialActivateInternal"/>; returns the original, or null.</summary>
     public static RadialActivateInternalFn InstallRadialActivateInternal(this HookService h, RadialActivateInternalFn handler) =>
         (RadialActivateInternalFn)h.Install(SymbolMap.RadialActivateInternal, (IntPtr)handler);
@@ -4572,4 +5169,118 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.AurTextureFind"/>; returns the slot holding the next layer, or null.</summary>
     public static AurTextureFindFn* ChainAurTextureFind(this HookService h, AurTextureFindFn handler, int priority) =>
         (AurTextureFindFn*)h.Chain(SymbolMap.AurTextureFind, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ResManAddManifest"/>; returns the original, or null.</summary>
+    public static ResManAddManifestFn InstallResManAddManifest(this HookService h, ResManAddManifestFn handler) =>
+        (ResManAddManifestFn)h.Install(SymbolMap.ResManAddManifest, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ResManAddManifest"/>; returns the slot holding the next layer, or null.</summary>
+    public static ResManAddManifestFn* ChainResManAddManifest(this HookService h, ResManAddManifestFn handler, int priority) =>
+        (ResManAddManifestFn*)h.Chain(SymbolMap.ResManAddManifest, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ResManRemoveManifest"/>; returns the original, or null.</summary>
+    public static ResManRemoveManifestFn InstallResManRemoveManifest(this HookService h, ResManRemoveManifestFn handler) =>
+        (ResManRemoveManifestFn)h.Install(SymbolMap.ResManRemoveManifest, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ResManRemoveManifest"/>; returns the slot holding the next layer, or null.</summary>
+    public static ResManRemoveManifestFn* ChainResManRemoveManifest(this HookService h, ResManRemoveManifestFn handler, int priority) =>
+        (ResManRemoveManifestFn*)h.Chain(SymbolMap.ResManRemoveManifest, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3OpenV2"/>; returns the original, or null.</summary>
+    public static Sqlite3OpenV2Fn InstallSqlite3OpenV2(this HookService h, Sqlite3OpenV2Fn handler) =>
+        (Sqlite3OpenV2Fn)h.Install(SymbolMap.Sqlite3OpenV2, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3OpenV2"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3OpenV2Fn* ChainSqlite3OpenV2(this HookService h, Sqlite3OpenV2Fn handler, int priority) =>
+        (Sqlite3OpenV2Fn*)h.Chain(SymbolMap.Sqlite3OpenV2, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3CloseV2"/>; returns the original, or null.</summary>
+    public static Sqlite3CloseV2Fn InstallSqlite3CloseV2(this HookService h, Sqlite3CloseV2Fn handler) =>
+        (Sqlite3CloseV2Fn)h.Install(SymbolMap.Sqlite3CloseV2, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3CloseV2"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3CloseV2Fn* ChainSqlite3CloseV2(this HookService h, Sqlite3CloseV2Fn handler, int priority) =>
+        (Sqlite3CloseV2Fn*)h.Chain(SymbolMap.Sqlite3CloseV2, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3PrepareV2"/>; returns the original, or null.</summary>
+    public static Sqlite3PrepareV2Fn InstallSqlite3PrepareV2(this HookService h, Sqlite3PrepareV2Fn handler) =>
+        (Sqlite3PrepareV2Fn)h.Install(SymbolMap.Sqlite3PrepareV2, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3PrepareV2"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3PrepareV2Fn* ChainSqlite3PrepareV2(this HookService h, Sqlite3PrepareV2Fn handler, int priority) =>
+        (Sqlite3PrepareV2Fn*)h.Chain(SymbolMap.Sqlite3PrepareV2, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3Exec"/>; returns the original, or null.</summary>
+    public static Sqlite3ExecFn InstallSqlite3Exec(this HookService h, Sqlite3ExecFn handler) =>
+        (Sqlite3ExecFn)h.Install(SymbolMap.Sqlite3Exec, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3Exec"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3ExecFn* ChainSqlite3Exec(this HookService h, Sqlite3ExecFn handler, int priority) =>
+        (Sqlite3ExecFn*)h.Chain(SymbolMap.Sqlite3Exec, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3BusyTimeout"/>; returns the original, or null.</summary>
+    public static Sqlite3BusyTimeoutFn InstallSqlite3BusyTimeout(this HookService h, Sqlite3BusyTimeoutFn handler) =>
+        (Sqlite3BusyTimeoutFn)h.Install(SymbolMap.Sqlite3BusyTimeout, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3BusyTimeout"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3BusyTimeoutFn* ChainSqlite3BusyTimeout(this HookService h, Sqlite3BusyTimeoutFn handler, int priority) =>
+        (Sqlite3BusyTimeoutFn*)h.Chain(SymbolMap.Sqlite3BusyTimeout, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3BindText"/>; returns the original, or null.</summary>
+    public static Sqlite3BindTextFn InstallSqlite3BindText(this HookService h, Sqlite3BindTextFn handler) =>
+        (Sqlite3BindTextFn)h.Install(SymbolMap.Sqlite3BindText, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3BindText"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3BindTextFn* ChainSqlite3BindText(this HookService h, Sqlite3BindTextFn handler, int priority) =>
+        (Sqlite3BindTextFn*)h.Chain(SymbolMap.Sqlite3BindText, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3BindInt"/>; returns the original, or null.</summary>
+    public static Sqlite3BindIntFn InstallSqlite3BindInt(this HookService h, Sqlite3BindIntFn handler) =>
+        (Sqlite3BindIntFn)h.Install(SymbolMap.Sqlite3BindInt, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3BindInt"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3BindIntFn* ChainSqlite3BindInt(this HookService h, Sqlite3BindIntFn handler, int priority) =>
+        (Sqlite3BindIntFn*)h.Chain(SymbolMap.Sqlite3BindInt, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3Step"/>; returns the original, or null.</summary>
+    public static Sqlite3StepFn InstallSqlite3Step(this HookService h, Sqlite3StepFn handler) =>
+        (Sqlite3StepFn)h.Install(SymbolMap.Sqlite3Step, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3Step"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3StepFn* ChainSqlite3Step(this HookService h, Sqlite3StepFn handler, int priority) =>
+        (Sqlite3StepFn*)h.Chain(SymbolMap.Sqlite3Step, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3Reset"/>; returns the original, or null.</summary>
+    public static Sqlite3ResetFn InstallSqlite3Reset(this HookService h, Sqlite3ResetFn handler) =>
+        (Sqlite3ResetFn)h.Install(SymbolMap.Sqlite3Reset, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3Reset"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3ResetFn* ChainSqlite3Reset(this HookService h, Sqlite3ResetFn handler, int priority) =>
+        (Sqlite3ResetFn*)h.Chain(SymbolMap.Sqlite3Reset, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3Finalize"/>; returns the original, or null.</summary>
+    public static Sqlite3FinalizeFn InstallSqlite3Finalize(this HookService h, Sqlite3FinalizeFn handler) =>
+        (Sqlite3FinalizeFn)h.Install(SymbolMap.Sqlite3Finalize, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3Finalize"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3FinalizeFn* ChainSqlite3Finalize(this HookService h, Sqlite3FinalizeFn handler, int priority) =>
+        (Sqlite3FinalizeFn*)h.Chain(SymbolMap.Sqlite3Finalize, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3ColumnText"/>; returns the original, or null.</summary>
+    public static Sqlite3ColumnTextFn InstallSqlite3ColumnText(this HookService h, Sqlite3ColumnTextFn handler) =>
+        (Sqlite3ColumnTextFn)h.Install(SymbolMap.Sqlite3ColumnText, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3ColumnText"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3ColumnTextFn* ChainSqlite3ColumnText(this HookService h, Sqlite3ColumnTextFn handler, int priority) =>
+        (Sqlite3ColumnTextFn*)h.Chain(SymbolMap.Sqlite3ColumnText, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3ColumnBlob"/>; returns the original, or null.</summary>
+    public static Sqlite3ColumnBlobFn InstallSqlite3ColumnBlob(this HookService h, Sqlite3ColumnBlobFn handler) =>
+        (Sqlite3ColumnBlobFn)h.Install(SymbolMap.Sqlite3ColumnBlob, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3ColumnBlob"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3ColumnBlobFn* ChainSqlite3ColumnBlob(this HookService h, Sqlite3ColumnBlobFn handler, int priority) =>
+        (Sqlite3ColumnBlobFn*)h.Chain(SymbolMap.Sqlite3ColumnBlob, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3ColumnBytes"/>; returns the original, or null.</summary>
+    public static Sqlite3ColumnBytesFn InstallSqlite3ColumnBytes(this HookService h, Sqlite3ColumnBytesFn handler) =>
+        (Sqlite3ColumnBytesFn)h.Install(SymbolMap.Sqlite3ColumnBytes, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3ColumnBytes"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3ColumnBytesFn* ChainSqlite3ColumnBytes(this HookService h, Sqlite3ColumnBytesFn handler, int priority) =>
+        (Sqlite3ColumnBytesFn*)h.Chain(SymbolMap.Sqlite3ColumnBytes, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3ThreadSafe"/>; returns the original, or null.</summary>
+    public static Sqlite3ThreadSafeFn InstallSqlite3ThreadSafe(this HookService h, Sqlite3ThreadSafeFn handler) =>
+        (Sqlite3ThreadSafeFn)h.Install(SymbolMap.Sqlite3ThreadSafe, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3ThreadSafe"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3ThreadSafeFn* ChainSqlite3ThreadSafe(this HookService h, Sqlite3ThreadSafeFn handler, int priority) =>
+        (Sqlite3ThreadSafeFn*)h.Chain(SymbolMap.Sqlite3ThreadSafe, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.Sqlite3ErrMsg"/>; returns the original, or null.</summary>
+    public static Sqlite3ErrMsgFn InstallSqlite3ErrMsg(this HookService h, Sqlite3ErrMsgFn handler) =>
+        (Sqlite3ErrMsgFn)h.Install(SymbolMap.Sqlite3ErrMsg, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.Sqlite3ErrMsg"/>; returns the slot holding the next layer, or null.</summary>
+    public static Sqlite3ErrMsgFn* ChainSqlite3ErrMsg(this HookService h, Sqlite3ErrMsgFn handler, int priority) =>
+        (Sqlite3ErrMsgFn*)h.Chain(SymbolMap.Sqlite3ErrMsg, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ZstdCreateDCtx"/>; returns the original, or null.</summary>
+    public static ZstdCreateDCtxFn InstallZstdCreateDCtx(this HookService h, ZstdCreateDCtxFn handler) =>
+        (ZstdCreateDCtxFn)h.Install(SymbolMap.ZstdCreateDCtx, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ZstdCreateDCtx"/>; returns the slot holding the next layer, or null.</summary>
+    public static ZstdCreateDCtxFn* ChainZstdCreateDCtx(this HookService h, ZstdCreateDCtxFn handler, int priority) =>
+        (ZstdCreateDCtxFn*)h.Chain(SymbolMap.ZstdCreateDCtx, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ZstdDecompressDCtx"/>; returns the original, or null.</summary>
+    public static ZstdDecompressDCtxFn InstallZstdDecompressDCtx(this HookService h, ZstdDecompressDCtxFn handler) =>
+        (ZstdDecompressDCtxFn)h.Install(SymbolMap.ZstdDecompressDCtx, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ZstdDecompressDCtx"/>; returns the slot holding the next layer, or null.</summary>
+    public static ZstdDecompressDCtxFn* ChainZstdDecompressDCtx(this HookService h, ZstdDecompressDCtxFn handler, int priority) =>
+        (ZstdDecompressDCtxFn*)h.Chain(SymbolMap.ZstdDecompressDCtx, (IntPtr)handler, priority);
 }

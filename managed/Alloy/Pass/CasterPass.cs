@@ -990,10 +990,6 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // the dirty window, and this bracket runs after the sweep has already read _vDirty off it.
         OwnedBuffers.ClearDirty();
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-        // Casters in front of a view's near plane are CLAMPED to it instead of clipped: an up-light caster
-        // still occludes (depth 0 beats every receiver), so the sun cascades need no depth range spent on it.
-        // Context state the engine never sets; disabled again before Leave.
-        Gl.Enable(Gl.DEPTH_CLAMP);
         _qShadowOn = _qShadow.Begin(Gl.TIME_ELAPSED);
         // #286: ONE staging for the whole frame, after the bones (the skin drop is a per-frame fact) and
         // inside the bracket (the mask resolve issues Alloy's texture copy). Every view below is then a
@@ -1044,6 +1040,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         else if (_gStaged && _fbo != 0)
         {   // #196: the combined (no-split) static layer, or the dynamic mirror -- never both, or the frozen
             // static copy and the live one compose into a double shadow
+            Gl.Enable(Gl.DEPTH_CLAMP);
             GrassField.DrawShadows(_fbo, _depthTex, _mapSize, _sunRebaked, CascadeCount);
             GrassField.DrawShadows(_fbo, SunDynTex, _mapSize, _sunDynRebaked, CascadeCount);
         }
@@ -2586,6 +2583,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
             && Gl.CheckFramebufferStatus(Gl.FRAMEBUFFER) != Gl.FRAMEBUFFER_COMPLETE)
         { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); Disarm("the caster depth framebuffer is incomplete"); return false; }
         Gl.Viewport(0, 0, size, size);
+        // clamp only the directional maps: a point cube's near plane IS the self-shadow skip the lightmap bake clips at
+        if (tex == _depthTex || tex == SunDynTex) Gl.Enable(Gl.DEPTH_CLAMP); else Gl.Disable(Gl.DEPTH_CLAMP);
         // #302: the depth stages read ALLOY's per-draw records and ALLOY's bone block, at Alloy's own binding
         // points. Re-bound per view (per flush target on the layered path) rather than once per frame because
         // the colour pass is entitled to rebind both between frames, and a bake reading a buffer that has

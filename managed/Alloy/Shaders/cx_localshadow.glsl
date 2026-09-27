@@ -235,12 +235,50 @@ float CxLocalShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float onMover
     return CxLocalShadowQ(slot, worldPos, N, ndlRaw, onMover, viewDepth, true);
 }
 
-// #674: the visibility a baked receiver still owes a hot static light: the mover's occlusion off the
-// DYNAMIC page, scaled by the STATIC cube's visibility -- where the bake already holds this light's
-// shadow (a fence's) the mover adds nothing, else the creature's shadow stacked on the fence's from
-// the same light. Same offset and bias as the full receiver; 1.0 where the light holds no page.
-// `soft` false = one centre tap per map, for a hot light past the fragment's cap (shadow.cap).
-float CxLocalDynShadowQ(int slot, vec3 worldPos, vec3 N, float ndlRaw, bool soft)
+// #674: the static cube's visibility exactly as the lightmap bake filtered it (LightmapBake.BakeLight):
+// PCSS off, so a fixed disc at the softness ceiling, never under `lmTexel` (the receiver's lightmap texel
+// in world units), each tap against the receiver plane's depth along its own ray. The live filter is
+// harder near contact, and a baked penumbra it read as umbra cut a creature's shadow off there. Unfaded.
+// `soft` false = the centre tap alone (a hot light past the fragment's cap).
+float CxLocalBakedVis(int slot, vec3 worldPos, vec3 N, float ndlRaw, float lmTexel, bool soft)
+{
+    vec4 L = uLocalLight[slot];
+    float far = L.w, near = uLocalPlane.x;
+    vec3 d = worldPos - L.xyz;
+    float m = max(max(abs(d.x), abs(d.y)), abs(d.z));
+    if (far <= near || m <= near + CX_LOCAL_BIAS || m >= far) return 1.0;
+    float texel = 2.0 * m * uLocalPlane.y;
+    float slope = ndlRaw <= 0.0 ? 0.0
+                  : min(sqrt(max(1.0 - ndlRaw * ndlRaw, 0.0)) / max(ndlRaw, 0.1), CX_LOCAL_SLOPE_MAX);
+    d += N * (texel * (CX_LOCAL_NORMAL_OFFSET + CX_LOCAL_SLOPE_OFFSET * slope));
+    m = clamp(max(max(abs(d.x), abs(d.y)), abs(d.z)) - CX_LOCAL_BIAS * (1.0 + slope), near, far);
+    float ref = far / (far - near) * (1.0 - near / m);
+    float vs = texture(uLocalShadow, vec4(d, float(slot)), ref);
+    int taps = min(int(uLocalPcss.z), CX_VOGEL_MAX);
+    float rs = max(uLocalSoft.x, min(lmTexel / texel, CX_LOCAL_DISC_WORLD_MAX));
+    if (!soft || uLocalSoft.x <= 0.0 || taps <= 0 || rs < CX_LOCAL_DISC_MIN) return vs;
+    vec3 axis = abs(d.x) < 0.9 * m ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
+    vec3 u1 = normalize(cross(axis, d));
+    vec3 v1 = normalize(cross(d, u1));
+    mat2 disc = CxSpin(taps, fract(CxShadowNoise(worldPos) + uLocalPcss.y), texel * rs);
+    vec2 dir = vec2(1.0, 0.0);
+    for (int i = 0; i < taps; i++)
+    {
+        vec2 o = disc * (sqrt(float(i) + 0.5) * dir);
+        dir = CxVogelTurn(dir);
+        vec3 dt = d + u1 * o.x + v1 * o.y;
+        float dn = dot(dt, N);
+        float sc = abs(dn) > 1e-4 ? clamp(dot(d, N) / dn, 0.5, 2.0) : 1.0;
+        float mt = clamp(max(max(abs(dt.x), abs(dt.y)), abs(dt.z)) * sc - CX_LOCAL_BIAS * (1.0 + slope), near, far);
+        vs += texture(uLocalShadow, vec4(dt, float(slot)), far / (far - near) * (1.0 - near / mt));
+    }
+    return vs / float(taps + 1);
+}
+
+// CX-56: the MOVERS' visibility alone from the light in `slot` -- its dyn page, no static map, unfaded;
+// 1.0 where the light holds no page. `soft` = a 4-tap disc one dyn texel wide (a baked receiver has no
+// static cube to min() it against, so the lone hardware tap shows its texel); false = the centre tap.
+float CxMoverVisQ(int slot, vec3 worldPos, vec3 N, float ndlRaw, bool soft)
 {
     if (uLocalCubes <= 0 || slot < 0 || slot >= uLocalCubes) return 1.0;
     float pg = uLocalDynPage[slot];
@@ -250,31 +288,29 @@ float CxLocalDynShadowQ(int slot, vec3 worldPos, vec3 N, float ndlRaw, bool soft
     vec3 d = worldPos - L.xyz;
     float m = max(max(abs(d.x), abs(d.y)), abs(d.z));
     if (far <= near || m <= near + CX_LOCAL_BIAS || m >= far) return 1.0;
-    float biasTexel = 2.0 * m / float(textureSize(uLocalDynShadow, 0).x);
+    float t = 2.0 * m / float(textureSize(uLocalDynShadow, 0).x);
     float slope = ndlRaw <= 0.0 ? 0.0
                   : min(sqrt(max(1.0 - ndlRaw * ndlRaw, 0.0)) / max(ndlRaw, 0.1), CX_LOCAL_SLOPE_MAX);
-    d += N * (biasTexel * (CX_LOCAL_NORMAL_OFFSET + CX_LOCAL_SLOPE_OFFSET * slope));
+    d += N * (t * (CX_LOCAL_NORMAL_OFFSET + CX_LOCAL_SLOPE_OFFSET * slope));
     m = clamp(max(max(abs(d.x), abs(d.y)), abs(d.z)) - CX_LOCAL_BIAS * (1.0 + slope), near, far);
     float ref = far / (far - near) * (1.0 - near / m);
-    if (!soft)
-    {
-        float vc = texture(uLocalDynShadow, vec4(d, pg - 1.0), ref);
-        return mix(1.0, 1.0 - texture(uLocalShadow, vec4(d, float(slot)), ref) * (1.0 - vc), uLocalFade[slot]);
-    }
-    // a baked receiver has no static cube to min() this against, so the one hardware tap the live
-    // path gets away with shows its texel here: a 4-tap disc one dyn texel wide
-    float t = 2.0 * m / float(textureSize(uLocalDynShadow, 0).x);
+    if (!soft) return texture(uLocalDynShadow, vec4(d, pg - 1.0), ref);
     vec3 axis = abs(d.x) < 0.9 * m ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0);
     vec3 u1 = normalize(cross(axis, d)) * t, v1 = normalize(cross(d, u1)) * t;
-    float v = texture(uLocalDynShadow, vec4(d + u1 + v1, pg - 1.0), ref) + texture(uLocalDynShadow, vec4(d - u1 + v1, pg - 1.0), ref)
-            + texture(uLocalDynShadow, vec4(d + u1 - v1, pg - 1.0), ref) + texture(uLocalDynShadow, vec4(d - u1 - v1, pg - 1.0), ref);
-    // the static half through the same disc: one hard tap against the bake's soft edge cut the
-    // creature's silhouette out of the fence's penumbra
-    float vs = texture(uLocalShadow, vec4(d + u1 + v1, float(slot)), ref) + texture(uLocalShadow, vec4(d - u1 + v1, float(slot)), ref)
-             + texture(uLocalShadow, vec4(d + u1 - v1, float(slot)), ref) + texture(uLocalShadow, vec4(d - u1 - v1, float(slot)), ref);
-    return mix(1.0, 1.0 - vs * 0.25 * (1.0 - v * 0.25), uLocalFade[slot]);
+    return 0.25 * (texture(uLocalDynShadow, vec4(d + u1 + v1, pg - 1.0), ref) + texture(uLocalDynShadow, vec4(d - u1 + v1, pg - 1.0), ref)
+                 + texture(uLocalDynShadow, vec4(d + u1 - v1, pg - 1.0), ref) + texture(uLocalDynShadow, vec4(d - u1 - v1, pg - 1.0), ref));
 }
-float CxLocalDynShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw)
+
+// #674: the visibility a baked receiver still owes a hot static light with NO mover channel (CX-56: past
+// the four a surface can hold): the movers' occlusion scaled by an ESTIMATE of what the bake left lit --
+// the static cube through the bake's own filter. The channel path reads the bake's answer instead.
+float CxLocalDynShadowQ(int slot, vec3 worldPos, vec3 N, float ndlRaw, bool soft, float lmTexel)
 {
-    return CxLocalDynShadowQ(slot, worldPos, N, ndlRaw, true);
+    float vd = CxMoverVisQ(slot, worldPos, N, ndlRaw, soft);
+    if (vd >= 1.0) return 1.0;
+    return mix(1.0, 1.0 - CxLocalBakedVis(slot, worldPos, N, ndlRaw, lmTexel, soft) * (1.0 - vd), uLocalFade[slot]);
+}
+float CxLocalDynShadow(int slot, vec3 worldPos, vec3 N, float ndlRaw, float lmTexel)
+{
+    return CxLocalDynShadowQ(slot, worldPos, N, ndlRaw, true, lmTexel);
 }

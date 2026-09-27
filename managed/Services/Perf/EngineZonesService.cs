@@ -25,6 +25,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
         _ai = hooks.InstallClientAiUpdateState(&OnAi);
         _gui = hooks.InstallGuiUpdateAndRender(&OnGui);
         _demand = hooks.InstallResManDemand(&OnDemand);
+        _image = hooks.ChainAurGetImageWrapper(&OnImage, ImagePriority);
         _bsp = hooks.InstallManageSceneBSP(&OnBsp);
         _buckets = hooks.InstallAddPartsToDrawBuckets(&OnBuckets);
         // 2 by default (2026-09-06, live: Buckets 0,7 -> 0,2-0,3ms, gob parts intact); 0 is the A/B, 1 the
@@ -118,16 +119,83 @@ public sealed unsafe class EngineZonesService : IExtenderService
         return r;
     }
     private static int _demandDepth;
+    /// <summary>Outermost demands since boot: ticks in all, in models, in restypes step 0 does not name, and calls.
+    /// Never reset (a load-screen present clears the frame zones mid-<c>LoadArea</c>), so a caller samples deltas.</summary>
+    public static long DemandTicks, DemandMdlTicks, DemandOtherTicks, DemandCalls;
+    /// <summary>CX-55 step 0: ticks in texture demands at ANY depth, decode included, never reset. The
+    /// <see cref="FrameZones.Zone.TexRead"/> zone is the same bracket minus the decode and is cleared every
+    /// frame; a model's parse subtracts this instead, because the texture demands nested in it are the
+    /// engine's work under our bracket and not the model parse we are sizing.</summary>
+    public static long DemandTexTicks;
 
     /// <summary>The on-demand resource load, wherever the engine asks for it (a model on first sight, a
     /// texture, an animation). Demands nest -- a model demands its textures -- so only the outermost call
-    /// is bracketed and counted. Nested zone: reported for shape inside Ai, not subtracted.</summary>
+    /// is bracketed and counted. Nested zone: reported for shape inside Ai, not subtracted.
+    /// <para>CX-54 step 0: a texture's demand is bracketed at ANY depth as the read half of the build's
+    /// read / decode / upload split (texture demands never nest in each other, and the one the tile loop
+    /// makes sits under a model's), minus the decode inside it -- a TGA is decoded by
+    /// <c>CResTGA::OnResourceServiced</c> within its own demand. Every demand, at any depth, has its
+    /// container filed by <see cref="CX.Alloy.ResSources"/>. The restype is read BEFORE the call, which is the same answer:
+    /// neither <c>Demand</c> (Linux @0x53ae70 / Windows RVA 0x18ef90) nor the four <c>ServiceFrom*</c> it
+    /// dispatches to writes the <c>CRes</c>'s key-entry pointer at <c>+0x28</c>.</para></summary>
     [UnmanagedCallersOnly]
     private static long OnDemand(IntPtr self, IntPtr res)
     {
+        ushort type = ResType(res);
+        bool tex = type == ResDds || type == ResTga || type == ResPlt;
+        long tr = tex ? FrameZones.Now : 0;
+        long dec0 = tex ? FrameZones.Ticks(FrameZones.Zone.TexDecode) : 0;
         long t = _demandDepth++ == 0 ? FrameZones.Now : 0;
         long r = _demand != null ? _demand(self, res) : 0;
-        if (--_demandDepth == 0) { FrameZones.Add(FrameZones.Zone.Demand, t); FrameZones.Count(FrameZones.Ev.Demands); }
+        if (tex)
+        {
+            DemandTexTicks += FrameZones.Now - tr;
+            FrameZones.Add(FrameZones.Zone.TexRead, tr, FrameZones.Ticks(FrameZones.Zone.TexDecode) - dec0);
+        }
+        CX.Alloy.ResSources.Note(res == IntPtr.Zero ? 0 : new CRes(res).SourceKind, tex);   // every depth: a tile's textures nest under its model
+        if (--_demandDepth == 0)
+        {
+            long dt = FrameZones.Now - t;
+            DemandTicks += dt; DemandCalls++;
+            if (type == ResMdl) DemandMdlTicks += dt;
+            else if (!tex) DemandOtherTicks += dt;
+            FrameZones.Add(FrameZones.Zone.Demand, t);
+            FrameZones.Count(FrameZones.Ev.Demands);
+            switch (type)
+            {
+                case ResDds: FrameZones.Add(FrameZones.Zone.DemDds, t); FrameZones.Count(FrameZones.Ev.DdsDemands); break;
+                case ResTga: FrameZones.Add(FrameZones.Zone.DemTga, t); FrameZones.Count(FrameZones.Ev.TgaDemands); break;
+                case ResPlt: FrameZones.Add(FrameZones.Zone.DemPlt, t); FrameZones.Count(FrameZones.Ev.PltDemands); break;
+                case ResMdl: FrameZones.Add(FrameZones.Zone.DemMdl, t); FrameZones.Count(FrameZones.Ev.MdlDemands); break;
+                default: FrameZones.Add(FrameZones.Zone.DemOther, t); break;
+            }
+        }
+        return r;
+    }
+
+    /// <summary>The engine restypes step 0 names (confirmed from the <c>CResHelper&lt;T, n&gt;</c> instantiations).</summary>
+    private const ushort ResTga = 3, ResPlt = 6, ResMdl = 2002, ResDds = 2033;
+
+    /// <summary>A resource's restype, through its key-table entry; 0 when it has none.</summary>
+    private static ushort ResType(IntPtr res)
+    {
+        if (res == IntPtr.Zero) return 0;
+        var entry = new CKeyTableEntry(new CRes(res).KeyEntry);
+        return entry.IsNull ? (ushort)0 : entry.ResType;
+    }
+
+    private static AurGetImageWrapperFn* _image;
+    /// <summary>Outermost on the wrapper: the zone times whatever <see cref="Alloy.RasterReader"/> adds under it.</summary>
+    private const int ImagePriority = 100;
+    private static int _imageDepth;
+
+    /// <summary>CX-52 step 0: one texture's read + decode, outermost call only.</summary>
+    [UnmanagedCallersOnly]
+    private static IntPtr OnImage(IntPtr name, int* w, int* h, int* bpp, int* size, int* container, int* format, float* alpha, int allow)
+    {
+        long t = _imageDepth++ == 0 ? FrameZones.Now : 0;
+        IntPtr r = (*_image)(name, w, h, bpp, size, container, format, alpha, allow);
+        if (--_imageDepth == 0) FrameZones.Add(FrameZones.Zone.Image, t);
         return r;
     }
 

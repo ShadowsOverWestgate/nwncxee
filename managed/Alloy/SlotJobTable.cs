@@ -19,7 +19,7 @@ internal sealed class SlotJobTable<TJob, TEntry>
     private readonly Stack<TJob> _free = new();
     private readonly object _gate = new();
     private readonly int _maxPending;
-    private Thread? _worker;
+    private bool _started;
 
     internal SlotJobTable(int maxEntries, int maxPending)
     {
@@ -29,29 +29,35 @@ internal sealed class SlotJobTable<TJob, TEntry>
 
     internal static long KeyOf(int slot, int item) => ((long)slot << 32) | (uint)item;
 
-    internal bool Running => _worker != null;
+    internal bool Running => _started;
 
-    /// <summary>Start the worker once. <paramref name="body"/> sees one job at a time, no GL, no engine memory --
-    /// everything it reads was copied for it at the offer, so nothing it holds outlives a pool the engine freed.
-    /// A throw escaping it kills the process (an unhandled background-thread exception), so bodies catch.</summary>
-    internal void Start(string name, Action<TJob> body)
+    /// <summary>Start the worker(s) once, from the offering thread. <paramref name="body"/> sees one job at a
+    /// time, no GL, no engine memory -- everything it reads was copied for it at the offer, so nothing it holds
+    /// outlives a pool the engine freed. A throw escaping it kills the process (an unhandled background-thread
+    /// exception), so bodies catch.
+    /// <para>More than one worker means <paramref name="body"/> runs on several threads at once and results come
+    /// back out of offer order: a body that wants a pool of its own (buffers, file handles) keeps it
+    /// <c>[ThreadStatic]</c>. The queue stays FIFO, so the jobs are still STARTED in the order they were
+    /// offered.</para></summary>
+    internal void Start(string name, Action<TJob> body, int workers = 1)
     {
-        if (_worker != null) return;
-        _worker = new Thread(() =>
-        {
-            while (true)
+        if (_started) return;
+        _started = true;
+        for (int i = 0; i < workers; i++)
+            new Thread(() =>
             {
-                TJob j;
-                lock (_gate)
+                while (true)
                 {
-                    while (_in.Count == 0) Monitor.Wait(_gate);
-                    j = _in.Dequeue();
+                    TJob j;
+                    lock (_gate)
+                    {
+                        while (_in.Count == 0) Monitor.Wait(_gate);
+                        j = _in.Dequeue();
+                    }
+                    body(j);
+                    lock (_gate) _out.Enqueue(j);
                 }
-                body(j);
-                lock (_gate) _out.Enqueue(j);
-            }
-        }) { IsBackground = true, Name = name };
-        _worker.Start();
+            }) { IsBackground = true, Name = workers == 1 ? name : $"{name}-{i}" }.Start();
     }
 
     internal bool QueueHasRoom { get { lock (_gate) return _in.Count < _maxPending; } }

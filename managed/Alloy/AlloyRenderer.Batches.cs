@@ -1189,6 +1189,7 @@ public sealed unsafe partial class AlloyRenderer
                     // anything, so the synthesis falls back to its generated floor exactly as it does for
                     // content that ships no maps at all.
                     bool mapsMeanNothing = !_vUv[_oVao[i]].Present;
+                    bool slotQueued = false;
                     for (int s = 0; s < MapSlots; s++)
                     {
                         slotTid[s] = 0;
@@ -1209,6 +1210,7 @@ public sealed unsafe partial class AlloyRenderer
                             { if (!main && OwnedTextures.IsOwned(t)) { c = snap; return Deferred; } t = 0; }
                             _recAurS[i * MapSlots + s] = sa.Ptr;   // stamped only past the gates: a deferred slot must re-resolve
                             if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
+                            else if (TexStream.On && AurTex.Tid(sa.Ptr) == 0) slotQueued = true;   // CX-52 step 5: still in the build queue
                         }
                     }
                     if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
@@ -1222,7 +1224,11 @@ public sealed unsafe partial class AlloyRenderer
                     // so a cached stand-in would never re-resolve and the part would stay white for the life
                     // of the record. The cost is one re-resolve per frame per affected part, which is the
                     // null-tex count.
-                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _recTexStale[i] = nullTex;
+                    // CX-52 step 5: a record that drew the white stand-in now resolves a real diffuse -- the part was
+                    // classed against the unbuilt texture (GetIsOpaque answers "not opaque" for one), so re-enrol it.
+                    if (!nullTex && _recTexStale[i] && TexStream.On && _recTid[i] != 0 && _recTid[i] == OwnedTextures.WhiteName)
+                    { TexStream.Landed(_oEntry[i]); _recArrive[i] = TexStream.Clock; }
+                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _recTexStale[i] = nullTex || slotQueued;
                     for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
                 }
             }
@@ -1273,6 +1279,7 @@ public sealed unsafe partial class AlloyRenderer
                 if (samp) tChase = FrameZones.Now;
                 bool rec = texDirty;
                 if (stale) { WriteStable(r, i, lit); rec = true; }
+                if (lit && r[ArriveFloat] != _recArrive[i]) { r[ArriveFloat] = _recArrive[i]; rec = true; }
                 var pf = default(RecordFrameState);
                 // rot.z carries #124's dissolve flag and rot.w #126's per-draw alpha multiplier (the part's
                 // own alpha, times the tile fade factor where one applies): the record already had two dead

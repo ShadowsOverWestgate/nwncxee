@@ -1,0 +1,95 @@
+using System;
+using System.Runtime.InteropServices;
+using CX.Engine;
+using CX.Framework;
+
+namespace CX.Alloy;
+
+/// <summary>CX-54: the TGA hand-back. <c>AurGetImageWrapper</c> @0x484cc0 tries the DDS slot, then 4PC, then
+/// <c>AurGetRaster</c>, a data slot <c>CAuroraInterface::CAuroraInterface</c> @0x1124ac0 fills with
+/// <c>GetRaster</c> @0x1123080. That getter builds a <c>CAuroraTexture</c>, demands its <c>CResTGA</c> (the read
+/// and the decode) and reports w, h and bytes per pixel; the wrapper turns the depth into a format and nothing
+/// after it reads a TGA header. A prepared TGA answers the slot with those three and its pixels, so the whole
+/// <c>CRes</c> path is skipped. Its release goes through <c>AurReleaseRaster</c> with size 0, which reads a tag at
+/// <c>data + w*h*bpp + 4</c>: ours is not the engine's 3, so <see cref="DdsReader"/>'s release frees it here.</summary>
+internal static unsafe partial class TexLoad
+{
+    /// <summary>The tag at a buffer of ours: not the engine's TGA tag (3) nor <see cref="RasterReader"/>'s forced 0,
+    /// so the engine's release, if it ever saw one, refuses it with a logged error.</summary>
+    private const short RasterTag = 0x0cd6;   // not-an-offset: a tag value
+    /// <summary>The tag's place past the pixels, inside <see cref="RasterReader.TgaTagTail"/>.</summary>
+    private const int RasterTagAt = 4;
+
+    private static delegate* unmanaged<IntPtr, int*, int*, int*, byte*> _engRaster;
+    private static IntPtr* _rasterSlot, _releaseSlot;
+    private static long _rasterSwaps;
+
+    /// <summary>From <see cref="Attach"/>: the two slots, or a loud line and DDS alone.</summary>
+    private static void AttachRaster(ExtenderLog log)
+    {
+        _rasterSlot = (IntPtr*)Native.Sym(SymbolMap.AurGetRaster);
+        _releaseSlot = (IntPtr*)Native.Sym(SymbolMap.AurReleaseRaster);
+        if (_rasterSlot == null || _releaseSlot == null)
+        {
+            _rasterSlot = null;
+            log.Always("TexLoad: TGA REFUSED -- AurGetRaster or AurReleaseRaster unresolved; every TGA is read by the engine");
+        }
+    }
+
+    /// <summary>Once a frame, from <see cref="Drip"/>, and at <c>LoadArea</c>'s entry: store our getter once the constructor has filled the slot,
+    /// and again if it refills it -- only while the release that frees our buffers is <see cref="DdsReader"/>'s.</summary>
+    internal static void SwapRaster()
+    {
+        if (!_armed || _rasterSlot == null || !DdsReader.OwnsRelease) return;
+        IntPtr ours = (IntPtr)(delegate* unmanaged<IntPtr, int*, int*, int*, byte*>)&OnRaster;
+        IntPtr g = *_rasterSlot;
+        if (g == ours || g == IntPtr.Zero) return;
+        _engRaster = (delegate* unmanaged<IntPtr, int*, int*, int*, byte*>)g;
+        *_rasterSlot = ours;
+        _log?.Info($"TexLoad: raster slot swapped (#{++_rasterSwaps})");
+    }
+
+    [UnmanagedCallersOnly]
+    private static byte* OnRaster(IntPtr name, int* w, int* h, int* bpp)
+    {
+        byte* px = TakeTga(name, out RasterReader.Raster r);
+        if (px == null)
+        {
+            byte* read = _engRaster(name, w, h, bpp);
+            if (read != null) NoteEngineTga(name);
+            return read;
+        }
+        *(short*)(px + r.Bytes + RasterTagAt) = RasterTag;
+        *w = r.W; *h = r.H; *bpp = r.Px;
+        if (!Checking) return px;
+        int w2, h2, b2;
+        byte* engine = _engRaster(name, &w2, &h2, &b2);
+        bool agreed = CheckTga(name, r, px, engine, w2, h2, b2);
+        if (engine != null) ((delegate* unmanaged<byte*, int, int, int, int, int, void>)*_releaseSlot)(engine, w2, h2, b2, 0, 0);
+        if (agreed) return px;
+        NativeMemory.Free(px);
+        return _engRaster(name, w, h, bpp);
+    }
+
+    /// <summary>From the release slot: true when the buffer is a TGA of ours, and it is freed.</summary>
+    internal static bool FreeRaster(byte* data, int w, int h, int bpp)
+    {
+        if (data == null || bpp == 2 || w <= 0 || h <= 0 || *(short*)(data + (long)w * h * bpp + RasterTagAt) != RasterTag) return false;
+        NativeMemory.Free(data);
+        return true;
+    }
+
+    /// <summary>The check-mode oracle for a TGA: the engine's own getter must report the same raster, byte for byte.</summary>
+    private static bool CheckTga(IntPtr name, in RasterReader.Raster ours, byte* oursData, byte* engine, int w, int h, int bpp)
+    {
+        _checked++;
+        string? bad = engine == null ? "the engine read nothing"
+            : w != ours.W || h != ours.H || bpp != ours.Px ? $"engine {w}x{h}x{bpp} vs ours {ours.W}x{ours.H}x{ours.Px}"
+            : !new ReadOnlySpan<byte>(engine, ours.Bytes).SequenceEqual(new ReadOnlySpan<byte>(oursData, ours.Bytes)) ? "pixels differ"
+            : null;
+        if (bad == null) return true;
+        if (++_mismatched <= LogCap)
+            _log?.Always($"TexLoad: TGA CHECK FAILED for {Marshal.PtrToStringAnsi(name)}: {bad} -- the engine's own read is served instead; set alloy.texload=0 if this repeats");
+        return false;
+    }
+}

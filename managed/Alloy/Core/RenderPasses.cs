@@ -26,7 +26,7 @@ internal static class RenderPasses
             Name = "ownedtex",
             Attach = l => { OwnedTextures.Attach(l); KnobSurface.Note(AlloyRenderer.VramNote); },
             Install = OwnedTextures.Install,
-            SelfCheck = l => { OwnedTextures.SelfCheck(l); BcnEncode.SelfCheck(l); AlloyRenderer.SelfCheckHandles(l); AlloyRenderer.SelfCheckNameRetired(l); OwnedTextures.SelfCheckCache(l); },
+            SelfCheck = l => { OwnedTextures.SelfCheck(l); BcnEncode.SelfCheck(l); DdsReader.SelfCheck(l); RasterReader.SelfCheck(l); TexStream.SelfCheck(l); ResSources.SelfCheck(l); TexLoad.SelfCheck(l); ModelLoad.SelfCheck(l); MdlCache.SelfCheck(l); AlloyRenderer.SelfCheckHandles(l); AlloyRenderer.SelfCheckNameRetired(l); OwnedTextures.SelfCheckCache(l); },
             // #259: no Revoke. Its resources are keyed on CONTENT, so a part-table wipe
             // invalidates nothing in them -- and since they are only ever populated at the engine's upload
             // funnel, wiping them on an edge the engine does not rebuild across would leave every texture
@@ -78,7 +78,7 @@ internal static class RenderPasses
             Name = "lightmap",
             Attach = LightmapBake.Attach,
             Install = LightmapBake.Install,
-            SelfCheck = l => { LightmapBake.SelfCheck(l); LightmapBake.HoldSelfCheck(l); BakeCache.SelfCheck(l); },
+            SelfCheck = l => { LightmapBake.SelfCheck(l); LightmapBake.HoldSelfCheck(l); LightmapBake.LightsSelfCheck(l); LightmapBake.AreaSelfCheck(l); BakeCache.SelfCheck(l); },
             Revoke = LightmapBake.Revoke,
             ContextLost = LightmapBake.ContextLost,
             Stats = LightmapBake.Stats,
@@ -279,6 +279,20 @@ internal static class RenderPasses
             ContextLost = AlloyRenderer.ContextLost,
             SelfCheck = l => { CullPass.SelfCheck(l); AlloyRenderer.EnrollSelfCheck(l); },
         }, log);
+        // CX-54 step 3: not a pass either -- the NWSync store, read by Alloy so a worker can fetch a manifest
+        // resource without the main-thread resource manager. It wants the same four slots: a boot gate, the two
+        // engine hooks that tell it which manifest is live, a check and a line on the period report.
+        r.Register(new PassLifecycle
+        {
+            Name = "nwsyncread",
+            Attach = NwSyncReader.Attach,
+            Install = NwSyncReader.Install,
+            SelfCheck = l => NwSyncReader.SelfCheck(l),
+            // No ContextLost/Revoke: it owns no GL name and captures nothing from the world. Its one lifetime
+            // edge is the manifest, and the engine announces that itself.
+            Stats = _ => NwSyncReader.Note(),
+        }, log);
+
         // CasterPass is deliberately NOT here yet. It runs in the SHADOW bracket, installs through its own
         // service, and its stand-down is a latched Disarm rather than a context edge -- so it does not fit
         // these slots without changing what they mean. Folding the shadow pass in is #176's work, which is

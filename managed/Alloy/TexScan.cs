@@ -34,9 +34,10 @@ internal static unsafe class TexScan
         /// <summary>Mean colour, 0..1 in the texture's own (sRGB) encoding; valid when <see cref="MeanOk"/>.</summary>
         public Vector3 Mean;
         public bool MeanOk;
-        /// <summary>The cell as RGBA8, top row first as the engine uploads it; null when not asked for or
-        /// the image is not 3- or 4-byte uncompressed.</summary>
-        /// <summary>Rented from ArrayPool; W*H*4 bytes are valid. Whoever drops it returns it.</summary>
+        /// <summary>The cell as RGBA8, top row first as the engine uploads it; null when not asked for or the image
+        /// is not 3- or 4-byte uncompressed. Rented from ArrayPool with room for the whole mip chain
+        /// (<see cref="ChainBytes"/>), so the transcode builds its mips in place; W*H*4 bytes are valid. Whoever
+        /// drops it returns it.</summary>
         public byte[]? Rgba;
         public int W, H;
         /// <summary>The engine asked for a mip chain on this texture.</summary>
@@ -75,6 +76,8 @@ internal static unsafe class TexScan
             int fmt = t.GetCompressionFormat();
             byte* data = px + t.GetNumMipHeaderBytes();
             r.W = w; r.H = h;
+            if (DdsReader.Lookup(px, out DdsReader.Info dds) && !DdsReader.EngineUploads(dds.Format))
+                return ScanDecoded(data, w, h, dds.Format, cut, ref r);
             if (fmt == FmtDxt1) ScanDxt(data, w, h, false, cut, ref r);
             else if (fmt == FmtDxt5) ScanDxt(data, w, h, true, cut, ref r);
             else { LastRefusedFormat = fmt; return false; }
@@ -89,7 +92,7 @@ internal static unsafe class TexScan
         r.W = cw; r.H = ch;
         if (wantPixels && bpp >= 3)
         {
-            byte[] o = ArrayPool<byte>.Shared.Rent(cw * ch * 4);   // longer than W*H*4; the owner returns it
+            byte[] o = ArrayPool<byte>.Shared.Rent((int)ChainBytes(cw, ch, r.Mips));
             fixed (byte* op = o)
                 for (int y = 0; y < ch; y++)
                 {
@@ -102,6 +105,23 @@ internal static unsafe class TexScan
         }
         return true;
     }
+
+    /// <summary>CX-52 step 4: a format the engine names by its same-sized stand-in (BC7 as DXT5 and so on) is scanned
+    /// from its own decode; one with no CPU decoder here (BC6H, SNORM RGTC -- none carries alpha) is left unscanned.
+    /// ponytail: a full level-0 decode on the main thread; move it to cx-bcn if such textures show in the Tex zone.</summary>
+    private static bool ScanDecoded(byte* data, int w, int h, DdsReader.Fmt f, int cut, ref Result r)
+    {
+        if (!BcnDecode.Decodes(f)) { LastRefusedFormat = FmtDecodedBase + (int)f; return false; }
+        int px = BcnDecode.PixelBytes(f), n = w * h * px;
+        byte[] buf = ArrayPool<byte>.Shared.Rent(n);
+        BcnDecode.Unpack(new ReadOnlySpan<byte>(data, DdsReader.LevelSize(w, h, DdsReader.ChannelsOf(f))), w, h, f, buf.AsSpan(0, n));
+        fixed (byte* p = buf) ScanRaw(p, (long)w * px, px, 0, 0, w, h, cut, ref r);
+        ArrayPool<byte>.Shared.Return(buf);
+        return true;
+    }
+
+    /// <summary><see cref="LastRefusedFormat"/> for a DDS format with no decoder: this plus its <see cref="DdsReader.Fmt"/>.</summary>
+    private const int FmtDecodedBase = 100;
 
     /// <summary>Full-resolution alpha count (a sparse scan misses the railing that IS the cutout), mean
     /// colour on a stride so a 2k sheet costs a few hundred adds.</summary>
@@ -205,6 +225,16 @@ internal static unsafe class TexScan
         }
     }
 
+    /// <summary>RGBA8 bytes of the chain <see cref="Chain"/> lays out (uncapped, so never less).</summary>
+    internal static long ChainBytes(int w, int h, bool mips)
+    {
+        for (long total = 0; ; w = Math.Max(w >> 1, 1), h = Math.Max(h >> 1, 1))
+        {
+            total += (long)w * h * 4;
+            if (!mips || (w == 1 && h == 1)) return total;
+        }
+    }
+
     /// <summary>Lay out a chain from <paramref name="w"/> x <paramref name="h"/> down to 1x1 (one level when
     /// <paramref name="mips"/> is false), capped at <paramref name="max"/> levels. Returns the level count;
     /// <paramref name="total"/> is the RGBA8 byte size of the whole chain.</summary>
@@ -240,7 +270,7 @@ internal static unsafe class TexScan
         check.Expect(MathF.Abs(r.Holes - 1f / 16f) < 1e-6f, $"dxt5 ramp block: holes {r.Holes}");
         int* lw = stackalloc int[16], lh = stackalloc int[16]; long* off = stackalloc long[16];
         int n = Chain(8, 2, true, 16, lw, lh, off, out long total);
-        check.Expect(n == 4 && lw[3] == 1 && lh[3] == 1 && total == (16 + 4 + 2 + 1) * 4, $"chain 8x2: {n} levels, {total} bytes");
+        check.Expect(n == 4 && lw[3] == 1 && lh[3] == 1 && total == (16 + 4 + 2 + 1) * 4 && ChainBytes(8, 2, true) == total, $"chain 8x2: {n} levels, {total} bytes");
         check.Expect(Chain(64, 64, false, 16, lw, lh, off, out _) == 1, "no mips = one level");
         byte* px = stackalloc byte[(4 + 1) * 4];
         for (int i = 0; i < 4; i++) { px[i * 4] = (byte)(i * 85); px[i * 4 + 1] = 255; px[i * 4 + 2] = 0; px[i * 4 + 3] = 255; }

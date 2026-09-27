@@ -29,7 +29,14 @@ BID=$(awk -F'\t' '$1 == "linux" { print $2; exit }' managed/Framework/Builds/*.t
 [ -n "$BID" ] || { echo ">> FAIL: no linux key in managed/Framework/Builds/*.tsv"; exit 1; }
 # Named nwmain-*: the bootstrap loads into nothing else (the Steam runtime preloads its helpers too).
 STUB="$DEMOHOME/nwmain-demo"
-echo 'int main(void){return 0;}' | cc -x c - -o "$STUB" -Wl,--build-id=0x"$BID"
+# CX-55: NwSyncReader resolves sqlite3/zstd out of the GLOBAL scope (dlsym(NULL)), so linking the system copies
+# into the stub is what lets its self-check really build a store and read it from two threads at once. Not every
+# box has the two -devel packages; there the check says SKIPPED, and this says which of the two ran.
+if ! echo 'int main(void){return 0;}' | cc -x c - -o "$STUB" -Wl,--build-id=0x"$BID" \
+       -Wl,--no-as-needed -lsqlite3 -lzstd 2>/dev/null; then
+  echo ">> no libsqlite3/libzstd to link: NwSyncReader.SelfCheck will SKIP (install them to run it)"
+  echo 'int main(void){return 0;}' | cc -x c - -o "$STUB" -Wl,--build-id=0x"$BID"
+fi
 
 echo ">> launching the demo host with the extender preloaded..."
 HOME="$DEMOHOME" CX_MANAGED="$B/cx_managed.so" LD_LIBRARY_PATH="$B" LD_PRELOAD="$B/libcx.so" "$STUB" >/dev/null

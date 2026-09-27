@@ -92,6 +92,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>ADR 0026: where the three material-extension vec4s (<c>ext0..ext2</c>) start -- after
     /// <c>prev</c>, so no older field moved.</summary>
     internal const int ExtFloat = 60;
+    /// <summary>CX-52: ext2.z, the one lane ADR 0026 leaves spare -- <c>_recArrive</c>, the diffuse's arrival time.</summary>
+    internal const int ArriveFloat = ExtFloat + 10;
     /// <summary>#392: where <c>prev</c>, the previous frame's model matrix, starts in the record.</summary>
     internal const int PrevFloat = 44;
     /// <summary>#242: record slots the persistent buffer can hold -- one per ownership slot, plus the sky's
@@ -656,6 +658,15 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _vramFreeKib = v[0];
     }
     private static int _vramFreeKib;
+    /// <summary>CX-52 step 4: the free pool read now, from whichever context is current (the query is per device);
+    /// -1 before the probe or without a memory query.</summary>
+    internal static long VramFreeKibNow()
+    {
+        if (!_vramProbed || _vramExt == null) return -1;
+        int* v = stackalloc int[4] { 0, 0, 0, 0 };
+        Gl.GetIntegerv(_vramNvx ? GpuMemCurrentNvx : TexFreeMemoryAti, v);
+        return v[0];
+    }
 
     /// <summary>GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX / _CURRENT_AVAILABLE_VIDMEM_NVX /
     /// GL_TEXTURE_FREE_MEMORY_ATI.</summary>
@@ -1407,7 +1418,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                                        + $" no-pos {HarvestNoPos} no-uv {HarvestNoUv})") +
                    // #284: OUTSIDE the holes parenthetical on purpose. The number that says the drip worked
                    // is the one printed on a period with no holes left at all.
-                   DripNote() + " [" + OwnedTextures.TranscodeNote() + "; " + OwnedTextures.CacheNote() + "; " + OwnedTextures.PrefetchNote() + "; " + EnrollNote() + "]" +
+                   DripNote() + " [" + OwnedTextures.TranscodeNote() + "; " + OwnedTextures.CacheNote() + "; " + OwnedTextures.PrefetchNote() + TexStream.Note() + TexLoad.Note() + ModelLoad.Note() + MdlCache.Note() + "; " + DdsReader.Note() + "; " + RasterReader.Note() + "; " + EnrollNote() + "]" +
                    $" on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}{UvlessNote()}) " +
                    $"/ {Counters._lastTextures} textures " +
                    $"({_litCount} lit, {Counters._litUnownable} lit left to the engine" +
@@ -1766,7 +1777,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal unsafe struct FeatLoc { internal int Time, Wind, Flags, Cam, CamFocus, Player, Fog, FogColor, KhDia, KhCam,
                                        Pixel, Eye, FogSky, FogSkyColor, FogSun, FogSunColor, FogOrigin, LodBias,
                                        TgtShapeL, TgtSelfL, TgtObjL, TgtSizeXL, TgtSizeYL, TgtRangeL,
-                                       TgtColL, TgtWorldL, ProjL;
+                                       TgtColL, TgtWorldL, ProjL, Now;
         /// <summary>#551: the WHOLE scriptable block, by location. Picking entries one feature at a time
         /// was a standing bug: a content shader that starts reading a new slot compiles, links, and reads
         /// zero, which is a feature that silently does nothing under Alloy and works under the engine.

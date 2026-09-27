@@ -293,6 +293,9 @@ public sealed unsafe partial class AlloyRenderer
     /// per slot on purpose: a global generation re-staged the whole world on every drip frame (Restage
     /// 5,7ms in hitch frames against 0,8 mean, measured).</summary>
     private static readonly bool[] _recTexStale = new bool[MaxOwned];
+    /// <summary>CX-52: when this slot's diffuse replaced the white stand-in, on <see cref="TexStream.Clock"/>; 0 = it
+    /// never drew the stand-in. Staged into the record's <see cref="ArriveFloat"/> for the colour pass's fade.</summary>
+    private static readonly float[] _recArrive = new float[MaxOwned];
 
     /// <summary>Only the records that minted on the retired name go stale -- the global generation this
     /// replaced re-staged the whole world per drip frame.</summary>

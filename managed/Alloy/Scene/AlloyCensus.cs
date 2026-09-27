@@ -296,6 +296,17 @@ internal static unsafe partial class AlloyCensus
               : (int)AlloyClasses.Of(water, c.Dst == BlendOne, Engine.IsOpaque(p),
                     !s.IsNull && s.Transparency,
                     p.Alpha < 1f);
+        // CX-54: a cutout whose diffuse is not built yet is not a cutout, it is an unanswered question.
+        // Ghidra Material::GetIsOpaque @0x4c6190 asks an unloaded diffuse and returns "not opaque" WITHOUT
+        // writing either memo, so Of() falls through to Cutout and the engine re-answers once it lands.
+        // Until then the part draws the OPAQUE white stand-in the 0.2 discard cannot hole, so the two
+        // classes look identical and only the cutout one gives up early-Z. Tested on the condition that
+        // picks the stand-in (tid 0), under the gate that arms TexStream.Landed -- the re-enrol on arrival.
+        if (c.Cls == (int)AlloyClass.Cutout && TexStream.On)
+        {
+            var d0 = m.Texture(0);
+            if (!d0.IsNull && AurTex.Tid(d0.Ptr) == 0) c.Cls = (int)AlloyClass.Opaque;
+        }
         // A cutout whose diffuse is mostly GRADED alpha (a light shaft, a ground decal) is a wash vanilla
         // blends in bucket 3; alpha-tested it is a solid slab with a ragged 0.2 rim. Blend it instead.
         c.Wash = false;
