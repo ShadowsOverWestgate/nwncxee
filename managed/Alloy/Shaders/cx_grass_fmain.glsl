@@ -56,26 +56,25 @@ void main()
     float sheen = pow(clamp(dot(N, normalize(uAreaDir + V)), 0.0, 1.0), 40.0) * uLook.y * vRoot;
     lit += uAreaDiffuse * sh * (albedo * uMatDiffuse * back + sheen);
 
-    // CX-51: a blade reflects as the ground around it does -- the screen, else the probe, under the split-sum
+    // CX-51: a blade reflects as the ground around it does -- the probe, under the split-sum
     // weight at the roughness the wet splice gives that ground (the legacy 0.6, wetted toward 0.35). Without
     // it a lit or reflective patch of ground shows around blades that ignore it, as if glued on.
-    if (uProbeMips > 0.0 || uSsr.x > 0.0)
+    if (uProbeMips > 0.0)
     {
         float gRough = mix(0.6, 0.35, uLook.z);
         vec3 Nv = faceforward(N, -V, N);   // two-sided: the face toward the eye
         vec3 R = reflect(-V, Nv);
         vec2 gAb = CxEnvBrdf(max(dot(Nv, V), 1e-3), sqrt(gRough));
         float gW = min((CX_DIELECTRIC_F0 * gAb.x + gAb.y) * uProbeGain, 1.0);
-        vec4 gSsr = CxSsr(R, gRough, gW);
-        vec3 gEnv = uProbeMips > 0.0 && gSsr.a < 1.0
-                  ? min(textureLod(uProbe, R, sqrt(gRough) * (uProbeMips - 1.0)).rgb, vec3(CX_SSR_MAX)) : vec3(0.0);
-        lit += mix(gEnv, gSsr.rgb, gSsr.a) * (gW * mix(1.0 - uRootAo, 1.0, vRoot));
+        vec3 gEnv = CxProbeFetch(uProbe, vWorld, R, sqrt(gRough) * (uProbeMips - 1.0));
+        lit += gEnv * (gW * mix(1.0 - uRootAo, 1.0, vRoot));
     }
     // vanilla grass runs fsgrass, which is the stock lit shader with KEYHOLING 1 and FOG 1 -- so the
     // camera dissolve and the scene fog both apply, and dropping them would fill a low camera shot
     // with undissolved grass. Grass always dissolves: it has no per-part CanDissolve to read.
     float kh = CxKeyhole(1.0, vWorld, vDepth);
     if (kh < 0.0) discard;
+    CxReflNone();   // the trace leaves a blade alone: the record under it is the ground it covers
     vec3 col = CxFog(lit * kh, vWorld, vDepth);
     // Sprouting from the ground: the blade's base takes the colour the frame already has BEHIND
     // this fragment -- lit, shadowed and fogged terrain, pavement, whatever is there -- and fades to

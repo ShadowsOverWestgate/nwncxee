@@ -244,9 +244,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         public FeatLoc Feat;
     }
     /// <summary>light.hidden: the roughness under which a surface's highlight is a mirror image of the source
-    /// (wet ground is 0.35, a puddle 0.12) and takes the source's shadow whatever the cube cap says; a rougher
-    /// lobe is too broad to be an image of anything.</summary>
-    internal const float GlossyRough = 0.5f;
+    /// (a puddle 0.12; wet ground's 0.35 is not) and takes the source's shadow whatever the cube cap says; a rougher
+    /// lobe keeps the lightmap's, which only the pages have exact. Faded in from half of it (CxGlossW).</summary>
+    internal const float GlossyRough = 0.25f;
     /// <summary>#120: THIS pass's eye, from the inverse of the view matrix the pass is drawing with. Never
     /// <c>FrameInputs.CameraPos</c> -- that belongs to whichever pass set a view last -- and taken per pass
     /// rather than from the scene latch so a reflection subframe reflects from its own camera.</summary>
@@ -289,7 +289,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 44;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42 = unused since the probe grid left; 43/44 = the #674 lightmap term and its texel grid
+    internal const int LightVizMax = 46;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42/45/46 = SSR trust, the reflection, the probe behind it and the mirrored draw (CX-51); 43/44 = the #674 lightmap term and its texel grid
     internal static int _lightViz => Renderer.Viz.V;
     /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -303,6 +303,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// target is linear too, so the capture and the frame want the same values and the fullbright stage
     /// stopped needing the flag at all.</summary>
     internal static bool _capturing;
+    /// <summary>CX-51: the capture in progress is the mirrored draw of the planar reflection, not the probe: creatures
+    /// stay in and every program writes its alpha (see <see cref="PlanarPass"/>).</summary>
+    internal static bool _planar;
     internal static bool Capturing => _capturing;
     /// <summary>GL_BLEND as the pass last set it, so <see cref="Issue.IssueBatches"/>' per-batch toggle starts from
     /// the truth instead of assuming.</summary>
@@ -1580,7 +1583,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $" / cull {GpuMs(GpuTerm.Cull):F2} / hiz {GpuMs(GpuTerm.HiZ):F2} / beams {GpuMs(GpuTerm.Beams):F2}" +
                          $" / water copy {GpuMs(GpuTerm.WaterCopy):F2}" +
                          // CX-51: the history copy alone; the march itself is inside opaque (A/B with /light ssr 0)
-                         (_qTerm[(int)GpuTerm.Ssr].Measured ? $" / ssr copy {GpuMs(GpuTerm.Ssr):F2}" : "") +
+                         (_qTerm[(int)GpuTerm.Ssr].Measured ? $" / ssr {GpuMs(GpuTerm.Ssr):F2}" : "") +
                          (_qTerm[(int)GpuTerm.Weather].Measured ? $" / weather {GpuMs(GpuTerm.Weather):F3}" : "") +
                          $" (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame

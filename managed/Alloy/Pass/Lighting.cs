@@ -12,9 +12,9 @@ internal static class Lighting
     internal static readonly KnobGroup G;
     internal static readonly Knob<float> Gain, Ambient, Sun, Overbright, Sss, Wrap, WrapNdl, Hot, HotSize, Radius, Falloff,
                                          ProbeGain, BinReach, Flicker, FlickerSpeed, AmbientDir,
-                                         Daylight, DayLow, DayHigh, SsrRough;
-    internal static readonly Knob<int> Fadeout, ProbeSize, BinCap, SsrDetail;
-    internal static readonly Knob<bool> Probe, ReachFade, HiddenLights, Brdf, SpecAa, Ssr;
+                                         Daylight, DayLow, DayHigh, SsrRough, SsrPlanarCull;
+    internal static readonly Knob<int> Fadeout, ProbeSize, BinCap, SsrDetail, SsrPlanarRes;
+    internal static readonly Knob<bool> Probe, ReachFade, HiddenLights, Brdf, SpecAa, Ssr, SsrPlanar;
 
     static Lighting()
     {
@@ -63,7 +63,7 @@ internal static class Lighting
         G.Section("Reflections");
         Probe = G.Toggle("probe", "Reflections from the scene", true,
                          help: "Materials with an environment map reflect a capture of the surroundings instead of the stock sphere map.");
-        ProbeGain = G.Slider("probegain", "Reflection strength", 0f, 4f, 0.05f, 0.25f, tier: Tier.Advanced,
+        ProbeGain = G.Slider("probegain", "Reflection strength", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced,
                              help: "1 is the stock weighting. Fainter reflections are also cheaper: too faint a one traces no ray.");
         ProbeSize = G.Dropdown("probesize", "Reflection capture size", new[] { 64, 128, 256, 512 }, 64, tier: Tier.Advanced,
                                effect: Effect.Restart);
@@ -72,9 +72,18 @@ internal static class Lighting
                            + "and keep the capture where a reflection leaves the screen.");
         SsrRough = G.Slider("ssrrough", "Screen-space reflection roughness", 0.05f, 1f, 0.05f, 0.5f, tier: Tier.Advanced,
                             help: "Surfaces rougher than this keep the capture alone. Lower is cheaper.");
-        SsrDetail = G.Dropdown("ssrdetail", "Screen-space reflection detail", new[] { 0, 1, 2 }, 1, new[] { "full", "half", "quarter" },
+        SsrDetail = G.Dropdown("ssrdetail", "Screen-space reflection detail", new[] { 0, 1, 2 }, 2, new[] { "full", "half", "quarter" },
                                tier: Tier.Advanced,
                                help: "The resolution a reflection finds what it hits at. Lower is cheaper and blockier.");
+        SsrPlanar = G.Toggle("ssrplanar", "Mirror reflections on flat ground", true,
+                             help: "Wet ground at the player's height reflects a second, mirrored draw of the scene: no holes behind "
+                                 + "figures, and undersides the camera never sees. Costs a low-resolution redraw of the opaque set.");
+        SsrPlanarRes = G.Dropdown("ssrplanarres", "Mirror reflection detail", new[] { 2, 3, 4, 6, 8 }, 8,
+                                  new[] { "half", "third", "quarter", "sixth", "eighth" },
+                                  tier: Tier.Advanced,
+                                  help: "The resolution the mirrored scene is drawn at. Lower is cheaper and softer.");
+        SsrPlanarCull = G.Slider("ssrplanarcull", "Mirror reflection small-object cull", 0f, 16f, 0.5f, 2f, "px", Tier.Advanced,
+                                 help: "Objects smaller than this many pixels of the mirrored draw are left out of it. Higher is cheaper.");
         HiddenLights = G.Toggle("hidden", "Hidden lights do not reflect", true,
                                 help: "A wet or glossy surface mirrors a light only where that light's shadow lets it -- a lamp on a terrace reflects in the street from where the ground sees over the parapet, not from the wall's foot.");
         G.Section("Materials");

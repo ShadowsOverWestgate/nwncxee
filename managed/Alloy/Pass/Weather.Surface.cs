@@ -45,7 +45,7 @@ internal static unsafe partial class Weather
         G.Section("Surfaces");
         Arrive = G.Toggle("arrive", "Arrive into settled weather", true,
                           help: "Weather already running when you enter an area is fully soaked or snowed on arrival, instead of accumulating in front of you.");
-        WetStrength = G.Slider("wet", "Wet surfaces", 0f, 1f, 0.05f, 0.1f,
+        WetStrength = G.Slider("wet", "Wet surfaces", 0f, 1f, 0.05f, 1f,
                                help: "Exposed ground and roofs darken and turn glossy in rain, reflecting the sky. 0 = off.");
         SnowStrength = G.Slider("snow", "Snow cover", 0f, 1f, 0.05f, 1f,
                                 help: "Exposed up-facing surfaces whiten in snow. 0 = off.");
@@ -79,9 +79,9 @@ internal static unsafe partial class Weather
         G.Section("Puddles");
         PuddleThreshold = G.Slider("puddle", "Puddle threshold", 0f, 1f, 0.05f, 0.5f,
                                    help: "Wetness at which puddles start to fill. 1 = never.");
-        PuddleCoverage = G.Slider("puddlecover", "Puddle coverage", 0f, 1f, 0.05f, 0.15f,
+        PuddleCoverage = G.Slider("puddlecover", "Puddle coverage", 0f, 1f, 0.05f, 0.5f,
                                   help: "How much low ground pools at full fill.");
-        PuddleEdge = G.Slider("puddleedge", "Puddle edge", 0.02f, 0.5f, 0.01f, 0.12f, tier: Tier.Advanced,
+        PuddleEdge = G.Slider("puddleedge", "Puddle edge", 0.02f, 0.5f, 0.01f, 0.2f, tier: Tier.Advanced,
                               help: "Softness of a puddle's shoreline.");
     }
 
@@ -138,8 +138,8 @@ internal static unsafe partial class Weather
     private static string SurfaceStats() => $" wet {_wet:F2} snow {_snow:F2} puddle {_puddle:F2}";
 
     /// <summary>The lit main's splice, between material synthesis and the lighting: exposure, then the three
-    /// masks, then the surface rewritten under them. A material hosting its own weather body
-    /// (<c>td_ground_fs</c>) keeps it. <c>/weather viz 2</c> paints exposure.</summary>
+    /// masks, then the surface rewritten under them, on every surface: content that hosts its own weather body
+    /// (<c>td_ground_fs</c>) stands it down on <c>CX_ALLOY</c>. <c>/weather viz 2</c> paints exposure.</summary>
     internal static string LitSplice => ShaderSource.Get("cx_wx_litsplice.glsl");
 
     /// <summary>The wet reflection, after the material's own probe term, in the ENGINE's form: the probe sample

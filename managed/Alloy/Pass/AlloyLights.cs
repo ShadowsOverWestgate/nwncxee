@@ -244,7 +244,7 @@ internal static unsafe class AlloyLights
         check.Expect(FragmentLib.Contains("c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y)"), "the point loop carries the subsurface term on the MAPPED normal");
         check.Expect(FragmentLib.Contains("if (mirror) { spec += spc; continue; }")
           && FragmentLib.Contains("if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)") && FragmentLib.Contains("if (l > mLum) { mLum = l; mSlot = slot; mNdl = ndlRaw; mSpc = spc; }")
-          && AlloyRenderer.OwnedLitFsMain.Contains("if (!CxGlossy(rough)) pointSpec += lm * CxLoopSpec(CxSpecLobe"),
+          && AlloyRenderer.OwnedLitFsMain.Contains("pointSpec += lm * (1.0 - CxGlossW(rough)) * CxLoopSpec(CxSpecLobe"),
           "a glossy lobe carries its light's shadow whatever the cap says, in the pages' place too");
         check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
 

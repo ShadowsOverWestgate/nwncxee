@@ -13,6 +13,9 @@ const int CX_DYN_SPHERES = $DYNSPH$;
 // Mirrored lights (light.hidden): x = on, y = the roughness ceiling a surface counts as glossy under.
 uniform vec2 uLightOcc;
 bool CxGlossy(float rough) { return uLightOcc.x > 0.0 && rough < uLightOcc.y; }
+// the share of a baked light's highlight the mirror lobes carry, the pages' one lobe the rest: 0 at the ceiling,
+// 1 at half of it. A cut there swapped the baked shadow for one cube tap wherever rain crossed the ceiling.
+float CxGlossW(float rough) { return uLightOcc.x > 0.0 ? 1.0 - smoothstep(0.5 * uLightOcc.y, uLightOcc.y, rough) : 0.0; }
 // linear luminance under which a glossy lobe is not worth the fragment's one mirror tap
 const float CX_MIRROR_FLOOR = 0.002;
 const uint CX_CLUSTER_CAP = $CAP$u;
@@ -257,6 +260,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     spec = vec3(0.0); lmSub = vec3(0.0);
     uint cl = CxCluster(viewDepth);
     bool glossy = CxGlossy(rough);
+    float glossW = CxGlossW(rough);
     // a baked receiver with no mirror to take skips every cold static outright -- they trail the list
     uint n = baked > 0.5 && !glossy ? CxClusterLive(cl) : CxClusterN(cl);
     uint base = cl * CX_CLUSTER_CAP;
@@ -308,7 +312,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         if (inPages && !hot && !mirror) continue;
         // ...and only a light the reflection vector points near: the lobe of a light outside that cone
         // is under the floor, and the point body is what 74 baked-away lights cost per fragment (run 8).
-        // The cone widens with roughness: 40 deg at a puddle's 0.12, the hemisphere at the 0.5 ceiling.
+        // The cone widens with roughness: 20 deg at a puddle's 0.03, the hemisphere at the 0.5 ceiling.
         if (mirror && !hot && dot(R, normalize(pr.xyz - worldPos)) < 1.0 - 2.0 * rough) continue;
         if (hot)
         {   // the light-to-fragment ray misses every mover sphere: nothing on the page can shadow here,
@@ -357,6 +361,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         vec3 dif = c * (att * ndl);
         float lobe = CxSpecLobe(N, V, L, rough, specularity);
         vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L);
+        if (mirror) spc *= glossW;
         // a glossy surface's lobe is the mirror image of the source, and the source must be in view of
         // the FRAGMENT: a lamp on a terrace mirrors in the street from where the ground first sees over
         // the parapet, not from the wall's foot. That is the light's own shadow, so the strongest lobe

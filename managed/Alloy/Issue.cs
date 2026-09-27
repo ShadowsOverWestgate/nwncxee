@@ -315,6 +315,8 @@ internal static unsafe class Issue
             {
                 boundProg = wantProg;
                 boundCut = float.NaN;
+                // CX-51: the probe's alpha is 1 / distance, and only the lit stage writes one; the rest keep the clear's "far"
+                if (_capturing && !_planar) Gl.ColorMask(1, 1, 1, (byte)(wantProg == 1 ? 1 : 0));
                 if (water)
                 {
                     Gl.UseProgram(Programs._progWater);
@@ -344,12 +346,11 @@ internal static unsafe class Issue
                     Gl.Uniform1i(L.Viz, viz);
                     Gl.Uniform1f(L.AoCutout, Ao.Cutout.V);
                     OitPass.Upload(L.Oit, L.OitDim, _oitOn);
-                    Gl.Uniform1i(L.Capture, _capturing ? 1 : 0);
+                    Gl.Uniform1i(L.Capture, _capturing ? (_planar ? 2 : 1) : 0);
                     LightmapBake.BindForDraw(L.LmPages, L.LmMovers);
                     UploadFeatureTerms(L.Feat, viewport);
                     BindPass(L.CubeCount, viewport, near, far);
                     BindProbe();
-                    Ssr.Bind();
                     SsaoPass.BindForDraw(SsaoPass.Live && !_capturing, PostChain.DepthTex);
                     Gl.Uniform1i(L.SsaoHalf, SsaoPass.Half ? 1 : 0);
                     Gl.Uniform2f(L.LightOcc, Lighting.HiddenLights.V ? 1f : 0f, GlossyRough);

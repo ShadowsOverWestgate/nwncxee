@@ -30,21 +30,20 @@ void main()
     float ao = mix(1.0 - uRootAo, 1.0, sqrt(vRoot));
     vec3 lit = albedo * ((uAreaAmbient * vMatAmb + point * vMatDif) * ao + (sun * ao + uAreaDiffuse * sh * back) * vMatDif)
              + uAreaDiffuse * sh * sheen;
-    // CX-51: a blade reflects as the ground around it does -- the screen, else the probe, under the split-sum
+    // CX-51: a blade reflects as the ground around it does -- the probe, under the split-sum
     // weight at the roughness the wet splice gives that ground (the legacy 0.6, wetted toward 0.35). Without
     // it a lit or reflective patch of ground shows around blades that ignore it, as if glued on.
-    if (uProbeMips > 0.0 || uSsr.x > 0.0)
+    if (uProbeMips > 0.0)
     {
         float gRough = mix(0.6, 0.35, uLook.z);
         vec3 Nv = faceforward(N, -V, N);   // two-sided: the face toward the eye
         vec3 R = reflect(-V, Nv);
         vec2 gAb = CxEnvBrdf(max(dot(Nv, V), 1e-3), sqrt(gRough));
         float gW = min((CX_DIELECTRIC_F0 * gAb.x + gAb.y) * uProbeGain, 1.0);
-        vec4 gSsr = CxSsr(R, gRough, gW);
-        vec3 gEnv = uProbeMips > 0.0 && gSsr.a < 1.0
-                  ? min(textureLod(uProbe, R, sqrt(gRough) * (uProbeMips - 1.0)).rgb, vec3(CX_SSR_MAX)) : vec3(0.0);
-        lit += mix(gEnv, gSsr.rgb, gSsr.a) * (gW * ao);
+        vec3 gEnv = CxProbeFetch(uProbe, vWorld, R, sqrt(gRough) * (uProbeMips - 1.0));
+        lit += gEnv * (gW * ao);
     }
+    CxReflNone();   // the trace leaves a blade alone: the record under it is the ground it covers
     vec3 col = CxFog(lit, vWorld, vDepth);
     if (uGroundOn != 0)
     {

@@ -22,6 +22,7 @@ uniform sampler2D uFlowTex;
 #include "cx_pass.glsl"
 uniform samplerCube uProbe;               // CX-51: the reflection probe, on the lit stage's unit
 #include "cx_ssr.glsl"
+#include "cx_reflrec.glsl"
 uniform vec3 uMatAmbient;               // the grass material's own ambient (CAurGrassInfo +0x34)
 uniform vec3 uMatDiffuse;               // ... and diffuse (+0x28), WITHOUT vanilla's fade in its alpha
 uniform int uLit;                       // 0 = no cluster build this pass: ambient + sun only
@@ -39,6 +40,6 @@ uniform int uGroundOn;                  // 1 = the copy was taken this pass
 uniform int uGroundViz;                 // /grass gviz 1: paint the fetched copy texel over the whole blade
 in float vRoot;
 in float vLookDown;
-out vec4 frag;
+layout(location = 0) out vec4 frag;
 #include "cx_grassfetch.glsl"
 #include "cx_grassdither.glsl"

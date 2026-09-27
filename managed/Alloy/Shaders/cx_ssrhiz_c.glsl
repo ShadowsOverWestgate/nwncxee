@@ -1,13 +1,13 @@
 #version 460 core
-// CX-51: the reflection history's hi-Z pyramid. Level 0 is the history depth as INVERSE view depth (1/w, which
+// CX-51: the reflection trace's hi-Z pyramid. Level 0 is the frame depth as INVERSE view depth (1/w, which
 // is linear in screen space, so the march interpolates it exactly); each level above is the MAX over the
 // footprint of the one below -- the CLOSEST surface in the cell, which a ray must reach before it can hit
 // anything there. 3x3 rather than 2x2 so an odd-sized level's last row and column are never dropped.
 layout(local_size_x = 8, local_size_y = 8) in;
-layout(binding = 19) uniform sampler2D uSrc;          // the window depth (level 0) or this pyramid (above)
+layout(binding = 2) uniform sampler2D uSrc;          // the window depth (level 0) or this pyramid (above)
 layout(r32f, binding = 0) writeonly uniform image2D uDst;
 uniform int uLevel;
-uniform vec2 uNf;                                     // the history's near/far
+uniform vec2 uNf;                                     // the frame's near/far
 void main()
 {
     ivec2 p = ivec2(gl_GlobalInvocationID.xy);

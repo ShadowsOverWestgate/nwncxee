@@ -216,8 +216,7 @@ internal static class ShaderContract
             ("uTile", AlloyRenderer.PbTile), ("uGrid", AlloyRenderer.PbGrid), ("uReach", AlloyRenderer.PbReach),
             ("uFalloff", AlloyRenderer.PbFalloff), ("uWrap", AlloyRenderer.PbWrap), ("uZ", AlloyRenderer.PbZ),
             ("uAtten", AlloyRenderer.PbAtten), ("uHot", AlloyRenderer.PbHot), ("uSss", AlloyRenderer.PbSss),
-            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim),
-            ("uSsrView", AlloyRenderer.PbSsrView), ("uSsrProj", AlloyRenderer.PbSsrProj), ("uSsr", AlloyRenderer.PbSsr) };
+            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim) };
         foreach ((string name, int off) in pinned)
         {
             int at = Std140Offset(members, name, out int size);
@@ -453,12 +452,12 @@ internal static class ShaderContract
                   // A stage that lost the sample still renders (flat, as before #121); one that kept the
                   // sample but lost the capture branch samples the cube it is drawing into -- undefined --
                   // and stores display-space values a mip filter then darkens. Both are silent.
-                  && OwnedLitFsMain.Contains("textureLod(uProbe, R, sqrt(rough)")
-                  && OwnedLitFsMain.Contains("uCapture == 0 && uProbeMips > 0.0")
-                  && OwnedLitFsMain.Contains("if (uCapture != 0) { frag = vec4(lit, 1.0); return; }")
-                  // ...and CX-51's weighting: the screen hit and the probe share one split-sum weight, capped at
-                  // 1 -- anything above it compounds through the SSR history into inf
-                  && OwnedLitFsMain.Contains("specLight += mix(env, ssr.rgb, ssr.a)")
+                  && OwnedLitFsMain.Contains("CxProbeFetch(uProbe, vWorld, R, sqrt(rough)")
+                  && OwnedLitFsMain.Contains("uCapture != 1 && uProbeMips > 0.0")
+                  && OwnedLitFsMain.Contains("if (int(d.feat.x) == CX_FEAT_SKIN || d.feat.w < 0.0) discard;")
+                  && OwnedLitFsMain.Contains("frag = vec4(lit, 1.0 / max(distance(vWorld, uEyePos), 1e-3));")
+                  // ...and CX-51's record: the weight the probe term took is the one Ssr swaps the screen in under
+                  && OwnedLitFsMain.Contains("CxReflOut(N, rough, reflW")
                   // #124/#132: the dissolve and the fog, and the order they apply in. Both are LINEAR now --
                   // #124 welded the engine's keyhole-then-encode-then-fog order and #132 unwelded it, so the
                   // whole tail is one linear expression and the encode is the resolve's. Swap the two and

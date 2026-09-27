@@ -348,6 +348,8 @@ public sealed unsafe partial class AlloyRenderer
                     CullPass.Dispatch(CullPass.PhaseColour, &vp, hiZ: DepthResource.Filled(PassGen), PassGen);
                     GpuEnd(GpuTerm.Cull);
                     FrameZones.Add(FrameZones.Zone.Cull, tCull2);
+                    // CX-51: the reflection records ride the colour pass from here to Reflections
+                    if (perspective && !_capturing) Ssr.Begin(viewport);
                     OpaqueOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
                     // The GPU-side cluster stats belong to the SCREEN's build. Harvested here rather
                     // than after the bracket because the probe capture rebuilds the clusters once per
@@ -374,6 +376,14 @@ public sealed unsafe partial class AlloyRenderer
                     break;
                 case PassId.CutoutOwned:
                     CutoutOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
+                    break;
+                case PassId.Reflections:
+                    GpuBegin(GpuTerm.Ssr);
+                    if (lightingOn && perspective && !_capturing) PlanarPass(&vp, near, far, viewport);
+                    Ssr.Run(viewport, &view, &proj, near, far, _lightViz);
+                    GpuEnd(GpuTerm.Ssr);
+                    // the pass leaves GL_BLEND off; hand the tracked state back as the next pass expects it
+                    if (_blendOn) Gl.Enable(Gl.BLEND); else Gl.Disable(Gl.BLEND);
                     break;
                 case PassId.BlendedOwned:
                     GpuBegin(GpuTerm.Blended);
@@ -417,13 +427,6 @@ public sealed unsafe partial class AlloyRenderer
                         else FrameSnapshot.Copy(viewport);
                         GpuEnd(GpuTerm.WaterCopy);
                         FrameZones.Add(FrameZones.Zone.Blit, tBlit);
-                    }
-                    // CX-51: next frame's reflection history -- whole frame, every frame, its own pair.
-                    if (perspective && !_capturing && Ssr.On)
-                    {
-                        GpuBegin(GpuTerm.Ssr);
-                        Ssr.Take(viewport, &view, &proj, near, far);
-                        GpuEnd(GpuTerm.Ssr);
                     }
                     break;
                 case PassId.WaterOwned:
@@ -960,7 +963,10 @@ public sealed unsafe partial class AlloyRenderer
     private static void CaptureProbeInner(int groups, float far)
     {
         IntPtr bsp = _enrollScene != IntPtr.Zero ? new Scene(_enrollScene).BspRoot : IntPtr.Zero;
-        if (!EnvProbe.Wanted(_eyePos, bsp, _frameSeq)) return;
+        // the dome stages after the area light: a probe captured before it has only the clear for a sky
+        bool domeArrived = EnvProbe.Ready && !_probeDome && _skyN > 0;
+        if (!domeArrived && !EnvProbe.Wanted(_eyePos, bsp, _frameSeq)) return;
+        if (!ProbeLightSettled()) return;
         if (!EnvProbe.Begin(_eyePos, bsp, _frameSeq, far, ProbeClear())) return;
 
         long draws = Counters._draws, batches = Counters._batches;
@@ -979,25 +985,96 @@ public sealed unsafe partial class AlloyRenderer
             Matrix4x4 view = EnvProbe.FaceView(f);
             // A cube face is exactly 90deg, so the projection's p00 and p11 are both cot(45) = 1.
             AlloyLights.Build((float*)&view, 1f, 1f, fnear, ffar);
+            Gl.ColorMask(1, 1, 1, 1);
             Issue.IssueBatches(0, groups, (float*)&vp, faceVp, fnear, ffar);
+            Gl.ColorMask(1, 1, 1, 0);   // the dome is infinitely far: the clear's alpha 0 already says so
             // the real sky behind the world, so a wet street mirrors the dome and not the clear colour; the
             // dome is parked at this frame's camera, which is where the probe stands
             SkyOwnedPass(&vp, faceVp, hosted: false);
             Gl.DepthMask(1);   // the sky pass leaves the mask off, and the next face's depth clear honours it
         }
-        if (ok) EnvProbe.End(); else Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        Gl.ColorMask(1, 1, 1, 1);
+        if (ok) { EnvProbe.End(); _probeDome = _skyN > 0; } else Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         _capturing = false;
         _eyePos = eye;
         Counters._draws = draws; Counters._batches = batches;
         AlloyLights.LastBuildMs = buildMs;
     }
 
+    /// <summary>CX-51: the planar reflection -- the opaque set again, mirrored across the ground at the player's feet
+    /// into <see cref="Ssr"/>'s half-res target, which the trace reads on flat ground at that height. Screen space
+    /// only knows what the camera sees: a figure hides what stands behind it, and an awning never shows its
+    /// underside, so both left holes the probe filled with sky. Under the probe capture's flag (no SSAO, motion,
+    /// viz, keyhole) with <see cref="_planar"/> set, from the mirrored eye, winding flipped, at
+    /// <c>light.ssrplanarres</c>. It reads no clustered light (the lit stage skips the loop under it, so the screen's
+    /// binning is never disturbed): the lightmap, sun and ambient light the reflection.
+    /// <para>ponytail: no clip plane -- geometry below the ground mirrors up into view; the ground itself turns its
+    /// back and culls, and little else in an area sits under it. One plane, the player's; other heights trace.</para></summary>
+    private static void PlanarPass(Matrix4x4* vp, float near, float far, int* viewport)
+    {
+        if (_runtime == null || !Ssr.BeginPlanar(viewport[2], viewport[3], out int pw, out int ph)) return;
+        float z = Rt.PlayerPos.Z;
+        // the reflection across z = h, row vectors (p' = p M): z' = 2h - z
+        Matrix4x4 m = Matrix4x4.Identity;
+        m.M33 = -1f; m.M43 = 2f * z;
+        Matrix4x4 mVp = m * *vp;
+        long draws = Counters._draws, batches = Counters._batches;
+        Vector3 eye = _eyePos;
+        int* pvp = stackalloc int[4] { 0, 0, pw, ph };
+        _capturing = _planar = true;
+        _eyePos = new Vector3(eye.X, eye.Y, 2f * z - eye.Z);
+        new PassState(depth: true, depthWrite: true, cull: true, srgb: false).Apply();
+        Gl.DepthFunc(Gl.LEQUAL);
+        Gl.FrontFace(Gl.CW);
+        // the colour phase's list is this camera's: re-cull for the mirror, dropping what is off its frustum, under
+        // the plane, or smaller than light.ssrplanarcull mirror pixels (the threshold is in main-view pixels)
+        bool indirect = CullPass.Active && CullPass.Dispatch(CullPass.PhaseMirror, &mVp, hiZ: false, PassGen,
+                                                             Lighting.SsrPlanarCull.V * Lighting.SsrPlanarRes.V, z);
+        if (indirect) CullPass.BindForDraw(CullPass.PhaseMirror);
+        Issue._holdProg = false;
+        try { Issue.IssueBatches(0, _gOpaqueEnd, (float*)&mVp, pvp, near, far, indirect); }
+        finally
+        {
+            if (indirect) { CullPass.UnbindForDraw(); Issue.BindStagedSlots(); }
+            Gl.FrontFace(Gl.CCW);
+            _capturing = _planar = false;
+            _eyePos = eye;
+            Counters._draws = draws; Counters._batches = batches;
+            Ssr.EndPlanar(z);
+            Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        }
+    }
+
+    /// <summary>The area light the last frame saw, for <see cref="ProbeLightSettled"/>.</summary>
+    private static Vector3 _probeLightWas;
+    /// <summary>Did the live probe capture a dome? One that did not re-captures when the dome stages.</summary>
+    private static bool _probeDome;
+
+    /// <summary>Is the area's light worth capturing? The engine fades ambient and sun in from zero over the
+    /// first seconds of an area, with no dome staged yet; a probe captured there is black, and nothing
+    /// re-captures it until the player walks <c>MoveDist</c>. So: wait for the fade to stop moving, and for
+    /// either a dome or a light that is not black. A genuinely black area never captures, which reads the same.</summary>
+    private static bool ProbeLightSettled()
+    {
+        Vector3 l = (FrameInputs.HasAreaAmbient ? FrameInputs.AreaAmbient : default)
+                  + (FrameInputs.HasAreaDiffuse ? FrameInputs.AreaDiffuse : default);
+        bool still = Vector3.DistanceSquared(l, _probeLightWas) < ProbeSettleEps * ProbeSettleEps;
+        _probeLightWas = l;
+        return still && (_skyN > 0 || MathF.Max(l.X, MathF.Max(l.Y, l.Z)) > ProbeDarkFloor);
+    }
+
+    /// <summary>Frame-to-frame change in area light below which the fade-in is over.</summary>
+    private const float ProbeSettleEps = 1e-4f;
+    /// <summary>Area light (ambient + sun, brightest channel) below which a domeless area is still fading in.</summary>
+    private const float ProbeDarkFloor = 1e-3f;
+
     /// <summary>What the probe's faces are cleared to -- the sky stand-in where no dome covers: an area with
     /// the skybox off, or one whose sky is hosted engine parts only (<see cref="SkyOwnedPass"/> draws the
-    /// owned dome into the capture). The area's own ambient plus half its directional is a defensible sky
-    /// colour; a black clear would make outdoor metal reflect a black dome.</summary>
+    /// owned dome into the capture). The sky's own average when fog has read one; else the area's ambient
+    /// plus half its directional -- a black clear would make outdoor metal reflect a black dome.</summary>
     private static Vector3 ProbeClear()
     {
+        if (SceneFog.TrySky(out Vector3 sky)) return sky;
         Vector3 amb = FrameInputs.HasAreaAmbient
             ? FrameInputs.AreaAmbient * AlloyLights.AmbientScale
             : new Vector3(DefaultAmbient);

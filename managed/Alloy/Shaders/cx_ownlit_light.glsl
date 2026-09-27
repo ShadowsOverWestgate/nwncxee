@@ -6,7 +6,7 @@
     // exactly -- the view-side normalisation and the specular colour, applied per light instead of once
     // over the sum, which is the same product. Under 1 it adds multiple scattering and the two layers.
     float NoV = max(dot(N, V), 0.0);
-    // after the weather splice, so a puddle's 0.12 is widened too
+    // after the weather splice, so a puddle's 0.03 is widened too
     if (uMaterial.z > 0.5) rough = sqrt(min(rough * rough + aaKernel, 1.0));
     cxCoat = 0.0; cxCoatRough = 0.0; cxSheen = vec3(0.0); cxSheenRough = 0.0;
     float coatT = 1.0;
@@ -54,16 +54,21 @@
     vec3 lmIrr, lmDir, lmSub;
     CxChart chart = uChart[vDraw];
     bool baked = CxLightmap(chart.rec, vChart, lmIrr, lmDir);
-    vec3 point = CxClusteredLightLm(vWorld, N, V, vDepth, onMover, rough, spec, baked ? 1.0 : 0.0, CxLmTexelWorld(chart.rec),
-                                    baked ? CxLightmapMover(chart.rec, vChart) : vec4(0.0), chart.pick, pointSpec, lmSub);
+    // CX-51: the mirrored draw of the planar reflection skips the loop, its cube shadows and the re-binning they need:
+    // the lightmap still brings every static light, and a reflection is the last place a torch's own lobe shows
+    vec3 point = vec3(0.0);
+    pointSpec = vec3(0.0); lmSub = vec3(0.0);
+    if (uCapture != 2)
+        point = CxClusteredLightLm(vWorld, N, V, vDepth, onMover, rough, spec, baked ? 1.0 : 0.0, CxLmTexelWorld(chart.rec),
+                                   baked ? CxLightmapMover(chart.rec, vChart) : vec4(0.0), chart.pick, pointSpec, lmSub);
     vec3 lm = vec3(0.0);
     if (baked)
     {
         lm = CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm));
         lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5) + lmSub.y, 1.0)) * uDayDim;
         point += lm;
-        // a glossy receiver took each static light's own lobe in the loop instead (light.hidden)
-        if (!CxGlossy(rough)) pointSpec += lm * CxLoopSpec(CxSpecLobe(N, V, lmDir, rough, spec), N, V, lmDir);
+        // a glossy receiver took each static light's own lobe in the loop instead, cross-faded (light.hidden)
+        pointSpec += lm * (1.0 - CxGlossW(rough)) * CxLoopSpec(CxSpecLobe(N, V, lmDir, rough, spec), N, V, lmDir);
     }
     // 43 = the lightmap term alone: the baked light on a baked surface, MAGENTA on an unbaked one.
     // 44 = the pages' texel grid over baked surfaces (chart seams and density), magenta unbaked.
@@ -93,7 +98,7 @@
     // at the authored level; the stock wrap's 0.15 stays the floor. Never during the capture itself.
     float ambDir = mix(0.15, 1.0, sunRaw);
     vec3 ambShape = vec3(ambDir);
-    if (uMaterial.y > 0.0 && uCapture == 0 && uProbeMips > 0.0)
+    if (uMaterial.y > 0.0 && uCapture != 1 && uProbeMips > 0.0)
         ambShape = mix(ambShape, max(CxAmbientShape(N), vec3(0.15)), uMaterial.y);
     vec3 ambient = uAreaAmbient * matAmbient * ambShape * occl;
     // 34 = the ONLY term occlusion can move inside `total` (the (1-spec) share of the ambient).
@@ -101,10 +106,10 @@
     //      viz 8 reads -- which no other view in the ladder can say.
     if (uViz == 34) { frag = vec4(ambient * (1.0 - spec), 1.0); return; }
     // ...and the clear coat reflects on its own lobe, on every material that declares one
-    if (cxCoat > 0.0 && uCapture == 0 && uProbeMips > 0.0)
+    if (cxCoat > 0.0 && uCapture != 1 && uProbeMips > 0.0)
     {
         vec2 cab = CxEnvBrdf(NoV, sqrt(cxCoatRough));
-        vec3 cenv = textureLod(uProbe, reflect(-V, N), sqrt(cxCoatRough) * (uProbeMips - 1.0)).rgb;
+        vec3 cenv = CxProbeFetch(uProbe, vWorld, reflect(-V, N), sqrt(cxCoatRough) * (uProbeMips - 1.0));
         specLight += (ambient + diffuse) * cenv * (cxCoat * (CX_DIELECTRIC_F0 * cab.x + cab.y)
                      * CxSpecOcclusion(NoV, occl, cxCoatRough)) * uProbeGain;
     }

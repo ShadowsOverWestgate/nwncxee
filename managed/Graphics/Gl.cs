@@ -35,7 +35,7 @@ public static unsafe class Gl
     public const uint DEPTH_CLAMP = 0x864F;
     public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE_MINUS_SRC_COLOR = 0x0301;
     public const uint COLOR_ATTACHMENT1 = 0x8CE1;
-    public const uint COLOR_ATTACHMENT2 = 0x8CE2;
+    public const uint COLOR_ATTACHMENT2 = 0x8CE2, COLOR_ATTACHMENT3 = 0x8CE3;
     public const uint POLYGON_OFFSET_FILL = 0x8037;
     public const uint TRIANGLE_STRIP = 0x0005;
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
@@ -189,7 +189,7 @@ public static unsafe class Gl
     /// <summary>CX-24: a compute write consumed as a divisor-1 vertex attribute (the grass scatter's stream).</summary>
     public const uint VERTEX_ATTRIB_ARRAY_BARRIER_BIT = 0x0001;
     /// <summary>CX-51: an image store read back by the next level's dispatch (image) and by the lit stage (fetch).</summary>
-    public const uint SHADER_IMAGE_ACCESS_BARRIER_BIT = 0x0020, TEXTURE_FETCH_BARRIER_BIT = 0x0008, WRITE_ONLY = 0x88B9;
+    public const uint SHADER_IMAGE_ACCESS_BARRIER_BIT = 0x0020, TEXTURE_FETCH_BARRIER_BIT = 0x0008, TEXTURE_UPDATE_BARRIER_BIT = 0x0100, WRITE_ONLY = 0x88B9;
     /// <summary>CX-46: a compute write to a buffer the lit stage then reads as a uniform block (the probe's SH9).</summary>
     public const uint UNIFORM_BARRIER_BIT = 0x0004;
     /// <summary>Sample counts of an existing attachment: renderbuffer (glGetRenderbufferParameteriv) and
@@ -389,6 +389,9 @@ public static unsafe class Gl
     public static delegate* unmanaged<byte, void> DepthMask;
     public static delegate* unmanaged<float, float, void> PolygonOffset;
     public static delegate* unmanaged<byte, byte, byte, byte, void> ColorMask;
+    /// <summary>glFrontFace: which winding is front. A mirrored view flips every triangle's winding.</summary>
+    public static delegate* unmanaged<uint, void> FrontFace;
+    public const uint CW = 0x0900, CCW = 0x0901;
     /// <summary>glColorMaski: the write mask of ONE draw buffer (GL 3.0).</summary>
     public static delegate* unmanaged<uint, byte, byte, byte, byte, void> ColorMaski;
     public static delegate* unmanaged<double, void> ClearDepth;
@@ -669,6 +672,7 @@ public static unsafe class Gl
         DepthMask = (delegate* unmanaged<byte, void>)P("glDepthMask");
         PolygonOffset = (delegate* unmanaged<float, float, void>)P("glPolygonOffset");
         ColorMask = (delegate* unmanaged<byte, byte, byte, byte, void>)P("glColorMask");
+        FrontFace = (delegate* unmanaged<uint, void>)P("glFrontFace");
         ColorMaski = (delegate* unmanaged<uint, byte, byte, byte, byte, void>)P("glColorMaski");
         ClearDepth = (delegate* unmanaged<double, void>)P("glClearDepth");
         DepthRange = (delegate* unmanaged<double, double, void>)P("glDepthRange");

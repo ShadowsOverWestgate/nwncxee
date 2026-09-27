@@ -134,9 +134,7 @@ float CxSpecOcclusion(float NoV, float ao, float rough)
     return clamp(pow(NoV + ao, exp2(-16.0 * rough - 1.0)) - 1.0 + ao, 0.0, 1.0);
 }
 
-/// CX-46: the probe's SH9 irradiance, written by cx_probe_sh after each capture with the cosine lobe and
-/// basis constants folded in. Read only under uProbeMips > 0, i.e. once a capture has filled it.
-layout(std140, binding = 1) uniform CxProbeSh { vec4 uProbeSh[9]; };
+// CxProbeSh (the SH9 block) lives in cx_ssr.glsl beside CxProbeFetch, which reads its origin; cx_ownlit_head includes it.
 
 /// The probe's directional shape over the area ambient: the SH irradiance toward N over the mean luminance of
 /// N and -N, in [0, 2] by luminance. Normalised against its own opposite, so the authored ambient keeps its

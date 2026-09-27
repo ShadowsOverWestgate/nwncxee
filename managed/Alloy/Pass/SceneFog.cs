@@ -55,6 +55,10 @@ internal static unsafe class SceneFog
     private static bool _haveSky;
     private static Vector3 _sky;
     private static Vector3 _acc; private static float _accW;
+
+    /// <summary>The sky average, LINEAR, once one has been read: <see cref="EnvProbe"/>'s clear where the capture
+    /// draws no dome -- a hosted content sky (SoW's <c>inc_clouds</c>) is never in it.</summary>
+    internal static bool TrySky(out Vector3 sky) { sky = _sky; return _haveSky; }
     private static uint _lastTid;
 
     /// <summary>The texture-average cache: a GL readback per sky texture, once. Sixteen slots is far more

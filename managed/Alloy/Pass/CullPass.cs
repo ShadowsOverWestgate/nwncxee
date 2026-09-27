@@ -69,7 +69,9 @@ internal static unsafe class CullPass
     /// #489's second prepass phase: its own set, because <c>MultiDrawElementsIndirectCount</c> takes a CPU
     /// byte offset for the start and phase one's count never comes back to say where its survivors end.</summary>
     internal const int PhasePrepass = 0, PhaseColour = 1, PhaseRetest = 2;
-    private const int Phases = 3;
+    /// <summary>CX-51: the planar reflection's mirrored draw -- frustum, size and plane only, never sampled.</summary>
+    internal const int PhaseMirror = 3;
+    private const int Phases = 4;
     /// <summary>The shader's <c>uRej</c> mode per phase: the colour phase ignores the verdict buffer, phase
     /// one WRITES it, phase two READS it and tests only the marked draws.</summary>
     private const int RejOff = 0, RejWrite = 1, RejRead = 2;
@@ -87,7 +89,7 @@ internal static unsafe class CullPass
     private static uint _prog, _progHiZ, _progSort;
     private static bool _failed;
     private static int _uDrawN, _uPlanes, _uHiZ, _uVP, _uPyr, _uPyrSize, _uMaxLod;
-    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye, _uFogCull, _uFogOrigin, _uPyrVP, _uRej;
+    private static int _uLodPx, _uLodScale, _uCompactBelow, _uEye, _uFogCull, _uFogOrigin, _uPyrVP, _uRej, _uClipZ;
     private static int _sDrawN, _sCompactBelow;
     private static int _hSrc, _hLevel;
 
@@ -270,6 +272,7 @@ internal static unsafe class CullPass
         _uEye = GlProgram.Loc(_prog, "uEye");
         _uFogCull = GlProgram.Loc(_prog, "uFogCull");
         _uFogOrigin = GlProgram.Loc(_prog, "uFogOrigin");
+        _uClipZ = GlProgram.Loc(_prog, "uClipZ");
         _uPyrVP = GlProgram.Loc(_prog, "uPyrVP");
         _uRej = GlProgram.Loc(_prog, "uRej");
         _sDrawN = GlProgram.Loc(_progSort, "uDrawN");
@@ -368,12 +371,14 @@ internal static unsafe class CullPass
     /// <see cref="PhaseRetest"/> against the pyramid this pass just built (<paramref name="gen"/> gates it),
     /// for <see cref="PhasePrepass"/> against the PRIOR pass's pyramid in its own clip space (#489), which
     /// also marks the rejects phase two re-tests.</summary>
-    internal static void Dispatch(int phase, Matrix4x4* vp, bool hiZ, int gen)
+    /// <para><paramref name="lodPx"/> overrides <see cref="LodPx"/> when non-negative; a draw whose sphere lies
+    /// wholly below <paramref name="clipZ"/> is dropped (the mirror plane).</para>
+    internal static bool Dispatch(int phase, Matrix4x4* vp, bool hiZ, int gen, float lodPx = -1f, float clipZ = -1e30f)
     {
         bool stale = phase == PhasePrepass;
         if (stale) RetestPending = false;
-        if (_phase == -1 || _drawN <= 0) return;
-        if (!StreamRing.Rebind(StreamRing.Site.CullSource, BindSrc, in _src)) return;   // logged and painted; _phase stays unpublished, so the pass draws unculled
+        if (_phase == -1 || _drawN <= 0) return false;
+        if (!StreamRing.Rebind(StreamRing.Site.CullSource, BindSrc, in _src)) return false;   // logged and painted; _phase stays unpublished, so the pass draws unculled
         Gl.ZeroBuffer(_cntBuf[phase], (long)_groups * sizeof(uint));
         bool useHiZ = hiZ && Mode >= ModeHiZ && _pyrTex != 0 && _pyrLevels > 0
                       && (stale ? Retest && _pyrStale : _pyrGen == gen);
@@ -401,7 +406,8 @@ internal static unsafe class CullPass
         float* planes = stackalloc float[24];
         Planes((float*)vp, planes, _eye);
         Gl.Uniform4fv(_uPlanes, 6, planes);
-        Gl.Uniform1f(_uLodPx, MathF.Max(LodPx, 0f));
+        Gl.Uniform1f(_uLodPx, MathF.Max(lodPx >= 0f ? lodPx : LodPx, 0f));
+        Gl.Uniform1f(_uClipZ, clipZ);
         Gl.Uniform1f(_uLodScale, _lodScale);
         Gl.Uniform1i(_uCompactBelow, _compactBelow);
         fixed (Vector3* e = &_eye) Gl.Uniform3fv(_uEye, 1, (float*)e);
@@ -428,7 +434,7 @@ internal static unsafe class CullPass
         // be in flight. One pass cannot do both: a rank needs the whole batch's verdicts decided.
         // #489: phase two has no sorted draws to place -- the prepass never submits them, and the shader
         // returns early on every one.
-        if (_compactBelow < _groups && phase != PhaseRetest)
+        if (_compactBelow < _groups && phase != PhaseRetest && phase != PhaseMirror)
         {
             Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
             Gl.UseProgram(_progSort);
@@ -455,6 +461,7 @@ internal static unsafe class CullPass
         // GetBufferSubData behind it cost 2-5ms of every frame (a mapped read of a GPU-written buffer is a
         // wait there, however old the buffer), where NVIDIA charged nothing.
         if (phase == PhaseColour && ++_sampleTick >= SamplePeriod) { _sampleTick = 0; Sample(); }
+        return true;
     }
 
     /// <summary>Texture unit the pyramid takes for the dispatch -- see <see cref="TextureSlots.HiZ"/> for

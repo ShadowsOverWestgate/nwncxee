@@ -32,7 +32,7 @@ uniform int uViz;              // /alloy viz, see OwnedLitFsMain
 // specular at all -- the pre-#121 behaviour, never a half-written cube.
 uniform samplerCube uProbe;
 // uProbeMips / uProbeGain / uSceneEnv ride the pass block (cx_pass).
-uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe; 2 = a GI probe capture (back faces write alpha 0)
+uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe; 2 = the planar reflection's mirrored draw
 uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
 uniform int uSsaoOn;           // >0 when this BATCH is in the depth SsaoPass read; <0 names why not (viz 35)
 uniform int uSsaoHalf;         // post.halfres: 1 = uSsao is half the frame's extent, read bilaterally
@@ -44,6 +44,7 @@ uniform float uAoCutout;       // /ao cutout: how much of it a CUTOUT receiver t
 uniform float uAlphaCut;
 layout(location = 0) out vec4 frag;
 #include "cx_ssr.glsl"
+#include "cx_reflrec.glsl"
 #include "cx_oitout.glsl"
 // Slot mask bits, matching AlloyRenderer's 1 << (slot - 1).
 const int CX_SLOT_NORMAL = 1, CX_SLOT_SPEC = 2, CX_SLOT_ROUGH = 4,

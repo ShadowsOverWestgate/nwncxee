@@ -25,6 +25,7 @@ uniform int uViz;                       // /alloy viz: 3 = the sun's visibility,
 #include "cx_pass.glsl"
 uniform samplerCube uProbe;               // CX-51: the reflection probe, on the lit stage's unit
 #include "cx_ssr.glsl"
+#include "cx_reflrec.glsl"
 uniform int uLit;
 uniform int uVLit;
 uniform float uRootAo;
@@ -33,4 +34,4 @@ uniform float uGroundTint;
 uniform vec4 uLook;                     // x backlit transmission, y specular sheen, z rain wetness, w its darkening
 uniform sampler2D uGround;
 uniform int uGroundOn;
-out vec4 frag;
+layout(location = 0) out vec4 frag;

@@ -22,8 +22,10 @@ namespace CX.Alloy;
 /// = perceptual roughness i / (Mips - 1), the inverse of every sample site's <c>sqrt(rough)</c> mapping) and
 /// <c>cx_probe_sh</c> projects SH9 irradiance into <see cref="_sh"/>, the lit stage's ambient shape. A
 /// driver that cannot run them stands the whole probe down: no silent box-filtered fallback.</para>
-/// <para>ponytail: one probe per area, the reflection vector not parallax-corrected against
-/// <see cref="Origin"/>. A second probe or a box projection is its own ticket.</para>
+/// <para>CX-51: creatures are left out of the capture, and its alpha is 1 / distance, which CxProbeFetch
+/// (cx_ssr.glsl) uses to parallax-correct every lookup against <see cref="Origin"/> -- what an SSR miss falls
+/// back to then stands where the screen would have shown it. ponytail: one probe per area, captured at the
+/// camera; what the camera's position cannot see (an awning's underside) is not in it either.</para>
 /// </summary>
 internal static unsafe class EnvProbe
 {
@@ -39,8 +41,8 @@ internal static unsafe class EnvProbe
     /// <summary>A capture has COMPLETED. Until then the Alloy pass feeds no ambient specular at all, which
     /// is exactly its pre-#121 behaviour -- never a half-written cube.</summary>
     internal static bool Ready { get; private set; }
-    /// <summary>World point the live cube was captured from. The reflection vector is not parallax-corrected
-    /// against it, so it is also the centre the "has the player walked out of this probe" test measures from.</summary>
+    /// <summary>World point the live cube was captured from: the parallax correction's centre, and the one the
+    /// "has the player walked out of this probe" test measures from.</summary>
     internal static Vector3 Origin { get; private set; }
     /// <summary>Captures this session -- the [alloy] line prints it, and a number that climbs with the frame
     /// count is the failure this ticket's third acceptance criterion is about.</summary>
@@ -71,8 +73,8 @@ internal static unsafe class EnvProbe
     /// <summary>SSBO binding <c>cx_probe_sh</c> writes the same buffer through: above every other SSBO binding
     /// (8 is the bindless handle table, 27 the dangly history), so the dispatch clobbers nothing.</summary>
     private const uint ShOutBinding = 28;
-    /// <summary>9 vec4, std140 = std430 for a vec4 array.</summary>
-    private const int ShBytes = 9 * 16;
+    /// <summary>9 vec4 of SH plus the capture origin, std140 = std430 for vec4s.</summary>
+    private const int ShBytes = 10 * 16;
 
     private static uint _fbo;
     /// <summary>The capture target: raw radiance plus its box chain, read only by the two dispatches.</summary>
@@ -83,6 +85,8 @@ internal static unsafe class EnvProbe
     private static uint _progGgx, _progSh;
     /// <summary><c>cx_probe_ggx</c>'s <c>uLevel</c>: the level (so the roughness) being written.</summary>
     private static int _locLevel;
+    /// <summary><c>cx_probe_sh</c>'s <c>uOrigin</c>: the capture point it publishes beside the SH.</summary>
+    private static int _locOrigin;
     /// <summary><c>light.probe</c>: gates <see cref="Wanted"/>, which is re-asked every frame, so the probe
     /// idles rather than un-arming and a re-enable captures at the next edge.</summary>
     private static bool _on => Lighting.Probe.V;
@@ -122,14 +126,16 @@ internal static unsafe class EnvProbe
             foreach (string stage in new[] { "cx_ownlit_tail.glsl", "cx_ownlit_light.glsl", "cx_grass_fmain.glsl", "cx_gblade_fmain.glsl" })
             {
                 string src = ShaderSource.Get(stage);
-                int fetches = Count(src, "textureLod(uProbe,"), mapped = Count(src, "textureLod(uProbe, R, sqrt(")
-                              + Count(src, "textureLod(uProbe, reflect(-V, N), sqrt(");
-                check.Expect(fetches > 0 && fetches == mapped && Count(src, "* (uProbeMips - 1.0)).rgb") == fetches,
-                             $"{stage}: every probe fetch uses the prefilter's sqrt(rough) * (uProbeMips - 1) mapping");
+                int fetches = Count(src, "uProbe,"), mapped = Count(src, "CxProbeFetch(uProbe, vWorld, R, sqrt(")
+                              + Count(src, "CxProbeFetch(uProbe, vWorld, reflect(-V, N), sqrt(");
+                check.Expect(fetches > 0 && fetches == mapped && Count(src, "* (uProbeMips - 1.0))") == fetches,
+                             $"{stage}: every probe fetch is parallax-corrected on the prefilter's sqrt(rough) * (uProbeMips - 1) mapping");
             }
-            string mat = ShaderSource.Get("cx_material.glsl"), sh = ShaderSource.Get("cx_probe_sh.glsl");
+            string mat = ShaderSource.Get("cx_material.glsl"), sh = ShaderSource.Get("cx_probe_sh.glsl"),
+                   ssr = ShaderSource.Get("cx_ssr.glsl");
             check.Expect(!mat.Contains("textureLod(uProbe"), "the ambient shape reads the SH9 block, not the cube");
-            check.Expect(mat.Contains($"layout(std140, binding = {ShBinding}) uniform CxProbeSh")
+            check.Expect(ssr.Contains($"layout(std140, binding = {ShBinding}) uniform CxProbeSh {{ vec4 uProbeSh[9]; vec4 uProbeAt; }}")
+                         && sh.Contains("buffer CxProbeShOut { vec4 uShOut[9]; vec4 uShAt; }")
                          && sh.Contains($"layout(std430, binding = {ShOutBinding}) writeonly buffer"),
                          "the SH9 block's two bindings match the C# side");
 
@@ -167,7 +173,8 @@ internal static unsafe class EnvProbe
         Ready = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.Viewport(0, 0, Size, Size);
-        Gl.ClearColor(clear.X, clear.Y, clear.Z, 1f);
+        // alpha 0 = nothing there, infinitely far: the parallax correction leaves the direction alone
+        Gl.ClearColor(clear.X, clear.Y, clear.Z, 0f);
         // srgb off: the cube holds linear radiance, and an sRGB-encoding target would encode it a second
         // time on write.
         // #292: cull ON, same as the screen pass -- a probe capture re-enters the SAME batch loop six more
@@ -203,8 +210,13 @@ internal static unsafe class EnvProbe
         Prefilter();
         Ready = true;
         Captures++;
+        // the roughest level's up and down faces, one texel each: a black probe shows here and nowhere else
+        float* px = stackalloc float[24];
+        Gl.MemoryBarrier(Gl.TEXTURE_UPDATE_BARRIER_BIT);
+        if (Gl.GetTextureImage != null) Gl.GetTextureImage(Tex, Mips - 1, Gl.RGBA, Gl.FLOAT, 24 * sizeof(float), px);
         _log?.Info($"EnvProbe: captured area probe #{Captures} at ({Origin.X:F0},{Origin.Y:F0},{Origin.Z:F0}) " +
-                   $"-- {Size}px x 6 faces, {Mips} mips, area bsp 0x{(ulong)_bsp:x}");
+                   $"-- {Size}px x 6 faces, {Mips} mips, area bsp 0x{(ulong)_bsp:x}; " +
+                   $"up ({px[16]:F2},{px[17]:F2},{px[18]:F2}) down ({px[20]:F2},{px[21]:F2},{px[22]:F2})");
     }
 
     /// <summary>The 4.6 context went away with the objects in it. Nothing is deleted here -- the context that
@@ -266,6 +278,7 @@ internal static unsafe class EnvProbe
         BindSh();
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, ShOutBinding, _sh);
         Gl.UseProgram(_progSh);
+        Gl.Uniform3f(_locOrigin, Origin.X, Origin.Y, Origin.Z);
         Gl.DispatchCompute(1, 1, 1);
         Gl.MemoryBarrier(Gl.TEXTURE_FETCH_BARRIER_BIT | Gl.UNIFORM_BARRIER_BIT);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, ShOutBinding, 0);
@@ -288,6 +301,7 @@ internal static unsafe class EnvProbe
             if (_progGgx == 0 || _progSh == 0)
             { Fail("the prefilter or SH9 program did not build"); return false; }
             _locLevel = GlProgram.Loc(_progGgx, "uLevel");
+            _locOrigin = GlProgram.Loc(_progSh, "uOrigin");
         }
 
         Mips = 1;

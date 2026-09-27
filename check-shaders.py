@@ -429,7 +429,7 @@ def check_material(g):
     prelude = lit[: m.start()]
     for tok, val in TOKENS.items():
         prelude = prelude.replace(tok, val)
-    prelude = prelude.replace("out vec4 frag;", "")     # our own probe output replaces it
+    prelude = re.sub(r"(layout\(location = 0\) )?out vec4 frag;", "", prelude)   # our own probe output replaces it
     # SPIR-V wants an explicit location on every user in/out; the GL path leaves them implicit.
     loc = [0]
     def locate(m):

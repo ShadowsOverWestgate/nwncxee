@@ -50,6 +50,11 @@ internal enum PassId
     /// paint over every translucent object standing in it. The cost is a tile fading under a close camera
     /// (a blended part while it fades), whose root copy now misses the fade.</summary>
     GrassOwned,
+    /// <summary>CX-51: screen-space reflections (<see cref="Ssr"/>), deferred. After everything that writes a
+    /// reflection record -- the opaque set, the sky, cutouts, grass -- and BEFORE the blended class: the trace reads
+    /// the depth and colour of the frame so far, and a translucent surface drawn over a reflection must composite
+    /// over the finished one. Blended surfaces keep the probe alone.</summary>
+    Reflections,
     /// <summary>#126: the blended class -- genuine alpha, sorted back-to-front per part, depth writes off.
     /// Sits here because ADR 0011 puts blended after the opaque set and BEFORE the framebuffer copy the
     /// FB-sampling and water classes will read (#128): fade is a blended-class member, and moving it ahead
@@ -160,6 +165,7 @@ internal static class FrameGraph
         (PassId.SkyOwned,        Bracket.Colour),
         (PassId.CutoutOwned,     Bracket.Colour),
         (PassId.GrassOwned,      Bracket.Colour),
+        (PassId.Reflections,     Bracket.Colour),
         (PassId.BlendedOwned,    Bracket.Colour),
         (PassId.FbCopy,          Bracket.Colour),
         (PassId.WaterOwned,      Bracket.Colour),

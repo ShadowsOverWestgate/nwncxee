@@ -38,8 +38,5 @@ layout(std140, binding = 0) uniform CxPass
     vec2 uSss;                // #375: the stock subsurface term as (wrap, energy)
     float uWrapN;             // #143: the distance-INDEPENDENT wrap floor; 0 = off
     float uDayDim;            // 1 / the daylight ratio: every lamp term's scale, 1 at night and indoors
-    mat4 uSsrView;            // CX-51: world -> view of the reflection history (Ssr), last frame's camera
-    mat4 uSsrProj;            // ...and its projection
-    vec4 uSsr;                // x = roughness cap (0 = no reflections this pass), y = cell visits per ray, z = the history's near, w = finest hi-Z level
 };
 #endif

@@ -24,7 +24,7 @@ internal static unsafe partial class Weather
         CoverSoft = G.Slider("coversoft", "Cover edge", 0f, 4f, 0.05f, 1f, "m",
                              help: "How far a roof's shelter feathers at its edge: wind and splash make no hard line.",
                              changed: CasterPass.RefilterCover);
-        CoverRange = G.Slider("coverrange", "Cover range", 16f, 128f, 4f, 48f, "m", Tier.Advanced,
+        CoverRange = G.Slider("coverrange", "Cover range", 16f, 128f, 4f, 60f, "m", Tier.Advanced,
                               help: "Half-width of the cover map around the player. Resolution is the sun shadow map's (one allocation).");
     }
 

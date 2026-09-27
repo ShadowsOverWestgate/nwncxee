@@ -4,7 +4,8 @@
 // constants are folded in here, so cx_material's CxAmbientShape evaluates E(N) as a bare polynomial.
 layout(local_size_x = 64) in;
 layout(binding = 0) uniform samplerCube uSrc;          // the capture, box-mipped
-layout(std430, binding = 28) writeonly buffer CxProbeShOut { vec4 uShOut[9]; };
+layout(std430, binding = 28) writeonly buffer CxProbeShOut { vec4 uShOut[9]; vec4 uShAt; };
+uniform vec3 uOrigin;                                  // where the capture stood: CxProbeSh's uProbeAt
 
 #include "cx_cubedir.glsl"
 shared vec3 cxSh[9][64];
@@ -32,6 +33,7 @@ void main()
     }
     for (int k = 0; k < 9; k++) cxSh[k][t] = c[k];
     barrier();
+    if (t == 9u) uShAt = vec4(uOrigin, 1.0);
     if (t >= 9u) return;
     vec3 s = vec3(0.0);
     for (int j = 0; j < 64; j++) s += cxSh[t][j];

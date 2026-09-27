@@ -26,6 +26,7 @@ uniform int uCompactBelow;
 uniform vec3 uEye;
 uniform float uFogCull;  // #341: fog-opaque distance, or 0 for no fog cull
 uniform vec4 uFogOrigin; // xyz = the player's feet, w = 1 radial from it, 0 = view depth (as the fog)
+uniform float uClipZ;    // CX-51: the mirror plane; a sphere wholly below it is not drawn (-1e30 = none)
 
 // One pyramid tap, addressed through the LEVEL-0 grid rather than the level's own.
 // This is the fix for #243's first live bug. `textureLod(uv, L)` maps uv across the width of level
@@ -105,6 +106,7 @@ void main()
         // sprite, and thinning it by projected radius would delete lights the frustum and the
         // pyramid both agree are visible.
         if (keep && !sorted && CxSubPixel(s.xyz, s.w)) keep = false;
+        if (s.z + s.w < uClipZ) keep = false;
         // #489: a SORTED draw is not tested against the stale pyramid. The blended prepass draws
         // phase one's placement of it as a creature's self-depth layer, and phase two does not
         // restore sorted draws -- so a stale rejection there would be the one-frame pop this exists

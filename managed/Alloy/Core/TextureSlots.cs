@@ -94,9 +94,6 @@ internal static class TextureSlots
     /// the driver once and leaves the search off (uLocalPcss.x = 0) where it is short -- the declaration
     /// stays, so a strict-16 driver would fail the lit link, which the limits line names.</summary>
     internal const uint LocalShadowRaw = 16, LocalShadowDynRaw = 17;
-    /// <summary>CX-51: last frame's colour and depth, which the lit stage's reflections march (<see cref="Ssr"/>).
-    /// Past the budget on <see cref="LocalShadowRaw"/>'s argument, bound by <c>layout(binding)</c>.</summary>
-    internal const uint SsrColor = 18, SsrHiZ = 19;
     /// <summary>#379 follow-up: the SAME prepass depth, on the same unit, read by the LIT stage -- so a
     /// fragment can ask whether the visibility at its pixel was computed from ITS OWN surface. Under #119 the
     /// prepass and the colour pass compute gl_Position character-for-character, so a prepassed fragment's
@@ -174,8 +171,6 @@ internal static class TextureSlots
         // #339: the water stage no longer samples the probe -- vanilla's reflection falls back to the
         // shaded surface, not to a cube -- so the lit stage is the only consumer left.
         check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("uniform samplerCube uProbe;"), $"{Probe} uProbe");
-        check.Expect(AlloyRenderer.OwnedLitFsHead.Contains($"layout(binding = {SsrColor}) uniform sampler2D uSsrColor;"), $"{SsrColor} uSsrColor");
-        check.Expect(AlloyRenderer.OwnedLitFsHead.Contains($"layout(binding = {SsrHiZ}) uniform sampler2D uSsrHiZ;"), $"{SsrHiZ} uSsrHiZ");
         check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uNoise;"), $"{WaterNoise} uNoise (water program)");
         check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uEnvMap;"), $"{WaterEnv} uEnvMap (water program)");
         check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbColor;"), $"{SnapshotColor} uFbColor");
