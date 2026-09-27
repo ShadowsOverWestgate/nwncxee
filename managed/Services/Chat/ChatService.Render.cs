@@ -126,6 +126,12 @@ public sealed unsafe partial class ChatService
         if (_wasInModule && !inModule) ResetSession();
         _wasInModule = inModule;
 
+        if (IsTyping && _layout != null && Hidden(_layout.Focused))
+        {
+            _log?.Info("[chat] a NUI window covers the typing line -- closing it");
+            CloseChat(false);
+        }
+
         if (GameGate.InGame)
         {
             // Scale edge: the frame host re-baked the atlas (ui.font or the game's UI scale moved) -> relay the chrome.

@@ -33,6 +33,11 @@ public sealed unsafe class UiInputService : IExtenderService
     // NUI keyboard-focus probe: ctx->active (0x6730) is the focused window; win->edit.active (0x18c) is nonzero
     // while an edit box has focus. NUI runs a parallel SDL pump, so a key typed in a NUI field still reaches us.
     private const int NkActiveWindowOff = 0x6730, NkWinEditActiveOff = 0x18c;  // not-an-offset: nuklear context ABI, not an engine class
+    /// <summary>nuklear's window list, as <c>nk_window_is_any_hovered</c> @0xee69f0 walks it: ctx->begin, win->flags
+    /// (skipped when hidden|closed), win->bounds (x,y,w,h floats in SDL window pixels -- nk_sdl_handle_event feeds
+    /// the raw event x/y), win->next. Minimized windows show only a header, so they cover nothing.</summary>
+    private const int NkBeginOff = 0x6720, NkWinFlagsOff = 0x48, NkWinBoundsOff = 0x4c, NkWinNextOff = 0x1c0;  // not-an-offset: nuklear context ABI, not an engine class
+    private const uint NkWinHiddenClosed = 0x4400, NkWinMinimized = 0x10000;  // not-an-offset: nuklear window flags
     // Native (vanilla) dialog probe: *(gui+0x70) non-null while a native conversation panel is up.
     private const int UiCursorId = 3;   // engine walk/default ground pointer
 
@@ -309,6 +314,25 @@ public sealed unsafe class UiInputService : IExtenderService
         var man = new CGuiMan(*(IntPtr*)_guiManGlobal);
         if (man.IsNull) return IntPtr.Zero;
         return man.GuiObjectHitCheck(man.MouseX, man.MouseY, 0, mask);
+    }
+
+    /// <summary>True while the app has window focus (the engine's focus-gain/lost edges).</summary>
+    internal static bool AppFocused => _focused;
+
+    /// <summary>True when a shown NUI window covers the point (SDL window pixels) -- it draws over our windows there.
+    /// Linux only: nwmain.exe exports no nuklear, so on Windows this is always false.</summary>
+    internal static bool NuiCovers(float x, float y)
+    {
+        if (_nuklearGlobal == IntPtr.Zero) return false;
+        IntPtr ctx = *(IntPtr*)_nuklearGlobal;
+        if (ctx == IntPtr.Zero) return false;
+        for (IntPtr w = *(IntPtr*)(ctx + NkBeginOff); w != IntPtr.Zero; w = *(IntPtr*)(w + NkWinNextOff))
+        {
+            if ((*(uint*)(w + NkWinFlagsOff) & (NkWinHiddenClosed | NkWinMinimized)) != 0) continue;
+            float* b = (float*)(w + NkWinBoundsOff);
+            if (x >= b[0] && x < b[0] + b[2] && y >= b[1] && y < b[1] + b[3]) return true;
+        }
+        return false;
     }
 
     private static bool NuiEditFocused()

@@ -134,7 +134,8 @@ public sealed unsafe partial class ChatService
 
     /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the
     /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does, and
-    /// out of game, where the chatbox is not drawn and a live line would eat every key unseen.</summary>
+    /// whenever the line could not be seen: out of game (the chatbox is not drawn), with the app unfocused (a
+    /// compositor may still deliver Enter), or with a NUI window over the box -- each would eat every key unseen.</summary>
     private static void Open()
     {
         if (_layout == null || !GameGate.InGame) return;
@@ -146,6 +147,11 @@ public sealed unsafe partial class ChatService
             if (_settings.Open) _settings.Reset();
         }
         if (!target.HasSendable) return;
+        if (!UiInputService.AppFocused || Hidden(target))
+        {
+            _log?.Info($"[chat] open refused: focused={UiInputService.AppFocused} nuiOver={Hidden(target)}");
+            return;
+        }
         IsTyping = true;
         if (TypingSignal.Focus()) NotifyChatBar(TypingSignal.EventFocus, target.SendChannel);
         Edit.Clear();
@@ -153,6 +159,9 @@ public sealed unsafe partial class ChatService
         KeyboardMode(true);
         Rebuild();
     }
+
+    /// <summary>True when a NUI window covers the box's centre, so the line would be typed unseen.</summary>
+    internal static bool Hidden(ChatWindow w) => UiInputService.NuiCovers(w.X + w.W * 0.5f, w.Y + w.H * 0.5f);
 
     /// <summary>
     /// Release the keyboard. <paramref name="submit"/> recalls the line into history; either way the
