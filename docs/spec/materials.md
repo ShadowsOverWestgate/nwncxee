@@ -22,6 +22,10 @@ proportion, whether or not the material names an environment map. Keep matte sur
 s = 0.2 and they stay matte. To make metal shinier without making it a mirror, raise its spec value
 and control the blur with a roughness map.
 
+A model with no `.mtr`, or one that sets no `Specularity` and binds no spec or roughness map, is
+drawn matte in Alloy: fully rough, never metal, and no brighter at low angles than head-on. An environment map on such a model makes it only
+mildly glossy, not the mirror vanilla generates. To make it shiny, give it a material.
+
 ## The optional Alloy view
 
 The `Cx` parameters below are for people who work in Substance, Blender or another glTF exporter and

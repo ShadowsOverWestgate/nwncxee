@@ -1,6 +1,7 @@
     vec3 base = albedo * matDiffuse;
     vec3 specColor = SpecularColor;
     vec3 F0 = specColor * spec;
+    cxFresnel = max(cxFresnel, wxWet);   // rain on a bare surface is authored wet: it keeps its grazing sheen
     // ADR 0026: the loop's per-fragment material state. Under light.brdf 0 this is the engine's split
     // exactly -- the view-side normalisation and the specular colour, applied per light instead of once
     // over the sum, which is the same product. Under 1 it adds multiple scattering and the two layers.

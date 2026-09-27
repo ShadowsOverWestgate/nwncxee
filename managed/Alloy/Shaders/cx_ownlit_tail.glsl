@@ -7,7 +7,7 @@
     if (uCapture == 0)
     {
         vec3 R = reflect(-V, N);
-        vec2 reflAb = CxEnvBrdf(NoV, sqrt(rough));
+        vec2 reflAb = CxEnvBrdf(NoV, sqrt(rough)) * vec2(1.0, cxFresnel);
         vec3 reflF0 = physical ? cxF0 : mix(vec3(CX_DIELECTRIC_F0), cxF0, metal);
         vec3 reflW = min((reflF0 * reflAb.x + reflAb.y) * msc * CxSpecOcclusion(NoV, occl, rough) * coatT * uProbeGain, vec3(1.0));
         vec4 ssr = CxSsr(R, rough, max(reflW.r, max(reflW.g, reflW.b)));

@@ -116,6 +116,10 @@ vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L);
 // light term it multiplies this by.
 // ponytail: the low-quality branches (Blinn-Phong, no shadowing, the simplified Fresnel) are not
 // reproduced. Add them if a device that cannot run the ship mode ever needs to match its own vanilla.
+/// How much of the Fresnel rise every lobe takes: 1 is the engine's, 0 holds the reflectance at F0 at
+/// every angle -- the lit main's choice for a bare material, whose grazing lobe otherwise outshines its diffuse.
+float cxFresnel = 1.0;
+
 float CxSpecLobe(vec3 N, vec3 V, vec3 L, float rough, float spec)
 {
     vec3 H = normalize(V + L);
@@ -127,7 +131,7 @@ float CxSpecLobe(vec3 N, vec3 V, vec3 L, float rough, float spec)
     float den = 1.0 - NdotH * NdotH * (1.0 - a2);
     float d = 1.0 / max(den * den, 1e-8);
     d *= 1.0 / mix(NdotL, 1.0, CxSmithK(rough));   // geometric shadowing, light side
-    return d * mix(spec, 1.0, CxFresnel(VdotH));
+    return d * mix(spec, 1.0, CxFresnel(VdotH) * cxFresnel);
 }
 
 // The half that does not vary per light: alpha^2/4 and the view-side shadowing term.

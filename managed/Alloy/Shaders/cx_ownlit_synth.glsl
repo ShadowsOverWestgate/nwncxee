@@ -258,6 +258,7 @@ void main()
         N = normalize(vFragmentNormal);
         pbr = vec3(fSpecularity, fRoughness, fMetallicness);
     }
+    if (!physical && CxBareMaterial(d.pbr.xyz, slots)) cxFresnel = 0.0;
     // 31/32/33 = the surface this fragment shades with -- albedo, shading normal,
     // (spec, rough, metal) -- against 7 (the normal before any body). Emitted AFTER the branch so
     // they describe EVERY material: inside it they answered only on a hosted one and read as
