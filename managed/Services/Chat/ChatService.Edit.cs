@@ -133,10 +133,11 @@ public sealed unsafe partial class ChatService
     }
 
     /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the
-    /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does.</summary>
+    /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does, and
+    /// out of game, where the chatbox is not drawn and a live line would eat every key unseen.</summary>
     private static void Open()
     {
-        if (_layout == null) return;
+        if (_layout == null || !GameGate.InGame) return;
         ChatWindow target = _layout.Focused;
         if (!target.HasSendable)
         {
