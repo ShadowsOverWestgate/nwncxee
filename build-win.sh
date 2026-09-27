@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
-# Cross-build the Windows leg on Linux (#48 M1): one version.dll, the NativeAOT image itself, with
-# funchook, the UI font and the export-forwarding proxy all linked in.
+# Cross-build the Windows leg on Linux (#48 M1): version.dll, the NativeAOT image itself, with
+# funchook, the UI font and the export-forwarding proxy all linked in, and CX-57's audio runtime beside it.
 # Needs clang-cl, lld-link, llvm-lib, cmake, the .NET SDK, and a Windows 10 SDK + MSVC lib/include
 # tree (default: the mounted Windows partition). Nothing here is supported by Microsoft; it works
 # because ILC emits COFF on any host and lld-link links it.
@@ -72,6 +72,20 @@ if [ ! -f build/cxatlas.lib ] || [ native/xatlas/xatlas.cpp -nt build/cxatlas.li
   llvm-lib -out:build/cxatlas.lib build/xatlas_win.obj build/cxatlas_win.obj
 fi
 
+# CX-57: the pinned audio runtime -- OpenAL Soft's own Win64 release build and Steam Audio's phonon.dll, shipped
+# beside version.dll (see build.sh for why OpenAL is a separate file) -- and the mixer, linked in.
+python3 tools/deps.py openal-src build/deps
+python3 tools/deps.py openal-win build/deps/win
+python3 tools/deps.py steamaudio build/deps/sa
+OAL=build/deps/openal-soft-1.25.2
+if [ ! -f build/cxaudio.lib ] || [ native/cxaudio.cpp -nt build/cxaudio.lib ]; then
+  echo ">> building the audio core (cxaudio.lib, clang-cl cross)..."
+  WINC="/I$WABS/inc/um /I$WABS/inc/shared /I$WABS/inc/ucrt /I$WABS/inc/msvc -Xclang -ivfsoverlay -Xclang $WABS/vfs.yaml -w"
+  clang-cl -c -std:c++17 -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG $WINC -Ithird_party/steamaudio -I"$OAL/include" \
+    native/cxaudio.cpp -Fo:build/cxaudio_win.obj
+  llvm-lib -out:build/cxaudio.lib build/cxaudio_win.obj
+fi
+
 # #456: the Windows symbol gate runs BEFORE the build, not as a report nobody reads. It checks every Nm row
 # names a real export, every At row lands in the image, and -- the clause the #456 crash bought -- that every
 # instance member returning a class by value has had its (this, sret) argument order decided at the call site.
@@ -93,9 +107,12 @@ fi
 
 OUT=cx-windows-x64
 rm -rf "$OUT" && mkdir -p "$OUT"
-# One file. funchook, the UI font and the proxy all ride inside the image; the name is the whole trick,
-# since nwmain.exe imports VERSION.dll and the loader takes the copy beside the exe first.
+# funchook, the UI font and the proxy all ride inside the image; the name is the whole trick, since nwmain.exe
+# imports VERSION.dll and the loader takes the copy beside the exe first. CX-57's audio runtime rides beside it:
+# cx_openal.dll is upstream's soft_oal.dll renamed so it cannot collide with the game's own soft_oal.dll.
 cp build/win/cx_managed.dll "$OUT/version.dll"
+cp build/deps/win/soft_oal.dll "$OUT/cx_openal.dll"
+cp build/deps/sa/phonon.dll "$OUT/phonon.dll"
 BUILDS=$(awk -F'\t' '$1 == "name" { printf "%s%s", sep, $2; sep = ", " }' managed/Framework/Builds/*.tsv)
 sed "s/@VERSION@/$CX_VERSION/g; s/@BUILDS@/$BUILDS/g" packaging/README-win.txt > "$OUT/README.txt"
 packaging/licenses.sh "$OUT/LICENSES.txt"

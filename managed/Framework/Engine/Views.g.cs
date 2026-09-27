@@ -202,6 +202,7 @@ global using unsafe SdlWarpMouseInWindowFn = delegate* unmanaged<nint, int, int,
 global using unsafe GuiInGameToggleOffFn = delegate* unmanaged<nint, void>;
 global using unsafe GuiInGameUnToggleOffFn = delegate* unmanaged<nint, void>;
 global using unsafe UpdateLookAtFn = delegate* unmanaged<nint, void>;
+global using unsafe PlayFootstepFn = delegate* unmanaged<nint, void>;
 global using unsafe BeginLookAtAnimateFn = delegate* unmanaged<nint, nint, byte*, byte*, float, float, float, float, void>;
 global using unsafe LookAtControlFn = delegate* unmanaged<nint, void>;
 global using unsafe GobAnimateFn = delegate* unmanaged<nint, float, void>;
@@ -263,6 +264,19 @@ global using unsafe Sqlite3ThreadSafeFn = delegate* unmanaged<int>;
 global using unsafe Sqlite3ErrMsgFn = delegate* unmanaged<nint, byte*>;
 global using unsafe ZstdCreateDCtxFn = delegate* unmanaged<nint>;
 global using unsafe ZstdDecompressDCtxFn = delegate* unmanaged<nint, void*, nuint, void*, nuint, nuint>;
+global using unsafe SoundPlayOn3DVoiceFn = delegate* unmanaged<nint, nint, nint, void>;
+global using unsafe SoundPlayOn2DVoiceFn = delegate* unmanaged<nint, nint, nint, void>;
+global using unsafe SoundSourceSetPositionFn = delegate* unmanaged<nint, CX.Engine.VectorArg, void>;
+global using unsafe SoundSetEnvironmentFn = delegate* unmanaged<nint, byte, void>;
+global using unsafe SoundInitializeFn = delegate* unmanaged<nint, nint, byte, byte, int>;
+global using unsafe StreamFadeAndStopFn = delegate* unmanaged<nint, uint, void>;
+global using unsafe StreamCtorFn = delegate* unmanaged<nint, int, void>;
+global using unsafe StreamResetFn = delegate* unmanaged<nint, int, void>;
+global using unsafe StreamStartFadeFn = delegate* unmanaged<nint, int, uint, byte, byte, void>;
+global using unsafe StreamIsPlayingFn = delegate* unmanaged<nint, int>;
+global using unsafe StreamStopFn = delegate* unmanaged<nint, void>;
+global using unsafe StreamGetVolumeFn = delegate* unmanaged<nint, byte>;
+global using unsafe StreamSetLoopingFn = delegate* unmanaged<nint, int, void>;
 using System;
 using CX.Framework;
 
@@ -330,6 +344,28 @@ public readonly unsafe partial struct BiffVarResEntry(IntPtr ptr)
     public ref int StoredSize => ref *(int*)(Ptr + EngineLayout.BifEntryStored);
     /// <inheritdoc cref="EngineLayout.BifEntryStride"/>
     public BiffVarResEntry this[int i] => new(Ptr + i * EngineLayout.BifEntryStride);
+}
+
+/// <summary>Typed view of an engine <c>C2DVoice*</c>.</summary>
+public readonly unsafe partial struct C2DVoice(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.Voice2DSource"/>
+    public ref uint Source => ref *(uint*)(Ptr + EngineLayout.Voice2DSource);
+}
+
+/// <summary>Typed view of an engine <c>C3DVoice*</c>.</summary>
+public readonly unsafe partial struct C3DVoice(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.Voice3DSource"/>
+    public ref uint Source => ref *(uint*)(Ptr + EngineLayout.Voice3DSource);
 }
 
 /// <summary>Typed view of an engine <c>CActionTarget*</c>.</summary>
@@ -523,6 +559,8 @@ public readonly unsafe ref partial struct CAurTexture(IntPtr ptr)
     public int GetWidth() => ((delegate* unmanaged<IntPtr, int>)GetWidthFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.TexGetWidthSlot"/>
     public IntPtr GetWidthFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.TexGetWidthSlot);
+    /// <inheritdoc cref="EngineLayout.TexReferenced"/>
+    public CAurTexture Referenced { get => new(*(IntPtr*)(Ptr + EngineLayout.TexReferenced)); set => *(IntPtr*)(Ptr + EngineLayout.TexReferenced) = value.Ptr; }
 }
 
 /// <summary>Typed view of an engine <c>CAurTextureBasic*</c>.</summary>
@@ -845,6 +883,73 @@ public readonly unsafe partial struct CExoResFile(IntPtr ptr)
     public ref IntPtr Name => ref *(IntPtr*)(Ptr + EngineLayout.ResFileName);
 }
 
+/// <summary>Typed view of an engine <c>CExoSoundInternal*</c>.</summary>
+public readonly unsafe partial struct CExoSoundInternal(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="SymbolMap.SoundPlayOn2DVoice"/>
+    public void SoundPlayOn2DVoice(CExoSoundSourceInternal source, C2DVoice voice) => EngineFn.SoundPlayOn2DVoice(Ptr, source.Ptr, voice.Ptr);
+    /// <inheritdoc cref="SymbolMap.SoundPlayOn3DVoice"/>
+    public void SoundPlayOn3DVoice(CExoSoundSourceInternal source, C3DVoice voice) => EngineFn.SoundPlayOn3DVoice(Ptr, source.Ptr, voice.Ptr);
+}
+
+/// <summary>Typed view of an engine <c>CExoSoundSourceInternal*</c>.</summary>
+public readonly unsafe partial struct CExoSoundSourceInternal(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.SoundSrcFar"/>
+    public ref float FarDist => ref *(float*)(Ptr + EngineLayout.SoundSrcFar);
+    /// <inheritdoc cref="EngineLayout.SoundSrcGroup"/>
+    public ref byte Group => ref *(byte*)(Ptr + EngineLayout.SoundSrcGroup);
+    /// <inheritdoc cref="EngineLayout.SoundSrcNear"/>
+    public ref float NearDist => ref *(float*)(Ptr + EngineLayout.SoundSrcNear);
+    /// <inheritdoc cref="EngineLayout.SoundSrcPosition"/>
+    public ref Vec3 Position => ref *(Vec3*)(Ptr + EngineLayout.SoundSrcPosition);
+    /// <inheritdoc cref="EngineLayout.SoundSrcOffset"/>
+    public ref int SampleOffset => ref *(int*)(Ptr + EngineLayout.SoundSrcOffset);
+    /// <inheritdoc cref="SymbolMap.SoundSourceSetPosition"/>
+    public void SoundSourceSetPosition(VectorArg pos) => EngineFn.SoundSourceSetPosition(Ptr, pos);
+    /// <inheritdoc cref="EngineLayout.SoundSrcVariance"/>
+    public ref float Variance => ref *(float*)(Ptr + EngineLayout.SoundSrcVariance);
+    /// <inheritdoc cref="EngineLayout.SoundSrcVoice2D"/>
+    public ref C2DVoice Voice2d => ref *(C2DVoice*)(Ptr + EngineLayout.SoundSrcVoice2D);
+    /// <inheritdoc cref="EngineLayout.SoundSrcVoice3D"/>
+    public ref C3DVoice Voice3d => ref *(C3DVoice*)(Ptr + EngineLayout.SoundSrcVoice3D);
+}
+
+/// <summary>Typed view of an engine <c>CExoStreamingSoundSource*</c>.</summary>
+public readonly unsafe partial struct CExoStreamingSoundSource(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.StreamInternal"/>
+    public ref IntPtr Internal => ref *(IntPtr*)(Ptr + EngineLayout.StreamInternal);
+    /// <inheritdoc cref="SymbolMap.StreamCtor"/>
+    public void StreamCtor(int type) => EngineFn.StreamCtor(Ptr, type);
+    /// <inheritdoc cref="SymbolMap.StreamFadeAndStop"/>
+    public void StreamFadeAndStop(uint ms) => EngineFn.StreamFadeAndStop(Ptr, ms);
+    /// <inheritdoc cref="SymbolMap.StreamGetVolume"/>
+    public byte StreamGetVolume() => EngineFn.StreamGetVolume(Ptr);
+    /// <inheritdoc cref="SymbolMap.StreamIsPlaying"/>
+    public int StreamIsPlaying() => EngineFn.StreamIsPlaying(Ptr);
+    /// <inheritdoc cref="SymbolMap.StreamReset"/>
+    public void StreamReset(int type) => EngineFn.StreamReset(Ptr, type);
+    /// <inheritdoc cref="SymbolMap.StreamSetLooping"/>
+    public void StreamSetLooping(int loop) => EngineFn.StreamSetLooping(Ptr, loop);
+    /// <inheritdoc cref="SymbolMap.StreamStartFade"/>
+    public void StreamStartFade(int type, uint ms, byte from, byte to) => EngineFn.StreamStartFade(Ptr, type, ms, from, to);
+    /// <inheritdoc cref="SymbolMap.StreamStop"/>
+    public void StreamStop() => EngineFn.StreamStop(Ptr);
+}
+
 /// <summary>Typed view of an engine <c>CGameObject*</c>.</summary>
 public readonly unsafe partial struct CGameObject(IntPtr ptr)
 {
@@ -1096,6 +1201,21 @@ public readonly unsafe partial struct CLayeredIcon(IntPtr ptr)
     public ref int SchemeCount => ref *(int*)(Ptr + EngineLayout.LayeredIconSchemeCount);
 }
 
+/// <summary>Typed view of an engine <c>CNWCAmbientSound*</c>.</summary>
+public readonly unsafe partial struct CNWCAmbientSound(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.AmbientBed"/>
+    public ref CExoStreamingSoundSource Ambient => ref *(CExoStreamingSoundSource*)(Ptr + EngineLayout.AmbientBed);
+    /// <inheritdoc cref="EngineLayout.AmbientMusic"/>
+    public ref CExoStreamingSoundSource Music => ref *(CExoStreamingSoundSource*)(Ptr + EngineLayout.AmbientMusic);
+    /// <inheritdoc cref="EngineLayout.AmbientTruncated"/>
+    public ref int Truncated => ref *(int*)(Ptr + EngineLayout.AmbientTruncated);
+}
+
 /// <summary>Typed view of an engine <c>CNWCAnimBase*</c>.</summary>
 public readonly unsafe partial struct CNWCAnimBase(IntPtr ptr)
 {
@@ -1118,6 +1238,8 @@ public readonly unsafe partial struct CNWCArea(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.AreaAmbientSound"/>
+    public ref CNWCAmbientSound AmbientSound => ref *(CNWCAmbientSound*)(Ptr + EngineLayout.AreaAmbientSound);
     /// <inheritdoc cref="SymbolMap.AreaLoadBorder"/>
     public int AreaLoadBorder(IntPtr loadscreen, float progress) => EngineFn.AreaLoadBorder(Ptr, loadscreen, progress);
     /// <inheritdoc cref="SymbolMap.AreaReloadBorder"/>
@@ -1212,6 +1334,8 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public ref CPathfindInformation Pathfind => ref *(CPathfindInformation*)(Ptr + EngineLayout.CreaturePathfind);
     /// <inheritdoc cref="EngineLayout.CreaturePlated"/>
     public ref int Plated => ref *(int*)(Ptr + EngineLayout.CreaturePlated);
+    /// <inheritdoc cref="SymbolMap.PlayFootstep"/>
+    public void PlayFootstep() => EngineFn.PlayFootstep(Ptr);
     /// <inheritdoc cref="EngineLayout.CreatureSetPositionSlot"/>
     public void SetPosition(VectorArg pos) => ((delegate* unmanaged<IntPtr, VectorArg, void>)SetPositionFn)(Ptr, pos);
     /// <inheritdoc cref="EngineLayout.CreatureSetPositionSlot"/>
@@ -3432,6 +3556,10 @@ public static unsafe class EngineFn
     private static bool _UpdateLookAtDone;
     /// <inheritdoc cref="SymbolMap.UpdateLookAt"/>
     public static UpdateLookAtFn UpdateLookAt => (UpdateLookAtFn)(_UpdateLookAtDone ? _UpdateLookAt : Resolve(ref _UpdateLookAt, ref _UpdateLookAtDone, SymbolMap.UpdateLookAt));
+    private static IntPtr _PlayFootstep;
+    private static bool _PlayFootstepDone;
+    /// <inheritdoc cref="SymbolMap.PlayFootstep"/>
+    public static PlayFootstepFn PlayFootstep => (PlayFootstepFn)(_PlayFootstepDone ? _PlayFootstep : Resolve(ref _PlayFootstep, ref _PlayFootstepDone, SymbolMap.PlayFootstep));
     private static IntPtr _BeginLookAtAnimate;
     private static bool _BeginLookAtAnimateDone;
     /// <inheritdoc cref="SymbolMap.BeginLookAtAnimate"/>
@@ -3694,6 +3822,58 @@ public static unsafe class EngineFn
     private static bool _ZstdDecompressDCtxDone;
     /// <inheritdoc cref="SymbolMap.ZstdDecompressDCtx"/>
     public static ZstdDecompressDCtxFn ZstdDecompressDCtx => (ZstdDecompressDCtxFn)(_ZstdDecompressDCtxDone ? _ZstdDecompressDCtx : Resolve(ref _ZstdDecompressDCtx, ref _ZstdDecompressDCtxDone, SymbolMap.ZstdDecompressDCtx));
+    private static IntPtr _SoundPlayOn3DVoice;
+    private static bool _SoundPlayOn3DVoiceDone;
+    /// <inheritdoc cref="SymbolMap.SoundPlayOn3DVoice"/>
+    public static SoundPlayOn3DVoiceFn SoundPlayOn3DVoice => (SoundPlayOn3DVoiceFn)(_SoundPlayOn3DVoiceDone ? _SoundPlayOn3DVoice : Resolve(ref _SoundPlayOn3DVoice, ref _SoundPlayOn3DVoiceDone, SymbolMap.SoundPlayOn3DVoice));
+    private static IntPtr _SoundPlayOn2DVoice;
+    private static bool _SoundPlayOn2DVoiceDone;
+    /// <inheritdoc cref="SymbolMap.SoundPlayOn2DVoice"/>
+    public static SoundPlayOn2DVoiceFn SoundPlayOn2DVoice => (SoundPlayOn2DVoiceFn)(_SoundPlayOn2DVoiceDone ? _SoundPlayOn2DVoice : Resolve(ref _SoundPlayOn2DVoice, ref _SoundPlayOn2DVoiceDone, SymbolMap.SoundPlayOn2DVoice));
+    private static IntPtr _SoundSourceSetPosition;
+    private static bool _SoundSourceSetPositionDone;
+    /// <inheritdoc cref="SymbolMap.SoundSourceSetPosition"/>
+    public static SoundSourceSetPositionFn SoundSourceSetPosition => (SoundSourceSetPositionFn)(_SoundSourceSetPositionDone ? _SoundSourceSetPosition : Resolve(ref _SoundSourceSetPosition, ref _SoundSourceSetPositionDone, SymbolMap.SoundSourceSetPosition));
+    private static IntPtr _SoundSetEnvironment;
+    private static bool _SoundSetEnvironmentDone;
+    /// <inheritdoc cref="SymbolMap.SoundSetEnvironment"/>
+    public static SoundSetEnvironmentFn SoundSetEnvironment => (SoundSetEnvironmentFn)(_SoundSetEnvironmentDone ? _SoundSetEnvironment : Resolve(ref _SoundSetEnvironment, ref _SoundSetEnvironmentDone, SymbolMap.SoundSetEnvironment));
+    private static IntPtr _SoundInitialize;
+    private static bool _SoundInitializeDone;
+    /// <inheritdoc cref="SymbolMap.SoundInitialize"/>
+    public static SoundInitializeFn SoundInitialize => (SoundInitializeFn)(_SoundInitializeDone ? _SoundInitialize : Resolve(ref _SoundInitialize, ref _SoundInitializeDone, SymbolMap.SoundInitialize));
+    private static IntPtr _StreamFadeAndStop;
+    private static bool _StreamFadeAndStopDone;
+    /// <inheritdoc cref="SymbolMap.StreamFadeAndStop"/>
+    public static StreamFadeAndStopFn StreamFadeAndStop => (StreamFadeAndStopFn)(_StreamFadeAndStopDone ? _StreamFadeAndStop : Resolve(ref _StreamFadeAndStop, ref _StreamFadeAndStopDone, SymbolMap.StreamFadeAndStop));
+    private static IntPtr _StreamCtor;
+    private static bool _StreamCtorDone;
+    /// <inheritdoc cref="SymbolMap.StreamCtor"/>
+    public static StreamCtorFn StreamCtor => (StreamCtorFn)(_StreamCtorDone ? _StreamCtor : Resolve(ref _StreamCtor, ref _StreamCtorDone, SymbolMap.StreamCtor));
+    private static IntPtr _StreamReset;
+    private static bool _StreamResetDone;
+    /// <inheritdoc cref="SymbolMap.StreamReset"/>
+    public static StreamResetFn StreamReset => (StreamResetFn)(_StreamResetDone ? _StreamReset : Resolve(ref _StreamReset, ref _StreamResetDone, SymbolMap.StreamReset));
+    private static IntPtr _StreamStartFade;
+    private static bool _StreamStartFadeDone;
+    /// <inheritdoc cref="SymbolMap.StreamStartFade"/>
+    public static StreamStartFadeFn StreamStartFade => (StreamStartFadeFn)(_StreamStartFadeDone ? _StreamStartFade : Resolve(ref _StreamStartFade, ref _StreamStartFadeDone, SymbolMap.StreamStartFade));
+    private static IntPtr _StreamIsPlaying;
+    private static bool _StreamIsPlayingDone;
+    /// <inheritdoc cref="SymbolMap.StreamIsPlaying"/>
+    public static StreamIsPlayingFn StreamIsPlaying => (StreamIsPlayingFn)(_StreamIsPlayingDone ? _StreamIsPlaying : Resolve(ref _StreamIsPlaying, ref _StreamIsPlayingDone, SymbolMap.StreamIsPlaying));
+    private static IntPtr _StreamStop;
+    private static bool _StreamStopDone;
+    /// <inheritdoc cref="SymbolMap.StreamStop"/>
+    public static StreamStopFn StreamStop => (StreamStopFn)(_StreamStopDone ? _StreamStop : Resolve(ref _StreamStop, ref _StreamStopDone, SymbolMap.StreamStop));
+    private static IntPtr _StreamGetVolume;
+    private static bool _StreamGetVolumeDone;
+    /// <inheritdoc cref="SymbolMap.StreamGetVolume"/>
+    public static StreamGetVolumeFn StreamGetVolume => (StreamGetVolumeFn)(_StreamGetVolumeDone ? _StreamGetVolume : Resolve(ref _StreamGetVolume, ref _StreamGetVolumeDone, SymbolMap.StreamGetVolume));
+    private static IntPtr _StreamSetLooping;
+    private static bool _StreamSetLoopingDone;
+    /// <inheritdoc cref="SymbolMap.StreamSetLooping"/>
+    public static StreamSetLoopingFn StreamSetLooping => (StreamSetLoopingFn)(_StreamSetLoopingDone ? _StreamSetLooping : Resolve(ref _StreamSetLooping, ref _StreamSetLoopingDone, SymbolMap.StreamSetLooping));
 }
 
 /// <summary>Typed hook installs, one pair per <c>[Fn]</c> symbol.</summary>
@@ -4917,6 +5097,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.UpdateLookAt"/>; returns the slot holding the next layer, or null.</summary>
     public static UpdateLookAtFn* ChainUpdateLookAt(this HookService h, UpdateLookAtFn handler, int priority) =>
         (UpdateLookAtFn*)h.Chain(SymbolMap.UpdateLookAt, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.PlayFootstep"/>; returns the original, or null.</summary>
+    public static PlayFootstepFn InstallPlayFootstep(this HookService h, PlayFootstepFn handler) =>
+        (PlayFootstepFn)h.Install(SymbolMap.PlayFootstep, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.PlayFootstep"/>; returns the slot holding the next layer, or null.</summary>
+    public static PlayFootstepFn* ChainPlayFootstep(this HookService h, PlayFootstepFn handler, int priority) =>
+        (PlayFootstepFn*)h.Chain(SymbolMap.PlayFootstep, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.BeginLookAtAnimate"/>; returns the original, or null.</summary>
     public static BeginLookAtAnimateFn InstallBeginLookAtAnimate(this HookService h, BeginLookAtAnimateFn handler) =>
         (BeginLookAtAnimateFn)h.Install(SymbolMap.BeginLookAtAnimate, (IntPtr)handler);
@@ -5283,4 +5469,82 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.ZstdDecompressDCtx"/>; returns the slot holding the next layer, or null.</summary>
     public static ZstdDecompressDCtxFn* ChainZstdDecompressDCtx(this HookService h, ZstdDecompressDCtxFn handler, int priority) =>
         (ZstdDecompressDCtxFn*)h.Chain(SymbolMap.ZstdDecompressDCtx, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SoundPlayOn3DVoice"/>; returns the original, or null.</summary>
+    public static SoundPlayOn3DVoiceFn InstallSoundPlayOn3DVoice(this HookService h, SoundPlayOn3DVoiceFn handler) =>
+        (SoundPlayOn3DVoiceFn)h.Install(SymbolMap.SoundPlayOn3DVoice, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SoundPlayOn3DVoice"/>; returns the slot holding the next layer, or null.</summary>
+    public static SoundPlayOn3DVoiceFn* ChainSoundPlayOn3DVoice(this HookService h, SoundPlayOn3DVoiceFn handler, int priority) =>
+        (SoundPlayOn3DVoiceFn*)h.Chain(SymbolMap.SoundPlayOn3DVoice, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SoundPlayOn2DVoice"/>; returns the original, or null.</summary>
+    public static SoundPlayOn2DVoiceFn InstallSoundPlayOn2DVoice(this HookService h, SoundPlayOn2DVoiceFn handler) =>
+        (SoundPlayOn2DVoiceFn)h.Install(SymbolMap.SoundPlayOn2DVoice, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SoundPlayOn2DVoice"/>; returns the slot holding the next layer, or null.</summary>
+    public static SoundPlayOn2DVoiceFn* ChainSoundPlayOn2DVoice(this HookService h, SoundPlayOn2DVoiceFn handler, int priority) =>
+        (SoundPlayOn2DVoiceFn*)h.Chain(SymbolMap.SoundPlayOn2DVoice, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SoundSourceSetPosition"/>; returns the original, or null.</summary>
+    public static SoundSourceSetPositionFn InstallSoundSourceSetPosition(this HookService h, SoundSourceSetPositionFn handler) =>
+        (SoundSourceSetPositionFn)h.Install(SymbolMap.SoundSourceSetPosition, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SoundSourceSetPosition"/>; returns the slot holding the next layer, or null.</summary>
+    public static SoundSourceSetPositionFn* ChainSoundSourceSetPosition(this HookService h, SoundSourceSetPositionFn handler, int priority) =>
+        (SoundSourceSetPositionFn*)h.Chain(SymbolMap.SoundSourceSetPosition, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SoundSetEnvironment"/>; returns the original, or null.</summary>
+    public static SoundSetEnvironmentFn InstallSoundSetEnvironment(this HookService h, SoundSetEnvironmentFn handler) =>
+        (SoundSetEnvironmentFn)h.Install(SymbolMap.SoundSetEnvironment, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SoundSetEnvironment"/>; returns the slot holding the next layer, or null.</summary>
+    public static SoundSetEnvironmentFn* ChainSoundSetEnvironment(this HookService h, SoundSetEnvironmentFn handler, int priority) =>
+        (SoundSetEnvironmentFn*)h.Chain(SymbolMap.SoundSetEnvironment, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SoundInitialize"/>; returns the original, or null.</summary>
+    public static SoundInitializeFn InstallSoundInitialize(this HookService h, SoundInitializeFn handler) =>
+        (SoundInitializeFn)h.Install(SymbolMap.SoundInitialize, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SoundInitialize"/>; returns the slot holding the next layer, or null.</summary>
+    public static SoundInitializeFn* ChainSoundInitialize(this HookService h, SoundInitializeFn handler, int priority) =>
+        (SoundInitializeFn*)h.Chain(SymbolMap.SoundInitialize, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StreamFadeAndStop"/>; returns the original, or null.</summary>
+    public static StreamFadeAndStopFn InstallStreamFadeAndStop(this HookService h, StreamFadeAndStopFn handler) =>
+        (StreamFadeAndStopFn)h.Install(SymbolMap.StreamFadeAndStop, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StreamFadeAndStop"/>; returns the slot holding the next layer, or null.</summary>
+    public static StreamFadeAndStopFn* ChainStreamFadeAndStop(this HookService h, StreamFadeAndStopFn handler, int priority) =>
+        (StreamFadeAndStopFn*)h.Chain(SymbolMap.StreamFadeAndStop, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StreamCtor"/>; returns the original, or null.</summary>
+    public static StreamCtorFn InstallStreamCtor(this HookService h, StreamCtorFn handler) =>
+        (StreamCtorFn)h.Install(SymbolMap.StreamCtor, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StreamCtor"/>; returns the slot holding the next layer, or null.</summary>
+    public static StreamCtorFn* ChainStreamCtor(this HookService h, StreamCtorFn handler, int priority) =>
+        (StreamCtorFn*)h.Chain(SymbolMap.StreamCtor, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StreamReset"/>; returns the original, or null.</summary>
+    public static StreamResetFn InstallStreamReset(this HookService h, StreamResetFn handler) =>
+        (StreamResetFn)h.Install(SymbolMap.StreamReset, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StreamReset"/>; returns the slot holding the next layer, or null.</summary>
+    public static StreamResetFn* ChainStreamReset(this HookService h, StreamResetFn handler, int priority) =>
+        (StreamResetFn*)h.Chain(SymbolMap.StreamReset, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StreamStartFade"/>; returns the original, or null.</summary>
+    public static StreamStartFadeFn InstallStreamStartFade(this HookService h, StreamStartFadeFn handler) =>
+        (StreamStartFadeFn)h.Install(SymbolMap.StreamStartFade, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StreamStartFade"/>; returns the slot holding the next layer, or null.</summary>
+    public static StreamStartFadeFn* ChainStreamStartFade(this HookService h, StreamStartFadeFn handler, int priority) =>
+        (StreamStartFadeFn*)h.Chain(SymbolMap.StreamStartFade, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StreamIsPlaying"/>; returns the original, or null.</summary>
+    public static StreamIsPlayingFn InstallStreamIsPlaying(this HookService h, StreamIsPlayingFn handler) =>
+        (StreamIsPlayingFn)h.Install(SymbolMap.StreamIsPlaying, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StreamIsPlaying"/>; returns the slot holding the next layer, or null.</summary>
+    public static StreamIsPlayingFn* ChainStreamIsPlaying(this HookService h, StreamIsPlayingFn handler, int priority) =>
+        (StreamIsPlayingFn*)h.Chain(SymbolMap.StreamIsPlaying, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StreamStop"/>; returns the original, or null.</summary>
+    public static StreamStopFn InstallStreamStop(this HookService h, StreamStopFn handler) =>
+        (StreamStopFn)h.Install(SymbolMap.StreamStop, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StreamStop"/>; returns the slot holding the next layer, or null.</summary>
+    public static StreamStopFn* ChainStreamStop(this HookService h, StreamStopFn handler, int priority) =>
+        (StreamStopFn*)h.Chain(SymbolMap.StreamStop, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StreamGetVolume"/>; returns the original, or null.</summary>
+    public static StreamGetVolumeFn InstallStreamGetVolume(this HookService h, StreamGetVolumeFn handler) =>
+        (StreamGetVolumeFn)h.Install(SymbolMap.StreamGetVolume, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StreamGetVolume"/>; returns the slot holding the next layer, or null.</summary>
+    public static StreamGetVolumeFn* ChainStreamGetVolume(this HookService h, StreamGetVolumeFn handler, int priority) =>
+        (StreamGetVolumeFn*)h.Chain(SymbolMap.StreamGetVolume, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StreamSetLooping"/>; returns the original, or null.</summary>
+    public static StreamSetLoopingFn InstallStreamSetLooping(this HookService h, StreamSetLoopingFn handler) =>
+        (StreamSetLoopingFn)h.Install(SymbolMap.StreamSetLooping, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StreamSetLooping"/>; returns the slot holding the next layer, or null.</summary>
+    public static StreamSetLoopingFn* ChainStreamSetLooping(this HookService h, StreamSetLoopingFn handler, int priority) =>
+        (StreamSetLoopingFn*)h.Chain(SymbolMap.StreamSetLooping, (IntPtr)handler, priority);
 }

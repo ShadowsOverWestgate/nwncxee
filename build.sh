@@ -64,6 +64,33 @@ if [ ! -f build/libcxatlas.a ] || [ native/xatlas/xatlas.cpp -nt build/libcxatla
   rm -f build/libcxatlas.a && ar rcs build/libcxatlas.a build/xatlas.o build/cxatlas.o
 fi
 
+# CX-57: the pinned audio runtime (tools/deps.py: sha256-checked, cached in ~/.cache/cx-deps). OpenAL Soft is
+# built from its release source into its own shared object -- LGPL-2.1, so it ships beside us rather than inside
+# us -- with the runtime pieces a player's box may lack (libstdc++, libgcc) linked static. Steam Audio's
+# libphonon.so is Valve's binary, shipped as is.
+python3 tools/deps.py openal-src build/deps
+python3 tools/deps.py steamaudio build/deps/sa
+OAL=build/deps/openal-soft-1.25.2
+if [ ! -f build/openal/libopenal.so.1 ]; then
+  echo ">> building OpenAL Soft 1.25.2 (once)..."
+  # GCC, not whatever `c++` is: clang 21 fails OpenAL Soft's own -Werror=function-effects against libstdc++ 15.
+  cmake -S "$OAL" -B build/openal-build -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ \
+    -DCMAKE_BUILD_TYPE=Release -DALSOFT_UTILS=OFF -DALSOFT_EXAMPLES=OFF \
+    -DALSOFT_INSTALL=OFF -DALSOFT_ENABLE_MODULES=OFF -DALSOFT_UPDATE_BUILD_VERSION=OFF \
+    -DALSOFT_REQUIRE_PIPEWIRE=ON -DALSOFT_REQUIRE_PULSEAUDIO=ON -DALSOFT_REQUIRE_ALSA=ON \
+    -DALSOFT_STATIC_STDCXX=ON -DALSOFT_STATIC_LIBGCC=ON > build/openal-build.log 2>&1 \
+    && cmake --build build/openal-build -j >> build/openal-build.log 2>&1 \
+    || { echo "!! OpenAL Soft build failed:"; tail -20 build/openal-build.log; exit 1; }
+  mkdir -p build/openal && cp -L build/openal-build/libopenal.so.1 build/openal/libopenal.so.1
+fi
+# The mixer behind it (native/cxaudio.cpp), static and PIC like xatlas (DirectPInvoke "cxaudio").
+if [ ! -f build/libcxaudio.a ] || [ native/cxaudio.cpp -nt build/libcxaudio.a ]; then
+  echo ">> building the audio core (libcxaudio.a)..."
+  c++ -std=c++17 -O2 -fPIC -fno-exceptions -fno-rtti -DNDEBUG -Ithird_party/steamaudio -I"$OAL/include" \
+    -c native/cxaudio.cpp -o build/cxaudio.o
+  rm -f build/libcxaudio.a && ar rcs build/libcxaudio.a build/cxaudio.o
+fi
+
 # The typed engine views (managed/Framework/Engine/Views.g.cs) are generated from EngineLayout's rows;
 # checked in because the Windows builds compile it without running python.
 python3 tools/engine/views.py
@@ -86,6 +113,7 @@ echo ">> staging runtime dir (cx-linux-x64/)..."
 OUT=cx-linux-x64
 rm -rf "$OUT" && mkdir -p "$OUT"
 cp -a build/libcx.so build/cx_managed.so "$OUT/"
+cp build/openal/libopenal.so.1 build/deps/sa/libphonon.so "$OUT/"
 cp packaging/cx-launch "$OUT/cx-launch"
 sed "s/@VERSION@/$CX_VERSION/g" packaging/README.txt > "$OUT/README.txt"
 packaging/licenses.sh "$OUT/LICENSES.txt"

@@ -72,6 +72,14 @@
     <DirectPInvoke Include="cxatlas" />
     <NativeLibrary Condition="'$(RuntimeIdentifier)' != 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/libcxatlas.a" />
     <NativeLibrary Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/cxatlas.lib" />
+    <!-- CX-57: the Steam Audio mixer (native/cxaudio.cpp). Steam Audio and OpenAL themselves are NOT linked: the
+         core resolves them at run time from the libraries shipped beside us, so a missing one stands sound down
+         instead of the whole extender. -->
+    <DirectPInvoke Include="cxaudio" />
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' != 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/libcxaudio.a" />
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/cxaudio.lib" />
+    <!-- The pinned-OpenAL redirect lives in the proxy half (native/bootstrap_win.c); Windows only. -->
+    <DirectPInvoke Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="cxboot" />
   </ItemGroup>
 
   <!-- Windows cross-compile (NativeAOT #48). Lifts the SDK's cross-OS refusal; ILC emits a

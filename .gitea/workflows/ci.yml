@@ -27,8 +27,14 @@ jobs:
 
       - name: Build + load smoke
         run: |
+          # CX-57: OpenAL Soft's backends. `nix shell` runs no setup hooks, so pkg-config (PipeWire) and CMake's
+          # find_library (PulseAudio, ALSA) are told where they are.
+          P=$(nix build --no-link --print-out-paths nixpkgs#pipewire nixpkgs#pipewire.dev nixpkgs#libpulseaudio \
+                nixpkgs#libpulseaudio.dev nixpkgs#alsa-lib nixpkgs#alsa-lib.dev)
+          PC=$(echo "$P" | grep -- '-dev$' | sed 's|$|/lib/pkgconfig|' | paste -sd:)
           nix shell nixpkgs#dotnet-sdk_10 nixpkgs#cmake nixpkgs#gnumake nixpkgs#clang \
-            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#python3 --command bash -c '
+            nixpkgs#lld nixpkgs#zlib nixpkgs#gcc nixpkgs#python3 nixpkgs#pkg-config \
+            --command env PKG_CONFIG_PATH="$PC" CMAKE_PREFIX_PATH="$(echo "$P" | paste -sd:)" bash -c '
               set -euo pipefail
               ./build.sh
               ./run-demo.sh

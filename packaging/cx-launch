@@ -37,7 +37,12 @@ LINK="${XDG_DATA_HOME:-$HOME/.local/share}/cx"
 mkdir -p "$(dirname "$LINK")" 2>/dev/null || true
 ln -sfn "$DIR" "$LINK" 2>/dev/null || LINK="$DIR"
 
-export LD_PRELOAD="$LINK/libcx.so${LD_PRELOAD:+ $LD_PRELOAD}"
+# CX-57: the pinned OpenAL Soft rides the same preload. nwmain-linux names libopenal.so.1 as a plain NEEDED,
+# and ld.so satisfies a NEEDED with an already-loaded object of that soname -- so the client binds to ours, not
+# to whichever OpenAL the system (or the runtime container) happens to carry.
+OPENAL=""
+[ -f "$DIR/libopenal.so.1" ] && OPENAL=" $LINK/libopenal.so.1"
+export LD_PRELOAD="$LINK/libcx.so$OPENAL${LD_PRELOAD:+ $LD_PRELOAD}"
 export CX_MANAGED="$LINK/cx_managed.so"
 # The runtime lets the environment override the GC mode built into cx_managed.so; keep ours.
 unset DOTNET_gcServer DOTNET_GCHeapCount DOTNET_gcConcurrent DOTNET_GCgen0size

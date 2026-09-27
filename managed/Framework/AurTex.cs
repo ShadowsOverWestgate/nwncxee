@@ -70,9 +70,23 @@ public static unsafe class AurTex
         return false;
     }
 
-    /// <summary>This texture's GL id, or 0 if the pointer is null or no longer a texture. Hot -- called per
-    /// Alloy part per frame.</summary>
-    public static int Tid(IntPtr tex) => Live(tex) ? _getTid(tex) : 0;
+    /// <summary>Would <c>AurTextureGetTID</c> survive this live texture? It resolves <see cref="EngineLayout.TexReferenced"/>
+    /// (null = the object itself) and reads +0x6c off <c>AsCAurTextureBasic()</c>, which is NULL on a plain
+    /// CAurTexture: a wrapper whose target is unset or not a basic faults in the engine (a mid-rebuild part
+    /// texture, the 2026-09-27 appearance-change crash). A freed target fails the same compare. Counted as a
+    /// refusal.</summary>
+    private static bool Resolves(IntPtr tex)
+    {
+        IntPtr r = new CAurTexture(tex).Referenced.Ptr;
+        if (r == IntPtr.Zero) r = tex;
+        if (*(IntPtr*)r == _vtblBasic) return true;
+        _refused++;
+        return false;
+    }
+
+    /// <summary>This texture's GL id, or 0 if the pointer is null, no longer a texture, or resolves to no
+    /// basic texture. Hot -- called per Alloy part per frame.</summary>
+    public static int Tid(IntPtr tex) => Live(tex) && Resolves(tex) ? _getTid(tex) : 0;
     /// <summary>The guard alone, for a caller about to read the object through an engine call other than
     /// <c>AurTextureGetTID</c> (#331's controller lookup).</summary>
     public static bool IsLive(IntPtr tex) => Live(tex);
@@ -125,7 +139,8 @@ public static unsafe class AurTex
         // (headless, where Ready is false), which is how it stayed that way.
         Ready = false;
         bool ok = !Live(IntPtr.Zero);                              // null, before anything is armed
-        IntPtr* obj = stackalloc IntPtr[1];
+        IntPtr* obj = stackalloc IntPtr[4];
+        obj[1] = obj[2] = obj[3] = IntPtr.Zero;
         IntPtr* fakeVtbl = stackalloc IntPtr[2];
         *obj = (IntPtr)fakeVtbl;
         ok &= !Live((IntPtr)obj) && _refused == before;             // unarmed: refused, and not counted
@@ -137,6 +152,18 @@ public static unsafe class AurTex
         *obj = (IntPtr)0x1234;                                       // a freed object's clobbered first word
         ok &= !Live((IntPtr)obj) && _refused == before + 1;          // refused AND counted
         ok &= !Live(IntPtr.Zero) && _refused == before + 1;          // null still costs no dereference
+
+        IntPtr* target = stackalloc IntPtr[1];
+        *obj = (IntPtr)fakeVtbl;                                     // a live wrapper...
+        ok &= !Resolves((IntPtr)obj) && _refused == before + 2;      // ...with no target is not a basic
+        obj[EngineLayout.TexReferenced / 8] = (IntPtr)target;
+        *target = (IntPtr)fakeVtbl;
+        ok &= !Resolves((IntPtr)obj) && _refused == before + 3;      // ...nor is a wrapper for a wrapper
+        *target = (IntPtr)(fakeVtbl + 1);
+        ok &= Resolves((IntPtr)obj) && _refused == before + 3;       // a wrapper for a basic resolves
+        obj[EngineLayout.TexReferenced / 8] = IntPtr.Zero;
+        *obj = (IntPtr)(fakeVtbl + 1);
+        ok &= Resolves((IntPtr)obj) && _refused == before + 3;       // a basic answers for itself
 
         Ready = wasReady; _vtbl = wv; _vtblBasic = wb;
         _refused = before;                                           // the check's own refusal is not a session's

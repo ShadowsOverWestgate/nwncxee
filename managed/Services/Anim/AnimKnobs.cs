@@ -13,6 +13,7 @@ internal static class AnimKnobs
     internal static readonly Knob<float> Lift;
     internal static readonly Knob<bool> Stride;
     internal static readonly Knob<bool> FootLock;
+    internal static readonly Knob<bool> Footsteps;
     internal static readonly Knob<bool> SyncAttach;
     internal static readonly Knob<bool> LookBody;
     internal static readonly Knob<float> Lean;
@@ -38,6 +39,8 @@ internal static class AnimKnobs
             help: "The walk and run cycles play at the pace the character actually covers ground, measured from the animation's own footfalls. The engine paces them from a fixed stride length per appearance, which a custom walk cycle, haste or a slow effect does not match, so feet slide.");
         FootLock = G.Toggle("footlock", "Plant feet", true,
             help: "While walking or running, a foot on the ground stays where it landed until the animation lifts it, so what is left of the sliding is taken up by the leg.");
+        Footsteps = G.Toggle("footsteps", "Footsteps on contact", true,
+            help: "A walking or running character's footstep sounds play when each foot lands, instead of where the animation's author placed them. Off, or beyond the detail distance, the animation's own timing is used.");
         SyncAttach = G.Toggle("syncattach", "Keep cloaks in step", true,
             help: "Fixes a bug with cloak desynchronizing from the body in certain situations.");
         G.Section("Body");

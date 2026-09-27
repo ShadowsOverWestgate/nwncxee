@@ -25,7 +25,8 @@ INSTALL
 UNINSTALL
   Clear the Launch Options line. That alone is enough: the files do nothing
   without it. To remove them too, delete cx-launch, libcx.so,
-  cx_managed.so, README.txt and LICENSES.txt from bin/linux-x86.
+  cx_managed.so, libopenal.so.1, libphonon.so, README.txt and LICENSES.txt
+  from bin/linux-x86.
 
 WHAT WORKING LOOKS LIKE
   The extender's own chatbox, bottom-left, instead of the stock one.

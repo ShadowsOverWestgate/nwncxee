@@ -1,6 +1,6 @@
 // The Windows half of the load path. Unlike bootstrap.c this is NOT a separate module: it is compiled to
-// an .obj and linked INTO cx_managed.dll, which then ships as `version.dll`. One file next to nwmain.exe
-// is the whole install.
+// an .obj and linked INTO cx_managed.dll, which then ships as `version.dll`, beside nwmain.exe (with the
+// CX-57 audio runtime, cx_openal.dll and phonon.dll, next to it).
 //
 // Windows has no LD_PRELOAD, so we get loaded as a PROXY DLL: nwmain.exe imports VERSION.dll
 // (GetFileVersionInfoA/SizeA, VerQueryValueA), so a version.dll beside the exe is loaded before the real
@@ -50,10 +50,84 @@ typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID);
 
 __declspec(dllimport) HANDLE WINAPI CreateThread(LPVOID, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, DWORD *);
 __declspec(dllimport) BOOL   WINAPI CloseHandle(HANDLE);
+__declspec(dllimport) HANDLE WINAPI GetModuleHandleW(const unsigned short *);
+__declspec(dllimport) DWORD  WINAPI GetModuleFileNameW(HANDLE, unsigned short *, DWORD);
+__declspec(dllimport) HANDLE WINAPI LoadLibraryExW(const unsigned short *, HANDLE, DWORD);
+__declspec(dllimport) void * WINAPI GetProcAddress(HANDLE, const char *);
+__declspec(dllimport) BOOL   WINAPI VirtualProtect(LPVOID, SIZE_T, DWORD, DWORD *);
+#define LOAD_WITH_ALTERED_SEARCH_PATH 0x8   /* resolve the DLL's own imports from its directory */
+#define PAGE_READWRITE 0x04
+extern char __ImageBase;                     /* this module, as the linker places it */
 // ---------------------------------------------------------------------------
 
 /// The managed entry point, exported by the NativeAOT half of this same DLL.
 extern void CxInit(void);
+
+/// CX-57: nwmain.exe imports OpenAL32.dll, and the copy beside it is the game's own (OpenAL Soft 1.20.1), which
+/// Steam's verify would restore if we replaced it. So the import table is pointed at CX's pinned build instead
+/// (cx_openal.dll beside this DLL), here, before the game's first instruction: the loader has bound every
+/// import by the time DLL initializers run, and nwmain's entry point runs after them. Every OpenAL32.dll entry
+/// the game imports is redirected or none is -- a half-redirected table would hand one library's handles to the
+/// other. The managed side reads the outcome through cx_openal_redirect.
+static HANDLE cx_openal;
+static int cx_openal_patched = -1;   /* -1 not tried, 0 failed (and why in cx_openal_why), else entries patched */
+static const char *cx_openal_why = "not tried";
+
+static int cx_ieq(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++)
+        if ((*a | 0x20) != (*b | 0x20)) return 0;
+    return *a == *b;
+}
+
+static void cx_redirect_openal(void)
+{
+    unsigned short path[1024];
+    DWORD n = GetModuleFileNameW((HANDLE)&__ImageBase, path, 1024 - 16);
+    if (n == 0 || n >= 1024 - 16) { cx_openal_patched = 0; cx_openal_why = "own path unreadable"; return; }
+    while (n > 0 && path[n - 1] != '\\' && path[n - 1] != '/') n--;
+    const char *leaf = "cx_openal.dll";
+    for (int i = 0; leaf[i]; i++) path[n++] = (unsigned short)leaf[i];
+    path[n] = 0;
+    cx_openal = LoadLibraryExW(path, 0, LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!cx_openal) { cx_openal_patched = 0; cx_openal_why = "cx_openal.dll missing or refused to load"; return; }
+
+    unsigned char *base = (unsigned char *)GetModuleHandleW(0);
+    unsigned char *nt = base + *(unsigned int *)(base + 0x3c);
+    unsigned int impRva = *(unsigned int *)(nt + 24 + 0x78);   /* PE32+ optional header, DataDirectory[IMPORT] */
+    if (!impRva) { cx_openal_patched = 0; cx_openal_why = "nwmain.exe has no import directory"; return; }
+    for (unsigned int *d = (unsigned int *)(base + impRva); d[3]; d += 5)
+    {
+        if (!cx_ieq((const char *)(base + d[3]), "OpenAL32.dll")) continue;
+        if (!d[0]) { cx_openal_patched = 0; cx_openal_why = "OpenAL32.dll imports carry no name table"; return; }
+        unsigned long long *names = (unsigned long long *)(base + d[0]), *iat = (unsigned long long *)(base + d[4]);
+        void *to[64];
+        int count = 0;
+        for (; names[count]; count++)
+        {
+            if (count == 64 || (names[count] >> 63)) { cx_openal_patched = 0; cx_openal_why = "an OpenAL32.dll import by ordinal"; return; }
+            to[count] = GetProcAddress(cx_openal, (const char *)(base + (unsigned int)names[count] + 2));
+            if (!to[count]) { cx_openal_patched = 0; cx_openal_why = "cx_openal.dll lacks an entry the game imports"; return; }
+        }
+        DWORD old;
+        if (!VirtualProtect(iat, sizeof(*iat) * count, PAGE_READWRITE, &old)) { cx_openal_patched = 0; cx_openal_why = "VirtualProtect refused the import table"; return; }
+        for (int i = 0; i < count; i++) iat[i] = (unsigned long long)to[i];
+        VirtualProtect(iat, sizeof(*iat) * count, old, &old);
+        cx_openal_patched = count;
+        cx_openal_why = "ok";
+        return;
+    }
+    cx_openal_patched = 0;
+    cx_openal_why = "nwmain.exe does not import OpenAL32.dll";
+}
+
+/// For SoundService: entries patched (0 = failed), the pinned module, and why it failed.
+int cx_openal_redirect(void **module, const char **why)
+{
+    if (module) *module = cx_openal;
+    if (why) *why = cx_openal_why;
+    return cx_openal_patched;
+}
 
 static DWORD WINAPI cx_start(LPVOID unused)
 {
@@ -67,6 +141,7 @@ static DWORD WINAPI cx_start(LPVOID unused)
 
 static int cx_boot(void)
 {
+    cx_redirect_openal();
     HANDLE t = CreateThread(0, 0, cx_start, 0, 0, 0);
     if (t) CloseHandle(t);
     return 0;

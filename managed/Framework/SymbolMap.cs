@@ -1421,6 +1421,15 @@ internal static unsafe class SymbolMap
     /// only caller; body decompiles identical, the mode word reading +0x37c (the class's -0x20 shift).</summary>
     [Fn("void(CNWCCreature this)")]
     public const string UpdateLookAt = "_ZN12CNWCCreature12UpdateLookAtEv";
+    /// <summary><c>CNWCCreature::PlayFootstep()</c> @0x72ff90 -- one footstep: the surface material under the
+    /// creature picks the sound (footstepsounds.2da by FootstepType) and the water visual, played as a 3D one-shot
+    /// at its position. Callers: <c>FootstepEvent</c>, the model's <c>snd_Footstep</c> animation event bound in
+    /// <c>LoadModel</c> (the walk/run footfalls); <c>AnimationUpdate</c> for fire-and-forget 0x18-0x1b; and
+    /// <c>AIUpdate</c>'s random idle shuffle. Hooked by <see cref="Services.Anim.Footfall"/>. Windows: rva 0x8057c0,
+    /// the one function outside the NWScript/GFF commands reading "FootstepType"; body decompiles identical
+    /// (SIZECATEGORY, Play3DOneShotSound, IsWater), and LoadModel (rva 0x802cc0) binds "snd_Footstep" to a thunk.</summary>
+    [Fn("void(CNWCCreature this)")]
+    public const string PlayFootstep = "_ZN12CNWCCreature12PlayFootstepEv";
     /// <summary><c>Gob::BeginLookAtAnimate(CAurObject* target, char const* targetNode, char const* myNode,
     /// float arcH, float arcV, float blend, float maxDist)</c> @0x49d5b0 -- <c>FindPart</c>s both nodes (silently
     /// returning if either misses), destroys any existing <c>LookAtAnimation</c> at Gob+0x1b0 and builds a fresh
@@ -1891,6 +1900,66 @@ internal static unsafe class SymbolMap
     [Fn("nuint(IntPtr dctx, void* dst, nuint dstCap, void* src, nuint srcSize)")]
     public const string ZstdDecompressDCtx = "ZSTD_decompressDCtx";
 
+    // ---- CX-57: the exosound seams (docs/audio.md, docs/research/client-audio-stack.md). The whole of exosound is a
+    //      shared-engine library, so every one of these is name-exported on Windows. ----
+    /// <summary><c>CExoSoundInternal::PlaySourceOn3DVoice(CExoSoundSourceInternal*, C3DVoice*)</c> @0x577dc0 -- decodes
+    /// the WAV, fills the voice's AL buffer and source, and ends in <c>alSourcePlay</c>. The Steam Audio path
+    /// brackets it: the source's authored near/far, variance and group ride to the play shim on this thread.</summary>
+    [Fn("void(CExoSoundInternal this, CExoSoundSourceInternal source, C3DVoice voice)")]
+    public const string SoundPlayOn3DVoice = "_ZN17CExoSoundInternal19PlaySourceOn3DVoiceEP23CExoSoundSourceInternalP8C3DVoice";
+    /// <summary><c>CExoSoundInternal::PlaySourceOn2DVoice(CExoSoundSourceInternal*, C2DVoice*)</c> @0x5780e0 -- the
+    /// same shape for a non-positional source. A placed sound object that is not Positional plays here (group 2,
+    /// Looping_AreaWide_Ambients, when it loops) and, being 2D, is never range-culled: it plays area-wide at
+    /// constant volume. It still carries the object's position and its authored min/max distance.</summary>
+    [Fn("void(CExoSoundInternal this, CExoSoundSourceInternal source, C2DVoice voice)")]
+    public const string SoundPlayOn2DVoice = "_ZN17CExoSoundInternal19PlaySourceOn2DVoiceEP23CExoSoundSourceInternalP8C2DVoice";
+    /// <summary><c>CExoSoundSourceInternal::SetPosition(Vector)</c> @0x576860 -- stores the world position and, for a
+    /// playing 3D voice, forwards it to AL with z NEGATED (<c>xorps</c> with the sign mask @0x5768b4) while the play
+    /// path forwards it as is: the stored vector is the one to trust.</summary>
+        [Fn("void(CExoSoundSourceInternal this, VectorArg pos)")]
+    public const string SoundSourceSetPosition = "_ZN23CExoSoundSourceInternal11SetPositionE6Vector";
+    /// <summary><c>CExoSound::SetEnvironment(unsigned char)</c> @0x574ea0 -- the area's <c>EnvAudio</c> row of
+    /// soundeax.2da, once per area from <c>CNWCArea::StartSounds</c> (its only caller); the OpenAL backend drops it.</summary>
+    [Fn("void(IntPtr sound, byte row)")]
+    public const string SoundSetEnvironment = "_ZN9CExoSound14SetEnvironmentEh";
+    /// <summary><c>CExoSoundInternal::Initialize(CExoString, unsigned char n2D, unsigned char n3D)</c> @0x57c4c0 -- the
+    /// voice budget (16 + 16 from <c>InitializeSoundOptions</c>, clamped to 8..64 inside). The by-value
+    /// <c>CExoString</c> crosses as a pointer on both ABIs (Itanium: non-trivial, so by invisible reference; Win64:
+    /// over 8 bytes, so a caller-made copy the callee destroys) -- forwarded untouched, never read.</summary>
+    [Fn("int(IntPtr sound, IntPtr provider, byte n2d, byte n3d)")]
+    public const string SoundInitialize = "_ZN17CExoSoundInternal10InitializeE10CExoStringhh";
+    /// <summary><c>CExoStreamingSoundSource::FadeAndStop(unsigned int ms)</c> @0x574450 -- every music/ambient track
+    /// change goes through it (PlayMusic(0), PlayAmbientSound(0), battle, truncated, day/night): the fade-out that the
+    /// next track waits on, since <c>PlayX(1)</c> only starts once <c>IsPlaying()</c> is 0. Main thread.</summary>
+    [Fn("void(CExoStreamingSoundSource this, uint ms)")]
+    public const string StreamFadeAndStop = "_ZN24CExoStreamingSoundSource11FadeAndStopEj";
+    /// <summary><c>CExoStreamingSoundSource::CExoStreamingSoundSource(Type)</c> @0x574240 -- the 8-byte handle; it
+    /// makes its Internal through <c>Reset(type)</c>. CNWCAmbientSound builds both of its streams as Type 0.</summary>
+    [Fn("void(CExoStreamingSoundSource this, int type)")]
+    public const string StreamCtor = "_ZN24CExoStreamingSoundSourceC1ENS_4TypeE";
+    /// <summary><c>CExoStreamingSoundSource::Reset(Type)</c> @0x5741c0 -- deletes the Internal (and the whole file it
+    /// holds) and makes a virgin one.</summary>
+    [Fn("void(CExoStreamingSoundSource this, int type)")]
+    public const string StreamReset = "_ZN24CExoStreamingSoundSource5ResetENS_4TypeE";
+    /// <summary><c>CExoStreamingSoundSource::StartFade(FadeType, unsigned int ms, u8 from, u8 to)</c> @0x5744c0 --
+    /// type 1 ramps and keeps playing; <c>CExoSoundInternal::Render</c> ticks it on the main thread.</summary>
+    [Fn("void(CExoStreamingSoundSource this, int type, uint ms, byte from, byte to)")]
+    public const string StreamStartFade = "_ZN24CExoStreamingSoundSource9StartFadeENS_8FadeTypeEjhh";
+    /// <summary><c>CExoStreamingSoundSource::IsPlaying()</c> @0x5742b0 -- nonzero while its AL source plays,
+    /// including through a fade-out.</summary>
+    [Fn("int(CExoStreamingSoundSource this)")]
+    public const string StreamIsPlaying = "_ZN24CExoStreamingSoundSource9IsPlayingEv";
+    /// <summary><c>CExoStreamingSoundSource::Stop()</c> @0x574430.</summary>
+    [Fn("void(CExoStreamingSoundSource this)")]
+    public const string StreamStop = "_ZN24CExoStreamingSoundSource4StopEv";
+    /// <summary><c>CExoStreamingSoundSource::GetVolume()</c> @0x574410 -- the set volume (0..127), not the faded one.</summary>
+    [Fn("byte(CExoStreamingSoundSource this)")]
+    public const string StreamGetVolume = "_ZN24CExoStreamingSoundSource9GetVolumeEv";
+    /// <summary><c>CExoStreamingSoundSource::SetLooping(int)</c> @0x5743a0 -- per Internal, and CNWCAmbientSound sets
+    /// it once at construction (music 0, ambient 1), so a swapped-in Internal needs it again.</summary>
+    [Fn("void(CExoStreamingSoundSource this, int loop)")]
+    public const string StreamSetLooping = "_ZN24CExoStreamingSoundSource10SetLoopingEi";
+
     /// <summary>A symbol's Windows resolution. Four forms and no fifth -- the point of #447: a missing key
     /// used to mean both "never looked" and "deliberately Linux-only", so the absence could not be counted.
     /// Now every constant has a row, <see cref="Nm"/>/<see cref="At"/> resolve, <see cref="LinuxOnly"/> is a
@@ -1973,6 +2042,7 @@ internal static unsafe class SymbolMap
         // head tracking: the three Gob/Part/LookAtAnimation symbols are shared-engine exports; only the
         // CNWC* chooser needs an anchor (its Windows caller-of-"HEADTRACK" chain, docs/windows-symbols.md).
         [UpdateLookAt]       = At(),
+        [PlayFootstep]       = At(),
         [BeginLookAtAnimate] = Nm("?BeginLookAtAnimate@Gob@@UEAAXPEAVCAurObject@@PEBD1MMMM@Z"),
         [GobAnimate] = Nm("?Animate@Gob@@UEAAXM@Z"),
         [SpawnHitVisuals] = At(),   // anchor: its own "SpawnHitVisuals" log tag, 5 refs all inside it
@@ -2392,6 +2462,19 @@ internal static unsafe class SymbolMap
         // stashed in TLS and handed to the five-argument decompressor is ZSTD_createDCtx.
         [ZstdCreateDCtx]     = At(),
         [ZstdDecompressDCtx] = At(),
+        [SoundPlayOn3DVoice]     = Nm("?PlaySourceOn3DVoice@CExoSoundInternal@@QEAAXPEAVCExoSoundSourceInternal@@PEAVC3DVoice@@@Z"),
+        [SoundPlayOn2DVoice]     = Nm("?PlaySourceOn2DVoice@CExoSoundInternal@@QEAAXPEAVCExoSoundSourceInternal@@PEAVC2DVoice@@@Z"),
+        [SoundSourceSetPosition] = Nm("?SetPosition@CExoSoundSourceInternal@@QEAAXVVector@@@Z"),
+        [SoundSetEnvironment]    = Nm("?SetEnvironment@CExoSound@@QEAAXE@Z"),
+        [SoundInitialize]        = Nm("?Initialize@CExoSoundInternal@@QEAAHVCExoString@@EE@Z"),
+        [StreamFadeAndStop]      = Nm("?FadeAndStop@CExoStreamingSoundSource@@QEAAXI@Z"),
+        [StreamCtor]             = Nm("??0CExoStreamingSoundSource@@QEAA@W4Type@0@@Z"),
+        [StreamReset]            = Nm("?Reset@CExoStreamingSoundSource@@QEAAXW4Type@1@@Z"),
+        [StreamStartFade]        = Nm("?StartFade@CExoStreamingSoundSource@@QEAAXW4FadeType@1@IEE@Z"),
+        [StreamIsPlaying]        = Nm("?IsPlaying@CExoStreamingSoundSource@@QEAAHXZ"),
+        [StreamStop]             = Nm("?Stop@CExoStreamingSoundSource@@QEAAXXZ"),
+        [StreamGetVolume]        = Nm("?GetVolume@CExoStreamingSoundSource@@QEAAEXZ"),
+        [StreamSetLooping]       = Nm("?SetLooping@CExoStreamingSoundSource@@QEAAXH@Z"),
     };
 
     /// <summary>Why a symbol does not resolve on Windows, in the words of its own row. A key that is missing

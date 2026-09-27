@@ -34,7 +34,7 @@ Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily)
     ./run-demo.sh       # boots the framework in a stub host + proves the rot refusal (no game needed)
     ./sym.sh [-m] <pat> # search client symbols; -m = mangled (for Install)
 
-`build.sh` stages a runtime folder `cx-linux-x64/` (launcher + 2 `.so`) and a flat zip
+`build.sh` stages a runtime folder `cx-linux-x64/` (launcher + 2 `.so` + the audio runtime) and a flat zip
 of its contents -- the install is "unpack into bin/linux-x86".
 Launch the real client:  `NWN_BIN=/path/to/nwmain-linux ./cx-linux-x64/cx-launch`
 (Steam: put `"<abs>/cx-launch" %command%` in the game Launch Options.)
@@ -49,7 +49,7 @@ runbook `docs/update-day.md`. Snapshot each shipped build
 
 Windows leg (#48), cross-built on Linux -- no Windows box involved (dev loop only):
 
-    ./build-win.sh      # one version.dll (the AOT image IS the proxy) -> cx-windows-x64/
+    ./build-win.sh      # version.dll (the AOT image IS the proxy) + the audio runtime -> cx-windows-x64/
     ./build-win-native.sh  # same, natively under MSVC + Git Bash: what the release workflow ships (#504)
     ./run-proton.sh     # drops them beside bin/win32/nwmain.exe, runs it under Proton (throwaway prefix)
 
@@ -100,7 +100,9 @@ Navigation:
     docs/hook-pattern.md       example: a real hook + trampoline
     docs/owned-resource-lifetimes.md  what creates/revokes each owned table, and Revoke vs ContextLost
     docs/alloy-refusals.md     why a frame is the engine's: the frame-start verdict and its reason set
-    native/bootstrap.c         the only native code
+    docs/audio.md              CX-57: Steam Audio behind the engine's OpenAL -- the path, threads, what is verified
+    native/bootstrap.c         the load path (+ bootstrap_win.c: the version.dll proxy, the OpenAL redirect)
+    native/cxaudio.cpp         the audio core: the Steam Audio mixer, OpenAL shims, simulation (C-style C++)
     third_party/funchook       hooking engine (git submodule)
 
 ## Adding a service (the whole contributor workflow)

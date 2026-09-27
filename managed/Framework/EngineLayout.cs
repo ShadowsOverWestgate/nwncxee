@@ -646,6 +646,42 @@ public static unsafe class EngineLayout
     /// 0x7dba70) reads three INTs into 0x2a0/0x2a4/0x2a8 and then the next DWORD into +8, identically on
     /// both builds.</summary>
     public static readonly int AreaFlags = Field<uint>("CNWCArea", "flags");
+
+    // ---- CX-57: exosound (docs/audio.md). MSVC shifts the middle of CExoSoundSourceInternal by 4 (read off
+    //      PlaySourceOn3DVoice @rva 0x1e0050 and SetPriorityGroup @rva 0x1e1610); the tail from +0x50 lines up. ----
+    /// <summary>CExoSoundSourceInternal: the stored world position (<c>SetPosition</c> writes it, the play path
+    /// hands it to AL as is).</summary>
+    public static readonly int SoundSrcPosition = Field<CX.Engine.Vec3>("CExoSoundSourceInternal", "position");
+    /// <summary>CExoSoundSourceInternal: <c>PlaybackVariance</c>, clamped to [0, 1] by <c>SetPriorityGroup</c>.</summary>
+    public static readonly int SoundSrcVariance = Field<float>("CExoSoundSourceInternal", "variance");
+    /// <summary>CExoSoundSourceInternal: the prioritygroups.2da row (<c>SetPriorityGroup</c>'s byte).</summary>
+    public static readonly int SoundSrcGroup = Field<byte>("CExoSoundSourceInternal", "group");
+    /// <summary>CExoSoundSourceInternal: the 3D voice while one is bound (<c>PlaySourceOn3DVoice</c> sets it).</summary>
+    public static readonly int SoundSrcVoice3D = Field<CX.Engine.C3DVoice>("CExoSoundSourceInternal", "voice3d");
+    /// <summary>CExoSoundSourceInternal: <c>MaxVolumeDist</c>, the authored full-volume radius that never reached AL.</summary>
+    public static readonly int SoundSrcNear = Field<float>("CExoSoundSourceInternal", "nearDist");
+    /// <summary>CExoSoundSourceInternal: <c>MinVolumeDist</c>, the far radius the engine sends as AL_MAX_DISTANCE.</summary>
+    public static readonly int SoundSrcFar = Field<float>("CExoSoundSourceInternal", "farDist");
+    /// <summary>CExoSoundSourceInternal: the sample offset the next play resumes from (AL_SAMPLE_OFFSET).</summary>
+    public static readonly int SoundSrcOffset = Field<int>("CExoSoundSourceInternal", "sampleOffset");
+    /// <summary>CExoSoundSourceInternal: the 2D voice while one is bound (<c>PlaySourceOn2DVoice</c> sets it).</summary>
+    public static readonly int SoundSrcVoice2D = Field<CX.Engine.C2DVoice>("CExoSoundSourceInternal", "voice2d");
+    /// <summary>C3DVoice: <c>{ owner; ALuint source; ALuint buffer; }</c> -- the AL source name.</summary>
+    public static readonly int Voice3DSource = Field<uint>("C3DVoice", "source");
+    /// <summary>C2DVoice: the same 16-byte slot as <see cref="Voice3DSource"/>'s.</summary>
+    public static readonly int Voice2DSource = Field<uint>("C2DVoice", "source");
+    /// <summary>CNWCArea -&gt; its <c>CNWCAmbientSound</c> (heap; <c>CNWCArea::Update</c> loads it to call
+    /// <c>CNWCAmbientSound::Update</c>: Linux @0x707ad2, Windows rva 0x7e9038, the same <c>mov rcx,[rdi+0x2d8]</c>).</summary>
+    public static readonly int AreaAmbientSound = Field<CX.Engine.CNWCAmbientSound>("CNWCArea", "ambientSound");
+    /// <summary>CNWCAmbientSound -&gt; the music stream handle (heap; <c>PlayMusic</c> @0x801b10 / rva 0x876990).</summary>
+    public static readonly int AmbientMusic = Field<CX.Engine.CExoStreamingSoundSource>("CNWCAmbientSound", "music");
+    /// <summary>CNWCAmbientSound -&gt; the ambient-bed stream handle (<c>PlayAmbientSound</c> @0x801f30 / rva 0x8761a0).</summary>
+    public static readonly int AmbientBed = Field<CX.Engine.CExoStreamingSoundSource>("CNWCAmbientSound", "ambient");
+    /// <summary>CNWCAmbientSound -&gt; nonzero in the low-sound "truncated" mode, where one stream carries both.</summary>
+    public static readonly int AmbientTruncated = Field<int>("CNWCAmbientSound", "truncated");
+    /// <summary>CExoStreamingSoundSource: the handle's only member, its Internal (the ctor @0x574240 zeroes it and
+    /// <c>Reset</c> fills it). Every stream list the engine keeps is keyed by the Internal, never the handle.</summary>
+    public static readonly int StreamInternal = Field<IntPtr>("CExoStreamingSoundSource", "internal");
     /// <summary>CAurBehaviorCameraFollow -&gt; <c>SafePointer&lt;CAurObject&gt;</c> to the followed object
     /// (the PC); raw pointer at +0. Its <see cref="GobPosition"/> is what GetTargetWorldPosition returns --
     /// and that accessor (@0x4a03a0 / rva 0x56540) is the whole measurement: one line on each build reading
@@ -1245,6 +1281,10 @@ public static unsafe class EngineLayout
     // tools/abi/vtable-slots.py for every vtbl row. Decompiler evidence: a CANDIDATE until probed.
 
     // ---- CAurTextureBasic (identical 0x28..0xec; #436 read the class by hand, this batch pairs the rest) ----
+
+    /// <summary>The texture a wrapper stands in for; null = the wrapper answers for itself. <c>GetReferencedTexture</c>
+    /// is <c>this+0x18 ?: this</c> on both builds (Linux @0x484200, Windows rva 0xebb00).</summary>
+    public static readonly int TexReferenced = Field<CX.Engine.CAurTexture>("CAurTexture", "referenced");
 
     /// <summary>The decoded image buffer. <c>ConstructImage</c> fills it, <c>FreeImage</c> releases it, and
     /// <c>BuildAndStoreTexture</c> refuses without it -- all three read +0x58 on both builds.</summary>

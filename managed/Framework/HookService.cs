@@ -79,6 +79,28 @@ public sealed class HookService : IDisposable
     }
 
     /// <summary>
+    /// <see cref="Install"/> for a function that is not the engine's -- an export of a library CX ships beside
+    /// itself (CX-57: the pinned OpenAL) -- by address. <paramref name="label"/> names it in the log.
+    /// </summary>
+    public IntPtr InstallAt(IntPtr target, IntPtr handler, string label)
+    {
+        if (target == IntPtr.Zero) return IntPtr.Zero;
+        if (_chains.ContainsKey(target) || !_prepared.TryAdd(target, label))
+        {
+            _log.Info($"hook: DUPLICATE target refused for {label} -- already prepared");
+            return IntPtr.Zero;
+        }
+        int rc = funchook_prepare(_fh, ref target, handler);
+        if (rc != 0)
+        {
+            _log.Info($"hook: prepare failed (rc={rc}): {label}");
+            return IntPtr.Zero;
+        }
+        _log.Info($"hook: prepared {label}");
+        return target;
+    }
+
+    /// <summary>
     /// Subscribes <paramref name="handler"/> to <paramref name="linux"/> alongside other subscribers,
     /// highest <paramref name="priority"/> outermost. Returns a slot the caller keeps and calls through
     /// at runtime (<c>*slot</c> = the next-lower subscriber, or the original for the bottom layer);

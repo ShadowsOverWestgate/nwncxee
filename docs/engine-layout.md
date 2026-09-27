@@ -808,3 +808,22 @@ record either 30 or 37 bytes. That global is a `.bss` neighbour of
 `g_pAppManager`, not a class field, so it is not a row: `ModelLoad.Objects` picks
 the shape by which one reads the appearance the engine just handed it back at the
 cursor, and stands down if neither does.
+
+### The exosound rows (CX-57)
+
+Read off `CExoSoundInternal::PlaySourceOn3DVoice` (Linux `0x677dc0` in Ghidra, Windows rva `0x1e0050`),
+`CExoSoundSourceInternal::SetPriorityGroup` (`0x676a70` / rva `0x1e1610`), `SetVolume` (`0x676900` / rva
+`0x1e1990`) and `SetPosition` (`0x676860` / rva `0x1e15a0`) on both builds. MSVC shifts the middle of the class by
+four bytes; from `+0x50` on the two layouts agree.
+
+| row | Linux / Windows | read off |
+|---|---|---|
+| `CExoSoundSourceInternal.position` | `0x30` / `0x34` | `SetPosition` stores the vector there; `PlaySourceOn3DVoice` hands the same three floats to `alSource3f(AL_POSITION)` |
+| `CExoSoundSourceInternal.variance` | `0x40` / `0x44` | `SetPriorityGroup` stores the 2DA's `PlaybackVariance`, clamped to [0, 1] |
+| `CExoSoundSourceInternal.group` | `0x48` / `0x4c` | `SetPriorityGroup`'s byte store; `SetVolume` tests it for the dialog/music routing |
+| `CExoSoundSourceInternal.voice3d` | `0x50` / `0x50` | `PlaySourceOn3DVoice` stores the voice there; `SetVolume` reads `+8` off it on the 3D branch |
+| `CExoSoundSourceInternal.voice2d` | `0x58` / `0x58` | `PlaySourceOn2DVoice` / `SetVolume`'s 2D branch, the same way |
+| `CExoSoundSourceInternal.nearDist` | `0x64` / `0x64` | `SetPriorityGroup` (`MaxVolumeDist`) and `CExoSoundSource::SetDistance` (a placed sound's UTS minimum) |
+| `CExoSoundSourceInternal.farDist` | `0x68` / `0x68` | the same two writers; `PlaySourceOn3DVoice` sends it as `AL_MAX_DISTANCE` |
+| `CExoSoundSourceInternal.sampleOffset` | `0x84` / `0x84` | `PlaySourceOn3DVoice`'s `alSourcei(AL_SAMPLE_OFFSET)` operand |
+| `C3DVoice.source`, `C2DVoice.source` | `0x8` / `0x8` | the `alGenSources(1, voice + 8)` in both play functions |

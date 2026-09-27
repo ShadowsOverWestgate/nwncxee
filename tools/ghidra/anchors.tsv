@@ -55,6 +55,7 @@ CGuiInGame::UnToggleOff	1406fc900
 CNWCMessage::HandleServerToPlayerCreatureUpdate_Update	140781e80
 CNWCCreature::SetCombatState	14080a230
 CNWCCreature::UpdateLookAt	14080fa60
+CNWCCreature::PlayFootstep	1408057c0
 CNWCCreature::LookAt	140803f20
 CActionTarget::ActivateTargetMode	14083b9e0
 CActionTarget::HandleLMouseDown	14083be00

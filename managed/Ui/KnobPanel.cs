@@ -38,7 +38,7 @@ namespace CX.Ui;
 /// </summary>
 public sealed partial class KnobPanel
 {
-    public static readonly string[] KnobCategories = { "General", "UI", "Graphics", "Camera", "Hotkeys" };
+    public static readonly string[] KnobCategories = { "General", "UI", "Graphics", "Audio", "Camera", "Hotkeys" };
     public const string ResetText = "Reset to defaults";
     public const string AdvancedClosed = "▸ Advanced", AdvancedOpen = "▾ Advanced";
     public const string BadgeText = "↻ restart";

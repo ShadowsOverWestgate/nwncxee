@@ -32,6 +32,18 @@ if [ ! -f build/cxatlas.lib ] || [ native/xatlas/xatlas.cpp -nt build/cxatlas.li
   lib -nologo -out:build/cxatlas.lib build/xatlas_win.obj build/cxatlas_win.obj
 fi
 
+# CX-57: the pinned audio runtime and the mixer (see build-win.sh).
+python tools/deps.py openal-src build/deps
+python tools/deps.py openal-win build/deps/win
+python tools/deps.py steamaudio build/deps/sa
+OAL=build/deps/openal-soft-1.25.2
+if [ ! -f build/cxaudio.lib ] || [ native/cxaudio.cpp -nt build/cxaudio.lib ]; then
+  echo ">> building the audio core (cxaudio.lib, MSVC)..."
+  cl -nologo -c -std:c++17 -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG -Ithird_party/steamaudio -I"$OAL/include" \
+    native/cxaudio.cpp -Fobuild/cxaudio_win.obj
+  lib -nologo -out:build/cxaudio.lib build/cxaudio_win.obj
+fi
+
 # tools/abi/check-win-symbols.py needs llvm-undname and a real nwmain.exe; a CI runner has neither.
 echo ">> skipping the symbol check (no nwmain.exe here; build-win.sh runs it on the dev box)" >&2
 
@@ -44,8 +56,11 @@ fi
 
 OUT=cx-windows-x64
 rm -rf "$OUT" && mkdir -p "$OUT"
-# One file: nwmain.exe imports VERSION.dll and the loader takes the copy beside the exe first.
+# nwmain.exe imports VERSION.dll and the loader takes the copy beside the exe first; the audio runtime rides
+# beside it (build-win.sh says why cx_openal.dll is renamed).
 cp build/win/cx_managed.dll "$OUT/version.dll"
+cp build/deps/win/soft_oal.dll "$OUT/cx_openal.dll"
+cp build/deps/sa/phonon.dll "$OUT/phonon.dll"
 BUILDS=$(awk -F'\t' '$1 == "name" { printf "%s%s", sep, $2; sep = ", " }' managed/Framework/Builds/*.tsv)
 sed "s/@VERSION@/$CX_VERSION/g; s/@BUILDS@/$BUILDS/g" packaging/README-win.txt > "$OUT/README.txt"
 packaging/licenses.sh "$OUT/LICENSES.txt"

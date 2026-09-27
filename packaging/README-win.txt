@@ -9,11 +9,13 @@ INSTALL
        GOG:   <GOG Games>\Neverwinter Nights Enhanced Edition\bin\win32\
   2. Start the game as usual (Steam, GOG Galaxy or nwmain.exe). No launch options needed.
 
-  That is the whole install: one file, version.dll. The game loads it, and it carries everything
-  else inside it.
+  That is the whole install: version.dll, which the game loads, and beside it the audio runtime
+  it uses -- cx_openal.dll (OpenAL Soft) and phonon.dll (Steam Audio). The game's own files are
+  not touched.
 
 UNINSTALL
-  Delete version.dll from bin\win32\. README.txt and LICENSES.txt can go too.
+  Delete version.dll, cx_openal.dll and phonon.dll from bin\win32\. README.txt and LICENSES.txt
+  can go too.
 
 WHAT WORKING LOOKS LIKE
   You'll see an attribution text in top left corner in the main menu.

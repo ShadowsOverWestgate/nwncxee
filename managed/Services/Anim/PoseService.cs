@@ -108,6 +108,12 @@ public sealed unsafe class PoseService : IExtenderService
         public bool HeldR, HeldL, SlipR, SlipL;
         public Vector2 LockDR, LockVR, LockDL, LockVL;
         public float PlantZ;
+        /// <summary>Footfall: stepping this frame, when it last was, each foot's own stance height and whether it is
+        /// in the air since its last landing, and the seconds since the last step played.</summary>
+        public bool Stepping;
+        public long SteppedAt;
+        public Footfall.Foot StepR, StepL;
+        public float SinceStep;
         /// <summary>Upper body: the lean, aim and flinch springs, (R, F) radians.</summary>
         public Vector2 Lean, LeanV, Hit, HitV;
         public float AimPitch, AimV, AimW, AimWV;
@@ -149,12 +155,13 @@ public sealed unsafe class PoseService : IExtenderService
         if (_next == null) { log.Info("Pose: standing down (Gob::Animate chain refused)"); return; }
         _armed = true;
         UpperBody.Install(log, hooks);
-        log.Info($"Pose: chained Gob::Animate (footik {On(AnimKnobs.FootIk.V)}, stride {On(AnimKnobs.Stride.V)}, footlock {On(AnimKnobs.FootLock.V)}, lookbody {On(AnimKnobs.LookBody.V)}, lean {AnimKnobs.Lean.V:0}%, aim {On(AnimKnobs.Aim.V)}, hitreact {AnimKnobs.Hit.V:0}%)");
+        Footfall.Install(log, hooks);
+        log.Info($"Pose: chained Gob::Animate (footik {On(AnimKnobs.FootIk.V)}, stride {On(AnimKnobs.Stride.V)}, footlock {On(AnimKnobs.FootLock.V)}, footsteps {On(AnimKnobs.Footsteps.V)}, lookbody {On(AnimKnobs.LookBody.V)}, lean {AnimKnobs.Lean.V:0}%, aim {On(AnimKnobs.Aim.V)}, hitreact {AnimKnobs.Hit.V:0}%)");
     }
 
     private static string On(bool b) => b ? "on" : "off";
 
-    private static bool AnyOn => AnimKnobs.FootIk.V || AnimKnobs.Stride.V || AnimKnobs.FootLock.V || AnimKnobs.SyncAttach.V
+    private static bool AnyOn => AnimKnobs.FootIk.V || AnimKnobs.Stride.V || AnimKnobs.FootLock.V || AnimKnobs.Footsteps.V || AnimKnobs.SyncAttach.V
                                  || AnimKnobs.LookBody.V || AnimKnobs.Lean.V > 0f || AnimKnobs.Aim.V || AnimKnobs.Hit.V > 0f;
 
     [UnmanagedCallersOnly]
@@ -471,6 +478,7 @@ public sealed unsafe class PoseService : IExtenderService
 
         FootPlacement.Compute(ref s, scene, gob, rAnkle, lAnkle, adjPos.Z, fwdH, right, scale, weight, gated, snap, dt, out var feet);
         Stride.Lock(ref s, rAnkle, lAnkle, mr.Z, ml.Z, s.Loco, snap, scale, dt, out Vector3 lockR, out Vector3 lockL);
+        Footfall.Step(ref s, creature, mr.Z, ml.Z, snap, dt);
         UpperBody.Step(ref s, creature, rootW, rootW.Z - adjPos.Z, scale, s.Speed, gated, snap, dt);
         UpperBody.Rotations(s, gated, out Vector2 torsoRot, out Vector2 neckRot);
 
@@ -534,6 +542,18 @@ public sealed unsafe class PoseService : IExtenderService
         s.HitV += UpperBody.Launch(push, s.Fwd, s.Right, peak);
     }
 
+    /// <summary>True while <see cref="Footfall"/> steps <paramref name="creature"/>'s body: it stepped within
+    /// <paramref name="hold"/> ticks and was locomoting then.</summary>
+    internal static bool Stepping(IntPtr creature, long hold)
+    {
+        if (!_armed || creature == IntPtr.Zero) return false;
+        IntPtr gob = GobOf(creature);
+        int slot = gob == IntPtr.Zero ? -1 : Find(gob);
+        if (slot < 0) return false;
+        ref Slot s = ref _slots[slot];
+        return s.Stepping && System.Diagnostics.Stopwatch.GetTimestamp() - s.SteppedAt < hold;
+    }
+
     /// <summary>A creature's Gob, through the engine's own accessor: <c>GetModel(0xff, 1)</c> forwards to the
     /// CNWCAnimBase at +0x78 (as <see cref="HeadTrackService"/> reaches it).</summary>
     internal static IntPtr GobOf(IntPtr creature)
@@ -575,11 +595,11 @@ public sealed unsafe class PoseService : IExtenderService
         if (!_armed || frames <= 0) return "";
         float f = frames;
         string s = FormattableString.Invariant(
-            $"pose {System.Diagnostics.Stopwatch.GetElapsedTime(0, _ticks).TotalMilliseconds / f:F2} ms/f, {_gobs / f:F1} gobs/f, {FootPlacement.Rays / f:F1} rays/f, hits {FootPlacement.Tile / f:F1} tile + {FootPlacement.Placeable / f:F1} placeable/f, refused {_gated / f:F1} gated + {_noSlot / f:F1} no slot/f, {FootPlacement.Stairs / f:F1} on stairs/f, {Stride.Strided / f:F1} strided, {Stride.Synced / f:F1} attachment runs synced + {_followed / f:F1} attachments posed/f, + {Stride.Locked / f:F1} feet locked/f, {UpperBody.Looked / f:F1} looking/f, {UpperBody.Aimed / f:F1} aiming/f, {UpperBody.Hits} flinches");
+            $"pose {System.Diagnostics.Stopwatch.GetElapsedTime(0, _ticks).TotalMilliseconds / f:F2} ms/f, {_gobs / f:F1} gobs/f, {FootPlacement.Rays / f:F1} rays/f, hits {FootPlacement.Tile / f:F1} tile + {FootPlacement.Placeable / f:F1} placeable/f, refused {_gated / f:F1} gated + {_noSlot / f:F1} no slot/f, {FootPlacement.Stairs / f:F1} on stairs/f, {Stride.Strided / f:F1} strided, {Stride.Synced / f:F1} attachment runs synced + {_followed / f:F1} attachments posed/f, + {Stride.Locked / f:F1} feet locked/f, {UpperBody.Looked / f:F1} looking/f, {UpperBody.Aimed / f:F1} aiming/f, {UpperBody.Hits} flinches, {Footfall.Steps} footsteps on contact + {Footfall.Skipped} authored skipped");
         _gobs = _gated = _noSlot = _followed = 0;
         _ticks = 0;
         FootPlacement.Rays = FootPlacement.Tile = FootPlacement.Placeable = FootPlacement.Stairs = 0;
-        Stride.Strided = Stride.Locked = Stride.Synced = UpperBody.Looked = UpperBody.Aimed = UpperBody.Hits = 0;
+        Stride.Strided = Stride.Locked = Stride.Synced = UpperBody.Looked = UpperBody.Aimed = UpperBody.Hits = Footfall.Steps = Footfall.Skipped = 0;
         return s;
     }
 
@@ -690,6 +710,7 @@ public sealed unsafe class PoseService : IExtenderService
         }
         check.Expect(hitPeak > 0.12f && hitPeak < 0.16f && hx.Length() < 0.01f,
                      "flinch: a blow from the front tips the top back, peaks at its magnitude and settles");
+        check.Expect(Footfall.SelfCheck(), "a footstep plays once per landing, only after the foot rose clear of the stance height");
         log.Info(check.Ok ? "Pose.SelfCheck: passed" : "Pose.SelfCheck: FAILED");
     }
 }
