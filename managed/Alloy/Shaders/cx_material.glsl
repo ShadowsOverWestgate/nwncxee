@@ -1,6 +1,6 @@
 
 /// A material that authors nothing -- no Specularity, no spec or roughness map, i.e. typically no .mtr.
-/// It is shaded deliberately flatter than stock: it was never made for a PBR lobe.
+/// Its lobe is stock's, but held at F0 at every angle: legacy content was never made for a grazing Fresnel rise.
 bool CxBareMaterial(vec3 declared, int slots)
 {
     return (slots & (CX_SLOT_SPEC | CX_SLOT_ROUGH)) == 0 && declared.x <= 0.0;
@@ -12,15 +12,14 @@ vec3 CxSynthPbr(vec3 declared, int slots, float envLevel, float specTexel, float
     float envShiny = min(envLevel * CX_ENV_SPEC_SCALE, 1.0);
     float envRough = min(envLevel * CX_ENV_ROUGH_SCALE, 1.0);
     bool sm = (slots & CX_SLOT_SPEC) != 0;
-    bool bare = CxBareMaterial(declared, slots);
     float spec = declared.x;
     if (spec <= 0.0)
     {
         if (sm) spec = specTexel;
-        // #121: env map + no specular map = legacy "shiny" content, the engine's own translation of it
-        // (inc_material.shd, "mainly for the sake of enabling specularity on legacy content"), capped
-        // low when nothing was authored.
-        else if (envShiny > 0.0) spec = mix(CX_SPEC_MIN, bare ? CX_BARE_ENV_SPEC_MAX : CX_ENV_SPEC_MAX, envShiny);
+        // #121: env map + no specular map = legacy "shiny" content, and this is the engine's own
+        // translation of it (inc_material.shd, "mainly for the sake of enabling specularity on
+        // legacy content").
+        else if (envShiny > 0.0) spec = mix(CX_SPEC_MIN, CX_ENV_SPEC_MAX, envShiny);
         else spec = CX_SPEC_MIN;
     }
     float rough = declared.y;
@@ -34,12 +33,11 @@ vec3 CxSynthPbr(vec3 declared, int slots, float envLevel, float specTexel, float
         {
             // a specular map with no roughness map is pre-PBR content: translate rather than trust it
             rough = sm ? mix(CX_ROUGH_MIN, CX_ROUGH_MAX, (1.0 - spec) * (1.0 - spec))
-                       : bare ? CX_ROUGH_BARE : CX_ROUGH_MAX;
-            // ...and the env map drives it toward the floor, on TOP of that translation -- a matte one
-            // when nothing was authored, so legacy shiny reads glossy rather than as a mirror.
+                       : CX_ROUGH_MAX;
+            // ...and the env map drives it toward the same floor, on TOP of that translation. With
+            // no maps at all the min() is stock's bare assignment: the mix never exceeds the max.
             if (envLevel > 0.0)
-                rough = bare ? min(rough, mix(CX_ROUGH_BARE, CX_BARE_ENV_ROUGH_MIN, envRough))
-                             : min(rough, mix(CX_ROUGH_MAX, CX_ROUGH_MIN, envRough));
+                rough = min(rough, mix(CX_ROUGH_MAX, CX_ROUGH_MIN, envRough));
         }
     }
     float metal = declared.z;
@@ -47,7 +45,7 @@ vec3 CxSynthPbr(vec3 declared, int slots, float envLevel, float specTexel, float
     // without (fMetallicnessModifier * fGeneratedMetallicnessOffset). Collapsing them to one branch
     // would generate visibly different metal for content that declares Specularity but ships no map.
     if (metal <= 0.0)
-        metal = bare ? 0.0 : clamp((sm ? CX_METAL_SCALE_MAP : CX_METAL_SCALE_BARE) * spec
+        metal = clamp((sm ? CX_METAL_SCALE_MAP : CX_METAL_SCALE_BARE) * spec
                       - (sm ? CX_METAL_BIAS_MAP : CX_METAL_BIAS_BARE), 0.0, 1.0);
     return vec3(spec, rough, metal);
 }
