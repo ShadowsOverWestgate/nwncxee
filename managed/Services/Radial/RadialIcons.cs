@@ -19,7 +19,8 @@ public enum IconKind { Plain, Layered, Composite, Armor }
 /// <see cref="TextRig.DrawIconTid"/> quads. A plain layer's texture is the resref's (<c>AurTextureGet</c>, as
 /// <see cref="TextRig.DrawIcon"/>); a PLT layer's is the one <c>Material::ReplaceTexturePLT</c> @0x4c7a10 keyed under
 /// (resref, palette scheme), found again per frame by the engine's own <c>AurTextureFind</c> hash -- never created
-/// here, never cached (a <c>CAurTexture*</c> is borrowed, <see cref="AurTex"/>).
+/// here, never cached (a <c>CAurTexture*</c> is borrowed, <see cref="AurTex"/>); <see cref="BuildModel"/> only asks the
+/// engine to build the icon's own model, whose load mints it.
 /// <para>The handle the dropdown carries is the item's OBJECT ID, not its <c>CGuiIcon*</c>: <c>CNWCItem::UpdateIcons</c>
 /// @0x7cbc50 deletes and rebuilds that icon on every item update the server sends, which can land while the menu
 /// is open, so <see cref="Draw"/> re-resolves id -&gt; <c>CNWCItem</c> -&gt; <see cref="EngineLayout.ItemGuiIcon"/> every
@@ -41,6 +42,7 @@ internal static unsafe class RadialIcons
 
     private static AurTextureFindFn _find;
     private static AurTextureGetFn _get;
+    private static GuiIconGetIconModelFn _getIconModel;
     private static GetGameObjectFn _getGameObject;
     private static GetObjectNameFn _getObjectName;
     private static ExoStringDtorFn _exoDtor;
@@ -57,10 +59,12 @@ internal static unsafe class RadialIcons
         _initTried = true;
         _log = log;
         if (!SymbolMap.Require(log, "RadialIcons", SymbolMap.AurTextureFind, SymbolMap.AurTextureGet, SymbolMap.GetGameObject,
-                               SymbolMap.AppManager, SymbolMap.VtCLayeredIcon, SymbolMap.VtCCompositeIcon, SymbolMap.VtCArmorIcon)) return false;
+                               SymbolMap.AppManager, SymbolMap.VtCLayeredIcon, SymbolMap.VtCCompositeIcon, SymbolMap.VtCArmorIcon,
+                               SymbolMap.GuiIconGetIconModel)) return false;
         if (!EngineLayout.Require(log, "RadialIcons", "CGuiIcon", "CLayeredIcon", "CCompositeIcon", "CArmorIcon", "CNWCItem", "CGameObject")) return false;
         _find = (AurTextureFindFn)SymbolMap.Resolve(SymbolMap.AurTextureFind, log);
         _get = (AurTextureGetFn)SymbolMap.Resolve(SymbolMap.AurTextureGet, log);
+        _getIconModel = (GuiIconGetIconModelFn)SymbolMap.Resolve(SymbolMap.GuiIconGetIconModel, log);
         _getGameObject = (GetGameObjectFn)SymbolMap.Resolve(SymbolMap.GetGameObject, log);
         _getObjectName = (GetObjectNameFn)SymbolMap.Resolve(SymbolMap.GetObjectName, log);
         _exoDtor = (ExoStringDtorFn)SymbolMap.Resolve(SymbolMap.ExoStringDtor, log);
@@ -68,7 +72,7 @@ internal static unsafe class RadialIcons
         _vtLayered = EngineAbi.Vtbl(SymbolMap.Resolve(SymbolMap.VtCLayeredIcon, log));
         _vtComposite = EngineAbi.Vtbl(SymbolMap.Resolve(SymbolMap.VtCCompositeIcon, log));
         _vtArmor = EngineAbi.Vtbl(SymbolMap.Resolve(SymbolMap.VtCArmorIcon, log));
-        _ready = _find != null && _get != null && _getGameObject != null && _appMgr != IntPtr.Zero;
+        _ready = _find != null && _get != null && _getIconModel != null && _getGameObject != null && _appMgr != IntPtr.Zero;
         return _ready;
     }
 
@@ -102,16 +106,56 @@ internal static unsafe class RadialIcons
         return new CascadeItem(ObjectName(id)) { IconHandle = (IntPtr)id };
     }
 
+    /// <summary>Have the engine build the item's own icon model when the icon is PLT-tinted (layered or armour), so its
+    /// textures exist whatever page the stock grid holds (<see cref="SymbolMap.GuiIconGetIconModel"/>); a no-op once built.
+    /// Outside any draw: the model load is engine work, not ours to interleave with a GL batch.</summary>
+    public static void BuildModel(uint oid)
+    {
+        if (!_ready) return;
+        IntPtr icon = ItemIcon((IntPtr)oid);
+        if (Classify(icon) is IconKind.Layered or IconKind.Armor) _getIconModel(icon);
+    }
+
     /// <summary>Per frame, from the owner's icon pass: every layer of the item's icon as it stands now, bottom to top.
     /// Zero-alloc; a vanished item, a stood-down unit or a not-yet-built texture draws nothing.</summary>
-    public static void Draw(IntPtr handle, float x, float y, float size, float alpha)
+    public static void Draw(IntPtr handle, float x, float y, float size, float alpha) => Draw(handle, x, y, size, size, alpha);
+
+    /// <summary><see cref="Draw(IntPtr, float, float, float, float)"/> of a <paramref name="cellsW"/>×<paramref name="cellsH"/>
+    /// inventory item into a <paramref name="w"/>×<paramref name="h"/> rect, cropped as the engine's <c>GUI_ICON_%dX%dL</c> model
+    /// crops it: the sheet is the cell size (32 px a cell) padded to powers of two, content top-left, so u runs to
+    /// <c>W*32/pow2(W*32)</c> and v from <c>1 - H*32/pow2(H*32)</c>. Cell-derived, not pixel-derived, so a 2x override keeps
+    /// its proportions (docs/research/inventory-screen.md §2.6).</summary>
+    public static void Draw(IntPtr handle, float x, float y, float w, float h, float alpha, int cellsW, int cellsH,
+                            bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
         if (!_ready || handle == IntPtr.Zero || !AurTex.Ready) return;
         IntPtr icon = ItemIcon(handle);
         if (icon == IntPtr.Zero) return;
         Span<int> tids = stackalloc int[MaxLayers];
         int n = Layers(icon, tids);
-        for (int i = 0; i < n; i++) TextRig.DrawIconTid(tids[i], x, y, size, size, alpha);
+        float u1 = ContentFrac(cellsW), v0 = 1f - ContentFrac(cellsH);
+        for (int i = 0; i < n; i++) TextRig.DrawIconTid(tids[i], x, y, w, h, alpha, u1, v0, clip, cx, cy, cw, ch);
+    }
+
+    /// <summary>Texels of one inventory cell on a stock icon sheet.</summary>
+    private const int IconCellPx = 32;
+
+    /// <summary>The share of a power-of-two padded sheet <paramref name="cells"/> cells fill.</summary>
+    internal static float ContentFrac(int cells)
+    {
+        int px = Math.Max(1, cells) * IconCellPx;
+        return px / (float)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)px);
+    }
+
+    /// <summary><see cref="Draw(IntPtr, float, float, float, float)"/> into a <paramref name="w"/>×<paramref name="h"/> rect.</summary>
+    public static void Draw(IntPtr handle, float x, float y, float w, float h, float alpha)
+    {
+        if (!_ready || handle == IntPtr.Zero || !AurTex.Ready) return;
+        IntPtr icon = ItemIcon(handle);
+        if (icon == IntPtr.Zero) return;
+        Span<int> tids = stackalloc int[MaxLayers];
+        int n = Layers(icon, tids);
+        for (int i = 0; i < n; i++) TextRig.DrawIconTid(tids[i], x, y, w, h, alpha);
         if (!_firstDrawLogged && n > 0 && tids[0] != 0 && ExtenderLog.Enabled)
         {
             _firstDrawLogged = true;
@@ -218,7 +262,7 @@ internal static unsafe class RadialIcons
 
     /// <summary>The item's display name through <c>GetObjectName</c> (cold; the DialogService contract: zeroed
     /// CExoString in, its buffer freed by the CExoString dtor after the copy).</summary>
-    private static string ObjectName(uint id)
+    internal static string ObjectName(uint id)
     {
         if (_getObjectName == null || _exoDtor == null) return "";
         IntPtr mgr = *(IntPtr*)_appMgr; if (mgr == IntPtr.Zero) return "";

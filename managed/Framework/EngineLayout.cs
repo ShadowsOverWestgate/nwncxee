@@ -873,6 +873,10 @@ public static unsafe class EngineLayout
     /// press/wheel handlers hit-test. #451: <c>CGuiMan::HandleLMouseDown</c> reads +0xd4/+0xd8 on both builds.</summary>
     public static readonly int GuiManMouseX = Field<int>("CGuiMan", "mouseX");
     public static readonly int GuiManMouseY = Field<int>("CGuiMan", "mouseY");
+    /// <summary>CGuiMan's modal-panel stack depth (the <c>CExoArrayList&lt;CGuiPanel*&gt;</c> count at +0x88/+0x90):
+    /// <c>SetModal</c> / <c>UnSetModal</c> (Linux @0x680390 / 0x680330, Windows rva 0x1f66f0 / 0x1f7080) read it on both builds;
+    /// every <c>CGuiModalPanel::Activate</c> pushes.</summary>
+    public static readonly int GuiManModalCount = Field<int>("CGuiMan", "modalCount");
 
     /// <summary>What to add to a vtable SYMBOL to reach slot 0. Itanium puts offset-to-top and the typeinfo
     /// pointer in front of the function pointers, so <c>_ZTV&lt;class&gt;</c> is two words short of the
@@ -2354,6 +2358,217 @@ public static unsafe class EngineLayout
     /// <c>fn(obj, result)</c> flat -- the <see cref="CallbackStride"/> difference, so the adjust word exists on
     /// Linux only and <see cref="CX.Engine.CGuiCallback.Adj"/> already knows that.</summary>
     public static readonly int GuiPanelCloseCallback = Field<CX.Engine.CGuiCallback>("CGuiPanel", "closeCallback", embedded: true);
+
+    // ================= the CX inventory screen (docs/research/inventory-screen.md §10) =================
+    // Every row below was PAIRED: the same function decompiled on both programs of ~/ghidra/nwn-linux.rep,
+    // Linux addresses as nm (Ghidra = nm + 0x100000), Windows as RVAs off base 0x140000000. The uniform
+    // CNWCItem / CNWCCreature Windows -0x20 held everywhere it was measured here, but no row rests on it:
+    // the pairing function is named on each. The inventory data model is NOT a client-side repository -- it
+    // is these per-item fields plus the creature's flat equipped-id array.
+
+    /// <summary>CNWCCreature: the flat <c>uint[18]</c> of equipped item object ids, indexed by
+    /// <c>log2(INVENTORY_SLOT_*)</c> -- 0 HEAD ... 17 CARMOUR, <c>0x7f000000</c> = empty. Measured as the whole
+    /// switch of <c>CNWCCreature::GetEquippedItemID(uint slotBitmask)</c>: Linux nm @0x7212e0 returns
+    /// <c>this+0x328</c> for flag 1 up to <c>this+0x36c</c> for 0x20000, Windows rva 0x800dd0 returns
+    /// <c>this+0x308</c> up to <c>this+0x34c</c> -- 18 consecutive dwords on both, so the array is the read and no
+    /// call is needed. The last four flags (the creature weapon/armour slots) have no widget on the vanilla panel.
+    /// </summary>
+    public static readonly int CreatureEquippedItems = Field<uint>("CNWCCreature", "equippedItems", count: 18);
+    /// <summary>CNWCCreature: gold pieces, what the inventory's <c>GPLabel</c> prints. Read by
+    /// <c>CPanelInventory::SetCharacterData</c> (Linux nm @0x68d810 <c>creature+0x1d8</c>, Windows rva 0x856fa0
+    /// <c>creature+0x1b8</c>) as the <c>%d</c> of TLK 0x1907.</summary>
+    public static readonly int CreatureGold = Field<uint>("CNWCCreature", "gold");
+    /// <summary>CNWCCreature: non-zero on an associate (henchman, familiar, summon, companion), whose master's id is
+    /// <see cref="CreatureMasterId"/>. <c>CGuiInvbox::HandleDropAsSource</c> (Linux @0x690990 <c>+0x294</c> / <c>+0x290</c>,
+    /// Windows rva 0x8813d0 <c>+0x274</c> / <c>+0x270</c>) lets a potion dropped on the player's own associate be used on it.</summary>
+    public static readonly int CreatureIsAssociate = Field<int>("CNWCCreature", "isAssociate");
+    /// <inheritdoc cref="CreatureIsAssociate"/>
+    public static readonly int CreatureMasterId = Field<uint>("CNWCCreature", "masterId");
+    /// <summary>CPanelQuickBar: its 36 <c>CGuiQuickButton</c>s (three sets of 12) laid inline from <see cref="QuickbarButtons"/>,
+    /// <see cref="QuickbarButtonStride"/> apart. <c>SetButton_Item</c> (Linux @0x6b1ab0 <c>slot*0x328 + 0xf8</c>, Windows rva
+    /// 0x86b3d0 <c>slot*0x2c8 + 0xf0</c>); <c>UpdateItemButtons</c> stops at <c>+0x7298</c> (36 × 0x328 + 0xf8), and both
+    /// quick-button drop handlers read the flag just past the array (<c>+0x72a4</c> / <c>+0x651c</c>).</summary>
+    public static readonly int QuickbarButtons = Field("CPanelQuickBar", "buttons");
+    /// <inheritdoc cref="QuickbarButtons"/>
+    public static readonly int QuickbarButtonStride = Field("CPanelQuickBar", "buttonStride");
+    /// <inheritdoc cref="QuickbarButtons"/>
+    public const int QuickbarButtonCount = 36;
+    /// <summary>CNWCCreature: carried weight in <b>tenths of a pound</b> -- the label is
+    /// <c>floor(weight / 10 + 0.5)</c>. Same two bodies (<c>+0x2ac</c> / <c>+0x28c</c>), and the same field the
+    /// <c>'U'</c> case of <c>HandleServerToPlayerUpdate_GuiInventory</c> writes (Linux nm @0x79dd90, Windows rva
+    /// 0x7b3f30). The max comes from <c>encumbrance.2da</c> column "Normal" at row = STR, not from the creature.
+    /// </summary>
+    public static readonly int CreatureCarriedWeight = Field<int>("CNWCCreature", "carriedWeight");
+
+    /// <summary>CNWCItem: the base item id -- the index into <see cref="SymbolMap.GetBaseItem"/>'s array, and the
+    /// same field on BOTH builds (<c>+0x40</c>), because it sits below the class's divergence. Read at
+    /// <c>item+0x40</c> by <c>CNWCItem::GetName</c> (Linux nm @0x7ce810, Windows rva 0x83d8a0),
+    /// <c>SetStackSize</c> (@0x7cdbd0 / rva 0x83f190) and <c>CGuiMultiInvbox::HandleDoubleClick</c>
+    /// (@0x690300 / rva 0x8801b0). Gold is base item 76. NOT the icon's base item, which is a second field.</summary>
+    public static readonly int ItemBaseItem = Field<int>("CNWCItem", "baseItem");
+    /// <summary>CNWCItem: non-zero =&gt; identified. <c>GetName</c> reads it twice on both builds
+    /// (<c>+0x1e0</c> / <c>+0x1c0</c>): it gates the custom name, and when clear it prefixes TLK 0x15ac.</summary>
+    public static readonly int ItemIdentified = Field<int>("CNWCItem", "identified");
+    /// <summary>CNWCItem: the ghost / in-flight flag -- non-zero while a move waits on the server, which blocks a
+    /// drag (<c>CGuiInvbox::CanEquipItem</c> @0x6906c0 refuses on it) and draws the icon at 0.4 alpha.
+    /// <c>HandleServerToPlayerUpdate_GuiRepository</c> clears it on every confirmation (Linux nm @0x79e320
+    /// <c>item+0x260</c>, Windows rva 0x7b4620 <c>item+0x240</c>).</summary>
+    public static readonly int ItemGhost = Field<int>("CNWCItem", "ghost");
+    /// <summary>CNWCItem: the <c>INVENTORY_SLOT_*</c> bitmask the item is equipped in, <c>-1</c> when it is not.
+    /// <c>HandleServerToPlayerUpdate_GuiInventory</c> reads and writes it on both builds (Linux nm @0x79dd90
+    /// <c>item+0x26c</c>, Windows rva 0x7b3f30 <c>item+0x24c</c>), beside a second slot field one dword up for
+    /// two-handed / dual references.</summary>
+    public static readonly int ItemEquipSlot = Field<int>("CNWCItem", "equipSlot");
+    /// <summary>CNWCItem: the CONFIRMED backpack cell, two bytes. <c>y</c> is <b>global</b>
+    /// (<c>page * rows + localY</c>), which is why one item's y can exceed the grid's 6 rows. Written by the
+    /// <c>'A'</c> and <c>'M'</c> cases of <c>Update_GuiRepository</c> and read back by its remove step, on both
+    /// builds (Linux nm @0x79e320 <c>item+0x274/+0x275</c>, Windows rva 0x7b4620 <c>item+0x254/+0x255</c>). The
+    /// pending pair the ghost writes is the next two bytes and is not declared.</summary>
+    public static readonly int ItemRepoX = Field<byte>("CNWCItem", "repoX");
+    /// <inheritdoc cref="ItemRepoX"/>
+    public static readonly int ItemRepoY = Field<byte>("CNWCItem", "repoY");
+    /// <summary>CNWCItem: the possessing creature's object id, <c>0x7f000000</c> when the item is on the ground.
+    /// <c>Update_GuiRepository</c> sets it to the panel's shown oid on <c>'A'</c> and to INVALID on <c>'D'</c>
+    /// (Linux nm @0x79e320 <c>item+0x284</c>, Windows rva 0x7b4620 <c>item+0x264</c>), and
+    /// <c>HandleDoubleClick</c> compares it against the player (@0x690300 / rva 0x8801b0). Measured from the
+    /// CNWCItem base, not the CNWCObject subobject -- contrast <see cref="ObjItemPlated"/>.</summary>
+    public static readonly int ItemPossessor = Field<uint>("CNWCItem", "possessor");
+    /// <summary>CNWCItem: 1 =&gt; the item sits in a container. The <c>'A'</c> of <c>Update_GuiContainer</c> sets it (Linux nm
+    /// @0x79ee90 <c>item+0x288</c>, Windows rva 0x7b3790 <c>item+0x268</c>) and the <c>'A'</c> of <c>Update_GuiRepository</c>
+    /// clears it (@0x79e320 / rva 0x7b4620). Both, and the container's <c>'D'</c>, stamp <see cref="ItemPossessor"/> with the
+    /// panel's shown creature -- the player -- so this is what tells looted items from carried ones.</summary>
+    public static readonly int ItemInContainer = Field<int>("CNWCItem", "inContainer");
+    /// <summary>CNWCItem: stack size. The first store of <c>CNWCItem::SetStackSize(int)</c> on both builds
+    /// (Linux nm @0x7cdbd0 <c>item+0x2a4</c>, Windows rva 0x83f190 <c>item+0x284</c>), which then suppresses the
+    /// count label when <see cref="BaseItemStacking"/> is 1 or the count is below 2.</summary>
+    public static readonly int ItemStackSize = Field<int>("CNWCItem", "stackSize");
+    /// <summary>CNWCItem: the custom (renamed) item name as a <c>char*</c> + dword length. <c>GetName</c> tests
+    /// the length and returns this text outright when the item is identified (Linux nm @0x7ce810
+    /// <c>item+0x2b0/+0x2b8</c>, Windows rva 0x83d8a0 <c>item+0x290/+0x298</c>). Single-byte codepage, not UTF-8
+    /// (docs: engine-text-codepage).</summary>
+    public static readonly int ItemCustomName = Field<IntPtr>("CNWCItem", "customName");
+    /// <inheritdoc cref="ItemCustomName"/>
+    public static readonly int ItemCustomNameLen = Field<uint>("CNWCItem", "customNameLen");
+
+    /// <summary>CNWBaseItem (a 200-byte record of <c>baseitems.2da</c>, reached through
+    /// <see cref="SymbolMap.GetBaseItem"/>): the <b>equippable-slot bitmask</b>. The whole client-side equip rule is
+    /// <c>(base-&gt;equipSlots &amp; invbox-&gt;slotMask) != 0</c> (<c>CGuiInvbox::CanEquipItem</c> @0x6906c0).
+    /// Identical on both builds -- paired on the shared-engine <c>CNWSCreature::CanEquipItem</c> (Linux nm
+    /// @0xa7adf0, Windows rva 0x3d12c0), which masks <c>*(uint*)(base + 4)</c> against the requested slot on
+    /// each.</summary>
+    public static readonly int BaseItemEquipSlots = Field<uint>("CNWBaseItem", "equipSlots");
+    /// <summary>CNWBaseItem: <c>InvSlotWidth</c> / <c>InvSlotHeight</c> in grid cells, already parsed by the client
+    /// -- no 2DA read. <c>CNWCItem::UpdateIcons</c> @0x7cbc50 copies them onto the built <c>CGuiIcon</c>, which is
+    /// what the grid places and reserves cells with. Identical on both builds, paired on the exported
+    /// <c>CItemRepository::CheckBaseItemFits</c> (Linux nm @0xb439c0, Windows rva 0x4659e0), which reads
+    /// <c>base[0x14]</c> and <c>base[0x15]</c> on each.</summary>
+    public static readonly int BaseItemInvSlotWidth = Field<byte>("CNWBaseItem", "invSlotWidth");
+    /// <inheritdoc cref="BaseItemInvSlotWidth"/>
+    public static readonly int BaseItemInvSlotHeight = Field<byte>("CNWBaseItem", "invSlotHeight");
+    /// <summary>CNWBaseItem: the stacking limit as a <c>short</c>; <c>== 1</c> means "never show a count label".
+    /// Identical on both builds -- <c>CNWCItem::SetStackSize</c> tests <c>*(short*)(base + 0x24) != 1</c> on each
+    /// (Linux nm @0x7cdbd0, Windows rva 0x83f190).</summary>
+    public static readonly int BaseItemStacking = Field<short>("CNWBaseItem", "stacking");
+    /// <summary>CNWBaseItem: non-zero =&gt; a double-click means <see cref="SymbolMap.SendInputUseObject"/>; zero
+    /// means "activate an item property" (walk the item's properties for type 0xf and open an action target).
+    /// Identical on both builds -- <c>CGuiMultiInvbox::HandleDoubleClick</c> branches on
+    /// <c>*(int*)(base + 0x80)</c> on each (Linux nm @0x690300, Windows rva 0x8801b0).</summary>
+    public static readonly int BaseItemUsable = Field<int>("CNWBaseItem", "usable");
+
+    /// <summary>CNWRules -&gt; its <c>CNWBaseItemArray*</c>. Every client body that needs a base item does the same
+    /// two-step, <c>GetBaseItem(*(g_pRules + 0x20), item-&gt;baseItem)</c>, at the same offset on both builds
+    /// (<c>CNWCItem::GetName</c> Linux nm @0x7ce810 / Windows rva 0x83d8a0, and three others).</summary>
+    public static readonly int RulesBaseItems = Field<IntPtr>("CNWRules", "baseItems");
+
+    /// <summary>CPanelInventory: non-zero =&gt; this panel is currently showing a CONTAINER rather than the plain
+    /// backpack. <c>SetContainerGUIVisible</c> (Linux nm @0x68e5d0) is its only writer and
+    /// <c>SetInventoryVisible</c>'s <c>show == 0</c> branch its reader (Linux nm @0x68e760 <c>+0x319c</c>, Windows
+    /// rva 0x857cd0 <c>+0x2f64</c>, where MSVC inlined the whole teardown). On a container OPEN it is still clear
+    /// when <c>SetInventoryVisible(1, ...)</c> runs -- the container message calls the two in that order.</summary>
+    public static readonly int InvContainerMode = Field<int>("CPanelInventory", "containerMode");
+    /// <summary>CPanelInventory: whose inventory is on show. <c>SetInventoryVisible</c> resolves an INVALID
+    /// argument to <c>GetPlayerCreatureId()</c> and stores it here before calling
+    /// <see cref="SymbolMap.InvSetCharacterData"/> (Linux nm @0x68e760 <c>+0x31a0</c>, Windows rva 0x857cd0
+    /// <c>+0x2f68</c>), and the notify tail sends it.</summary>
+    public static readonly int InvShownOid = Field<uint>("CPanelInventory", "shownOid");
+    /// <summary>CPanelInventory: 1 =&gt; this is my own inventory. <c>SetCharacterData</c> sets it for the player
+    /// (or a DM) and CLEARS it for anyone else, stripping the gold label and gold button from the panel for good
+    /// (Linux nm @0x68d810 <c>+0x31a4</c>, Windows rva 0x856fa0 <c>+0x2f6c</c>).</summary>
+    public static readonly int InvIsMine = Field<int>("CPanelInventory", "isMine");
+    /// <summary>CPanelInventory -&gt; its embedded <c>CPanelInvEquip</c> (the 14 equip slots), the subobject
+    /// <c>SetInventoryVisible</c> adds and removes under the tag "Equip" (Linux nm @0x68e760 <c>this+0x368</c>,
+    /// Windows rva 0x857cd0 <c>this+0x308</c>).</summary>
+    public static readonly int InvEquipPanel = Field<CX.Engine.CPanelInvEquip>("CPanelInventory", "equipPanel", embedded: true);
+    /// <summary>CPanelInventory: the three labels <c>SetCharacterData</c> fills -- gold (<c>GPLabel</c>), current
+    /// weight, max weight. Each measured as the <c>m_pString</c> the body writes through, minus
+    /// <see cref="LabelString"/>: Linux nm @0x68d810 writes <c>+0x1ec8 / +0x1ff8 / +0x1f60</c> =&gt;
+    /// <c>+0x1e38 / +0x1f68 / +0x1ed0</c>; Windows rva 0x856fa0 writes <c>+0x1d78 / +0x1ea8 / +0x1e10</c> =&gt;
+    /// <c>+0x1ce8 / +0x1e18 / +0x1d80</c>. The gold one is also the <c>RemoveFromPanel</c> target in the
+    /// someone-else branch, which is an independent read of the same offset on each.</summary>
+    public static readonly int InvGoldLabel = Field<CX.Engine.CGuiLabel>("CPanelInventory", "goldLabel", embedded: true);
+    /// <inheritdoc cref="InvGoldLabel"/>
+    public static readonly int InvWeightLabel = Field<CX.Engine.CGuiLabel>("CPanelInventory", "weightLabel", embedded: true);
+    /// <inheritdoc cref="InvGoldLabel"/>
+    public static readonly int InvMaxWeightLabel = Field<CX.Engine.CGuiLabel>("CPanelInventory", "maxWeightLabel", embedded: true);
+    /// <summary>CPanelInventory -&gt; its embedded container grid (<c>CGuiContainer</c>, 7x5), the widget every container
+    /// update lands in: <c>Update_GuiContainer</c> adds to <c>panel+0x2628</c> (Linux nm @0x79ee90) / <c>panel+0x24b0</c>
+    /// (Windows rva 0x7b3790), and <c>HandleContainerPageUp</c> empties the same one (@0x68c520 / rva 0x855d00).</summary>
+    public static readonly int InvContainerGrid = Field<CX.Engine.CGuiContainer>("CPanelInventory", "containerGrid", embedded: true);
+    /// <summary>CPanelInventory -&gt; its embedded backpack grid (<c>CGuiInvRepository</c>, a <c>CGuiMultiPageMultiInvbox</c>), the
+    /// box every backpack <c>'A'</c> adds to: <c>Update_GuiRepository</c> (Linux nm @0x79e320 <c>panel+0x1c50</c>, Windows rva
+    /// 0x7b4620 <c>panel+0x1b08</c>), and <c>Update_GuiContainer</c>'s <c>'A'</c> takes a looted item out of the same one
+    /// (@0x79ee90 / rva 0x7b3790). Its <c>CGuiMultiInvbox</c> base is the one <see cref="InvContainerGrid"/>'s view reads.</summary>
+    public static readonly int InvBackpackGrid = Field<CX.Engine.CGuiContainer>("CPanelInventory", "backpackGrid", embedded: true);
+    /// <summary>CPanelInventory: the open container's object id, INVALID when none. The container message stores it
+    /// (Linux nm @0x766f30 <c>+0x2810</c>) and <c>HandleContainerClose</c> <c>UseObject</c>s it (@0x68be50 <c>+0x2810</c>,
+    /// Windows rva 0x855ba0 <c>+0x268c</c>). It is the container grid's own target field (<c>grid+0x1e8</c> / <c>+0x1dc</c>),
+    /// which <c>CGuiContainer::ProcessItemDrop</c> sends a drop to.</summary>
+    public static readonly int InvContainerOid = Field<uint>("CPanelInventory", "containerOid");
+    /// <summary>CPanelInventory: non-zero =&gt; the open container is an item (a bag), not a placeable.
+    /// <c>SetContainerGUIVisible</c>'s third argument (Linux nm @0x68e5d0 <c>+0x2814</c>, Windows rva 0x8575f0
+    /// <c>+0x2690</c>); the grid's radial flags and a world pickup into it key off it.</summary>
+    public static readonly int InvContainerIsItem = Field<int>("CPanelInventory", "containerIsItem");
+    /// <summary>CPanelInventory: the container's page count (a byte), from the open message and the server's <c>'P'</c>
+    /// (<c>SetContainerPagenumVisible</c> @0x68e100 writes <c>+0x3198</c>); <c>HandleContainerPageUp</c> wraps at it (Linux
+    /// nm @0x68c520 <c>+0x3198</c>, Windows rva 0x855d00 <c>+0x2f60</c>). The constructor sets 1.</summary>
+    public static readonly int InvContainerPages = Field<byte>("CPanelInventory", "containerPages");
+    /// <summary>CPanelInventory: the container's title label (tag <c>Title</c>): <c>SetContainerGraphic</c> writes the
+    /// placeable, corpse or item name through its <see cref="LabelString"/> (Linux nm @0x68e280 <c>+0x2940</c>, Windows rva
+    /// 0x8576d0 <c>+0x27c0</c>), so the label sits at <c>+0x28b0</c> / <c>+0x2730</c>, one <c>CGuiLabel</c> after the page
+    /// label that <c>HandleContainerPageUp</c> writes (<c>+0x28a8</c> / <c>+0x2728</c>).</summary>
+    public static readonly int InvContainerTitle = Field<CX.Engine.CGuiLabel>("CPanelInventory", "containerTitle", embedded: true);
+    /// <summary>CGuiContainer (a <c>CGuiMultiPageMultiInvbox</c>): columns and rows of one page, as <c>CGuiMultiInvbox::SetSize</c>
+    /// stores them (Linux nm @0x692bf0 <c>+0x1a0/+0x1a4</c>, Windows rva 0x883220 <c>+0x190/+0x194</c>).</summary>
+    public static readonly int ContainerCols = Field<int>("CGuiContainer", "cols");
+    /// <inheritdoc cref="ContainerCols"/>
+    public static readonly int ContainerRows = Field<int>("CGuiContainer", "rows");
+    /// <summary>CGuiContainer: <c>uint[cols*rows]</c>, the item id at each footprint's origin cell (<c>cols*localY + x</c>),
+    /// INVALID elsewhere. <c>SetSize</c> allocates it (Linux nm @0x692bf0 <c>+0x1b0</c>, Windows rva 0x883220 <c>+0x1a0</c>),
+    /// <c>AddItem</c> writes the origin and <c>RemoveItem</c> (@0x692760) resets it, so a scan of it is the page's items.</summary>
+    public static readonly int ContainerItemIds = Field<IntPtr>("CGuiContainer", "itemIds");
+    /// <summary>CGuiContainer: the page the grid holds; <c>CGuiMultiPageMultiInvbox::AddItem</c> drops any item off it (Linux
+    /// nm @0x6943f0 <c>+0x1e0</c>, Windows rva 0x87f970 <c>+0x1d0</c>). For the container grid it is the server's page:
+    /// <c>HandleContainerPageUp</c> moves it with its <c>SelectNextPage</c> (panel <c>+0x2808</c> / <c>+0x2680</c>).</summary>
+    public static readonly int ContainerPage = Field<int>("CGuiContainer", "page");
+    /// <summary>CPanelInvEquip: the character-name label (<c>TGuiLabel</c>) and the armour-class label, the other
+    /// two <c>SetCharacterData</c> fills. Same derivation from the same two bodies: Linux <c>panel+0x4f0</c> and
+    /// <c>+0x588</c> are <c>equip+0xf8</c> and <c>+0x190</c> (equip at <c>+0x368</c>, minus
+    /// <see cref="LabelString"/>); Windows <c>panel+0x488</c> and <c>+0x520</c> are <c>equip+0xf0</c> and
+    /// <c>+0x188</c> (equip at <c>+0x308</c>).</summary>
+    public static readonly int InvEquipNameLabel = Field<CX.Engine.CGuiLabel>("CPanelInvEquip", "nameLabel", embedded: true);
+    /// <inheritdoc cref="InvEquipNameLabel"/>
+    public static readonly int InvEquipAcLabel = Field<CX.Engine.CGuiLabel>("CPanelInvEquip", "acLabel", embedded: true);
+    /// <summary>CGuiLabel -&gt; <c>CAurString* m_pString</c>, the text object the label draws -- at <c>+0x90</c> on
+    /// BOTH builds. It is a pointer to a live object, never an inline <c>CExoString</c>: the constructor
+    /// <c>CGuiLabel::CGuiLabel(int)</c> @0x591fd0 fills it with <c>NewCAurString</c> (so it is non-null from
+    /// construction, before the panel is ever shown), and every setter goes through the CAurString vtable
+    /// (<see cref="AurStringSetTextSlot"/>, the slot <c>SetCharacterData</c> calls on each build: Linux
+    /// <c>*(vtbl + 0xd8)</c> at <c>label+0x90</c>, Windows <c>*(vtbl + 0xd0)</c> at the same <c>+0x90</c>).
+    /// <para>To READ the displayed text: subtract <see cref="StringGobReaderAdjust"/> from this pointer and call the
+    /// exported <see cref="SymbolMap.StringGobGetTextLine"/>(0) -- the same recipe the chat bubble already uses,
+    /// and the only one that works on both ABIs (Linux needs the <c>-0x4c0</c> StringGob base, Windows does
+    /// not).</para></summary>
+    public static readonly int LabelString = Field<CX.Engine.CAurString>("CGuiLabel", "string");
 
     // ================= engine constants that are not offsets =================
     // They rode into this table with #436 because the file they lived in was the offset file. They are

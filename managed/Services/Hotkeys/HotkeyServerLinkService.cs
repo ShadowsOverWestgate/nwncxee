@@ -28,6 +28,9 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
         if (!SymbolMap.Require(log, "HotkeyServerLinkService", HotkeyProtocol.RequiredSymbols)) return;
         HotkeyConsent.Init(_log!);
         SelfCheck();   // the fail-closed consent policy is security-critical; verify it at startup
+        ServerPolicy.Log = log;
+        ServerPolicy.Send = (minor, ascii) => ClientApi.SendAscii(ServerPolicy.DeviceMajor, minor, ascii);
+        CommandRegistry.Global.Register("/policy", "list what the server's UI policy holds", _ => ServerPolicy.Report());
         _inboundOrig = hooks.InstallHandleServerToPlayerMessage(&OnInbound);
     }
 
@@ -50,6 +53,9 @@ public sealed unsafe class HotkeyServerLinkService : IExtenderService
                     return 1;                            // consume: ours, the stock client must not see it
                 case HotkeyProtocol.ArmSetMinor:
                     HandleArmSet(data, size);
+                    return 1;
+                case ServerPolicy.PolicyMinor:
+                    ServerPolicy.Apply(System.Text.Encoding.ASCII.GetString(data + 3, (int)size - 3));
                     return 1;
             }
         }

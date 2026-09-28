@@ -1,19 +1,22 @@
 #version 460 core
-// CX-51: screen-space reflections, one full-screen pass after the opaque set, sky, cutouts and grass (Ssr). Each
-// pixel with a reflection record (cx_reflrec) traces its reflection through THIS frame's depth, as a hi-Z pyramid:
+// CX-51: screen-space reflections, one half-res pass after the opaque set, sky, cutouts and grass (Ssr). Each
+// texel traces for one pixel of its 2x2 block -- the one whose reflection record (cx_reflrec) weighs most -- through
+// THIS frame's depth, as a hi-Z pyramid:
 // the walk climbs while the ray stays in front of each cell's closest surface and confirms a hit at the finest
-// level. Out goes the correction the lit stage's probe term needs -- (screen - probe) x trust x the record's weight
-// -- which Ssr adds onto the frame. On flat ground at the player's height the mirrored draw (uPlanar) answers
+// level. Out goes the correction the lit stage's probe term needs, (screen - probe) x trust, and the traced pixel's
+// 1 / view depth; cx_ssrcomp_f joins it to the full-res pixels at that depth and scales it by each one's own weight. On flat ground at the player's height the mirrored draw (uPlanar) answers
 // first. A miss, a back face or a ray off the screen leaves the probe standing -- never the screen at the ray's
 // vanishing point: that swaps sky for probe along a line that slides with the camera's pitch.
 #include "cx_ssr.glsl"
+#include "cx_ssrrec.glsl"
 in vec2 vUV;
 layout(location = 0) out vec4 frag;
 uniform sampler2D uDepth;    // the frame depth
-uniform sampler2D uColor;    // the frame so far, linear HDR, mipmapped
+uniform sampler2D uColor;    // the frame so far, linear HDR, mipmapped, its level 0 at level uColShift of the frame
+uniform int uColShift;
 uniform sampler2D uHiZ;      // 1 / view depth: level 0 per pixel, each level up the MAX (closest) of the one below
-uniform sampler2D uRecN;     // the record: world normal, roughness
-uniform sampler2D uRecW;     // ...its weight, view depth
+uniform sampler2D uRecN;     // the record: octahedral world normal, roughness, view depth (cx_ssrrec)
+uniform sampler2D uRecW;     // ...its weight
 uniform samplerCube uProbe;  // the probe the lit stage added, to be taken back out where the screen answers
 uniform sampler2D uPlanar;   // the opaque set drawn mirrored across uPlane.x, half res, mipped: alpha 1 where it drew
 uniform vec4 uPlane;         // x = the mirror plane's world z, y = 1 when uPlanar holds this frame's
@@ -32,13 +35,6 @@ const float CX_SSR_DIST = 60.0;
 const float CX_SSR_THICK = 0.15, CX_SSR_THICKREL = 0.015;
 /// The screen-edge fade, in uv: a hit this close to the border fades toward the probe instead of cutting.
 const float CX_SSR_EDGE = 0.08;
-/// The record weight below which no ray is traced, faded in over this range. Under the dielectric floor (F0 0.04):
-/// water seen from above reflects ~2-4%, and a dark figure standing in it still reads against the probe's sky.
-/// The roughness cap, not this, is what keeps the march off matte ground.
-const vec2 CX_SSR_WEIGHT = vec2(0.005, 0.01);
-/// How far (a share of view depth) a record's depth may sit off the frame's before a later draw is judged to have
-/// covered it without a record of its own -- a hosted program, the sky -- or the attachment holds nothing.
-const float CX_SSR_RECORD = 0.01;
 /// How far (world z) a surface may sit off the mirror plane and still take the mirrored draw, faded over this range:
 /// a curb's top is not the street's plane, and its mirror image would land a curb-height off.
 const vec2 CX_PLANE_TOL = vec2(0.1, 0.4);
@@ -55,20 +51,12 @@ vec3 ViewPos(vec2 uv, float depth)
     return p.xyz / p.w;
 }
 
-/// The record at a full-res texel belongs to what the frame shows there (NaN-safe: garbage fails).
-bool Recorded(ivec2 p, out vec4 n, out vec4 w)
-{
-    w = texelFetch(uRecW, p, 0);
-    n = texelFetch(uRecN, p, 0);
-    return abs(w.a * texelFetch(uHiZ, p, 0).r - 1.0) < CX_SSR_RECORD;
-}
-
 /// A surface the ray meets from behind or edge-on: what the mirror sees is past it, so the walk goes on. Only a
 /// recorded surface knows its normal; an unrecorded one (grass, a hosted draw) is taken as facing.
 bool Behind(ivec2 p, vec3 r)
 {
-    vec4 n, w;
-    return Recorded(p, n, w) && dot(mat3(uView) * n.xyz, r) >= 0.0;
+    vec3 n, w; float rough;
+    return CxRecRead(uRecN, uRecW, uHiZ, p, n, rough, w) && dot(mat3(uView) * n, r) >= 0.0;
 }
 
 /// What the screen shows along view-space ray r from view position o: rgb = radiance, a = trust.
@@ -117,21 +105,29 @@ vec4 Trace(vec3 o, vec3 r, float rough, vec2 size)
     float w = smoothstep(0.0, CX_SSR_EDGE, min(e.x, e.y)) * (1.0 - smoothstep(0.8, 1.0, t));
     // the lobe's footprint widens with the distance travelled and picks the mip. rough^2, not alpha: a box mip of
     // a thin dark object blends in the bright sky around it, so a glossy mirror must stay near level 0
-    vec3 hit = textureLod(uColor, uv, max(log2(max(distance(ph, p0) * rough * rough, 1.0)), float(fine))).rgb;
+    vec3 hit = textureLod(uColor, uv, max(log2(max(distance(ph, p0) * rough * rough, 1.0)), float(fine)) - float(uColShift)).rgb;
     return vec4(hit, w);
 }
 
 void main()
 {
     frag = vec4(0.0);
-    ivec2 px = ivec2(gl_FragCoord.xy);
-    vec4 n, w;
-    if (!Recorded(px, n, w)) return;
-    float wmax = max(w.r, max(w.g, w.b)), rough = n.w;
-    if (!(wmax >= CX_SSR_WEIGHT.x) || rough >= uSsr.x) return;
+    ivec2 lim = textureSize(uHiZ, 0) - 1, px = ivec2(-1);
+    vec3 n, w;
+    float wmax = 0.0, rough = 1.0;
+    for (int j = 0; j < 4; j++)
+    {
+        ivec2 q = min(ivec2(gl_FragCoord.xy) * 2 + ivec2(j & 1, j >> 1), lim);
+        vec3 qn, qw; float qr;
+        if (!CxRecRead(uRecN, uRecW, uHiZ, q, qn, qr, qw)) continue;
+        float qm = max(qw.r, max(qw.g, qw.b));
+        if (!(qm >= CX_SSR_WEIGHT.x) || qr >= uSsr.x || qm <= wmax) continue;
+        px = q; n = qn; w = qw; wmax = qm; rough = qr;
+    }
+    if (px.x < 0) return;
     vec2 size = vec2(textureSize(uHiZ, 0));
     vec3 o = ViewPos((vec2(px) + 0.5) / size, texelFetch(uDepth, px, 0).r);
-    vec3 r = reflect(normalize(o), normalize(mat3(uView) * n.xyz));
+    vec3 r = reflect(normalize(o), normalize(mat3(uView) * n));
     vec3 P = (uInvView * vec4(o, 1.0)).xyz;
     // the mirrored draw where this is the plane: exact, no holes behind figures, undersides included
     vec2 uv = (vec2(px) + 0.5) / size + (mat3(uView) * vec3(n.xy, 0.0)).xy * CX_PLANE_WARP;
@@ -143,7 +139,7 @@ void main()
     if (any(isnan(hit)) || any(isinf(hit))) hit = vec4(0.0);
     hit = clamp(hit, vec4(0.0), vec4(vec3(CX_SSR_MAX), 1.0));
     pl.rgb = min(pl.rgb, vec3(CX_SSR_MAX));
-    float gate = smoothstep(CX_SSR_WEIGHT.x, CX_SSR_WEIGHT.y, wmax) * (1.0 - smoothstep(0.75 * uSsr.x, uSsr.x, rough));
+    float gate = CxSsrGate(wmax, rough, uSsr.x);
     float trust = pa + (1.0 - pa) * hit.a;
     if (uViz == 41) { frag = vec4(trust * gate, wmax, 1.0, 1.0); return; }
     // the lit stage's own fetch, exactly: R in world space, its roughness on the prefilter's mip ladder
@@ -152,7 +148,7 @@ void main()
     // plane over screen over probe
     vec3 refl = mix(mix(env, hit.rgb, hit.a), pl.rgb, pa);
     if (uViz == 42) { frag = vec4(refl * trust, 1.0); return; }
-    frag = vec4((refl - env) * (gate * clamp(w.rgb, 0.0, 1.0)), 0.0);
+    frag = vec4(refl - env, texelFetch(uHiZ, px, 0).r);
     // a record some other program wrote garbage into can pass the depth test by chance: one NaN here is the
     // whole frame's, through the bloom
     if (any(isnan(frag)) || any(isinf(frag))) frag = vec4(0.0);

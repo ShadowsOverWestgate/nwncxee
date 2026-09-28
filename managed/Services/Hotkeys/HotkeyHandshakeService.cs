@@ -39,6 +39,7 @@ public sealed unsafe class HotkeyHandshakeService : IExtenderService
             // prompts. Nothing is armed until the server presents a recognised token.
             HotkeyStore.BeginSession();
             HotkeyConsent.Reset();
+            ServerPolicy.Clear();                           // a policy is the server's that sent it
             Advertise(msg);
         }
         return r;

@@ -43,7 +43,7 @@ public static class KnobFile
             {
                 if (!k.Persisted) continue;
                 declared.Add(k.Key);
-                if (!k.IsDefault) lines.Add(k.Key + "=" + k.Format());
+                if (!k.StoredIsDefault) lines.Add(k.Key + "=" + k.FormatStored());
             }
             foreach (KnobBag b in g.Bags)
             {
@@ -101,7 +101,7 @@ public static class KnobFile
             foreach (Knob k in g.Knobs)
             {
                 if (k.Persisted) declared.Add(k.Key);
-                check.Expect(k.IsDefault == !text.Contains("\n" + k.Key + "=") || !k.Persisted, $"{k.Key}: present iff off-default");
+                check.Expect(k.StoredIsDefault == !text.Contains("\n" + k.Key + "=") || !k.Persisted, $"{k.Key}: present iff off-default");
             }
             foreach (KnobBag b in g.Bags)
             {

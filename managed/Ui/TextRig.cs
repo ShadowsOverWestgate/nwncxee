@@ -21,7 +21,7 @@ namespace CX.Ui;
 /// engine's own state cache stays consistent. The chat-coupled Publish/RenderFrame draw path lives
 /// in <see cref="CX.Services.Chat.Render.ChatRenderer"/>, which drives these primitives.
 /// </summary>
-public static unsafe class TextRig
+public static unsafe partial class TextRig
 {
     /// <summary>The UI typeface's <see cref="FontRegistry"/> name: the embedded DejaVuSans (third_party/dejavu,
     /// Bitstream Vera licence) unless <c>font.default=</c> overrides it (#470). Shipped rather than searched:
@@ -783,8 +783,11 @@ public static unsafe class TextRig
     }
 
     /// <summary>The <see cref="DrawIcon"/> body for a live GL texture id the caller already holds; 0 draws nothing.
-    /// Sets its own full GL preamble (no snapshot, #210).</summary>
-    public static void DrawIconTid(int tid, float x, float y, float w, float h, float alpha = 1f)
+    /// <paramref name="u1"/> / <paramref name="v0"/> crop a padded sheet to its top-left content (the <c>GUI_ICON_*</c>
+    /// models' UVs); <paramref name="clip"/> scissors to (<paramref name="cx"/>, <paramref name="cy"/>, <paramref name="cw"/>,
+    /// <paramref name="ch"/>), y-down px. Sets its own full GL preamble (no snapshot, #210).</summary>
+    public static void DrawIconTid(int tid, float x, float y, float w, float h, float alpha = 1f, float u1 = 1f, float v0 = 0f,
+                                   bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {
         if (tid == 0 || _sheet == null || _log == null || alpha <= 0f) return;
         if (!Gl.Init(_log)) return;
@@ -794,15 +797,16 @@ public static unsafe class TextRig
         if (!_pvaoUp) SetupPortraitVao();
         Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE);
         Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
-        Gl.Disable(Gl.SCISSOR_TEST);
+        if (clip) { Gl.Enable(Gl.SCISSOR_TEST); Gl.Scissor(cx, ViewportH - (cy + ch), cw < 0 ? 0 : cw, ch < 0 ? 0 : ch); }
+        else Gl.Disable(Gl.SCISSOR_TEST);
 
         float* m = stackalloc float[16];
         Ortho(m, ViewportW, ViewportH);
 
         float a = alpha < 1f ? alpha : 1f, x1 = x + w, y1 = y + h;
         float* v = stackalloc float[Floats * 6];
-        Vtx(v, 0, x, y, 0, 1, a); Vtx(v, 1, x1, y, 1, 1, a); Vtx(v, 2, x1, y1, 1, 0, a);
-        Vtx(v, 3, x, y, 0, 1, a); Vtx(v, 4, x1, y1, 1, 0, a); Vtx(v, 5, x, y1, 0, 0, a);
+        Vtx(v, 0, x, y, 0, 1, a); Vtx(v, 1, x1, y, u1, 1, a); Vtx(v, 2, x1, y1, u1, v0, a);
+        Vtx(v, 3, x, y, 0, 1, a); Vtx(v, 4, x1, y1, u1, v0, a); Vtx(v, 5, x, y1, 0, v0, a);
 
         Gl.UseProgram(_progIcon);
         Gl.UniformMatrix4fv(_uProjIcon, 1, (byte)Gl.FALSE, m);
@@ -816,5 +820,6 @@ public static unsafe class TextRig
         Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
         // Unbind is load-bearing, not tidiness: a sampler left on unit 0 would override the glyph atlas's own filter/wrap state.
         if (samp) Gl.BindSampler(0, 0);
+        if (clip) Gl.Disable(Gl.SCISSOR_TEST);
     }
 }

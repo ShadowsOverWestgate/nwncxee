@@ -6,11 +6,12 @@ namespace CX.Alloy;
 
 /// <summary>
 /// CX-51: screen-space reflections, deferred. While the opaque set, the sky, the cutouts and grass draw, the frame
-/// target carries two more attachments -- the reflection record (<c>cx_reflrec</c>: normal, roughness, the weight
-/// the lit stage gave its probe term, view depth). At <see cref="PassId.Reflections"/> one full-screen pass traces
-/// every recorded pixel through THIS frame's depth (a hi-Z pyramid, <c>cx_ssrhiz_c</c>) and a colour copy of the
-/// frame so far, and adds (screen − probe) × trust × weight onto the frame (<c>cx_ssrtrace_f</c>). No lag, no
-/// history, and no reflection of a reflection: the copy is taken before any is added.
+/// target carries two more attachments -- the reflection record (<c>cx_ssrrec</c>: normal, roughness, view depth;
+/// the weight the lit stage gave its probe term). At <see cref="PassId.Reflections"/> a half-res pass traces one
+/// recorded pixel per 2x2 block through THIS frame's depth (a hi-Z pyramid, <c>cx_ssrhiz_c</c>) and a colour copy
+/// of the frame so far (<c>cx_ssrtrace_f</c>); a full-res pass joins that to the pixels at its depth and adds
+/// (screen − probe) × trust × each pixel's own weight onto the frame (<c>cx_ssrcomp_f</c>). No lag, no history,
+/// and no reflection of a reflection: the copy is taken before any is added.
 /// <para>Needs the owned HDR target (<see cref="PostChain.Armed"/>): the records attach to it. Shader-only plus
 /// this pass on Windows: no symbol, no offset.</para>
 /// </summary>
@@ -22,7 +23,12 @@ internal static unsafe class Ssr
 
     private static uint _fbo, _col, _hiz, _recN, _recW, _out, _progHiZ, _progTrace, _progComp;
     private static int _w, _h, _levels, _locLevel, _locNf;
-    private static int _tProj, _tInvProj, _tView, _tInvView, _tNf, _tSsr, _tViz, _tPlane;
+    private static int _tProj, _tInvProj, _tView, _tInvView, _tNf, _tSsr, _tViz, _tPlane, _tColShift, _cCap, _cViz;
+    /// <summary>The trace's size: half the frame's, rounded up.</summary>
+    private static int _ow, _oh;
+    /// <summary>The frame level the colour copy's level 0 stands at: 1 when the trace's finest level is 1 or 2, which
+    /// never reads the full-res levels; the copy is then one bilinear 2:1 blit, an exact box, and its mips from there.</summary>
+    private static int _colShift;
     /// <summary>The planar reflection's target: the opaque set drawn mirrored (<see cref="AlloyRenderer.PlanarPass"/>),
     /// a fraction of the frame, mipped for rough surfaces; its depth. <see cref="_planeZ"/> is this frame's plane, NaN for none.</summary>
     private static uint _plFbo, _plCol, _plDepth;
@@ -75,15 +81,14 @@ internal static unsafe class Ssr
         if (viewport[0] != 0 || viewport[1] != 0) { _down.Refuse(_log, "the pass viewport is offset", "no reflections this frame"); return; }
         int bound; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &bound);
         if ((uint)bound != PostChain.Fbo) { _down.Refuse(_log, "the colour pass is not on the owned frame target", "no reflections this frame"); return; }
-        if (!EnsureTargets(viewport[2], viewport[3])) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, PostChain.Fbo); return; }
+        if (!EnsureTargets(viewport[2], viewport[3], Math.Min(Lighting.SsrDetail.V, 1))) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, PostChain.Fbo); return; }
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, Gl.TEXTURE_2D, _recN, 0);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT3, Gl.TEXTURE_2D, _recW, 0);
         uint* bufs = stackalloc uint[RecordBuffers] { Gl.COLOR_ATTACHMENT0, Gl.NONE, Gl.COLOR_ATTACHMENT2, Gl.COLOR_ATTACHMENT3 };
         Gl.DrawBuffers(RecordBuffers, bufs);
         float* zero = stackalloc float[4];
-        // draw-buffer INDICES 2 and 3, not the attachment enums
+        // draw-buffer INDEX 2, not the attachment enum; a zero view depth there is "no record", so the weight needs none
         Gl.ClearBufferfv(Gl.COLOR, 2, zero);
-        Gl.ClearBufferfv(Gl.COLOR, 3, zero);
         // once per allocation, not per frame: driver-side validation costs inside the Opaque term
         if (!_checked)
         {
@@ -97,6 +102,22 @@ internal static unsafe class Ssr
             _checked = true;
         }
         _armed = true;
+    }
+
+    /// <summary>Around the sky: it writes no record, so its fragments stop paying for the two attachments; the
+    /// cleared record under it already reads "none". The frame target must be bound.</summary>
+    internal static void Pause()
+    {
+        if (!_armed) return;
+        uint buf = Gl.COLOR_ATTACHMENT0;
+        Gl.DrawBuffers(1, &buf);
+    }
+
+    internal static void Resume()
+    {
+        if (!_armed) return;
+        uint* bufs = stackalloc uint[RecordBuffers] { Gl.COLOR_ATTACHMENT0, Gl.NONE, Gl.COLOR_ATTACHMENT2, Gl.COLOR_ATTACHMENT3 };
+        Gl.DrawBuffers(RecordBuffers, bufs);
     }
 
     /// <summary>Detach the records and restore the frame target's single draw buffer. Every frame that reached
@@ -125,7 +146,7 @@ internal static unsafe class Ssr
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, PostChain.Fbo);
         Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.DRAW_FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _col, 0);
-        Gl.BlitFramebuffer(0, 0, _w, _h, 0, 0, _w, _h, Gl.COLOR_BUFFER_BIT, (uint)Gl.NEAREST);
+        Gl.BlitFramebuffer(0, 0, _w, _h, 0, 0, _w >> _colShift, _h >> _colShift, Gl.COLOR_BUFFER_BIT, (uint)(_colShift == 0 ? Gl.NEAREST : Gl.LINEAR));
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         uint err = Gl.GetError == null ? 0 : Gl.GetError();
         if (err != 0)
@@ -138,7 +159,7 @@ internal static unsafe class Ssr
         BuildPyramid(near, far);
 
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _out, 0);
-        Gl.Viewport(0, 0, _w, _h);
+        Gl.Viewport(0, 0, _ow, _oh);
         Gl.BindVertexArray(PostChain.FullscreenVao);
         new PassState(depth: false, depthWrite: false).Apply();
         BindUnit(0, Gl.TEXTURE_2D, PostChain.DepthTex);
@@ -160,6 +181,7 @@ internal static unsafe class Ssr
         int fine = Lighting.SsrDetail.V;
         Gl.Uniform4f(_tSsr, Lighting.SsrRough.V, Steps[fine], probe ? EnvProbe.Mips : 0f, fine);
         Gl.Uniform1i(_tViz, viz);
+        Gl.Uniform1i(_tColShift, _colShift);
         Gl.Uniform4f(_tPlane, planar ? planeZ : 0f, planar ? 1f : 0f, 0f, 0f);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
         for (uint u = 6; u >= 1; u--) BindUnit(u, u == 5 ? Gl.TEXTURE_CUBE_MAP : Gl.TEXTURE_2D, 0);
@@ -169,8 +191,14 @@ internal static unsafe class Ssr
         Gl.Viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
         new PassState(depth: false, depthWrite: false, blend: !shown, blendSrc: Gl.ONE, blendDst: Gl.ONE).Apply();
         BindUnit(0, Gl.TEXTURE_2D, _out);
+        BindUnit(1, Gl.TEXTURE_2D, _recN);
+        BindUnit(2, Gl.TEXTURE_2D, _recW);
+        BindUnit(3, Gl.TEXTURE_2D, _hiz);
         Gl.UseProgram(_progComp);
+        Gl.Uniform1f(_cCap, Lighting.SsrRough.V);
+        Gl.Uniform1i(_cViz, shown ? viz : 0);
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
+        for (uint u = 3; u >= 1; u--) BindUnit(u, Gl.TEXTURE_2D, 0);
         BindUnit(0, Gl.TEXTURE_2D, 0);
         Gl.Disable(Gl.BLEND);
         Gl.Enable(Gl.DEPTH_TEST); Gl.DepthFunc(Gl.LEQUAL); Gl.DepthMask(1);
@@ -247,12 +275,14 @@ internal static unsafe class Ssr
         _tProj = GlProgram.Loc(_progTrace, "uProj"); _tInvProj = GlProgram.Loc(_progTrace, "uInvProj");
         _tView = GlProgram.Loc(_progTrace, "uView"); _tInvView = GlProgram.Loc(_progTrace, "uInvView");
         _tNf = GlProgram.Loc(_progTrace, "uNf"); _tSsr = GlProgram.Loc(_progTrace, "uSsr"); _tViz = GlProgram.Loc(_progTrace, "uViz");
-        _tPlane = GlProgram.Loc(_progTrace, "uPlane");
+        _tPlane = GlProgram.Loc(_progTrace, "uPlane"); _tColShift = GlProgram.Loc(_progTrace, "uColShift");
         Gl.UseProgram(_progTrace);
         string[] units = ["uDepth", "uColor", "uHiZ", "uRecN", "uRecW", "uProbe", "uPlanar"];
         for (int i = 0; i < units.Length; i++) Gl.Uniform1i(GlProgram.Loc(_progTrace, units[i]), i);
         Gl.UseProgram(_progComp);
-        Gl.Uniform1i(GlProgram.Loc(_progComp, "uSrc"), 0);
+        string[] comp = ["uSrc", "uRecN", "uRecW", "uHiZ"];
+        for (int i = 0; i < comp.Length; i++) Gl.Uniform1i(GlProgram.Loc(_progComp, comp[i]), i);
+        _cCap = GlProgram.Loc(_progComp, "uCap"); _cViz = GlProgram.Loc(_progComp, "uViz");
         Gl.UseProgram(0);
         return true;
     }
@@ -287,22 +317,25 @@ internal static unsafe class Ssr
         Gl.UseProgram((uint)prev);
     }
 
-    /// <summary>The records, the colour copy (full mip chain, for rough reflections), the pyramid and the trace
-    /// output, all at the frame's size: the records attach beside its colour, so they must match it.</summary>
-    private static bool EnsureTargets(int w, int h)
+    /// <summary>The records and the pyramid at the frame's size (the records attach beside its colour, so they must
+    /// match it), the colour copy (full mip chain, for rough reflections) from level <paramref name="shift"/> of it,
+    /// and the trace output at half of it.</summary>
+    private static bool EnsureTargets(int w, int h, int shift)
     {
-        if (_fbo != 0 && _w == w && _h == h) return true;
+        if (_fbo != 0 && _w == w && _h == h && _colShift == shift) return true;
         _checked = false;
         if (_fbo == 0) { uint f; Gl.GenFramebuffers(1, &f); _fbo = f; }
-        int levels = 1;
-        while ((w >> levels) > 0 || (h >> levels) > 0) levels++;
+        int levels = Levels(w, h);
+        int cw = Math.Max(w >> shift, 1), ch = Math.Max(h >> shift, 1);
+        _ow = (w + 1) / 2; _oh = (h + 1) / 2;
         // immutable storage: a new size is a new name
-        Fresh(ref _col, Gl.RGBA16F, levels, w, h, Gl.LINEAR_MIPMAP_LINEAR, Gl.LINEAR);
+        Fresh(ref _col, Gl.RGBA16F, Levels(cw, ch), cw, ch, Gl.LINEAR_MIPMAP_LINEAR, Gl.LINEAR);
         Fresh(ref _hiz, Gl.R32F, levels, w, h, Gl.NEAREST_MIPMAP_NEAREST, Gl.NEAREST);
         Fresh(ref _recN, Gl.RGBA16F, 1, w, h, Gl.NEAREST, Gl.NEAREST);
-        Fresh(ref _recW, Gl.RGBA16F, 1, w, h, Gl.NEAREST, Gl.NEAREST);
-        Fresh(ref _out, Gl.RGBA16F, 1, w, h, Gl.NEAREST, Gl.NEAREST);
+        Fresh(ref _recW, Gl.R11F_G11F_B10F, 1, w, h, Gl.NEAREST, Gl.NEAREST);
+        Fresh(ref _out, Gl.RGBA16F, 1, _ow, _oh, Gl.NEAREST, Gl.NEAREST);
         _levels = levels;
+        _colShift = shift;
         int prev; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &prev);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _out, 0);
@@ -314,8 +347,15 @@ internal static unsafe class Ssr
             return _down.Fail(_log, $"the trace framebuffer is incomplete (0x{status:x})", "screen-space reflections are off for the session");
         }
         _w = w; _h = h;
-        _log?.Info($"Ssr: {w}x{h}, records 2x RGBA16F, colour copy RGBA16F, hi-Z {_levels} levels");
+        _log?.Info($"Ssr: {w}x{h}, records RGBA16F + R11F_G11F_B10F, colour copy RGBA16F {cw}x{ch}, trace {_ow}x{_oh}, hi-Z {_levels} levels");
         return true;
+    }
+
+    private static int Levels(int w, int h)
+    {
+        int levels = 1;
+        while ((w >> levels) > 0 || (h >> levels) > 0) levels++;
+        return levels;
     }
 
     private static void Fresh(ref uint tex, uint fmt, int levels, int w, int h, int min, int mag)

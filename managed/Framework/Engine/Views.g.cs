@@ -245,6 +245,7 @@ global using unsafe StringGobGetTextLineCountFn = delegate* unmanaged<nint, int>
 global using unsafe StringGobGetTextLineFn = delegate* unmanaged<nint, int, nint>;
 global using unsafe SpellMenuTargetIsValidFn = delegate* unmanaged<nint, uint, ushort>;
 global using unsafe AurTextureFindFn = delegate* unmanaged<byte*, byte*, int*, int, byte, nint>;
+global using unsafe GuiIconGetIconModelFn = delegate* unmanaged<nint, nint>;
 global using unsafe ResManAddManifestFn = delegate* unmanaged<nint, nint, uint, int>;
 global using unsafe ResManRemoveManifestFn = delegate* unmanaged<nint, nint, int>;
 global using unsafe Sqlite3OpenV2Fn = delegate* unmanaged<byte*, nint*, int, byte*, int>;
@@ -277,6 +278,32 @@ global using unsafe StreamIsPlayingFn = delegate* unmanaged<nint, int>;
 global using unsafe StreamStopFn = delegate* unmanaged<nint, void>;
 global using unsafe StreamGetVolumeFn = delegate* unmanaged<nint, byte>;
 global using unsafe StreamSetLoopingFn = delegate* unmanaged<nint, int, void>;
+global using unsafe InvSetInventoryVisibleFn = delegate* unmanaged<nint, int, int, uint, void>;
+global using unsafe InvSetCharacterDataFn = delegate* unmanaged<nint, uint, void>;
+global using unsafe GameCameraHitCheckFn = delegate* unmanaged<int, int, nint, nint, void>;
+global using unsafe GetGameobjectHitFn = delegate* unmanaged<nint, nint*, int>;
+global using unsafe SendBarterStartFn = delegate* unmanaged<nint, uint, uint, void>;
+global using unsafe SendInputUseItemFn = delegate* unmanaged<nint, uint, byte, byte, uint, CX.Engine.VectorArg, void>;
+global using unsafe SendGoldTransferFn = delegate* unmanaged<nint, uint, CX.Engine.VectorArg, int, int, byte, byte, void>;
+global using unsafe QuickButtonSetItemFn = delegate* unmanaged<nint, uint, int, int, void>;
+global using unsafe ItemPlayDropSoundFn = delegate* unmanaged<nint, void>;
+global using unsafe GetInventoryPanelFn = delegate* unmanaged<nint, nint>;
+global using unsafe InvboxAddItemFn = delegate* unmanaged<nint, uint, int, int, int, void>;
+global using unsafe InvSetContainerGuiVisibleFn = delegate* unmanaged<nint, int, int, int, uint, void>;
+global using unsafe InvContainerPageUpFn = delegate* unmanaged<nint, void>;
+global using unsafe InvContainerPageDownFn = delegate* unmanaged<nint, void>;
+global using unsafe InvContainerPagenumFn = delegate* unmanaged<nint, int, byte, void>;
+global using unsafe ItemActivateRadialMenuFn = delegate* unmanaged<nint, int, void>;
+global using unsafe GetBaseItemFn = delegate* unmanaged<nint, int, nint>;
+global using unsafe SendInvEquipFn = delegate* unmanaged<nint, uint, uint, uint, void>;
+global using unsafe SendInvUnequipFn = delegate* unmanaged<nint, uint, byte, byte, uint, void>;
+global using unsafe SendInvRepositoryMoveFn = delegate* unmanaged<nint, uint, byte, byte, uint, void>;
+global using unsafe SendInvDropFn = delegate* unmanaged<nint, uint, float, float, float, void>;
+global using unsafe SendGuiInvStatusFn = delegate* unmanaged<nint, int, uint, void>;
+global using unsafe SendGuiInvSelectPanelFn = delegate* unmanaged<nint, byte, int, void>;
+global using unsafe SendInputUseObjectFn = delegate* unmanaged<nint, uint, int, int, void>;
+global using unsafe SendInputSplitItemFn = delegate* unmanaged<nint, uint, int, void>;
+global using unsafe SendInputMergeItemFn = delegate* unmanaged<nint, uint, uint, void>;
 using System;
 using CX.Framework;
 
@@ -685,6 +712,8 @@ public readonly unsafe partial struct CClientExoApp(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="SymbolMap.GetGameObject"/>
     public CGameObject GetGameObject(uint id) => new CGameObject(EngineFn.GetGameObject(Ptr, id));
+    /// <inheritdoc cref="SymbolMap.GetInventoryPanel"/>
+    public CPanelInventory GetInventoryPanel() => new CPanelInventory(EngineFn.GetInventoryPanel(Ptr));
     /// <inheritdoc cref="SymbolMap.GetModule"/>
     public CNWCModule GetModule() => new CNWCModule(EngineFn.GetModule(Ptr));
     /// <inheritdoc cref="SymbolMap.GetNWCMessage"/>
@@ -988,6 +1017,23 @@ public readonly unsafe partial struct CGuiCallback(IntPtr ptr)
     public CGuiCallback this[int i] => new(Ptr + i * EngineLayout.CallbackStride);
 }
 
+/// <summary>Typed view of an engine <c>CGuiContainer*</c>.</summary>
+public readonly unsafe partial struct CGuiContainer(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ContainerCols"/>
+    public ref int Cols => ref *(int*)(Ptr + EngineLayout.ContainerCols);
+    /// <inheritdoc cref="EngineLayout.ContainerItemIds"/>
+    public ref IntPtr ItemIds => ref *(IntPtr*)(Ptr + EngineLayout.ContainerItemIds);
+    /// <inheritdoc cref="EngineLayout.ContainerPage"/>
+    public ref int Page => ref *(int*)(Ptr + EngineLayout.ContainerPage);
+    /// <inheritdoc cref="EngineLayout.ContainerRows"/>
+    public ref int Rows => ref *(int*)(Ptr + EngineLayout.ContainerRows);
+}
+
 /// <summary>Typed view of an engine <c>CGuiEdit*</c>.</summary>
 public readonly unsafe partial struct CGuiEdit(IntPtr ptr)
 {
@@ -1097,6 +1143,17 @@ public readonly unsafe partial struct CGuiInGamePopUpBubble(IntPtr ptr)
     public ref int LiveText => ref *(int*)(Ptr + EngineLayout.BubbleLiveText);
 }
 
+/// <summary>Typed view of an engine <c>CGuiLabel*</c>.</summary>
+public readonly unsafe partial struct CGuiLabel(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.LabelString"/>
+    public ref CAurString String => ref *(CAurString*)(Ptr + EngineLayout.LabelString);
+}
+
 /// <summary>Typed view of an engine <c>CGuiMan*</c>.</summary>
 public readonly unsafe partial struct CGuiMan(IntPtr ptr)
 {
@@ -1108,6 +1165,8 @@ public readonly unsafe partial struct CGuiMan(IntPtr ptr)
     public IntPtr GuiObjectHitCheck(int x, int y, int fresh, int mask) => EngineFn.GuiObjectHitCheck(Ptr, x, y, fresh, mask);
     /// <inheritdoc cref="SymbolMap.GuiUpdateAndRender"/>
     public long GuiUpdateAndRender(float dt) => EngineFn.GuiUpdateAndRender(Ptr, dt);
+    /// <inheritdoc cref="EngineLayout.GuiManModalCount"/>
+    public ref int ModalCount => ref *(int*)(Ptr + EngineLayout.GuiManModalCount);
     /// <inheritdoc cref="EngineLayout.GuiManMouseX"/>
     public ref int MouseX => ref *(int*)(Ptr + EngineLayout.GuiManMouseX);
     /// <inheritdoc cref="EngineLayout.GuiManMouseY"/>
@@ -1199,6 +1258,25 @@ public readonly unsafe partial struct CLayeredIcon(IntPtr ptr)
     public ref IntPtr Scheme => ref *(IntPtr*)(Ptr + EngineLayout.LayeredIconScheme);
     /// <inheritdoc cref="EngineLayout.LayeredIconSchemeCount"/>
     public ref int SchemeCount => ref *(int*)(Ptr + EngineLayout.LayeredIconSchemeCount);
+}
+
+/// <summary>Typed view of an engine <c>CNWBaseItem*</c>.</summary>
+public readonly unsafe partial struct CNWBaseItem(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.BaseItemEquipSlots"/>
+    public ref uint EquipSlots => ref *(uint*)(Ptr + EngineLayout.BaseItemEquipSlots);
+    /// <inheritdoc cref="EngineLayout.BaseItemInvSlotHeight"/>
+    public ref byte InvSlotHeight => ref *(byte*)(Ptr + EngineLayout.BaseItemInvSlotHeight);
+    /// <inheritdoc cref="EngineLayout.BaseItemInvSlotWidth"/>
+    public ref byte InvSlotWidth => ref *(byte*)(Ptr + EngineLayout.BaseItemInvSlotWidth);
+    /// <inheritdoc cref="EngineLayout.BaseItemStacking"/>
+    public ref short Stacking => ref *(short*)(Ptr + EngineLayout.BaseItemStacking);
+    /// <inheritdoc cref="EngineLayout.BaseItemUsable"/>
+    public ref int Usable => ref *(int*)(Ptr + EngineLayout.BaseItemUsable);
 }
 
 /// <summary>Typed view of an engine <c>CNWCAmbientSound*</c>.</summary>
@@ -1308,6 +1386,8 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public ref uint Area => ref *(uint*)(Ptr + EngineLayout.CreatureArea);
     /// <inheritdoc cref="EngineLayout.CreatureAttitude"/>
     public ref byte Attitude => ref *(byte*)(Ptr + EngineLayout.CreatureAttitude);
+    /// <inheritdoc cref="EngineLayout.CreatureCarriedWeight"/>
+    public ref int CarriedWeight => ref *(int*)(Ptr + EngineLayout.CreatureCarriedWeight);
     /// <inheritdoc cref="EngineLayout.CreatureCombatState"/>
     public ref int CombatState => ref *(int*)(Ptr + EngineLayout.CreatureCombatState);
     /// <inheritdoc cref="SymbolMap.CreatureShowFeedbackBubbleText"/>
@@ -1318,6 +1398,8 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public ref int DriveEnabled => ref *(int*)(Ptr + EngineLayout.CreatureDriveEnabled);
     /// <inheritdoc cref="EngineLayout.CreatureDriving"/>
     public ref int Driving => ref *(int*)(Ptr + EngineLayout.CreatureDriving);
+    /// <inheritdoc cref="EngineLayout.CreatureEquippedItems"/>
+    public Span<uint> EquippedItems { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.CreatureEquippedItems), 18); }
     /// <inheritdoc cref="EngineLayout.CreatureFacingTarget"/>
     public ref System.Numerics.Vector3 FacingTarget => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.CreatureFacingTarget);
     /// <inheritdoc cref="EngineLayout.CreatureFacingTargetB"/>
@@ -1326,10 +1408,16 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public IntPtr GetModel(byte part, int flag) => ((delegate* unmanaged<IntPtr, byte, int, IntPtr>)GetModelFn)(Ptr, part, flag);
     /// <inheritdoc cref="EngineLayout.CreatureGetModelSlot"/>
     public IntPtr GetModelFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.CreatureGetModelSlot);
+    /// <inheritdoc cref="EngineLayout.CreatureGold"/>
+    public ref uint Gold => ref *(uint*)(Ptr + EngineLayout.CreatureGold);
     /// <inheritdoc cref="EngineLayout.CreatureHoveredOid"/>
     public ref uint HoveredOid => ref *(uint*)(Ptr + EngineLayout.CreatureHoveredOid);
+    /// <inheritdoc cref="EngineLayout.CreatureIsAssociate"/>
+    public ref int IsAssociate => ref *(int*)(Ptr + EngineLayout.CreatureIsAssociate);
     /// <inheritdoc cref="EngineLayout.CreatureLockTarget"/>
     public ref uint LockTarget => ref *(uint*)(Ptr + EngineLayout.CreatureLockTarget);
+    /// <inheritdoc cref="EngineLayout.CreatureMasterId"/>
+    public ref uint MasterId => ref *(uint*)(Ptr + EngineLayout.CreatureMasterId);
     /// <inheritdoc cref="EngineLayout.CreaturePathfind"/>
     public ref CPathfindInformation Pathfind => ref *(CPathfindInformation*)(Ptr + EngineLayout.CreaturePathfind);
     /// <inheritdoc cref="EngineLayout.CreaturePlated"/>
@@ -1380,10 +1468,38 @@ public readonly unsafe partial struct CNWCItem(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.ItemBaseItem"/>
+    public ref int BaseItem => ref *(int*)(Ptr + EngineLayout.ItemBaseItem);
+    /// <inheritdoc cref="EngineLayout.ItemCustomName"/>
+    public ref IntPtr CustomName => ref *(IntPtr*)(Ptr + EngineLayout.ItemCustomName);
+    /// <inheritdoc cref="EngineLayout.ItemCustomNameLen"/>
+    public ref uint CustomNameLen => ref *(uint*)(Ptr + EngineLayout.ItemCustomNameLen);
+    /// <inheritdoc cref="EngineLayout.ItemEquipSlot"/>
+    public ref int EquipSlot => ref *(int*)(Ptr + EngineLayout.ItemEquipSlot);
+    /// <inheritdoc cref="EngineLayout.ItemGhost"/>
+    public ref int Ghost => ref *(int*)(Ptr + EngineLayout.ItemGhost);
     /// <inheritdoc cref="EngineLayout.ItemGuiIcon"/>
     public ref IntPtr GuiIcon => ref *(IntPtr*)(Ptr + EngineLayout.ItemGuiIcon);
+    /// <inheritdoc cref="EngineLayout.ItemIdentified"/>
+    public ref int Identified => ref *(int*)(Ptr + EngineLayout.ItemIdentified);
+    /// <inheritdoc cref="EngineLayout.ItemInContainer"/>
+    public ref int InContainer => ref *(int*)(Ptr + EngineLayout.ItemInContainer);
+    /// <inheritdoc cref="SymbolMap.ItemActivateRadialMenu"/>
+    public void ItemActivateRadialMenu(int flags) => EngineFn.ItemActivateRadialMenu(Ptr, flags);
+    /// <inheritdoc cref="SymbolMap.ItemGetName"/>
+    public void ItemGetName(void* ret, int useCustom) => EngineFn.ItemGetName(ret, Ptr, useCustom);
+    /// <inheritdoc cref="SymbolMap.ItemPlayDropSound"/>
+    public void ItemPlayDropSound() => EngineFn.ItemPlayDropSound(Ptr);
     /// <inheritdoc cref="SymbolMap.ItemShowFeedbackBubbleText"/>
     public void ItemShowFeedbackBubbleText() => EngineFn.ItemShowFeedbackBubbleText(Ptr);
+    /// <inheritdoc cref="EngineLayout.ItemPossessor"/>
+    public ref uint Possessor => ref *(uint*)(Ptr + EngineLayout.ItemPossessor);
+    /// <inheritdoc cref="EngineLayout.ItemRepoX"/>
+    public ref byte RepoX => ref *(byte*)(Ptr + EngineLayout.ItemRepoX);
+    /// <inheritdoc cref="EngineLayout.ItemRepoY"/>
+    public ref byte RepoY => ref *(byte*)(Ptr + EngineLayout.ItemRepoY);
+    /// <inheritdoc cref="EngineLayout.ItemStackSize"/>
+    public ref int StackSize => ref *(int*)(Ptr + EngineLayout.ItemStackSize);
 }
 
 /// <summary>Typed view of an engine <c>CNWCModule*</c>.</summary>
@@ -1554,6 +1670,8 @@ public readonly unsafe partial struct CNWRules(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.RulesBaseItems"/>
+    public ref IntPtr BaseItems => ref *(IntPtr*)(Ptr + EngineLayout.RulesBaseItems);
     /// <inheritdoc cref="EngineLayout.RulesTwoDimArrays"/>
     public ref IntPtr TwoDimArrays => ref *(IntPtr*)(Ptr + EngineLayout.RulesTwoDimArrays);
 }
@@ -1606,6 +1724,66 @@ public readonly unsafe partial struct CPanelActionQueue(IntPtr ptr)
     public ref IntPtr Current => ref *(IntPtr*)(Ptr + EngineLayout.ActionQueueCurrent);
     /// <inheritdoc cref="EngineLayout.ActionQueueCount"/>
     public ref int QueuedCount => ref *(int*)(Ptr + EngineLayout.ActionQueueCount);
+}
+
+/// <summary>Typed view of an engine <c>CPanelInvEquip*</c>.</summary>
+public readonly unsafe partial struct CPanelInvEquip(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.InvEquipAcLabel"/>
+    public CGuiLabel AcLabel => new(Ptr + EngineLayout.InvEquipAcLabel);
+    /// <inheritdoc cref="EngineLayout.InvEquipNameLabel"/>
+    public CGuiLabel NameLabel => new(Ptr + EngineLayout.InvEquipNameLabel);
+}
+
+/// <summary>Typed view of an engine <c>CPanelInventory*</c>.</summary>
+public readonly unsafe partial struct CPanelInventory(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.InvBackpackGrid"/>
+    public CGuiContainer BackpackGrid => new(Ptr + EngineLayout.InvBackpackGrid);
+    /// <inheritdoc cref="EngineLayout.InvContainerGrid"/>
+    public CGuiContainer ContainerGrid => new(Ptr + EngineLayout.InvContainerGrid);
+    /// <inheritdoc cref="EngineLayout.InvContainerIsItem"/>
+    public ref int ContainerIsItem => ref *(int*)(Ptr + EngineLayout.InvContainerIsItem);
+    /// <inheritdoc cref="EngineLayout.InvContainerMode"/>
+    public ref int ContainerMode => ref *(int*)(Ptr + EngineLayout.InvContainerMode);
+    /// <inheritdoc cref="EngineLayout.InvContainerOid"/>
+    public ref uint ContainerOid => ref *(uint*)(Ptr + EngineLayout.InvContainerOid);
+    /// <inheritdoc cref="EngineLayout.InvContainerPages"/>
+    public ref byte ContainerPages => ref *(byte*)(Ptr + EngineLayout.InvContainerPages);
+    /// <inheritdoc cref="EngineLayout.InvContainerTitle"/>
+    public CGuiLabel ContainerTitle => new(Ptr + EngineLayout.InvContainerTitle);
+    /// <inheritdoc cref="EngineLayout.InvEquipPanel"/>
+    public CPanelInvEquip EquipPanel => new(Ptr + EngineLayout.InvEquipPanel);
+    /// <inheritdoc cref="EngineLayout.InvGoldLabel"/>
+    public CGuiLabel GoldLabel => new(Ptr + EngineLayout.InvGoldLabel);
+    /// <inheritdoc cref="SymbolMap.InvContainerPageDown"/>
+    public void InvContainerPageDown() => EngineFn.InvContainerPageDown(Ptr);
+    /// <inheritdoc cref="SymbolMap.InvContainerPageUp"/>
+    public void InvContainerPageUp() => EngineFn.InvContainerPageUp(Ptr);
+    /// <inheritdoc cref="SymbolMap.InvContainerPagenum"/>
+    public void InvContainerPagenum(int show, byte count) => EngineFn.InvContainerPagenum(Ptr, show, count);
+    /// <inheritdoc cref="SymbolMap.InvSetCharacterData"/>
+    public void InvSetCharacterData(uint oid) => EngineFn.InvSetCharacterData(Ptr, oid);
+    /// <inheritdoc cref="SymbolMap.InvSetContainerGuiVisible"/>
+    public void InvSetContainerGuiVisible(int show, int notifyServer, int isItem, uint graphicOid) => EngineFn.InvSetContainerGuiVisible(Ptr, show, notifyServer, isItem, graphicOid);
+    /// <inheritdoc cref="SymbolMap.InvSetInventoryVisible"/>
+    public void InvSetInventoryVisible(int show, int notifyServer, uint oid) => EngineFn.InvSetInventoryVisible(Ptr, show, notifyServer, oid);
+    /// <inheritdoc cref="EngineLayout.InvIsMine"/>
+    public ref int IsMine => ref *(int*)(Ptr + EngineLayout.InvIsMine);
+    /// <inheritdoc cref="EngineLayout.InvMaxWeightLabel"/>
+    public CGuiLabel MaxWeightLabel => new(Ptr + EngineLayout.InvMaxWeightLabel);
+    /// <inheritdoc cref="EngineLayout.InvShownOid"/>
+    public ref uint ShownOid => ref *(uint*)(Ptr + EngineLayout.InvShownOid);
+    /// <inheritdoc cref="EngineLayout.InvWeightLabel"/>
+    public CGuiLabel WeightLabel => new(Ptr + EngineLayout.InvWeightLabel);
 }
 
 /// <summary>Typed view of an engine <c>CPathfindInformation*</c>.</summary>
@@ -3746,6 +3924,10 @@ public static unsafe class EngineFn
     private static bool _AurTextureFindDone;
     /// <inheritdoc cref="SymbolMap.AurTextureFind"/>
     public static AurTextureFindFn AurTextureFind => (AurTextureFindFn)(_AurTextureFindDone ? _AurTextureFind : Resolve(ref _AurTextureFind, ref _AurTextureFindDone, SymbolMap.AurTextureFind));
+    private static IntPtr _GuiIconGetIconModel;
+    private static bool _GuiIconGetIconModelDone;
+    /// <inheritdoc cref="SymbolMap.GuiIconGetIconModel"/>
+    public static GuiIconGetIconModelFn GuiIconGetIconModel => (GuiIconGetIconModelFn)(_GuiIconGetIconModelDone ? _GuiIconGetIconModel : Resolve(ref _GuiIconGetIconModel, ref _GuiIconGetIconModelDone, SymbolMap.GuiIconGetIconModel));
     private static IntPtr _ResManAddManifest;
     private static bool _ResManAddManifestDone;
     /// <inheritdoc cref="SymbolMap.ResManAddManifest"/>
@@ -3874,6 +4056,119 @@ public static unsafe class EngineFn
     private static bool _StreamSetLoopingDone;
     /// <inheritdoc cref="SymbolMap.StreamSetLooping"/>
     public static StreamSetLoopingFn StreamSetLooping => (StreamSetLoopingFn)(_StreamSetLoopingDone ? _StreamSetLooping : Resolve(ref _StreamSetLooping, ref _StreamSetLoopingDone, SymbolMap.StreamSetLooping));
+    private static IntPtr _InvSetInventoryVisible;
+    private static bool _InvSetInventoryVisibleDone;
+    /// <inheritdoc cref="SymbolMap.InvSetInventoryVisible"/>
+    public static InvSetInventoryVisibleFn InvSetInventoryVisible => (InvSetInventoryVisibleFn)(_InvSetInventoryVisibleDone ? _InvSetInventoryVisible : Resolve(ref _InvSetInventoryVisible, ref _InvSetInventoryVisibleDone, SymbolMap.InvSetInventoryVisible));
+    private static IntPtr _InvSetCharacterData;
+    private static bool _InvSetCharacterDataDone;
+    /// <inheritdoc cref="SymbolMap.InvSetCharacterData"/>
+    public static InvSetCharacterDataFn InvSetCharacterData => (InvSetCharacterDataFn)(_InvSetCharacterDataDone ? _InvSetCharacterData : Resolve(ref _InvSetCharacterData, ref _InvSetCharacterDataDone, SymbolMap.InvSetCharacterData));
+    private static IntPtr _GameCameraHitCheck;
+    private static bool _GameCameraHitCheckDone;
+    /// <inheritdoc cref="SymbolMap.GameCameraHitCheck"/>
+    public static GameCameraHitCheckFn GameCameraHitCheck => (GameCameraHitCheckFn)(_GameCameraHitCheckDone ? _GameCameraHitCheck : Resolve(ref _GameCameraHitCheck, ref _GameCameraHitCheckDone, SymbolMap.GameCameraHitCheck));
+    private static IntPtr _GetGameobjectHit;
+    private static bool _GetGameobjectHitDone;
+    /// <inheritdoc cref="SymbolMap.GetGameobjectHit"/>
+    public static GetGameobjectHitFn GetGameobjectHit => (GetGameobjectHitFn)(_GetGameobjectHitDone ? _GetGameobjectHit : Resolve(ref _GetGameobjectHit, ref _GetGameobjectHitDone, SymbolMap.GetGameobjectHit));
+    private static IntPtr _SendBarterStart;
+    private static bool _SendBarterStartDone;
+    /// <inheritdoc cref="SymbolMap.SendBarterStart"/>
+    public static SendBarterStartFn SendBarterStart => (SendBarterStartFn)(_SendBarterStartDone ? _SendBarterStart : Resolve(ref _SendBarterStart, ref _SendBarterStartDone, SymbolMap.SendBarterStart));
+    private static IntPtr _SendInputUseItem;
+    private static bool _SendInputUseItemDone;
+    /// <inheritdoc cref="SymbolMap.SendInputUseItem"/>
+    public static SendInputUseItemFn SendInputUseItem => (SendInputUseItemFn)(_SendInputUseItemDone ? _SendInputUseItem : Resolve(ref _SendInputUseItem, ref _SendInputUseItemDone, SymbolMap.SendInputUseItem));
+    private static IntPtr _SendGoldTransfer;
+    private static bool _SendGoldTransferDone;
+    /// <inheritdoc cref="SymbolMap.SendGoldTransfer"/>
+    public static SendGoldTransferFn SendGoldTransfer => (SendGoldTransferFn)(_SendGoldTransferDone ? _SendGoldTransfer : Resolve(ref _SendGoldTransfer, ref _SendGoldTransferDone, SymbolMap.SendGoldTransfer));
+    private static IntPtr _QuickButtonSetItem;
+    private static bool _QuickButtonSetItemDone;
+    /// <inheritdoc cref="SymbolMap.QuickButtonSetItem"/>
+    public static QuickButtonSetItemFn QuickButtonSetItem => (QuickButtonSetItemFn)(_QuickButtonSetItemDone ? _QuickButtonSetItem : Resolve(ref _QuickButtonSetItem, ref _QuickButtonSetItemDone, SymbolMap.QuickButtonSetItem));
+    private static IntPtr _ItemPlayDropSound;
+    private static bool _ItemPlayDropSoundDone;
+    /// <inheritdoc cref="SymbolMap.ItemPlayDropSound"/>
+    public static ItemPlayDropSoundFn ItemPlayDropSound => (ItemPlayDropSoundFn)(_ItemPlayDropSoundDone ? _ItemPlayDropSound : Resolve(ref _ItemPlayDropSound, ref _ItemPlayDropSoundDone, SymbolMap.ItemPlayDropSound));
+    private static IntPtr _GetInventoryPanel;
+    private static bool _GetInventoryPanelDone;
+    /// <inheritdoc cref="SymbolMap.GetInventoryPanel"/>
+    public static GetInventoryPanelFn GetInventoryPanel => (GetInventoryPanelFn)(_GetInventoryPanelDone ? _GetInventoryPanel : Resolve(ref _GetInventoryPanel, ref _GetInventoryPanelDone, SymbolMap.GetInventoryPanel));
+    private static IntPtr _InvboxAddItem;
+    private static bool _InvboxAddItemDone;
+    /// <inheritdoc cref="SymbolMap.InvboxAddItem"/>
+    public static InvboxAddItemFn InvboxAddItem => (InvboxAddItemFn)(_InvboxAddItemDone ? _InvboxAddItem : Resolve(ref _InvboxAddItem, ref _InvboxAddItemDone, SymbolMap.InvboxAddItem));
+    private static IntPtr _InvSetContainerGuiVisible;
+    private static bool _InvSetContainerGuiVisibleDone;
+    /// <inheritdoc cref="SymbolMap.InvSetContainerGuiVisible"/>
+    public static InvSetContainerGuiVisibleFn InvSetContainerGuiVisible => (InvSetContainerGuiVisibleFn)(_InvSetContainerGuiVisibleDone ? _InvSetContainerGuiVisible : Resolve(ref _InvSetContainerGuiVisible, ref _InvSetContainerGuiVisibleDone, SymbolMap.InvSetContainerGuiVisible));
+    private static IntPtr _InvContainerPageUp;
+    private static bool _InvContainerPageUpDone;
+    /// <inheritdoc cref="SymbolMap.InvContainerPageUp"/>
+    public static InvContainerPageUpFn InvContainerPageUp => (InvContainerPageUpFn)(_InvContainerPageUpDone ? _InvContainerPageUp : Resolve(ref _InvContainerPageUp, ref _InvContainerPageUpDone, SymbolMap.InvContainerPageUp));
+    private static IntPtr _InvContainerPageDown;
+    private static bool _InvContainerPageDownDone;
+    /// <inheritdoc cref="SymbolMap.InvContainerPageDown"/>
+    public static InvContainerPageDownFn InvContainerPageDown => (InvContainerPageDownFn)(_InvContainerPageDownDone ? _InvContainerPageDown : Resolve(ref _InvContainerPageDown, ref _InvContainerPageDownDone, SymbolMap.InvContainerPageDown));
+    private static IntPtr _InvContainerPagenum;
+    private static bool _InvContainerPagenumDone;
+    /// <inheritdoc cref="SymbolMap.InvContainerPagenum"/>
+    public static InvContainerPagenumFn InvContainerPagenum => (InvContainerPagenumFn)(_InvContainerPagenumDone ? _InvContainerPagenum : Resolve(ref _InvContainerPagenum, ref _InvContainerPagenumDone, SymbolMap.InvContainerPagenum));
+    private static IntPtr _ItemActivateRadialMenu;
+    private static bool _ItemActivateRadialMenuDone;
+    /// <inheritdoc cref="SymbolMap.ItemActivateRadialMenu"/>
+    public static ItemActivateRadialMenuFn ItemActivateRadialMenu => (ItemActivateRadialMenuFn)(_ItemActivateRadialMenuDone ? _ItemActivateRadialMenu : Resolve(ref _ItemActivateRadialMenu, ref _ItemActivateRadialMenuDone, SymbolMap.ItemActivateRadialMenu));
+    private static IntPtr _ItemGetName;
+    private static bool _ItemGetNameDone;
+    /// <inheritdoc cref="SymbolMap.ItemGetName"/>
+    public static void ItemGetName(void* ret, IntPtr self, int useCustom)
+    {
+        IntPtr fn = _ItemGetNameDone ? _ItemGetName : Resolve(ref _ItemGetName, ref _ItemGetNameDone, SymbolMap.ItemGetName);
+        if (OperatingSystem.IsWindows()) ((delegate* unmanaged<IntPtr, IntPtr, int, void>)fn)(self, (IntPtr)ret, useCustom);
+        else ((delegate* unmanaged<IntPtr, IntPtr, int, void>)fn)((IntPtr)ret, self, useCustom);
+    }
+    private static IntPtr _GetBaseItem;
+    private static bool _GetBaseItemDone;
+    /// <inheritdoc cref="SymbolMap.GetBaseItem"/>
+    public static GetBaseItemFn GetBaseItem => (GetBaseItemFn)(_GetBaseItemDone ? _GetBaseItem : Resolve(ref _GetBaseItem, ref _GetBaseItemDone, SymbolMap.GetBaseItem));
+    private static IntPtr _SendInvEquip;
+    private static bool _SendInvEquipDone;
+    /// <inheritdoc cref="SymbolMap.SendInvEquip"/>
+    public static SendInvEquipFn SendInvEquip => (SendInvEquipFn)(_SendInvEquipDone ? _SendInvEquip : Resolve(ref _SendInvEquip, ref _SendInvEquipDone, SymbolMap.SendInvEquip));
+    private static IntPtr _SendInvUnequip;
+    private static bool _SendInvUnequipDone;
+    /// <inheritdoc cref="SymbolMap.SendInvUnequip"/>
+    public static SendInvUnequipFn SendInvUnequip => (SendInvUnequipFn)(_SendInvUnequipDone ? _SendInvUnequip : Resolve(ref _SendInvUnequip, ref _SendInvUnequipDone, SymbolMap.SendInvUnequip));
+    private static IntPtr _SendInvRepositoryMove;
+    private static bool _SendInvRepositoryMoveDone;
+    /// <inheritdoc cref="SymbolMap.SendInvRepositoryMove"/>
+    public static SendInvRepositoryMoveFn SendInvRepositoryMove => (SendInvRepositoryMoveFn)(_SendInvRepositoryMoveDone ? _SendInvRepositoryMove : Resolve(ref _SendInvRepositoryMove, ref _SendInvRepositoryMoveDone, SymbolMap.SendInvRepositoryMove));
+    private static IntPtr _SendInvDrop;
+    private static bool _SendInvDropDone;
+    /// <inheritdoc cref="SymbolMap.SendInvDrop"/>
+    public static SendInvDropFn SendInvDrop => (SendInvDropFn)(_SendInvDropDone ? _SendInvDrop : Resolve(ref _SendInvDrop, ref _SendInvDropDone, SymbolMap.SendInvDrop));
+    private static IntPtr _SendGuiInvStatus;
+    private static bool _SendGuiInvStatusDone;
+    /// <inheritdoc cref="SymbolMap.SendGuiInvStatus"/>
+    public static SendGuiInvStatusFn SendGuiInvStatus => (SendGuiInvStatusFn)(_SendGuiInvStatusDone ? _SendGuiInvStatus : Resolve(ref _SendGuiInvStatus, ref _SendGuiInvStatusDone, SymbolMap.SendGuiInvStatus));
+    private static IntPtr _SendGuiInvSelectPanel;
+    private static bool _SendGuiInvSelectPanelDone;
+    /// <inheritdoc cref="SymbolMap.SendGuiInvSelectPanel"/>
+    public static SendGuiInvSelectPanelFn SendGuiInvSelectPanel => (SendGuiInvSelectPanelFn)(_SendGuiInvSelectPanelDone ? _SendGuiInvSelectPanel : Resolve(ref _SendGuiInvSelectPanel, ref _SendGuiInvSelectPanelDone, SymbolMap.SendGuiInvSelectPanel));
+    private static IntPtr _SendInputUseObject;
+    private static bool _SendInputUseObjectDone;
+    /// <inheritdoc cref="SymbolMap.SendInputUseObject"/>
+    public static SendInputUseObjectFn SendInputUseObject => (SendInputUseObjectFn)(_SendInputUseObjectDone ? _SendInputUseObject : Resolve(ref _SendInputUseObject, ref _SendInputUseObjectDone, SymbolMap.SendInputUseObject));
+    private static IntPtr _SendInputSplitItem;
+    private static bool _SendInputSplitItemDone;
+    /// <inheritdoc cref="SymbolMap.SendInputSplitItem"/>
+    public static SendInputSplitItemFn SendInputSplitItem => (SendInputSplitItemFn)(_SendInputSplitItemDone ? _SendInputSplitItem : Resolve(ref _SendInputSplitItem, ref _SendInputSplitItemDone, SymbolMap.SendInputSplitItem));
+    private static IntPtr _SendInputMergeItem;
+    private static bool _SendInputMergeItemDone;
+    /// <inheritdoc cref="SymbolMap.SendInputMergeItem"/>
+    public static SendInputMergeItemFn SendInputMergeItem => (SendInputMergeItemFn)(_SendInputMergeItemDone ? _SendInputMergeItem : Resolve(ref _SendInputMergeItem, ref _SendInputMergeItemDone, SymbolMap.SendInputMergeItem));
 }
 
 /// <summary>Typed hook installs, one pair per <c>[Fn]</c> symbol.</summary>
@@ -5355,6 +5650,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.AurTextureFind"/>; returns the slot holding the next layer, or null.</summary>
     public static AurTextureFindFn* ChainAurTextureFind(this HookService h, AurTextureFindFn handler, int priority) =>
         (AurTextureFindFn*)h.Chain(SymbolMap.AurTextureFind, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GuiIconGetIconModel"/>; returns the original, or null.</summary>
+    public static GuiIconGetIconModelFn InstallGuiIconGetIconModel(this HookService h, GuiIconGetIconModelFn handler) =>
+        (GuiIconGetIconModelFn)h.Install(SymbolMap.GuiIconGetIconModel, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GuiIconGetIconModel"/>; returns the slot holding the next layer, or null.</summary>
+    public static GuiIconGetIconModelFn* ChainGuiIconGetIconModel(this HookService h, GuiIconGetIconModelFn handler, int priority) =>
+        (GuiIconGetIconModelFn*)h.Chain(SymbolMap.GuiIconGetIconModel, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.ResManAddManifest"/>; returns the original, or null.</summary>
     public static ResManAddManifestFn InstallResManAddManifest(this HookService h, ResManAddManifestFn handler) =>
         (ResManAddManifestFn)h.Install(SymbolMap.ResManAddManifest, (IntPtr)handler);
@@ -5547,4 +5848,160 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.StreamSetLooping"/>; returns the slot holding the next layer, or null.</summary>
     public static StreamSetLoopingFn* ChainStreamSetLooping(this HookService h, StreamSetLoopingFn handler, int priority) =>
         (StreamSetLoopingFn*)h.Chain(SymbolMap.StreamSetLooping, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.InvSetInventoryVisible"/>; returns the original, or null.</summary>
+    public static InvSetInventoryVisibleFn InstallInvSetInventoryVisible(this HookService h, InvSetInventoryVisibleFn handler) =>
+        (InvSetInventoryVisibleFn)h.Install(SymbolMap.InvSetInventoryVisible, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.InvSetInventoryVisible"/>; returns the slot holding the next layer, or null.</summary>
+    public static InvSetInventoryVisibleFn* ChainInvSetInventoryVisible(this HookService h, InvSetInventoryVisibleFn handler, int priority) =>
+        (InvSetInventoryVisibleFn*)h.Chain(SymbolMap.InvSetInventoryVisible, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.InvSetCharacterData"/>; returns the original, or null.</summary>
+    public static InvSetCharacterDataFn InstallInvSetCharacterData(this HookService h, InvSetCharacterDataFn handler) =>
+        (InvSetCharacterDataFn)h.Install(SymbolMap.InvSetCharacterData, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.InvSetCharacterData"/>; returns the slot holding the next layer, or null.</summary>
+    public static InvSetCharacterDataFn* ChainInvSetCharacterData(this HookService h, InvSetCharacterDataFn handler, int priority) =>
+        (InvSetCharacterDataFn*)h.Chain(SymbolMap.InvSetCharacterData, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GameCameraHitCheck"/>; returns the original, or null.</summary>
+    public static GameCameraHitCheckFn InstallGameCameraHitCheck(this HookService h, GameCameraHitCheckFn handler) =>
+        (GameCameraHitCheckFn)h.Install(SymbolMap.GameCameraHitCheck, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GameCameraHitCheck"/>; returns the slot holding the next layer, or null.</summary>
+    public static GameCameraHitCheckFn* ChainGameCameraHitCheck(this HookService h, GameCameraHitCheckFn handler, int priority) =>
+        (GameCameraHitCheckFn*)h.Chain(SymbolMap.GameCameraHitCheck, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GetGameobjectHit"/>; returns the original, or null.</summary>
+    public static GetGameobjectHitFn InstallGetGameobjectHit(this HookService h, GetGameobjectHitFn handler) =>
+        (GetGameobjectHitFn)h.Install(SymbolMap.GetGameobjectHit, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GetGameobjectHit"/>; returns the slot holding the next layer, or null.</summary>
+    public static GetGameobjectHitFn* ChainGetGameobjectHit(this HookService h, GetGameobjectHitFn handler, int priority) =>
+        (GetGameobjectHitFn*)h.Chain(SymbolMap.GetGameobjectHit, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendBarterStart"/>; returns the original, or null.</summary>
+    public static SendBarterStartFn InstallSendBarterStart(this HookService h, SendBarterStartFn handler) =>
+        (SendBarterStartFn)h.Install(SymbolMap.SendBarterStart, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendBarterStart"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendBarterStartFn* ChainSendBarterStart(this HookService h, SendBarterStartFn handler, int priority) =>
+        (SendBarterStartFn*)h.Chain(SymbolMap.SendBarterStart, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendInputUseItem"/>; returns the original, or null.</summary>
+    public static SendInputUseItemFn InstallSendInputUseItem(this HookService h, SendInputUseItemFn handler) =>
+        (SendInputUseItemFn)h.Install(SymbolMap.SendInputUseItem, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendInputUseItem"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendInputUseItemFn* ChainSendInputUseItem(this HookService h, SendInputUseItemFn handler, int priority) =>
+        (SendInputUseItemFn*)h.Chain(SymbolMap.SendInputUseItem, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendGoldTransfer"/>; returns the original, or null.</summary>
+    public static SendGoldTransferFn InstallSendGoldTransfer(this HookService h, SendGoldTransferFn handler) =>
+        (SendGoldTransferFn)h.Install(SymbolMap.SendGoldTransfer, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendGoldTransfer"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendGoldTransferFn* ChainSendGoldTransfer(this HookService h, SendGoldTransferFn handler, int priority) =>
+        (SendGoldTransferFn*)h.Chain(SymbolMap.SendGoldTransfer, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.QuickButtonSetItem"/>; returns the original, or null.</summary>
+    public static QuickButtonSetItemFn InstallQuickButtonSetItem(this HookService h, QuickButtonSetItemFn handler) =>
+        (QuickButtonSetItemFn)h.Install(SymbolMap.QuickButtonSetItem, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.QuickButtonSetItem"/>; returns the slot holding the next layer, or null.</summary>
+    public static QuickButtonSetItemFn* ChainQuickButtonSetItem(this HookService h, QuickButtonSetItemFn handler, int priority) =>
+        (QuickButtonSetItemFn*)h.Chain(SymbolMap.QuickButtonSetItem, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ItemPlayDropSound"/>; returns the original, or null.</summary>
+    public static ItemPlayDropSoundFn InstallItemPlayDropSound(this HookService h, ItemPlayDropSoundFn handler) =>
+        (ItemPlayDropSoundFn)h.Install(SymbolMap.ItemPlayDropSound, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ItemPlayDropSound"/>; returns the slot holding the next layer, or null.</summary>
+    public static ItemPlayDropSoundFn* ChainItemPlayDropSound(this HookService h, ItemPlayDropSoundFn handler, int priority) =>
+        (ItemPlayDropSoundFn*)h.Chain(SymbolMap.ItemPlayDropSound, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GetInventoryPanel"/>; returns the original, or null.</summary>
+    public static GetInventoryPanelFn InstallGetInventoryPanel(this HookService h, GetInventoryPanelFn handler) =>
+        (GetInventoryPanelFn)h.Install(SymbolMap.GetInventoryPanel, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GetInventoryPanel"/>; returns the slot holding the next layer, or null.</summary>
+    public static GetInventoryPanelFn* ChainGetInventoryPanel(this HookService h, GetInventoryPanelFn handler, int priority) =>
+        (GetInventoryPanelFn*)h.Chain(SymbolMap.GetInventoryPanel, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.InvboxAddItem"/>; returns the original, or null.</summary>
+    public static InvboxAddItemFn InstallInvboxAddItem(this HookService h, InvboxAddItemFn handler) =>
+        (InvboxAddItemFn)h.Install(SymbolMap.InvboxAddItem, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.InvboxAddItem"/>; returns the slot holding the next layer, or null.</summary>
+    public static InvboxAddItemFn* ChainInvboxAddItem(this HookService h, InvboxAddItemFn handler, int priority) =>
+        (InvboxAddItemFn*)h.Chain(SymbolMap.InvboxAddItem, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.InvSetContainerGuiVisible"/>; returns the original, or null.</summary>
+    public static InvSetContainerGuiVisibleFn InstallInvSetContainerGuiVisible(this HookService h, InvSetContainerGuiVisibleFn handler) =>
+        (InvSetContainerGuiVisibleFn)h.Install(SymbolMap.InvSetContainerGuiVisible, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.InvSetContainerGuiVisible"/>; returns the slot holding the next layer, or null.</summary>
+    public static InvSetContainerGuiVisibleFn* ChainInvSetContainerGuiVisible(this HookService h, InvSetContainerGuiVisibleFn handler, int priority) =>
+        (InvSetContainerGuiVisibleFn*)h.Chain(SymbolMap.InvSetContainerGuiVisible, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.InvContainerPageUp"/>; returns the original, or null.</summary>
+    public static InvContainerPageUpFn InstallInvContainerPageUp(this HookService h, InvContainerPageUpFn handler) =>
+        (InvContainerPageUpFn)h.Install(SymbolMap.InvContainerPageUp, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.InvContainerPageUp"/>; returns the slot holding the next layer, or null.</summary>
+    public static InvContainerPageUpFn* ChainInvContainerPageUp(this HookService h, InvContainerPageUpFn handler, int priority) =>
+        (InvContainerPageUpFn*)h.Chain(SymbolMap.InvContainerPageUp, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.InvContainerPageDown"/>; returns the original, or null.</summary>
+    public static InvContainerPageDownFn InstallInvContainerPageDown(this HookService h, InvContainerPageDownFn handler) =>
+        (InvContainerPageDownFn)h.Install(SymbolMap.InvContainerPageDown, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.InvContainerPageDown"/>; returns the slot holding the next layer, or null.</summary>
+    public static InvContainerPageDownFn* ChainInvContainerPageDown(this HookService h, InvContainerPageDownFn handler, int priority) =>
+        (InvContainerPageDownFn*)h.Chain(SymbolMap.InvContainerPageDown, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.InvContainerPagenum"/>; returns the original, or null.</summary>
+    public static InvContainerPagenumFn InstallInvContainerPagenum(this HookService h, InvContainerPagenumFn handler) =>
+        (InvContainerPagenumFn)h.Install(SymbolMap.InvContainerPagenum, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.InvContainerPagenum"/>; returns the slot holding the next layer, or null.</summary>
+    public static InvContainerPagenumFn* ChainInvContainerPagenum(this HookService h, InvContainerPagenumFn handler, int priority) =>
+        (InvContainerPagenumFn*)h.Chain(SymbolMap.InvContainerPagenum, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.ItemActivateRadialMenu"/>; returns the original, or null.</summary>
+    public static ItemActivateRadialMenuFn InstallItemActivateRadialMenu(this HookService h, ItemActivateRadialMenuFn handler) =>
+        (ItemActivateRadialMenuFn)h.Install(SymbolMap.ItemActivateRadialMenu, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.ItemActivateRadialMenu"/>; returns the slot holding the next layer, or null.</summary>
+    public static ItemActivateRadialMenuFn* ChainItemActivateRadialMenu(this HookService h, ItemActivateRadialMenuFn handler, int priority) =>
+        (ItemActivateRadialMenuFn*)h.Chain(SymbolMap.ItemActivateRadialMenu, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GetBaseItem"/>; returns the original, or null.</summary>
+    public static GetBaseItemFn InstallGetBaseItem(this HookService h, GetBaseItemFn handler) =>
+        (GetBaseItemFn)h.Install(SymbolMap.GetBaseItem, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GetBaseItem"/>; returns the slot holding the next layer, or null.</summary>
+    public static GetBaseItemFn* ChainGetBaseItem(this HookService h, GetBaseItemFn handler, int priority) =>
+        (GetBaseItemFn*)h.Chain(SymbolMap.GetBaseItem, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendInvEquip"/>; returns the original, or null.</summary>
+    public static SendInvEquipFn InstallSendInvEquip(this HookService h, SendInvEquipFn handler) =>
+        (SendInvEquipFn)h.Install(SymbolMap.SendInvEquip, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendInvEquip"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendInvEquipFn* ChainSendInvEquip(this HookService h, SendInvEquipFn handler, int priority) =>
+        (SendInvEquipFn*)h.Chain(SymbolMap.SendInvEquip, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendInvUnequip"/>; returns the original, or null.</summary>
+    public static SendInvUnequipFn InstallSendInvUnequip(this HookService h, SendInvUnequipFn handler) =>
+        (SendInvUnequipFn)h.Install(SymbolMap.SendInvUnequip, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendInvUnequip"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendInvUnequipFn* ChainSendInvUnequip(this HookService h, SendInvUnequipFn handler, int priority) =>
+        (SendInvUnequipFn*)h.Chain(SymbolMap.SendInvUnequip, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendInvRepositoryMove"/>; returns the original, or null.</summary>
+    public static SendInvRepositoryMoveFn InstallSendInvRepositoryMove(this HookService h, SendInvRepositoryMoveFn handler) =>
+        (SendInvRepositoryMoveFn)h.Install(SymbolMap.SendInvRepositoryMove, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendInvRepositoryMove"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendInvRepositoryMoveFn* ChainSendInvRepositoryMove(this HookService h, SendInvRepositoryMoveFn handler, int priority) =>
+        (SendInvRepositoryMoveFn*)h.Chain(SymbolMap.SendInvRepositoryMove, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendInvDrop"/>; returns the original, or null.</summary>
+    public static SendInvDropFn InstallSendInvDrop(this HookService h, SendInvDropFn handler) =>
+        (SendInvDropFn)h.Install(SymbolMap.SendInvDrop, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendInvDrop"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendInvDropFn* ChainSendInvDrop(this HookService h, SendInvDropFn handler, int priority) =>
+        (SendInvDropFn*)h.Chain(SymbolMap.SendInvDrop, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendGuiInvStatus"/>; returns the original, or null.</summary>
+    public static SendGuiInvStatusFn InstallSendGuiInvStatus(this HookService h, SendGuiInvStatusFn handler) =>
+        (SendGuiInvStatusFn)h.Install(SymbolMap.SendGuiInvStatus, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendGuiInvStatus"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendGuiInvStatusFn* ChainSendGuiInvStatus(this HookService h, SendGuiInvStatusFn handler, int priority) =>
+        (SendGuiInvStatusFn*)h.Chain(SymbolMap.SendGuiInvStatus, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendGuiInvSelectPanel"/>; returns the original, or null.</summary>
+    public static SendGuiInvSelectPanelFn InstallSendGuiInvSelectPanel(this HookService h, SendGuiInvSelectPanelFn handler) =>
+        (SendGuiInvSelectPanelFn)h.Install(SymbolMap.SendGuiInvSelectPanel, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendGuiInvSelectPanel"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendGuiInvSelectPanelFn* ChainSendGuiInvSelectPanel(this HookService h, SendGuiInvSelectPanelFn handler, int priority) =>
+        (SendGuiInvSelectPanelFn*)h.Chain(SymbolMap.SendGuiInvSelectPanel, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendInputUseObject"/>; returns the original, or null.</summary>
+    public static SendInputUseObjectFn InstallSendInputUseObject(this HookService h, SendInputUseObjectFn handler) =>
+        (SendInputUseObjectFn)h.Install(SymbolMap.SendInputUseObject, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendInputUseObject"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendInputUseObjectFn* ChainSendInputUseObject(this HookService h, SendInputUseObjectFn handler, int priority) =>
+        (SendInputUseObjectFn*)h.Chain(SymbolMap.SendInputUseObject, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendInputSplitItem"/>; returns the original, or null.</summary>
+    public static SendInputSplitItemFn InstallSendInputSplitItem(this HookService h, SendInputSplitItemFn handler) =>
+        (SendInputSplitItemFn)h.Install(SymbolMap.SendInputSplitItem, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendInputSplitItem"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendInputSplitItemFn* ChainSendInputSplitItem(this HookService h, SendInputSplitItemFn handler, int priority) =>
+        (SendInputSplitItemFn*)h.Chain(SymbolMap.SendInputSplitItem, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SendInputMergeItem"/>; returns the original, or null.</summary>
+    public static SendInputMergeItemFn InstallSendInputMergeItem(this HookService h, SendInputMergeItemFn handler) =>
+        (SendInputMergeItemFn)h.Install(SymbolMap.SendInputMergeItem, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SendInputMergeItem"/>; returns the slot holding the next layer, or null.</summary>
+    public static SendInputMergeItemFn* ChainSendInputMergeItem(this HookService h, SendInputMergeItemFn handler, int priority) =>
+        (SendInputMergeItemFn*)h.Chain(SymbolMap.SendInputMergeItem, (IntPtr)handler, priority);
 }

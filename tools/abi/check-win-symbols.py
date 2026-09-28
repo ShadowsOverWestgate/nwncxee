@@ -73,8 +73,13 @@ def returns_class_by_value(dem):
     return bool(re.match(r"^(class|struct)\s", head)) and not head.endswith(("*", "&"))
 
 
-def check_sret(rows):
-    """Every instance member returning a class by value must be in SRET_HANDLED."""
+def check_sret(rows, at_keys=frozenset()):
+    """Every instance member returning a class by value must be in SRET_HANDLED.
+
+    The evidence is the MSVC mangling, which only an Nm row carries, so a symbol resolved by At() (an
+    unexported client class) cannot be checked here either way: its by-value return was read off the Windows
+    body by hand. Such a row is therefore exempt from the stale report rather than counted as a lie.
+    """
     bad = 0
     seen = set()
     for key, mangled in rows:
@@ -89,7 +94,7 @@ def check_sret(rows):
                   f"      Win64 passes (this, sret, ...); Itanium (sret, this, ...). Declare it\n"
                   f"      [Fn(\"sret(View this, ...)\")] in SymbolMap, which orders the buffer per OS.")
             bad += 1
-    for key in (SRET_HANDLED.keys() | SRET_DECLARED) - seen:
+    for key in (SRET_HANDLED.keys() | SRET_DECLARED) - seen - set(at_keys):
         print(f"STALE SRET_HANDLED  {key} no longer returns a class by value -- drop the entry")
         bad += 1
     print(f"{len(seen)} by-value-return row(s), {bad} bad")
@@ -118,7 +123,7 @@ def main():
             if rva is None or not 0 < rva < size:
                 print(f"RVA MISSING OR OUT OF IMAGE  {key} -> {rva} ({build['name']})"); bad += 1
     print(f"{nm} Nm row(s), {at} At row(s), {bad} bad")
-    bad += check_sret(nm_rows)
+    bad += check_sret(nm_rows, {key for key, kind, _ in win if kind != "Nm"})
     return 1 if bad else 0
 
 

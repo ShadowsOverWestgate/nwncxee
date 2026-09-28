@@ -219,6 +219,7 @@ offset	CGuiMan	vpWidth	0xb8	0xb8	# GuiManVpW
 offset	CGuiMan	vpHeight	0xbc	0xbc	# GuiManVpH
 offset	CGuiMan	mouseX	0xd4	0xd4	# GuiManMouseX
 offset	CGuiMan	mouseY	0xd8	0xd8	# GuiManMouseY
+offset	CGuiMan	modalCount	0x90	0x90	# GuiManModalCount
 offset	(abi)	vtblSymbolHeader	0x10	0x0	# VtblSymbolHeader
 offset	Part	node	0x8	0x8	# PartNodeLink
 offset	Part	scale	0x2c	0x2c	# PartScale
@@ -598,6 +599,52 @@ offset	CNWCAmbientSound	truncated	0x1b8	0x1b8	# AmbientTruncated
 offset	CExoStreamingSoundSource	internal	0x0	0x0	# StreamInternal
 offset	C2DVoice	source	0x8	0x8	# Voice2DSource
 
+# the CX inventory screen (docs/research/inventory-screen.md §10): every row paired on both programs.
+offset	CNWCCreature	equippedItems	0x328	0x308	# CreatureEquippedItems
+offset	CNWCCreature	gold	0x1d8	0x1b8	# CreatureGold
+offset	CNWCCreature	isAssociate	0x294	0x274	# CreatureIsAssociate
+offset	CNWCCreature	masterId	0x290	0x270	# CreatureMasterId
+offset	CPanelQuickBar	buttons	0xf8	0xf0	# QuickbarButtons
+offset	CPanelQuickBar	buttonStride	0x328	0x2c8	# QuickbarButtonStride
+offset	CNWCCreature	carriedWeight	0x2ac	0x28c	# CreatureCarriedWeight
+offset	CNWCItem	baseItem	0x40	0x40	# ItemBaseItem
+offset	CNWCItem	identified	0x1e0	0x1c0	# ItemIdentified
+offset	CNWCItem	ghost	0x260	0x240	# ItemGhost
+offset	CNWCItem	equipSlot	0x26c	0x24c	# ItemEquipSlot
+offset	CNWCItem	repoX	0x274	0x254	# ItemRepoX
+offset	CNWCItem	repoY	0x275	0x255	# ItemRepoY
+offset	CNWCItem	possessor	0x284	0x264	# ItemPossessor
+offset	CNWCItem	inContainer	0x288	0x268	# ItemInContainer
+offset	CNWCItem	stackSize	0x2a4	0x284	# ItemStackSize
+offset	CNWCItem	customName	0x2b0	0x290	# ItemCustomName
+offset	CNWCItem	customNameLen	0x2b8	0x298	# ItemCustomNameLen
+offset	CNWBaseItem	equipSlots	0x4	0x4	# BaseItemEquipSlots
+offset	CNWBaseItem	invSlotWidth	0x14	0x14	# BaseItemInvSlotWidth
+offset	CNWBaseItem	invSlotHeight	0x15	0x15	# BaseItemInvSlotHeight
+offset	CNWBaseItem	stacking	0x24	0x24	# BaseItemStacking
+offset	CNWBaseItem	usable	0x80	0x80	# BaseItemUsable
+offset	CNWRules	baseItems	0x20	0x20	# RulesBaseItems
+offset	CPanelInventory	containerMode	0x319c	0x2f64	# InvContainerMode
+offset	CPanelInventory	shownOid	0x31a0	0x2f68	# InvShownOid
+offset	CPanelInventory	isMine	0x31a4	0x2f6c	# InvIsMine
+offset	CPanelInventory	equipPanel	0x368	0x308	# InvEquipPanel
+offset	CPanelInventory	goldLabel	0x1e38	0x1ce8	# InvGoldLabel
+offset	CPanelInventory	weightLabel	0x1f68	0x1e18	# InvWeightLabel
+offset	CPanelInventory	maxWeightLabel	0x1ed0	0x1d80	# InvMaxWeightLabel
+offset	CPanelInventory	containerGrid	0x2628	0x24b0	# InvContainerGrid
+offset	CPanelInventory	containerOid	0x2810	0x268c	# InvContainerOid
+offset	CPanelInventory	containerIsItem	0x2814	0x2690	# InvContainerIsItem
+offset	CPanelInventory	containerPages	0x3198	0x2f60	# InvContainerPages
+offset	CPanelInventory	containerTitle	0x28b0	0x2730	# InvContainerTitle
+offset	CPanelInventory	backpackGrid	0x1c50	0x1b08	# InvBackpackGrid
+offset	CGuiContainer	cols	0x1a0	0x190	# ContainerCols
+offset	CGuiContainer	rows	0x1a4	0x194	# ContainerRows
+offset	CGuiContainer	itemIds	0x1b0	0x1a0	# ContainerItemIds
+offset	CGuiContainer	page	0x1e0	0x1d0	# ContainerPage
+offset	CPanelInvEquip	nameLabel	0xf8	0xf0	# InvEquipNameLabel
+offset	CPanelInvEquip	acLabel	0x190	0x188	# InvEquipAcLabel
+offset	CGuiLabel	string	0x90	0x90	# LabelString
+
 # rva	linux symbol	windows rva	# SymbolMap constant
 rva	_ZN11CNWCMessage27HandleServerToPlayerMessageEPhj	0x7a41a0	# HandleServerToPlayerMessage
 rva	_ZN11CNWCMessage25HandleServerToPlayerLoginEh	0x7a31b0	# HandleServerToPlayerLogin
@@ -720,3 +767,30 @@ rva	_ZTV10CArmorIcon	0xdaf6c0	# VtCArmorIcon
 rva	_ZN12CNWCCreature15SpawnHitVisualsEhP20CNWCCombatAttackData6Vector10CExoString	0x80bb10	# SpawnHitVisuals
 rva	ZSTD_createDCtx	0x9e8350	# ZstdCreateDCtx (CX-54: the zero-arg DCtx factory called by ?DecompressBuffer@ZstdCompressionProvider@NWCompressedBuffer@@ rva 0x1aa230)
 rva	ZSTD_decompressDCtx	0x9e9670	# ZstdDecompressDCtx (CX-54: the 5-arg decompressor in the same body)
+# the CX inventory screen: RVAs read out of the Windows bodies (docs/research/inventory-screen.md §10).
+rva	_ZN15CPanelInventory19SetInventoryVisibleEiij	0x857cd0	# InvSetInventoryVisible
+rva	_ZN15CPanelInventory16SetCharacterDataEj	0x856fa0	# InvSetCharacterData
+rva	_Z18GameCameraHitCheckiiP6VectorP8CHitInfo	0x6d7f50	# GameCameraHitCheck
+rva	_Z16GetGameobjectHitR8CHitInfoPP10CNWCObject	0x6ed4e0	# GetGameobjectHit
+rva	_ZN11CNWCMessage35SendPlayerToServerBarterStartBarterEjj	0x7ba3f0	# SendBarterStart
+rva	_ZN11CNWCMessage31SendPlayerToServerInput_UseItemEjhhj6Vector	0x7c0610	# SendInputUseItem
+rva	_ZN11CNWCMessage35SendPlayerToServerGold_TransferGoldEj6Vectoriihh	0x7bdc70	# SendGoldTransfer
+rva	_ZN15CGuiQuickButton13SetButtonItemEjii	0x867760	# QuickButtonSetItem
+rva	_ZN8CNWCItem13PlayDropSoundEv	0x83ea00	# ItemPlayDropSound
+rva	_ZN13CClientExoApp17GetInventoryPanelEv	0x6abbe0	# GetInventoryPanel
+rva	_ZN24CGuiMultiPageMultiInvbox7AddItemEjiii	0x87f970	# InvboxAddItem
+rva	_ZN15CPanelInventory22SetContainerGUIVisibleEiiij	0x8575f0	# InvSetContainerGuiVisible
+rva	_ZN15CPanelInventory21HandleContainerPageUpEv	0x855d00	# InvContainerPageUp
+rva	_ZN15CPanelInventory23HandleContainerPageDownEv	0x855be0	# InvContainerPageDown
+rva	_ZN15CPanelInventory26SetContainerPagenumVisibleEih	0x857ad0	# InvContainerPagenum
+rva	_ZN8CNWCItem18ActivateRadialMenuEi	0x83ce30	# ItemActivateRadialMenu
+rva	_ZN8CNWCItem7GetNameEi	0x83d8a0	# ItemGetName
+rva	_ZN11CNWCMessage33SendPlayerToServerInventory_EquipEjjj	0x7c0d70	# SendInvEquip (12/1)
+rva	_ZN11CNWCMessage35SendPlayerToServerInventory_UnequipEjhhj	0x7c1100	# SendInvUnequip (12/7)
+rva	_ZN11CNWCMessage42SendPlayerToServerInventory_RepositoryMoveEjhhj	0x7c1030	# SendInvRepositoryMove (12/9)
+rva	_ZN11CNWCMessage32SendPlayerToServerInventory_DropEjfff	0x7c0c90	# SendInvDrop (12/3)
+rva	_ZN11CNWCMessage37SendPlayerToServerGuiInventory_StatusEij	0x7be110	# SendGuiInvStatus (13/1)
+rva	_ZN11CNWCMessage42SendPlayerToServerGuiInventory_SelectPanelEhi	0x7be060	# SendGuiInvSelectPanel (13/2)
+rva	_ZN11CNWCMessage33SendPlayerToServerInput_UseObjectEjii	0x7c07c0	# SendInputUseObject (6/11)
+rva	_ZN11CNWCMessage33SendPlayerToServerInput_SplitItemEji	0x7c0050	# SendInputSplitItem (6/23)
+rva	_ZN11CNWCMessage33SendPlayerToServerInput_MergeItemEjj	0x7bfd90	# SendInputMergeItem (6/22)

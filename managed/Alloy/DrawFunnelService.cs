@@ -157,6 +157,8 @@ public sealed unsafe class DrawFunnelService : IExtenderService
             _pGob[e] = IntPtr.Zero;
             Die(e, "destroyed");
             DtorRevokes++;
+            // An in-place model rebuild (armour off) never hits Gob::SetScene, the only Scene::Sequence bump: re-walk for its new parts.
+            SceneWalk.RequestWalk();
         }
         // ...and the OWNERSHIP slot with it: #308's persistent slots outlive the enrollment gap, so the
         // notice must reach them directly or the shadow bracket keeps chasing the freed part until the

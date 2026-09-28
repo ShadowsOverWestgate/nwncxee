@@ -623,7 +623,7 @@ public sealed partial class KnobPanel
     {
         if (r.Kind == RowKind.Channel) return MasterOff;
         if (r.Kind != RowKind.Knob || r.Master || r.K == null) return false;
-        if (r.K.Disabled) return true;
+        if (r.K.Disabled || r.K.Enforced) return true;
         if (r.K.Kind == KnobKind.Button) return r.K is KnobButton { Enabled: { } en } && !en();
         if (r.K.Kind == KnobKind.Link) return false;
         return MasterOff;

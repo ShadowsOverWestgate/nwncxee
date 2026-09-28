@@ -370,7 +370,9 @@ public sealed unsafe partial class AlloyRenderer
                     if (!_capturing) FrameTap.Take("opaque", viewport);
                     GpuBegin(GpuTerm.Sky);
                     if (!_capturing && !Matrix4x4.Invert(vp, out SkyInvVp)) SkyInvVp = default;
+                    Ssr.Pause();
                     SkyOwnedPass(&vp, viewport);
+                    Ssr.Resume();
                     GpuEnd(GpuTerm.Sky);
                     if (!_capturing) FrameTap.Take("sky", viewport);
                     break;

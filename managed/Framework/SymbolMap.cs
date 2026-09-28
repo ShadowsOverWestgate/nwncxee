@@ -1829,6 +1829,13 @@ internal static unsafe class SymbolMap
     public const string VtCCompositeIcon = "_ZTV14CCompositeIcon";
     /// <inheritdoc cref="VtCLayeredIcon"/>
     public const string VtCArmorIcon = "_ZTV10CArmorIcon";
+    /// <summary><c>CGuiIcon::GetIconModel()</c> @0x58cfa0 -- the icon's model, built on the first call (the virtual
+    /// <c>CreateCopyIconModel</c>; a PLT icon's runs <c>ReplaceTexturePLT</c>, which mints the tinted texture) and kept at
+    /// <c>+0x30</c> until <c>~CGuiIcon</c> purges it. The stock grid builds models only for its resident page's icon
+    /// COPIES (<c>CGuiMultiInvbox::AddItem</c> @0x692f70; <c>RemoveItem</c> deletes the copy), so a PLT item on any other
+    /// page has no texture until something builds one; calling this on the item's own icon does. Name-exported on both.</summary>
+    [Fn("IntPtr(IntPtr icon)")]
+    public const string GuiIconGetIconModel = "_ZN8CGuiIcon12GetIconModelEv";
 
     /// <summary><c>CExoResMan::AddManifest(Hash::SHA1 const&amp;, unsigned priority)</c> @0x53bae0 -- the one place a
     /// NWSync manifest becomes a search source. It copies the hash's hex text out of <c>sha1+0x15</c> and calls
@@ -1959,6 +1966,179 @@ internal static unsafe class SymbolMap
     /// it once at construction (music 0, ambient 1), so a swapped-in Internal needs it again.</summary>
     [Fn("void(CExoStreamingSoundSource this, int loop)")]
     public const string StreamSetLooping = "_ZN24CExoStreamingSoundSource10SetLoopingEi";
+
+    // ---- the CX inventory screen (docs/research/inventory-screen.md; §10 records this pass). Every client
+    //      GUI / CNWCMessage class here is unexported on Windows -> At() + an `rva` line; only
+    //      CNWBaseItemArray (shared engine) is a name export. Each RVA below was read from the Windows body,
+    //      not pattern-matched: the addresses in the decompiled bodies cross-check each other. ----
+    /// <summary><c>CPanelInventory::SetInventoryVisible(int show, int notifyServer, uint oid)</c> @0x68e760 (Windows
+    /// rva 0x857cd0) -- the one funnel every inventory open and close goes through (keybind, quick button, radial,
+    /// server push, store/levelup teardown). Returns <c>void</c>; no by-value crossing, so one signature for both
+    /// ABIs. <c>show == 0</c> tears the container sub-panel down first (MSVC INLINED
+    /// <c>SetContainerGUIVisible(0,1,0,INVALID)</c> there, including its <c>GuiContainer_Status(0)</c> send);
+    /// <c>show != 0</c> registers the popup, forces the panel visible, resolves <c>INVALID -&gt;
+    /// GetPlayerCreatureId()</c> into <see cref="EngineLayout.InvShownOid"/> and calls
+    /// <see cref="InvSetCharacterData"/>. The <c>notifyServer</c> tail is the one thing a skip must still do:
+    /// <see cref="SendGuiInvStatus"/>(visible, shownOid), or the server stops pushing repository updates.</summary>
+    [Fn("void(CPanelInventory this, int show, int notifyServer, uint oid)")]
+    public const string InvSetInventoryVisible = "_ZN15CPanelInventory19SetInventoryVisibleEiij";
+    /// <summary><c>CPanelInventory::SetCharacterData(uint oid)</c> @0x68d810 (Windows rva 0x856fa0) -- fills the five
+    /// labels (name, gold, weight, max weight, AC) from the creature. Safe to call on a HIDDEN panel with the
+    /// player's own oid: it reads no visibility field, registers no popup, sends no message and allocates no widget;
+    /// every <c>CGuiLabel</c>'s <c>m_pString</c> exists from the label's constructor
+    /// (<c>CGuiLabel::CGuiLabel(int)</c> @0x591fd0 calls <c>NewCAurString</c>), so the null-<c>m_pString</c>
+    /// EXOWARNING path is unreachable on a constructed panel. It DOES write
+    /// <see cref="EngineLayout.InvIsMine"/> = 1, and with a FOREIGN oid it permanently strips the panel
+    /// (<c>RemoveFromPanel</c> on the gold label and gold button, the three GuiObjTypes flipped) -- so only ever
+    /// pass the player's own id. A null creature only logs.</summary>
+    [Fn("void(CPanelInventory this, uint oid)")]
+    public const string InvSetCharacterData = "_ZN15CPanelInventory16SetCharacterDataEj";
+    /// <summary><c>GameCameraHitCheck(int x, int y, Vector* out, CHitInfo* info)</c> @0x63a270 (Windows rva 0x6d7f50) -- the
+    /// world under a GUI-space point (SDL x, <c>GuiManVpH - y</c>) through the module camera: what
+    /// <c>CGuiDragSource::HandleLMouseUp</c> asks when a drag ends over no GUI object. Sets <c>info+0x20 = 1</c>, then
+    /// the camera's pick fills the kind (1 ground, 2 gob), the point and the gob. The return is unused (void on Windows).</summary>
+    [Fn("void(int x, int y, IntPtr outPoint, CHitInfo info)")]
+    public const string GameCameraHitCheck = "_Z18GameCameraHitCheckiiP6VectorP8CHitInfo";
+    /// <summary><c>int GetGameobjectHit(CHitInfo&amp;, CNWCObject**)</c> @0x65dfd0 (Windows rva 0x6ed4e0) -- the game object
+    /// behind a gob hit, and its type: 2 for ground (no object), 6 an item (the object is <c>item+0x48</c>, its
+    /// <c>CNWCObject</c> base), 5 a creature, 9 a placeable, 0 nothing.</summary>
+    [Fn("int(CHitInfo info, IntPtr* obj)")]
+    public const string GetGameobjectHit = "_Z16GetGameobjectHitR8CHitInfoPP10CNWCObject";
+    /// <summary><c>..._BarterStartBarter(uint creature, uint item)</c> @0x806400 (rva 0x7ba3f0), major 35 minor 1 -- a
+    /// backpack item dropped on another creature (<c>CGuiInvbox::HandleDropAsSource</c>).</summary>
+    [Fn("void(IntPtr msg, uint creature, uint item)")]
+    public const string SendBarterStart = "_ZN11CNWCMessage35SendPlayerToServerBarterStartBarterEjj";
+    /// <summary><c>..._Input_UseItem(uint item, uchar, uchar, uint target, Vector)</c> @0x7ffa10 (rva 0x7c0610), major 6
+    /// minor 9 -- a potion dropped on the player (vanilla passes 0, 0xff, the creature, a zero vector).</summary>
+    [Fn("void(IntPtr msg, uint item, byte a, byte b, uint target, VectorArg pos)")]
+    public const string SendInputUseItem = "_ZN11CNWCMessage31SendPlayerToServerInput_UseItemEjhhj6Vector";
+    /// <summary><c>..._Gold_TransferGold(uint target, Vector pos, int amount, int, uchar, uchar)</c> @0x804a50 (rva
+    /// 0x7bdc70), major 8 -- minor 0x16 with the point when <c>target</c> is INVALID (the ground), else minor 0x0a to
+    /// the object. The stock gold drop passes 0, 0, 0 for the tail.</summary>
+    [Fn("void(IntPtr msg, uint target, VectorArg pos, int amount, int flag, byte a, byte b)")]
+    public const string SendGoldTransfer = "_ZN11CNWCMessage35SendPlayerToServerGold_TransferGoldEj6Vectoriihh";
+    /// <summary><c>CGuiQuickButton::SetButtonItem(uint item, int, int)</c> @0x6b1270 (Windows rva 0x867760) -- what the
+    /// quick button's own drop handler does with an item dragged from the backpack or a slot: <c>(item, 0xff00ff, 0)</c>. It
+    /// refuses with the engine's own feedback, pairs two dual-wieldable weapons, and sends
+    /// <c>SendButtonUpdateToServer</c> itself.</summary>
+    [Fn("void(IntPtr button, uint item, int prop, int force)")]
+    public const string QuickButtonSetItem = "_ZN15CGuiQuickButton13SetButtonItemEjii";
+    /// <summary><c>CNWCItem::PlayDropSound()</c> @0x7cd960 (Windows rva 0x83ea00) -- the quick-button drop's second step.</summary>
+    [Fn("void(CNWCItem this)")]
+    public const string ItemPlayDropSound = "_ZN8CNWCItem13PlayDropSoundEv";
+    /// <summary><c>CClientExoApp::GetInventoryPanel()</c> @0x637c90 (Windows rva 0x6abbe0) -- MY inventory panel
+    /// (a one-line forward to <c>CClientExoAppInternal::GetInventoryPanel</c>, Linux @0x63cad0 / rva 0x6d8290).
+    /// Someone else's is <c>GetOtherInventoryPanel</c>, which CX does not take over. The player's creature id needs
+    /// no symbol -- it is <see cref="EngineLayout.InternalPlayerCreatureId"/>, the very field
+    /// <c>CClientExoApp::GetPlayerCreatureId</c> @0x6377a0 (rva 0x6ac1c0) returns.</summary>
+    [Fn("CPanelInventory(CClientExoApp this)")]
+    public const string GetInventoryPanel = "_ZN13CClientExoApp17GetInventoryPanelEv";
+    /// <summary><c>CGuiMultiPageMultiInvbox::AddItem(uint oid, int x, int globalY, int ghost)</c> @0x6943f0 (Windows
+    /// rva 0x87f970) -- the seam that sees EVERY backpack item the server sends, on every page: the page test
+    /// (<c>page != globalY / rows</c>) and the <c>globalY % rows</c> fold are INSIDE the callee, so a chain hook
+    /// observes the off-page items the widget itself drops. <c>globalY</c> is page-major
+    /// (<c>page * rows + localY</c>). Windows takes the 5th argument on the stack (Ghidra's callee signature drops
+    /// it; the call sites pass it) -- the declared parameter list is the Linux mangling's, <c>Ejiii</c>.</summary>
+    [Fn("void(IntPtr box, uint oid, int x, int globalY, int ghost)")]
+    public const string InvboxAddItem = "_ZN24CGuiMultiPageMultiInvbox7AddItemEjiii";
+    /// <summary><c>CPanelInventory::SetContainerGUIVisible(int show, int notifyServer, int isItem, uint graphicOid)</c>
+    /// @0x68e5d0 (Windows rva 0x8575f0, the same body standalone; MSVC also inlined its <c>show == 0</c> half into
+    /// <c>SetInventoryVisible</c>). <c>show == 0</c> is the stock container teardown: container mode off, the grid emptied, the
+    /// container sub-panel swapped back for "Equip", the container oid INVALID, and with <c>notifyServer</c>
+    /// <c>SendPlayerToServerGuiContainer_Status(0)</c> (25 / 1), which the server answers by closing the container
+    /// (<c>CNWSPlaceable::CloseInventory</c>: its OnClosed script and the close echo).</summary>
+    [Fn("void(CPanelInventory this, int show, int notifyServer, int isItem, uint graphicOid)")]
+    public const string InvSetContainerGuiVisible = "_ZN15CPanelInventory22SetContainerGUIVisibleEiiij";
+    /// <summary><c>CPanelInventory::HandleContainerPageUp()</c> @0x68c520 (Windows rva 0x855d00) -- the container's
+    /// right-arrow: empties the container grid, sends <c>SelectNextPage</c> (25 / 2) and steps the grid's page, wrapping to
+    /// 0 past <see cref="EngineLayout.InvContainerPages"/> as the server's <c>SetNextPage</c> does. The server keeps the
+    /// page; it streams only that one.</summary>
+    [Fn("void(CPanelInventory this)")]
+    public const string InvContainerPageUp = "_ZN15CPanelInventory21HandleContainerPageUpEv";
+    /// <summary><c>CPanelInventory::HandleContainerPageDown()</c> @0x68c3d0 (Windows rva 0x855be0) -- the left arrow:
+    /// <see cref="InvContainerPageUp"/> backwards (<c>SelectPreviousPage</c>, 25 / 3; page 0 wraps to the last).</summary>
+    [Fn("void(CPanelInventory this)")]
+    public const string InvContainerPageDown = "_ZN15CPanelInventory23HandleContainerPageDownEv";
+    /// <summary><c>CPanelInventory::SetContainerPagenumVisible(int show, uchar count)</c> @0x68e100 (Windows rva 0x857ad0,
+    /// the same body: count <c>+0x2f60</c>, page clamp <c>+0x2680</c>, <c>"%02d/%02d"</c>) -- stores the page count and
+    /// clamps the grid's page to it. Three callers on each build: the container message's open, <c>(0, 1)</c> then
+    /// <c>(1, count)</c> for a placeable (Linux nm @0x766f30, Windows rva 0x79ceb0), and <c>Update_GuiContainer</c>'s
+    /// <c>'P'</c> (@0x79ee90 / rva 0x7b3790) -- which the server writes ahead of every resend of a multi-page container's
+    /// page (<c>WriteRepositoryUpdate</c>, after <c>ClearContainer</c>), so it is the one "that page arrived" signal.</summary>
+    [Fn("void(CPanelInventory this, int show, byte count)")]
+    public const string InvContainerPagenum = "_ZN15CPanelInventory26SetContainerPagenumVisibleEih";
+    /// <summary><c>CNWCItem::ActivateRadialMenu(int flags)</c> @0x7cb8f0 (Windows rva 0x83ce30) -- <c>new</c>s a
+    /// <c>CGuiItemMenu</c> (0x888 Linux / 0x808 Windows) and hands it <c>(flags, this-&gt;oid, null)</c>.
+    /// <c>flags</c> picks the leaf set in <c>CGuiItemMenu::ActivateRadialMenu</c> @0x7d3720: bit 1 (2) = equipped
+    /// (<c>InitializeEquippedItemMenu</c>), bit 4 (0x10) = quickbar, bit 0 (1) = possessed
+    /// (<c>InitializePossessedItemMenu</c>), none of them = on the ground; bit 3 (8) drops the "put into" submenu and
+    /// is forwarded to the possessed builder. Vanilla passes <c>widget+0x168 | 1</c> for a backpack cell
+    /// (<c>CGuiMultiInvbox::HandleRMouseDown</c> @0x692420) and <c>widget+0x168 | 3</c> for an equip slot
+    /// (<c>CGuiInvbox::HandleRMouseDown</c> @0x6904e0); <c>+0x168</c> is <b>0</b> for both -- the ctor @0x6905e0
+    /// zeroes it and nothing on the inventory path writes it -- so the values are literally <b>1</b> (backpack) and
+    /// <b>3</b> (equipped). The menu places itself: <c>CRadialMenu::Activate</c> fills
+    /// <see cref="EngineLayout.RadialMenuX"/>/<c>Y</c> from <c>CGuiMan::GetMousePos</c>, so no position is
+    /// passed.</summary>
+    [Fn("void(CNWCItem this, int flags)")]
+    public const string ItemActivateRadialMenu = "_ZN8CNWCItem18ActivateRadialMenuEi";
+    /// <summary><c>CNWCItem::GetName(int useCustom)</c> @0x7ce810 (Windows rva 0x83d8a0) -- returns a
+    /// <c>CExoString</c> BY VALUE, so <b>sret</b>: Itanium <c>(out, this, int)</c>, Win64 <c>(this, out, int)</c>
+    /// (measured -- the Windows body's parameters are exactly <c>(rcx this, rdx out, r8d useCustom)</c>). Body:
+    /// <c>useCustom == 0</c>, or a non-empty custom name on an identified item, yields the custom name
+    /// (<see cref="EngineLayout.ItemCustomName"/>); otherwise TLK[<c>baseItem-&gt;nameStrRef</c>], prefixed with
+    /// TLK[0x15ac] when the item is unidentified. The buffer is the CALLER's and engine-heap: zero it first, free
+    /// it with <see cref="ExoStringDtor"/>.</summary>
+    [Fn("sret(CNWCItem this, int useCustom)")]
+    public const string ItemGetName = "_ZN8CNWCItem7GetNameEi";
+    /// <summary><c>CNWBaseItemArray::GetBaseItem(int baseItem) const</c> @0x11a9440 -- bounds-checked
+    /// <c>records + baseItem * 200</c>, null when out of range. Name-exported on Windows (shared engine). The array
+    /// itself is <see cref="EngineLayout.RulesBaseItems"/> off <see cref="Rules"/>, which is how every client body
+    /// reaches it (<c>*(g_pRules + 0x20)</c> on both builds).</summary>
+    [Fn("CNWBaseItem(IntPtr array, int baseItem)")]
+    public const string GetBaseItem = "_ZNK16CNWBaseItemArray11GetBaseItemEi";
+
+    // The senders. All are CNWCMessage instance methods (`this` = CClientExoApp::GetNWCMessage()), all take
+    // plain scalars, all return void, none crosses a class by value -- directly callable, no new opcode.
+    // Parameter types are the Linux mangling's; the Windows bodies were read and every (major, minor) pair
+    // below is the immediate at that body's SendPlayerToServerMessage (rva 0x7c25c0) call.
+    /// <summary><c>CNWCMessage::SendPlayerToServerInventory_Equip(uint item, uint slotBitmask, uint targetCreature)</c>
+    /// @0x800c20 (Windows rva 0x7c0d70), major 12 minor 1.</summary>
+    [Fn("void(IntPtr msg, uint item, uint slotBitmask, uint target)")]
+    public const string SendInvEquip = "_ZN11CNWCMessage33SendPlayerToServerInventory_EquipEjjj";
+    /// <summary><c>..._Unequip(uint item, uchar x, uchar globalY, uint target)</c> @0x800f80 (rva 0x7c1100),
+    /// major 12 minor 7. <c>globalY = page * rows + localY</c>.</summary>
+    [Fn("void(IntPtr msg, uint item, byte x, byte globalY, uint target)")]
+    public const string SendInvUnequip = "_ZN11CNWCMessage35SendPlayerToServerInventory_UnequipEjhhj";
+    /// <summary><c>..._RepositoryMove(uint item, uchar x, uchar globalY, uint target)</c> @0x800dc0 (rva 0x7c1030),
+    /// major 12 minor 9 -- a move inside the backpack or between backpack and container.</summary>
+    [Fn("void(IntPtr msg, uint item, byte x, byte globalY, uint target)")]
+    public const string SendInvRepositoryMove = "_ZN11CNWCMessage42SendPlayerToServerInventory_RepositoryMoveEjhhj";
+    /// <summary><c>..._Drop(uint item, float x, float y, float z)</c> @0x800b20 (rva 0x7c0c90), major 12 minor 3.
+    /// The world point for "at my feet" is the player creature's own position,
+    /// <see cref="EngineLayout.ObjPosition"/> (<c>new CNWCObject(playerCreature).Position</c>).</summary>
+    [Fn("void(IntPtr msg, uint item, float x, float y, float z)")]
+    public const string SendInvDrop = "_ZN11CNWCMessage32SendPlayerToServerInventory_DropEjfff";
+    /// <summary><c>CNWCMessage::SendPlayerToServerGuiInventory_Status(int visible, uint oid)</c> @0x7ff3f0
+    /// (rva 0x7be110), major 13 minor 1 -- what <c>SetInventoryVisible</c>'s notify tail sends. A CX panel MUST keep
+    /// sending it or <c>ComputeInventoryUpdateRequired</c> server-side stops pushing repository updates.</summary>
+    [Fn("void(IntPtr msg, int visible, uint oid)")]
+    public const string SendGuiInvStatus = "_ZN11CNWCMessage37SendPlayerToServerGuiInventory_StatusEij";
+    /// <summary><c>..._SelectPanel(uchar page, int isMine)</c> @0x7ff340 (rva 0x7be060), major 13 minor 2 -- the page
+    /// change; the other half of the same gate.</summary>
+    [Fn("void(IntPtr msg, byte page, int isMine)")]
+    public const string SendGuiInvSelectPanel = "_ZN11CNWCMessage42SendPlayerToServerGuiInventory_SelectPanelEhi";
+    /// <summary><c>..._UseObject(uint oid, int, int)</c> @0x7ffe50 (rva 0x7c07c0), major 6 minor 11 -- double-click on
+    /// a usable item (<see cref="EngineLayout.BaseItemUsable"/> non-zero), and also how the X button closes a
+    /// container. Vanilla passes 0 for both ints.</summary>
+    [Fn("void(IntPtr msg, uint oid, int a, int b)")]
+    public const string SendInputUseObject = "_ZN11CNWCMessage33SendPlayerToServerInput_UseObjectEjii";
+    /// <summary><c>..._SplitItem(uint item, int count)</c> @0x804900 (rva 0x7c0050), major 6 minor 23. The count goes
+    /// on the wire as a WORD, so it is a 16-bit quantity in an <c>int</c> parameter.</summary>
+    [Fn("void(IntPtr msg, uint item, int count)")]
+    public const string SendInputSplitItem = "_ZN11CNWCMessage33SendPlayerToServerInput_SplitItemEji";
+    /// <summary><c>..._MergeItem(uint dst, uint src)</c> @0x804850 (rva 0x7bfd90), major 6 minor 22.</summary>
+    [Fn("void(IntPtr msg, uint dst, uint src)")]
+    public const string SendInputMergeItem = "_ZN11CNWCMessage33SendPlayerToServerInput_MergeItemEjj";
 
     /// <summary>A symbol's Windows resolution. Four forms and no fifth -- the point of #447: a missing key
     /// used to mean both "never looked" and "deliberately Linux-only", so the absence could not be counted.
@@ -2436,6 +2616,7 @@ internal static unsafe class SymbolMap
         [VtCLayeredIcon]           = At(),
         [VtCCompositeIcon]         = At(),
         [VtCArmorIcon]             = At(),
+        [GuiIconGetIconModel]      = Nm("?GetIconModel@CGuiIcon@@QEAAPEAVCAurObject@@XZ"),
         // --- CX-54 step 3: NWSync read. The manifest edges are shared-engine exports; the sqlite3 C API is
         //     exported UNMANGLED on nwmain.exe (311 sqlite3_* names, verified against the build 0x68e408bc
         //     export table), so it resolves by its own name on both platforms.
@@ -2475,6 +2656,39 @@ internal static unsafe class SymbolMap
         [StreamStop]             = Nm("?Stop@CExoStreamingSoundSource@@QEAAXXZ"),
         [StreamGetVolume]        = Nm("?GetVolume@CExoStreamingSoundSource@@QEAAEXZ"),
         [StreamSetLooping]       = Nm("?SetLooping@CExoStreamingSoundSource@@QEAAXH@Z"),
+        // --- the CX inventory screen (docs/research/inventory-screen.md §10). CPanelInventory, CGuiInvbox,
+        //     CGuiMulti*Invbox, CNWCItem and CNWCMessage are all unexported on nwmain.exe, so each row is an
+        //     RVA read out of the Windows BODY (not a caller-shape guess): SetInventoryVisible's own body names
+        //     SetCharacterData / GetNWCMessage / the Status sender, Update_GuiRepository's names AddItem and
+        //     GetEquipSlot, and each sender was confirmed by its (major, minor) immediate at rva 0x7c25c0.
+        //     Only CNWBaseItemArray is shared engine and therefore a name export.
+        [InvSetInventoryVisible] = At(),   // container flag +0x2f64, shown oid +0x2f68 (Linux +0x319c / +0x31a0)
+        [InvSetCharacterData]    = At(),   // gold creature+0x1b8, weight +0x28c; label m_pString at label+0x90
+        [GetInventoryPanel]      = At(),
+        [GameCameraHitCheck]     = At(),   // body read: GetModuleCamera, info+0x20 = 1, camera vtbl +0x60
+        [GetGameobjectHit]       = At(),   // body read: kind +0x24, gob +0x48, item -> +0x48
+        [SendBarterStart]        = At(),   // 35 / 1
+        [SendInputUseItem]       = At(),   // 6 / 9; the Vector by pointer
+        [SendGoldTransfer]       = At(),   // 8 / 1, minor 0x0a / 0x16; the Vector by pointer
+        [QuickButtonSetItem]     = At(),   // body read: CGuiQuickButton drop handler (vtbl +0xe8) calls it with 0xff00ff, 0
+        [ItemPlayDropSound]      = At(),   // the same handler's next call
+        [InvboxAddItem]          = At(),   // page +0x1d0, rows +0x194 on the Windows CGuiMultiInvbox
+        [InvSetContainerGuiVisible] = At(), // body read: mode +0x2f64, grid +0x24b0, isItem +0x2690, oid +0x268c, Status 0x7bdeb0
+        [InvContainerPageUp]     = At(),   // body read: grid +0x24b0, SelectNextPage 0x7bde70 (25 / 2), page +0x2680, count +0x2f60
+        [InvContainerPageDown]   = At(),   // body read: the same, SelectPreviousPage 0x7bde90 (25 / 3)
+        [InvContainerPagenum]    = At(),   // body read: count +0x2f60, page clamp +0x2680; called from 0x79ceb0 (twice) and the 'P' of 0x7b3790
+        [ItemActivateRadialMenu] = At(),
+        [ItemGetName]            = At(),   // sret: Win64 (this, out, int) -- measured in the body
+        [GetBaseItem]            = Nm("?GetBaseItem@CNWBaseItemArray@@QEBAPEAVCNWBaseItem@@H@Z"),
+        [SendInvEquip]           = At(),   // 12 / 1
+        [SendInvUnequip]         = At(),   // 12 / 7
+        [SendInvRepositoryMove]  = At(),   // 12 / 9
+        [SendInvDrop]            = At(),   // 12 / 3
+        [SendGuiInvStatus]       = At(),   // 13 / 1
+        [SendGuiInvSelectPanel]  = At(),   // 13 / 2
+        [SendInputUseObject]     = At(),   // 6 / 11
+        [SendInputSplitItem]     = At(),   // 6 / 23
+        [SendInputMergeItem]     = At(),   // 6 / 22
     };
 
     /// <summary>Why a symbol does not resolve on Windows, in the words of its own row. A key that is missing

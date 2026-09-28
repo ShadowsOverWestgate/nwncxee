@@ -85,6 +85,36 @@ public sealed class VertexBatch
         V(tlx,tly, gl.U0,gl.V0, r,g,b,a); V(brx,bry, gl.U1,gl.V1, r,g,b,a);  V(blx,bly, gl.U0,gl.V1, r,g,b,a);
     }
 
+    /// <summary>A textured quad with explicit UVs (a skin batch; honours the clip band).</summary>
+    public void Tex(float x0, float y0, float x1, float y1, float u0, float v0, float u1, float v1,
+                    float r, float g, float b, float a)
+        => Quad(x0, y0, x1, y1, u0, v0, u1, v1, r, g, b, a);
+
+    /// <summary>Nine-slice (native-gui-skinning §4.2b): the texture's <paramref name="l"/>/<paramref name="t"/>/
+    /// <paramref name="r"/>/<paramref name="bt"/> texel border keeps its size × <paramref name="scale"/> on screen, the
+    /// edges stretch along one axis, the centre along both. Engine textures are bottom-up (v = 1 is the top row).
+    /// A rect narrower than its borders shrinks them proportionally. <paramref name="tw"/>/<paramref name="th"/>
+    /// are the texture's texel size.</summary>
+    public void NineSlice(float x0, float y0, float x1, float y1, int tw, int th, int l, int t, int r, int bt,
+                          float scale, float cr, float cg, float cb, float ca)
+    {
+        if (tw <= 0 || th <= 0 || x1 <= x0 || y1 <= y0) return;
+        float sl = l * scale, sr = r * scale, st = t * scale, sb = bt * scale;
+        float kx = sl + sr > x1 - x0 ? (x1 - x0) / (sl + sr) : 1f, ky = st + sb > y1 - y0 ? (y1 - y0) / (st + sb) : 1f;
+        sl *= kx; sr *= kx; st *= ky; sb *= ky;
+        float xa = x0 + sl, xb = x1 - sr, ya = y0 + st, yb = y1 - sb;
+        float ua = (float)l / tw, ub = 1f - (float)r / tw;
+        float vTop = 1f, va = 1f - (float)t / th, vb = (float)bt / th, vBot = 0f;
+        Span<float> xs = stackalloc float[] { x0, xa, xb, x1 };
+        Span<float> us = stackalloc float[] { 0f, ua, ub, 1f };
+        Span<float> ys = stackalloc float[] { y0, ya, yb, y1 };
+        Span<float> vs = stackalloc float[] { vTop, va, vb, vBot };
+        for (int j = 0; j < 3; j++)
+            for (int i = 0; i < 3; i++)
+                if (xs[i + 1] > xs[i] && ys[j + 1] > ys[j])
+                    Quad(xs[i], ys[j], xs[i + 1], ys[j + 1], us[i], vs[j], us[i + 1], vs[j + 1], cr, cg, cb, ca);
+    }
+
     private void Quad(float x0, float y0, float x1, float y1,
                       float u0, float v0, float u1, float v1,
                       float r, float g, float b, float a)

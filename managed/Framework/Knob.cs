@@ -45,6 +45,9 @@ public abstract class Knob
     /// <summary>A row that exists but cannot be edited yet: the panel
     /// greys it and ignores its presses; chat and the file still read it.</summary>
     public bool Disabled;
+    /// <summary>A server policy (<see cref="ServerPolicy"/>) holds this knob: <c>V</c> is the server's value, the
+    /// player's own lives on underneath and is what the file keeps. The panel greys the row.</summary>
+    public bool Enforced { get; private protected set; }
 
     private protected Knob(KnobGroup group, string name, string label, KnobKind kind, Tier tier, Effect effect,
                            string section, string help, bool layout)
@@ -68,6 +71,15 @@ public abstract class Knob
     public abstract bool BootMoved { get; }
     /// <summary>Back to the default, as a set.</summary>
     public abstract void Reset();
+    /// <summary>Hold the live value at <paramref name="raw"/> for the session's server: the player's value is kept
+    /// underneath, <see cref="Changed"/> runs, the writer is not armed. False when the text is no value of this knob.</summary>
+    public abstract bool Enforce(string raw);
+    /// <summary>Drop the server's hold: the player's value is live again.</summary>
+    public abstract void Release();
+    /// <summary>The player's value in cfg form -- what <see cref="KnobFile"/> writes, never the server's.</summary>
+    public abstract string FormatStored();
+    /// <summary>The player's value equals the default: its key is absent from the file.</summary>
+    public abstract bool StoredIsDefault { get; }
     /// <summary>Persisted to <c>cx.cfg</c>: everything but a Button or a Link.</summary>
     public bool Persisted => Kind != KnobKind.Button && Kind != KnobKind.Link;
     /// <summary>Human-readable range / choices for a usage line, "" when none.</summary>
@@ -89,6 +101,7 @@ public abstract class Knob
         string s = $"{Key}={Format()} (default {FormatDefault()}) [{tier}]";
         if (Effect == Effect.Restart) s += " [restart]";
         if (BootMoved) s += $" (boot {FormatBoot()})";
+        if (Enforced) s += $" [server; yours {FormatStored()}]";
         return s;
     }
 
@@ -122,6 +135,8 @@ public sealed class Knob<T> : Knob
     public readonly T[] Values;
 
     private readonly T _bound;
+    /// <summary>The player's value while <see cref="Knob.Enforced"/>; meaningless otherwise.</summary>
+    private T _user = default!;
     private readonly Func<T, string> _fmt;
     private readonly Func<string, (bool Ok, T V)> _parse;
 
@@ -141,12 +156,35 @@ public sealed class Knob<T> : Knob
         V = Boot = _bound = v;
     }
 
-    /// <summary>A set: clamp to the range, assign, run <see cref="Changed"/>, arm the writer.</summary>
+    /// <summary>A set: clamp to the range, assign, run <see cref="Changed"/>, arm the writer. Under a server hold
+    /// the player's value moves underneath and <c>V</c> stays the server's.</summary>
     public void Set(T v)
     {
+        if (Enforced) { _user = Clamp(v); AfterSet(); return; }
         V = Clamp(v);
         AfterSet();
     }
+
+    public override bool Enforce(string raw)
+    {
+        if (!Persisted || !TryParse(raw, out T v)) return false;
+        if (!Enforced) _user = V;
+        Enforced = true;
+        V = v;
+        Changed?.Invoke();
+        return true;
+    }
+
+    public override void Release()
+    {
+        if (!Enforced) return;
+        Enforced = false;
+        V = _user;
+        Changed?.Invoke();
+    }
+
+    public override string FormatStored() => _fmt(Enforced ? _user : V);
+    public override bool StoredIsDefault => EqualityComparer<T>.Default.Equals(Enforced ? _user : V, Default);
 
     public override bool Parse(string s)
     {
@@ -248,6 +286,10 @@ public sealed class KnobButton : Knob
     public override string RangeText() => "";
     public override int ChoiceIndex => -1;
     internal override bool BootIntact => true;
+    public override bool Enforce(string raw) => false;
+    public override void Release() { }
+    public override string FormatStored() => Format();
+    public override bool StoredIsDefault => true;
 }
 
 /// <summary>A knob-less element with a knob's place in the row order (spec §3 link row): an address the panel
@@ -271,6 +313,10 @@ public sealed class KnobLink : Knob
     public override string RangeText() => "";
     public override int ChoiceIndex => -1;
     internal override bool BootIntact => true;
+    public override bool Enforce(string raw) => false;
+    public override void Release() { }
+    public override string FormatStored() => Format();
+    public override bool StoredIsDefault => true;
 }
 
 /// <summary>The built-in Format/Parse per <typeparamref name="T"/> (spec §1 cx.cfg): Toggle <c>0/1</c>,

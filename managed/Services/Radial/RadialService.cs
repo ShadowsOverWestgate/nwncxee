@@ -174,9 +174,20 @@ public sealed unsafe partial class RadialService : IExtenderService
 
     // ---- hooks (cold: the main thread, once per right-click) ------------------------------------
 
+    /// <summary>A screen point (SDL px) the next root opens at instead of the engine's last mouse position, set around a
+    /// synchronous <c>ActivateRadialMenu</c> by a CX window the engine does not see the pointer over (the inventory).</summary>
+    internal static (int X, int Y)? OpenAt;
+
     [UnmanagedCallersOnly]
     private static void OnActivateInternal(IntPtr menu)
     {
+        if (OpenAt is var (ax, ay) && menu != IntPtr.Zero)
+        {
+            IntPtr gm = _guiMan != IntPtr.Zero ? *(IntPtr*)_guiMan : IntPtr.Zero;
+            var m = new CRadialMenu(menu);
+            m.MenuX = ax;
+            m.MenuY = (gm != IntPtr.Zero ? new CGuiMan(gm).VpHeight : TextRig.ViewportH) - ay;
+        }
         if (!RadialKnobs.Enabled.V || _vanilla || menu == IntPtr.Zero || _inInvoke) { Forward(menu); return; }
         int depth = RadialTree.MenuDepth;
         if (depth != 0)
