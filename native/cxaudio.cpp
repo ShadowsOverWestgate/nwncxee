@@ -47,6 +47,12 @@ struct Wake
 static DWORD WINAPI render_main_w(LPVOID);
 static int start_thread() { HANDLE t = CreateThread(NULL, 0, render_main_w, NULL, 0, NULL); if (!t) return 0; SetThreadPriority(t, THREAD_PRIORITY_HIGHEST); CloseHandle(t); return 1; }
 static void* cxa_sym(void* lib, const char* n) { return (void*)GetProcAddress((HMODULE)lib, n); }
+/// Atomics as Interlocked ops, since MSVC has no __atomic builtins; each is a full barrier, at least the order a call site needs.
+static int64_t cxa_ld(int64_t* p) { return InterlockedCompareExchange64(p, 0, 0); }
+static unsigned cxa_ld(unsigned* p) { return (unsigned)InterlockedCompareExchange((volatile LONG*)p, 0, 0); }
+static void cxa_st(int64_t* p, int64_t v) { InterlockedExchange64(p, v); }
+static unsigned cxa_inc(unsigned* p) { return (unsigned)InterlockedIncrement((volatile LONG*)p); }
+static int32_t cxa_inc(int32_t* p) { return (int32_t)InterlockedIncrement((volatile LONG*)p); }
 static double cxa_now()
 {
     LARGE_INTEGER f, c;
@@ -91,6 +97,10 @@ static int start_thread()
     return 1;
 }
 static void* cxa_sym(void* lib, const char* n) { return dlsym(lib, n); }
+/// Acquire load / release store / acq-rel increment (returns the new value).
+template <class T> static T cxa_ld(T* p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
+template <class T> static void cxa_st(T* p, T v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
+template <class T> static T cxa_inc(T* p) { return __atomic_add_fetch(p, 1, __ATOMIC_ACQ_REL); }
 static double cxa_now()
 {
     struct timespec t;
@@ -1037,9 +1047,9 @@ static ALsizei AL_APIENTRY bus_callback(ALvoid* user, ALvoid* data, ALsizei byte
     Sa& s = g_sa;
     float* o = (float*)data;
     int want = bytes / (int)(sizeof(float) * s.busCh), done = 0;
-    if ((unsigned)(uintptr_t)user != __atomic_load_n(&g_busGen, __ATOMIC_ACQUIRE)) { memset(data, 0, (size_t)bytes); return bytes; }
+    if ((unsigned)(uintptr_t)user != cxa_ld(&g_busGen)) { memset(data, 0, (size_t)bytes); return bytes; }
     const int64_t cap = (int64_t)s.frame * RingFrames;
-    int64_t r = s.ringR, w = __atomic_load_n(&s.ringW, __ATOMIC_ACQUIRE);
+    int64_t r = s.ringR, w = cxa_ld(&s.ringW);
     while (done < want && r < w)
     {
         int at = (int)(r % cap), n = want - done;
@@ -1048,11 +1058,11 @@ static ALsizei AL_APIENTRY bus_callback(ALvoid* user, ALvoid* data, ALsizei byte
         memcpy(o + (size_t)done * s.busCh, s.ring + (size_t)at * s.busCh, sizeof(float) * (size_t)n * s.busCh);
         done += n; r += n;
     }
-    __atomic_store_n(&s.ringR, r, __ATOMIC_RELEASE);
+    cxa_st(&s.ringR, r);
     if (done < want)
     {
         memset(o + (size_t)done * s.busCh, 0, sizeof(float) * (size_t)(want - done) * s.busCh);
-        if (s.primed) __atomic_add_fetch(&g_stats.underruns, 1, __ATOMIC_RELAXED);
+        if (s.primed) cxa_inc(&g_stats.underruns);
     }
     g_wake.post();
     return bytes;
@@ -1065,13 +1075,13 @@ static void render_main()
     const int64_t N = s.frame;
     for (;;)
     {
-        unsigned gen = __atomic_load_n(&g_busGen, __ATOMIC_ACQUIRE);
+        unsigned gen = cxa_ld(&g_busGen);
         int64_t w = s.ringW;
-        while (w - __atomic_load_n(&s.ringR, __ATOMIC_ACQUIRE) < RingAhead * N)
+        while (w - cxa_ld(&s.ringR) < RingAhead * N)
         {
             render_frame(gen, s.ring + (size_t)(w % (N * RingFrames)) * s.busCh);
             w += N;
-            __atomic_store_n(&s.ringW, w, __ATOMIC_RELEASE);
+            cxa_st(&s.ringW, w);
         }
         s.primed = 1;
         g_wake.wait(5);
@@ -1204,7 +1214,7 @@ static void bus_open(ALCcontext* ctx)
     ALenum fmt = g_sa.busCh == 8 ? AL_FORMAT_71CHN32 : g_sa.busCh == 6 ? AL_FORMAT_51CHN32
                : g_sa.busCh == 4 ? AL_FORMAT_QUAD32 : AL_FORMAT_STEREO_FLOAT32;
     g_lk.on();
-    unsigned gen = __atomic_add_fetch(&g_busGen, 1, __ATOMIC_ACQ_REL);
+    unsigned gen = cxa_inc(&g_busGen);
     g_lk.off();
     p_alGenBuffers(1, &g_busBuf);
     p_alBufferCallbackSOFT(g_busBuf, fmt, g_sa.rate, bus_callback, (ALvoid*)(uintptr_t)gen);
