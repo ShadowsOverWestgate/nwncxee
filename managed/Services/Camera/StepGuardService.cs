@@ -26,7 +26,7 @@ namespace CX.Services.Camera;
 public sealed unsafe class StepGuardService : IExtenderService
 {
     private static ExtenderLog? _log;
-    private static WalkUpdateLocationFn _orig;
+    private static WalkUpdateLocationFn* _next;
     private static TestDirectLineFn _testLine;
     private static readonly IntPtr _appMgr = Native.Sym(SymbolMap.AppManager);
 
@@ -46,21 +46,22 @@ public sealed unsafe class StepGuardService : IExtenderService
         if (!EngineLayout.Require(log, "StepGuard", "CClientExoApp", "CClientExoAppInternal", "CNWCObject", "CNWCCreature", "CNWCModule", "CPathfindInformation")) return;
         if (!SymbolMap.Require(log, "StepGuard", SymbolMap.WalkUpdateLocation, SymbolMap.TestDirectLine, SymbolMap.AppManager, SymbolMap.GetModule)) return;
         _testLine = EngineFn.TestDirectLine;
-        _orig = hooks.InstallWalkUpdateLocation(&OnWalkUpdateLocation);
-        if (_orig == null) { log.Info("StepGuard: standing down (WalkUpdateLocation hook refused)"); return; }
+        // chained, not installed: the pose layer's keyboard weight sets the step's rate just outside it (priority 60)
+        _next = hooks.ChainWalkUpdateLocation(&OnWalkUpdateLocation, 50);
+        if (_next == null) { log.Info("StepGuard: standing down (WalkUpdateLocation chain refused)"); return; }
         KnobSurface.Note(Report);
-        log.Info("StepGuard: pre-hooked CNWCCreature::WalkUpdateLocation");
+        log.Info("StepGuard: chained CNWCCreature::WalkUpdateLocation");
     }
 
     [UnmanagedCallersOnly]
     private static int OnWalkUpdateLocation(IntPtr cre)
     {
-        if (!Walk.Enabled.V) return _orig(cre);
+        if (!Walk.Enabled.V) return (*_next)(cre);
         IntPtr mgr = *(IntPtr*)_appMgr;
         IntPtr app = mgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)mgr;
         CClientExoAppInternal intern = app == IntPtr.Zero ? default : new CClientExoApp(app).Internal;
         var creature = new CNWCCreature(cre);
-        if (intern.IsNull || new CNWCObject(cre).Id != intern.PlayerCreatureId) return _orig(cre);
+        if (intern.IsNull || new CNWCObject(cre).Id != intern.PlayerCreatureId) return (*_next)(cre);
         if (!_live)
         {
             _live = true;
@@ -70,11 +71,11 @@ public sealed unsafe class StepGuardService : IExtenderService
         IntPtr module = CameraService.Module();
         CNWCArea area = module == IntPtr.Zero ? default : new CNWCModule(module).CurrentArea;
         CPathfindInformation pathfind = creature.Pathfind;
-        if (!_probeOk || area.IsNull || pathfind.IsNull) return _orig(cre);
+        if (!_probeOk || area.IsNull || pathfind.IsNull) return (*_next)(cre);
 
         ref Vector3 desired = ref creature.DesiredPos;
         Vector3 before = desired;
-        int r = _orig(cre);
+        int r = (*_next)(cre);
         Vector3 after = desired;
         if (!IsStep(before, after) || new CNWCModule(module).CurrentArea.Ptr != area.Ptr) return r;
         Span<float> space = pathfind.SpaceArgs;

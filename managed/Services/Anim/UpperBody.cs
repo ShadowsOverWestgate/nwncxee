@@ -20,8 +20,10 @@ namespace CX.Services.Anim;
 /// tenths to the neck -- and the head's local rewritten so its world rotation is exactly the engine's: the gaze
 /// is untouched, the body joins it. Whatever drives the head (a conversation, the action camera's head
 /// tracking) gets the same.</para>
-/// <para><b>Lean</b> is measured, not told: centripetal acceleration (speed times yaw rate) tips into a turn,
-/// forward acceleration pitches, and a climb pitches into the slope, each clamped and eased.</para>
+/// <para><b>Lean</b>: centripetal acceleration (speed times yaw rate) tips into a turn, forward acceleration
+/// pitches, and a climb pitches into the slope, each clamped and eased. The forward acceleration is the one
+/// <see cref="Weight"/> hands over -- the engine's own on a path, a drawn profile at a driven start or stop --
+/// and the turn and the slope are still measured.</para>
 /// <para><b>Aim</b> (docs/research/procedural-anim-combat.md): while the creature's current animation is an
 /// attack (<see cref="IsAttack"/>), its upper body pitches by the elevation from its own root part to its lock
 /// target's (<c>CNWCCreature+0x3c8</c>) -- root to root, so equal creatures on equal ground measure 0. Ranged
@@ -132,7 +134,7 @@ internal static unsafe class UpperBody
     {
         float lean = AnimKnobs.Lean.V / 100f;
         Vector2 leanT = gated || !(lean > 0f) ? Vector2.Zero
-            : LeanTarget(groundSpeed, s.YawRate, s.Accel, s.Slope, s.Moving > 0f) * lean;
+            : LeanTarget(groundSpeed, s.YawRate, s.Cue, s.Slope, s.Moving > 0f) * lean;
         float aimT = s.AimPitch, aimW = 0f;
         if (!gated && AnimKnobs.Aim.V && _aimReady && creature != IntPtr.Zero)
         {
@@ -154,7 +156,8 @@ internal static unsafe class UpperBody
         }
         else
         {
-            Smooth(ref s.Lean, ref s.LeanV, leanT, dt, LeanTime);
+            if (AnimKnobs.Mass.V) Mass.Chest(ref s.Lean, ref s.LeanV, leanT, dt);
+            else Smooth(ref s.Lean, ref s.LeanV, leanT, dt, LeanTime);
             Smooth(ref s.AimPitch, ref s.AimV, aimT, dt, AimTime);
             Smooth(ref s.AimW, ref s.AimWV, aimW, dt, AimFade);
             Wobble(ref s.Hit, ref s.HitV, Omega, HitZeta, dt);

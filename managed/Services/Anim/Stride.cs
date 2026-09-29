@@ -12,7 +12,10 @@ namespace CX.Services.Anim;
 /// length per appearance that a custom cycle, a slope or the two-clock step does not match. Here the stance
 /// foot's model-space speed is measured per unit of the engine's own rate and the rate multiplied so it equals
 /// the gob's measured ground speed. No table, no content contract: any walk cycle is paced by its own feet.
-/// Every run on the gob is scaled alike, so a torso overlay (<c>walk_swordl</c>) stays in step with its walk.</para>
+/// Every run on the gob is scaled alike, so a torso overlay (<c>walk_swordl</c>) stays in step with its walk.
+/// <see cref="Skating"/> (CX-70) adds the clip the engine never paces at all -- the combat shuffle, by the gap
+/// its position correction still has to close -- and the pose test that stands both this and the lock down when
+/// the body is not walking on the ground.</para>
 /// <para><b>Attachments follow.</b> A cloak, robe, tail or wings is a gob of its own (<c>CNWCAnimBaseTW::LoadModel</c>
 /// attaches it to the body's root) playing the body's clip on its own run list, which the engine paces equal to
 /// the body's on every AI update but never re-syncs in time (docs/research/cloak-animation.md). Scaling the body
@@ -25,7 +28,8 @@ namespace CX.Services.Anim;
 /// <para><b>Lock.</b> While locomoting, a foot within <see cref="PlantTol"/> of the stance height is planted:
 /// its world XY is held from the frame it lands until the animation lifts it (or it is dragged
 /// <see cref="MaxSlip"/> away), then eased back to the animated foot over <see cref="ReleaseTime"/>; the
-/// offset is a spring both ways (<see cref="Foot"/>).</para>
+/// offset is a spring both ways (<see cref="Foot"/>). A foot planted while the hips turn (<see cref="Diagonal"/>) is
+/// the pivot: it holds however far the turn drags it, until the animation lifts it.</para>
 /// </summary>
 internal static unsafe class Stride
 {
@@ -38,10 +42,16 @@ internal static unsafe class Stride
     private const float MinStance = 0.2f;
     /// <summary>The correction's range: past it the cycle is not a walk at all and is left to the engine.</summary>
     private const float MinFactor = 0.6f, MaxFactor = 1.6f;
-    /// <summary>Corrections inside this are no correction: the engine's pacing is already right.</summary>
+    /// <summary>Corrections inside this are no correction: the engine's pacing is already right. The next band's
+    /// worth past it eases the correction in, so a measurement hovering at the edge cannot flip the rate between
+    /// the engine's and a few percent off it; from twice this out it is the whole measured ratio.</summary>
     private const float Deadband = 0.04f;
     /// <summary>Seconds the applied factor takes to follow the measurement.</summary>
     private const float FactorTime = 0.3f;
+    /// <summary>Gait acceleration (world units/s²) past which the body is winding up or down: the engine scales the
+    /// cycle's rate with the speed factor itself then, and the measurement -- a ground speed averaged over 0.15 s
+    /// against a stance speed averaged over half a second -- lags the ramp both ways, so pacing holds still.</summary>
+    private const float Transient = 0.3f;
     /// <summary>Model units above the stance height a foot may be and still count as planted.</summary>
     private const float PlantTol = 0.03f;
     /// <summary>Seconds the stance height takes to rise back after a lower foot set it.</summary>
@@ -57,7 +67,7 @@ internal static unsafe class Stride
     /// <summary>Runs whose rate is tracked: the walk, its overlay, and the ones fading out.</summary>
     internal const int TrackedRuns = 4;
 
-    internal static int Strided, Locked, Synced;
+    internal static int Strided, Locked, Pinned, Dragged, Synced;
 
     /// <summary>Before the engine animates: every run gets the engine's rate times the gob's stride factor
     /// (1 when not locomoting or the knob is off, which puts the engine's own value back).</summary>
@@ -69,9 +79,10 @@ internal static unsafe class Stride
     }
 
     /// <summary>The multiplier a body with slot <paramref name="s"/> plays its runs at this frame: last frame's
-    /// eased factor while locomoting, else 1. Read by the body itself and by its attachments, which animate
-    /// first in the same frame and so see the same value.</summary>
-    internal static float Of(in PoseService.Slot s) => AnimKnobs.Stride.V && s.Loco ? 1f + s.Factor : 1f;
+    /// eased factor while it is being paced -- walking, running, or shuffling a position correction closed
+    /// (<see cref="Skating"/>) -- else 1. Read by the body itself and by its attachments, which animate first in
+    /// the same frame and so see the same value.</summary>
+    internal static float Of(in PoseService.Slot s) => AnimKnobs.Stride.V && (s.Loco || s.Shuffling) ? 1f + s.Factor : 1f;
 
     /// <summary>Sets every run on <paramref name="gob"/> to the engine's own rate times <paramref name="f"/>,
     /// telling the engine's value from this module's last write (<paramref name="s"/> keeps both).</summary>
@@ -183,28 +194,48 @@ internal static unsafe class Stride
 
     /// <summary>After the engine animates, before any correction: samples the stance foot's model-space speed
     /// (<paramref name="mr"/>/<paramref name="ml"/>, the ankles in model units) and eases the factor toward
-    /// ground speed over it. <paramref name="groundSpeed"/> is in model units per second.</summary>
-    internal static void Measure(ref PoseService.Slot s, Vector3 mr, Vector3 ml, float groundSpeed, bool fading, float dt)
+    /// ground speed over it. <paramref name="travel"/> is the body's horizontal travel direction in the same
+    /// model frame (unit, or zero when it is not moving) and <paramref name="groundSpeed"/> its speed, in model
+    /// units per second.
+    /// <para>The sample is the lower ankle's travel <b>against</b> that direction, and only while it bears the
+    /// body's weight (<see cref="Skating.Bears"/>): a swinging foot comes forward, and one the body is carrying
+    /// -- a swim, a crawl, an Arcane float -- hardly moves in the model frame at all. Taking the speed's
+    /// magnitude instead sampled a run through its 41 % flight, where the lower ankle is airborne and moving the
+    /// wrong way. Nothing bearing weight for <see cref="Skating.Liftoff"/> stands the correction down. While the
+    /// gait winds up or down (<see cref="Transient"/>) the factor and the stance speed both hold.</para></summary>
+    internal static void Measure(ref PoseService.Slot s, Vector3 mr, Vector3 ml, Vector3 travel, float groundSpeed, bool fading, float dt)
     {
-        bool sample = s.Loco && !fading && s.HasPrev && dt > 0f && MathF.Abs(mr.Z - ml.Z) > StanceGap;
-        if (sample)
+        bool paced = s.Loco || s.Shuffling;
+        // a different clip is a different stride: the shuffle's is nothing like the walk that preceded it
+        if (s.StanceAnim != s.GaitAnim) { s.StanceAnim = s.GaitAnim; s.Stance = 0f; }
+        bool ramping = s.Gait != GaitMode.None && MathF.Abs(s.GaitAccel) > Transient;
+        bool judged = paced && !fading && s.HasPrev && dt > 0f;
+        bool bears = false;
+        if (judged && MathF.Abs(mr.Z - ml.Z) > StanceGap)
         {
             Vector3 d = mr.Z < ml.Z ? mr - s.PrevR : ml - s.PrevL;
-            float v = MathF.Sqrt(d.X * d.X + d.Y * d.Y) / dt / s.RateF;
-            s.Stance = s.Stance <= 0f ? v : s.Stance + (v - s.Stance) * MathF.Min(1f, dt / StanceTime);
+            float v = -(d.X * travel.X + d.Y * travel.Y) / dt / s.RateF;
+            bears = Skating.Bears(v, groundSpeed);
+            if (bears && !ramping) s.Stance = s.Stance <= 0f ? v : s.Stance + (v - s.Stance) * MathF.Min(1f, dt / StanceTime);
         }
+        if (!paced) s.Airborne = 0f;
+        else if (judged) s.Airborne = bears ? 0f : s.Airborne + dt;
+        s.Grounded = s.Airborne < Skating.Liftoff;
         s.PrevR = mr; s.PrevL = ml; s.HasPrev = true;
-        float target = s.Loco ? Factor(groundSpeed, s.Stance) - 1f : 0f;
-        Smooth(ref s.Factor, ref s.VFactor, target, dt, FactorTime);
+        float target = paced && s.Grounded ? Factor(groundSpeed, s.Stance) - 1f : 0f;
+        if (!ramping || !paced) Smooth(ref s.Factor, ref s.VFactor, target, dt, FactorTime);
     }
 
     /// <summary>The rate multiplier making a stance foot moving <paramref name="stance"/> per unit rate keep
-    /// pace with the ground at <paramref name="ground"/>; 1 inside the deadband, out of range or unmeasured.</summary>
+    /// pace with the ground at <paramref name="ground"/>, eased in past the <see cref="Deadband"/>; 1 out of range
+    /// or unmeasured.</summary>
     internal static float Factor(float ground, float stance)
     {
         if (!(stance > MinStance) || !(ground > 0f)) return 1f;
         float f = ground / stance;
-        return f < MinFactor || f > MaxFactor || MathF.Abs(f - 1f) < Deadband ? 1f : f;
+        if (f < MinFactor || f > MaxFactor) return 1f;
+        float u = Math.Clamp((MathF.Abs(f - 1f) - Deadband) / Deadband, 0f, 1f);
+        return 1f + (f - 1f) * u * u * (3f - 2f * u);
     }
 
     /// <summary>The world XY each ankle is moved by this frame (Z is foot placement's).
@@ -215,31 +246,61 @@ internal static unsafe class Stride
         float low = MathF.Min(mrz, mlz);
         s.PlantZ = s.PlantZ == 0f || low < s.PlantZ ? low : s.PlantZ + (low - s.PlantZ) * MathF.Min(1f, dt / PlantRise);
         active &= AnimKnobs.FootLock.V && !snap;
-        dr = Foot(ref s.LockR, ref s.HeldR, ref s.SlipR, ref s.LockDR, ref s.LockVR, ankleR, active && mrz - s.PlantZ < PlantTol, snap, MaxSlip * scale, dt);
-        dl = Foot(ref s.LockL, ref s.HeldL, ref s.SlipL, ref s.LockDL, ref s.LockVL, ankleL, active && mlz - s.PlantZ < PlantTol, snap, MaxSlip * scale, dt);
+        dr = Foot(ref s.LockR, ref s.HeldR, ref s.SlipR, ref s.PinR, ref s.LockDR, ref s.LockVR, ankleR, active && mrz - s.PlantZ < PlantTol, s.Pivot, snap, MaxSlip * scale, dt);
+        dl = Foot(ref s.LockL, ref s.HeldL, ref s.SlipL, ref s.PinL, ref s.LockDL, ref s.LockVL, ankleL, active && mlz - s.PlantZ < PlantTol, s.Pivot, snap, MaxSlip * scale, dt);
     }
 
     /// <summary>One foot's lock: the XY offset from the animated ankle to where it is drawn. The offset is a
     /// spring, never a switch: while held it chases the held point over <see cref="HoldTime"/> (a landing foot
     /// settles rather than stopping dead), and let go it returns to 0 over <see cref="ReleaseTime"/>. A lock
     /// dragged past <paramref name="slip"/> lets go and stays let go (<paramref name="slipped"/>) until the foot
-    /// lifts.</summary>
-    internal static Vector3 Foot(ref Vector3 lockAt, ref bool held, ref bool slipped, ref Vector2 d, ref Vector2 vd,
-                                 Vector3 ankle, bool planted, bool snap, float slip, float dt)
+    /// lifts -- unless it was held while the hips turned (<paramref name="pivot"/>): that foot is
+    /// <paramref name="pinned"/> and holds until it lifts, however far.</summary>
+    internal static Vector3 Foot(ref Vector3 lockAt, ref bool held, ref bool slipped, ref bool pinned, ref Vector2 d, ref Vector2 vd,
+                                 Vector3 ankle, bool planted, bool pivot, bool snap, float slip, float dt)
     {
-        if (snap) { held = slipped = false; d = vd = Vector2.Zero; return Vector3.Zero; }
-        if (!planted) held = slipped = false;
+        if (snap) { held = slipped = pinned = false; d = vd = Vector2.Zero; return Vector3.Zero; }
+        if (!planted) held = slipped = pinned = false;
         else if (!held && !slipped)
         {
             // a fresh plant holds where the foot is drawn now, so a lock still easing out never pops
             lockAt = ankle + new Vector3(d.X, d.Y, 0f);
             held = true;
         }
+        pinned |= held && pivot;
         Vector2 target = held ? new Vector2(lockAt.X - ankle.X, lockAt.Y - ankle.Y) : Vector2.Zero;
-        if (held && target.LengthSquared() > slip * slip) { held = false; slipped = true; target = Vector2.Zero; }
+        if (held && !pinned && target.LengthSquared() > slip * slip) { held = false; slipped = true; target = Vector2.Zero; }
         if (held) Locked++;
+        if (pinned) Pinned++;
         Smooth(ref d, ref vd, target, dt, held ? HoldTime : ReleaseTime);
         return new Vector3(d.X, d.Y, 0f);
+    }
+
+    /// <summary>A moving body's legs went round by <paramref name="angle"/> radians (positive = left) about
+    /// <paramref name="about"/> with its facing (<see cref="PoseService.Slot.Walked"/>): each held foot that is not a
+    /// pivot goes round with them, point and drawn offset alike. The lock is there to stop the feet sliding along the
+    /// ground, not to stand them still while the body turns over them: held against a walked turn a planted foot
+    /// strains until it slips or is dragged, and the step stutters. A pinned foot is the turn's pivot and stays.</summary>
+    internal static void Turn(ref PoseService.Slot s, Vector3 about, float angle)
+    {
+        if (angle == 0f) return;
+        (float sn, float cs) = MathF.SinCos(angle);
+        if (s.HeldR && !s.PinR) { s.LockR = about + Spin(s.LockR - about, sn, cs); s.LockDR = Spin(s.LockDR, sn, cs); }
+        if (s.HeldL && !s.PinL) { s.LockL = about + Spin(s.LockL - about, sn, cs); s.LockDL = Spin(s.LockDL, sn, cs); }
+    }
+
+    private static Vector3 Spin(Vector3 v, float sn, float cs) => new(v.X * cs - v.Y * sn, v.X * sn + v.Y * cs, v.Z);
+
+    private static Vector2 Spin(Vector2 v, float sn, float cs) => new(v.X * cs - v.Y * sn, v.X * sn + v.Y * cs);
+
+    /// <summary>A foot the leg could not reach was drawn <paramref name="cut"/> (world XY) short of its lock: the lock
+    /// moves there, so it holds where the foot was dragged to instead of sliding back once the hips come round.</summary>
+    internal static void Drag(ref Vector3 lockAt, ref Vector2 d, Vector3 cut)
+    {
+        if (cut == Vector3.Zero) return;
+        lockAt -= cut;
+        d -= new Vector2(cut.X, cut.Y);
+        Dragged++;
     }
 
     private static Vector3 Flat(Vector3 v) => new(v.X, v.Y, 0f);

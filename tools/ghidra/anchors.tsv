@@ -56,6 +56,7 @@ CNWCMessage::HandleServerToPlayerCreatureUpdate_Update	140781e80
 CNWCCreature::SetCombatState	14080a230
 CNWCCreature::UpdateLookAt	14080fa60
 CNWCCreature::PlayFootstep	1408057c0
+CNWCAnimBase::GetAnimationName	140961540
 CNWCCreature::LookAt	140803f20
 CActionTarget::ActivateTargetMode	14083b9e0
 CActionTarget::HandleLMouseDown	14083be00

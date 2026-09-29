@@ -59,6 +59,10 @@ offset	MdlNode	kind	0x98	0x98	# MdlNodeKind
 offset	MdlNode	controllers	0x78	0x78	# MdlNodeControllers
 offset	MdlNode	controllerCount	0x80	0x80	# MdlNodeControllerCount
 offset	NewController	keyCount	0x4	0x4	# NewControllerKeyCount
+offset	NewController	timeKey	0x6	0x6	# NewControllerTimeKey
+offset	NewController	valueKey	0x8	0x8	# NewControllerValueKey
+offset	NewController	format	0xa	0xa	# NewControllerFormat
+offset	MdlNode	controllerData	0x88	0x88	# MdlNodeControllerData
 offset	MdlNode	children	0x68	0x68	# MdlNodeChildren
 offset	MdlNode	childCount	0x70	0x70	# MdlNodeChildCount
 offset	MdlNode	nodeId	0x34	0x34	# MdlNodeId
@@ -492,6 +496,16 @@ offset	CNWCCreature	facingTarget	0x2c8	0x2a8	# CreatureFacingTarget
 offset	CNWCCreature	facingTargetB	0x2d4	0x2b4	# CreatureFacingTargetB
 offset	CNWCCreature	desiredPos	0x2e0	0x2c0	# CreatureDesiredPos
 offset	CNWCCreature	driving	0x318	0x2f8	# CreatureDriving
+offset	CNWCCreature	speedFactor	0x2fc	0x2dc	# CreatureSpeedFactor
+offset	CNWCCreature	specialWalk	0x300	0x2e0	# CreatureSpecialWalk
+offset	CNWCCreature	walkRate	0x310	0x2f0	# CreatureWalkRate
+offset	CNWCCreature	runRate	0x314	0x2f4	# CreatureRunRate
+offset	CNWCCreature	pathFromServer	0x2f8	0x2d8	# CreaturePathFromServer
+offset	CNWCCreature	waypoints	0x2b8	0x298	# CreatureWaypoints
+offset	CNWCCreature	waypointCursor	0x2c0	0x2a0	# CreatureWaypointCursor
+offset	CNWCCreature	waypointCount	0x2f0	0x2d0	# CreatureWaypointCount
+offset	CNWCCreature	correctionMs	0x2ec	0x2cc	# CreatureCorrectionMs
+offset	CNWCObject	stepMs	0x58	0x58	# ObjStepMs
 offset	CNWCCreature	pathfind	0x320	0x300	# CreaturePathfind
 offset	CPathfindInformation	spaceArgs	0xe0	0xe0	# PathfindSpaceArgs
 offset	CNWCCreature	vtbl.SetPosition	0x130	0x128	# CreatureSetPositionSlot
@@ -512,6 +526,7 @@ offset	Gob	animRunCount	0xe8	0xe8	# GobAnimRunCount
 offset	AnimRun	animation	0x0	0x0	# AnimRunAnimation
 offset	Animation	name	0x10	0x10	# AnimationName
 offset	Animation	node	0x50	0x50	# AnimationNode
+offset	Animation	length	0x8c	0x90	# AnimationLength
 offset	AnimRun	rate	0x8	0x8	# AnimRunRate
 offset	AnimRun	blend	0x18	0x18	# AnimRunBlend
 offset	AnimRun	flags	0xc	0xc	# AnimRunFlags
@@ -713,6 +728,7 @@ rva	_ZN21CClientExoAppInternal23FeedbackHitCheckHostileEPP10CNWCObjectP6VectorPi
 rva	_ZN21CClientExoAppInternal26FeedbackHitCheckNonHostileEPP10CNWCObjectP6VectorPii	0x6ebcf0	# FeedbackHitCheckNonHostile
 rva	_ZN12CNWCCreature12UpdateLookAtEv	0x80fa60	# UpdateLookAt
 rva	_ZN12CNWCCreature12PlayFootstepEv	0x8057c0	# PlayFootstep
+rva	_ZN12CNWCAnimBase16GetAnimationNameEt	0x961540	# AnimGetName
 rva	_ZN13CActionTarget18ActivateTargetModeEv	0x83b9e0	# ActivateTargetMode
 rva	_ZN13CActionTarget16HandleLMouseDownEv	0x83be00	# ActionTargetLMouseDown
 rva	_ZN21CClientExoAppInternal28PerformDefaultActionOnObjectEP10CNWCObject	0x6efec0	# PerformDefaultActionOnObject

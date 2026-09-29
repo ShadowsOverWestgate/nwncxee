@@ -207,6 +207,9 @@ global using unsafe PlayFootstepFn = delegate* unmanaged<nint, void>;
 global using unsafe BeginLookAtAnimateFn = delegate* unmanaged<nint, nint, byte*, byte*, float, float, float, float, void>;
 global using unsafe LookAtControlFn = delegate* unmanaged<nint, void>;
 global using unsafe GobAnimateFn = delegate* unmanaged<nint, float, void>;
+global using unsafe AnimateHierarchyFn = delegate* unmanaged<nint, nint, float, float, float, void>;
+global using unsafe CtrlGetQuaternionFn = delegate* unmanaged<nint, float, nint, CX.Engine.Quat*, int>;
+global using unsafe CtrlGetVectorFn = delegate* unmanaged<nint, float, nint, System.Numerics.Vector3*, int>;
 global using unsafe SpawnHitVisualsFn = delegate* unmanaged<nint, byte, nint, CX.Engine.VectorArg, nint, void>;
 global using unsafe AurTextureGetFn = delegate* unmanaged<byte*, nint, byte*, int*, int, byte, nint>;
 global using unsafe AurTextureGetTIDFn = delegate* unmanaged<nint, int>;
@@ -347,6 +350,8 @@ public readonly unsafe partial struct Animation(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.AnimationLength"/>
+    public ref float Length => ref *(float*)(Ptr + EngineLayout.AnimationLength);
     /// <inheritdoc cref="EngineLayout.AnimationName"/>
     public ref byte Name => ref *(byte*)(Ptr + EngineLayout.AnimationName);
     /// <inheritdoc cref="EngineLayout.AnimationNode"/>
@@ -1400,6 +1405,8 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public ref int CarriedWeight => ref *(int*)(Ptr + EngineLayout.CreatureCarriedWeight);
     /// <inheritdoc cref="EngineLayout.CreatureCombatState"/>
     public ref int CombatState => ref *(int*)(Ptr + EngineLayout.CreatureCombatState);
+    /// <inheritdoc cref="EngineLayout.CreatureCorrectionMs"/>
+    public ref uint CorrectionMs => ref *(uint*)(Ptr + EngineLayout.CreatureCorrectionMs);
     /// <inheritdoc cref="SymbolMap.CreatureShowFeedbackBubbleText"/>
     public void CreatureShowFeedbackBubbleText() => EngineFn.CreatureShowFeedbackBubbleText(Ptr);
     /// <inheritdoc cref="EngineLayout.CreatureDesiredPos"/>
@@ -1428,24 +1435,40 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public ref uint LockTarget => ref *(uint*)(Ptr + EngineLayout.CreatureLockTarget);
     /// <inheritdoc cref="EngineLayout.CreatureMasterId"/>
     public ref uint MasterId => ref *(uint*)(Ptr + EngineLayout.CreatureMasterId);
+    /// <inheritdoc cref="EngineLayout.CreaturePathFromServer"/>
+    public ref int PathFromServer => ref *(int*)(Ptr + EngineLayout.CreaturePathFromServer);
     /// <inheritdoc cref="EngineLayout.CreaturePathfind"/>
     public ref CPathfindInformation Pathfind => ref *(CPathfindInformation*)(Ptr + EngineLayout.CreaturePathfind);
     /// <inheritdoc cref="EngineLayout.CreaturePlated"/>
     public ref int Plated => ref *(int*)(Ptr + EngineLayout.CreaturePlated);
     /// <inheritdoc cref="SymbolMap.PlayFootstep"/>
     public void PlayFootstep() => EngineFn.PlayFootstep(Ptr);
+    /// <inheritdoc cref="EngineLayout.CreatureRunRate"/>
+    public ref float RunRate => ref *(float*)(Ptr + EngineLayout.CreatureRunRate);
     /// <inheritdoc cref="EngineLayout.CreatureSetPositionSlot"/>
     public void SetPosition(VectorArg pos) => ((delegate* unmanaged<IntPtr, VectorArg, void>)SetPositionFn)(Ptr, pos);
     /// <inheritdoc cref="EngineLayout.CreatureSetPositionSlot"/>
     public IntPtr SetPositionFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.CreatureSetPositionSlot);
     /// <inheritdoc cref="SymbolMap.SpawnHitVisuals"/>
     public void SpawnHitVisuals(byte flag, IntPtr attackData, VectorArg push, IntPtr text) => EngineFn.SpawnHitVisuals(Ptr, flag, attackData, push, text);
+    /// <inheritdoc cref="EngineLayout.CreatureSpecialWalk"/>
+    public ref float SpecialWalk => ref *(float*)(Ptr + EngineLayout.CreatureSpecialWalk);
+    /// <inheritdoc cref="EngineLayout.CreatureSpeedFactor"/>
+    public ref float SpeedFactor => ref *(float*)(Ptr + EngineLayout.CreatureSpeedFactor);
     /// <inheritdoc cref="EngineLayout.CreatureStats"/>
     public ref CNWCCreatureStats Stats => ref *(CNWCCreatureStats*)(Ptr + EngineLayout.CreatureStats);
     /// <inheritdoc cref="SymbolMap.UpdateLookAt"/>
     public void UpdateLookAt() => EngineFn.UpdateLookAt(Ptr);
+    /// <inheritdoc cref="EngineLayout.CreatureWalkRate"/>
+    public ref float WalkRate => ref *(float*)(Ptr + EngineLayout.CreatureWalkRate);
     /// <inheritdoc cref="SymbolMap.WalkUpdateLocation"/>
     public int WalkUpdateLocation() => EngineFn.WalkUpdateLocation(Ptr);
+    /// <inheritdoc cref="EngineLayout.CreatureWaypointCount"/>
+    public ref ushort WaypointCount => ref *(ushort*)(Ptr + EngineLayout.CreatureWaypointCount);
+    /// <inheritdoc cref="EngineLayout.CreatureWaypointCursor"/>
+    public ref IntPtr WaypointCursor => ref *(IntPtr*)(Ptr + EngineLayout.CreatureWaypointCursor);
+    /// <inheritdoc cref="EngineLayout.CreatureWaypoints"/>
+    public ref IntPtr Waypoints => ref *(IntPtr*)(Ptr + EngineLayout.CreatureWaypoints);
 }
 
 /// <summary>Typed view of an engine <c>CNWCCreatureStats*</c>.</summary>
@@ -1609,6 +1632,8 @@ public readonly unsafe partial struct CNWCObject(IntPtr ptr)
     public void SetPopUpBubbleText(IntPtr text, int forceShow, float perChar, float fixedSec) => EngineFn.SetPopUpBubbleText(Ptr, text, forceShow, perChar, fixedSec);
     /// <inheritdoc cref="SymbolMap.ShowFloatyText"/>
     public void ShowFloatyText(IntPtr text, VectorArg colour, IntPtr font, int background) => EngineFn.ShowFloatyText(Ptr, text, colour, font, background);
+    /// <inheritdoc cref="EngineLayout.ObjStepMs"/>
+    public ref uint StepMs => ref *(uint*)(Ptr + EngineLayout.ObjStepMs);
     /// <inheritdoc cref="EngineLayout.ObjType"/>
     public ref byte Type => ref *(byte*)(Ptr + EngineLayout.ObjType);
     /// <inheritdoc cref="EngineLayout.ObjUnHiliteSlot"/>
@@ -2221,6 +2246,8 @@ public readonly unsafe ref partial struct MdlNode(IntPtr ptr)
     public ref IntPtr Children => ref *(IntPtr*)(Ptr + EngineLayout.MdlNodeChildren);
     /// <inheritdoc cref="EngineLayout.MdlNodeControllerCount"/>
     public ref int ControllerCount => ref *(int*)(Ptr + EngineLayout.MdlNodeControllerCount);
+    /// <inheritdoc cref="EngineLayout.MdlNodeControllerData"/>
+    public ref IntPtr ControllerData => ref *(IntPtr*)(Ptr + EngineLayout.MdlNodeControllerData);
     /// <inheritdoc cref="EngineLayout.MdlNodeControllers"/>
     public ref IntPtr Controllers => ref *(IntPtr*)(Ptr + EngineLayout.MdlNodeControllers);
     /// <inheritdoc cref="EngineLayout.MdlNodeKind"/>
@@ -2360,8 +2387,14 @@ public readonly unsafe partial struct NewController(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.NewControllerFormat"/>
+    public ref byte Format => ref *(byte*)(Ptr + EngineLayout.NewControllerFormat);
     /// <inheritdoc cref="EngineLayout.NewControllerKeyCount"/>
     public ref short KeyCount => ref *(short*)(Ptr + EngineLayout.NewControllerKeyCount);
+    /// <inheritdoc cref="EngineLayout.NewControllerTimeKey"/>
+    public ref ushort TimeKey => ref *(ushort*)(Ptr + EngineLayout.NewControllerTimeKey);
+    /// <inheritdoc cref="EngineLayout.NewControllerValueKey"/>
+    public ref ushort ValueKey => ref *(ushort*)(Ptr + EngineLayout.NewControllerValueKey);
 }
 
 /// <summary>Typed view of an engine <c>Nui__JSON__IdNode*</c>.</summary>
@@ -3947,6 +3980,18 @@ public static unsafe class EngineFn
     private static bool _GobAnimateDone;
     /// <inheritdoc cref="SymbolMap.GobAnimate"/>
     public static GobAnimateFn GobAnimate => (GobAnimateFn)(_GobAnimateDone ? _GobAnimate : Resolve(ref _GobAnimate, ref _GobAnimateDone, SymbolMap.GobAnimate));
+    private static IntPtr _AnimateHierarchy;
+    private static bool _AnimateHierarchyDone;
+    /// <inheritdoc cref="SymbolMap.AnimateHierarchy"/>
+    public static AnimateHierarchyFn AnimateHierarchy => (AnimateHierarchyFn)(_AnimateHierarchyDone ? _AnimateHierarchy : Resolve(ref _AnimateHierarchy, ref _AnimateHierarchyDone, SymbolMap.AnimateHierarchy));
+    private static IntPtr _CtrlGetQuaternion;
+    private static bool _CtrlGetQuaternionDone;
+    /// <inheritdoc cref="SymbolMap.CtrlGetQuaternion"/>
+    public static CtrlGetQuaternionFn CtrlGetQuaternion => (CtrlGetQuaternionFn)(_CtrlGetQuaternionDone ? _CtrlGetQuaternion : Resolve(ref _CtrlGetQuaternion, ref _CtrlGetQuaternionDone, SymbolMap.CtrlGetQuaternion));
+    private static IntPtr _CtrlGetVector;
+    private static bool _CtrlGetVectorDone;
+    /// <inheritdoc cref="SymbolMap.CtrlGetVector"/>
+    public static CtrlGetVectorFn CtrlGetVector => (CtrlGetVectorFn)(_CtrlGetVectorDone ? _CtrlGetVector : Resolve(ref _CtrlGetVector, ref _CtrlGetVectorDone, SymbolMap.CtrlGetVector));
     private static IntPtr _SpawnHitVisuals;
     private static bool _SpawnHitVisualsDone;
     /// <inheritdoc cref="SymbolMap.SpawnHitVisuals"/>
@@ -5664,6 +5709,24 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.GobAnimate"/>; returns the slot holding the next layer, or null.</summary>
     public static GobAnimateFn* ChainGobAnimate(this HookService h, GobAnimateFn handler, int priority) =>
         (GobAnimateFn*)h.Chain(SymbolMap.GobAnimate, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AnimateHierarchy"/>; returns the original, or null.</summary>
+    public static AnimateHierarchyFn InstallAnimateHierarchy(this HookService h, AnimateHierarchyFn handler) =>
+        (AnimateHierarchyFn)h.Install(SymbolMap.AnimateHierarchy, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AnimateHierarchy"/>; returns the slot holding the next layer, or null.</summary>
+    public static AnimateHierarchyFn* ChainAnimateHierarchy(this HookService h, AnimateHierarchyFn handler, int priority) =>
+        (AnimateHierarchyFn*)h.Chain(SymbolMap.AnimateHierarchy, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.CtrlGetQuaternion"/>; returns the original, or null.</summary>
+    public static CtrlGetQuaternionFn InstallCtrlGetQuaternion(this HookService h, CtrlGetQuaternionFn handler) =>
+        (CtrlGetQuaternionFn)h.Install(SymbolMap.CtrlGetQuaternion, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.CtrlGetQuaternion"/>; returns the slot holding the next layer, or null.</summary>
+    public static CtrlGetQuaternionFn* ChainCtrlGetQuaternion(this HookService h, CtrlGetQuaternionFn handler, int priority) =>
+        (CtrlGetQuaternionFn*)h.Chain(SymbolMap.CtrlGetQuaternion, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.CtrlGetVector"/>; returns the original, or null.</summary>
+    public static CtrlGetVectorFn InstallCtrlGetVector(this HookService h, CtrlGetVectorFn handler) =>
+        (CtrlGetVectorFn)h.Install(SymbolMap.CtrlGetVector, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.CtrlGetVector"/>; returns the slot holding the next layer, or null.</summary>
+    public static CtrlGetVectorFn* ChainCtrlGetVector(this HookService h, CtrlGetVectorFn handler, int priority) =>
+        (CtrlGetVectorFn*)h.Chain(SymbolMap.CtrlGetVector, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.SpawnHitVisuals"/>; returns the original, or null.</summary>
     public static SpawnHitVisualsFn InstallSpawnHitVisuals(this HookService h, SpawnHitVisualsFn handler) =>
         (SpawnHitVisualsFn)h.Install(SymbolMap.SpawnHitVisuals, (IntPtr)handler);

@@ -728,14 +728,15 @@ Deleted: `/post scale` (= alloy.scale), `/post aotemporal` (= ao.temporal).
 | dangly.cage | cage | Freedom of movement | S | 0.5–8 · 3.5 | A | L | Collision | ×stock cage; past ~4 cloaks reach the legs. |
 | dangly.hz / steps / still | same | — | S | | C | L | | |
 
-**Animation** — group `anim` (CX-29). No master: foot placement is one toggle beside its own limit. Status line: hooked or not, and on/off; the `[alloy]` period line carries `ik` (gobs/f, rays/f, tile vs placeable hits, gated vs no-slot refusals).
+**Animation** — group `anim` (CX-29, CX-61). One panel row, the master *Procedural animations*; every other `anim.*` knob (foot placement, stride, foot lock, settle, footsteps, cloaks, look, diagonal, pivot, blend, crossfade, curves, lean, mass, keyboard weight, follow, aim, hit reactions, detail distance) is Chat-only, set in `cx.cfg` or with `/anim`, and a correction reads on only while both it and the master are. Every one of them defaults on, so the master alone decides (2026-09-29). Status line: hooked or not, and on/off; the `[alloy]` period line carries `ik` (gobs/f, rays/f, tile vs placeable hits, gated vs no-slot refusals).
 
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
-| anim.footik | (none) | Stand on uneven floors | T | off (on after live verification) | U | L | Characters stand on the floor that is drawn -- raised platforms, rugs, decks, stairs and sloped tiles -- instead of the flat walkmesh under it: the body is raised or lowered and each leg bends to its own foothold. Sitting, lying, knockdown and death are left alone. |
-| anim.footik_max | (none) | Largest step | S | 0.1–1.5 m step 0.05 · 0.5 | U | L | How far above or below the walkmesh a floor may be and still count. A table the character walks past is higher than this and is ignored. |
-| anim.footik_tilt | (none) | Foot tilt | S | 0–45 ° step 5 · 30 | U | L | The steepest slope a foot turns to lie flat on, so a sole follows a ramp or a sloped tile instead of cutting into it. 0 keeps the foot as animated. |
-| anim.footik_lift | (none) | Highest knee lift | S | 0.05–0.6 m step 0.05 · 0.25 | U | L | How much higher one foot may be set than the other. A steep step past this leaves the foot in the step rather than folding the leg up to it. |
+| anim.enabled | (none) | Procedural animations | T | on | U | L | Corrections laid over the engine's own animation: characters stand on the floor that is drawn and keep their feet planted, footsteps sound as a foot lands, the body turns with the head, leans into turns, bends toward what it attacks and takes hits. Off, every character animates exactly as the engine plays it. |
+| anim.footik | (none) | Stand on uneven floors | T | off (on after live verification) | C | L | Characters stand on the floor that is drawn -- raised platforms, rugs, decks, stairs and sloped tiles -- instead of the flat walkmesh under it: the body is raised or lowered and each leg bends to its own foothold. Sitting, lying, knockdown and death are left alone. |
+| anim.footik_max | (none) | Largest step | S | 0.1–1.5 m step 0.05 · 0.5 | C | L | How far above or below the walkmesh a floor may be and still count. A table the character walks past is higher than this and is ignored. |
+| anim.footik_tilt | (none) | Foot tilt | S | 0–45 ° step 5 · 30 | C | L | The steepest slope a foot turns to lie flat on, so a sole follows a ramp or a sloped tile instead of cutting into it. 0 keeps the foot as animated. |
+| anim.footik_lift | (none) | Highest knee lift | S | 0.05–0.6 m step 0.05 · 0.25 | C | L | How much higher one foot may be set than the other. A steep step past this leaves the foot in the step rather than folding the leg up to it. |
 
 ### 4.4 Camera
 

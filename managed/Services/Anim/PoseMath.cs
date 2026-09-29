@@ -36,17 +36,24 @@ internal static unsafe class PoseMath
 
     /// <summary>An underdamped spring toward 0 (natural frequency <paramref name="omega"/> rad/s, damping ratio
     /// <paramref name="zeta"/>): semi-implicit Euler in fixed substeps, so a flinch overshoots once and settles.</summary>
-    internal static void Wobble(ref Vector2 x, ref Vector2 v, float omega, float zeta, float dt)
+    internal static void Wobble(ref float x, ref float v, float omega, float zeta, float dt)
     {
         if (!(dt > 0f)) return;
         int n = (int)MathF.Ceiling(dt / WobbleStep);
-        if (n > WobbleMaxSteps) { x = v = Vector2.Zero; return; }
+        if (n > WobbleMaxSteps) { x = v = 0f; return; }
         float h = dt / n;
         for (int i = 0; i < n; i++)
         {
             v += (-omega * omega * x - 2f * zeta * omega * v) * h;
             x += v * h;
         }
+    }
+
+    /// <summary>Two <see cref="Wobble"/> springs at once.</summary>
+    internal static void Wobble(ref Vector2 x, ref Vector2 v, float omega, float zeta, float dt)
+    {
+        Wobble(ref x.X, ref v.X, omega, zeta, dt);
+        Wobble(ref x.Y, ref v.Y, omega, zeta, dt);
     }
 
     /// <summary>Weight of the character's forward in the knee's bend plane, as a share of the leg's length, once
@@ -107,6 +114,20 @@ internal static unsafe class PoseMath
         return start + soft * (1f - MathF.Exp(-(c - start) / soft));
     }
 
+    /// <summary>The share (0 to 1) of the horizontal move <paramref name="flat"/> the leg hip <paramref name="h"/>, knee
+    /// <paramref name="k"/>, ankle <paramref name="a"/> can reach exactly from the ankle target <paramref name="at"/>: past
+    /// the start of <see cref="Soften"/>'s zone the ankle stops short of its target, in the air. A target already past it
+    /// keeps a move toward the hip and drops one away.</summary>
+    internal static float Reachable(Vector3 h, Vector3 k, Vector3 a, Vector3 at, Vector3 flat)
+    {
+        float limit = MathF.Max((Vector3.Distance(h, k) + Vector3.Distance(k, a)) * (1f - SoftReach), Vector3.Distance(h, a));
+        Vector3 q = at - h;
+        float f = flat.LengthSquared(), c = q.LengthSquared() - limit * limit, b = Vector3.Dot(q, flat);
+        if (f < 1e-12f) return 1f;
+        if (c > 0f) return b < 0f ? 1f : 0f;
+        return MathF.Min(1f, (-b + MathF.Sqrt(b * b - f * c)) / f);
+    }
+
     /// <summary>The shortest rotation taking <paramref name="u"/> onto <paramref name="v"/>.</summary>
     internal static Quaternion Arc(Vector3 u, Vector3 v)
     {
@@ -142,6 +163,22 @@ internal static unsafe class PoseMath
         GetWorld(part, &p, q);
         pos = p;
         rot = new Quaternion(q[1], q[2], q[3], q[0]);
+    }
+
+    /// <summary>The rotation vector (axis times angle, radians) of <paramref name="q"/>, the short way round.</summary>
+    internal static Vector3 Log(Quaternion q)
+    {
+        if (q.W < 0f) q = Quaternion.Negate(q);
+        Vector3 v = new(q.X, q.Y, q.Z);
+        float s = v.Length();
+        return s < 1e-7f ? 2f * v : v * (2f * MathF.Atan2(s, q.W) / s);
+    }
+
+    /// <summary>The rotation whose rotation vector is <paramref name="r"/>: <see cref="Log"/>'s inverse.</summary>
+    internal static Quaternion Exp(Vector3 r)
+    {
+        float a = r.Length();
+        return a < 1e-7f ? Quaternion.Normalize(new Quaternion(0.5f * r, 1f)) : Quaternion.CreateFromAxisAngle(r / a, a);
     }
 
     internal static Quaternion Local(IntPtr part) => new Part(part).Rot;

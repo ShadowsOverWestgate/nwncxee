@@ -228,6 +228,19 @@ public static unsafe class EngineLayout
     public const int NewControllerStride = 0xc;
     /// <inheritdoc cref="NewControllerStride"/>
     public static readonly int NewControllerKeyCount = Field<short>("NewController", "keyCount");
+    /// <summary>CX-28: where a controller's keys sit in its node's float pool (<see cref="MdlNodeControllerData"/>):
+    /// the key times from float index +6, the values from +8, and at +0xa the value's width (1 float, 3 vector,
+    /// 4 quaternion as x, y, z, w) with 0x10 set on Bezier keys. <c>GetKeyIndexAndAlpha</c> (@0x4980e0 / rva
+    /// 0x51470), <c>GetVectorValue</c> (@0x498620 / rva 0x51750) and <c>GetQuaternionValue</c> (@0x498640 /
+    /// rva 0x51530) read all four the same way on both builds.</summary>
+    public static readonly int NewControllerTimeKey = Field<ushort>("NewController", "timeKey");
+    /// <inheritdoc cref="NewControllerTimeKey"/>
+    public static readonly int NewControllerValueKey = Field<ushort>("NewController", "valueKey");
+    /// <inheritdoc cref="NewControllerTimeKey"/>
+    public static readonly int NewControllerFormat = Field<byte>("NewController", "format");
+    /// <summary>CX-28: MdlNode -&gt; the float pool its controllers' key times and values index into
+    /// (<see cref="NewControllerTimeKey"/>); the same three getters read it at +0x88 on both builds.</summary>
+    public static readonly int MdlNodeControllerData = Field<IntPtr>("MdlNode", "controllerData");
     /// <summary>CX-56: MdlNode -&gt; its child nodes (items +0x68, count +0x70). <c>CreateInstanceTreeR</c>
     /// (Linux @0x43c6b0, Windows rva 0x8dab0) sizes the Part's child array from the count and instances each
     /// entry, and <c>AnimateHierarchy</c> (Linux @0x499990, Windows rva 0x4fe90) pairs over the same two
@@ -1952,6 +1965,55 @@ public static unsafe class EngineLayout
     /// update that says so, cleared when the walk ends. Linux +0x318, Windows +0x2f8. No Byte01 probe: the ctor
     /// is not known to zero it.</summary>
     public static readonly int CreatureDriving = Field<int>("CNWCCreature", "driving");
+
+    // ---- CX-67: the gait signals. Every row below is read off ONE function pair, CNWCCreature::WalkUpdateLocation
+    // (Linux @0x725830, Windows rva 0x8114d0), which on Windows carries ComputeSpeedFactor inlined -- so the ramp
+    // divisor, the path walk and the trapezoid step are all in the one body. The block shift is the CNWCCreature
+    // -0x20 the rows above already carry. docs/research/locomotion-engine.md.
+
+    /// <summary>CNWCCreature -&gt; the speed factor, 0.1..1.0, that <c>ComputeSpeedFactor</c> returns and
+    /// <c>WalkUpdateLocation</c> stores: the fraction of the rate the body is travelling at, and the engine's own
+    /// ramp and stop ease. Reset to 0 on arrival. Linux +0x2fc, Windows +0x2dc -- both bodies read it as the
+    /// trapezoid's previous term and write the new one back at the same slot.</summary>
+    public static readonly int CreatureSpeedFactor = Field<float>("CNWCCreature", "speedFactor");
+    /// <summary>CNWCCreature -&gt; the special-walk rate multiplier, applied to the rate on the driving arm only
+    /// (1.0 in practice). Linux +0x300, Windows +0x2e0: the <c>rate *= this</c> immediately under the driving
+    /// test in both bodies.</summary>
+    public static readonly int CreatureSpecialWalk = Field<float>("CNWCCreature", "specialWalk");
+    /// <summary>CNWCCreature -&gt; the walk and run rates in mm/s, server-supplied. <c>WalkUpdateLocation</c> picks
+    /// the walk on animation 2, 3, 0x54, 0x55 (and looks WALKDIST up) and the run on 4, 0x56, 0x57 (RUNDIST);
+    /// the pure sidesteps 0x4e/0x4f use a hardcoded 1600 mm/s instead. Linux +0x310/+0x314, Windows
+    /// +0x2f0/+0x2f4 -- the same two animation-id chains reach them on both builds.</summary>
+    public static readonly int CreatureWalkRate = Field<float>("CNWCCreature", "walkRate");
+    /// <inheritdoc cref="CreatureWalkRate"/>
+    public static readonly int CreatureRunRate = Field<float>("CNWCCreature", "runRate");
+    /// <summary>CNWCCreature -&gt; the path's provenance (int): 1 = the server sent it (<c>EvaluateNewWayPoints</c>)
+    /// and the speed factor ramps over divisor 500, 0 = the client predicted it (<c>ClientSideWalkCommand</c>) and
+    /// the divisor is 1000. <b>Not</b> the driving flag, which is <see cref="CreatureDriving"/>. Linux +0x2f8
+    /// (<c>cmpl $0x1,0x2f8(%rdi)</c> at the head of ComputeSpeedFactor), Windows +0x2d8 (the same <c>== 1</c>
+    /// picking 500.0 over 1000.0, inlined into WalkUpdateLocation).</summary>
+    public static readonly int CreaturePathFromServer = Field<int>("CNWCCreature", "pathFromServer");
+    /// <summary>CNWCCreature -&gt; the waypoint array (<c>Vector*</c>, stride 12), the cursor into it, and the
+    /// count (ushort). The remaining path is <c>|cursor[0] - desiredPos|</c> plus every leg from there to
+    /// <c>array + count</c>, measured in 2-D (z is forced to 0 in every leg). Linux +0x2b8/+0x2c0/+0x2f0,
+    /// Windows +0x298/+0x2a0/+0x2d0 -- the one path-length loop, identical on both builds.</summary>
+    public static readonly int CreatureWaypoints = Field<IntPtr>("CNWCCreature", "waypoints");
+    /// <inheritdoc cref="CreatureWaypoints"/>
+    public static readonly int CreatureWaypointCursor = Field<IntPtr>("CNWCCreature", "waypointCursor");
+    /// <inheritdoc cref="CreatureWaypoints"/>
+    public static readonly int CreatureWaypointCount = Field<ushort>("CNWCCreature", "waypointCount");
+    /// <summary>CNWCCreature -&gt; the server-correction countdown in milliseconds, 0 in the normal case:
+    /// <c>MoveCreatureToPosition</c> (Linux @0x71cd70, Windows rva 0x804840) snaps the drawn position onto the
+    /// desired one once <see cref="ObjStepMs"/> reaches it and otherwise closes the gap by
+    /// <c>this/(this + step)</c>. <c>ResetDesiredPositionTimer</c> sets it to 512. Linux +0x2ec, Windows +0x2cc --
+    /// both bodies decrement it by the step and divide by the same sum.</summary>
+    public static readonly int CreatureCorrectionMs = Field<uint>("CNWCCreature", "correctionMs");
+    /// <summary>CNWCObject -&gt; the world-time delta of this AI update, whole milliseconds (<c>AIUpdate</c> writes
+    /// it from <c>SubtractWorldTimes</c>). It is the clock the position steps on -- the pose layer's own float
+    /// seconds are a different clock -- so a speed or an acceleration read off the engine divides by this, not by
+    /// the frame time. A CNWCObject field, so the CNWCCreature shift does not apply: +0x58 on both, the
+    /// WalkUpdateLocation trapezoid's <c>ms</c> on each build.</summary>
+    public static readonly int ObjStepMs = Field<uint>("CNWCObject", "stepMs");
     /// <summary>CNWCCreature -&gt; pointer to the creature's pathfind block (the object whose +0xcc ushort indexes
     /// creaturespeed.2da). Linux +0x320, Windows +0x300.</summary>
     public static readonly int CreaturePathfind = Field<CX.Engine.CPathfindInformation>("CNWCCreature", "pathfind");
@@ -2041,6 +2103,12 @@ public static unsafe class EngineLayout
     /// both builds (Linux @0x49d8c0, Windows @0x14004dbd0), so this tree -- not the model's -- holds the
     /// controllers a running animation writes through.</summary>
     public static readonly int AnimationNode = Field<CX.Engine.MdlNode>("Animation", "node");
+    /// <summary>CX-67: Animation -&gt; its length in seconds. <c>Gob::Animate</c> wraps and clamps
+    /// <see cref="AnimRunTime"/> against it and publishes it as <c>AnimRun::m_AnimLength</c> on both builds
+    /// (Linux @0x49d8c0 reads +0x8c, Windows rva 0x4dbd0 reads <b>+0x90</b>). The Windows <c>Animation</c> layout
+    /// shifts +4 from here on, so the transition time beside it is +0x90 / +0x94 -- pair any further field of
+    /// this class on its own.</summary>
+    public static readonly int AnimationLength = Field<float>("Animation", "length");
     /// <summary>AnimRun -&gt; its playback rate (float, signed): <c>Gob::Animate</c> advances <c>+0x14</c> by
     /// <c>dt * rate</c>; <c>Gob::PlayAnimation</c> writes it, and <c>CNWCCreature::WalkUpdateLocation</c> re-paces
     /// walk/run through it every AI update. Same offset on both builds

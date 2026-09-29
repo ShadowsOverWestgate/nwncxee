@@ -1461,6 +1461,33 @@ internal static unsafe class SymbolMap
     /// local written after it reaches every draw. Chained. ABI: <c>(Gob* /*rdi*/, float dt /*xmm0*/)</c>.</summary>
     [Fn("void(Gob gob, float dt)")]
     public const string GobAnimate = "_ZN3Gob7AnimateEf";
+    /// <summary>CX-27: <c>AnimateHierarchy(Part*, MdlNode*, float from, float to, float weight)</c> @0x499990 -- one
+    /// AnimRun applied to a part and, through a direct self-call, to each child. <c>Gob::Animate</c> passes the run's times
+    /// (+0x10, +0x14) and its crossfade weight (+0x18: raised by dt / +0x1c to 1, a fading run lowered to 0), which every
+    /// controller blends by (<c>NewController::Control</c>: <c>slerp(current, key, weight)</c>). Chained. ABI: Itanium
+    /// <c>(rdi, rsi, xmm0, xmm1, xmm2)</c>; Win64 <c>(rcx, rdx, xmm2, xmm3, [rsp+0x28])</c> -- the weight on the stack.</summary>
+    [Fn("void(IntPtr part, IntPtr node, float from, float to, float weight)")]
+    public const string AnimateHierarchy = "_Z16AnimateHierarchyP4PartP7MdlNodefff";
+    /// <summary>CX-28: <c>NewController::GetQuaternionValue(float t, MdlNode*, Quaternion&amp;)</c> @0x498640 -- a
+    /// rotation track's value at animation time <c>t</c>: the bracketing keys slerped, the end key held past either
+    /// end. 0 (nothing written) unless the track is 4 wide. Called by <c>NewController::Control</c> and
+    /// <c>ReportKey</c>; the out value is w-first (<see cref="CX.Engine.Quat"/>). Returns int in eax on both
+    /// builds (the MSVC name says <c>H</c>).</summary>
+    [Fn("int(NewController self, float t, IntPtr node, Quat* rot)")]
+    public const string CtrlGetQuaternion = "_ZN13NewController18GetQuaternionValueEfP7MdlNodeR10Quaternion";
+    /// <summary>CX-28: <c>NewController::GetVectorValue(float t, MdlNode*, Vector&amp;)</c> @0x498620 -- a vector
+    /// track's value (a position, or a colour), linear or Bezier; a position track (id <see cref="EngineLayout.PartPos"/>)
+    /// comes out times <see cref="PositionScaleFactor"/>. Same callers and return as <see cref="CtrlGetQuaternion"/>.</summary>
+    [Fn("int(NewController self, float t, IntPtr node, System.Numerics.Vector3* v)")]
+    public const string CtrlGetVector = "_ZN13NewController14GetVectorValueEfP7MdlNodeR6Vector";
+    /// <summary>CX-28: the float <c>GetVectorValue</c> multiplies a position track by (both builds). Data symbol; read only.</summary>
+    public const string PositionScaleFactor = "position_scale_factor";
+    /// <summary><c>CNWCAnimBase::GetAnimationName(ushort)</c> @0x9ccd80 -- a creature's anim id to its animation name
+    /// (vtable +0x60), then <c>GetAnimationReplace</c>. <c>SetAnimation</c>, <c>GetAnimationLength</c> and
+    /// <c>GetAnimationTime</c> all resolve through it, so an id swapped here swaps the length and pacing too. Returns
+    /// a <c>CExoString</c> BY VALUE: Itanium <c>(sret, this, id)</c>, Win64 <c>(this, sret, id)</c>, the buffer
+    /// back in rax on both. No <c>[Fn]</c>: an sret symbol is hooked by hand (<see cref="CX.Services.Anim.Diagonal"/>).</summary>
+    public const string AnimGetName = "_ZN12CNWCAnimBase16GetAnimationNameEt";
 
     /// <summary><c>CNWCCreature::SpawnHitVisuals(uchar flag, CNWCCombatAttackData*, Vector, CExoString)</c>: the one
     /// funnel a landed melee swing (<c>SwingHitEvent</c>) and a projectile impact (<c>CNWCProjectile::AIUpdate</c>)
@@ -2325,6 +2352,11 @@ internal static unsafe class SymbolMap
         [PlayFootstep]       = At(),
         [BeginLookAtAnimate] = Nm("?BeginLookAtAnimate@Gob@@UEAAXPEAVCAurObject@@PEBD1MMMM@Z"),
         [GobAnimate] = Nm("?Animate@Gob@@UEAAXM@Z"),
+        [AnimateHierarchy] = Nm("?AnimateHierarchy@@YAXPEAVPart@@PEAVMdlNode@@MMM@Z"),
+        [CtrlGetQuaternion] = Nm("?GetQuaternionValue@NewController@@QEAAHMPEAVMdlNode@@AEAVQuaternion@@@Z"),
+        [CtrlGetVector] = Nm("?GetVectorValue@NewController@@QEAAHMPEAVMdlNode@@AEAVVector@@@Z"),
+        [PositionScaleFactor] = Nm("?position_scale_factor@@3MA"),
+        [AnimGetName] = At(),   // the only user of "pausewalkfl" and "runfr" (and every "CustomNN" name)
         [SpawnHitVisuals] = At(),   // anchor: its own "SpawnHitVisuals" log tag, 5 refs all inside it
         [LookAtControl]      = Nm("?Control@LookAtAnimation@@UEAAXXZ"),
         // auto-target: CActionTarget is client-side (not name-exported on Windows). Both anchored by the

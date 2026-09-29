@@ -65,6 +65,15 @@ public sealed unsafe class CameraDriveService : IExtenderService
     /// movement is a deliberate sidestep or back-pedal the recenter must not swing behind -- a strafe would
     /// become a spiral and a back-pedal a 180° swing that has no side to take.</summary>
     internal static bool NoForward { get; private set; }
+    /// <summary>The engine was handed a key that moves the player on the last drive step -- walk, run, back or
+    /// strafe, as it saw them after any rewrite here -- so <c>DrivePlayer</c> keeps re-extending the drive's path.
+    /// It does that only every 250 ms between packets (<c>UpdateDriveMode</c>'s <c>+0x198</c> gate), so a path
+    /// running short is no sign of a release; this is. False once they are up: a driving player is then coasting
+    /// to its stop. A turn key alone moves nothing -- the engine re-paths it to where the creature stands. Read by
+    /// the pose layer only once <see cref="Live"/>.</summary>
+    internal static bool Held { get; private set; }
+    /// <summary>The drive step has run, so <see cref="Held"/> is a reading and not the default.</summary>
+    internal static bool Live => _live;
     /// <summary>Face mode (<c>&lt;mode&gt;.face</c>): the turn keys' camera yaw, +1 left / -1 right, consumed by
     /// <see cref="CameraService"/> before Control as a yaw velocity of <c>move.keyturn</c> deg/s.</summary>
     internal static int TurnAxis { get; private set; }
@@ -109,7 +118,7 @@ public sealed unsafe class CameraDriveService : IExtenderService
             if (_active) { _active = false; ClientApi.Send(MajorInput, MinorAbortDrive, null, 0); _aborts++; }
             int walk0 = a.DriveWalk, s0 = keys[0], s1 = keys[1], s2 = keys[2], s3 = keys[3], s4 = keys[4], s5 = keys[5];
             a.DriveWalk = 0; keys[0] = keys[1] = keys[2] = keys[3] = keys[4] = keys[5] = 0;
-            _orig(app);
+            Step(app, a);
             a.DriveWalk = walk0; keys[0] = s0; keys[1] = s1; keys[2] = s2; keys[3] = s3; keys[4] = s4; keys[5] = s5;
             return;
         }
@@ -162,11 +171,11 @@ public sealed unsafe class CameraDriveService : IExtenderService
                 // The turn keys turn the camera, not the creature: the engine sees them up (no turn-on-spot).
                 int t2 = keys[TurnL], t3 = keys[TurnR];
                 keys[TurnL] = keys[TurnR] = 0;
-                _orig(app);
+                Step(app, a);
                 keys[TurnL] = t2; keys[TurnR] = t3;
                 return;
             }
-            _orig(app);
+            Step(app, a);
             return;
         }
 
@@ -209,10 +218,18 @@ public sealed unsafe class CameraDriveService : IExtenderService
         (keys[Fwd], walk) = ForwardSlots(face, f, k0, w0);
         if (face) { keys[Back] = f < 0f ? 1 : 0; keys[StrafeL] = s < 0f ? 1 : 0; keys[StrafeR] = s > 0f ? 1 : 0; }
         else keys[Back] = keys[StrafeL] = keys[StrafeR] = 0;
-        _orig(app);
+        Step(app, a);
         walk = w0; keys[0] = k0; keys[1] = k1; keys[2] = k2; keys[3] = k3; keys[4] = k4; keys[5] = k5;
         if (a.DriveLastSend != sendBefore) { _sentTenths = tenths; _lastSendTick = now; _sends++; }
         _active = true; _engineAborts = engineKey;
+    }
+
+    /// <summary>The engine's drive step, <see cref="Held"/> read off the keys exactly as it is handed them.</summary>
+    private static void Step(IntPtr app, CClientExoAppInternal a)
+    {
+        Span<int> keys = a.DriveKeys;
+        Held = (a.DriveWalk | keys[Fwd] | keys[Back] | keys[StrafeL] | keys[StrafeR]) != 0;
+        _orig(app);
     }
 
     /// <summary>The forward slots the engine is handed (run = <see cref="EngineLayout.InternalDriveKeys"/>[0], walk =
