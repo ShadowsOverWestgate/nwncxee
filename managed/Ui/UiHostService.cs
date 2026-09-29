@@ -172,17 +172,9 @@ public sealed unsafe class UiHostService : IExtenderService
         FrameRegistry.Global.Run(FramePhase.Start);
         if (_nkSlot == null) DrawWindows();       // fallback: no nk_sdl_render chain -> draw here, above NUI
         FrameRegistry.Global.Run(FramePhase.PrePresent);
-        // #210 (G1): the hand-back resync. Window content draws raw GL in the ENGINE's 3.3 context, past
-        // GLRender's shadow cache, which then early-outs on a stale match and skips real GL calls for the rest
-        // of the frame. One engine-side full resync closes that instead of each drawer mirroring the state it
-        // touched. Must be the LAST thing before the present -- after the window roll-call and after every
-        // PrePresent participant (GlContextService's 4.6 bracket switches back to this context in there).
-        if (_resetStates != null) _resetStates();
-        // ResetRenderStates rewrites every shadow-cache global EXCEPT the two buffer bindings, and
-        // GLRender::BindBuffer early-outs on a cache match -- so a window that left its own VBO bound in real
-        // GL would have the engine's next streamed vertex upload land in it. Routed through the engine
-        // wrapper, not glBindBuffer, precisely so the cache learns about it.
-        if (_bindBuffer != null) _bindBuffer(GlArrayBuffer, 0);
+        // Must be the LAST thing before the present -- after the window roll-call and after every PrePresent
+        // participant (GlContextService's 4.6 bracket switches back to this context in there).
+        HandBack();
         // #238: the present is its own zone. It is the discriminator the other brackets cannot supply --
         // a frame that spends its time HERE is waiting on the GPU or on vsync, which is a different problem
         // from every zone that measures our own CPU work.
@@ -225,7 +217,19 @@ public sealed unsafe class UiHostService : IExtenderService
         long tUi = FrameZones.Now;
         UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
         FrameZones.Add(FrameZones.Zone.Ui, tUi);
+        HandBack();
+    }
+
+    /// <summary>#210 (G1): the hand-back resync after raw GL in the ENGINE's context, which went past GLRender's
+    /// shadow cache -- that cache early-outs on a stale match and skips real GL calls for the rest of the frame.
+    /// One engine-side full resync instead of each drawer mirroring the state it touched. It rebinds the engine's
+    /// default framebuffer too (Ghidra: <c>GLRender::ResetRenderStates</c>).</summary>
+    internal static void HandBack()
+    {
         if (_resetStates != null) _resetStates();
+        // ResetRenderStates rewrites every shadow-cache global EXCEPT the two buffer bindings, and
+        // GLRender::BindBuffer early-outs on a cache match -- so a VBO left bound in real GL would take the
+        // engine's next streamed vertex upload. Through the engine wrapper so the cache learns about it.
         if (_bindBuffer != null) _bindBuffer(GlArrayBuffer, 0);
     }
 

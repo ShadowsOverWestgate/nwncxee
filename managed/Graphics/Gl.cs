@@ -313,6 +313,12 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint> CreateProgram;
     public static delegate* unmanaged<uint, uint, void> AttachShader;
     public static delegate* unmanaged<uint, void> LinkProgram;
+    /// <summary>glGetProgramBinary(program, bufSize, length*, format*, binary*) / glProgramBinary(program, format,
+    /// binary*, length) / glProgramParameteri: the <see cref="ProgramBinary"/> disk cache (GL 4.1 core).</summary>
+    public static delegate* unmanaged<uint, int, int*, uint*, void*, void> GetProgramBinary;
+    public static delegate* unmanaged<uint, uint, void*, int, void> ProgramBinaryLoad;
+    public static delegate* unmanaged<uint, uint, int, void> ProgramParameteri;
+    public const uint PROGRAM_BINARY_RETRIEVABLE_HINT = 0x8257, PROGRAM_BINARY_LENGTH = 0x8741;
     public static delegate* unmanaged<uint, byte*, int> GetUniformLocation;
     public static delegate* unmanaged<int, int, byte, float*, void> UniformMatrix4fv;
     public static delegate* unmanaged<int, int, void> Uniform1i;
@@ -623,6 +629,9 @@ public static unsafe class Gl
         CreateProgram = (delegate* unmanaged<uint>)P("glCreateProgram");
         AttachShader = (delegate* unmanaged<uint, uint, void>)P("glAttachShader");
         LinkProgram = (delegate* unmanaged<uint, void>)P("glLinkProgram");
+        GetProgramBinary = (delegate* unmanaged<uint, int, int*, uint*, void*, void>)P("glGetProgramBinary");
+        ProgramBinaryLoad = (delegate* unmanaged<uint, uint, void*, int, void>)P("glProgramBinary");
+        ProgramParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glProgramParameteri");
         GetUniformLocation = (delegate* unmanaged<uint, byte*, int>)P("glGetUniformLocation");
         UniformMatrix4fv = (delegate* unmanaged<int, int, byte, float*, void>)P("glUniformMatrix4fv");
         Uniform2fv = (delegate* unmanaged<int, int, float*, void>)P("glUniform2fv");

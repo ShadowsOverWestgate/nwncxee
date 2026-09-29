@@ -28,6 +28,9 @@ public sealed unsafe class GlContextService : IExtenderService
     /// teardown faults on a worker thread at texture delete; OwnedTextures reads it to keep such names alive.</summary>
     internal static bool Zink => _zink;
     private static bool _zink;
+    /// <summary>GL_RENDERER|GL_VERSION of the 4.6 context, empty until it is live: the driver half of every
+    /// <see cref="ProgramBinary"/> key, so a driver update misses instead of offering a stale blob.</summary>
+    internal static string Driver { get; private set; } = "";
     private const int GLX_FBCONFIG_ID = 0x8013;
     private const int GLX_CONTEXT_MAJOR_VERSION_ARB = 0x2091, GLX_CONTEXT_MINOR_VERSION_ARB = 0x2092;
     private const int GLX_CONTEXT_PROFILE_MASK_ARB = 0x9126, GLX_CONTEXT_CORE_PROFILE_BIT_ARB = 0x1;
@@ -70,6 +73,7 @@ public sealed unsafe class GlContextService : IExtenderService
     private static delegate* unmanaged<byte*, IntPtr> _glxGetProc;
     private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, int> _makeCur;
     private static delegate* unmanaged<IntPtr, IntPtr, void> _destroy;
+    private static delegate* unmanaged<IntPtr, IntPtr, void> _glxSwap;
     private static delegate* unmanaged<uint, uint, IntPtr> _fenceSync;
     private static delegate* unmanaged<IntPtr, uint, ulong, void> _waitSync;
     private static delegate* unmanaged<IntPtr, void> _deleteSync;
@@ -136,6 +140,7 @@ public sealed unsafe class GlContextService : IExtenderService
     [DllImport("opengl32.dll")] private static extern int wglMakeCurrent(IntPtr hdc, IntPtr ctx);
     [DllImport("opengl32.dll")] private static extern int wglDeleteContext(IntPtr ctx);
     [DllImport("opengl32.dll")] private static extern IntPtr wglGetProcAddress(string name);
+    [DllImport("gdi32.dll")] private static extern int SwapBuffers(IntPtr hdc);
 
     private static readonly bool Win = OperatingSystem.IsWindows();
 
@@ -167,6 +172,7 @@ public sealed unsafe class GlContextService : IExtenderService
     /// frame. Near-free when disabled/failed.</summary>
     public static void OnFrame()
     {
+        Presents++;
         if (_disabled) return;
         if (!_tried) { _tried = true; try { Create(); } catch (Exception e) { Fail($"EXCEPTION {e.Message}"); } }
         if (Available && !_worked && Enter()) { InBracket?.Invoke(); Leave(); }
@@ -235,6 +241,7 @@ public sealed unsafe class GlContextService : IExtenderService
         string ver = getString != null ? CStr(getString(GL_VERSION)) : "?";
         string renderer = getString != null ? CStr(getString(GL_RENDERER)) : "?";
         _zink = renderer.Contains("zink", StringComparison.OrdinalIgnoreCase);
+        Driver = renderer + "|" + ver;
         bool dbg = _debug && ArmDebug();
         Gl.DrainErrors();   // fresh-context error queue starts clean
         MakeCur(_engCtx);
@@ -255,6 +262,7 @@ public sealed unsafe class GlContextService : IExtenderService
         var getDrw = (delegate* unmanaged<IntPtr>)Dl("glXGetCurrentDrawable");
         _makeCur = (delegate* unmanaged<IntPtr, IntPtr, IntPtr, int>)Dl("glXMakeCurrent");
         _destroy = (delegate* unmanaged<IntPtr, IntPtr, void>)Dl("glXDestroyContext");
+        _glxSwap = (delegate* unmanaged<IntPtr, IntPtr, void>)Dl("glXSwapBuffers");
         if (_glxGetProc == null || getCtx == null || getDpy == null || getDrw == null || _makeCur == null
             || _destroy == null || Dl("glXQueryDrawable") == IntPtr.Zero || Dl("glXChooseFBConfig") == IntPtr.Zero
             || Dl("XDefaultScreen") == IntPtr.Zero || Dl("XSetErrorHandler") == IntPtr.Zero)
@@ -337,7 +345,24 @@ public sealed unsafe class GlContextService : IExtenderService
             if (fIn != IntPtr.Zero) { _waitSync(fIn, 0, TimeoutIgnored); _deleteSync(fIn); }
         }
         if (!_stamped) { _span.LastMs = -1; _stamped = _span.Begin(); if (_span.LastMs >= 0) FrameZones.Gpu(_span.LastMs, GpuStamp.Age); }
+        Inside = true;
         return true;
+    }
+
+    /// <summary>Presents since boot, bumped in <see cref="OnFrame"/>'s slot: a frame identity the passes can compare
+    /// without a present slot of their own.</summary>
+    internal static int Presents { get; private set; }
+
+    /// <summary>The 4.6 bracket is open: <see cref="Enter"/> succeeded and <see cref="Leave"/> has not run.</summary>
+    internal static bool Inside { get; private set; }
+
+    /// <summary>Present the engine's drawable now, from the engine's context, and wait until the GPU has taken it:
+    /// how a step that blocks the render thread (a shader compile) gets a frame on screen before it runs. Not the
+    /// engine's <c>GLRender::SwapBuffers</c>, which also resets its render states and runs its frame callbacks.</summary>
+    internal static void SwapNow()
+    {
+        if (Win) SwapBuffers(_drw); else if (_glxSwap != null) _glxSwap(_dpy, _drw);
+        if (_finish != null) _finish();
     }
 
     /// <summary>Close the bracket: drain glGetError on the 4.6 side (an error can never leak across the
@@ -368,6 +393,7 @@ public sealed unsafe class GlContextService : IExtenderService
 
     public static void Leave()
     {
+        Inside = false;
         _err46 += Gl.DrainErrors();
         if (_stamped) _span.End();
 

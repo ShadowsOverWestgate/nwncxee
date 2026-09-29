@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using CX.Framework;
 using CX.Alloy;   // ShaderResource: override lookup + $TOKEN$ expansion, both content/render concerns
 
@@ -36,9 +37,15 @@ internal static unsafe class GlProgram
 
     private static uint Pair(string vs, string fs, ExtenderLog? log, string what, bool host)
     {
-        uint v = Compile(Gl.VERTEX_SHADER, vs, log, what, host), f = Compile(Gl.FRAGMENT_SHADER, fs, log, what, host);
+        string tv = Text(vs, log, what, host), tf = Text(fs, log, what, host);
+        ulong key = ProgramBinary.Key(ProgramBinary.Key(ProgramBinary.Seed, Gl.VERTEX_SHADER, tv), Gl.FRAGMENT_SHADER, tf);
+        uint p = ProgramBinary.Load(key, log, what);
+        if (p != 0) { Labels[p] = what; return p; }
+        LightmapBake.CompileNotice();
+        long t0 = Stopwatch.GetTimestamp();
+        uint v = Compile(Gl.VERTEX_SHADER, vs, tv, log, what, host, out bool cv), f = Compile(Gl.FRAGMENT_SHADER, fs, tf, log, what, host, out bool cf);
         if (v == 0 || f == 0) { if (v != 0) Gl.DeleteShader(v); if (f != 0) Gl.DeleteShader(f); return 0; }
-        return Link(log, what, v, f);
+        return Cache(cv && cf ? key : 0, Link(log, what, v, f), t0, log, what);
     }
 
     /// <summary>Link a vertex+geometry+fragment program. Returns 0 on failure (already logged). Library
@@ -54,10 +61,19 @@ internal static unsafe class GlProgram
 
     private static uint Triple(string vs, string gs, string fs, ExtenderLog? log, string what)
     {
-        uint v = Compile(Gl.VERTEX_SHADER, vs, log, what), g = Compile(Gl.GEOMETRY_SHADER, gs, log, what), f = Compile(Gl.FRAGMENT_SHADER, fs, log, what);
+        string tv = Text(vs, log, what, true), tg = Text(gs, log, what, true), tf = Text(fs, log, what, true);
+        ulong key = ProgramBinary.Key(ProgramBinary.Key(ProgramBinary.Key(ProgramBinary.Seed,
+                        Gl.VERTEX_SHADER, tv), Gl.GEOMETRY_SHADER, tg), Gl.FRAGMENT_SHADER, tf);
+        uint p = ProgramBinary.Load(key, log, what);
+        if (p != 0) { Labels[p] = what; return p; }
+        LightmapBake.CompileNotice();
+        long t0 = Stopwatch.GetTimestamp();
+        uint v = Compile(Gl.VERTEX_SHADER, vs, tv, log, what, true, out bool cv),
+             g = Compile(Gl.GEOMETRY_SHADER, gs, tg, log, what, true, out bool cg),
+             f = Compile(Gl.FRAGMENT_SHADER, fs, tf, log, what, true, out bool cf);
         if (v == 0 || g == 0 || f == 0)
         { if (v != 0) Gl.DeleteShader(v); if (g != 0) Gl.DeleteShader(g); if (f != 0) Gl.DeleteShader(f); return 0; }
-        return Link(log, what, v, g, f);
+        return Cache(cv && cg && cf ? key : 0, Link(log, what, v, g, f), t0, log, what);
     }
 
     /// <summary>Link a vertex+fragment program whose stages a content author may override as
@@ -118,8 +134,25 @@ internal static unsafe class GlProgram
 
     private static uint Single(string cs, ExtenderLog? log, string what)
     {
-        uint c = Compile(Gl.COMPUTE_SHADER, cs, log, what);
-        return c == 0 ? 0 : Link(log, what, c);
+        string tc = Text(cs, log, what, true);
+        ulong key = ProgramBinary.Key(ProgramBinary.Seed, Gl.COMPUTE_SHADER, tc);
+        uint p = ProgramBinary.Load(key, log, what);
+        if (p != 0) { Labels[p] = what; return p; }
+        LightmapBake.CompileNotice();
+        long t0 = Stopwatch.GetTimestamp();
+        uint c = Compile(Gl.COMPUTE_SHADER, cs, tc, log, what, true, out bool clean);
+        return c == 0 ? 0 : Cache(clean ? key : 0, Link(log, what, c), t0, log, what);
+    }
+
+    /// <summary>Save a program that linked from its first-try texts, and log what the miss cost; a stubbed
+    /// retry is not cached, so its WARN lines repeat every launch instead of going quiet behind a blob.</summary>
+    private static uint Cache(ulong key, uint prog, long t0, ExtenderLog? log, string what)
+    {
+        if (prog == 0) return 0;
+        bool saved = ProgramBinary.Save(key, prog, log, what);
+        log?.Info($"{what}: compiled in {Stopwatch.GetElapsedTime(t0).TotalMilliseconds:F0} ms"
+                + (saved ? " -- saved to cx-shaders/" : key == 0 ? " -- not cached" : ""));
+        return prog;
     }
 
     /// <summary>The compute counterpart of the overridable <see cref="Graphics(string, string, string, string,
@@ -149,6 +182,7 @@ internal static unsafe class GlProgram
     private static uint Link(ExtenderLog? log, string what, uint a, uint b = 0, uint c = 0, uint d = 0)
     {
         uint prog = Gl.CreateProgram();
+        if (Gl.ProgramParameteri != null) Gl.ProgramParameteri(prog, Gl.PROGRAM_BINARY_RETRIEVABLE_HINT, 1);
         Gl.AttachShader(prog, a);
         if (b != 0) Gl.AttachShader(prog, b);
         if (c != 0) Gl.AttachShader(prog, c);
@@ -169,10 +203,19 @@ internal static unsafe class GlProgram
     /// embedded default and a content override read identically (see <see cref="ShaderResource.Tokens"/>),
     /// and <see cref="VanillaShader.Splice"/> runs at the same seam for the same reason.</summary>
     private static uint Compile(uint type, string rawSrc, ExtenderLog? log, string what, bool host = true)
+        => Compile(type, rawSrc, Text(rawSrc, log, what, host), log, what, host, out _);
+
+    /// <summary>A stage's first-try text: the vanilla bridge first, sizing tokens second -- spliced stock text is
+    /// subject to the same token expansion as everything else (#346). What <see cref="ProgramBinary"/> keys on.</summary>
+    private static string Text(string rawSrc, ExtenderLog? log, string what, bool host) =>
+        ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what, true, host));
+
+    /// <summary><see cref="Compile(uint, string, ExtenderLog?, string, bool)"/> from a precomputed first-try
+    /// <paramref name="text"/>; <paramref name="clean"/> is whether that text compiled without a retry.</summary>
+    private static uint Compile(uint type, string rawSrc, string text, ExtenderLog? log, string what, bool host, out bool clean)
     {
-        // #346: the vanilla bridge first, sizing tokens second -- spliced stock text is subject to the same
-        // token expansion as everything else, and a stock file carrying none is unaffected either way.
-        uint sh = CompileText(type, ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what, true, host)), log, what);
+        uint sh = CompileText(type, text, log, what);
+        clean = sh != 0;
         if (sh != 0 || !VanillaShader.HasSplice(rawSrc)) return sh;
         if (host && VanillaShader.HasHost(rawSrc))
         {

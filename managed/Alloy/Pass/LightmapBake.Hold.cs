@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using CX.Framework;
+using CX.Graphics;
 using CX.Ui;
 
 namespace CX.Alloy;
@@ -174,7 +175,7 @@ internal static unsafe partial class LightmapBake
     /// the new area's inputs rather than falling back to the 600-walk close.</summary>
     private static bool _areaEdge;
     internal static void BeginAreaEdge() => _areaEdge = true;
-    internal static void EndAreaEdge() { _areaEdge = false; OnAreaLoaded(); StampEdge(); TakeAreaKey(); }
+    internal static void EndAreaEdge() { _areaEdge = false; _edgePresent = GlContextService.Presents; OnAreaLoaded(); StampEdge(); TakeAreaKey(); }
 
     /// <summary>The window is the input side only (Escape, the clicks it eats); the draw is at the present,
     /// after the GL bracket hands the engine's context back -- the window roll-call sits under the engine's
@@ -222,6 +223,45 @@ internal static unsafe partial class LightmapBake
         int n = phase == 0 ? MeshChart.Done : PagesDone(), m = phase == 0 ? MeshChart.Offered : _layers;
         if (n != _captionN || m != _captionM || phase != _captionPhase || _skipOpen != _captionSkip) Bake(atlas, w, h, phase, n, m);
         TextRig.DrawBatch(_batch.AsSpan(), _batch.VertexCount);
+    }
+
+    /// <summary>The present "Compiling shaders" last went up in: once per present, the screen keeps it until the next.</summary>
+    private static int _noticeAt = -1;
+    /// <summary>The present the last area edge ran in: nothing of that area is on screen until it ends. SoW's login
+    /// runs its edge ~125 ms after the AreaLoaded send, past the hold's idle exit (2026-09-29: the module's whole
+    /// program set compiled on that frame, 9,6 s, with no hold up).</summary>
+    private static int _edgePresent = -1;
+
+    /// <summary>A shader compile is about to block the render thread on a loading screen -- under the hold, or on the
+    /// frame an area edge ran in: put the backdrop up with "Compiling shaders…" NOW, as its own present. Every
+    /// other draw comes at the frame's present, after the compile, so without this the player watches a frozen
+    /// frame for the seconds a cold lit variant takes. Mid-play first-use compiles get no notice: a backdrop
+    /// flashing over the world is worse than the hitch. Only from inside the 4.6 bracket (every Alloy compile is),
+    /// which it leaves for the engine's context and re-enters.</summary>
+    internal static void CompileNotice()
+    {
+        int now = GlContextService.Presents;
+        if (!Held && _edgePresent != now || _noticeAt == now || !GlContextService.Inside || TextRig.Atlas is not { } atlas) return;
+        int w = TextRig.ViewportW, h = TextRig.ViewportH;
+        if (w <= 0 || h <= 0) return;
+        _noticeAt = now; _captionPhase = -1;   // the batch is shared: the hold's caption rebakes at its next present
+        _batch.Reset(atlas.SolidU, atlas.SolidV);
+        _batch.Rect(0, 0, w, h, 0.04f, 0.04f, 0.05f, 1f);
+        const string caption = "Compiling shaders…", sub = "Only once: the result is saved for next time";
+        float y0 = h * 0.72f;
+        UiText.Draw(_batch, atlas, caption, (w - UiText.Measure(atlas, caption)) * 0.5f, y0 - atlas.LineHeight * 0.6f, CaptionRgb, w);
+        UiText.Draw(_batch, atlas, sub, (w - UiText.Measure(atlas, sub)) * 0.5f, y0 + atlas.LineHeight * 1.4f, SkipRgb, w);
+        GlContextService.Leave();
+        int* vp = stackalloc int[4];
+        Gl.GetIntegerv(Gl.VIEWPORT, vp);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        Gl.Viewport(0, 0, w, h);
+        TextRig.DrawBatch(_batch.AsSpan(), _batch.VertexCount);
+        GlContextService.SwapNow();
+        UiHostService.HandBack();
+        Gl.Viewport(vp[0], vp[1], vp[2], vp[3]);   // GLRender::SetViewPort caches no GL state, so the raw value is all it had
+        if (GlContextService.Enter()) _log?.Info($"LightmapBake: a shader compile {(Held ? "under the hold" : "on an area's first frame")} -- \"Compiling shaders\" is on screen until it finishes");
+        else _log?.Always("LightmapBake: the 4.6 context REFUSED re-entry after the compile notice -- this frame's Alloy GL runs on the engine's context");
     }
 
     /// <summary>Pages with no rect still queued, probing or packing.</summary>
