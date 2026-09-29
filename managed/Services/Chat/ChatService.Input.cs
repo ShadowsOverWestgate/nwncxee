@@ -143,8 +143,7 @@ public sealed unsafe partial class ChatService
                 if (_layout.TransferTab(i, src.ActiveTab, j, dp))
                 {
                     _layout.FocusedIndex = j;
-                    _layout.Windows[j].ActiveTab = dp;
-                    _layout.Windows[j].ClampSendChannel();
+                    _layout.Windows[j].SelectTab(dp);
                     if (IsTyping && !_layout.Windows[j].HasSendable) CloseChat(false);
                 }
                 break;

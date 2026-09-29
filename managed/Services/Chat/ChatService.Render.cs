@@ -369,12 +369,12 @@ public sealed unsafe partial class ChatService
             for (int wi = 0; wi < wins.Length; wi++)
             {
                 ChatWindow w = wins[wi];
+                var wt = w.Tabs; for (int ti = 0; ti < wt.Count; ti++) { wt[ti].ScrollPx = 0f; wt[ti].SendChannel = null; }
                 w.SendChannel = Channel.Talk;
                 w.ClampSendChannel();
                 w.ChannelListOpen = false;
                 w.Dirty = true;
                 w.LastScroll = System.DateTime.MinValue;
-                var wt = w.Tabs; for (int ti = 0; ti < wt.Count; ti++) wt[ti].ScrollPx = 0f;
             }
         }
     }

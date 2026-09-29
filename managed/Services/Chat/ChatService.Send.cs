@@ -200,7 +200,7 @@ public sealed unsafe partial class ChatService
                 ChatWindow win = _layout.Windows[decision.WindowIndex];
                 var tabs = win.Tabs;
                 for (int j = 0; j < tabs.Count; j++)
-                    if (tabs[j].PinnedName == name) { win.ActiveTab = j; break; }
+                    if (tabs[j].PinnedName == name) { win.SelectTab(j); break; }
                 _layout.FocusedIndex = decision.WindowIndex;
                 win.SendChannel = Channel.Tell;
                 break;
@@ -209,7 +209,7 @@ public sealed unsafe partial class ChatService
             {
                 ChatWindow win = _layout.Windows[decision.WindowIndex];
                 win.AddTab(new Tab($"T:{name}", 0x002, playerId) { PinnedName = name });
-                win.ActiveTab = win.Tabs.Count - 1;
+                win.SelectTab(win.Tabs.Count - 1);
                 _layout.FocusedIndex = decision.WindowIndex;
                 win.SendChannel = Channel.Tell;
                 break;

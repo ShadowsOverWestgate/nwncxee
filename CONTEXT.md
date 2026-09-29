@@ -43,7 +43,8 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Send channel** — the channel the focused window's input targets, picked from a
   dropdown **constrained to the active tab's visible channels** (you cannot send on a
   channel the active tab hides). Active-tab-scoped, superseding the earlier per-window
-  dropdown (#25).
+  dropdown (#25): each tab remembers its own for the session and gets it back when it
+  becomes active (CX-59); a relog starts every tab on Talk.
 - **Tells-here window** — the window flagged to receive auto-opened Tell tabs (the Tell
   auto-open setting is Off / new-tab / new-window, default Off); defaults to the focused
   window when none is flagged.

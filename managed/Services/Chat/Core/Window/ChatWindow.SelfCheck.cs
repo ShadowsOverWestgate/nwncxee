@@ -192,6 +192,37 @@ public sealed partial class ChatWindow
         check.Expect(sw.ActiveTab == 1 && sw.SendChannel == Channel.DM, "tab switch clamps SendChannel to tab's mask");
         sw.MouseUp(0, 0);
 
+        // CX-59: each tab keeps its own channel. The reporter's layout -- All, and a Server/Combat/DM tab whose only
+        // sendable is DM -- must not leave All on DM, and a channel picked on All survives a trip to a narrow tab.
+        void Click(ChatWindow w, int tab) { w.MouseDown(w.X + tab * w.TabW + 5, w.Y + 5); w.MouseUp(0, 0); }
+        var rt = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff), new Tab("Srv/Cbt/DM", 0x020 | 0x010 | 0x400), new Tab("Party", 0x040), new Tab("Fresh", 0xffffffff) });
+        rt.SendChannel = Channel.Talk;
+        Click(rt, 1);
+        check.Expect(rt.ActiveTab == 1 && rt.SendChannel == Channel.DM, "CX-59: the DM-only tab sends on DM");
+        Click(rt, 0);
+        check.Expect(rt.ActiveTab == 0 && rt.SendChannel == Channel.Talk, $"CX-59: back on All, Talk again ({rt.SendChannel})");
+        rt.SendChannel = Channel.Party;
+        Click(rt, 2); Click(rt, 1); Click(rt, 0);
+        check.Expect(rt.SendChannel == Channel.Party, $"CX-59: a channel picked on All survives trips through narrow tabs ({rt.SendChannel})");
+        Click(rt, 1); Click(rt, 3);
+        check.Expect(rt.SendChannel == Channel.Talk, $"CX-59: a tab not yet used starts on Talk, not the DM tab's channel ({rt.SendChannel})");
+        rt.SendChannel = Channel.Shout; Click(rt, 0); Click(rt, 3);
+        check.Expect(rt.SendChannel == Channel.Shout, "CX-59: two broad tabs keep separate channels");
+        Click(rt, 1);
+        check.Expect(rt.RemoveTab(1) && rt.Active.Label == "Party" && rt.SendChannel == Channel.Party, $"CX-59: removing the active tab restores the channel of the tab that slides in ({rt.SendChannel})");
+        rt.SelectTab(0);
+        check.Expect(rt.SendChannel == Channel.Party && rt.Active.SendChannel == Channel.Party, "CX-59: SelectTab restores, and the window's channel is the active tab's");
+        var pin = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff), new Tab("T:Alice", 0x002) { PinnedName = "Alice" } });
+        pin.SendChannel = Channel.Whisper;
+        Click(pin, 1);
+        check.Expect(pin.SendChannel == Channel.Tell, "CX-59: a pinned tell tab still sends Tell");
+        Click(pin, 0);
+        check.Expect(pin.SendChannel == Channel.Whisper, $"CX-59: back from a tell tab, the channel picked before it ({pin.SendChannel})");
+        var st = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) });
+        st.SendChannel = Channel.Shout;
+        st.SetTabs(new[] { new Tab("A", 0xffffffff), new Tab("DM", 0x400) });
+        check.Expect(st.SendChannel == Channel.Shout && st.Active.SendChannel == Channel.Shout, "CX-59: a restored tab list's first tab takes over the window's channel");
+
         // CanSelect: Tell hidden from dropdown when other channels exist.
         check.Expect(!cw.CanSelect(Channel.Tell), "CanSelect hides Tell when Talk|DM present");
         var allTab = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) });

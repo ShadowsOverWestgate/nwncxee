@@ -83,9 +83,16 @@ public sealed partial class ChatWindow
     private volatile Tab[] _tabs;
     public volatile int ActiveTab;
 
-    /// <summary>Current send channel (the dropdown selection, #25). Window-level, not per-tab. Dropdown
-    /// and slash commands both write this; reset to <see cref="Channel.Talk"/> on relog by the shell.</summary>
-    public Channel SendChannel = Channel.Talk;
+    /// <summary>Current send channel (the dropdown selection, #25), the active tab's (CX-59): every write also lands
+    /// on <see cref="Tab.SendChannel"/>, so a tab keeps its channel while another is active and
+    /// <see cref="SelectTab"/> gives it back. Dropdown and slash commands both write this; the shell resets every
+    /// tab to <see cref="Channel.Talk"/> on relog.</summary>
+    public Channel SendChannel
+    {
+        get => _send;
+        set { _send = value; Active.SendChannel = value; }
+    }
+    private Channel _send = Channel.Talk;
 
     /// <summary>True while the channel dropdown list is expanded (over the body). Set by hit-testing.</summary>
     public bool ChannelListOpen;
@@ -220,6 +227,24 @@ public sealed partial class ChatWindow
         foreach (Channel ch in SendChannels) if (CanSelect(ch)) { SendChannel = ch; return; }
     }
 
+    /// <summary>Make tab <paramref name="i"/> active and give it back the channel last used on it (CX-59), clamped to
+    /// what it can send. A tab not yet typed in this session starts on <see cref="Channel.Talk"/>, clamped, rather
+    /// than inheriting whatever the tab before it was on -- a DM-only tab must not leave the next tab on DM.</summary>
+    public void SelectTab(int i)
+    {
+        if ((uint)i >= (uint)_tabs.Length) return;
+        ActiveTab = i;
+        RestoreChannel();
+    }
+
+    /// <summary>The active tab's remembered channel back on the window (<see cref="Channel.Talk"/> when it has none),
+    /// clamped.</summary>
+    private void RestoreChannel()
+    {
+        SendChannel = Active.SendChannel ?? Channel.Talk;
+        ClampSendChannel();
+    }
+
     // Layout metrics: design pixels at Metrics.Scale==1, multiplied by the live scale so the chrome tracks the
     // font size + game UI scale in lockstep (no clipping at larger sizes). ponytail: no per-metric tuning; one
     // uniform scale keeps every text-to-chrome ratio fixed, which is all the clipping fix needs.
@@ -352,21 +377,23 @@ public sealed partial class ChatWindow
     }
 
     /// <summary>Replace the entire tab list (rejects empty, keeping the &gt;=1 invariant). Resets
-    /// <see cref="ActiveTab"/> to 0. Used by the persistence layer to restore saved tabs.
-    /// ActiveTab assigned first so a concurrent reader on the old (possibly longer) array never sees
-    /// the new (possibly shorter) array with a stale index.</summary>
+    /// <see cref="ActiveTab"/> to 0, which takes over the window's current channel, clamped. Used by the
+    /// persistence layer to restore saved tabs. ActiveTab assigned first so a concurrent reader on the old
+    /// (possibly longer) array never sees the new (possibly shorter) array with a stale index.</summary>
     public void SetTabs(Tab[] tabs)
     {
         if (tabs.Length == 0) return;
         ActiveTab = 0;
         _tabs = (Tab[])tabs.Clone();
+        SendChannel = _send;
         ClampSendChannel();
     }
 
     /// <summary>Remove tab <paramref name="index"/>, refusing the last one so a window always keeps &gt;=1 tab
     /// (#36); returns false + no change on the last tab or an out-of-range index. Keeps the same tab active --
-    /// removing one before it decrements <see cref="ActiveTab"/>, removing it lands on the tab that slid in.
-    /// ActiveTab is written first so a concurrent reader never sees an index past the new array's end.</summary>
+    /// removing one before it decrements <see cref="ActiveTab"/>, removing it lands on the tab that slid in, which
+    /// gets its own channel back (CX-59). ActiveTab is written first so a concurrent reader never sees an index
+    /// past the new array's end.</summary>
     public bool RemoveTab(int index)
     {
         Tab[] old = _tabs;
@@ -379,7 +406,7 @@ public sealed partial class ChatWindow
         System.Array.Copy(old, 0, next, 0, index);
         System.Array.Copy(old, index + 1, next, index, old.Length - index - 1);
         _tabs = next;
-        ClampSendChannel();
+        RestoreChannel();
         return true;
     }
 
@@ -546,7 +573,6 @@ public sealed partial class ChatWindow
                 if (_tabs.Length > 1 && TabCloseHit(tab, mx))
                 {
                     RemoveTab(tab);
-                    ClampSendChannel();
                     return true;
                 }
                 // Pin: left of close. Keeps the tab (clears ephemeral).
@@ -557,7 +583,7 @@ public sealed partial class ChatWindow
                     return true;
                 }
             }
-            ActiveTab = tab; _tabs[tab].Unread = false; ClampSendChannel();
+            _tabs[tab].Unread = false; SelectTab(tab);
             if (!Locked) { _grab = Grab.TabHold; _dragTabIdx = tab; _gx = mx; _gy = my; }
             return true;
         }
