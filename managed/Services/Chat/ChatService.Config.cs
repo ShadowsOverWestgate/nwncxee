@@ -103,7 +103,7 @@ public sealed unsafe partial class ChatService
             if (wc.HoldSec is float hs) win.HoldSec = hs;
             if (wc.FadeSec is float fs) win.FadeSec = fs;
             if (wc.TauMs is float tm) win.TauMs = tm;
-            if (wc.Outline is bool ol) win.Outline = ol;
+            if (wc.Outline is int ol) win.Outline = ol;
             if (wc.FontPx is int fp && fp >= TextRig.MinFontPx && fp <= TextRig.MaxFontPx) win.FontPx = fp;
             if (wc.Typeface is { Length: > 0 } tfn) win.Typeface = tfn;
             if (wc.TimeFormat is int tf) win.TimeFormat = (TsFormat)tf;

@@ -50,9 +50,6 @@ public static partial class WindowRenderer
     /// <summary>Inset of the channel chip / thumb / caret inside their bands (px at scale 1).</summary>
     private const float Inset = 3f;
 
-    /// <summary>8-way (±1px) offsets for the outline halo, as flat (dx,dy) pairs.</summary>
-    private static readonly float[] OutlineOffsets = { -1, -1, 0, -1, 1, -1, -1, 0, 1, 0, -1, 1, 0, 1, 1, 1 };
-
     /// <summary>Default colours (RGBA8, <c>0xRRGGBBAA</c>) for the themeable keys. The one source of truth
     /// for both the render fields (via <see cref="ApplyPalette"/>) and the picker UI (via <see cref="CurrentColor"/>).</summary>
     public static readonly Dictionary<string, uint> Defaults = new()
@@ -116,7 +113,7 @@ public static partial class WindowRenderer
                                     (int start, int end)? selection = null, GlyphAtlas? chrome = null)
     {
         var p = ResolvePalette(win);
-        bool outline = win.Outline;
+        float halo = TextStyle.HaloOf(win.Outline, TextRig.FacePx(win.FontPx));
         chrome ??= atlas;
         float chromeBase = (ChatWindow.TabBarH - chrome.LineHeight) * 0.5f + chrome.Ascent;   // baseline drop that centres a line in a band (TabBarH == FooterH)
 
@@ -269,6 +266,7 @@ public static partial class WindowRenderer
         // cap, so a bounded residual can never expose an un-emitted block. The body scissor clips it all.
         float easeMargin = ChatAnim.MaxResidualPx;
         int bodyStart = b.VertexCount;   // the animated (fade/slide/scroll) slice starts here
+        b.Outline = halo;
         float rowBottom = by + bh - BottomPad + active.ScrollPx;
         for (int li = 0; li < nAll; li++)
         {
@@ -287,7 +285,7 @@ public static partial class WindowRenderer
                     var span = wraps[w];
                     RowAlign.Compute(win.Align, atlas, runes, span, availW, w == wraps.Count - 1,
                              out float xOff, out float spaceExtra);
-                    EmitRow(b, atlas, runes, cols, span, rowX + xOff, top + w * lh + glyphBaseline, outline, spaceExtra);
+                    EmitRow(b, atlas, runes, cols, span, rowX + xOff, top + w * lh + glyphBaseline, spaceExtra);
                 }
                 if (hasPortrait)
                 {
@@ -308,6 +306,7 @@ public static partial class WindowRenderer
             rowBottom = top - MsgGap;              // gap before the next (older) message
             if (rowBottom <= by - easeMargin) break;   // past the top margin -> older blocks are all off it
         }
+        b.Outline = 0f;
         int bodyEnd = b.VertexCount;   // ...and ends here; chrome (scrollbar/footer/grip/dropdown) follows, unanimated
 
         // Scrollbar (chrome: after the body slice, so unfaded and unscissored): a track + an Accent-coloured
@@ -507,7 +506,7 @@ public static partial class WindowRenderer
     /// <summary>Lay one wrapped row (a span into <paramref name="runes"/>) with per-rune colour.</summary>
     private static void EmitRow(VertexBatch b, GlyphAtlas atlas, List<Rune> runes, List<uint> cols,
                                 TextWrapper.LineSpan span, float startX, float baseline,
-                                bool outline = false, float spaceExtra = 0f)
+                                float spaceExtra = 0f)
     {
         float penX = startX;
         for (int k = span.Start; k < span.End; k++)
@@ -515,9 +514,6 @@ public static partial class WindowRenderer
             Rune r = runes[k];
             if (!atlas.TryGet(r.Value, out Glyph g)) { penX += atlas.AdvanceOf(r); continue; }
             uint c = cols[k];
-            if (outline)
-                for (int o = 0; o < OutlineOffsets.Length; o += 2)
-                    b.Glyph(g, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1], 0f, 0f, 0f, 1f);
             b.Glyph(g, penX, baseline, ((c >> 16) & 0xFF) / 255f, ((c >> 8) & 0xFF) / 255f, (c & 0xFF) / 255f, 1f);
             penX += g.Advance;
             if (r.Value == ' ') penX += spaceExtra;

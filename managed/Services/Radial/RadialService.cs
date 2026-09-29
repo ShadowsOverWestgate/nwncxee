@@ -108,8 +108,6 @@ public sealed unsafe partial class RadialService : IExtenderService
     private static readonly (RootKind Kind, string Label)[] ShowOnKinds =
         { (RootKind.Creature, "Creatures"), (RootKind.Placeable, "Placeables"), (RootKind.Door, "Doors"), (RootKind.Plain, "Ground") };
     private static VertexBatch? _batch, _ctxBatch;
-    /// <summary>The refused-face line is logged once per session.</summary>
-    private static bool _faceWarned;
     private static int _epoch;
     /// <summary>A press was consumed, so its release is ours too (else the engine sees an orphan up).</summary>
     private static bool _pressOwned;
@@ -264,7 +262,7 @@ public sealed unsafe partial class RadialService : IExtenderService
     /// through the same viewport height. False when nothing can show it (no window or atlas, an empty ring).</summary>
     private static bool OpenCascade(IntPtr menu)
     {
-        GlyphAtlas? atlas = MenuFace() ?? TextRig.Atlas;
+        GlyphAtlas? atlas = RadialKnobs.Font.Face(TextRig.Atlas, cold: true);
         if (_window == null || atlas == null) return false;
         RadialPins.Load(_log, PlayerIdentity.Key());
         _kind = RadialTree.Classify(menu);
@@ -285,20 +283,6 @@ public sealed unsafe partial class RadialService : IExtenderService
         return true;
     }
 
-    /// <summary>The menu's own face (CX-694: <c>radial.font</c> / <c>radial.typeface</c>) at the GUI scale, clamped like
-    /// the UI atlas; null when both follow the UI. Cold: a miss bakes it into the sheet, and a refused bake logs once
-    /// and falls back to the UI face. ponytail: every picked (typeface, px) stays in the sheet for the session, as
-    /// the chat windows' faces do.</summary>
-    private static GlyphAtlas? MenuFace()
-    {
-        int font = RadialKnobs.Font.V;
-        string face = RadialKnobs.Typeface.V;
-        if (font <= 0 && face == FontRegistry.DefaultName) return null;
-        float px = TextRig.FacePx(font);
-        GlyphAtlas? a = TextRig.Face(face, px);
-        if (a == null && !_faceWarned) { _faceWarned = true; _log?.Info($"[radial] face {face} @ {px}px refused; drawing with the UI face (logged once)"); }
-        return a;
-    }
 
     /// <summary>Close the cascade, drop the modal gate and every per-level handle, tear the held tree down. Idempotent;
     /// the reason is the <c>logs=1</c> close line (leaf / esc / away / area / reenter / off / font).</summary>
@@ -981,6 +965,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         if (_deferClose != null) return;
         VertexBatch b = _batch ??= new VertexBatch(atlas.SolidU, atlas.SolidV);
         b.Reset(atlas.SolidU, atlas.SolidV);
+        b.Outline = RadialKnobs.Font.HaloPx;
         uint text = RadialKnobs.Text.V;
         _style.Bg = CascadeStyle.Rgba(RadialKnobs.Bg.V); _style.Frame = CascadeStyle.Rgba(RadialKnobs.Frame.V);
         _style.Hover = CascadeStyle.Rgba(RadialKnobs.Hover.V);
@@ -996,6 +981,7 @@ public sealed unsafe partial class RadialService : IExtenderService
         if (!_ctx.Open) return;
         VertexBatch cb = _ctxBatch ??= new VertexBatch(atlas.SolidU, atlas.SolidV);   // after the icons: the popup is on top of everything
         cb.Reset(atlas.SolidU, atlas.SolidV);
+        cb.Outline = b.Outline;
         _ctx.Draw(cb, atlas, atlas.Ascent, in _style);
         TextRig.DrawBatch(cb.AsSpan(), cb.VertexCount);
     }

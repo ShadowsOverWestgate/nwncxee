@@ -1,4 +1,5 @@
 using CX.Framework;
+using CX.Ui;
 
 namespace CX.Services.Dialog;
 
@@ -6,7 +7,7 @@ namespace CX.Services.Dialog;
 /// (off = the stock panel from the next conversation node on; live per node, #591), the five User rows, the two Advanced fade knobs, and the window
 /// rect as Hidden state -- <see cref="X"/>/<see cref="Y"/>/<see cref="W"/> with the <see cref="Placed"/>
 /// sentinel, false until the user first moves or resizes so a fresh install takes the auto layout instead of
-/// a (0,0) box. Text size is <c>ui.font</c>. Touched from <c>DialogService.Initialize</c> so the group declares
+/// a (0,0) box. <see cref="Text"/> is the window's own size / typeface / outline. Touched from <c>DialogService.Initialize</c> so the group declares
 /// whether or not the hooks arm.</summary>
 internal static class DialogKnobs
 {
@@ -14,6 +15,7 @@ internal static class DialogKnobs
     internal static readonly Knob<bool> Enabled, Lock, Justify, Anim, Placed;
     internal static readonly Knob<int> MaxHeight, FadeIn, FadeOut;
     internal static readonly Knob<float> X, Y, W;
+    internal static readonly TextStyle Text;
 
     /// <summary>Breakpoint range (px): the content height past which the window stops stretching and scrolls.</summary>
     internal const int MaxHMin = 120, MaxHMax = 800;
@@ -33,6 +35,8 @@ internal static class DialogKnobs
         Anim = G.Toggle("anim", "Animations", true, help: "Text fades in and out between nodes. Off, it snaps.");
         FadeIn = G.Slider("fadein", "Fade in", 0, 500, 10, 180, "ms", Tier.Advanced);
         FadeOut = G.Slider("fadeout", "Fade out", 0, 500, 10, 140, "ms", Tier.Advanced);
+        G.Section("Text");
+        Text = new TextStyle(G, "the dialog window", changed: DialogService.Relayout);
         X = G.Slider("x", "x", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);
         Y = G.Slider("y", "y", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);
         W = G.Slider("w", "w", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);

@@ -115,8 +115,9 @@ public sealed partial class ChatWindow
     public float HoldSec = 60f, FadeSec = 6f, TauMs = 70f;
     /// <summary>Per-window fade-clock reset: scrolling this window makes its faded messages reappear.</summary>
     public System.DateTime LastScroll = System.DateTime.MinValue;
-    /// <summary>Per-window text outline (dark halo behind body glyphs for readability).</summary>
-    public bool Outline;
+    /// <summary>Per-window text outline level (dark halo behind body glyphs for readability): a
+    /// <c>TextStyle.OutlineLevels</c> value, 0 off, 1 thin, 2 thick.</summary>
+    public int Outline;
     /// <summary>Per-window text size in design px (CX-683); 0 = follow <c>ui.font</c>.</summary>
     public int FontPx;
     /// <summary>Per-window typeface, a <c>FontRegistry</c> name (CX-683); "" = follow <c>ui.typeface</c>.</summary>

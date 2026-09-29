@@ -30,6 +30,17 @@ public readonly struct PlateMetrics
     }
 }
 
+/// <summary>One speech card's boxes (<see cref="PlateLayout.MeasureCard"/>), relative to its top-left: the portrait
+/// at the pad, top-aligned, and the text column right of it -- the name header at the pad, the body from
+/// <see cref="BodyY"/>.</summary>
+public readonly struct CardMetrics
+{
+    public readonly float W, H, PortraitW, PortraitH, ColX, BodyY;
+
+    public CardMetrics(float w, float h, float portraitW, float portraitH, float colX, float bodyY)
+    { W = w; H = h; PortraitW = portraitW; PortraitH = portraitH; ColX = colX; BodyY = bodyY; }
+}
+
 /// <summary>Which existing plate line an <c>ObjectTextBubbleOverride</c> segment continues:
 /// <c>First</c> means it runs in FRONT of that line (prepend), <c>Last</c> means it runs off its end
 /// (append). <c>None</c> = the plate has no such line and every segment stands on its own.</summary>
@@ -252,6 +263,47 @@ public static partial class PlateLayout
             colX, bandY,
             colX, barY, bar ? textW : 0f, bar ? barH : 0f, textW,
             pad, postY);
+    }
+
+    /// <summary>Lay out a speech card: portrait left, <paramref name="nameLines"/> of header, then the body. The portrait
+    /// is <paramref name="portraitLines"/> text lines tall (0 = none) whatever the body, so a one-liner still shows a
+    /// readable face; <paramref name="pad"/> arrives scaled, <paramref name="scale"/> scales the rest of the chrome.</summary>
+    public static CardMetrics MeasureCard(float textW, float bodyH, int nameLines, int portraitLines, float lineH,
+                                          float pad, float scale)
+    {
+        float ph = portraitLines > 0 ? portraitLines * lineH : 0f;
+        float pw = ph * PortraitAspect;
+        float colX = pad + (ph > 0f ? pw + PortraitGapPx * scale : 0f);
+        float headH = nameLines > 0 ? nameLines * lineH + NameGapPx * scale : 0f;
+        float contentH = headH + (bodyH > 0f ? bodyH : 0f);
+        if (ph > contentH) contentH = ph;
+        return new CardMetrics(colX + (textW > 0f ? textW : 0f) + pad, contentH + pad * 2f, pw, ph, colX, pad + headH);
+    }
+
+    /// <summary>Gap between a card's name header and what was said, design px.</summary>
+    private const float NameGapPx = 2f;
+
+    /// <summary>The speech card's parts from <c>nameplate.speaker</c>'s mask and what the
+    /// speaker has. A plate <paramref name="stacked"/> under the bubble takes over the name, and the portrait when
+    /// <paramref name="platePortrait"/>: each shows once. False = no card, the plain per-line boxes.</summary>
+    public static bool CardParts(int speaker, bool stacked, bool platePortrait, bool hasName, bool hasPortrait,
+                                 out bool name, out bool portrait)
+    {
+        name = !stacked && (speaker & NameplateKnobs.SpeakerName) != 0 && hasName;
+        portrait = !(stacked && platePortrait) && (speaker & NameplateKnobs.SpeakerPortrait) != 0 && hasPortrait;
+        return name || portrait;
+    }
+
+    /// <summary>Runes of the <c>"[speaker]: "</c> prefix the engine glues onto a placeable's or door's chat line
+    /// (object types 7/9/10, <c>HandleServerToPlayerChat</c>'s tail, docs/re/nameplate.md), or 0. A card with a name
+    /// header skips it rather than naming the speaker twice. A prefix with nothing after it is not skipped -- that
+    /// would draw an empty line. Pure, cold (once per line, on the drain).</summary>
+    public static int SpeakerPrefixLen(System.Collections.Generic.IReadOnlyList<System.Text.Rune> r)
+    {
+        if (r.Count == 0 || r[0].Value != '[') return 0;
+        for (int i = 1; i + 3 < r.Count; i++)
+            if (r[i].Value == ']' && r[i + 1].Value == ':' && r[i + 2].Value == ' ') return i + 3;
+        return 0;
     }
 
     /// <summary>NAME lines a portrait may grow with (the band and bar are always added on top). Past this a
@@ -636,6 +688,42 @@ public static partial class PlateLayout
         int i = band < 0 ? 0 : band >= BandCount ? BandCount - 1 : band;
         int o = i * 3;
         return (BandRgb[o] / 255f, BandRgb[o + 1] / 255f, BandRgb[o + 2] / 255f);
+    }
+
+    /// <summary>The damage band <paramref name="hp"/> of <paramref name="max"/> falls in: <c>CNWSObject::GetDamageLevel</c>
+    /// (Linux nm @0xb6dc70) replayed test for test -- float divide, <c>f &lt; t</c> against the same float thresholds,
+    /// so a zero <paramref name="max"/> lands where the engine's NaN/infinity does (docs/re/nameplate.md §4.5).</summary>
+    public static int BandOf(int hp, int max)
+    {
+        float f = (float)hp / max;
+        if (!(f < 0.95f)) return 0;
+        if (!(f < 0.75f)) return 1;
+        if (!(f < 0.5f)) return 2;
+        if (!(f < 0.25f)) return 3;
+        return f <= 0f ? 5 : 4;
+    }
+
+    /// <summary>The health bar's fill for a band alone: its midpoint, full for uninjured, empty for dead.</summary>
+    private static readonly float[] BandFill = { 1f, 0.85f, 0.625f, 0.375f, 0.125f, 0f };
+
+    /// <summary>The health bar's fill, 0..1: <c>(cur + temp) / max</c> while <paramref name="max"/> is set and the pool
+    /// lands in <paramref name="band"/> (only self and party are ever sent HP, and a leaver's goes stale -- RE §4.5),
+    /// else the band's midpoint.
+    /// <para>ponytail: stale HP that still agrees with the band draws a stale fill within it; checking party
+    /// membership (<c>CPanelPartyBar::FindMemberPanel</c>) is the upgrade if that ever reads wrong.</para></summary>
+    public static float HealthFraction(int cur, int temp, int max, int band)
+    {
+        int b = band < 0 ? 0 : band >= BandCount ? BandCount - 1 : band;
+        if (max > 0)
+        {
+            int hp = (short)(cur + temp);   // the engine sums the two shorts as a short
+            if (BandOf(hp, max) == b)
+            {
+                float f = (float)hp / max;
+                return f < 0f ? 0f : f > 1f ? 1f : f;
+            }
+        }
+        return BandFill[b];
     }
 
     /// <summary>Health-band caption. Out-of-range indices clamp to the nearest band; the returned string is a

@@ -1478,6 +1478,8 @@ public readonly unsafe partial struct CNWCCreatureStats(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.StatsCurHp"/>
+    public ref short CurHp => ref *(short*)(Ptr + EngineLayout.StatsCurHp);
     /// <inheritdoc cref="EngineLayout.StatsDamage"/>
     public ref byte Damage => ref *(byte*)(Ptr + EngineLayout.StatsDamage);
     /// <inheritdoc cref="EngineLayout.StatsFirstName"/>
@@ -1488,10 +1490,14 @@ public readonly unsafe partial struct CNWCCreatureStats(IntPtr ptr)
     public ref IntPtr LastName => ref *(IntPtr*)(Ptr + EngineLayout.StatsLastName);
     /// <inheritdoc cref="EngineLayout.StatsLastNameLen"/>
     public ref uint LastNameLen => ref *(uint*)(Ptr + EngineLayout.StatsLastNameLen);
+    /// <inheritdoc cref="EngineLayout.StatsMaxHp"/>
+    public ref short MaxHp => ref *(short*)(Ptr + EngineLayout.StatsMaxHp);
     /// <inheritdoc cref="EngineLayout.StatsOverrideName"/>
     public ref IntPtr OverrideName => ref *(IntPtr*)(Ptr + EngineLayout.StatsOverrideName);
     /// <inheritdoc cref="EngineLayout.StatsOverrideNameLen"/>
     public ref uint OverrideNameLen => ref *(uint*)(Ptr + EngineLayout.StatsOverrideNameLen);
+    /// <inheritdoc cref="EngineLayout.StatsTempHp"/>
+    public ref short TempHp => ref *(short*)(Ptr + EngineLayout.StatsTempHp);
 }
 
 /// <summary>Typed view of an engine <c>CNWCItem*</c>.</summary>

@@ -148,7 +148,7 @@ public sealed partial class SettingsWindow
         PressBox(s, win, Find(s, SetAct.CycleTellOpen));
         check.Expect(s.Panel.Drop.Open, "tell auto-open list opened");
         Row outl = Find(s, SetAct.OutlineOn);
-        bool outlBefore = win.Outline;
+        int outlBefore = win.Outline;
         PressRow(s, win, outl);
         check.Expect(!s.Panel.Drop.Open && win.Outline == outlBefore && s.TellOpenPicked == -1, "outside press closes the list, toggles nothing");
         check.Expect(outl.Help.Length > 0 && outl.H > tgl.H, "help rows wrap their help under the label; a row without help is compact");

@@ -141,6 +141,7 @@ public sealed unsafe partial class InventoryService
         if (!Faces()) return;
         _goldBatch ??= new VertexBatch(_text!.SolidU, _text.SolidV);
         _goldBatch.Reset(_text!.SolidU, _text.SolidV);
+        _goldBatch.Outline = Halo;
         Skin? skin = null;
         if (InventoryKnobs.Look.V == InventoryKnobs.LookNative && _skin.Arm(_log, ""))
         {

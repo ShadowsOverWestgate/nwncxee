@@ -239,7 +239,7 @@ the per-window editor with its own `SetAct`. Since CX-683 it wears the panel's d
 category column -- *Window settings*, one entry per kept tab, *Add new tab...* -- and since
 CX-696 it *is* `KnobPanel` (a row `Source` + `Publish`, `SubFrac = 0`, `Modal`), and the font
 rows are the window's own (`w<N>.font` / `w<N>.typeface`, absent = follow `ui.font` /
-`ui.typeface`), drawn from a face of its own on the shared sheet. The tab bar keeps only the gear:
+`ui.typeface`; `w<N>.outline` off / thin / thick), drawn from a face of its own on the shared sheet. The tab bar keeps only the gear:
 a new window is the panel header's *Copy this window*, closing is the window category's *Close
 this window* (two presses; Main has no row).
 
@@ -273,6 +273,7 @@ like every other window's; the chat window's per-window gear is the exception, n
 | radial.text | — | Text | Sw | d8dee9ff | U | L | Labels, counts and the submenu marks. |
 | radial.font | — | Text size | D | as UI / 6..32 · as UI | U | L | The menu's own text size, or the UI text size. |
 | radial.typeface | — | Typeface | D | registry names · default | U | L | The menu's own font; default follows the UI typeface. |
+| radial.outline | — | Text outline | D | off / thin / thick · off | U | L | Element text rows (§4.2 Windows & fonts). |
 | radial.anim | — | Animate | T | on | U | L | Lists fade and slide in as they open. |
 | radial.animms | — | Animation length | S | 40..400 ms · 120 | U | L | How long a list takes to appear. |
 | radial.p<N>.* (who, root, path, at, fn, param, hide, label, icon, folder, in) | — | — | pinned/reordered/hidden rows, folders | | H | | edited by drag-and-drop in the menu and its row actions; the group reset leaves it alone |
@@ -395,26 +396,31 @@ flow in slot order; no rows is vanilla order, *Reset layout* drops the root kind
 | dialog.anim | anim | Animations | T | on | U | L | Text fades in and out between nodes. Off, it snaps. |
 | dialog.fadein | fadein | Fade in | S | 0–500 ms step 10 · 180 | A | L | |
 | dialog.fadeout | fadeout | Fade out | S | 0–500 ms step 10 · 140 | A | L | |
+| dialog.font / typeface / outline | — | Text size / Typeface / Text outline | D | as UI · default · off | U | L | Element text rows (§4.2 Windows & fonts), *Text* section. |
 | x, y, w (+ Placed sentinel) | same | — | window state | | H | | |
 
 **Nameplates** — group `nameplate`.
 
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
-| nameplate.enabled | on | Enable CX nameplates and chat bubbles | T | on | U | L | Names, health colour and speech bubbles drawn by CX: sharper text, portraits, stacked lines. Off, the stock bubbles draw. |
-| nameplate.portraits | portraits | Portraits | T | on | U | L | A portrait beside the name. |
-| nameplate.background | background | Background | T | on | U | L | A box behind the plate, as in the stock game. |
-| nameplate.outline | outline | Text outline | T | on | U | L | A dark edge around the letters so they read over bright ground. |
+| nameplate.enabled | on | Enable CX nameplates and chat bubbles | T | on | U | L | Names, health and speech bubbles drawn by CX: sharper text, portraits, stacked lines. Off, the stock game's names and bubbles draw. |
+| nameplate.background | background | Background | T | on | U | L | *Nameplates and bubbles* section. A box behind names and bubbles, as in the stock game. |
+| nameplate.maxdist | maxdist | Visible distance | S | 0–100 m step 5 · 45 | U | L | Names and bubbles past this distance are not drawn. 0 draws them all. |
+| nameplate.fadedist | fadedist | Fade band | S | 0–100 m step 1 · 10 | A | L | They fade out over this distance before Visible distance. |
+| nameplate.width | bubblewidth | Text width | S | 120–480 px step 10 · 300 | U | L | The widest a name or a bubble gets before wrapping. |
+| nameplate.anim | animms | Animation | S | 0–1000 ms step 10 · 180 | A | L | 0 = they pop in. |
+| nameplate.portraits | portraits | Portrait | T | on | U | L | *Nameplates* section. A portrait beside the name. |
 | nameplate.healthband | healthband | Health colour | T | on | U | L | The name is tinted by the creature's health, as in the stock game. |
-| nameplate.healthbar | healthbar | Health bar | T | off | U | L | A thin bar under the name. Not in the stock game. |
-| nameplate.maxdist | maxdist | Visible distance | S | 0–100 m step 5 · 45 | U | L | Plates past this distance are not drawn. 0 draws every plate. |
-| nameplate.queue | bubblequeue | Bubble lines kept | D | 1 / 2 / 3 / 4 · 2 | U | L | How many recent things someone said stack in their bubble. The stock game keeps 1. |
-| nameplate.width | bubblewidth | Text width | S | 120–480 px step 10 · 300 | U | L | The widest a bubble or a name gets before wrapping. |
-| nameplate.channelstyle | channelstyle | Colour by channel | T | on | A | L | Shouts, whispers and emotes get their own colour and emphasis. |
+| nameplate.healthbar | healthbar | Health bar | T | off | U | L | A thin bar under the name. Exact for you and your party; others by injury level. Not in the stock game. |
+| nameplate.whiletalking | — | Show while talking | T | off | U | L | Hovering or Tab still shows the nameplate of someone talking, under their bubble. The stock game hides it until they finish. |
 | nameplate.clicktotell | clicktotell | Click a name to tell | T | off | A | L | Clicking the name starts a tell. Takes the click the world would have had. |
-| nameplate.fadedist | fadedist | Fade band | S | 0–100 m step 1 · 10 | A | L | Plates fade out over this distance before Visible distance. |
-| nameplate.lines | bubblelines | Wrapped lines per bubble | S | 1–32 · 32 | A | L | |
-| nameplate.anim | animms | Animation | S | 0–1000 ms step 10 · 180 | A | L | 0 = plates pop in. |
+| nameplate.font / typeface / outline | outline (was a toggle) | Text size / Typeface / Text outline | D | as UI · default · thin | U | L | The names' element text rows, end of *Nameplates*. |
+| nameplate.speaker | — | Speaker | D | Name and portrait (3) / Name only (1) / Portrait only (2) / Neither (stock) (0) · 3 | U | L | *Chat bubbles* section. Who is talking: their name above the bubble, their portrait beside it. A nameplate shown under the bubble takes over what it already shows. |
+| nameplate.portraitsize | — | Portrait size | D | 2 / 3 / 4 / 5 / 6 lines · 3 | U | L | How tall the portrait beside a bubble is, in lines of bubble text. |
+| nameplate.queue | bubblequeue | Messages kept | D | 1 / 2 / 3 / 4 · 2 | U | L | How many recent things someone said stack in their bubble. The stock game keeps 1. |
+| nameplate.lines | bubblelines | Lines per message | S | 1–32 · 32 | A | L | A longer message is cut to this many wrapped lines. |
+| nameplate.channelstyle | channelstyle | Colour by channel | T | on | A | L | Shouts, whispers and emotes get their own colour and emphasis. |
+| nameplate.bubblefont / bubbletypeface / bubbleoutline | — | Text size / Typeface / Text outline | D | as UI · default · thin | U | L | The chat bubbles' element text rows, end of *Chat bubbles*. |
 | nameplate.probe | probe | — | B | | C | — | anchor dump on the next frame |
 
 Deleted: `mode`, the `settings` subcommand, `NameplateSettings`, `/np`.
@@ -424,7 +430,6 @@ Deleted: `mode`, the `settings` subcommand, `NameplateSettings`, `/np`.
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
 | combattext.enabled | on | Enable CX combat text | T | on | U | L | Damage numbers and combat banners drawn by CX: stacked per target, outlined, animated. Off, the stock floating text draws. |
-| combattext.outline | outline | Text outline | T | on | U | L | A dark edge so numbers read over bright ground. |
 | combattext.max | max | Numbers per target | S | 1–16 · 6 | U | L | Damage numbers shown on one creature at once; older ones are dropped. |
 | combattext.life | risems | Number lifetime | S | 200–6000 ms step 100 · 1200 | U | L | How long a damage number stays. |
 | combattext.bannerlife | textms | Banner lifetime | S | 200–6000 ms step 100 · 1500 | U | L | How long a banner (*Sneak Attack!*) stays. |
@@ -432,6 +437,7 @@ Deleted: `mode`, the `settings` subcommand, `NameplateSettings`, `/np`.
 | combattext.rise | risepx | Rise distance | S | 0–400 px step 4 · 52 | A | L | How far a number floats up over its life. |
 | combattext.stack | stackpx | Stack spacing | S | 0–120 px step 2 · 20 | A | L | |
 | combattext.lift | bannerliftpx | Banner lift | S | 0–300 px step 2 · 34 | A | L | Banners start this far above the damage column. |
+| combattext.font / typeface / outline | outline (was a toggle) | Text size / Typeface / Text outline | D | as UI · default · thin | U | L | Element text rows, *Text* section: the resting size of a number; the peak face follows. |
 
 `/ct` dies.
 
@@ -454,7 +460,7 @@ Deleted: Quickbar's `/settings`, `/qbar`, `QuickbarSettings`.
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
 | fps.enabled | /fps (session-only) | Show FPS and ping | T | off | U | L | Frame rate, frame time and server round-trip in the top-right corner. |
-| fps.font | /fps font | — | X | default | C | L | a `font.<name>` typeface; Chat-only until multi-font |
+| fps.font / typeface / outline | /fps font (was the Chat-only typeface) | Text size / Typeface / Text outline | D | 14 · default · off | U | L | Element text rows, *Text* section; the size defaults to 14 rather than as UI. |
 
 Now persists (amends #182).
 
@@ -483,8 +489,8 @@ inventory icon (docs/research/nui-plt-icons.md, "Built").
 
 | key | today | label | kind | range · default | tier | eff | help |
 |---|---|---|---|---|---|---|---|
-| ui.font | font (cx-chat.cfg; dialog's slider edited the same) | Text size | D | 6 … 32 pt, every point · 18 | U | L | Size of the text in every CX window: chat, dialog, nameplates. A chat window may set its own on its gear (CX-683). |
-| ui.typeface | — | Typeface | D | `default` + every `font.<name>` + every installed font (full name) · default | U | L | The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Type in the list to search. (CX-681: rebinds the registry's `default`; icons stay DejaVu, #425) |
+| ui.font | font (cx-chat.cfg; dialog's slider edited the same) | Text size | D | 6 … 32 pt, every point · 18 | U | L | Size of the text in every CX window and label. Each element may set its own in its Text rows; a chat window on its gear. |
+| ui.typeface | — | Typeface | D | `default` + every `font.<name>` + every installed font (full name) · default | U | L | The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Each element may pick its own in its Text rows. Type in the list to search. (CX-681: rebinds the registry's `default`; icons stay DejaVu, #425) |
 | ui.hoverfocus | hoverToFocus (cx-ui.cfg) | Focus a window by hovering | T | off | U | L | A CX window takes the keyboard when the pointer rests on it, without a click. |
 | ui.snap | grid (cx-quickbar.cfg) | Snap windows to a grid | T | off | U | L | Dragged windows land on grid points. |
 | ui.gridpx | gridpx | Grid size | D | 25 / 50 / 75 / 100 / 150 / 200 px · 50 | U | L | |
@@ -493,6 +499,24 @@ inventory icon (docs/research/nui-plt-icons.md, "Built").
 **Units:** "pt" = 1 design px before GUI scale, no DPI maths; the ladder is 6–32 pt everywhere
 (`TextRig.MinFontPx` 10 → 6; the atlas ceiling is 96 px effective). Box sizes and distances
 stay design px.
+
+**Element text rows** (`TextStyle`): every CX element that draws text declares the same three
+rows in its own group, under a section the group names: `<prefix>font` (*Text size*, as UI /
+6..32), `<prefix>typeface` (*Typeface*, the `ui.typeface` choices; `default` follows the UI) and
+`<prefix>outline` (*Text outline*, off / thin / thick). As UI + default draws with the UI face;
+anything else is a face of its own on the shared sheet: a draw-path miss queues its bake on the
+thread pool and the UI face stands in until it lands (a cold caller -- the radial menu opening, a
+row set -- bakes in place); a refused bake logs once; every re-bake raises `TextRig.Rebaked`, which
+the dialog rebuilds on. The outline is a black halo of one px per level per 18 px of
+face, never under a px per level, laid under all of a run's glyphs before their bodies. The
+elements: `nameplate` (names, and `bubble*` for the chat bubbles), `dialog`, `combattext`,
+`radial`, `fps`, `inventory` (typeface + outline only; its text follows its *Size* row) and each
+chat window (`w<N>.font` / `typeface` / `outline` on its gear; the outline reaches the messages,
+not the tab bar or the input line). A toggle's stored `1`/`0` reads as thin/off, so the old
+`nameplate.outline`, `combattext.outline` and `w<N>.outline` keep their meaning; a stored
+`fps.font=<typeface>` moves to `fps.typeface`, logged. The settings panel (and the chat gear, which
+is it), its tooltips and dropdowns, and the Alloy notice lines draw with the UI face itself:
+`ui.font` / `ui.typeface` are their rows. The quickbar and the NUI windows draw no CX text.
 
 ### 4.3 Graphics
 

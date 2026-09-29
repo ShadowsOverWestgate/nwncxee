@@ -257,7 +257,7 @@ public sealed partial class ChatWindow
         // CopySettingsFrom: deep-copies all look settings, NOT tabs/rect/sendChannel.
         var src = new ChatWindow(0, 0, 400, 300, new[] { new Tab("All", 0xffffffff) });
         src.Toggles = ChatToggle.Timestamp; src.InputOnTop = true; src.AnimEnabled = false;
-        src.HoldSec = 99f; src.FadeSec = 11f; src.TauMs = 200f; src.Outline = true;
+        src.HoldSec = 99f; src.FadeSec = 11f; src.TauMs = 200f; src.Outline = 2;
         src.TimeFormat = TsFormat.HourMinSec; src.TimeSource = TsSource.Game;
         src.Align = TextAlign.Right;
         src.BgMode = BgMode.Radial; src.BgEnd = 0.7f;
@@ -268,7 +268,7 @@ public sealed partial class ChatWindow
         dst.CopySettingsFrom(src);
         check.Expect(dst.Toggles == ChatToggle.Timestamp && dst.InputOnTop && !dst.AnimEnabled, "copy: toggles+inputOnTop+anim");
         check.Expect(dst.HoldSec == 99f && dst.FadeSec == 11f && dst.TauMs == 200f, "copy: hold/fade/tau");
-        check.Expect(dst.Outline && dst.TimeFormat == TsFormat.HourMinSec && dst.TimeSource == TsSource.Game, "copy: outline+ts");
+        check.Expect(dst.Outline == 2 && dst.TimeFormat == TsFormat.HourMinSec && dst.TimeSource == TsSource.Game, "copy: outline+ts");
         check.Expect(dst.Align == TextAlign.Right, "copy: align");
         check.Expect(dst.BgMode == BgMode.Radial && dst.BgEnd == 0.7f, "copy: bgmode + stops");
         check.Expect(!dst.AutoHideHeader, "copy: autoHideHeader");

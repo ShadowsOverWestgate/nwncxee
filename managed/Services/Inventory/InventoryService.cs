@@ -29,6 +29,8 @@ public sealed unsafe partial class InventoryService : IExtenderService
     private static readonly InvIcon[] _icons = new InvIcon[InventoryModel.MaxItems + InventoryModel.Slots.Length + 256];
     private static GlyphAtlas? _text, _small;
     private static float _textPx, _smallPx;
+    /// <summary>The typeface the two faces were baked in (<c>inventory.typeface</c>).</summary>
+    private static string _typeface = FontRegistry.DefaultName;
     private static int _atlasEpoch = -1, _vw, _vh;
     private static bool _layoutDirty = true, _ready, _masterOff, _facesMissing;
 
@@ -335,6 +337,7 @@ public sealed unsafe partial class InventoryService : IExtenderService
         _gridOver.Reset(_text.SolidU, _text.SolidV);
         _lootUnder.Reset(_text.SolidU, _text.SolidV);
         _lootOver.Reset(_text.SolidU, _text.SolidV);
+        _under.Outline = _over.Outline = _gridUnder.Outline = _gridOver.Outline = _lootUnder.Outline = _lootOver.Outline = Halo;
         int n = _inv.Emit(_under, _over, _gridUnder, _gridOver, _lootUnder, _lootOver, skin, _text, _small, _icons);
         _inv.GridClip(out int gx, out int gy, out int gw, out int gh);
         _inv.LootClip(out int lx, out int ly, out int lw, out int lh);
@@ -358,13 +361,16 @@ public sealed unsafe partial class InventoryService : IExtenderService
         if (_inv.DragIcon(out InvIcon d)) RadialIcons.Draw((IntPtr)d.Oid, d.X, d.Y, d.W, d.H, d.Alpha, d.CellsW, d.CellsH);
     }
 
+    /// <summary>The <c>inventory.outline</c> halo radius at the window's text size.</summary>
+    private static float Halo => TextStyle.HaloOf(InventoryKnobs.Text.Outline.V, _textPx);
+
     /// <summary>The window's two faces at its scale, re-fetched when the atlas re-baked; false (and one notice) when they
     /// are not baked.</summary>
     private static bool Faces()
     {
         if (_text != null && _small != null && _atlasEpoch == TextRig.AtlasEpoch) return true;
         _atlasEpoch = TextRig.AtlasEpoch;
-        _text = TextRig.BakedFace(_textPx); _small = TextRig.BakedFace(_smallPx);
+        _text = TextRig.BakedFace(_typeface, _textPx); _small = TextRig.BakedFace(_typeface, _smallPx);
         if (_text != null && _small != null) return true;
         if (!_facesMissing) { _facesMissing = true; Notice.Show(_log, $"inventory: the {_textPx}/{_smallPx} px faces are not baked -- the window cannot draw"); }
         return false;
@@ -379,10 +385,11 @@ public sealed unsafe partial class InventoryService : IExtenderService
         if (centre) { _inv.X = (vw - _inv.W) / 2f; _inv.Y = (vh - _inv.H) / 2f; _inv.ClampOnScreen(vw, vh); }
         float tp = MathF.Round(Math.Clamp(TextPx * _inv.S, TextRig.MinFontPx, TextRig.AtlasMaxPx));
         float sp = MathF.Round(Math.Clamp(SmallPx * _inv.S, TextRig.MinFontPx, TextRig.AtlasMaxPx));
-        if (tp != _textPx || sp != _smallPx)
+        string face = InventoryKnobs.Text.Typeface.V;
+        if (tp != _textPx || sp != _smallPx || face != _typeface)
         {
-            _textPx = tp; _smallPx = sp;
-            TextRig.Face(tp); TextRig.Face(sp);
+            _textPx = tp; _smallPx = sp; _typeface = face;
+            TextRig.Face(face, tp); TextRig.Face(face, sp);
             _atlasEpoch = -1;
         }
     }

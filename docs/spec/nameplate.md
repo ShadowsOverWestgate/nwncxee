@@ -215,7 +215,8 @@ Every one of these must hold, and each gets a line in the commit message:
    -- vanilla has none either, and the shared glyph atlas is baked once at the effective px, so a scale factor
    would only inflate chrome around unchanged glyphs.
 4. Chat wins over the plate while a line is live; un-hovering does not cut a line short.
-5. Object types 7/9/10 get the `"[name]: "` prefix; creatures do not.
+5. Object types 7/9/10 get the `"[name]: "` prefix; creatures do not. (A speech card's name header already
+   names the speaker, so under one the prefix is wrapped past -- `nameplate.speaker`.)
 6. Channels 5, 0x0c, 0x0f never bubble.
 7. Decay: server-supplied `fixedSec` if **> 0.15**, else `clamp(len*perChar*0.15, 4, 12)`.
 8. Tab plates **creatures only**; placeables and items plate on hover only; doors and
@@ -248,7 +249,20 @@ Deliberate divergences from vanilla, to be stated in the commit message:
   Reuse the chat's existing entry/tell path; do not invent a second one. **Off by default**, and the plate
   window publishes **no `HitTestOverride`**: a plate must never take the cursor from the engine's contextual
   pointer, nor take a click the game world would have had.
-- **Health bar** — optional thin bar under the name, coloured by band. Off by default.
+- **Health bar** — optional thin bar under the name, coloured by band. Off by default. The fill is the
+  creature's EXACT HP (`(current + temporary) / max`, `CNWCCreatureStats +0x88/+0x86/+0x8a`) where the
+  server sent it -- the player's own creature and party members only (update flag `0x400`, RE §4.5) -- and
+  only while it lands in the band the server last sent, which is how HP left stale by a creature leaving
+  the party is caught. Everyone else fills to the band's midpoint.
+- **Speech card** — `nameplate.speaker`: name and portrait (default), name only, portrait only, or neither. With either,
+  a bubble is one card: the speaker's portrait top-left (`nameplate.portraitsize` lines tall, 2–6, default 3), their name as a header
+  in the reaction colour (wrapped as the plate wraps it, so "name + title" keeps both lines), then every queued line oldest first, left-aligned. The engine's
+  `"[speaker]: "` prefix on a placeable's/door's line (types 7/9/10) is wrapped past while the header
+  names the speaker. Neither = the plain per-line boxes, as on the stock game.
+- **Show while talking** — `nameplate.whiletalking`, off by default: hover or Tab plates a talking object
+  too, the plate on the anchor and the bubble stacked above it as one separation box. The bubble leaves to
+  the plate what it shows: the name always, the portrait when the plate draws one. Diverges from
+  acceptance §4 on purpose, and only when asked.
 - **`ObjectTextBubbleOverride`** — the module's own plate text (§8.5). The engine composes one
   string, `name\nband`, and glues the override onto its head (mode 2) or tail (mode 3), or
   replaces it outright (mode 1); we keep name and band as separate boxes, so the segment at the

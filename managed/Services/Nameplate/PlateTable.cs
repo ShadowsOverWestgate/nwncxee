@@ -73,6 +73,10 @@ public sealed partial class PlateTable
         public bool Fading;
         /// <summary>The wrap dropped lines past the cap, so the last kept line ends in an ellipsis.</summary>
         public bool Truncated;
+        /// <summary>Runes of the engine's <c>"[speaker]: "</c> prefix at the head of <see cref="Runes"/>
+        /// (<see cref="PlateLayout.SpeakerPrefixLen"/>), or 0. Kept in the runes; a card with a name header wraps
+        /// past it.</summary>
+        public int Prefix;
 
         /// <summary>Put the line into its fade tail starting now. Idempotent: a line already fading keeps the
         /// tail it is part way through rather than restarting it.</summary>
@@ -94,6 +98,9 @@ public sealed partial class PlateTable
         /// <summary>Wrapped-line cap the cached spans were cut to. In the key because the cap is a LIVE knob
         /// (the settings slider): without it, dragging it rewraps nothing until the width or scale changes.</summary>
         public int WrapCap = -1;
+        /// <summary>Runes the cached spans skip at the head -- <see cref="Prefix"/> or 0 -- in the key because the
+        /// name header that decides it is a live knob.</summary>
+        public int WrapSkip = -1;
         public float WrapPixelW;
     }
 
@@ -156,6 +163,8 @@ public sealed partial class PlateTable
         public float AnchorX, AnchorY;
         public bool Plated;
         public int Damage = -1;
+        /// <summary>The health bar's fill 0..1 (<see cref="NameplateNative.Health"/>), or -1 with no band.</summary>
+        public float Health = -1f;
         public float Distance;
         public float DistanceFade;
         /// <summary>Set on the frame the entry is drawn as a bubble rather than a plate.</summary>
@@ -179,6 +188,12 @@ public sealed partial class PlateTable
         public float LastH;
         /// <summary>Set on a freshly claimed slot: the next draw seeds the entry slide and clears it.</summary>
         public bool AnimNew;
+        /// <summary>Height of the plate stacked under this entry's bubble last frame (<c>nameplate.whiletalking</c>),
+        /// 0 when none. Its drop is absorbed into <see cref="YOff"/>, so the bubble eases down instead of falling.</summary>
+        public float LastStackH;
+        /// <summary>Last frame drew a bubble. A stacked plate holds its anchor: a plate-only entry that starts talking
+        /// lands the bubble on top of it rather than absorbing the growth (which would dip the plate).</summary>
+        public bool LastBubble;
         /// <summary>Last frame's separation push in draw px (negative = shoved upward). Kept so a slot change
         /// can be absorbed into <see cref="YOff"/> (<c>PlateLayout.AbsorbPush</c>) instead of teleporting, and
         /// so a box that steps out of separation while <see cref="FadingOut"/> keeps the slot it died in.</summary>
@@ -208,7 +223,7 @@ public sealed partial class PlateTable
         /// mid-fade alpha would lend it to whatever object claims the slot next.</summary>
         public void Release()
         {
-            Used = false; LineCount = 0; TopLine = -1; Damage = -1;
+            Used = false; LineCount = 0; TopLine = -1; Damage = -1; Health = -1f; LastStackH = 0f; LastBubble = false;
             OverrideMode = 0; OverrideText = ""; ParaCount = 0;
             Alive = false; ShowBubble = false;
             Alpha = 0f; YOff = 0f; LastH = 0f; LastPush = 0f; AnimNew = true;
@@ -450,6 +465,7 @@ public sealed partial class PlateTable
         }
         BubbleLine ln = e.Lines[e.LineCount];
         Fill(ln, p.Runs, p.Channel, p.DecaySec, p.PostedMs);
+        if (NameplateNative.SpeakerPrefixed(p.Type)) ln.Prefix = PlateLayout.SpeakerPrefixLen(ln.Runes);
         e.LineCount++;
     }
 
@@ -474,6 +490,7 @@ public sealed partial class PlateTable
         ln.Alpha = 1f;
         ln.Fading = false;
         ln.Truncated = false;
+        ln.Prefix = 0;
         ln.WrapWidth = -1f;   // invalidate the wrap cache: the content changed
 
         int need = 0;
@@ -568,6 +585,7 @@ public sealed partial class PlateTable
             }
 
             e.Damage = NameplateNative.DamageLevel(obj, e.Type);
+            e.Health = NameplateNative.Health(obj, e.Type, e.Damage);
             // Acceptance §4: a live chat line wins over the plate, and un-hovering does not cut it short.
             // (Vanilla enforces that through bubble+0x14c, which our own reset clears -- see the hook.)
             // Latched while alive: a dying bubble must not flip to plate chrome half way through its fade.
@@ -602,19 +620,23 @@ public sealed partial class PlateTable
     }
 
     /// <summary>COLD-on-change: (re)wrap a bubble line to <paramref name="pixelW"/>. Keyed on the width, the
-    /// glyph-atlas epoch and <see cref="Metrics.Scale"/>, exactly as the chat layout cache is -- a font
-    /// re-bake changes every advance. Steady state is a four-compare no-op; only a real change pays
+    /// face stamp (<paramref name="epoch"/>: <c>TextStyle.Stamp</c>, which moves on a face pick and on every
+    /// re-bake) and <see cref="Metrics.Scale"/> -- a new face changes every advance. Steady state is a four-compare no-op; only a real change pays
     /// <c>TextWrapper.WrapRunes</c>, which allocates.</summary>
-    public static void EnsureWrap(BubbleLine ln, GlyphAtlas atlas, float pixelW, int epoch, int maxLines)
+    /// <param name="skip">runes at the head the wrap leaves out (the speaker prefix under a name header); the spans
+    /// stay indices into the whole <see cref="BubbleLine.Runes"/>.</param>
+    public static void EnsureWrap(BubbleLine ln, GlyphAtlas atlas, float pixelW, int epoch, int maxLines, int skip = 0)
     {
         int cap = maxLines < 1 ? 1 : (maxLines > MaxWrapped ? MaxWrapped : maxLines);
+        if (skip < 0 || skip >= ln.Runes.Count) skip = 0;
         if (ln.WrapWidth == pixelW && ln.WrapEpoch == epoch && ln.WrapScale == Metrics.Scale
-            && ln.WrapCap == cap) return;
-        ln.WrapWidth = pixelW; ln.WrapEpoch = epoch; ln.WrapScale = Metrics.Scale; ln.WrapCap = cap;
+            && ln.WrapCap == cap && ln.WrapSkip == skip) return;
+        ln.WrapWidth = pixelW; ln.WrapEpoch = epoch; ln.WrapScale = Metrics.Scale; ln.WrapCap = cap; ln.WrapSkip = skip;
 
-        List<TextWrapper.LineSpan> spans = TextWrapper.WrapRunes(ln.Runes, pixelW, atlas.AdvanceOfCached);
+        List<Rune> src = skip == 0 ? ln.Runes : ln.Runes.GetRange(skip, ln.Runes.Count - skip);
+        List<TextWrapper.LineSpan> spans = TextWrapper.WrapRunes(src, pixelW, atlas.AdvanceOfCached);
         int n = spans.Count < cap ? spans.Count : cap;
-        for (int i = 0; i < n; i++) ln.Spans[i] = spans[i];
+        for (int i = 0; i < n; i++) ln.Spans[i] = new TextWrapper.LineSpan(spans[i].Start + skip, spans[i].End + skip);
         ln.SpanCount = n;
         ln.Truncated = spans.Count > n;
         ln.WrapPixelW = FitSpans(ln, pixelW, atlas.AdvanceOfCached);

@@ -16,7 +16,7 @@ public sealed class WindowConfig
     public readonly Dictionary<string, uint> Colors = new();
     public bool? AnimEnabled;
     public float? HoldSec, FadeSec, TauMs;
-    public bool? Outline;
+    public int? Outline;
     /// <summary>Per-window font (CX-683): absent = follow the UI knobs.</summary>
     public int? FontPx;
     public string? Typeface;

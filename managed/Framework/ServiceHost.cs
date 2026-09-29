@@ -77,6 +77,7 @@ public static class ServiceHost
         ClientBuilds.SelfCheck(log);   // every build file names real rows and symbols, and covers every RVA
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
         CX.Ui.AtlasSheet.SelfCheck(log);   // #469: pack-and-grow, ceiling refusal, face lookup -- no GL, no stbtt
+        CX.Ui.TextStyle.SelfCheck(log);   // per-element text rows + the batch's halos-under-bodies run
         foreach (IExtenderService service in all)
         {
             try { service.Initialize(log, hooks); }

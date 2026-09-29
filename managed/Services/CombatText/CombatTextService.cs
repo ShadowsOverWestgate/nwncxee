@@ -44,10 +44,11 @@ public sealed unsafe class CombatTextService : IExtenderService
     private static readonly string[] RequiredSymbols = { SymbolMap.ShowFloatyText, SymbolMap.ExoStringDtor };
 
     /// <summary>Glyph height of the face the animation samples (#471): the largest an element ever gets --
-    /// effective UI px × the spawn pop × the banner multiplier -- so every frame is a
-    /// minification. Capped at <see cref="TextRig.AtlasMaxPx"/>: past it (UI 18px needs textscale &gt; 3.05)
-    /// the top of the pop magnifies again. Written cold; read on the frame.</summary>
+    /// the resting px (<c>combattext.font</c>, else the UI's) × the spawn pop × the banner multiplier -- so every
+    /// frame is a minification. Capped at <see cref="TextRig.AtlasMaxPx"/>: past it (UI 18px needs textscale &gt; 3.05)
+    /// the top of the pop magnifies again. Written cold; read on the frame, with <see cref="_peakFace"/> its typeface.</summary>
     private static volatile float _peakPx;
+    private static volatile string _peakFace = FontRegistry.DefaultName;
 
     /// <summary>The peak height for the current UI size and multipliers.</summary>
     private static float PeakPx()
@@ -58,19 +59,20 @@ public sealed unsafe class CombatTextService : IExtenderService
 
     /// <summary>The uncapped peak, so the status line can say when the cap is in force.</summary>
     private static float PeakPxRaw()
-        => MathF.Round(Metrics.DesignFontPx * Metrics.Scale * FloatyAnim.PopFrom * CombatTextKnobs.BannerSize.V);
+        => MathF.Round(CombatTextKnobs.Text.Px * FloatyAnim.PopFrom * CombatTextKnobs.BannerSize.V);
 
     /// <summary>COLD: (re)bake the peak face, dropping the previous one so the sheet does not accumulate every
-    /// ceiling ever tried. Runs at arm time, on a <c>combattext.bannersize</c> set, and after a UI font change.</summary>
+    /// ceiling ever tried. Runs at arm time, on a <c>combattext.bannersize</c> or text-row set, and after a UI font change.</summary>
     internal static void RequestPeakFace()
     {
         if (!_armed) return;
         float px = PeakPx();
-        if (px == _peakPx && TextRig.BakedFace(px) != null) return;
-        float old = _peakPx;
-        if (old != 0f && old != px) TextRig.ReleaseFace(old);
-        _peakPx = TextRig.Face(px) != null ? px : 0f;
-        _log?.Info($"CombatTextService: peak face {(_peakPx > 0f ? $"{_peakPx}px" : "unavailable, drawing from the UI face")}");
+        string face = CombatTextKnobs.Text.Typeface.V;
+        if (px == _peakPx && face == _peakFace && TextRig.BakedFace(face, px) != null) return;
+        if (_peakPx != 0f && (_peakPx != px || face != _peakFace)) TextRig.ReleaseFace(_peakFace, _peakPx);
+        _peakFace = face;
+        _peakPx = TextRig.Face(face, px) != null ? px : 0f;
+        _log?.Info($"CombatTextService: peak face {(_peakPx > 0f ? $"{face} @ {_peakPx}px" : "unavailable, drawing from the UI face")}");
     }
 
     public void Initialize(ExtenderLog log, HookService hooks)
@@ -156,9 +158,10 @@ public sealed unsafe class CombatTextService : IExtenderService
     /// <summary>Element geometry, reused. Doubling is a guard, not a path.</summary>
     private static float[] _verts = new float[4096];
 
-    /// <summary>8-way (±1px) offsets for the outline halo, as flat (dx,dy) pairs -- the chat renderer's.</summary>
-    private static readonly float[] OutlineOffsets =
-    { -1f, -1f, 0f, -1f, 1f, -1f, -1f, 0f, 1f, 0f, -1f, 1f, 0f, 1f, 1f, 1f };
+    /// <summary>Bumped when the face the draw samples changes object (a pick, any re-bake): the key a slot's cached
+    /// measure is valid under. Render thread only.</summary>
+    private static int _faceKey;
+    private static GlyphAtlas? _lastFace;
 
     private static void Draw()
     {
@@ -185,10 +188,14 @@ public sealed unsafe class CombatTextService : IExtenderService
         float gui = Metrics.GameUiScale;
         float ui = Metrics.Scale;
         float uiPx = Metrics.DesignFontPx * ui;
+        float restPx = CombatTextKnobs.Text.Px;
         float peakPx = _peakPx;
-        GlyphAtlas face = TextRig.BakedFace(peakPx) ?? atlas;
+        GlyphAtlas face = TextRig.BakedFace(_peakFace, peakPx) ?? atlas;
+        if (!ReferenceEquals(face, _lastFace)) { _lastFace = face; _faceKey++; }
         float facePx = face == atlas ? uiPx : peakPx;
-        float down = uiPx / facePx;
+        float down = restPx / facePx;
+        float lineH = atlas.LineHeight * restPx / uiPx;
+        float halo = CombatTextKnobs.Text.HaloPx;
 
         int n = 0;
         for (int i = 0; i < count; i++)
@@ -207,12 +214,13 @@ public sealed unsafe class CombatTextService : IExtenderService
                 if ((ox - cx) * fx + (oy - cy) * fy + (oz - cz) * fz <= 0f) continue;
             }
 
-            Place(s, now, ui, atlas.LineHeight, ref x, ref y, out float scale, out float alpha);
+            Place(s, now, ui, lineH, ref x, ref y, out float scale, out float alpha);
             if (alpha <= 0f) continue;
 
             float k = scale * down;
             float w = Measure(s, face, facePx) * k;
-            EmitSlot(ref n, face, s, x - w * 0.5f, y, k, scale, alpha);
+            // The halo grows with the element: a 1px outline behind a 1.3x banner is a grey fringe, not an outline.
+            EmitSlot(ref n, face, s, x - w * 0.5f, y, k, halo * (scale < 1f ? 1f : scale), alpha);
         }
 
         if (n > 0) TextRig.DrawBatch(_verts, n / VertexBatch.Floats);
@@ -252,39 +260,41 @@ public sealed unsafe class CombatTextService : IExtenderService
     /// re-bake or a change of measured face height.</summary>
     private static float Measure(FloatyTable.Slot s, GlyphAtlas atlas, float facePx)
     {
-        if (s.MeasuredW >= 0f && s.MeasureEpoch == TextRig.AtlasEpoch && s.MeasurePx == facePx) return s.MeasuredW;
+        if (s.MeasuredW >= 0f && s.MeasureEpoch == _faceKey && s.MeasurePx == facePx) return s.MeasuredW;
         float w = 0f;
         for (int r = 0; r < s.Runs.Length; r++)
             foreach (Rune ru in s.Runs[r].Text.EnumerateRunes()) w += atlas.AdvanceOf(ru);
         s.MeasuredW = w;
-        s.MeasureEpoch = TextRig.AtlasEpoch;
+        s.MeasureEpoch = _faceKey;
         s.MeasurePx = facePx;
         return w;
     }
 
-    /// <summary><paramref name="scale"/> is the quad factor on the face's glyphs; <paramref name="anim"/> is the
-    /// animation scale relative to the UI size, which is what the outline halo grows with.</summary>
+    /// <summary><paramref name="scale"/> is the quad factor on the face's glyphs; <paramref name="halo"/> the outline
+    /// radius in screen px (0 = none). Halos in a first pass, bodies in a second, so no halo paints over a glyph.</summary>
     private static void EmitSlot(ref int n, GlyphAtlas atlas, FloatyTable.Slot s,
-                                 float penX, float baseline, float scale, float anim, float alpha)
+                                 float penX, float baseline, float scale, float halo, float alpha)
     {
-        // The halo grows with the element: a 1px outline behind a 1.3x banner is a grey fringe, not an outline.
-        float halo = anim < 1f ? 1f : anim;
-        for (int r = 0; r < s.Runs.Length; r++)
+        Span<float> o = TextStyle.HaloOffsets(halo, stackalloc float[TextStyle.MaxHaloFloats]);
+        for (int pass = o.Length > 0 ? 0 : 1; pass < 2; pass++)
         {
-            ColorRun run = s.Runs[r];
-            // A rune the parser left at plain white takes the engine's own Vector colour -- the same
-            // fallback rule the plate's override lines use for an untagged run.
-            bool plain = run.R == 1f && run.G == 1f && run.B == 1f;
-            float cr = plain ? s.BaseR : run.R, cg = plain ? s.BaseG : run.G, cb = plain ? s.BaseB : run.B;
-            foreach (Rune ru in run.Text.EnumerateRunes())
+            float pen = penX;
+            for (int r = 0; r < s.Runs.Length; r++)
             {
-                if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru) * scale; continue; }
-                if (CombatTextKnobs.Outline.V)
-                    for (int o = 0; o < OutlineOffsets.Length; o += 2)
-                        EmitGlyph(ref n, gl, penX + OutlineOffsets[o] * halo,
-                                  baseline + OutlineOffsets[o + 1] * halo, scale, 0f, 0f, 0f, alpha);
-                EmitGlyph(ref n, gl, penX, baseline, scale, cr, cg, cb, alpha);
-                penX += gl.Advance * scale;
+                ColorRun run = s.Runs[r];
+                // A rune the parser left at plain white takes the engine's own Vector colour -- the same
+                // fallback rule the plate's override lines use for an untagged run.
+                bool plain = run.R == 1f && run.G == 1f && run.B == 1f;
+                float cr = plain ? s.BaseR : run.R, cg = plain ? s.BaseG : run.G, cb = plain ? s.BaseB : run.B;
+                foreach (Rune ru in run.Text.EnumerateRunes())
+                {
+                    if (!atlas.TryGet(ru.Value, out Glyph gl)) { pen += atlas.AdvanceOf(ru) * scale; continue; }
+                    if (pass == 1) EmitGlyph(ref n, gl, pen, baseline, scale, cr, cg, cb, alpha);
+                    else
+                        for (int i = 0; i < o.Length; i += 2)
+                            EmitGlyph(ref n, gl, pen + o[i], baseline + o[i + 1], scale, 0f, 0f, 0f, alpha);
+                    pen += gl.Advance * scale;
+                }
             }
         }
     }
@@ -313,7 +323,7 @@ public sealed unsafe class CombatTextService : IExtenderService
     /// <summary>The bare <c>/combattext</c> line: the rows, then the table's live counters and the peak face.</summary>
     private static string Status()
         => $"{CombatTextKnobs.G.Report()} | live={_table.LiveCount} overflow={_table.Overflow} "
-         + $"peakface={F(_peakPx)}px{(PeakPxRaw() > TextRig.AtlasMaxPx ? " (capped)" : "")}";
+         + $"peakface={_peakFace} @ {F(_peakPx)}px{(PeakPxRaw() > TextRig.AtlasMaxPx ? " (capped)" : "")}";
 
     private static string F(float v) => v.ToString("0.##", CultureInfo.InvariantCulture);
 }

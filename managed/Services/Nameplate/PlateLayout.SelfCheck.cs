@@ -478,6 +478,68 @@ public static partial class PlateLayout
         var neutral = ReactionColor(0);
         check.Expect(Near(neutral.b, 1f) && Near(neutral.r, 128f / 255f), "neutral is blue");
 
+        // ---- BandOf: CNWSObject::GetDamageLevel's float thresholds, replayed ----
+        check.Expect(BandOf(20, 20) == 0 && BandOf(19, 20) == 0, "exactly 0.95 is still uninjured (ucomiss 0.95f)");
+        check.Expect(BandOf(189, 200) == 1 && BandOf(15, 20) == 1, "under 0.95 down to 0.75 is barely injured");
+        check.Expect(BandOf(149, 200) == 2 && BandOf(10, 20) == 2, "under 0.75 down to 0.5 is injured");
+        check.Expect(BandOf(99, 200) == 3 && BandOf(5, 20) == 3, "under 0.5 down to 0.25 is badly wounded");
+        check.Expect(BandOf(1, 20) == 4, "alive under 0.25 is near death");
+        check.Expect(BandOf(0, 20) == 5 && BandOf(-7, 20) == 5, "zero or below is dead");
+        check.Expect(BandOf(0, 0) == 0 && BandOf(5, 0) == 0 && BandOf(-5, 0) == 5,
+                     "a zero max replays the engine's NaN (uninjured), +inf (uninjured) and -inf (dead)");
+
+        // ---- HealthFraction: exact HP when the server sent it and it agrees with the band, else the band ----
+        check.Expect(Near(HealthFraction(37, 0, 50, BandOf(37, 50)), 0.74f), "exact HP drives the bar when it agrees with the band");
+        check.Expect(Near(HealthFraction(30, 10, 50, BandOf(40, 50)), 0.8f), "temporary HP counts, as the band and the party bar count it");
+        check.Expect(Near(HealthFraction(0, 0, 0, 2), 0.625f), "no HP from the server: the band's midpoint");
+        check.Expect(Near(HealthFraction(50, 0, 50, 3), 0.375f), "stale HP that contradicts the band loses to the band");
+        check.Expect(HealthFraction(60, 0, 50, 0) == 1f, "an overfull pool never draws past the track");
+        check.Expect(HealthFraction(0, 0, 0, 0) == 1f && HealthFraction(0, 0, 0, 5) == 0f, "band 0 is a full bar, dead an empty one");
+        check.Expect(HealthFraction(0, 0, 0, 42) == 0f && HealthFraction(0, 0, 0, -1) == 1f, "an out-of-range band clamps");
+
+        // ---- SpeakerPrefixLen: the engine's "[name]: " on a placeable/door line ----
+        static System.Collections.Generic.List<System.Text.Rune> R(string s)
+        {
+            var l = new System.Collections.Generic.List<System.Text.Rune>();
+            foreach (System.Text.Rune r in s.EnumerateRunes()) l.Add(r);
+            return l;
+        }
+        check.Expect(SpeakerPrefixLen(R("[Old Door]: Locked.")) == 12, "the bracketed speaker and its colon-space are the prefix");
+        check.Expect(SpeakerPrefixLen(R("Locked.")) == 0, "no leading bracket, no prefix");
+        check.Expect(SpeakerPrefixLen(R("[Old Door] Locked.")) == 0, "a bracket without the colon-space is the speaker's own text");
+        check.Expect(SpeakerPrefixLen(R("[Sign]: ")) == 0, "a prefix with nothing after it is kept, never skipped to an empty line");
+        check.Expect(SpeakerPrefixLen(R("")) == 0, "empty text has no prefix");
+
+        // ---- CardParts: nameplate.speaker, and a plate stacked under the bubble showing each part once ----
+        check.Expect(CardParts(3, false, true, true, true, out bool cn, out bool cp) && cn && cp, "name and portrait: both on the card");
+        check.Expect(CardParts(1, false, true, true, true, out cn, out cp) && cn && !cp, "name only: no portrait");
+        check.Expect(CardParts(2, false, true, true, true, out cn, out cp) && !cn && cp, "portrait only: no name");
+        check.Expect(!CardParts(0, false, true, true, true, out _, out _), "neither: the stock plain boxes");
+        check.Expect(!CardParts(3, true, true, true, true, out _, out _), "a stacked plate with a portrait takes over both");
+        check.Expect(CardParts(3, true, false, true, true, out cn, out cp) && !cn && cp, "a stacked plate without a portrait leaves it to the card");
+        check.Expect(!CardParts(3, false, true, false, false, out _, out _), "no name and no resref: no card");
+
+        // ---- MeasureCard: portrait left, name header, body; top-aligned portrait sets the floor ----
+        var card = MeasureCard(100f, 20f, 1, 3, 20f, 5f, 1f);
+        check.Expect(Near(card.PortraitH, 60f) && Near(card.PortraitW, 38.4f), "the card portrait is its lines tall at the NWN aspect");
+        check.Expect(Near(card.ColX, 5f + 38.4f + 8f) && Near(card.W, 5f + 38.4f + 8f + 100f + 5f), "the text column sits right of the portrait");
+        check.Expect(Near(card.BodyY, 5f + 20f + 2f), "the body starts under the name header");
+        check.Expect(Near(card.H, 70f), "a one-line card is as tall as its portrait plus the pad");
+        var tall = MeasureCard(100f, 200f, 1, 3, 20f, 5f, 1f);
+        check.Expect(Near(tall.H, 5f + 22f + 200f + 5f), "a long message grows the card past its portrait");
+        var named = MeasureCard(100f, 20f, 1, 0, 20f, 5f, 1f);
+        check.Expect(Near(named.H, 5f + 22f + 20f + 5f) && Near(named.ColX, 5f) && named.PortraitW == 0f, "a name header without a portrait");
+        var faced = MeasureCard(100f, 20f, 0, 3, 20f, 5f, 1f);
+        check.Expect(Near(faced.BodyY, 5f) && Near(faced.H, 70f), "a portrait without a name header");
+        var titled = MeasureCard(100f, 20f, 2, 3, 20f, 5f, 1f);
+        check.Expect(Near(titled.BodyY, 5f + 40f + 2f) && Near(titled.H, 5f + 42f + 20f + 5f),
+                     "a two-line name (name + title) keeps both lines in the header");
+        var twice = MeasureCard(100f, 20f, 1, 3, 20f, 10f, 2f);
+        check.Expect(Near(twice.ColX, 10f + 38.4f + 16f) && Near(twice.BodyY, 10f + 20f + 4f), "scale widens only the chrome");
+        var big = MeasureCard(100f, 20f, 1, 5, 20f, 5f, 1f);
+        check.Expect(Near(big.PortraitH, 100f) && Near(big.ColX, 5f + 64f + 8f) && Near(big.H, 110f),
+                     "a bigger portrait widens the column and sets the card's height");
+
         log.Info(check.Ok ? "PlateLayout.SelfCheck: passed" : "PlateLayout.SelfCheck: FAILED");
     }
 }

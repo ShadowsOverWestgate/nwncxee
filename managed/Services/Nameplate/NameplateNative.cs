@@ -77,6 +77,12 @@ public static unsafe class NameplateNative
     /// <summary>Object type bytes we care about.</summary>
     public const byte TypeCreature = 5, TypeItem = 6, TypePlaceable = 9, TypeDoor = 0xa;  // not-an-offset: an object type enum
 
+    /// <summary>Object types whose chat lines the engine prefixes with <c>"[speaker]: "</c>: the <c>0x680</c> mask
+    /// (7, 9, 10) tested at <c>HandleServerToPlayerChat</c>'s tail (docs/re/nameplate.md). Creatures get none.</summary>
+    public static bool SpeakerPrefixed(byte type) => type < 11 && ((1 << type) & SpeakerPrefixMask) != 0;
+
+    private const int SpeakerPrefixMask = 0x680;  // not-an-offset: an object-type bitmask
+
     /// <summary>The server has retired this object -- it gets neither element (acceptance §9).</summary>
     public static bool Retired(IntPtr obj) => obj != IntPtr.Zero && new CNWCObject(obj).Retired == 1;
 
@@ -322,6 +328,16 @@ public static unsafe class NameplateNative
         return lvl > 5 ? 5 : lvl;
     }
 
+    /// <summary>The health bar's fill 0..1 for a creature in <paramref name="band"/> (<see cref="PlateLayout.HealthFraction"/>:
+    /// exact HP where the server sent it and it agrees with the band, else the band), or -1 with no band. HOT: three
+    /// short reads.</summary>
+    public static float Health(IntPtr obj, byte type, int band)
+    {
+        if (band < 0 || obj == IntPtr.Zero || type != TypeCreature) return -1f;
+        CNWCCreatureStats stats = new CNWCCreature(obj).Stats;
+        return stats.IsNull ? -1f : PlateLayout.HealthFraction(stats.CurHp, stats.TempHp, stats.MaxHp, band);
+    }
+
     /// <summary>Reaction byte for the name colour: 1 friend, 2 enemy, anything else neutral.</summary>
     public static byte Reaction(IntPtr obj, byte type)
         => obj != IntPtr.Zero && type == TypeCreature ? new CNWCCreature(obj).Attitude : (byte)0;
@@ -436,6 +452,10 @@ public static unsafe class NameplateNative
         check.Expect(Decay(1000, 1f, -1f) == 12f, "a negative fixed value falls through to the formula");
 
         check.Expect(!ChannelBubbles(5) && !ChannelBubbles(0x0c) && !ChannelBubbles(0x0f), "channels 5, 0x0c and 0x0f never bubble");
+        check.Expect(SpeakerPrefixed(7) && SpeakerPrefixed(TypePlaceable) && SpeakerPrefixed(TypeDoor),
+                     "triggers, placeables and doors speak with the engine's [name]: prefix");
+        check.Expect(!SpeakerPrefixed(TypeCreature) && !SpeakerPrefixed(TypeItem) && !SpeakerPrefixed(200),
+                     "creatures and items do not, and an out-of-range type is not shifted into the mask");
         check.Expect(ChannelBubbles(1) && ChannelBubbles(3) && ChannelBubbles(4) && ChannelBubbles(0x0e), "every other handled channel bubbles");
 
         log.Info(check.Ok ? "NameplateNative.SelfCheck: passed" : "NameplateNative.SelfCheck: FAILED");

@@ -6,7 +6,8 @@ namespace CX.Ui;
 /// is the text size in design px before GUI scale (was chat's <c>font</c>); <see cref="UiHostService"/> bakes
 /// the one atlas at <c>font × GUI scale</c> and sets <see cref="Metrics.Scale"/> from it, on a set and on the
 /// GUI-scale edge; every window re-lays out from the atlas epoch. <see cref="Typeface"/> (#681) picks the face
-/// <c>default</c> is bound to, from <see cref="FontRegistry.Names"/>. <see cref="HoverFocus"/> is read by <see cref="UiHost"/>
+/// <c>default</c> is bound to, from <see cref="FontRegistry.Names"/>. Both are the base every element's own
+/// <see cref="TextStyle"/> rows follow until set. <see cref="HoverFocus"/> is read by <see cref="UiHost"/>
 /// (was <c>cx-ui.cfg</c>'s <c>hoverToFocus</c>); the three snapping knobs (were <c>cx-quickbar.cfg</c>'s grid
 /// keys) are applied to <c>ChatWindow</c>'s snap statics by the quickbar tick. Declared through
 /// <see cref="UiCategory.Declare"/> from every UI service's Initialize.</summary>
@@ -23,10 +24,10 @@ internal static class UiKnobs
         int[] ladder = new int[TextRig.MaxFontPx - TextRig.MinFontPx + 1];
         for (int i = 0; i < ladder.Length; i++) ladder[i] = TextRig.MinFontPx + i;
         Font = G.Dropdown("font", "Text size", ladder, (int)Metrics.DesignFontPx, layout: true,
-                          help: "Size of the text in every CX window: chat, dialog, nameplates. A chat window may set its own on its gear.",
+                          help: "Size of the text in every CX window and label. Each element may set its own in its Text rows; a chat window on its gear.",
                           changed: UiHostService.ApplyFont);
         Typeface = G.Dropdown("typeface", "Typeface", FontRegistry.Names, FontRegistry.DefaultName, layout: true,
-                              help: "The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Type in the list to search.",
+                              help: "The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Each element may pick its own in its Text rows. Type in the list to search.",
                               changed: UiHostService.ApplyTypeface);
         HoverFocus = G.Toggle("hoverfocus", "Focus a window by hovering", false,
                               help: "A CX window takes the keyboard when the pointer rests on it, without a click.");

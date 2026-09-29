@@ -2375,6 +2375,18 @@ public static unsafe class EngineLayout
     /// <c>*(byte*)(stats + 0x8e)</c> to pick the injury line's colour on both builds.</summary>
     public static readonly int StatsDamage = Field<byte>("CNWCCreatureStats", "damage");
 
+    /// <summary>CNWCCreatureStats: current HP (temporary excluded), temporary HP and max HP, shorts. Written only by
+    /// creature-update flag <c>0x400</c> (<c>HandleServerToPlayerCreatureUpdate_Update</c>, Linux nm @0x7a1550, Windows
+    /// rva 0x781e80: four <c>ReadSHORT</c>s into <c>+0x88 / +0x84 / +0x86 / +0x8a</c> beside
+    /// <c>CPanelPartyBar::SetMemberHealth(cur + temp, max)</c>), which the server sends for the player's own creature
+    /// and party members only; the constructor zeroes all four (<c>movq $0, 0x84</c>, nm @0x75189a). Same offsets on
+    /// both builds.</summary>
+    public static readonly int StatsCurHp = Field<short>("CNWCCreatureStats", "curHp");
+    /// <inheritdoc cref="StatsCurHp"/>
+    public static readonly int StatsTempHp = Field<short>("CNWCCreatureStats", "tempHp");
+    /// <inheritdoc cref="StatsCurHp"/>
+    public static readonly int StatsMaxHp = Field<short>("CNWCCreatureStats", "maxHp");
+
     /// <summary>CGuiInGamePopUpBubble: the projected screen anchor, whole-pixel snapped.
     /// <c>CGuiInGamePopUpBubble::Show(Vector)</c> (Linux nm @0x6a05a0, Windows rva 0x6e9820) stores the vector
     /// there -- x and y as one 8-byte store, z after. NOT the space a <c>Window</c> draws in: see

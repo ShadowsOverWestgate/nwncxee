@@ -7,7 +7,7 @@ namespace CX.Services.Radial;
 /// (CX-689). Off by default until the CRadialMenu layout has been probed live -- the row sits on every
 /// right-click, and a wrong offset there is a crash, not a glitch. Touched from <c>RadialService.Initialize</c>
 /// so the group declares whether or not the hook arms. The look rows (CX-694) are read per frame by the draw
-/// (swatches are RRGGBBAA; <see cref="Opacity"/> multiplies every alpha); the face rows resolve at open, cold.
+/// (swatches are RRGGBBAA; <see cref="Opacity"/> multiplies every alpha); the <see cref="Font"/> face resolves at open, cold.
 /// <see cref="Layout"/> is the CX-692 layout bag (<c>radial.p&lt;N&gt;.*</c>, spec §4.2): Hidden, in-file,
 /// reset-proof, read and written by <see cref="RadialPins"/>, one layout per <see cref="PlayerIdentity"/>.</summary>
 internal static class RadialKnobs
@@ -16,9 +16,11 @@ internal static class RadialKnobs
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled, Lock, Anim;
     internal static readonly Knob<uint> Bg, Frame, Hover, Text;
-    internal static readonly Knob<int> Font, Dwell, AnimMs;
+    internal static readonly Knob<int> Dwell, AnimMs;
     internal static readonly Knob<float> Opacity;
-    internal static readonly Knob<string> Mode, Typeface;
+    internal static readonly Knob<string> Mode;
+    /// <summary>The menu's own text size / typeface / outline (<c>radial.font</c>, <c>radial.typeface</c>, <c>radial.outline</c>).</summary>
+    internal static readonly TextStyle Font;
     internal static readonly KnobBag Layout;
 
     static RadialKnobs()
@@ -37,12 +39,8 @@ internal static class RadialKnobs
         Frame = G.Swatch("frame", "Frame", 0x8c8c8cffu, help: "The 1 px border around each list.");
         Hover = G.Swatch("hover", "Highlight", 0x38669effu, help: "The hovered row and the row whose submenu is open.");
         Text = G.Swatch("text", "Text", 0xd8dee9ffu, help: "Labels, counts and the submenu marks.");
-        int[] ladder = new int[TextRig.MaxFontPx - TextRig.MinFontPx + 2];
-        var names = new string[ladder.Length];
-        ladder[0] = 0; names[0] = "as UI";
-        for (int i = 1; i < ladder.Length; i++) { ladder[i] = TextRig.MinFontPx + i - 1; names[i] = ladder[i].ToString(); }
-        Font = G.Dropdown("font", "Text size", ladder, 0, names, layout: true, help: "The menu's own text size, or the UI text size.");
-        Typeface = G.Dropdown("typeface", "Typeface", FontRegistry.Names, FontRegistry.DefaultName, layout: true, help: "The menu's own font; default follows the UI typeface.");
+        G.Section("Text");
+        Font = new TextStyle(G, "the menu");
         G.Section("Animation");
         Anim = G.Toggle("anim", "Animate", true, help: "Lists fade and slide in as they open.");
         AnimMs = G.Slider("animms", "Animation length", 40, 400, 10, 120, "ms", help: "How long a list takes to appear.");

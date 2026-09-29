@@ -169,8 +169,8 @@ public sealed partial class SettingsWindow
                     "The font this window draws its text with; UI default follows the Typeface setting under UI.");
         AddDropdown(rows, SetAct.SliderFont, "Text size", FontSizes, FontIndex(win.FontPx),
                     "Text size in this window; UI default follows the Text size setting under UI.");
-        AddToggle(rows, SetAct.OutlineOn, "Outline", win.Outline, 0,
-                  "A dark halo around the text for readability over bright scenes.");
+        AddDropdown(rows, SetAct.OutlineOn, "Outline", TextStyle.OutlineNames, win.Outline,
+                    "A dark halo around the messages for readability over bright scenes: thin or thick.");
 
         AddSection(rows, "Animation");
         AddToggle(rows, SetAct.AnimOn, "Animations", win.AnimEnabled, 0,
@@ -356,7 +356,7 @@ public sealed partial class SettingsWindow
             case SetAct.TellsHere: win.TellsHere = !win.TellsHere; TellsHereChanged = win.TellsHere; break;
             case SetAct.CycleTellOpen: TellOpenPicked = row.Selected; break;
             case SetAct.AnimOn: win.AnimEnabled = !win.AnimEnabled; break;
-            case SetAct.OutlineOn: win.Outline = !win.Outline; break;
+            case SetAct.OutlineOn: win.Outline = row.Selected; break;
             case SetAct.CycleFmt: win.TimeFormat = (TsFormat)row.Selected; break;
             case SetAct.CycleSrc: win.TimeSource = (TsSource)row.Selected; break;
             case SetAct.CycleAlign: win.Align = (TextAlign)row.Selected; break;

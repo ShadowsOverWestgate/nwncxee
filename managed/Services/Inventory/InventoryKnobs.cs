@@ -1,9 +1,10 @@
 using CX.Framework;
+using CX.Ui;
 
 namespace CX.Services.Inventory;
 
-/// <summary>The <c>inventory</c> group: the master (off = the stock panel), the look, size and page count, and the
-/// window position as Hidden state (<see cref="Placed"/> false until the player first drags it, so a fresh install
+/// <summary>The <c>inventory</c> group: the master (off = the stock panel), the look, size and page count, the
+/// window's own typeface and outline (<see cref="Text"/>; its text size follows <see cref="Size"/>), and the window position as Hidden state (<see cref="Placed"/> false until the player first drags it, so a fresh install
 /// centres). Every row may be held by a server (<c>ServerPolicy</c>); the component-level overrides no knob exposes
 /// are documented in <c>docs/ui-policy-contract.md</c>.</summary>
 internal static class InventoryKnobs
@@ -12,6 +13,7 @@ internal static class InventoryKnobs
     internal static readonly Knob<bool> Enabled, DragDrop, Search, Kilograms, Placed;
     internal static readonly Knob<string> Look, Mode;
     internal static readonly Knob<float> Size, X, Y;
+    internal static readonly TextStyle Text;
 
     /// <summary>The <see cref="Look"/> values: the game's own GUI art, or CX's flat palette.</summary>
     internal const string LookNative = "native", LookFlat = "cx";
@@ -38,6 +40,8 @@ internal static class InventoryKnobs
                              help: "Hovering the weight shows it in kilograms (1 lb = 0.4536 kg). The window itself keeps the game's pounds.");
         DragDrop = G.Toggle("dropground", "Drag out to drop", true,
                             help: "Releasing a dragged item over the world acts as the stock panel does: on the ground it drops there, on another creature it offers a trade, on you or your associate a potion is drunk. Off: only quickbar drops leave the window.");
+        G.Section("Text");
+        Text = new TextStyle(G, "the inventory", sized: false, changed: InventoryService.Relayout);
         X = G.Slider("x", "x", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);
         Y = G.Slider("y", "y", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);
         Placed = G.Toggle("placed", "placed", false, Tier.Hidden);

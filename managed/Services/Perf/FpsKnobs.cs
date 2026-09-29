@@ -3,13 +3,13 @@ using CX.Framework;
 namespace CX.Services.Perf;
 
 /// <summary>The <c>fps</c> group (spec §4.2): the master is the overlay's visibility and now persists (amends
-/// #182's session-only <c>/fps</c>); <see cref="Font"/> is the Chat-only <c>font.&lt;name&gt;</c> typeface until
-/// multi-font. Touched from <c>FpsOverlayService.Initialize</c>.</summary>
+/// #182's session-only <c>/fps</c>); <see cref="Text"/> is the readout's own size (14 unless set; <c>fps.font</c>,
+/// which held a Chat-only typeface name before) / typeface / outline. Touched from <c>FpsOverlayService.Initialize</c>.</summary>
 internal static class FpsKnobs
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled;
-    internal static readonly Knob<string> Font;
+    internal static readonly CX.Ui.TextStyle Text;
 
     static FpsKnobs()
     {
@@ -17,6 +17,7 @@ internal static class FpsKnobs
             masterHelp: "Frame rate, frame time and server round-trip in the top-right corner.",
             masterChanged: FpsOverlayService.VisibilityChanged);
         Enabled = G.Master!;
-        Font = G.Text("font", "font", CX.Ui.FontRegistry.DefaultName, Tier.ChatOnly, changed: FpsOverlayService.FaceChanged);
+        G.Section("Text");
+        Text = new CX.Ui.TextStyle(G, "the readout", size: 14, changed: FpsOverlayService.FaceChanged);
     }
 }

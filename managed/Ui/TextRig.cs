@@ -124,20 +124,24 @@ public static unsafe partial class TextRig
     public static GlyphAtlas? BakedIconFace(float px)
         => _sheet != null && _sheet.TryFace(Icons.Name, px, out GlyphAtlas f) ? f : null;
 
-    /// <summary>Drop a default-typeface face request a caller no longer needs (#471: a superseded peak face), so the
-    /// sheet stops carrying it from the next re-bake on. Cold; no bake of its own -- the face stays usable until then.
-    /// The default face (index 0) is never dropped.</summary>
-    public static void ReleaseFace(float px)
+    /// <summary>Drop a face request of the registry name <paramref name="typeface"/> a caller no longer needs (#471: a
+    /// superseded peak face), so the sheet stops carrying it from the next re-bake on. Cold; no bake of its own -- the
+    /// face stays usable until then. The default face (index 0) is never dropped.</summary>
+    public static void ReleaseFace(string typeface, float px)
     {
-        if (_defaultName == null) return;
+        typeface = FontRegistry.Effective(typeface);
         lock (_bakeLock) for (int i = _requests.Count - 1; i >= 1; i--)
-            if (_requests[i].Typeface == _defaultName && _requests[i].Px == px) _requests.RemoveAt(i);
+            if (_requests[i].Typeface == typeface && _requests[i].Px == px) _requests.RemoveAt(i);
     }
 
     /// <summary>Raised COLD after <see cref="SetFont"/> swaps in a re-baked sheet, so a face derived from the UI size
     /// (the floaty peak face) can re-request itself at the new height. ponytail: that re-request is a second full
     /// bake per slider tick; folding derived sizes into the first bake is the upgrade if the tick ever feels slow.</summary>
     public static event Action? FontChanged;
+
+    /// <summary>Raised after EVERY sheet swap (a UI font or typeface set, any element's or window's new face), on the
+    /// baking thread, inside the bake lock: every face's UVs moved, so an owner of cached glyph geometry rebuilds.</summary>
+    public static event Action? Rebaked;
 
     /// <summary>Baked faces of a registry name, for <c>/knobs</c>.</summary>
     private static int FacesOf(string name)
@@ -156,6 +160,7 @@ public static unsafe partial class TextRig
         _sheet = baked;
         _texUp = false;   // the hot Draw uploads the new sheet bitmap on the next frame
         AtlasEpoch++;     // cached-geometry consumers rebuild: their glyph UVs went stale
+        Rebaked?.Invoke();
         return true;
     }
 

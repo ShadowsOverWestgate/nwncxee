@@ -27,22 +27,31 @@ public sealed class FpsOverlayService : IExtenderService
 
     private static readonly char[] _text = new char[96];
     private static int _textLen;
-    private static readonly float[] _verts = new float[(96 + 1) * 6 * VertexBatch.Floats];
+    /// <summary>The backing rect, then per char a body and at most two rings of eight halo quads.</summary>
+    private static readonly float[] _verts = new float[(96 * 17 + 1) * 6 * VertexBatch.Floats];
     private static int _vertCount;
     private static float _bakedW, _bakedH;
-    /// <summary>#469: the readout's own face, so it stays this size whatever the chat font is set to. Requested
-    /// cold in <see cref="VisibilityChanged"/> (a miss bakes); <see cref="Bake"/> re-fetches by epoch and falls back to the default face.</summary>
-    private const float FacePx = 14f;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
         _log = log;
         UiCategory.Declare();
-        FpsKnobs.G.Status = () => $"{FpsKnobs.G.Report()} (font -> {FontRegistry.Effective(FpsKnobs.Font.V)})";
+        FpsKnobs.G.Status = () => $"{FpsKnobs.G.Report()} (typeface -> {FontRegistry.Effective(FpsKnobs.Text.Typeface.V)})";
         ServerPing.SelfCheck(log);
         new Window(0, 0, 0, 0) { Focusable = false, DrawContent = Draw };
-        if (FpsKnobs.Enabled.V) TextRig.Face(FpsKnobs.Font.V, FacePx);
+        MigrateFont(log);
+        if (FpsKnobs.Enabled.V) FpsKnobs.Text.Face(TextRig.Atlas, cold: true);
         log.Info($"FpsOverlayService: registered ({(FpsKnobs.Enabled.V ? "shown" : "hidden")}; fps.enabled)");
+    }
+
+    /// <summary><c>fps.font</c> held the Chat-only typeface name before it became the text size: a stored name that is
+    /// not a size moves to <c>fps.typeface</c> (a set, so the file is rewritten), or is dropped out loud.</summary>
+    private static void MigrateFont(ExtenderLog log)
+    {
+        if (Settings.Raw(FpsKnobs.Text.Size!.Key) is not string raw || int.TryParse(raw, out _)) return;
+        bool moved = FpsKnobs.Text.Typeface.Parse(raw);
+        log.Info(moved ? $"FpsOverlayService: {FpsKnobs.Text.Size.Key}={raw} is now {FpsKnobs.Text.Typeface.Key} (the size row took the key)"
+                       : $"FpsOverlayService: {FpsKnobs.Text.Size.Key}={raw} is no size and no known typeface; dropped");
     }
 
     /// <summary>The master's set (cold, the setter's thread): restart the accumulators and, when shown, request
@@ -50,14 +59,14 @@ public sealed class FpsOverlayService : IExtenderService
     internal static void VisibilityChanged()
     {
         _last = 0; _sum = 0; _max = 0; _n = 0; _vertCount = 0;
-        if (FpsKnobs.Enabled.V) TextRig.Face(FpsKnobs.Font.V, FacePx);
+        if (FpsKnobs.Enabled.V) FpsKnobs.Text.Face(TextRig.Atlas, cold: true);
         _log?.Info($"FpsOverlayService: fps.enabled -> {(FpsKnobs.Enabled.V ? "on" : "off")}");
     }
 
-    /// <summary>A <c>fps.font</c> set: bake the new face if the readout is up.</summary>
+    /// <summary>A text-row set (cold, the setter's thread): bake the new face if the readout is up.</summary>
     internal static void FaceChanged()
     {
-        if (FpsKnobs.Enabled.V) TextRig.Face(FpsKnobs.Font.V, FacePx);
+        if (FpsKnobs.Enabled.V) FpsKnobs.Text.Face(TextRig.Atlas, cold: true);
     }
 
     /// <summary>Per-frame draw (render thread, hot). Accumulates present-to-present dt; every
@@ -89,7 +98,7 @@ public sealed class FpsOverlayService : IExtenderService
     /// line of atlas glyphs. Zero-alloc -- digits are written straight into the char buffer.</summary>
     private static void Bake(float fps, float avgMs, float maxMs)
     {
-        GlyphAtlas? atlas = TextRig.BakedFace(FpsKnobs.Font.V, FacePx) ?? TextRig.Atlas;
+        GlyphAtlas? atlas = FpsKnobs.Text.Face(TextRig.Atlas);
         if (atlas == null) { _vertCount = 0; return; }
 
         ServerPing.Refresh();
@@ -129,17 +138,21 @@ public sealed class FpsOverlayService : IExtenderService
         _vertCount = 0;
         Quad(0, 0, _bakedW, _bakedH, atlas.SolidU, atlas.SolidV, atlas.SolidU, atlas.SolidV, 0f, 0f, 0f, 0.55f);
         float r = avgMs <= FrameBudgetMs ? 0.55f : 1f, g2 = avgMs <= FrameBudgetMs ? 0.95f : 0.75f, b = 0.55f;
-        float pen = Pad, baseline = Pad + atlas.Ascent;
-        for (int i = 0; i < _textLen; i++)
+        float baseline = Pad + atlas.Ascent;
+        Span<float> o = TextStyle.HaloOffsets(FpsKnobs.Text.HaloPx, stackalloc float[TextStyle.MaxHaloFloats]);
+        for (int pass = o.Length > 0 ? 0 : 1; pass < 2; pass++)
         {
-            if (atlas.TryGet(_text[i], out Glyph gl))
+            float pen = Pad;
+            for (int i = 0; i < _textLen; i++)
             {
-                if (gl.W > 0)
-                    Quad(pen + gl.XOff, baseline + gl.YOff, pen + gl.XOff + gl.W, baseline + gl.YOff + gl.H,
-                         gl.U0, gl.V0, gl.U1, gl.V1, r, g2, b, 1f);
+                if (!atlas.TryGet(_text[i], out Glyph gl)) { pen += atlas.AdvanceOf(new System.Text.Rune(_text[i])); continue; }
+                float x0 = pen + gl.XOff, y0 = baseline + gl.YOff;
+                if (gl.W > 0 && pass == 1) Quad(x0, y0, x0 + gl.W, y0 + gl.H, gl.U0, gl.V0, gl.U1, gl.V1, r, g2, b, 1f);
+                else if (gl.W > 0)
+                    for (int h = 0; h < o.Length; h += 2)
+                        Quad(x0 + o[h], y0 + o[h + 1], x0 + gl.W + o[h], y0 + gl.H + o[h + 1], gl.U0, gl.V0, gl.U1, gl.V1, 0f, 0f, 0f, 1f);
                 pen += gl.Advance;
             }
-            else pen += atlas.AdvanceOf(new System.Text.Rune(_text[i]));
         }
     }
 

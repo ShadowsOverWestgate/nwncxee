@@ -238,6 +238,10 @@ public sealed unsafe class NameplateService : IExtenderService
     private static readonly long[] _boxKey = new long[PlateTable.MaxEntries];
     private static readonly uint[] _boxId = new uint[PlateTable.MaxEntries];
     private static readonly bool[] _boxIn = new bool[PlateTable.MaxEntries];
+    /// <summary>Height and width of the plate stacked under a bubble (<c>nameplate.whiletalking</c>); 0 = none. The
+    /// bubble leaves to that plate what it already shows (<see cref="UseCard"/>).</summary>
+    private static readonly float[] _boxStackH = new float[PlateTable.MaxEntries];
+    private static readonly float[] _boxPlateW = new float[PlateTable.MaxEntries];
     private static readonly int[] _boxOrder = new int[PlateTable.MaxEntries];
 
     /// <summary>One clickable plate, published for the input thread.</summary>
@@ -253,8 +257,18 @@ public sealed unsafe class NameplateService : IExtenderService
     private static readonly string[] _portraitRef = new string[MaxPortraitsPerFrame];
     private static readonly float[] _portraitRect = new float[MaxPortraitsPerFrame * 5];   // x,y,w,h,alpha
 
-    /// <summary>8-way (±1px) offsets for the outline halo, as flat (dx,dy) pairs -- the chat renderer's.</summary>
-    private static readonly float[] OutlineOffsets = { -1, -1, 0, -1, 1, -1, -1, 0, 1, 0, -1, 1, 0, 1, 1, 1 };
+    /// <summary>The entry being measured or emitted: its style's halo offsets (<see cref="TextStyle.HaloOffsets"/>) and
+    /// the key its wraps are cached under (<see cref="TextStyle.Stamp"/>), set by <see cref="Use"/>. Render thread only.</summary>
+    private static readonly float[] _haloOff = new float[TextStyle.MaxHaloFloats];
+    private static int _haloN, _wrapKey;
+
+    /// <summary>Point the measure / emit helpers at a plate's or a bubble's text style.</summary>
+    private static void Use(TextStyle s) { _haloN = TextStyle.HaloOffsets(s.HaloPx, _haloOff).Length; _wrapKey = s.Stamp; }
+
+    /// <summary>The emitted entry's glyph bodies, held back while its halos go straight into <see cref="_verts"/> and
+    /// appended by <see cref="FlushBodies"/> once it is done: every halo of a plate or bubble lies under every glyph of it.</summary>
+    private static float[] _bodies = new float[4096];
+    private static int _bn;
 
     private static readonly (float r, float g, float b, float a) PlateBg = (0.03f, 0.04f, 0.06f, 0.78f);
     private static readonly (float r, float g, float b, float a) BubbleBg = (0.04f, 0.05f, 0.08f, 0.80f);
@@ -264,6 +278,11 @@ public sealed unsafe class NameplateService : IExtenderService
     private const float BubblePadPx = 5f;
     /// <summary>Vertical gap between a bubble box and the one queued above it, design px.</summary>
     private const float BubbleGapPx = 2f;
+    /// <summary>Gap between two queued lines inside one speech card, design px -- wider than
+    /// <see cref="BubbleGapPx"/>, since no box edge separates them there.</summary>
+    private const float CardParaGapPx = 4f;
+    /// <summary>Opacity of a queued line older than the newest, so the eye lands on what was said last.</summary>
+    private const float OlderLineAlpha = 0.65f;
     /// <summary>Vertical clearance the separation pass leaves between two overlapping boxes, design px.</summary>
     private const float SeparationGapPx = 2f;
     /// <summary>Speech tail under a bubble box, design px. Sized off the design grid, not the atlas, so it
@@ -313,30 +332,45 @@ public sealed unsafe class NameplateService : IExtenderService
         int count = _table.VisibleCount;
         if (count == 0) { Publish(0); return; }
 
-        // ponytail: plate text cannot be sized independently of the chat font -- the atlas is baked once at the
-        // effective px. The upgrade path is a glyph emit of our own that scales the quad AND the advance.
         float scale = Metrics.Scale;
-        float lineH = atlas.LineHeight;
+        GlyphAtlas plate = NameplateKnobs.Plate.Face(atlas)!, bubble = NameplateKnobs.Bubble.Face(atlas)!;
         bool portraits = NameplateKnobs.Portraits.V;
         bool background = NameplateKnobs.Background.V;
+        bool stackPlate = NameplateKnobs.WhileTalking.V;
 
         // Pass 1: measure and place every box at its anchor. The slide residual is NOT folded in yet -- it is
         // applied after separation, so a box easing into place cannot perturb the overlap tests.
         for (int i = 0; i < count; i++)
         {
             PlateTable.Entry e = _table.Visible[i];
-            float w, h;
-            if (e.ShowBubble) MeasureBubble(e, atlas, scale, lineH, out w, out h);
-            else MeasurePlate(e, atlas, scale, lineH, portraits, out w, out h);
+            float w, h, stackH = 0f;
+            if (e.ShowBubble)
+            {
+                bool stacked = stackPlate && e.Plated && PlateHasContent(e);
+                Use(NameplateKnobs.Bubble);
+                MeasureBubble(e, bubble, scale, bubble.LineHeight, stacked, out w, out h);
+                if (stacked)
+                {
+                    Use(NameplateKnobs.Plate);
+                    MeasurePlate(e, plate, scale, plate.LineHeight, portraits, out float pw, out stackH);
+                    _boxPlateW[i] = pw;
+                    if (pw > w) w = pw;
+                    h += stackH;
+                }
+            }
+            else { Use(NameplateKnobs.Plate); MeasurePlate(e, plate, scale, plate.LineHeight, portraits, out w, out h); }
+            _boxStackH[i] = stackH;
             PlateLayout.Place(e.AnchorX, e.AnchorY, w, h, vpW, vpH, out _boxX[i], out _boxBaseY[i]);
             // A newcomer starts a slide below its place; afterwards, GROWTH of the box (a newer line queued
             // beneath the older ones) pushes the top edge up, and feeding that delta back into the residual
             // makes the older lines EASE to the new offset instead of jumping to it. Shrink is deliberately
             // NOT absorbed: the box's bottom is pinned to the anchor, so when the oldest line expires every
             // surviving line stays exactly where it was and there is no displacement to animate.
+            bool landed = stackH > 0f && !e.LastBubble;
             if (e.AnimNew) { e.AnimNew = false; e.YOff = SlideUpPx * scale; }
-            else if (e.LastH > 0f && h > e.LastH) e.YOff += h - e.LastH;
-            e.LastH = h;
+            else if (!landed && e.LastH > 0f && h > e.LastH) e.YOff += h - e.LastH;
+            else if (e.ShowBubble && stackH < e.LastStackH) e.YOff -= e.LastStackH - stackH;
+            e.LastH = h; e.LastStackH = stackH; e.LastBubble = e.ShowBubble;
             _boxY[i] = _boxBaseY[i];
             _boxW[i] = w; _boxH[i] = h;
             _boxKey[i] = e.SortKey;
@@ -374,12 +408,29 @@ public sealed unsafe class NameplateService : IExtenderService
             PlateTable.Entry e = _table.Visible[i];
             float a = _boxA[i];
             if (a <= 0f) continue;
-            if (!e.ShowBubble && e.Name.Length == 0 && !(NameplateKnobs.HealthBand.V && e.Damage >= 0)) continue;
+            if (!e.ShowBubble && !PlateHasContent(e)) continue;
+            float stackH = _boxStackH[i];
             if (e.ShowBubble)
-                EmitBubble(ref n, su, sv, atlas, e, _boxX[i], _boxY[i], _boxW[i], _boxH[i], a, scale, lineH, background);
+            {
+                Use(NameplateKnobs.Bubble);
+                EmitBubble(ref n, ref pn, su, sv, bubble, e, _boxX[i], _boxY[i], _boxW[i], a, scale, bubble.LineHeight,
+                           background, stackH > 0f);
+                if (stackH > 0f)
+                {
+                    FlushBodies(ref n);
+                    Use(NameplateKnobs.Plate);
+                    EmitPlate(ref n, ref pn, su, sv, plate, e, _boxX[i] + (_boxW[i] - _boxPlateW[i]) * 0.5f,
+                              _boxY[i] + _boxH[i] - stackH, a, scale, plate.LineHeight, portraits, background,
+                              hits, ref hitN);
+                }
+            }
             else
-                EmitPlate(ref n, ref pn, su, sv, atlas, e, _boxX[i], _boxY[i], a, scale, lineH, portraits,
+            {
+                Use(NameplateKnobs.Plate);
+                EmitPlate(ref n, ref pn, su, sv, plate, e, _boxX[i], _boxY[i], a, scale, plate.LineHeight, portraits,
                           background, hits, ref hitN);
+            }
+            FlushBodies(ref n);
         }
 
         if (n > 0) TextRig.DrawBatch(_verts, n / VertexBatch.Floats);
@@ -442,7 +493,8 @@ public sealed unsafe class NameplateService : IExtenderService
                    + $"dist={e.Distance.ToString("F1", CultureInfo.InvariantCulture)} "
                    + $"alpha={e.Alpha.ToString("F2", CultureInfo.InvariantCulture)} "
                    + $"yoff={e.YOff.ToString("F1", CultureInfo.InvariantCulture)} "
-                   + $"plated={e.Plated} bubble={e.ShowBubble} alive={e.Alive} "
+                   + $"plated={e.Plated} bubble={e.ShowBubble} alive={e.Alive} band={e.Damage} "
+                   + $"health={e.Health.ToString("F3", CultureInfo.InvariantCulture)} "
                    + $"ovmode={e.OverrideMode} ovparas={e.ParaCount} ov='{e.OverrideText.Replace("\n", "\\n")}'");
         }
     }
@@ -477,7 +529,7 @@ public sealed unsafe class NameplateService : IExtenderService
     /// so a steady frame is three compares and the measure walks preallocated spans, allocating nothing.</summary>
     private static float MeasureName(PlateTable.Entry e, GlyphAtlas atlas, float maxW, out int lines)
     {
-        PlateTable.EnsureNameWrap(e, atlas.AdvanceOfCached, maxW, TextRig.AtlasEpoch);
+        PlateTable.EnsureNameWrap(e, atlas.AdvanceOfCached, maxW, _wrapKey);
         lines = e.NameLineCount;
         float w = 0f;
         for (int i = 0; i < lines; i++)
@@ -487,6 +539,10 @@ public sealed unsafe class NameplateService : IExtenderService
         }
         return w;
     }
+
+    /// <summary>Whether a plate for this entry has anything to show: a name, or a health band to colour.</summary>
+    private static bool PlateHasContent(PlateTable.Entry e)
+        => e.Name.Length != 0 || (NameplateKnobs.HealthBand.V && e.Damage >= 0);
 
     /// <summary>The max width a plate name column and a bubble box share -- one knob, <c>nameplate.width</c>.</summary>
     private static float TextMaxW(float scale) => NameplateKnobs.Width.V * scale;
@@ -506,16 +562,23 @@ public sealed unsafe class NameplateService : IExtenderService
         w = m.W; h = m.H;
     }
 
-    private static void MeasureBubble(PlateTable.Entry e, GlyphAtlas atlas, float scale, float lineH,
+    /// <param name="stacked">a nameplate is stacked under this bubble (<see cref="UseCard"/>).</param>
+    private static void MeasureBubble(PlateTable.Entry e, GlyphAtlas atlas, float scale, float lineH, bool stacked,
                                       out float w, out float h)
     {
+        if (UseCard(e, stacked, out bool name, out bool portrait))
+        {
+            CardMetrics m = MeasureCardOf(e, atlas, scale, lineH, name, portrait);
+            w = m.W; h = m.H + TailH(scale);
+            return;
+        }
         float pad = BubblePadPx * scale, gap = BubbleGapPx * scale;
         float maxW = TextMaxW(scale);
         w = 0f; h = 0f;
         for (int i = 0; i < e.LineCount; i++)
         {
             PlateTable.BubbleLine ln = e.Lines[i];
-            PlateTable.EnsureWrap(ln, atlas, maxW, TextRig.AtlasEpoch, NameplateKnobs.Lines.V);
+            PlateTable.EnsureWrap(ln, atlas, maxW, _wrapKey, NameplateKnobs.Lines.V);
             float bw = ln.WrapPixelW + pad * 2f;
             if (bw > w) w = bw;
             h += ln.SpanCount * lineH + pad * 2f + (i > 0 ? gap : 0f);
@@ -523,6 +586,31 @@ public sealed unsafe class NameplateService : IExtenderService
         if (w <= 0f) w = pad * 2f;
         if (h <= 0f) h = lineH + pad * 2f;
         h += TailH(scale);   // the band the tail hangs into; the box's own bottom edge stops above it
+    }
+
+    /// <summary>Whether this bubble draws as a speech card, and with which parts (<see cref="PlateLayout.CardParts"/>).</summary>
+    private static bool UseCard(PlateTable.Entry e, bool stacked, out bool name, out bool portrait)
+        => PlateLayout.CardParts(NameplateKnobs.Speaker.V, stacked, NameplateKnobs.Portraits.V, e.Name.Length != 0,
+                                 e.PortraitResref.Length != 0, out name, out portrait);
+
+    /// <summary>Wrap every queued line -- past the engine's <c>"[speaker]: "</c> prefix when the header already names
+    /// the speaker -- and lay the card out around the widest of them and the header. The header is the plate's own
+    /// name wrap (same lines, same cache), so a "name + title" name keeps both lines.</summary>
+    private static CardMetrics MeasureCardOf(PlateTable.Entry e, GlyphAtlas atlas, float scale, float lineH,
+                                             bool name, bool portrait)
+    {
+        float maxW = TextMaxW(scale), gap = CardParaGapPx * scale, bodyH = 0f;
+        int nameLines = 0;
+        float textW = name ? MeasureName(e, atlas, maxW, out nameLines) : 0f;
+        for (int i = 0; i < e.LineCount; i++)
+        {
+            PlateTable.BubbleLine ln = e.Lines[i];
+            PlateTable.EnsureWrap(ln, atlas, maxW, _wrapKey, NameplateKnobs.Lines.V, name ? ln.Prefix : 0);
+            if (ln.WrapPixelW > textW) textW = ln.WrapPixelW;
+            bodyH += ln.SpanCount * lineH + (i > 0 ? gap : 0f);
+        }
+        return PlateLayout.MeasureCard(textW, bodyH, nameLines, portrait ? NameplateKnobs.PortraitLines.V : 0, lineH,
+                                       BubblePadPx * scale, scale);
     }
 
     /// <summary>The chrome the speech tail needs, or 0 when there is no box for it to hang off (the background
@@ -557,31 +645,51 @@ public sealed unsafe class NameplateService : IExtenderService
         Vtx(ref n, x0, y0, su, sv, r, g, b, a); Vtx(ref n, x1, y1, su, sv, r, g, b, a); Vtx(ref n, x2, y2, su, sv, r, g, b, a);
     }
 
-    private static void EmitGlyph(ref int n, in Glyph gl, float penX, float baseline,
+    /// <summary>One sheared glyph quad into <paramref name="q"/> at <paramref name="n"/>, growing it on demand.</summary>
+    private static void GlyphQuad(ref float[] q, ref int n, in Glyph gl, float penX, float baseline,
                                   float r, float g, float b, float a, float shear)
     {
         if (gl.W <= 0) return;
-        Grow(n + 6 * VertexBatch.Floats);
+        while (n + 6 * VertexBatch.Floats > q.Length) Array.Resize(ref q, q.Length * 2);
         float x0 = penX + gl.XOff, y0 = baseline + gl.YOff, x1 = x0 + gl.W, y1 = y0 + gl.H;
         float dx = shear * gl.H;
-        Vtx(ref n, x0 + dx, y0, gl.U0, gl.V0, r, g, b, a); Vtx(ref n, x1 + dx, y0, gl.U1, gl.V0, r, g, b, a);
-        Vtx(ref n, x1, y1, gl.U1, gl.V1, r, g, b, a);
-        Vtx(ref n, x0 + dx, y0, gl.U0, gl.V0, r, g, b, a); Vtx(ref n, x1, y1, gl.U1, gl.V1, r, g, b, a);
-        Vtx(ref n, x0, y1, gl.U0, gl.V1, r, g, b, a);
+        Span<float> v = q.AsSpan(n, 6 * VertexBatch.Floats);
+        v[0] = x0 + dx; v[1] = y0; v[2] = gl.U0; v[3] = gl.V0;
+        v[8] = x1 + dx; v[9] = y0; v[10] = gl.U1; v[11] = gl.V0;
+        v[16] = x1; v[17] = y1; v[18] = gl.U1; v[19] = gl.V1;
+        v[24] = x0 + dx; v[25] = y0; v[26] = gl.U0; v[27] = gl.V0;
+        v[32] = x1; v[33] = y1; v[34] = gl.U1; v[35] = gl.V1;
+        v[40] = x0; v[41] = y1; v[42] = gl.U0; v[43] = gl.V1;
+        for (int o = 4; o < v.Length; o += VertexBatch.Floats) { v[o] = r; v[o + 1] = g; v[o + 2] = b; v[o + 3] = a; }
+        n += 6 * VertexBatch.Floats;
     }
 
-    /// <summary>One string at one colour, outlined when the config asks. The halo is the chat renderer's
-    /// 8-way ±1px black offset -- 9x the quads, which is nothing at plate text volumes and is the whole
-    /// readability answer over a bright world.</summary>
+    /// <summary>One glyph: its halo (the style's black rings, the whole readability answer over a bright world) into
+    /// <see cref="_verts"/> now, its body into <see cref="_bodies"/> for <see cref="FlushBodies"/>.</summary>
+    private static void EmitGlyph(ref int n, in Glyph gl, float penX, float baseline,
+                                  float r, float g, float b, float a, float shear)
+    {
+        for (int o = 0; o < _haloN; o += 2)
+            GlyphQuad(ref _verts, ref n, gl, penX + _haloOff[o], baseline + _haloOff[o + 1], 0f, 0f, 0f, a, shear);
+        GlyphQuad(ref _bodies, ref _bn, gl, penX, baseline, r, g, b, a, shear);
+    }
+
+    /// <summary>Append the entry's held-back glyph bodies after its halos.</summary>
+    private static void FlushBodies(ref int n)
+    {
+        if (_bn == 0) return;
+        Grow(n + _bn);
+        Array.Copy(_bodies, 0, _verts, n, _bn);
+        n += _bn; _bn = 0;
+    }
+
+    /// <summary>One string at one colour, outlined when the style asks.</summary>
     private static void EmitString(ref int n, GlyphAtlas atlas, ReadOnlySpan<char> s, float penX, float baseline,
                                    float r, float g, float b, float a, float shear)
     {
         foreach (Rune ru in s.EnumerateRunes())
         {
             if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
-            if (NameplateKnobs.Outline.V)
-                for (int o = 0; o < OutlineOffsets.Length; o += 2)
-                    EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1], 0f, 0f, 0f, a, shear);
             EmitGlyph(ref n, gl, penX, baseline, r, g, b, a, shear);
             penX += gl.Advance;
         }
@@ -608,10 +716,6 @@ public sealed unsafe class NameplateService : IExtenderService
             { cr = ((c >> 16) & 0xFF) / 255f; cg = ((c >> 8) & 0xFF) / 255f; cb = (c & 0xFF) / 255f; }
             ci += used;
             if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
-            if (NameplateKnobs.Outline.V)
-                for (int o = 0; o < OutlineOffsets.Length; o += 2)
-                    EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1],
-                              0f, 0f, 0f, a, 0f);
             EmitGlyph(ref n, gl, penX, baseline, cr, cg, cb, a, 0f);
             penX += gl.Advance;
         }
@@ -635,10 +739,6 @@ public sealed unsafe class NameplateService : IExtenderService
             if (!atlas.TryGet(ru.Value, out Glyph gl)) { penX += atlas.AdvanceOf(ru); continue; }
             if (c == 0xffffffu && fallbackRgb != 0u) c = fallbackRgb;
             float r = ((c >> 16) & 0xFF) / 255f, g = ((c >> 8) & 0xFF) / 255f, b = (c & 0xFF) / 255f;
-            if (NameplateKnobs.Outline.V)
-                for (int o = 0; o < OutlineOffsets.Length; o += 2)
-                    EmitGlyph(ref n, gl, penX + OutlineOffsets[o], baseline + OutlineOffsets[o + 1],
-                              0f, 0f, 0f, a, shear);
             EmitGlyph(ref n, gl, penX, baseline, r, g, b, a, shear);
             penX += gl.Advance;
         }
@@ -699,7 +799,7 @@ public sealed unsafe class NameplateService : IExtenderService
                 float room = maxW - anchorW;
                 float floorW = maxW * SpliceMinFraction;
                 if (room < floorW) room = floorW;
-                PlateTable.EnsureWrap(sp, atlas, room, TextRig.AtlasEpoch, 1);
+                PlateTable.EnsureWrap(sp, atlas, room, _wrapKey, 1);
                 o.SpliceW = sp.SpanCount > 0 ? SpanW(atlas, sp, 0) : 0f;
                 if (sp.Truncated) o.SpliceW += MeasureRunes(atlas, PlateTable.Ellipsis);
             }
@@ -722,7 +822,7 @@ public sealed unsafe class NameplateService : IExtenderService
         {
             PlateTable.BubbleLine ln = e.Paras[i];
             if (ln.Runes.Count == 0) continue;   // the empty segment that says "nothing glues here"
-            PlateTable.EnsureWrap(ln, atlas, maxW, TextRig.AtlasEpoch, NameplateKnobs.Lines.V);
+            PlateTable.EnsureWrap(ln, atlas, maxW, _wrapKey, NameplateKnobs.Lines.V);
             lines += ln.SpanCount;
             if (ln.WrapPixelW > extraW) extraW = ln.WrapPixelW;
         }
@@ -831,28 +931,39 @@ public sealed unsafe class NameplateService : IExtenderService
         if (bar && m.BarW > 0f)
         {
             (float r, float g, float b) bc = PlateLayout.BandColor(e.Damage);
-            float frac = 1f - e.Damage / (float)(PlateLayout.BandCount - 1);
+            float frac = e.Health < 0f ? 0f : e.Health;
             EmitRect(ref n, su, sv, x + m.BarX, y + m.BarY, x + m.BarX + m.BarW, y + m.BarY + m.BarH,
                      BarTrack.r, BarTrack.g, BarTrack.b, BarTrack.a * a);
             EmitRect(ref n, su, sv, x + m.BarX, y + m.BarY, x + m.BarX + m.BarW * frac, y + m.BarY + m.BarH,
                      bc.r, bc.g, bc.b, a);
         }
 
-        if (portrait && pn < MaxPortraitsPerFrame)
-        {
-            float ph = m.PortraitSize, pw = ph * TextRig.PortraitAspect;
-            _portraitRef[pn] = e.PortraitResref;
-            int o = pn * 5;
-            _portraitRect[o] = x + m.PortraitX; _portraitRect[o + 1] = y + m.PortraitY;
-            _portraitRect[o + 2] = pw; _portraitRect[o + 3] = ph; _portraitRect[o + 4] = a;
-            pn++;
-        }
+        if (portrait)
+            AddPortrait(ref pn, e.PortraitResref, x + m.PortraitX, y + m.PortraitY,
+                        m.PortraitSize * TextRig.PortraitAspect, m.PortraitSize, a);
     }
 
-    private static void EmitBubble(ref int n, float su, float sv, GlyphAtlas atlas, PlateTable.Entry e,
-                                   float x, float y, float w, float h, float a, float scale, float lineH,
-                                   bool background)
+    /// <summary>Queue one portrait for <see cref="DrawPortraits"/>. Past <see cref="MaxPortraitsPerFrame"/> the
+    /// rest go without.</summary>
+    private static void AddPortrait(ref int pn, string resref, float x, float y, float w, float h, float a)
     {
+        if (pn >= MaxPortraitsPerFrame) return;
+        _portraitRef[pn] = resref;
+        int o = pn * 5;
+        _portraitRect[o] = x; _portraitRect[o + 1] = y; _portraitRect[o + 2] = w; _portraitRect[o + 3] = h;
+        _portraitRect[o + 4] = a;
+        pn++;
+    }
+
+    private static void EmitBubble(ref int n, ref int pn, float su, float sv, GlyphAtlas atlas, PlateTable.Entry e,
+                                   float x, float y, float w, float a, float scale, float lineH, bool background,
+                                   bool stacked)
+    {
+        if (UseCard(e, stacked, out bool name, out bool portrait))
+        {
+            EmitCard(ref n, ref pn, su, sv, atlas, e, x, y, w, a, scale, lineH, background, name, portrait);
+            return;
+        }
         float pad = BubblePadPx * scale, gap = BubbleGapPx * scale;
         float cy = y;
         // The tail hangs off the NEWEST line's box -- the bottom-most one -- so it is the last one's geometry
@@ -866,41 +977,95 @@ public sealed unsafe class NameplateService : IExtenderService
             float bx = x + (w - bw) * 0.5f;
             // Oldest at the top, so it is also the first to fade out from under the newer lines. Each line
             // carries its OWN fade (PlateTable.ExpireLines), which is what stops a dying line from popping.
-            float la = a * ln.Alpha * (i == e.TopLine ? 1f : 0.65f);
+            float la = a * ln.Alpha * (i == e.TopLine ? 1f : OlderLineAlpha);
             tailX = bx; tailW = bw; tailY = cy + bh; tailA = la;
             ChannelStyle st = StyleOf(ln.Channel);
             if (background)
                 EmitRect(ref n, su, sv, bx, cy, bx + bw, cy + bh,
                          BubbleBg.r, BubbleBg.g, BubbleBg.b, BubbleBg.a * la);
 
-            for (int s = 0; s < ln.SpanCount; s++)
-            {
-                float penX = bx + pad;
-                float baseline = cy + pad + s * lineH + atlas.Ascent;
-                TextWrapper.LineSpan sp = ln.Spans[s];
-                penX = EmitRuns(ref n, atlas, ln.Runes, ln.Colours, sp.Start, sp.End, penX, baseline,
-                                la * st.Alpha, st.Rgb, st.Shear, out uint tail);
-                // The wrap cut the message: say so on the last kept line rather than stopping mid-word.
-                if (ln.Truncated && s == ln.SpanCount - 1)
-                {
-                    if (tail == 0xffffffu && st.Rgb != 0u) tail = st.Rgb;
-                    EmitString(ref n, atlas, PlateTable.Ellipsis, penX, baseline,
-                               ((tail >> 16) & 0xFF) / 255f, ((tail >> 8) & 0xFF) / 255f, (tail & 0xFF) / 255f,
-                               la * st.Alpha, st.Shear);
-                }
-            }
+            EmitLineSpans(ref n, atlas, ln, bx + pad, cy + pad, la, lineH, st);
             cy += bh + gap;
         }
 
-        float th = TailH(scale);
-        if (background && th > 0f && tailA > 0f)
+        if (background) EmitTail(ref n, su, sv, e, tailX, tailW, tailY, tailA, scale);
+    }
+
+    /// <summary>A speech card: one box with the speaker's portrait top-left, their name as a header in the reaction
+    /// colour, then every queued line oldest first, left-aligned under it. The box, header and portrait take the
+    /// NEWEST line's alpha -- the card lives as long as that line -- while each line keeps its own fade and the older
+    /// ones are dimmed, as in the plain boxes.</summary>
+    private static void EmitCard(ref int n, ref int pn, float su, float sv, GlyphAtlas atlas, PlateTable.Entry e,
+                                 float x, float y, float w, float a, float scale, float lineH, bool background,
+                                 bool name, bool portrait)
+    {
+        if (e.TopLine < 0) return;
+        CardMetrics m = MeasureCardOf(e, atlas, scale, lineH, name, portrait);
+        float pad = BubblePadPx * scale, gap = CardParaGapPx * scale;
+        float cx = x + (w - m.W) * 0.5f;
+        float boxA = a * e.Lines[e.TopLine].Alpha;
+        if (background)
+            EmitRect(ref n, su, sv, cx, y, cx + m.W, y + m.H, BubbleBg.r, BubbleBg.g, BubbleBg.b, BubbleBg.a * boxA);
+
+        float colX = cx + m.ColX;
+        int nameLines = name ? e.NameLineCount : 0;
+        (float r, float g, float b) nc = PlateLayout.ReactionColor(e.Reaction);
+        for (int i = 0; i < nameLines; i++)
         {
-            PlateLayout.TailPoints(e.AnchorX, tailX, tailW, TailWidthPx * scale, pad,
-                                   out float bl, out float br, out float tipX);
-            if (br > bl)
-                EmitTri(ref n, su, sv, bl, tailY, br, tailY, tipX, tailY + th,
-                        BubbleBg.r, BubbleBg.g, BubbleBg.b, BubbleBg.a * tailA);
+            float by = y + pad + i * lineH + atlas.Ascent;
+            EmitNameLine(ref n, atlas, e.Name.AsSpan(e.NameStart[i], e.NameLen[i]), e.NameColours, e.NameStart[i],
+                         colX, by, nc.r, nc.g, nc.b, boxA);
+            if (e.NameTruncated && i == nameLines - 1)
+                EmitString(ref n, atlas, PlateTable.Ellipsis,
+                           colX + NameLineW(e, atlas, i, nameLines) - MeasureRunes(atlas, PlateTable.Ellipsis), by,
+                           nc.r, nc.g, nc.b, boxA, 0f);
         }
+
+        float top = y + m.BodyY;
+        for (int i = 0; i < e.LineCount; i++)
+        {
+            PlateTable.BubbleLine ln = e.Lines[i];
+            float la = a * ln.Alpha * (i == e.TopLine ? 1f : OlderLineAlpha);
+            EmitLineSpans(ref n, atlas, ln, colX, top, la, lineH, StyleOf(ln.Channel));
+            top += ln.SpanCount * lineH + gap;
+        }
+
+        if (portrait) AddPortrait(ref pn, e.PortraitResref, cx + pad, y + pad, m.PortraitW, m.PortraitH, boxA);
+        if (background) EmitTail(ref n, su, sv, e, cx, m.W, y + m.H, boxA, scale);
+    }
+
+    /// <summary>One queued line's wrapped spans, left-aligned at <paramref name="x"/> down from <paramref name="top"/>
+    /// in its channel style. A line the wrap cut says so with an ellipsis on its last kept span rather than stopping
+    /// mid-word.</summary>
+    private static void EmitLineSpans(ref int n, GlyphAtlas atlas, PlateTable.BubbleLine ln, float x, float top,
+                                      float la, float lineH, ChannelStyle st)
+    {
+        for (int s = 0; s < ln.SpanCount; s++)
+        {
+            float baseline = top + s * lineH + atlas.Ascent;
+            TextWrapper.LineSpan sp = ln.Spans[s];
+            float penX = EmitRuns(ref n, atlas, ln.Runes, ln.Colours, sp.Start, sp.End, x, baseline,
+                                  la * st.Alpha, st.Rgb, st.Shear, out uint tail);
+            if (!ln.Truncated || s != ln.SpanCount - 1) continue;
+            if (tail == 0xffffffu && st.Rgb != 0u) tail = st.Rgb;
+            EmitString(ref n, atlas, PlateTable.Ellipsis, penX, baseline,
+                       ((tail >> 16) & 0xFF) / 255f, ((tail >> 8) & 0xFF) / 255f, (tail & 0xFF) / 255f,
+                       la * st.Alpha, st.Shear);
+        }
+    }
+
+    /// <summary>The speech tail under a box whose bottom edge is at <paramref name="bottom"/>, its tip leaning toward
+    /// the speaker's anchor (<see cref="PlateLayout.TailPoints"/>).</summary>
+    private static void EmitTail(ref int n, float su, float sv, PlateTable.Entry e, float boxX, float boxW,
+                                 float bottom, float ta, float scale)
+    {
+        float th = TailH(scale);
+        if (th <= 0f || ta <= 0f) return;
+        PlateLayout.TailPoints(e.AnchorX, boxX, boxW, TailWidthPx * scale, BubblePadPx * scale,
+                               out float bl, out float br, out float tipX);
+        if (br > bl)
+            EmitTri(ref n, su, sv, bl, bottom, br, bottom, tipX, bottom + th,
+                    BubbleBg.r, BubbleBg.g, BubbleBg.b, BubbleBg.a * ta);
     }
 
     // ---- channel styling ---------------------------------------------------------------------

@@ -156,7 +156,7 @@ public sealed unsafe class DialogService : IExtenderService
             HitTestOverride = (px, py) => MouseOverUi((int)px, (int)py),
         };
 
-        TextRig.FontChanged += Rebuild;   // ui.font: the open window re-lays out on the new atlas (cold, the setter's thread)
+        TextRig.Rebaked += Rebuild;   // any re-bake moved every UV: the open window re-lays out on the new sheet (cold, the baking thread)
 
         _entryOrig = hooks.InstallShowDialogEntry(&OnShowEntry);
         _repliesOrig = hooks.InstallShowDialogReplies(&OnShowReplies);
@@ -421,7 +421,7 @@ public sealed unsafe class DialogService : IExtenderService
         float bodyTop = f.PanelY + f.TitleH;
         if (!In(f.PanelX, bodyTop, f.PanelW, _bodyHPub, _lastMx, _lastMy)) return false;
         float maxScroll = f.ContentH - _bodyHPub; if (maxScroll < 0f) maxScroll = 0f;
-        GlyphAtlas? atlas = TextRig.Atlas;
+        GlyphAtlas? atlas = Face();
         float step = (atlas?.LineHeight ?? 18f) * 3f;
         float sp = _scroll - dy * step;
         _scroll = sp < 0f ? 0f : (sp > maxScroll ? maxScroll : sp);
@@ -539,7 +539,7 @@ public sealed unsafe class DialogService : IExtenderService
     private static bool OverNpcText(DialogFrame? f, float x, float y)
     {
         if (f == null || f.NpcBlock.Runes == null || f.NpcBlock.Runes.Count == 0) return false;
-        GlyphAtlas? atlas = TextRig.Atlas; if (atlas == null) return false;
+        GlyphAtlas? atlas = Face(); if (atlas == null) return false;
         float bodyTop = f.PanelY + f.TitleH;
         if (y < bodyTop || y > bodyTop + _bodyHPub) return false;
         if (x < f.NpcX || x > f.NpcX + f.NpcW) return false;
@@ -552,7 +552,7 @@ public sealed unsafe class DialogService : IExtenderService
     /// index is chosen by the nearest glyph gap, measured with the same <see cref="RowEdges"/> walk the glyphs use.</summary>
     private static int NpcHitIndex(DialogFrame f, float x, float y)
     {
-        GlyphAtlas? atlas = TextRig.Atlas;
+        GlyphAtlas? atlas = Face();
         Block blk = f.NpcBlock;
         if (atlas == null || blk.Runes == null || blk.Lines.Count == 0) return 0;
         float lh = atlas.LineHeight;
@@ -808,12 +808,17 @@ public sealed unsafe class DialogService : IExtenderService
     private const uint NumRgb = 0xFFD200, DimRgb = 0x7A7E86;  // not-an-offset: a colour
     private const uint NameRgb = 0xEAF0F8;  // not-an-offset: a colour
 
+    /// <summary>The window's text face: <c>dialog.font</c> / <c>dialog.typeface</c>, else the UI face (a miss bakes
+    /// on the pool, and the re-bake rebuilds the window).</summary>
+    private static GlyphAtlas? Face() => DialogKnobs.Text.Face(TextRig.Atlas);
+
     /// <summary>Cold: rebuild the drawable snapshot from the captured content and publish it. Content geometry is
-    /// content-relative (y=0 at content top); Draw offsets + clips it. Runs on the message / input threads.</summary>
+    /// content-relative (y=0 at content top); Draw offsets + clips it. Runs on the message / input threads, and on
+    /// whichever thread re-baked the sheet (<see cref="TextRig.Rebaked"/>).</summary>
     private static void Rebuild()
     {
         if (!_open) return;                                    // fading out: keep the last frame for Draw to fade
-        GlyphAtlas? atlas = TextRig.Atlas;
+        GlyphAtlas? atlas = Face();
         if (atlas == null) { _frame = null; return; }
 
         Reply[] replies = _replies;
@@ -870,7 +875,7 @@ public sealed unsafe class DialogService : IExtenderService
         float headerH = System.Math.Max(npc.Lines.Count * lh, portraitH);
         var replyBlocks = new Block[replies.Length];
 
-        var b = new VertexBatch(atlas.SolidU, atlas.SolidV);
+        var b = new VertexBatch(atlas.SolidU, atlas.SolidV) { Outline = DialogKnobs.Text.HaloPx };
         var hits = new List<HitRect>();
 
         float cy = PanelPad;
@@ -925,7 +930,7 @@ public sealed unsafe class DialogService : IExtenderService
             : System.Math.Max(0f, vpH - BottomMargin - (titleH + maxBodyH));
 
         // Title band: the speaker name only (nothing else), truncated at the right pad -- screen coords, fixed.
-        var tb = new VertexBatch(atlas.SolidU, atlas.SolidV);
+        var tb = new VertexBatch(atlas.SolidU, atlas.SolidV) { Outline = b.Outline };
         float titleBaseline = panelY + TitlePadY + atlas.Ascent + 1f;
         if (speakerName.Length > 0)
             DrawPlainClipped(tb, atlas, speakerName, panelX + PanelPad, titleBaseline, NameRgb,

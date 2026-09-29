@@ -50,7 +50,7 @@ public sealed class ChatConfig
             if (w.HoldSec is float hs) Put(p + "hold", hs.ToString(ci));
             if (w.FadeSec is float fs) Put(p + "fade", fs.ToString(ci));
             if (w.TauMs is float tm) Put(p + "tau", tm.ToString(ci));
-            if (w.Outline is bool ol) Put(p + "outline", ol ? "1" : "0");
+            if (w.Outline is int ol) Put(p + "outline", ol.ToString(CultureInfo.InvariantCulture));
             if (w.FontPx is int fp && fp > 0) Put(p + "font", fp.ToString(ci));
             if (w.Typeface is { Length: > 0 } tfn) Put(p + "typeface", tfn.Replace("\n", "").Replace("\r", ""));
             if (w.TimeFormat is int tf) Put(p + "tsfmt", tf.ToString(ci));
@@ -142,7 +142,7 @@ public sealed class ChatConfig
             case "hold": if (float.TryParse(val, ci, out float hold)) w.HoldSec = hold; break;
             case "fade": if (float.TryParse(val, ci, out float fade)) w.FadeSec = fade; break;
             case "tau": if (float.TryParse(val, ci, out float tau)) w.TauMs = tau; break;
-            case "outline": w.Outline = val != "0"; break;
+            case "outline": if (int.TryParse(val, out int ol)) w.Outline = Math.Clamp(ol, 0, 2); break;   // the old toggle's 1/0 is thin/off
             case "font": if (int.TryParse(val, out int fp)) w.FontPx = fp; break;
             case "typeface": w.Typeface = val; break;
             case "tsfmt": if (int.TryParse(val, out int f)) w.TimeFormat = f; break;
@@ -176,7 +176,7 @@ public sealed class ChatConfig
         w0.X = 150; w0.Y = 120; w0.W = 400; w0.H = 300; w0.Toggles = 5;
         w0.InputOnTop = true; w0.SendChannel = 2;
         w0.AnimEnabled = false; w0.HoldSec = 42f; w0.FadeSec = 3f; w0.TauMs = 90f;
-        w0.Outline = true; w0.TimeFormat = (int)TsFormat.Hour12; w0.TimeSource = (int)TsSource.Game;
+        w0.Outline = 2; w0.TimeFormat = (int)TsFormat.Hour12; w0.TimeSource = (int)TsSource.Game;
         w0.FontPx = 14; w0.Typeface = "DejaVu Serif";
         w0.Align = (int)TextAlign.Center;
         w0.BgMode = (int)BgMode.Linear; w0.BgAngle = 45f; w0.BgEnd = 0.75f;
@@ -195,7 +195,7 @@ public sealed class ChatConfig
         check.Expect(bw0.InputOnTop, "window input side round-trips");
         check.Expect(bw0.SendChannel == 2, "window send channel round-trips");
         check.Expect(bw0.AnimEnabled == false && bw0.HoldSec == 42f && bw0.FadeSec == 3f && bw0.TauMs == 90f, "per-window anim round-trips");
-        check.Expect(bw0.Outline == true, "per-window outline round-trips");
+        check.Expect(bw0.Outline == 2, "per-window outline level round-trips");
         check.Expect(bw0.FontPx == 14 && bw0.Typeface == "DejaVu Serif", "per-window font round-trips");
         check.Expect(bw0.TimeFormat == (int)TsFormat.Hour12 && bw0.TimeSource == (int)TsSource.Game, "per-window ts round-trips");
         check.Expect(bw0.Align == (int)TextAlign.Center, "per-window align round-trips");
