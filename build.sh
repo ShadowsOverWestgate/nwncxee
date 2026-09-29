@@ -66,6 +66,13 @@ if [ ! -f build/libcxatlas.a ] || [ native/xatlas/xatlas.cpp -nt build/libcxatla
   rm -f build/libcxatlas.a && ar rcs build/libcxatlas.a build/xatlas.o build/cxatlas.o
 fi
 
+# The C wrappers for engine functions that throw (native/cxthunk.c, DirectPInvoke "cxthunk"). Unwind tables are
+# the point: a C++ exception thrown by the wrapped function unwinds through this frame.
+if [ ! -f build/libcxthunk.a ] || [ native/cxthunk.c -nt build/libcxthunk.a ]; then
+  cc -O2 -fPIC -fasynchronous-unwind-tables -c native/cxthunk.c -o build/cxthunk.o
+  rm -f build/libcxthunk.a && ar rcs build/libcxthunk.a build/cxthunk.o
+fi
+
 # CX-57: the pinned audio runtime (tools/deps.py: sha256-checked, cached in ~/.cache/cx-deps). OpenAL Soft is
 # built from its release source into its own shared object -- LGPL-2.1, so it ships beside us rather than inside
 # us -- with the runtime pieces a player's box may lack (libstdc++, libgcc) linked static. Steam Audio's

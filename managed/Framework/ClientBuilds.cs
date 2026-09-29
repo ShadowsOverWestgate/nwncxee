@@ -21,9 +21,10 @@ namespace CX.Framework;
 /// stamp   0x68e408bc                                (PE TimeDateStamp, the RVA-path guard)
 /// offset  CNWCCreature  plated  0x468  0x448       (linux, windows; "-" = never measured there)
 /// rva     _ZN11CNWCMessage...  0x7a41a0            (Windows address of a SymbolMap At() symbol)
+/// lva     nk_scrollbar_behavior  0xdf5ba0          (Linux nm address of a static function nm has no name for)
 /// </code>
 /// A file is complete or it is refused: <see cref="SelfCheck"/> wants one <c>offset</c> line per declared
-/// row and one <c>rva</c> line per <c>At()</c> symbol, and a row with no value for the running OS reads 0
+/// row, one <c>rva</c> line per <c>At()</c> symbol and one <c>lva</c> line per <see cref="SymbolMap.LinuxAnchored"/> symbol, and a row with no value for the running OS reads 0
 /// and stands its features down (<see cref="EngineLayout.Require"/>).
 /// </remarks>
 public static class ClientBuilds
@@ -36,6 +37,8 @@ public static class ClientBuilds
         /// <summary>"Class.field" -> (linux, windows); null where the file says <c>-</c>.</summary>
         public readonly Dictionary<string, (int? Linux, int? Windows)> Offsets = new();
         public readonly Dictionary<string, int> Rvas = new();
+        /// <summary>Linux nm addresses of the static functions <see cref="SymbolMap.LinuxAnchored"/> names.</summary>
+        public readonly Dictionary<string, int> Lvas = new();
         public readonly List<string> Errors = new();
 
         /// <summary>The key for the OS we are running on.</summary>
@@ -93,6 +96,9 @@ public static class ClientBuilds
     /// <summary>The running build's RVA for a <see cref="SymbolMap"/> <c>At()</c> symbol, 0 when it has none.</summary>
     public static int Rva(string linux) => Current is { } b && b.Rvas.TryGetValue(linux, out int v) ? v : 0;
 
+    /// <summary>The running build's Linux nm address for a <see cref="SymbolMap.LinuxAnchored"/> symbol, 0 when it has none.</summary>
+    public static int Lva(string name) => Current is { } b && b.Lvas.TryGetValue(name, out int v) ? v : 0;
+
     private static List<Build> LoadAll()
     {
         var all = new List<Build>();
@@ -131,6 +137,7 @@ public static class ClientBuilds
                 ("offset", 5) => Value(f[3], out int? lin) && Value(f[4], out int? win)
                                  && b.Offsets.TryAdd(f[1] + "." + f[2], (lin, win)),
                 ("rva", 3) => Hex(f[2], out int rva) && rva > 0 && b.Rvas.TryAdd(f[1], rva),
+                ("lva", 3) => Hex(f[2], out int lva) && lva > 0 && b.Lvas.TryAdd(f[1], lva),
                 _ => false,
             };
             if (!ok) b.Errors.Add($"{resource}:{n}: bad or duplicate line '{line}'");
@@ -172,11 +179,12 @@ public static class ClientBuilds
         var check = new Checker(log);
 
         Build t = Parse("name\tt # c\nlinux\tab\nstamp\t0x10\noffset\tC\tf\t0x8\t-\noffset\tC\tg\t0x8\tzz\n" +
-                        "rva\t_Zx\t0x20\nrva\t_Zx\t0x30\nbogus\n", "t");
+                        "rva\t_Zx\t0x20\nrva\t_Zx\t0x30\nlva\tnk_x\t0x40\nbogus\n", "t");
         check.Expect(t.Name == "t" && t.LinuxKey == "ab" && t.Stamp == 0x10, "header fields parse, comments stripped");
         check.Expect(t.Offsets.TryGetValue("C.f", out var tv) && tv == (8, null), "offset parses per OS, '-' is null");
         check.Expect(!t.Offsets.ContainsKey("C.g"), "a malformed offset cell rejects the line");
         check.Expect(t.Rvas.TryGetValue("_Zx", out int tr) && tr == 0x20, "first rva wins");
+        check.Expect(t.Lvas.TryGetValue("nk_x", out int tl) && tl == 0x40, "lva parses");
         check.Expect(t.Errors.Count == 3, "bad cell, duplicate rva and unknown directive are all reported");
         check.Expect(Find("not-a-build-key") == null, "rot gate refuses a key no build file carries");
 
@@ -197,6 +205,8 @@ public static class ClientBuilds
             foreach (string k in declared) check.Expect(b.Offsets.ContainsKey(k), $"{b.Name}: no offset line for {k}");
             foreach (string k in b.Rvas.Keys) check.Expect(anchored.Contains(k), $"{b.Name}: rva {k} is not a SymbolMap At() symbol");
             foreach (string k in anchored) check.Expect(b.Rvas.ContainsKey(k), $"{b.Name}: no rva line for {k}");
+            foreach (string k in b.Lvas.Keys) check.Expect(SymbolMap.LinuxAnchored.Contains(k), $"{b.Name}: lva {k} is not a SymbolMap.LinuxAnchored symbol");
+            foreach (string k in SymbolMap.LinuxAnchored) check.Expect(b.Lvas.ContainsKey(k), $"{b.Name}: no lva line for {k}");
             if (b != Current) continue;
             foreach ((string k, var v) in b.Offsets)
             {

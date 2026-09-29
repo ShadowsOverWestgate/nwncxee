@@ -1,0 +1,42 @@
+using CX.Framework;
+
+namespace CX.Services.Nui;
+
+/// <summary>The <c>nui</c> group: speed and usability fixes for server-built NUI windows. <see cref="Cull"/> gates
+/// <see cref="NuiService"/>'s off-screen skip, <see cref="ItemIcons"/> the <c>@item:</c> images (<see cref="NuiItemIcons"/>),
+/// <see cref="Smooth"/> and <see cref="Thumb"/> the scrollbars (<see cref="NuiScrollbars"/>), <see cref="AutoHide"/> and
+/// <see cref="HoverBars"/> their visibility (<see cref="NuiScrollbarHide"/>), <see cref="Solve"/> and
+/// <see cref="SolveCheck"/> the layout solve (<see cref="NuiSolver"/>), <see cref="Explain"/> the broken-layout explanation
+/// (<see cref="NuiLayoutErrors"/>).
+/// Declared through <see cref="CX.Ui.UiCategory.Declare"/>.</summary>
+internal static class NuiKnobs
+{
+    internal static readonly KnobGroup G;
+    internal static readonly Knob<bool> Enabled, Cull, ItemIcons, Smooth, AutoHide, HoverBars, Solve, SolveCheck, Explain;
+    internal static readonly Knob<float> Thumb;
+
+    static NuiKnobs()
+    {
+        G = KnobGroup.Declare("nui", "UI", "NUI windows", master: "Enable CX NUI fixes",
+            masterHelp: "Speed and usability fixes for the windows servers build with NUI. Off, they behave exactly as in the stock client.");
+        Enabled = G.Master!;
+        Cull = G.Toggle("cull", "Skip widgets scrolled out of view", true,
+            help: "Rows of a NUI list that are outside its visible area are not processed each frame, so long lists stay smooth. Nothing on screen changes.");
+        Solve = G.Toggle("solve", "Faster layout solving", true,
+            help: "Windows with long lists open and refresh much faster. Every element lands exactly where the stock client puts it.");
+        SolveCheck = G.Toggle("solvecheck", "Check the fast layout solve", false, Tier.Advanced,
+            help: "Debug: solves the stock way and checks the fast path's bookkeeping at every step. A mismatch turns the fast solve off and says so. Slow.");
+        Explain = G.Toggle("explain", "Explain broken layouts", true,
+            help: "When a server's window cannot lay out, it lists the rules that contradict each other and the elements they belong to, instead of only \"The constraint can not be satisfied.\" The same text goes to cx.log.");
+        Smooth = G.Toggle("smooth", "Smooth scrolling", true,
+            help: "The mouse wheel glides a NUI list to its new position instead of jumping there.");
+        AutoHide = G.Toggle("autohide", "Hide scrollbars with nothing to scroll", true,
+            help: "A NUI list whose content fits shows no scrollbar, instead of a full-length one that does nothing.");
+        HoverBars = G.Toggle("hoverbars", "Show scrollbars only under the mouse", false,
+            help: "A NUI list's scrollbar fades out while the pointer is elsewhere and back in when it is over the list. Text boxes keep theirs.");
+        Thumb = G.Slider("thumb", "Shortest scrollbar handle", 0f, 4f, 0.5f, 2f, "\u00d7 its width",
+            help: "A long list's scrollbar handle never gets shorter than this, so it cannot shrink out of sight. 0 = stock.");
+        ItemIcons = G.Toggle("itemicons", "Item icons in NUI windows", true,
+            help: "A server's NUI window can show an item's own icon in its real colours, as the inventory does. Off, those images show the stock error sprite.");
+    }
+}

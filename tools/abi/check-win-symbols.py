@@ -54,6 +54,7 @@ SRET_HANDLED = {
     "GetEmitterLighting":      "managed/Alloy/Core/EmitterLighting.cs",
     "SceneGetWindVector":      "managed/Alloy/Scene/DanglyPhysics.cs (Wind)",
     "TlkGetSimpleString":      "managed/Services/CombatText/CombatTextNative.cs",
+    "ExoResManGet":            "managed/Services/Nui/NuiItemIcons.cs (OnGetItanium / OnGetWin64, a hook)",
 }
 SRET_DECLARED = set(re.findall(r'\[Fn\("sret\([^"]*"\)\]\s*public const string (\w+)', SRC.read_text()))
 

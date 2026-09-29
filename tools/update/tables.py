@@ -13,8 +13,9 @@ def hexval(s):
 
 def read_build(path):
     """A build file: name/linux/windows/stamp, offsets {(cls, field): (linux, windows)}, rvas {mangled: rva},
-    and the trailing `# comment` of each line kept for rewriting (row / constant names)."""
-    b = dict(path=path, offsets={}, rvas={}, notes={})
+    lvas {static name: linux nm address}, and the trailing `# comment` of each line kept for rewriting (row /
+    constant names)."""
+    b = dict(path=path, offsets={}, rvas={}, lvas={}, notes={})
     for raw in open(path):
         body, _, note = raw.partition('#')
         f = [x.strip() for x in body.split('\t') if x.strip()]
@@ -28,6 +29,8 @@ def read_build(path):
         elif f[0] == 'rva':
             b['rvas'][f[1]] = int(f[2], 16)
             b['notes'][f[1]] = note.strip()
+        elif f[0] == 'lva':
+            b['lvas'][f[1]] = int(f[2], 16)
     return b
 
 

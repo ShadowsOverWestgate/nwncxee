@@ -2235,6 +2235,11 @@ public static unsafe class EngineLayout
     /// from the item every frame, never held. <c>CGuiItemMenu::ActivateRadialMenu</c> hands it to <c>SetCenter</c>:
     /// Linux @0x7d3720 reads <c>item+0x258</c>, Windows rva 0x9a59d0 <c>item+0x238</c>.</summary>
     public static readonly int ItemGuiIcon = Field<IntPtr>("CNWCItem", "guiIcon");
+    /// <summary>CNWCItem's deleting destructor in its primary vtable: Itanium's D0 at +0x08 (<c>_ZN8CNWCItemD0Ev</c>, after
+    /// the complete D1), MSVC's scalar deleting destructor, the table's only slot (vftable rva 0xe4ceb0 -&gt; 0x83c8a0:
+    /// the dtor, then <c>operator delete(this, 0x2b8)</c> when <c>flags &amp; 1</c>). The two take different arguments,
+    /// so NuiItemIcons calls it per OS.</summary>
+    public static readonly int ItemDeleteSlot = Field("CNWCItem", "vtbl.Delete", Expect.VtblSlot);
     /// <summary>CGameObject: the object type byte <c>CClientExoAppInternal::GetItemByGameObjectID</c> tests for 6
     /// (item) before casting -- Linux @0x63f3a0, Windows rva 0x6d82a0, both <c>go+0xc</c>.</summary>
     public static readonly int GameObjType = Field<byte>("CGameObject", "type");
@@ -2570,6 +2575,112 @@ public static unsafe class EngineLayout
     /// not).</para></summary>
     public static readonly int LabelString = Field<CX.Engine.CAurString>("CGuiLabel", "string");
 
+    /// <summary>Nui::Layout::Layoutable: nonzero = the parent's child loop does NOT <c>nk_layout_space_push</c> this child,
+    /// so <c>panel-&gt;row.item</c> still holds the previous child's rect when it renders (Linux nm @0x84c9f8
+    /// <c>cmpb $0,0x50(%r15)</c> -&gt; the push at 0x84dab5; Windows rva 0x951260 @0x1409515d6, the push at 0x1409515fa).</summary>
+    public static readonly int NuiLayoutableNoPush = Field<byte>("Nui::Layout::Layoutable", "noPush");
+    /// <summary>Virtual slot of <c>Render(nk_context*)</c> on every Nui::Layout class: the parent's child call (Linux
+    /// @0x84ce7e <c>call *0x28(%rax)</c>, Windows @0x140951cfe <c>call *0x20(%rax)</c>), and the slot the
+    /// <c>Widget</c>/<c>StatefulWidget</c> vtables fill with <see cref="SymbolMap.NuiWidgetRender"/>.</summary>
+    public static readonly int NuiRenderSlot = Field("Nui::Layout::Layoutable", "vtbl.Render", Expect.VtblSlot, sig: "void(IntPtr ctx)");
+
+    /// <summary>kiwi::impl::SolverImpl, the Cassowary solver each NUI LayoutGroup embeds at +0x5a8: its tableau, a vector of
+    /// (Symbol key, Row*) pairs sorted by symbol id -- begin, then end. <c>substitute</c> @0x85b890 / rva 0x3458e0 reads both
+    /// once and walks between them. Windows sits 8 further per Loki map before it: MSVC keeps each AssocVector's empty
+    /// comparator as a member, so every SolverImpl field after m_cns moves (and Row's constant, +0x18 vs +0x20).</summary>
+    public static readonly int KiwiRows = Field<IntPtr>("kiwi::impl::SolverImpl", "rows");
+    /// <inheritdoc cref="KiwiRows"/>
+    public static readonly int KiwiRowsEnd = Field<IntPtr>("kiwi::impl::SolverImpl", "rowsEnd");
+    /// <summary>m_infeasible_rows, the Symbol vector <c>substitute</c> appends every negative restricted row to (begin, end):
+    /// the push at 0x85b9f0 / rva 0x3459f0 reads its end and capacity.</summary>
+    public static readonly int KiwiInfeasible = Field<IntPtr>("kiwi::impl::SolverImpl", "infeasible");
+    /// <inheritdoc cref="KiwiInfeasible"/>
+    public static readonly int KiwiInfeasibleEnd = Field<IntPtr>("kiwi::impl::SolverImpl", "infeasibleEnd");
+    /// <summary>m_artificial, non-null only while <c>addWithArtificialVariable</c> @0x85daa0 / rva 0x340410 runs its feasibility
+    /// optimize: that row sits in the tableau under the slack symbol <see cref="KiwiIdTick"/> - 1, inserted without a substitute.</summary>
+    public static readonly int KiwiArtificial = Field<IntPtr>("kiwi::impl::SolverImpl", "artificial");
+    /// <summary>m_id_tick, the next symbol id: 1 after the reset <c>LayoutGroup::SetChildren</c> @0x853db0 inlines, bumped
+    /// once per new symbol (read and incremented at the head of <c>addWithArtificialVariable</c> on both builds).</summary>
+    public static readonly int KiwiIdTick = Field<ulong>("kiwi::impl::SolverImpl", "idTick");
+    /// <summary>kiwi::impl::Row's cell vector of (Symbol, double) pairs sorted by symbol id -- begin, then end.</summary>
+    public static readonly int KiwiRowCells = Field<IntPtr>("kiwi::impl::Row", "cells");
+    /// <inheritdoc cref="KiwiRowCells"/>
+    public static readonly int KiwiRowCellsEnd = Field<IntPtr>("kiwi::impl::Row", "cellsEnd");
+    /// <summary>The (Symbol, 8-byte value) pair both kiwi maps store -- a tableau entry's value is its Row*, a cell's its
+    /// coefficient: the symbol id (the only sort key), its type (1 External, 2 Slack, 3 Error, 4 Dummy), the value, and
+    /// the record size. <c>substitute</c>'s walks on both builds.</summary>
+    public static readonly int KiwiPairId = Field<ulong>("kiwi::impl::SymbolPair", "id");
+    /// <inheritdoc cref="KiwiPairId"/>
+    public static readonly int KiwiPairType = Field<int>("kiwi::impl::SymbolPair", "type");
+    /// <inheritdoc cref="KiwiPairId"/>
+    public static readonly int KiwiPairValue = Field<IntPtr>("kiwi::impl::SymbolPair", "value");
+    /// <inheritdoc cref="KiwiPairId"/>
+    public static readonly int KiwiPairStride = Field("kiwi::impl::SymbolPair", "stride");
+    /// <summary>m_cns, the constraints the solver accepted: a flat vector of (Constraint, Tag) records sorted by
+    /// ConstraintData* -- begin, then end. <c>addConstraint</c> inserts here only after the row is in the tableau, so a
+    /// constraint that threw is never in it (docs/research/nui-layout-errors.md §5.3).</summary>
+    public static readonly int KiwiCns = Field<CX.Engine.kiwi__impl__CnPair>("kiwi::impl::SolverImpl", "cns");
+    /// <inheritdoc cref="KiwiCns"/>
+    public static readonly int KiwiCnsEnd = Field<IntPtr>("kiwi::impl::SolverImpl", "cnsEnd");
+    /// <summary>kiwi::impl::Row's constant term: <c>addConstraint</c>'s near-zero test on a new row, and
+    /// <c>addWithArtificialVariable</c>'s success test on the artificial objective.</summary>
+    public static readonly int KiwiRowConstant = Field<double>("kiwi::impl::Row", "constant");
+    /// <summary>One m_cns record: the ConstraintData*, the ids of its Tag's marker and other symbols (each Symbol is
+    /// {id, type}, 16 bytes), and the record size. The marker is the slack, dummy or error symbol the constraint left in
+    /// the tableau, which is how a tableau row's symbols lead back to the rules it was built from.</summary>
+    public static readonly int KiwiCnData = Field<CX.Engine.kiwi__ConstraintData>("kiwi::impl::CnPair", "data");
+    /// <inheritdoc cref="KiwiCnData"/>
+    public static readonly int KiwiCnMarker = Field<ulong>("kiwi::impl::CnPair", "marker");
+    /// <inheritdoc cref="KiwiCnData"/>
+    public static readonly int KiwiCnOther = Field<ulong>("kiwi::impl::CnPair", "other");
+    /// <inheritdoc cref="KiwiCnData"/>
+    public static readonly int KiwiCnStride = Field("kiwi::impl::CnPair", "stride");
+    /// <summary>kiwi::Constraint::ConstraintData, the same on both builds: the expression's terms (begin, end) and constant,
+    /// the strength (required = 1 001 001 000) and the operator (0 &lt;=, 1 &gt;=, 2 ==). The rule is
+    /// <c>sum(coefficient * variable) + constant OP 0</c>.</summary>
+    public static readonly int KiwiCnTerms = Field<CX.Engine.kiwi__Term>("kiwi::ConstraintData", "terms");
+    /// <inheritdoc cref="KiwiCnTerms"/>
+    public static readonly int KiwiCnTermsEnd = Field<IntPtr>("kiwi::ConstraintData", "termsEnd");
+    /// <inheritdoc cref="KiwiCnTerms"/>
+    public static readonly int KiwiCnConstant = Field<double>("kiwi::ConstraintData", "constant");
+    /// <inheritdoc cref="KiwiCnTerms"/>
+    public static readonly int KiwiCnStrength = Field<double>("kiwi::ConstraintData", "strength");
+    /// <inheritdoc cref="KiwiCnTerms"/>
+    public static readonly int KiwiCnOp = Field<int>("kiwi::ConstraintData", "op");
+    /// <summary>kiwi::Term: the variable (a VariableData*, which NUI never names) and its coefficient, and the record size.</summary>
+    public static readonly int KiwiTermVariable = Field<IntPtr>("kiwi::Term", "variable");
+    /// <inheritdoc cref="KiwiTermVariable"/>
+    public static readonly int KiwiTermCoefficient = Field<double>("kiwi::Term", "coefficient");
+    /// <inheritdoc cref="KiwiTermVariable"/>
+    public static readonly int KiwiTermStride = Field("kiwi::Term", "stride");
+    /// <summary>A layout element's children, a vector of shared_ptr (element, control block) -- begin, then end.</summary>
+    public static readonly int NuiChildren = Field<IntPtr>("Nui::Layout::Layoutable", "children");
+    /// <inheritdoc cref="NuiChildren"/>
+    public static readonly int NuiChildrenEnd = Field<IntPtr>("Nui::Layout::Layoutable", "childrenEnd");
+    /// <summary>An element's twelve kiwi variables (VariableData*): x, y, width, height, then padding left, top, right,
+    /// bottom, then margin left, top, right, bottom -- read off the ctor's three LayoutExpressions (inner = outer minus
+    /// padding, outer plus margin), docs/research/nui-layout-errors.md §3.1.</summary>
+    public static readonly int NuiVars = Field<IntPtr>("Nui::Layout::Layoutable", "vars", count: 12);
+    /// <summary>A Span's axis, read once by <c>Span::BuildConstraintDependants</c>: 1 = vertical.</summary>
+    public static readonly int NuiSpanDirection = Field<int>("Nui::Layout::Span", "direction");
+    /// <summary>The kiwi solver a LayoutGroup embeds; <c>SetChildren</c> resets it and adds the subtree's constraints.</summary>
+    public static readonly int NuiGroupSolver = Field<CX.Engine.kiwi__impl__SolverImpl>("Nui::Layout::LayoutGroup", "solver", embedded: true);
+    /// <summary>The group's own width and height, the two edit variables <c>SetChildren</c> adds at medium strength.</summary>
+    public static readonly int NuiGroupEditWidth = Field<IntPtr>("Nui::Layout::LayoutGroup", "editWidth");
+    /// <inheritdoc cref="NuiGroupEditWidth"/>
+    public static readonly int NuiGroupEditHeight = Field<IntPtr>("Nui::Layout::LayoutGroup", "editHeight");
+    /// <summary>The vector (begin) holding the one constraint <c>SetChildren</c> adds itself: the global UI-scale variable
+    /// equal to the current scale. Its single term names that variable, which has no symbol of its own.</summary>
+    public static readonly int NuiGroupScaleConstraints = Field<IntPtr>("Nui::Layout::LayoutGroup", "scaleConstraints");
+    /// <summary>The window's element-id map (JSON id to weak_ptr&lt;Layoutable&gt;; only elements that declared an id).
+    /// Linux: the libstdc++ hashtable's before-begin next, the first node of a null-terminated list. Windows: the MSVC
+    /// list's head sentinel, a circular list.</summary>
+    public static readonly int NuiIdsHead = Field<IntPtr>("Nui::JSON::JsonWindow", "idsHead");
+    /// <summary>An id-map node: the key std::string (its address) and the weak_ptr's element pointer.</summary>
+    public static readonly int NuiIdNodeKey = Field("Nui::JSON::IdNode", "key");
+    /// <inheritdoc cref="NuiIdNodeKey"/>
+    public static readonly int NuiIdNodeElement = Field<IntPtr>("Nui::JSON::IdNode", "element");
+
     // ================= engine constants that are not offsets =================
     // They rode into this table with #436 because the file they lived in was the offset file. They are
     // magic VALUES the engine compares against, not places -- no row, nothing to resolve per platform.
@@ -2591,6 +2702,15 @@ public static unsafe class EngineLayout
     /// <summary>The running client's build key, whatever it is -- logged even on mismatch, so the stand-down
     /// line can name what was actually loaded.</summary>
     public static string BuildKey => _key ??= OperatingSystem.IsWindows() ? WindowsKey() : LinuxKey();
+
+    /// <summary>Where the client image is loaded: the module base on Windows; on Linux the exe's lowest mapping (its
+    /// first PT_LOAD sits at vaddr 0, so nm addresses are offsets from it), which the build-key read takes from
+    /// <c>/proc/self/maps</c>.</summary>
+    public static IntPtr ImageBase { get { _ = BuildKey; return (IntPtr)(long)_imageLo; } }
+
+    /// <summary>True when <paramref name="p"/> lies inside the client image's mappings. A build key is not proof of the
+    /// image: run-demo's stub host carries the client's build-id (#457) around a few KB of code.</summary>
+    public static bool InImage(IntPtr p) { _ = BuildKey; return (ulong)p >= _imageLo && (ulong)p < _imageHi; }
 
     /// <summary>Is the running client a build we have measured (<see cref="ClientBuilds"/>)? #457: this is
     /// the extender's one rot policy -- <see cref="ServiceHost.Run"/> asks it before discovery and stands the

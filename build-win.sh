@@ -63,6 +63,7 @@ fi
 echo ">> compiling the version.dll proxy half (native/bootstrap_win.c -> .obj)..."
 # Linked INTO cx_managed.dll by the publish below, which is why it is compiled first.
 clang-cl -c -O2 -GS- native/bootstrap_win.c -Fo:build/bootstrap_win.obj
+clang-cl -c -O2 -GS- native/cxthunk.c -Fo:build/cxthunk_win.obj   # the throwing-function wrappers (see build.sh)
 # #673: xatlas for version.dll, the same flags as build.sh's (see there); /MT to match NativeAOT's static CRT.
 if [ ! -f build/cxatlas.lib ] || [ native/xatlas/xatlas.cpp -nt build/cxatlas.lib ] || [ native/cxatlas.cpp -nt build/cxatlas.lib ]; then
   echo ">> building xatlas (cxatlas.lib, clang-cl cross)..."

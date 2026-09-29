@@ -35,8 +35,8 @@ internal static unsafe class RadialIcons
     /// <summary>The armour model's ceiling, and the widest scheme the engine keeps (<c>CAurTextureBasic::SetScheme</c>
     /// @0x485f90 holds 15 slots; items pass 10). A scheme longer than that is treated as no layers, not truncated.</summary>
     public const int MaxLayers = EngineLayout.ArmorIconLayers;
-    private const int MaxScheme = 15;
-    private const int ResRefLen = 16;
+    internal const int MaxScheme = 15;
+    internal const int ResRefLen = 16;
     /// <summary>CGameObject type byte for an item (<c>CClientExoAppInternal::GetItemByGameObjectID</c> @0x63f3a0).</summary>
     private const byte GameObjTypeItem = 6;
 
@@ -213,9 +213,9 @@ internal static unsafe class RadialIcons
         }
     }
 
-    /// <summary>Handle -&gt; the item's current <c>CGuiIcon*</c>: <c>GetGameObject</c>, the type byte, the
-    /// <c>AsNWCItem</c> virtual, the field. Every step re-read; nothing held.</summary>
-    private static IntPtr ItemIcon(IntPtr handle)
+    /// <summary>Handle (object id) -&gt; the item's <c>CNWCItem*</c>, or zero: <c>GetGameObject</c>, the type byte, the
+    /// <c>AsNWCItem</c> virtual. Every step re-read; nothing held.</summary>
+    internal static IntPtr Item(IntPtr handle)
     {
         IntPtr mgr = *(IntPtr*)_appMgr;
         if (mgr == IntPtr.Zero) return IntPtr.Zero;
@@ -223,7 +223,13 @@ internal static unsafe class RadialIcons
         if (app == IntPtr.Zero) return IntPtr.Zero;
         var obj = new CGameObject(_getGameObject(app, (uint)(long)handle));
         if (obj.IsNull || obj.Type != GameObjTypeItem) return IntPtr.Zero;
-        IntPtr item = obj.AsNWCItem();
+        return obj.AsNWCItem();
+    }
+
+    /// <summary>Handle -&gt; the item's current <c>CGuiIcon*</c> (<see cref="Item"/>, then the field).</summary>
+    private static IntPtr ItemIcon(IntPtr handle)
+    {
+        IntPtr item = Item(handle);
         return item == IntPtr.Zero ? IntPtr.Zero : new CNWCItem(item).GuiIcon;
     }
 
@@ -252,7 +258,7 @@ internal static unsafe class RadialIcons
     }
 
     /// <summary>Copy a 16-byte <c>CResRef</c> into a NUL-terminated stack buffer; returns its length.</summary>
-    private static int CName(ReadOnlySpan<byte> resref, byte* dst)
+    internal static int CName(ReadOnlySpan<byte> resref, byte* dst)
     {
         int n = 0;
         while (n < ResRefLen && resref[n] != 0) { dst[n] = resref[n]; n++; }

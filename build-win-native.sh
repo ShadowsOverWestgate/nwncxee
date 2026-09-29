@@ -24,6 +24,7 @@ fi
 echo ">> compiling the version.dll proxy half (native/bootstrap_win.c -> .obj)..."
 # Dash flags: Git Bash rewrites /nologo-style args into C:/Program Files/Git/nologo paths.
 cl -nologo -c -O2 -GS- native/bootstrap_win.c -Fobuild/bootstrap_win.obj
+cl -nologo -c -O2 -GS- native/cxthunk.c -Fobuild/cxthunk_win.obj   # the throwing-function wrappers (see build.sh)
 # #673: xatlas for version.dll (see build.sh for the flags' reasons); /MT to match NativeAOT's static CRT.
 if [ ! -f build/cxatlas.lib ] || [ native/xatlas/xatlas.cpp -nt build/cxatlas.lib ] || [ native/cxatlas.cpp -nt build/cxatlas.lib ]; then
   echo ">> building xatlas (cxatlas.lib, MSVC)..."

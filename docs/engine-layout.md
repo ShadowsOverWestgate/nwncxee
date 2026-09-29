@@ -666,6 +666,7 @@ with the Linux ctor of the same signature.
 | `CCompositeIcon` | `resref2 0x48`, `resref3 0x59` (Same) | the ctor pair (`@0x58d9d0` / `0x1e2e40`): three `CResRef::operator=` at `+0x8`, `+0x48`, `+0x59`; `CreateCopyIconModel` (`@0x58d320` / `0x1e3930`) binds them to `gui_replace01/02/03` in that order |
 | `CArmorIcon` | `resrefs 0x48` (×6, stride `0x11`), `schemeCount 0xb0`, `scheme 0xb8`, `layerSchemes 0xc0` (Same) | the ctor pair (`@0x58d5c0` / `0x1e2ca0`): zero loop to `+0xae`, count at `+0xb0`, `new[count]` at `+0xb8`, optional `new[count*6]` at `+0xc0`, then the six 17-byte copies; `LoadArmorLayeredIconModel` (`@0x58d7c0` / `0x1e4470`) indexes `+0xc0` by `count * compactedLayer * 2` |
 | `CNWCItem` | `guiIcon 0x258 / 0x238` | `CGuiItemMenu::ActivateRadialMenu` (`@0x7d3720` / `0x9a59d0`): `SetCenter(*(item + off), 2)` right after the target-id store; `CNWCItem::UpdateIcons` (`@0x7cbc50`) is the Linux writer (virtual-deletes the old, stores the `new`) |
+| `CNWCItem` | `vtbl.Delete 0x8 / 0x0` | the primary vtable's deleting destructor: Itanium D0 `_ZN8CNWCItemD0Ev` after the complete D1 (`tools/abi/vtable-slots.py CNWCItem`); MSVC's scalar deleting destructor, the one-slot primary vftable's only entry (rva `0xe4ceb0` -> `0x83c8a0`, which tests `flags & 1` before `operator delete(this, 0x2b8)`). Different argument lists, so `NuiItemIcons.Destroy` calls it per OS |
 | `CGameObject` | `type 0xc` (Same), `vtbl.AsNWCItem 0x70 / 0x68` | `CClientExoAppInternal::GetItemByGameObjectID` (`@0x63f3a0` / rva `0x6d82a0`): `GetGameObject` into a local, `go[0xc] == 6`, then the vcall -- identical bodies, the slot one destructor-slot apart |
 
 The subclass delta is `-0x80` at every field read, not just the target id -- which is the
@@ -827,3 +828,53 @@ four bytes; from `+0x50` on the two layouts agree.
 | `CExoSoundSourceInternal.farDist` | `0x68` / `0x68` | the same two writers; `PlaySourceOn3DVoice` sends it as `AL_MAX_DISTANCE` |
 | `CExoSoundSourceInternal.sampleOffset` | `0x84` / `0x84` | `PlaySourceOn3DVoice`'s `alSourcei(AL_SAMPLE_OFFSET)` operand |
 | `C3DVoice.source`, `C2DVoice.source` | `0x8` / `0x8` | the `alGenSources(1, voice + 8)` in both play functions |
+
+### The NUI cull rows
+
+Read off `Nui::Layout::Layoutable::Render` (Linux nm `0x84c6b0`, Windows rva `0x951260`), the parent's
+per-child loop, on both builds (docs/research/nui-performance.md §9).
+
+| row | Linux / Windows | read off |
+|---|---|---|
+| `Nui::Layout::Layoutable.noPush` | `0x50` / `0x50` | `cmpb $0,0x50(%r15)` guards the `nk_layout_space_push` of the child's rect (Linux `0x84c9f8` -> `0x84dab5`, Windows `0x1409515d6` -> `0x1409515fa`) |
+| `Nui::Layout::Layoutable.vtbl.Render` | `0x28` / `0x20` | the child call (Linux `0x84ce7e` `call *0x28(%rax)`, Windows `0x140951cfe` `call *0x20(%rax)`); both builds' `Widget` and `StatefulWidget` vtables fill it with `Widget::Render` |
+
+The nuklear `nk_context`/`nk_panel` offsets `NuiService` reads are not rows: nuklear is C, and
+`nk_widget`, `nk_layout_widget_space` and `nk_layout_space_push` read the same values on both builds.
+
+### The kiwi solver rows
+
+What `NuiSolver` reads of the vendored kiwi solver every NUI `LayoutGroup` embeds at `+0x5a8`
+(docs/research/nui-performance.md §2, §12). Read off `SolverImpl::substitute` (Linux nm `0x85b890`, Windows rva
+`0x3458e0`), `addWithArtificialVariable` (`0x85daa0` / `0x340410`) and the reset `LayoutGroup::SetChildren` inlines
+(`0x853db0`). Windows sits further out: MSVC keeps each `Loki::AssocVector`'s empty comparator as an 8-byte member, so
+every `SolverImpl` field after `m_cns` moves, and so does `Row`'s constant (`+0x18` / `+0x20`, unread).
+
+| row | Linux / Windows | read off |
+|---|---|---|
+| `kiwi::impl::SolverImpl.rows` / `.rowsEnd` | `0x18`, `0x20` / `0x20`, `0x28` | substitute's walk bounds (`mov 0x18(%rdi)` / `mov 0x20(%rcx),%rbx; mov 0x28(%rcx),%rdi`) |
+| `kiwi::impl::SolverImpl.infeasible` / `.infeasibleEnd` | `0x60`, `0x68` / `0x80`, `0x88` | the negative-row push inside substitute (Linux end `+0x68`, cap `+0x70`; Windows `lea 0x80(%rbp)`, end `+8`, cap `+0x10`) |
+| `kiwi::impl::SolverImpl.artificial` | `0x80` / `0xa0` | substitute's last block and addWithArtificialVariable's store of the copied row |
+| `kiwi::impl::SolverImpl.idTick` | `0x88` / `0xa8` | read then incremented at the head of addWithArtificialVariable; set to 1 by SetChildren's reset |
+| `kiwi::impl::Row.cells` / `.cellsEnd` | `0x0`, `0x8` / same | every cell binary search |
+| `kiwi::impl::SymbolPair.id` / `.type` / `.value` / `.stride` | `0x0` / `0x8` / `0x10` / `0x18`, same | both maps' `(Symbol, 8-byte value)` pairs: the `/3` (24-byte) walks, `cmpl $0x1,0x8(entry)` for External, the `Row*` at `+0x10` |
+
+`NuiLayoutErrors` reads more of the same solver, and of the NUI tree around it, when a layout fails
+(docs/research/nui-layout-errors.md). Every row was read off both binaries; the evidence is in that document's
+§0 and §8.
+
+| row | Linux / Windows | read off |
+|---|---|---|
+| `kiwi::impl::SolverImpl.cns` / `.cnsEnd` | `0x0`, `0x8` / same | `addConstraint`'s duplicate `lower_bound` and its final `m_cns[constraint] = tag` insert |
+| `kiwi::impl::Row.constant` | `0x18` / `0x20` | createRow's store and addConstraint's `nearZero` read of the new row |
+| `kiwi::impl::CnPair.data` / `.marker` / `.other` / `.stride` | `0x0` / `0x8` / `0x18` / `0x28`, same | the m_cns record: `{ConstraintData*, Tag{marker{id, type}, other{id, type}}}` |
+| `kiwi::ConstraintData.terms` / `.termsEnd` / `.constant` / `.strength` / `.op` | `0x8` / `0x10` / `0x20` / `0x28` / `0x30`, same | the `Constraint(Expression, op, strength)` ctor (Linux `0x85a5f0`, Windows rva `0x334470`) |
+| `kiwi::Term.variable` / `.coefficient` / `.stride` | `0x0` / `0x8` / `0x10`, same | the same ctor's term copy |
+| `Nui::Layout::Layoutable.children` / `.childrenEnd` | `0x8`, `0x10` / same | `Span::BuildConstraintDependants`' child loop (shared_ptr records, 16 bytes) |
+| `Nui::Layout::Layoutable.vars` (12) | `0x2c8` / `0x3d8` | the ctor's twelve `Variable(Context*)` and its three LayoutExpressions: x, y, w, h, padding l t r b, margin l t r b |
+| `Nui::Layout::Span.direction` | `0x5a8` / `0x6c0` | the row / col makers store 0 / 1 (Linux `0x864b10` / `0x87b4b1`, Windows `0x741658` / `0x741773`) |
+| `Nui::Layout::LayoutGroup.solver` | `0x5a8` / `0x6c0` | `lea` before every `addEditVariable` / `addConstraint` in SetChildren |
+| `Nui::Layout::LayoutGroup.editWidth` / `.editHeight` | `0x638`, `0x640` / `0x770`, `0x778` | SetChildren's two `addEditVariable` calls; also the only inputs of the parent rect it hands its children |
+| `Nui::Layout::LayoutGroup.scaleConstraints` | `0x668` / `0x7a0` | SetChildren's vector holding its one `guiScale == nk_get_gui_scale()` constraint |
+| `Nui::JSON::JsonWindow.idsHead` | `0x418` / `0x468` | Linux: the id map's `_M_before_begin._M_nxt` (the hashtable `clear()` HandleError calls); Windows: the MSVC list head sentinel (`GetElementById`'s `end()` compare) |
+| `Nui::JSON::IdNode.key` / `.element` | `0x8`, `0x28` / `0x10`, `0x30` | the node's key `std::string` and its `weak_ptr<Layoutable>` element pointer (`GetElementById` on both) |

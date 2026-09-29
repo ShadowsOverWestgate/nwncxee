@@ -301,6 +301,74 @@ against the Linux decompile; the two ctors were already paired above. `anchors.t
 | `CGuiCreatureMenu::CGuiCreatureMenu(CNWCCreature*, Vector)` @0x73f110 | `0x98e140` | `(this, creature, Vector*)`; `sizeof` `0x840` from `operator_new` at its caller |
 | `CClientSpellMenu::CClientSpellMenu(Vector, uint, CGuiQuickButton*, int)` @0x6f1650 | `0x9a10e0` | `(this, Vector*, target, btn, build)`; stores `+0x880/+0x888/+0x88c/+0x890` after the player-creature-with-stats guard |
 
+## NUI widget cull -- RTTI vftables on build `0x68e408bc`
+
+`Nui::*` exports nothing on Windows (the export directory holds two `Nui::JSON` destructors and no
+`Nui::Layout`), so both rows are `At`. Each vftable was found from its RTTI type descriptor
+(`.?AVWidget@Layout@Nui@@`, `.?AVStatefulWidget@Layout@Nui@@`) -> complete object locator -> the
+pointer that precedes the vftable, the #134 recipe (`tools/abi/vtable-slots.py`).
+
+| Linux symbol | Windows | how |
+|---|---|---|
+| `Nui::Layout::Widget::Render(nk_context*)` | rva `0x9528e0`; `(this, ctx) -> void` | slot 4 of both `Widget` (rva `0xe39700`) and `StatefulWidget` vftables. MSVC slot order `~dtor, SetChildren, OnAttached, OnDetach, Render, ...` is pinned by `Layoutable` slot 4 = `0x951260` (the `"trying to render Layoutable without layout group"` ExoLog) and slot 2 = `0x94f4c0` (`"Attached Layoutable twice..."`) |
+| `_ZTVN3Nui6Layout14StatefulWidgetE` | rva `0xe6dff0` (the vftable itself; `VtblSymbolHeader` is 0 on Windows) | RTTI as above; `NuiService` checks at init that its Render slot holds `Widget::Render` |
+| `_ZTVN3Nui6Layout11LayoutGroupE` / `11SingleGroupE` / `4SpanE` | rva `0xe6ce10` / `0xe6ce58` / `0xe39670` | RTTI: `vftable[-1]` -> complete object locator -> type descriptor `.?AVLayoutGroup@Layout@Nui@@` etc. `NuiLayoutErrors` tells a NUI group's solver and a span's axis by them |
+| `Nui::JSON::JsonWindow::HandleError(char const*, char const*)` | rva `0x746650`; `(this, tag, message) -> void` | its own `.pdata` entry (`0x746650..0x746ee5`) holding the `"Error "` reference at `0x746a46`; its three callers (`0x74eb68`, `0xd32e5b`, `0xd3370b`) match Linux's three. Copies both strings during the call |
+
+## NUI `@item:` icons -- build `0x68e408bc`
+
+`nk_loadimg(char const*, ushort)` is nuklear and unexported: rva `0xa95e30`, the only function citing both
+`"nk_image: failed to load texture '%s' with ANY, no compatible format found"` and
+`"nk_image: failed to load '%s'.%d, not found"`; its body makes the same `CResRef::operator=` + `CExoResMan::Get`
+pair as Linux, and the `ExoLog::Emit` after it carries line `0x168` (360) on both. A free function returning
+`shared_ptr` by value: `(ret, resref, type)` on both ABIs. Everything else is by name:
+
+| Linux symbol | Windows (MSVC) |
+|---|---|
+| `CExoResMan::Get(CResRef const&, ushort)` (hook) | `?Get@CExoResMan@@QEAA?AV?$shared_ptr@VDataBlock@@@std@@AEBVCResRef@@G@Z` (`0x18f920`); a member returning by value: `(this, ret, ref, type)` here, `(ret, this, ref, type)` on Linux |
+| `DataBlock::FromBase64(std::string const&)` | `?FromBase64@DataBlock@@SA?AV?$shared_ptr@VDataBlock@@@std@@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@3@@Z` (`0x309040`); static, `(ret, str)` on both |
+| `AurGetLayeredRasterWrapper` | `?AurGetLayeredRasterWrapper@@YAPEAEPEBDPEAH11@Z` (`0xe5ef0`) |
+| `AurReleaseLayeredRaster` (data) | `?AurReleaseLayeredRaster@@3P6AXPEAXHH@ZEA` (`0x140b270`) |
+| `paletteimage` / `paletteheight` (data) | `?paletteimage@@3PEAEEA` (`0x140b290`) / `?paletteheight@@3HA` (`0x140b2a0`) |
+| `CNWCMessage::CreateItem(uint, ushort*, uchar*, uchar*, char, uchar, ObjectVisualTransformData const&)` | not exported: **rva `0x769130`**, its own `.pdata` entry and the only function in the image citing `"gifp"` and `"gi_armor01"` (both `lea`s at `0x76a276`/`0x76a2a1`); `(this, base, models, colors, partColors, gender, vfx, vt)` in the Win64 slots, no by-value crossing |
+| `ObjectVisualTransformData::s_IdentityVisualTransformData` (data) | `?s_IdentityVisualTransformData@ObjectVisualTransformData@@0U1@B` (`0x141f670`) |
+| `CNWCItem` deleting destructor | vftable rva `0xe4ceb0` (the `CNWCItem` ctor at `0x83c480` stores it at `+0`), slot 0 = `0x83c8a0`: `~CNWCItem`, then `operator delete(this, 0x2b8)` when `flags & 1`. Linux: D0 `_ZN8CNWCItemD0Ev`, slot +0x08 |
+
+## NUI scrollbars -- nuklear statics on build `0x68e408bc`
+
+`nk_scrollbar_behavior` and `nk_draw_scrollbar` are static on BOTH builds: Windows `At` rows, and on Linux the
+same constants resolve from `lva` rows (`SymbolMap.LinuxAnchored`), since nm has no name for them either. Each
+is called only by `nk_do_scrollbarv` / `nk_do_scrollbarh` (Windows `0xa65d10` / `0xa65700`, found as the two
+callees of `nk_panel_end` `0xa6db10` whose float result is stored through `panel+0x20` / `+0x18`), with every
+rect by pointer, so one signature serves both ABIs.
+
+| static | Linux lva | Windows rva | how |
+|---|---|---|---|
+| `nk_scrollbar_behavior` | `0xdf5ba0` | `0xa6f320` | the one callee of both scrollbar functions that writes `in->mouse.buttons[0].clicked_pos` (`in+0x114/+0x118`) |
+| `nk_draw_scrollbar` | `0xddf6b0` | `0xa68af0` | their other private callee; picks style items `0/0x50/0xa0` (track) and `0xf8/0x148/0x198` (thumb) by state bits `0x20/0x10` |
+| `nk_do_scrollbarv` | `0xdf6100` | `0xa65d10` | `nk_panel_end`'s callee whose float result is stored through `panel+0x20`; its only other caller is `nk_do_edit` |
+| `nk_do_scrollbarh` | `0xdf65c0` | `0xa65700` | the same, stored through `panel+0x18` |
+
+`nk_do_scrollbarv/h` take the track `nk_rect` by value: in xmm0/xmm1 on Linux, through a pointer in r8 on Windows. So
+`NuiScrollbarHide` declares one handler per ABI and no `[Fn]` row.
+
+## NUI layout solve -- kiwi by name on build `0x68e408bc`
+
+All three are name exports; the layout rows are in docs/engine-layout.md ("The kiwi solver rows").
+
+| Linux symbol | Windows (MSVC) |
+|---|---|
+| `kiwi::impl::SolverImpl::substitute(Symbol const&, Row const&)` (hook) | `?substitute@SolverImpl@impl@kiwi@@AEAAXAEBVSymbol@23@AEBVRow@23@@Z` (`0x3458e0`) |
+| `kiwi::impl::SolverImpl::optimize(Row const&)` (hook through native/cxthunk.c: it throws) | `?optimize@SolverImpl@impl@kiwi@@AEAAXAEBVRow@23@@Z` (`0x3433d0`) |
+| `kiwi::impl::SolverImpl::createRow(Constraint const&, Tag&)` (hook; returns `unique_ptr<Row>` by value, `(this, sret, constraint, tag)`) | `?createRow@SolverImpl@impl@kiwi@@AEAA?AV?$unique_ptr@VRow@impl@kiwi@@U?$default_delete@VRow@impl@kiwi@@@std@@@std@@AEBVConstraint@3@AEAUTag@123@@Z` (`0x340e00`) |
+
+The two builds differ in inlining, and the hook depends on it. GCC calls `substitute` from all five of its users
+(addConstraint `0x85f456`, addWithArtificialVariable `0x85e0f6`, optimize `0x85d053`, dualOptimize `0x85c533`,
+removeConstraint `0x85d93f`). MSVC calls it from four and **inlined it into `optimize`** (its body calls
+`Row::substitute` `0x345800` per row instead), so on Windows `NuiSolver` also hooks `optimize` and rebuilds a solver's
+row index after any `optimize` that can pivot. `optimize` itself is called, not inlined, from its three users on both
+(addConstraint, addWithArtificialVariable, removeConstraint).
+
 ## Chat raw offsets (#419) -- decomp-diffed against `0x68e408bc`
 
 | Struct / field | Linux | Windows | Where seen |

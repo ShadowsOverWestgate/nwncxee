@@ -432,6 +432,27 @@ Deleted: Quickbar's `/settings`, `/qbar`, `QuickbarSettings`.
 
 Now persists (amends #182).
 
+**NUI windows** — group `nui` (docs/research/nui-performance.md). Fixes to the windows servers build
+with NUI; nothing here changes what a window lays out.
+
+| key | today | label | kind | range · default | tier | eff | help |
+|---|---|---|---|---|---|---|---|
+| nui.enabled | — | Enable CX NUI fixes | T | on | U | L | Speed and usability fixes for the windows servers build with NUI. Off, they behave exactly as in the stock client. |
+| nui.cull | — | Skip widgets scrolled out of view | T | on | U | L | Rows of a NUI list that are outside its visible area are not processed each frame, so long lists stay smooth. Nothing on screen changes. |
+| nui.solve | — | Faster layout solving | T | on | U | L | Windows with long lists open and refresh much faster. Every element lands exactly where the stock client puts it. |
+| nui.solvecheck | — | Check the fast layout solve | T | off | A | L | Debug: solves the stock way and checks the fast path's bookkeeping at every step. A mismatch turns the fast solve off and says so. Slow. |
+| nui.explain | — | Explain broken layouts | T | on | U | L | When a server's window cannot lay out, it lists the rules that contradict each other and the elements they belong to, instead of only "The constraint can not be satisfied." The same text goes to cx.log. |
+| nui.itemicons | — | Item icons in NUI windows | T | on | U | L | A server's NUI window can show an item's own icon in its real colours, as the inventory does. Off, those images show the stock error sprite. |
+| nui.smooth | — | Smooth scrolling | T | on | U | L | The mouse wheel glides a NUI list to its new position instead of jumping there. |
+| nui.autohide | — | Hide scrollbars with nothing to scroll | T | on | U | L | A NUI list whose content fits shows no scrollbar, instead of a full-length one that does nothing. |
+| nui.hoverbars | — | Show scrollbars only under the mouse | T | off | U | L | A NUI list's scrollbar fades out while the pointer is elsewhere and back in when it is over the list. Text boxes keep theirs. |
+| nui.thumb | — | Shortest scrollbar handle | S | 0 … 4 × its width, step 0.5 · 2 | U | L | A long list's scrollbar handle never gets shorter than this, so it cannot shrink out of sight. 0 = stock. |
+
+Bare `/nui` prints how many widget draws the skip saved since the last ask, and how many tableau rows the layout solves visited of how many.
+
+The `@item:` contract: a NUI image whose resref string is `"@item:" + ObjectToString(oItem)` draws that item's own
+inventory icon (docs/research/nui-plt-icons.md, "Built").
+
 **Windows & fonts** — group `ui`.
 
 | key | today | label | kind | range · default | tier | eff | help |

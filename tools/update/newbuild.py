@@ -11,6 +11,7 @@ What it does, and nothing it cannot back with evidence:
   * keys    -- the new build-id, CodeView GUID+age and PE stamp, read from the binaries
   * rva     -- every SymbolMap At() re-anchored by rvamatch (exports, RTTI, xref votes); weak ones are
                written as `# TODO` lines, which ClientBuilds.SelfCheck refuses until a human fills them
+  * lva     -- every SymbolMap.LinuxAnchored static function, re-anchored the same way on the two ELFs
   * offset  -- layout.py: a row whose canary functions are byte-identical is copied from the old file; a
                changed or blind row is written with its old values commented out as `# CHECK`, which
                ClientBuilds.SelfCheck refuses until a human confirms or corrects it
@@ -87,6 +88,18 @@ def main():
                              f'(old {before:#x}, docs/windows-symbols.md)')
             todo.append(f'rva {c}: {how} {score:.2f}, candidate {cand}')
 
+    # ---- Linux static functions: the same matcher on the two ELFs ----
+    ml = Matcher(ol, nl)
+    lva_lines = []
+    for sname, before in sorted(old['lvas'].items()):
+        got, how, score = ml.match(before)
+        if got is not None and how in ('name', 'delta', 'interval', 'xref'):
+            lva_lines.append(f'lva\t{sname}\t{got:#x}\t# ({how} {score:.2f})')
+        else:
+            cand = f'{got:#x}' if got is not None else '?'
+            lva_lines.append(f'# TODO lva\t{sname}\t{cand}\t# {how} {score:.2f} -- confirm in Ghidra (old {before:#x})')
+            todo.append(f'lva {sname}: {how} {score:.2f}, candidate {cand}')
+
     # ---- offsets ----
     src = open(os.path.join(FW, 'EngineLayout.cs')).read()
     off_lines, verdicts = [], layout.check(src, old['offsets'], ol, nl, ow, nw)
@@ -109,10 +122,12 @@ def main():
             f'likely, {counts["changed"]} changed, {counts["blind"]} blind (CHECK lines).',
             f'name\t{name}', f'linux\t{nl.cv}', f'windows\t{nw.cv}', f'stamp\t{nw.stamp:#010x}', '',
             '# offset\tclass\tfield\tlinux\twindows\t# EngineLayout row']
-    text = '\n'.join(head + off_lines + ['', '# rva\tlinux symbol\twindows rva\t# SymbolMap constant'] + rva_lines) + '\n'
+    text = '\n'.join(head + off_lines + ['', '# rva\tlinux symbol\twindows rva\t# SymbolMap constant'] + rva_lines
+                     + ['', '# lva\tstatic function\tlinux nm address\t# SymbolMap.LinuxAnchored constant'] + lva_lines) + '\n'
 
     print(f'{old["name"]} -> {name}: linux {nl.cv}, windows {nw.cv}, stamp {nw.stamp:#010x}')
     print(f'  rva     {nrva}/{len(rva_lines)} re-anchored')
+    print(f'  lva     {sum(1 for l in lva_lines if l.startswith("lva"))}/{len(lva_lines)} re-anchored')
     print(f'  offsets {counts["carried"]} carried, {counts["likely"]} likely (displacement survives), '
           f'{counts["changed"]} changed, {counts["blind"]} blind')
     print(f'  symbols {len(gone_l)} linux gone, {len(gone_w)} windows gone; '

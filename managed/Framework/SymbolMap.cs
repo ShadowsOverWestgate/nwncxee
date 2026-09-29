@@ -377,6 +377,16 @@ internal static unsafe class SymbolMap
     /// pointer motion is handed here directly to keep <see cref="NkWindowIsAnyHovered"/> answering live.</summary>
     [Fn("void(IntPtr ev)")]
     public const string NkSdlCopyEvent      = "_Z17nk_sdl_copy_eventP9SDL_Event";
+    /// <summary><c>Nui::Layout::Widget::Render(nk_context*)</c> @0x84a610 (Windows rva 0x9528e0, vftable slot 4 of
+    /// <c>Widget</c> and <c>StatefulWidget</c>) -- every NUI leaf widget's per-frame draw, dispatched from the parent's
+    /// child loop in <c>Layoutable::Render</c> right after <c>nk_layout_space_push</c> put this child's rect in
+    /// <c>panel-&gt;row.item</c>. Containers, <c>movieplayer</c> and <c>SelectList</c> have their own Render and never
+    /// arrive here. docs/research/nui-performance.md §9.</summary>
+    [Fn("void(IntPtr self, IntPtr ctx)")]
+    public const string NuiWidgetRender = "_ZN3Nui6Layout6Widget6RenderEP10nk_context";
+    /// <summary><c>Nui::Layout::StatefulWidget</c>'s vtable. Not a hook -- an identity: <c>textedit</c> is built on it
+    /// and owns keyboard focus, so it is never culled. The object's vptr is the symbol + <see cref="EngineLayout.VtblSymbolHeader"/>.</summary>
+    public const string NuiStatefulWidgetVtbl = "_ZTVN3Nui6Layout14StatefulWidgetE";
     // in-game game clock (chat game-time timestamps). The SERVER-synced module time lives on CNWCModule
     // (hour at +0x16c); CClientExoApp::GetModule(app) fetches it off the same *g_pAppManager chain the
     // in-game gate walks. NOT CWorldTimer -- that's a free-running local clock never anchored to server time.
@@ -1579,6 +1589,96 @@ internal static unsafe class SymbolMap
     /// <c>palette + (layerRows[layer] &lt;&lt; 10) + index*4</c>. The palette height is unused.</summary>
     [Fn("IntPtr(byte* px, int w, int h, byte* palette, int paletteHeight, int* layerRows, int layers)")]
     public const string ImageDecode = "_Z11ImageDecodePhiiS_iPii";
+    /// <summary>A PLT's raw raster, two bytes a pixel <c>{palette index, layer}</c>, bottom-up (@0x485040, Windows rva
+    /// 0xe5ef0): a synchronous private copy through <c>CAuroraInterface::GetLayeredRaster</c>, freed through
+    /// <see cref="AurReleaseLayeredRaster"/>. Writes <c>*bpp = 2</c> unconditionally.</summary>
+    /// <summary>Static functions the Linux client has no symbol for (nm lists nothing): resolved from the running
+    /// build's <c>lva</c> line (<see cref="ClientBuilds.Lva"/>), as an <c>At()</c> symbol is from its <c>rva</c>
+    /// line on Windows. The constant is the function's source name, a key, never looked up as an export.</summary>
+    internal static readonly HashSet<string> LinuxAnchored = new() { NkScrollbarBehavior, NkDrawScrollbar, NkDoScrollbarV, NkDoScrollbarH };
+    /// <summary>nuklear's <c>nk_scrollbar_behavior</c> (static: Linux lva 0xdf5ba0, Windows rva 0xa6f320) -- the one
+    /// function that turns input into a scrollbar's new offset: the thumb drag (and the one <c>nk_input</c> write,
+    /// <c>clicked_pos</c>), the page clicks on the two empty rects, the wheel, the scroll keys. Called only by
+    /// <c>nk_do_scrollbarv/h</c>, with every rect by pointer, so one signature fits both ABIs. <c>axis</c> 0 =
+    /// vertical. docs/research/nui-performance.md, the scrollbar facts.</summary>
+    [Fn("float(IntPtr state, IntPtr input, int hasScrolling, IntPtr track, IntPtr thumb, IntPtr empty0, IntPtr empty1, float offset, float target, float step, int axis)")]
+    public const string NkScrollbarBehavior = "nk_scrollbar_behavior";
+    /// <summary>nuklear's <c>nk_draw_scrollbar(out, state, style, &amp;track, &amp;thumb)</c> (static: Linux lva 0xddf6b0,
+    /// Windows rva 0xa68af0): the pixels, from the thumb rect it is handed. Called only by <c>nk_do_scrollbarv/h</c>,
+    /// right after <see cref="NkScrollbarBehavior"/>.</summary>
+    [Fn("void(IntPtr output, uint state, IntPtr style, IntPtr track, IntPtr thumb)")]
+    public const string NkDrawScrollbar = "nk_draw_scrollbar";
+    /// <summary>nuklear's <c>nk_do_scrollbarv</c> / <c>nk_do_scrollbarh</c> (static: Linux lva 0xdf6100 / 0xdf65c0, Windows rva
+    /// 0xa65d10 / 0xa65700): one whole scrollbar -- its buttons, <see cref="NkScrollbarBehavior"/>, <see cref="NkDrawScrollbar"/> --
+    /// returning the new offset. Callers: <c>nk_panel_end</c> (a window or group) and <c>nk_do_edit</c>, which use only
+    /// the return. No <c>[Fn]</c>: the track rect is by value on Linux (xmm0/xmm1) and by pointer on Windows (r8), so
+    /// <c>NuiScrollbarHide</c> declares both. docs/research/nui-performance.md, the scrollbar hide facts.</summary>
+    public const string NkDoScrollbarV = "nk_do_scrollbarv", NkDoScrollbarH = "nk_do_scrollbarh";
+    [Fn("byte*(byte* name, int* w, int* h, int* bpp)")]
+    public const string AurGetLayeredRasterWrapper = "_Z26AurGetLayeredRasterWrapperPKcPiS1_S1_";
+    /// <summary>DATA slot <c>void(*)(void* data, int w, int h)</c> that frees a <see cref="AurGetLayeredRasterWrapper"/>
+    /// raster (<c>AurTextureFreeImage</c> @0x4850f0 calls it for a PLT). The master palette the PLT composite indexes:
+    /// <c>paletteimage</c> (<c>uchar*</c>, 256 RGBA entries a row, palette k owning rows k*256..; REALLOCATED by
+    /// <c>AurSetPalette</c> mid-session, so re-read at every use) and <c>paletteheight</c> (its row count).</summary>
+    public const string AurReleaseLayeredRaster = "AurReleaseLayeredRaster", PaletteImage = "paletteimage", PaletteHeight = "paletteheight";
+    /// <summary><c>nk_loadimg(char const*, ushort)</c> @0xe1a820 (Windows rva 0xa95e30) -- the one funnel under every NUI
+    /// image kind that turns a resref string into a <c>shared_ptr&lt;NkImage&gt;</c>, returned BY VALUE: a free function, so
+    /// the hidden return slot is first on both ABIs. Type 0xFFFF probes six image types; any other type goes straight
+    /// to <see cref="ExoResManGet"/>. Returns the slot, as the ABI has it in rax. docs/research/nui-plt-icons.md.</summary>
+    [Fn("IntPtr(IntPtr ret, byte* resref, ushort type)")]
+    public const string NkLoadImg = "_Z10nk_loadimgPKct";
+    /// <summary><c>shared_ptr&lt;DataBlock&gt; CExoResMan::Get(CResRef const&amp;, ushort)</c> @0x53e620 (Windows rva 0x18f920):
+    /// a resource's raw bytes, null when the key table has no entry. A member returning by value, so the hidden slot
+    /// sits (ret, this, ...) on Itanium and (this, ret, ...) on Win64 (#456); no <c>[Fn]</c>, because no one signature
+    /// describes it -- <c>NuiItemIcons</c> declares both orders. Cold: 14 callers, none per frame.</summary>
+    public const string ExoResManGet = "_ZN10CExoResMan3GetERK7CResReft";
+    /// <summary><c>static shared_ptr&lt;DataBlock&gt; DataBlock::FromBase64(std::string const&amp;)</c> @0x61f0e0 (Windows rva
+    /// 0x309040): decodes and ADOPTS the decoded buffer, null on a bad string. Static, so the return slot is first on
+    /// both ABIs. The string is only read.</summary>
+    [Fn("IntPtr(IntPtr ret, IntPtr str)")]
+    public const string DataBlockFromBase64 = "_ZN9DataBlock10FromBase64ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE";
+    /// <summary><c>CNWCMessage::CreateItem(uint baseItem, ushort* models, uchar* colors, uchar* partColors, char gender,
+    /// uchar visualEffect, ObjectVisualTransformData const&amp;)</c> @0x7577f0 (Windows rva 0x769130, anchored: its own .pdata
+    /// entry, and the only function citing "gifp" / "gi_armor01"): a whole client item, icon and ground model, from the
+    /// appearance an engine store sends (<c>HandleServerToPlayerItemAppearance</c> @0x79b730 decodes exactly these
+    /// buffers). Never reads its <c>this</c>; returns a <c>CNWCItem*</c> registered nowhere, which its caller deletes.</summary>
+    [Fn("IntPtr(IntPtr self, uint baseItem, ushort* models, byte* colors, byte* partColors, sbyte gender, byte visualEffect, IntPtr visualTransform)")]
+    public const string NwcCreateItem = "_ZN11CNWCMessage10CreateItemEjPtPhS1_chRK25ObjectVisualTransformData";
+    /// <summary>DATA: <c>ObjectVisualTransformData::s_IdentityVisualTransformData</c>, the constructed identity transform
+    /// (its std::map is a live empty tree), for <see cref="NwcCreateItem"/>'s last argument.</summary>
+    public const string IdentityVisualTransform = "_ZN25ObjectVisualTransformData29s_IdentityVisualTransformDataE";
+    /// <summary><c>kiwi::impl::SolverImpl::substitute(Symbol const&amp;, Row const&amp;)</c> @0x85b890 (Windows rva 0x3458e0): replaces
+    /// a symbol by a row in every tableau row, the objective and the artificial row -- the full row walk that makes a
+    /// NUI layout solve quadratic (docs/research/nui-performance.md §2). Never throws. Its callers are addConstraint,
+    /// addWithArtificialVariable, optimize (Linux only), dualOptimize and removeConstraint, all by call.</summary>
+    [Fn("void(IntPtr self, IntPtr symbol, IntPtr row)")]
+    public const string KiwiSubstitute = "_ZN4kiwi4impl10SolverImpl10substituteERKNS0_6SymbolERKNS0_3RowE";
+    /// <summary><c>kiwi::impl::SolverImpl::optimize(Row const&amp;)</c> @0x85cc50 (Windows rva 0x3433d0): the primal pivot loop.
+    /// MSVC inlined <see cref="KiwiSubstitute"/> into it, so on Windows its pivots bypass the substitute hook; GCC calls
+    /// it. Throws InternalSolverError("The objective is unbounded."), so it is hooked only through native/cxthunk.c's
+    /// C wrapper (<c>KiwiOptimizeHook</c>), never by a managed handler.</summary>
+    [Fn("void(IntPtr self, IntPtr objective)")]
+    public const string KiwiOptimize = "_ZN4kiwi4impl10SolverImpl8optimizeERKNS0_3RowE";
+    /// <summary><c>kiwi::impl::SolverImpl::createRow(Constraint const&amp;, Tag&amp;)</c> @0x85eb40 (Windows rva 0x340e00):
+    /// the constraint rewritten over the tableau's parametric symbols, returned as a <c>unique_ptr&lt;Row&gt;</c> by value
+    /// (Itanium <c>(sret, this, constraint, tag)</c>, Win64 <c>(this, sret, constraint, tag)</c>, so hooked per OS by
+    /// <c>NuiLayoutErrors</c>). Allocates but throws nothing of kiwi's; <c>addConstraint</c> calls it first and throws
+    /// UnsatisfiableConstraint straight after when the row is all dummies with a nonzero constant.</summary>
+    [Fn("sret(kiwi__impl__SolverImpl this, IntPtr constraint, IntPtr tag)")]
+    public const string KiwiCreateRow = "_ZN4kiwi4impl10SolverImpl9createRowERKNS_10ConstraintERNS1_3TagE";
+    /// <summary><c>Nui::JSON::JsonWindow::HandleError(char const* tag, char const* message)</c> @0x86d480 (Windows rva
+    /// 0x746650): vanilla's only NUI error surface. Retitles the window "Error " + tag and replaces its whole layout with
+    /// one text widget holding a copy of message. Called by Initialize and Render inside their catch and by Update after
+    /// it (docs/research/nui-layout-errors.md §1).</summary>
+    [Fn("void(IntPtr self, IntPtr tag, IntPtr message)")]
+    public const string NuiHandleError = "_ZN3Nui4JSON10JsonWindow11HandleErrorEPKcS3_";
+    /// <summary><c>Nui::Layout::LayoutGroup</c>'s and <c>SingleGroup</c>'s vtables: the only layout classes that embed a kiwi
+    /// solver. Identities, not hooks; an object's vptr is the symbol + <see cref="EngineLayout.VtblSymbolHeader"/>.</summary>
+    public const string NuiLayoutGroupVtbl = "_ZTVN3Nui6Layout11LayoutGroupE";
+    /// <inheritdoc cref="NuiLayoutGroupVtbl"/>
+    public const string NuiSingleGroupVtbl = "_ZTVN3Nui6Layout11SingleGroupE";
+    /// <summary><c>Nui::Layout::Span</c>'s vtable: a JSON <c>row</c> or <c>col</c>. An identity for naming elements.</summary>
+    public const string NuiSpanVtbl = "_ZTVN3Nui6Layout4SpanE";
     /// <summary>The two pre-dispatch calls of the world scene render, inside the AI update: the BSP
     /// management (every gob, three passes, the frustum traverse) and the draw-bucket build (the sole
     /// writer of the gob model matrix Alloy draws with). Timed only; see
@@ -2488,6 +2588,8 @@ internal static unsafe class SymbolMap
         [NkSdlCopyEvent] = Hole("nuklear is not exported by nwmain.exe"),
         [NkSdlRender] = Hole("nuklear is not exported by nwmain.exe"),
         [NkWindowIsAnyHovered] = Hole("nuklear is not exported by nwmain.exe"),
+        [NuiStatefulWidgetVtbl] = At(),   // RTTI type descriptor -> COL -> vftable
+        [NuiWidgetRender] = At(),         // Widget / StatefulWidget RTTI vftable slot 4 (docs/windows-symbols.md)
         [Nuklear] = Hole("nuklear is not exported by nwmain.exe"),
         [OnGainFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
         [OnLostFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
@@ -2531,6 +2633,26 @@ internal static unsafe class SymbolMap
         [AurGetImageWrapper] = Nm("?AurGetImageWrapper@@YAPEAEPEBDPEAH111PEAW4AuroraContainerFormats@Aurora@@PEAW4AuroraTextureFormats@2@PEAMH@Z"),
         [TgaServiced] = Nm("?OnResourceServiced@CResTGA@@UEAAHXZ"),
         [ImageDecode] = Nm("?ImageDecode@@YAPEAEPEAEHH0HPEAHH@Z"),
+        [AurGetLayeredRasterWrapper] = Nm("?AurGetLayeredRasterWrapper@@YAPEAEPEBDPEAH11@Z"),
+        [AurReleaseLayeredRaster] = Nm("?AurReleaseLayeredRaster@@3P6AXPEAXHH@ZEA"),
+        [PaletteImage] = Nm("?paletteimage@@3PEAEEA"),
+        [PaletteHeight] = Nm("?paletteheight@@3HA"),
+        [NkScrollbarBehavior] = At(),   // callee of nk_do_scrollbarv/h (0xa65d10 / 0xa65700) that owns clicked_pos
+        [NkDrawScrollbar] = At(),       // their other private callee: style items 0/0x50/0xa0 by state bit
+        [NkDoScrollbarV] = At(),        // nk_panel_end's callee whose result is stored through panel+0x20 (offset_y)
+        [NkDoScrollbarH] = At(),        // ... and through panel+0x18 (offset_x)
+        [NkLoadImg] = At(),   // the only function citing "nk_image: failed to load texture '%s' with ANY..." (docs/windows-symbols.md)
+        [ExoResManGet] = Nm("?Get@CExoResMan@@QEAA?AV?$shared_ptr@VDataBlock@@@std@@AEBVCResRef@@G@Z"),
+        [DataBlockFromBase64] = Nm("?FromBase64@DataBlock@@SA?AV?$shared_ptr@VDataBlock@@@std@@AEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@3@@Z"),
+        [NwcCreateItem] = At(),   // its own .pdata entry; the only function citing "gifp" and "gi_armor01" (docs/windows-symbols.md)
+        [IdentityVisualTransform] = Nm("?s_IdentityVisualTransformData@ObjectVisualTransformData@@0U1@B"),
+        [KiwiSubstitute] = Nm("?substitute@SolverImpl@impl@kiwi@@AEAAXAEBVSymbol@23@AEBVRow@23@@Z"),
+        [KiwiOptimize] = Nm("?optimize@SolverImpl@impl@kiwi@@AEAAXAEBVRow@23@@Z"),
+        [KiwiCreateRow] = Nm("?createRow@SolverImpl@impl@kiwi@@AEAA?AV?$unique_ptr@VRow@impl@kiwi@@U?$default_delete@VRow@impl@kiwi@@@std@@@std@@AEBVConstraint@3@AEAUTag@123@@Z"),
+        [NuiHandleError] = At(),   // its own .pdata entry holding the "Error " reference; its 3 callers match Linux's
+        [NuiLayoutGroupVtbl] = At(),   // RTTI type descriptor -> COL -> vftable
+        [NuiSingleGroupVtbl] = At(),   // RTTI type descriptor -> COL -> vftable
+        [NuiSpanVtbl] = At(),   // RTTI type descriptor -> COL -> vftable
         [ResManExists] = Nm("?Exists@CExoResMan@@QEAAHAEBVCResRef@@GPEAI@Z"),
         [ResManGetKeyEntry] = Nm("?GetKeyEntry@CExoResMan@@QEAAHAEBVCResRef@@GPEAPEAVCExoKeyTable@@PEAPEAVCKeyTableEntry@@_N@Z"),
         [AliasResolveFileName] = Nm("?ResolveFileName@CExoAliasList@@QEBA?AVCExoString@@AEBV2@G@Z"),
@@ -2752,6 +2874,12 @@ internal static unsafe class SymbolMap
     {
         if (!OperatingSystem.IsWindows())
         {
+            if (LinuxAnchored.Contains(linux))
+            {
+                int lva = ClientBuilds.Lva(linux);   // build-locked: Current is the build whose build-id is running
+                IntPtr at = EngineLayout.ImageBase + lva;
+                return lva != 0 && EngineLayout.ImageBase != IntPtr.Zero && EngineLayout.InImage(at) ? at : IntPtr.Zero;
+            }
             if (NativeLibrary.TryGetExport(Base, linux, out IntPtr p)) return p;
             // ponytail: TryGetExport misses symbols under NativeAOT + LD_PRELOAD; dlsym(NULL) searches
             // the global scope. macOS needs "libdl.dylib" — cross that bridge when hardened-runtime unblocks.
@@ -2791,7 +2919,8 @@ internal static unsafe class SymbolMap
         foreach (string sym in symbols)
         {
             if (Resolve(sym, log) != IntPtr.Zero) continue;
-            string why = !OperatingSystem.IsWindows() ? "not exported by this client build"
+            string why = !OperatingSystem.IsWindows()
+                ? LinuxAnchored.Contains(sym) ? "no lva line for this build, or its address is outside the loaded image" : "not exported by this client build"
                 : !_win.TryGetValue(sym, out Win w) || (w.Name is null && !w.At) ? Why(w)
                 : w.Name is not null ? $"Windows export {w.Name} missing"
                 : BuildMatches(null) ? $"build file {ClientBuilds.Current?.Name} carries no RVA for it (docs/update-day.md)"

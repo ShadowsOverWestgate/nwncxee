@@ -78,6 +78,10 @@
     <DirectPInvoke Include="cxaudio" />
     <NativeLibrary Condition="'$(RuntimeIdentifier)' != 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/libcxaudio.a" />
     <NativeLibrary Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/cxaudio.lib" />
+    <!-- native/cxthunk.c: C wrappers for engine functions that throw C++ exceptions, so no managed frame is unwound. -->
+    <DirectPInvoke Include="cxthunk" />
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' != 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/libcxthunk.a" />
+    <NativeLibrary Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="$(MSBuildThisFileDirectory)../build/cxthunk_win.obj" />
     <!-- The pinned-OpenAL redirect lives in the proxy half (native/bootstrap_win.c); Windows only. -->
     <DirectPInvoke Condition="'$(RuntimeIdentifier)' == 'win-x64'" Include="cxboot" />
   </ItemGroup>

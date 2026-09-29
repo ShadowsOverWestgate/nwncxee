@@ -2,12 +2,19 @@
   "mcpServers": {
     "plane": {
       "command": "uvx",
-      "args": ["plane-mcp-server", "stdio"],
+      "args": [
+        "plane-mcp-server",
+        "stdio"
+      ],
       "env": {
         "PLANE_BASE_URL": "https://plane.westgate.pw",
         "PLANE_WORKSPACE_SLUG": "shadows-over-westgate",
         "PLANE_API_KEY": "${PLANE_API_KEY}"
       }
+    },
+    "westgate-wiki": {
+      "type": "http",
+      "url": "https://westgate.pw/mcp"
     }
   }
 }

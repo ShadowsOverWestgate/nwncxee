@@ -33,7 +33,8 @@ This must report 115/115 RVAs, every offset carried, and an empty worklist.
        tools/update/newbuild.py ~/nwn-builds/<old> "<steam>/bin" --name <new, e.g. 8193.38-1> --write
        tools/update/snapshot.sh    # AFTER the file exists: the new build becomes a future OLD
 
-   It writes the new keys and stamp, one `rva` line per `At()` symbol, and one `offset`
+   It writes the new keys and stamp, one `rva` line per `At()` symbol, one `lva` line per
+   `SymbolMap.LinuxAnchored` static function (the same matcher, run on the two ELFs), and one `offset`
    line per row, copied from the old file where the row is proven unchanged. It also
    prints a `WORKLIST` of everything it could not prove. `diff` the new file against the
    old one to see exactly what moved.
@@ -43,6 +44,9 @@ This must report 115/115 RVAs, every offset carried, and an empty worklist.
      score. Confirm it in Ghidra (method: `docs/windows-symbols.md`, "Regenerating after a client patch"),
      then turn it into an `rva` line. `ClientBuilds.SelfCheck` fails until every `At()`
      symbol has one.
+   - `# TODO lva ...`: the same, for a Linux static function nm has no name for (a nuklear
+     internal such as `nk_scrollbar_behavior`). Find it by its callers in the new ELF, then write the
+     `lva` line; `ClientBuilds.SelfCheck` fails until every `LinuxAnchored` symbol has one.
    - `# CHECK offset ...`, **changed**: a function vouching for that row changed. The
      line carries the old values, commented out, the functions that changed, and
      usually a `candidates:` list of displacements that gained what the old value lost.

@@ -84,6 +84,7 @@ global using unsafe SdlGetKeyboardStateFn = delegate* unmanaged<int*, byte*>;
 global using unsafe NkSdlRenderFn = delegate* unmanaged<float, void>;
 global using unsafe NkWindowIsAnyHoveredFn = delegate* unmanaged<nint, int>;
 global using unsafe NkSdlCopyEventFn = delegate* unmanaged<nint, void>;
+global using unsafe NuiWidgetRenderFn = delegate* unmanaged<nint, nint, void>;
 global using unsafe GetModuleFn = delegate* unmanaged<nint, nint>;
 global using unsafe SetChatBubbleModeFn = delegate* unmanaged<int, void>;
 global using unsafe CreatureShowFeedbackBubbleTextFn = delegate* unmanaged<nint, void>;
@@ -220,6 +221,15 @@ global using unsafe ResManGetKeyEntryFn = delegate* unmanaged<nint, byte*, ushor
 global using unsafe AurGetImageWrapperFn = delegate* unmanaged<nint, int*, int*, int*, int*, int*, int*, float*, int, nint>;
 global using unsafe TgaServicedFn = delegate* unmanaged<nint, int>;
 global using unsafe ImageDecodeFn = delegate* unmanaged<byte*, int, int, byte*, int, int*, int, nint>;
+global using unsafe NkScrollbarBehaviorFn = delegate* unmanaged<nint, nint, int, nint, nint, nint, nint, float, float, float, int, float>;
+global using unsafe NkDrawScrollbarFn = delegate* unmanaged<nint, uint, nint, nint, nint, void>;
+global using unsafe AurGetLayeredRasterWrapperFn = delegate* unmanaged<byte*, int*, int*, int*, byte*>;
+global using unsafe NkLoadImgFn = delegate* unmanaged<nint, byte*, ushort, nint>;
+global using unsafe DataBlockFromBase64Fn = delegate* unmanaged<nint, nint, nint>;
+global using unsafe NwcCreateItemFn = delegate* unmanaged<nint, uint, ushort*, byte*, byte*, sbyte, byte, nint, nint>;
+global using unsafe KiwiSubstituteFn = delegate* unmanaged<nint, nint, nint, void>;
+global using unsafe KiwiOptimizeFn = delegate* unmanaged<nint, nint, void>;
+global using unsafe NuiHandleErrorFn = delegate* unmanaged<nint, nint, nint, void>;
 global using unsafe ManageSceneBSPFn = delegate* unmanaged<nint, long>;
 global using unsafe AddPartsToDrawBucketsFn = delegate* unmanaged<nint, long>;
 global using unsafe ResManReleaseFn = delegate* unmanaged<nint, nint, ulong>;
@@ -1474,6 +1484,8 @@ public readonly unsafe partial struct CNWCItem(IntPtr ptr)
     public ref IntPtr CustomName => ref *(IntPtr*)(Ptr + EngineLayout.ItemCustomName);
     /// <inheritdoc cref="EngineLayout.ItemCustomNameLen"/>
     public ref uint CustomNameLen => ref *(uint*)(Ptr + EngineLayout.ItemCustomNameLen);
+    /// <inheritdoc cref="EngineLayout.ItemDeleteSlot"/>
+    public IntPtr DeleteFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.ItemDeleteSlot);
     /// <inheritdoc cref="EngineLayout.ItemEquipSlot"/>
     public ref int EquipSlot => ref *(int*)(Ptr + EngineLayout.ItemEquipSlot);
     /// <inheritdoc cref="EngineLayout.ItemGhost"/>
@@ -2352,6 +2364,77 @@ public readonly unsafe partial struct NewController(IntPtr ptr)
     public ref short KeyCount => ref *(short*)(Ptr + EngineLayout.NewControllerKeyCount);
 }
 
+/// <summary>Typed view of an engine <c>Nui__JSON__IdNode*</c>.</summary>
+public readonly unsafe partial struct Nui__JSON__IdNode(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.NuiIdNodeElement"/>
+    public ref IntPtr Element => ref *(IntPtr*)(Ptr + EngineLayout.NuiIdNodeElement);
+}
+
+/// <summary>Typed view of an engine <c>Nui__JSON__JsonWindow*</c>.</summary>
+public readonly unsafe partial struct Nui__JSON__JsonWindow(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.NuiIdsHead"/>
+    public ref IntPtr IdsHead => ref *(IntPtr*)(Ptr + EngineLayout.NuiIdsHead);
+}
+
+/// <summary>Typed view of an engine <c>Nui__Layout__LayoutGroup*</c>.</summary>
+public readonly unsafe partial struct Nui__Layout__LayoutGroup(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.NuiGroupEditHeight"/>
+    public ref IntPtr EditHeight => ref *(IntPtr*)(Ptr + EngineLayout.NuiGroupEditHeight);
+    /// <inheritdoc cref="EngineLayout.NuiGroupEditWidth"/>
+    public ref IntPtr EditWidth => ref *(IntPtr*)(Ptr + EngineLayout.NuiGroupEditWidth);
+    /// <inheritdoc cref="EngineLayout.NuiGroupScaleConstraints"/>
+    public ref IntPtr ScaleConstraints => ref *(IntPtr*)(Ptr + EngineLayout.NuiGroupScaleConstraints);
+    /// <inheritdoc cref="EngineLayout.NuiGroupSolver"/>
+    public kiwi__impl__SolverImpl Solver => new(Ptr + EngineLayout.NuiGroupSolver);
+}
+
+/// <summary>Typed view of an engine <c>Nui__Layout__Layoutable*</c>.</summary>
+public readonly unsafe partial struct Nui__Layout__Layoutable(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.NuiChildren"/>
+    public ref IntPtr Children => ref *(IntPtr*)(Ptr + EngineLayout.NuiChildren);
+    /// <inheritdoc cref="EngineLayout.NuiChildrenEnd"/>
+    public ref IntPtr ChildrenEnd => ref *(IntPtr*)(Ptr + EngineLayout.NuiChildrenEnd);
+    /// <inheritdoc cref="EngineLayout.NuiLayoutableNoPush"/>
+    public ref byte NoPush => ref *(byte*)(Ptr + EngineLayout.NuiLayoutableNoPush);
+    /// <inheritdoc cref="EngineLayout.NuiRenderSlot"/>
+    public void Render(IntPtr ctx) => ((delegate* unmanaged<IntPtr, IntPtr, void>)RenderFn)(Ptr, ctx);
+    /// <inheritdoc cref="EngineLayout.NuiRenderSlot"/>
+    public IntPtr RenderFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.NuiRenderSlot);
+    /// <inheritdoc cref="EngineLayout.NuiVars"/>
+    public Span<IntPtr> Vars { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.NuiVars), 12); }
+}
+
+/// <summary>Typed view of an engine <c>Nui__Layout__Span*</c>.</summary>
+public readonly unsafe partial struct Nui__Layout__Span(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.NuiSpanDirection"/>
+    public ref int Direction => ref *(int*)(Ptr + EngineLayout.NuiSpanDirection);
+}
+
 /// <summary>Typed view of an engine <c>Part*</c>.</summary>
 public readonly unsafe ref partial struct Part(IntPtr ptr)
 {
@@ -2892,6 +2975,116 @@ public readonly unsafe partial struct aurMatrixStack(IntPtr ptr)
     public aurMatrixStack this[int i] => new(Ptr + i * EngineLayout.MtxStackStride);
 }
 
+/// <summary>Typed view of an engine <c>kiwi__ConstraintData*</c>.</summary>
+public readonly unsafe partial struct kiwi__ConstraintData(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.KiwiCnConstant"/>
+    public ref double Constant => ref *(double*)(Ptr + EngineLayout.KiwiCnConstant);
+    /// <inheritdoc cref="EngineLayout.KiwiCnOp"/>
+    public ref int Op => ref *(int*)(Ptr + EngineLayout.KiwiCnOp);
+    /// <inheritdoc cref="EngineLayout.KiwiCnStrength"/>
+    public ref double Strength => ref *(double*)(Ptr + EngineLayout.KiwiCnStrength);
+    /// <inheritdoc cref="EngineLayout.KiwiCnTerms"/>
+    public ref kiwi__Term Terms => ref *(kiwi__Term*)(Ptr + EngineLayout.KiwiCnTerms);
+    /// <inheritdoc cref="EngineLayout.KiwiCnTermsEnd"/>
+    public ref IntPtr TermsEnd => ref *(IntPtr*)(Ptr + EngineLayout.KiwiCnTermsEnd);
+}
+
+/// <summary>Typed view of an engine <c>kiwi__Term*</c>.</summary>
+public readonly unsafe partial struct kiwi__Term(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.KiwiTermCoefficient"/>
+    public ref double Coefficient => ref *(double*)(Ptr + EngineLayout.KiwiTermCoefficient);
+    /// <inheritdoc cref="EngineLayout.KiwiTermVariable"/>
+    public ref IntPtr Variable => ref *(IntPtr*)(Ptr + EngineLayout.KiwiTermVariable);
+    /// <inheritdoc cref="EngineLayout.KiwiTermStride"/>
+    public kiwi__Term this[int i] => new(Ptr + i * EngineLayout.KiwiTermStride);
+}
+
+/// <summary>Typed view of an engine <c>kiwi__impl__CnPair*</c>.</summary>
+public readonly unsafe partial struct kiwi__impl__CnPair(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.KiwiCnData"/>
+    public ref kiwi__ConstraintData Data => ref *(kiwi__ConstraintData*)(Ptr + EngineLayout.KiwiCnData);
+    /// <inheritdoc cref="EngineLayout.KiwiCnMarker"/>
+    public ref ulong Marker => ref *(ulong*)(Ptr + EngineLayout.KiwiCnMarker);
+    /// <inheritdoc cref="EngineLayout.KiwiCnOther"/>
+    public ref ulong Other => ref *(ulong*)(Ptr + EngineLayout.KiwiCnOther);
+    /// <inheritdoc cref="EngineLayout.KiwiCnStride"/>
+    public kiwi__impl__CnPair this[int i] => new(Ptr + i * EngineLayout.KiwiCnStride);
+}
+
+/// <summary>Typed view of an engine <c>kiwi__impl__Row*</c>.</summary>
+public readonly unsafe partial struct kiwi__impl__Row(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.KiwiRowCells"/>
+    public ref IntPtr Cells => ref *(IntPtr*)(Ptr + EngineLayout.KiwiRowCells);
+    /// <inheritdoc cref="EngineLayout.KiwiRowCellsEnd"/>
+    public ref IntPtr CellsEnd => ref *(IntPtr*)(Ptr + EngineLayout.KiwiRowCellsEnd);
+    /// <inheritdoc cref="EngineLayout.KiwiRowConstant"/>
+    public ref double Constant => ref *(double*)(Ptr + EngineLayout.KiwiRowConstant);
+}
+
+/// <summary>Typed view of an engine <c>kiwi__impl__SolverImpl*</c>.</summary>
+public readonly unsafe partial struct kiwi__impl__SolverImpl(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.KiwiArtificial"/>
+    public ref IntPtr Artificial => ref *(IntPtr*)(Ptr + EngineLayout.KiwiArtificial);
+    /// <inheritdoc cref="EngineLayout.KiwiCns"/>
+    public ref kiwi__impl__CnPair Cns => ref *(kiwi__impl__CnPair*)(Ptr + EngineLayout.KiwiCns);
+    /// <inheritdoc cref="EngineLayout.KiwiCnsEnd"/>
+    public ref IntPtr CnsEnd => ref *(IntPtr*)(Ptr + EngineLayout.KiwiCnsEnd);
+    /// <inheritdoc cref="EngineLayout.KiwiIdTick"/>
+    public ref ulong IdTick => ref *(ulong*)(Ptr + EngineLayout.KiwiIdTick);
+    /// <inheritdoc cref="EngineLayout.KiwiInfeasible"/>
+    public ref IntPtr Infeasible => ref *(IntPtr*)(Ptr + EngineLayout.KiwiInfeasible);
+    /// <inheritdoc cref="EngineLayout.KiwiInfeasibleEnd"/>
+    public ref IntPtr InfeasibleEnd => ref *(IntPtr*)(Ptr + EngineLayout.KiwiInfeasibleEnd);
+    /// <inheritdoc cref="SymbolMap.KiwiCreateRow"/>
+    public void KiwiCreateRow(void* ret, IntPtr constraint, IntPtr tag) => EngineFn.KiwiCreateRow(ret, Ptr, constraint, tag);
+    /// <inheritdoc cref="EngineLayout.KiwiRows"/>
+    public ref IntPtr Rows => ref *(IntPtr*)(Ptr + EngineLayout.KiwiRows);
+    /// <inheritdoc cref="EngineLayout.KiwiRowsEnd"/>
+    public ref IntPtr RowsEnd => ref *(IntPtr*)(Ptr + EngineLayout.KiwiRowsEnd);
+}
+
+/// <summary>Typed view of an engine <c>kiwi__impl__SymbolPair*</c>.</summary>
+public readonly unsafe partial struct kiwi__impl__SymbolPair(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.KiwiPairId"/>
+    public ref ulong Id => ref *(ulong*)(Ptr + EngineLayout.KiwiPairId);
+    /// <inheritdoc cref="EngineLayout.KiwiPairType"/>
+    public ref int Type => ref *(int*)(Ptr + EngineLayout.KiwiPairType);
+    /// <inheritdoc cref="EngineLayout.KiwiPairValue"/>
+    public ref IntPtr Value => ref *(IntPtr*)(Ptr + EngineLayout.KiwiPairValue);
+    /// <inheritdoc cref="EngineLayout.KiwiPairStride"/>
+    public kiwi__impl__SymbolPair this[int i] => new(Ptr + i * EngineLayout.KiwiPairStride);
+}
+
 /// <summary>Engine functions, typed by their <c>[Fn]</c> signature in <see cref="SymbolMap"/>.</summary>
 public static unsafe class EngineFn
 {
@@ -3262,6 +3455,10 @@ public static unsafe class EngineFn
     private static bool _NkSdlCopyEventDone;
     /// <inheritdoc cref="SymbolMap.NkSdlCopyEvent"/>
     public static NkSdlCopyEventFn NkSdlCopyEvent => (NkSdlCopyEventFn)(_NkSdlCopyEventDone ? _NkSdlCopyEvent : Resolve(ref _NkSdlCopyEvent, ref _NkSdlCopyEventDone, SymbolMap.NkSdlCopyEvent));
+    private static IntPtr _NuiWidgetRender;
+    private static bool _NuiWidgetRenderDone;
+    /// <inheritdoc cref="SymbolMap.NuiWidgetRender"/>
+    public static NuiWidgetRenderFn NuiWidgetRender => (NuiWidgetRenderFn)(_NuiWidgetRenderDone ? _NuiWidgetRender : Resolve(ref _NuiWidgetRender, ref _NuiWidgetRenderDone, SymbolMap.NuiWidgetRender));
     private static IntPtr _GetModule;
     private static bool _GetModuleDone;
     /// <inheritdoc cref="SymbolMap.GetModule"/>
@@ -3815,6 +4012,51 @@ public static unsafe class EngineFn
     private static bool _ImageDecodeDone;
     /// <inheritdoc cref="SymbolMap.ImageDecode"/>
     public static ImageDecodeFn ImageDecode => (ImageDecodeFn)(_ImageDecodeDone ? _ImageDecode : Resolve(ref _ImageDecode, ref _ImageDecodeDone, SymbolMap.ImageDecode));
+    private static IntPtr _NkScrollbarBehavior;
+    private static bool _NkScrollbarBehaviorDone;
+    /// <inheritdoc cref="SymbolMap.NkScrollbarBehavior"/>
+    public static NkScrollbarBehaviorFn NkScrollbarBehavior => (NkScrollbarBehaviorFn)(_NkScrollbarBehaviorDone ? _NkScrollbarBehavior : Resolve(ref _NkScrollbarBehavior, ref _NkScrollbarBehaviorDone, SymbolMap.NkScrollbarBehavior));
+    private static IntPtr _NkDrawScrollbar;
+    private static bool _NkDrawScrollbarDone;
+    /// <inheritdoc cref="SymbolMap.NkDrawScrollbar"/>
+    public static NkDrawScrollbarFn NkDrawScrollbar => (NkDrawScrollbarFn)(_NkDrawScrollbarDone ? _NkDrawScrollbar : Resolve(ref _NkDrawScrollbar, ref _NkDrawScrollbarDone, SymbolMap.NkDrawScrollbar));
+    private static IntPtr _AurGetLayeredRasterWrapper;
+    private static bool _AurGetLayeredRasterWrapperDone;
+    /// <inheritdoc cref="SymbolMap.AurGetLayeredRasterWrapper"/>
+    public static AurGetLayeredRasterWrapperFn AurGetLayeredRasterWrapper => (AurGetLayeredRasterWrapperFn)(_AurGetLayeredRasterWrapperDone ? _AurGetLayeredRasterWrapper : Resolve(ref _AurGetLayeredRasterWrapper, ref _AurGetLayeredRasterWrapperDone, SymbolMap.AurGetLayeredRasterWrapper));
+    private static IntPtr _NkLoadImg;
+    private static bool _NkLoadImgDone;
+    /// <inheritdoc cref="SymbolMap.NkLoadImg"/>
+    public static NkLoadImgFn NkLoadImg => (NkLoadImgFn)(_NkLoadImgDone ? _NkLoadImg : Resolve(ref _NkLoadImg, ref _NkLoadImgDone, SymbolMap.NkLoadImg));
+    private static IntPtr _DataBlockFromBase64;
+    private static bool _DataBlockFromBase64Done;
+    /// <inheritdoc cref="SymbolMap.DataBlockFromBase64"/>
+    public static DataBlockFromBase64Fn DataBlockFromBase64 => (DataBlockFromBase64Fn)(_DataBlockFromBase64Done ? _DataBlockFromBase64 : Resolve(ref _DataBlockFromBase64, ref _DataBlockFromBase64Done, SymbolMap.DataBlockFromBase64));
+    private static IntPtr _NwcCreateItem;
+    private static bool _NwcCreateItemDone;
+    /// <inheritdoc cref="SymbolMap.NwcCreateItem"/>
+    public static NwcCreateItemFn NwcCreateItem => (NwcCreateItemFn)(_NwcCreateItemDone ? _NwcCreateItem : Resolve(ref _NwcCreateItem, ref _NwcCreateItemDone, SymbolMap.NwcCreateItem));
+    private static IntPtr _KiwiSubstitute;
+    private static bool _KiwiSubstituteDone;
+    /// <inheritdoc cref="SymbolMap.KiwiSubstitute"/>
+    public static KiwiSubstituteFn KiwiSubstitute => (KiwiSubstituteFn)(_KiwiSubstituteDone ? _KiwiSubstitute : Resolve(ref _KiwiSubstitute, ref _KiwiSubstituteDone, SymbolMap.KiwiSubstitute));
+    private static IntPtr _KiwiOptimize;
+    private static bool _KiwiOptimizeDone;
+    /// <inheritdoc cref="SymbolMap.KiwiOptimize"/>
+    public static KiwiOptimizeFn KiwiOptimize => (KiwiOptimizeFn)(_KiwiOptimizeDone ? _KiwiOptimize : Resolve(ref _KiwiOptimize, ref _KiwiOptimizeDone, SymbolMap.KiwiOptimize));
+    private static IntPtr _KiwiCreateRow;
+    private static bool _KiwiCreateRowDone;
+    /// <inheritdoc cref="SymbolMap.KiwiCreateRow"/>
+    public static void KiwiCreateRow(void* ret, IntPtr self, IntPtr constraint, IntPtr tag)
+    {
+        IntPtr fn = _KiwiCreateRowDone ? _KiwiCreateRow : Resolve(ref _KiwiCreateRow, ref _KiwiCreateRowDone, SymbolMap.KiwiCreateRow);
+        if (OperatingSystem.IsWindows()) ((delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr, void>)fn)(self, (IntPtr)ret, constraint, tag);
+        else ((delegate* unmanaged<IntPtr, IntPtr, IntPtr, IntPtr, void>)fn)((IntPtr)ret, self, constraint, tag);
+    }
+    private static IntPtr _NuiHandleError;
+    private static bool _NuiHandleErrorDone;
+    /// <inheritdoc cref="SymbolMap.NuiHandleError"/>
+    public static NuiHandleErrorFn NuiHandleError => (NuiHandleErrorFn)(_NuiHandleErrorDone ? _NuiHandleError : Resolve(ref _NuiHandleError, ref _NuiHandleErrorDone, SymbolMap.NuiHandleError));
     private static IntPtr _ManageSceneBSP;
     private static bool _ManageSceneBSPDone;
     /// <inheritdoc cref="SymbolMap.ManageSceneBSP"/>
@@ -4684,6 +4926,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.NkSdlCopyEvent"/>; returns the slot holding the next layer, or null.</summary>
     public static NkSdlCopyEventFn* ChainNkSdlCopyEvent(this HookService h, NkSdlCopyEventFn handler, int priority) =>
         (NkSdlCopyEventFn*)h.Chain(SymbolMap.NkSdlCopyEvent, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NuiWidgetRender"/>; returns the original, or null.</summary>
+    public static NuiWidgetRenderFn InstallNuiWidgetRender(this HookService h, NuiWidgetRenderFn handler) =>
+        (NuiWidgetRenderFn)h.Install(SymbolMap.NuiWidgetRender, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NuiWidgetRender"/>; returns the slot holding the next layer, or null.</summary>
+    public static NuiWidgetRenderFn* ChainNuiWidgetRender(this HookService h, NuiWidgetRenderFn handler, int priority) =>
+        (NuiWidgetRenderFn*)h.Chain(SymbolMap.NuiWidgetRender, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.GetModule"/>; returns the original, or null.</summary>
     public static GetModuleFn InstallGetModule(this HookService h, GetModuleFn handler) =>
         (GetModuleFn)h.Install(SymbolMap.GetModule, (IntPtr)handler);
@@ -5500,6 +5748,60 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.ImageDecode"/>; returns the slot holding the next layer, or null.</summary>
     public static ImageDecodeFn* ChainImageDecode(this HookService h, ImageDecodeFn handler, int priority) =>
         (ImageDecodeFn*)h.Chain(SymbolMap.ImageDecode, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NkScrollbarBehavior"/>; returns the original, or null.</summary>
+    public static NkScrollbarBehaviorFn InstallNkScrollbarBehavior(this HookService h, NkScrollbarBehaviorFn handler) =>
+        (NkScrollbarBehaviorFn)h.Install(SymbolMap.NkScrollbarBehavior, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NkScrollbarBehavior"/>; returns the slot holding the next layer, or null.</summary>
+    public static NkScrollbarBehaviorFn* ChainNkScrollbarBehavior(this HookService h, NkScrollbarBehaviorFn handler, int priority) =>
+        (NkScrollbarBehaviorFn*)h.Chain(SymbolMap.NkScrollbarBehavior, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NkDrawScrollbar"/>; returns the original, or null.</summary>
+    public static NkDrawScrollbarFn InstallNkDrawScrollbar(this HookService h, NkDrawScrollbarFn handler) =>
+        (NkDrawScrollbarFn)h.Install(SymbolMap.NkDrawScrollbar, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NkDrawScrollbar"/>; returns the slot holding the next layer, or null.</summary>
+    public static NkDrawScrollbarFn* ChainNkDrawScrollbar(this HookService h, NkDrawScrollbarFn handler, int priority) =>
+        (NkDrawScrollbarFn*)h.Chain(SymbolMap.NkDrawScrollbar, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AurGetLayeredRasterWrapper"/>; returns the original, or null.</summary>
+    public static AurGetLayeredRasterWrapperFn InstallAurGetLayeredRasterWrapper(this HookService h, AurGetLayeredRasterWrapperFn handler) =>
+        (AurGetLayeredRasterWrapperFn)h.Install(SymbolMap.AurGetLayeredRasterWrapper, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AurGetLayeredRasterWrapper"/>; returns the slot holding the next layer, or null.</summary>
+    public static AurGetLayeredRasterWrapperFn* ChainAurGetLayeredRasterWrapper(this HookService h, AurGetLayeredRasterWrapperFn handler, int priority) =>
+        (AurGetLayeredRasterWrapperFn*)h.Chain(SymbolMap.AurGetLayeredRasterWrapper, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NkLoadImg"/>; returns the original, or null.</summary>
+    public static NkLoadImgFn InstallNkLoadImg(this HookService h, NkLoadImgFn handler) =>
+        (NkLoadImgFn)h.Install(SymbolMap.NkLoadImg, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NkLoadImg"/>; returns the slot holding the next layer, or null.</summary>
+    public static NkLoadImgFn* ChainNkLoadImg(this HookService h, NkLoadImgFn handler, int priority) =>
+        (NkLoadImgFn*)h.Chain(SymbolMap.NkLoadImg, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.DataBlockFromBase64"/>; returns the original, or null.</summary>
+    public static DataBlockFromBase64Fn InstallDataBlockFromBase64(this HookService h, DataBlockFromBase64Fn handler) =>
+        (DataBlockFromBase64Fn)h.Install(SymbolMap.DataBlockFromBase64, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.DataBlockFromBase64"/>; returns the slot holding the next layer, or null.</summary>
+    public static DataBlockFromBase64Fn* ChainDataBlockFromBase64(this HookService h, DataBlockFromBase64Fn handler, int priority) =>
+        (DataBlockFromBase64Fn*)h.Chain(SymbolMap.DataBlockFromBase64, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NwcCreateItem"/>; returns the original, or null.</summary>
+    public static NwcCreateItemFn InstallNwcCreateItem(this HookService h, NwcCreateItemFn handler) =>
+        (NwcCreateItemFn)h.Install(SymbolMap.NwcCreateItem, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NwcCreateItem"/>; returns the slot holding the next layer, or null.</summary>
+    public static NwcCreateItemFn* ChainNwcCreateItem(this HookService h, NwcCreateItemFn handler, int priority) =>
+        (NwcCreateItemFn*)h.Chain(SymbolMap.NwcCreateItem, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.KiwiSubstitute"/>; returns the original, or null.</summary>
+    public static KiwiSubstituteFn InstallKiwiSubstitute(this HookService h, KiwiSubstituteFn handler) =>
+        (KiwiSubstituteFn)h.Install(SymbolMap.KiwiSubstitute, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.KiwiSubstitute"/>; returns the slot holding the next layer, or null.</summary>
+    public static KiwiSubstituteFn* ChainKiwiSubstitute(this HookService h, KiwiSubstituteFn handler, int priority) =>
+        (KiwiSubstituteFn*)h.Chain(SymbolMap.KiwiSubstitute, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.KiwiOptimize"/>; returns the original, or null.</summary>
+    public static KiwiOptimizeFn InstallKiwiOptimize(this HookService h, KiwiOptimizeFn handler) =>
+        (KiwiOptimizeFn)h.Install(SymbolMap.KiwiOptimize, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.KiwiOptimize"/>; returns the slot holding the next layer, or null.</summary>
+    public static KiwiOptimizeFn* ChainKiwiOptimize(this HookService h, KiwiOptimizeFn handler, int priority) =>
+        (KiwiOptimizeFn*)h.Chain(SymbolMap.KiwiOptimize, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NuiHandleError"/>; returns the original, or null.</summary>
+    public static NuiHandleErrorFn InstallNuiHandleError(this HookService h, NuiHandleErrorFn handler) =>
+        (NuiHandleErrorFn)h.Install(SymbolMap.NuiHandleError, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NuiHandleError"/>; returns the slot holding the next layer, or null.</summary>
+    public static NuiHandleErrorFn* ChainNuiHandleError(this HookService h, NuiHandleErrorFn handler, int priority) =>
+        (NuiHandleErrorFn*)h.Chain(SymbolMap.NuiHandleError, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.ManageSceneBSP"/>; returns the original, or null.</summary>
     public static ManageSceneBSPFn InstallManageSceneBSP(this HookService h, ManageSceneBSPFn handler) =>
         (ManageSceneBSPFn)h.Install(SymbolMap.ManageSceneBSP, (IntPtr)handler);

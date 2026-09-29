@@ -54,6 +54,11 @@ A component action is routed by `<action>.route`:
 | `deny` | nothing is sent; the player is told "The server does not allow that here." |
 | `server` | CX sends `UiEvent` `<action>;<oid hex>;<mask hex>;<x>;<y>;<other oid hex>` and does nothing else -- the server decides |
 
+Every `<oid hex>` in a `UiEvent` is the CLIENT's id: the server's own id with `0x80000000` ORed in
+(`CNWSMessage::WriteOBJECTIDServer` sets `CGameObjectArray::LISTTYPE_MASK` on every valid id it sends; the engine's
+own reader, `ReadOBJECTIDServer`, masks it back off with `& 0x7fffffff`). A server handler does the same before
+`StringToObject`. `7f000000` (OBJECT_INVALID) is sent as is.
+
 `server` is the hook point: the server sees exactly what the player tried and can run its own logic (confirm a
 drop, move an item by script, refuse with its own message).
 

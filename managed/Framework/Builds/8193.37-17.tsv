@@ -560,6 +560,7 @@ offset	CArmorIcon	schemeCount	0xb0	0xb0	# ArmorIconSchemeCount
 offset	CArmorIcon	scheme	0xb8	0xb8	# ArmorIconScheme
 offset	CArmorIcon	layerSchemes	0xc0	0xc0	# ArmorIconLayerSchemes
 offset	CNWCItem	guiIcon	0x258	0x238	# ItemGuiIcon
+offset	CNWCItem	vtbl.Delete	0x8	0x0	# ItemDeleteSlot
 offset	CGameObject	type	0xc	0xc	# GameObjType
 offset	CGameObject	vtbl.AsNWCItem	0x70	0x68	# GameObjAsNWCItemSlot
 offset	CNWCObject	bubble	0xb8	0xb8	# ObjBubble
@@ -644,6 +645,46 @@ offset	CGuiContainer	page	0x1e0	0x1d0	# ContainerPage
 offset	CPanelInvEquip	nameLabel	0xf8	0xf0	# InvEquipNameLabel
 offset	CPanelInvEquip	acLabel	0x190	0x188	# InvEquipAcLabel
 offset	CGuiLabel	string	0x90	0x90	# LabelString
+offset	Nui::Layout::Layoutable	noPush	0x50	0x50	# NuiLayoutableNoPush
+offset	Nui::Layout::Layoutable	vtbl.Render	0x28	0x20	# NuiRenderSlot
+offset	kiwi::impl::SolverImpl	rows	0x18	0x20	# KiwiRows
+offset	kiwi::impl::SolverImpl	rowsEnd	0x20	0x28	# KiwiRowsEnd
+offset	kiwi::impl::SolverImpl	infeasible	0x60	0x80	# KiwiInfeasible
+offset	kiwi::impl::SolverImpl	infeasibleEnd	0x68	0x88	# KiwiInfeasibleEnd
+offset	kiwi::impl::SolverImpl	artificial	0x80	0xa0	# KiwiArtificial
+offset	kiwi::impl::SolverImpl	idTick	0x88	0xa8	# KiwiIdTick
+offset	kiwi::impl::Row	cells	0x0	0x0	# KiwiRowCells
+offset	kiwi::impl::Row	cellsEnd	0x8	0x8	# KiwiRowCellsEnd
+offset	kiwi::impl::SymbolPair	id	0x0	0x0	# KiwiPairId
+offset	kiwi::impl::SymbolPair	type	0x8	0x8	# KiwiPairType
+offset	kiwi::impl::SymbolPair	value	0x10	0x10	# KiwiPairValue
+offset	kiwi::impl::SymbolPair	stride	0x18	0x18	# KiwiPairStride
+offset	kiwi::impl::SolverImpl	cns	0x0	0x0	# KiwiCns
+offset	kiwi::impl::SolverImpl	cnsEnd	0x8	0x8	# KiwiCnsEnd
+offset	kiwi::impl::Row	constant	0x18	0x20	# KiwiRowConstant
+offset	kiwi::impl::CnPair	data	0x0	0x0	# KiwiCnData
+offset	kiwi::impl::CnPair	marker	0x8	0x8	# KiwiCnMarker
+offset	kiwi::impl::CnPair	other	0x18	0x18	# KiwiCnOther
+offset	kiwi::impl::CnPair	stride	0x28	0x28	# KiwiCnStride
+offset	kiwi::ConstraintData	terms	0x8	0x8	# KiwiCnTerms
+offset	kiwi::ConstraintData	termsEnd	0x10	0x10	# KiwiCnTermsEnd
+offset	kiwi::ConstraintData	constant	0x20	0x20	# KiwiCnConstant
+offset	kiwi::ConstraintData	strength	0x28	0x28	# KiwiCnStrength
+offset	kiwi::ConstraintData	op	0x30	0x30	# KiwiCnOp
+offset	kiwi::Term	variable	0x0	0x0	# KiwiTermVariable
+offset	kiwi::Term	coefficient	0x8	0x8	# KiwiTermCoefficient
+offset	kiwi::Term	stride	0x10	0x10	# KiwiTermStride
+offset	Nui::Layout::Layoutable	children	0x8	0x8	# NuiChildren
+offset	Nui::Layout::Layoutable	childrenEnd	0x10	0x10	# NuiChildrenEnd
+offset	Nui::Layout::Layoutable	vars	0x2c8	0x3d8	# NuiVars
+offset	Nui::Layout::Span	direction	0x5a8	0x6c0	# NuiSpanDirection
+offset	Nui::Layout::LayoutGroup	solver	0x5a8	0x6c0	# NuiGroupSolver
+offset	Nui::Layout::LayoutGroup	editWidth	0x638	0x770	# NuiGroupEditWidth
+offset	Nui::Layout::LayoutGroup	editHeight	0x640	0x778	# NuiGroupEditHeight
+offset	Nui::Layout::LayoutGroup	scaleConstraints	0x668	0x7a0	# NuiGroupScaleConstraints
+offset	Nui::JSON::JsonWindow	idsHead	0x418	0x468	# NuiIdsHead
+offset	Nui::JSON::IdNode	key	0x8	0x10	# NuiIdNodeKey
+offset	Nui::JSON::IdNode	element	0x28	0x30	# NuiIdNodeElement
 
 # rva	linux symbol	windows rva	# SymbolMap constant
 rva	_ZN11CNWCMessage27HandleServerToPlayerMessageEPhj	0x7a41a0	# HandleServerToPlayerMessage
@@ -794,3 +835,21 @@ rva	_ZN11CNWCMessage42SendPlayerToServerGuiInventory_SelectPanelEhi	0x7be060	# S
 rva	_ZN11CNWCMessage33SendPlayerToServerInput_UseObjectEjii	0x7c07c0	# SendInputUseObject (6/11)
 rva	_ZN11CNWCMessage33SendPlayerToServerInput_SplitItemEji	0x7c0050	# SendInputSplitItem (6/23)
 rva	_ZN11CNWCMessage33SendPlayerToServerInput_MergeItemEjj	0x7bfd90	# SendInputMergeItem (6/22)
+rva	_ZN3Nui6Layout6Widget6RenderEP10nk_context	0x9528e0	# NuiWidgetRender
+rva	_ZTVN3Nui6Layout14StatefulWidgetE	0xe6dff0	# NuiStatefulWidgetVtbl
+rva	_ZN3Nui4JSON10JsonWindow11HandleErrorEPKcS3_	0x746650	# NuiHandleError
+rva	_ZTVN3Nui6Layout11LayoutGroupE	0xe6ce10	# NuiLayoutGroupVtbl
+rva	_ZTVN3Nui6Layout11SingleGroupE	0xe6ce58	# NuiSingleGroupVtbl
+rva	_ZTVN3Nui6Layout4SpanE	0xe39670	# NuiSpanVtbl
+rva	_Z10nk_loadimgPKct	0xa95e30	# NkLoadImg
+rva	_ZN11CNWCMessage10CreateItemEjPtPhS1_chRK25ObjectVisualTransformData	0x769130	# NwcCreateItem
+rva	nk_scrollbar_behavior	0xa6f320	# NkScrollbarBehavior
+rva	nk_draw_scrollbar	0xa68af0	# NkDrawScrollbar
+rva	nk_do_scrollbarv	0xa65d10	# NkDoScrollbarV
+rva	nk_do_scrollbarh	0xa65700	# NkDoScrollbarH
+
+# lva	static function	linux nm address	# SymbolMap.LinuxAnchored constant
+lva	nk_scrollbar_behavior	0xdf5ba0	# NkScrollbarBehavior
+lva	nk_draw_scrollbar	0xddf6b0	# NkDrawScrollbar
+lva	nk_do_scrollbarv	0xdf6100	# NkDoScrollbarV
+lva	nk_do_scrollbarh	0xdf65c0	# NkDoScrollbarH
