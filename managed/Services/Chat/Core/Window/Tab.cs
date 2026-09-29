@@ -22,6 +22,10 @@ public sealed class Tab
     /// <summary>New messages arrived while this tab was not active. Cleared on focus.</summary>
     public bool Unread;
 
+    /// <summary>The unsent input line parked on this tab (<c>chat.drafts</c>): set when chat closes unsent or the
+    /// typing moves to another tab, taken back when typing returns here. Session memory, not persisted.</summary>
+    public string Draft = "";
+
     /// <summary>A Tell-only tab that hasn't been explicitly kept. Shows a close-X + pin button,
     /// excluded from the persisted layout. Structural: any Tell-only tab is ephemeral until pinned.</summary>
     public bool Ephemeral => ChannelMask == 0x002 && !Kept;

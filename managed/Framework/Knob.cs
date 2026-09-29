@@ -5,8 +5,9 @@ using System.Globalization;
 namespace CX.Framework;
 
 /// <summary>How the panel renders a knob (ADR 0025). A Button has no value and is never persisted; a Link is
-/// an address the row copies to the clipboard on press (spec §3), never persisted either.</summary>
-public enum KnobKind { Toggle, Slider, Dropdown, Swatch, Button, Text, Link }
+/// an address the row copies to the clipboard on press (spec §3), never persisted either. A List holds a
+/// <see cref="TextList"/>: one text box per item and a trailing box that adds one.</summary>
+public enum KnobKind { Toggle, Slider, Dropdown, Swatch, Button, Text, Link, List }
 
 /// <summary>Who sees a knob: a User row (help mandatory), a collapsed Advanced row, a chat command and
 /// <c>/knobs</c> line only, or persisted state with no surface at all.</summary>
@@ -37,6 +38,8 @@ public abstract class Knob
     public string Section { get; }
     /// <summary>Row help / tooltip. "" when none.</summary>
     public string Help { get; }
+    /// <summary>Placeholder an empty box shows: a List's add box. "" when none.</summary>
+    public string Hint { get; init; } = "";
     /// <summary>Layout-affecting: only the Dropdown factory can set it, so the panel never has to re-lay
     /// out under a slider drag.</summary>
     public bool Layout { get; }
@@ -117,7 +120,8 @@ public abstract class Knob
 /// The typed knob, and the storage: a feature reads <c>Grass.Density.V</c> where it read a private field,
 /// which is a plain field read and hot-path safe. <c>Boot</c> is bound at construction and never moves; a
 /// Restart reader reads that. Built-in <typeparamref name="T"/>: <c>bool</c>, <c>int</c>, <c>float</c>,
-/// <c>string</c>, <c>uint</c> (swatch, <c>rrggbbaa</c>); any other T supplies a format/parse pair.
+/// <c>string</c>, <c>uint</c> (swatch, <c>rrggbbaa</c>), <see cref="TextList"/> (list); any other T supplies a
+/// format/parse pair.
 /// </summary>
 public sealed class Knob<T> : Knob
 {
@@ -253,6 +257,7 @@ public sealed class Knob<T> : Knob
         KnobKind.Dropdown => string.Join(", ", Choices),
         KnobKind.Toggle => "on/off",
         KnobKind.Swatch => "rrggbbaa",
+        KnobKind.List => "items separated by |",
         _ => "",
     };
 }
@@ -320,7 +325,8 @@ public sealed class KnobLink : Knob
 }
 
 /// <summary>The built-in Format/Parse per <typeparamref name="T"/> (spec §1 cx.cfg): Toggle <c>0/1</c>,
-/// invariant float / int, Swatch <c>rrggbbaa</c>, Text raw. Null pair = the T needs its own.</summary>
+/// invariant float / int, Swatch <c>rrggbbaa</c>, Text raw, List <see cref="TextList.Format"/>. Null pair = the
+/// T needs its own.</summary>
 internal static class KnobCodec<T>
 {
     public static readonly Func<T, string>? Format;
@@ -360,6 +366,11 @@ internal static class KnobCodec<T>
             Format = v => ((uint)(object)v!).ToString("x8", CultureInfo.InvariantCulture);
             Parse = s => s.Length == 8 && uint.TryParse(s, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out uint u)
                 ? (true, (T)(object)u) : (false, default!);
+        }
+        else if (typeof(T) == typeof(TextList))
+        {
+            Format = v => ((TextList)(object)v!).Format();
+            Parse = s => (true, (T)(object)TextList.Parse(s));
         }
     }
 }

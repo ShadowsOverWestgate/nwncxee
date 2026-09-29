@@ -25,7 +25,8 @@ namespace CX.Ui;
 /// <see cref="KnobGroup.ResetRows"/>. A Restart row wears the ↻ badge, amber once its value left the boot one.
 /// The status line and the header note lead the rows; a link row copies on press and flashes "copied"; a
 /// confirming button fires on its second press within <see cref="KnobButton.ConfirmSec"/>; a swatch expands to
-/// R/G/B/A channel rows in place (#589).</para>
+/// R/G/B/A channel rows in place (#589); a list lays one item row per entry under its label -- a text box and a
+/// remove × -- and a trailing empty box that appends, where Enter keeps adding.</para>
 /// <para>Faces: everything is measured in <see cref="Em"/>, the panel's own body face height (design
 /// <see cref="FacePx"/> × the game's GUI scale), never <c>ui.font</c>; help, section and path text use the
 /// <see cref="SmallPx"/> face of the same scale.</para>
@@ -68,11 +69,11 @@ public sealed partial class KnobPanel
     internal Func<KnobGroup, Knob<bool>?> ResolveParent = g => g.Parent;
 
     // ---- rows ----
-    public enum RowKind { Note, Section, Knob, Status, Strip, Advanced, Channel }
+    public enum RowKind { Note, Section, Knob, Status, Strip, Advanced, Channel, Item }
 
     /// <summary>One laid-out line of the knob column: a section header, a note (the group's header text), the
     /// status line, the parent-off strip, the Advanced disclosure, a control row (a knob's, or a consumer's
-    /// with <see cref="K"/> null), or one channel of an expanded swatch. Geometry is in list-content px (the
+    /// with <see cref="K"/> null), one channel of an expanded swatch, or one entry of a list. Geometry is in list-content px (the
     /// column's scroll offset and origin are added at draw and hit-test); the value state is a cache the draw
     /// thread refreshes when the knob moved, or the consumer's own draw state.</summary>
     public sealed class Row
@@ -110,6 +111,11 @@ public sealed partial class KnobPanel
         public float ExtraW;
         /// <summary>A swatch channel row: 0 R, 1 G, 2 B, 3 A; -1 otherwise.</summary>
         public int Channel = -1;
+        /// <summary>A list item row: its index in the list, or the list's count on the trailing box that appends
+        /// (<see cref="Adds"/>); -1 otherwise. <see cref="Value"/> holds the item's text as laid out, <see cref="Text"/>
+        /// the knob's placeholder.</summary>
+        public int Item = -1;
+        public bool Adds;
         // The value cache: what the draw shows without formatting anything per frame.
         public string Value = "";
         public int Selected = -1;
@@ -250,6 +256,7 @@ public sealed partial class KnobPanel
     /// <summary>A row without help lines (or an Advanced row) is compact.</summary>
     private float RowPlainH => 2.4f * Em;
     private float ChanH => 2f * Em;
+    private float ItemH => 2.2f * Em;
     private float RowPadY => 0.4f * Em;
     private float SecH => SmallLh + 1.3f * Em;
     private float BodyLh => Body?.LineHeight ?? Em * 1.2f;
@@ -507,6 +514,16 @@ public sealed partial class KnobPanel
                 y += ChanH;
                 rows.Add(c);
             }
+        if (k is Knob<TextList> kl)
+        {
+            TextList items = kl.V;
+            for (int i = 0; i <= items.Count; i++)
+            {
+                bool adds = i == items.Count;
+                rows.Add(new Row { Kind = RowKind.Item, K = k, Item = i, Adds = adds, Value = adds ? "" : items[i], Text = k.Hint, Top = y, H = ItemH });
+                y += ItemH;
+            }
+        }
     }
 
     /// <summary>The width a row's label wraps to: the column less the control, the gap, the master inset and the
@@ -568,6 +585,7 @@ public sealed partial class KnobPanel
                 return w + 1.8f * Em;
             }
             case KnobKind.Link: return Small != null ? UiText.Measure(Small, CopiedText) + 0.6f * Em : 4f * Em;
+            case KnobKind.List: return 0f;
             default: return TextW;
         }
     }
@@ -622,6 +640,7 @@ public sealed partial class KnobPanel
     public bool Greyed(Row r)
     {
         if (r.Kind == RowKind.Channel) return MasterOff;
+        if (r.Kind == RowKind.Item) return r.K is { Disabled: true } or { Enforced: true } || MasterOff;
         if (r.Kind != RowKind.Knob || r.Master || r.K == null) return false;
         if (r.K.Disabled || r.K.Enforced) return true;
         if (r.K.Kind == KnobKind.Button) return r.K is KnobButton { Enabled: { } en } && !en();
@@ -713,6 +732,25 @@ public sealed partial class KnobPanel
         y0 = cy - 0.7f * Em; y1 = cy + 0.7f * Em;
     }
 
+    /// <summary>A list item row's text box: indented like a channel row, running to the remove × (the add box keeps
+    /// the same width so the boxes line up).</summary>
+    internal void ItemRect(Row r, float top, out float x0, out float x1, out float y0, out float y1)
+    {
+        ControlAnchor(r, top, out float right, out _);
+        float cy = top + r.H * 0.5f;
+        x0 = List.X + Pad + ChanIndent; x1 = right - CtlH - 0.4f * Em;
+        y0 = cy - CtlH * 0.5f; y1 = cy + CtlH * 0.5f;
+    }
+
+    /// <summary>A list item row's remove ×: a square at the column's right edge.</summary>
+    internal void RemoveRect(Row r, float top, out float x0, out float x1, out float y0, out float y1)
+    {
+        ControlAnchor(r, top, out float right, out _);
+        float cy = top + r.H * 0.5f;
+        x0 = right - CtlH; x1 = right;
+        y0 = cy - CtlH * 0.5f; y1 = cy + CtlH * 0.5f;
+    }
+
     /// <summary>The <c>(?)</c> marker's left edge on an Advanced row (after the label's first line).</summary>
     private float MarkX(Row r)
         => RowLeft(r) + (Body != null && r.Label.Length > 0 ? UiText.Measure(Body, r.Label[0]) : 0f) + 0.4f * Em;
@@ -776,7 +814,7 @@ public sealed partial class KnobPanel
         _pressed = true; _grab = null; _moving = false;
         Row? armed = _confirm; _confirm = null;
         Tip.Leave();
-        if (_editRow != null) CommitEdit();
+        bool moved = _editRow != null && Commit();
         if (OverClose(mx, my)) { Close(); return true; }
         if (OverHeaderButton(mx, my)) { HeaderActionPressed?.Invoke(); return true; }
         if (my < Y + HeaderH) { _moving = true; _mgx = mx - X; _mgy = my - Y; return true; }
@@ -793,14 +831,16 @@ public sealed partial class KnobPanel
         int s = NavAt(SubCol, _subs.Length, mx, my);
         if (s >= 0) { if (s != Sub) { SelectSub(s); Relayout(); } return true; }
         KnobGroup? g0 = Sub >= 0 && Sub < _subs.Length ? _subs[Sub] : null;
-        if (OverReset(mx, my)) { g0?.ResetRows(); RefreshStatus(g0); return true; }
+        if (OverReset(mx, my)) { g0?.ResetRows(); LayoutRows(); return true; }
         // A parent flipped from chat since the layout: the strip is stale, re-lay out before hit-testing.
         if (g0 != null && _stripLaid != (FirstOffAncestor() != null)) LayoutRows();
+        if (moved) return true;   // a list gained or lost an item: every row under it moved since the press was aimed
         Row? r = RowAt(mx, my, out float top);
         if (r == null) return true;
         if (r.Kind == RowKind.Advanced) { AdvOpen = !AdvOpen; LayoutRows(); return true; }
-        if (r.Kind != RowKind.Knob && r.Kind != RowKind.Channel) return true;
+        if (r.Kind != RowKind.Knob && r.Kind != RowKind.Channel && r.Kind != RowKind.Item) return true;
         if (Greyed(r)) return true;
+        if (r.Kind == RowKind.Item) { ItemPress(r, top, mx, my); return true; }
         if (r.Ctl == KnobKind.Slider) { SliderPress(r, top, mx, my); return true; }
         if (r.Ctl == KnobKind.Dropdown) { DropPress(r, top, mx, my); return true; }
         if (r.K == null) { ConsumerPress(r, top, mx, my); return true; }
@@ -855,6 +895,19 @@ public sealed partial class KnobPanel
         if (In(mx, my, vx0, vx1, vy0, vy1)) { BeginEdit(r, ""); return; }
         TrackRect(r, top, out float tx0, out float tx1, out float cy);
         if (mx >= tx0 - 0.4f * Em && mx < tx1 + 0.4f * Em && my >= cy - Em && my < cy + Em) { _grab = r; SetSliderFromX(r, mx); }
+    }
+
+    /// <summary>A press on a list item row: its box starts an edit seeded with the item (the add box, empty); the ×
+    /// removes the item.</summary>
+    private void ItemPress(Row r, float top, float mx, float my)
+    {
+        if (r.K is not Knob<TextList> kl) return;
+        ItemRect(r, top, out float x0, out float x1, out float y0, out float y1);
+        if (In(mx, my, x0, x1, y0, y1)) { BeginEdit(r, r.Value); return; }
+        RemoveRect(r, top, out x0, out x1, out y0, out y1);
+        if (r.Adds || !In(mx, my, x0, x1, y0, y1) || r.Item >= kl.V.Count) return;
+        kl.Set(kl.V.RemoveAt(r.Item));
+        LayoutRows();
     }
 
     /// <summary>A press on a dropdown row: its box opens the list on the current choice.</summary>
@@ -1014,13 +1067,19 @@ public sealed partial class KnobPanel
 
     private void BeginEdit(Row r, string seed) { _editRow = r; _editText = seed; _grab = null; }
 
-    /// <summary>Typed text (finished UTF-8 from the host): appended, capped at 64 chars.</summary>
+    /// <summary>Longest text a box takes: a field or a consumer's label, and a list item (a chat shortcut holds a
+    /// whole emote).</summary>
+    public const int EditMax = 64, ItemMax = 240;
+
+    /// <summary>Typed text (finished UTF-8 from the host): appended, capped at <see cref="EditMax"/> chars
+    /// (<see cref="ItemMax"/> in a list item).</summary>
     public void EditInsert(string s)
     {
         if (Drop.Searching) { Drop.Type(s); return; }
         if (_editRow == null) return;
+        int max = _editRow.Kind == RowKind.Item ? ItemMax : EditMax;
         foreach (char c in s)
-            if (_editText.Length < 64 && c >= ' ' && c != '\n' && c != '\r') _editText += c;
+            if (_editText.Length < max && c >= ' ' && c != '\n' && c != '\r') _editText += c;
     }
 
     public void EditBackspace()
@@ -1031,32 +1090,61 @@ public sealed partial class KnobPanel
 
     /// <summary>Commit: a searching list accepts its top match; a consumer text row hands the text to
     /// <see cref="CommitLabel"/> and a consumer slider parses it for <see cref="ApplyValue"/>; a knob's text
-    /// goes through its own Parse (a slider clamps, a swatch wants rrggbbaa; a channel row takes 0–255).
-    /// Empty or unparseable text keeps the old value.</summary>
-    public void CommitEdit()
+    /// goes through its own Parse (a slider clamps, a swatch wants rrggbbaa; a channel row takes 0–255); a list
+    /// item replaces its entry, appends from the add box, and is removed by an empty commit. Otherwise empty or
+    /// unparseable text keeps the old value.</summary>
+    public void CommitEdit() => Commit();
+
+    /// <summary><see cref="CommitEdit"/>; true when a list gained or lost an item, so every row below it moved.</summary>
+    private bool Commit()
     {
         if (Drop.Searching)
         {
             Row? dr = Drop.Tag as Row;
             int i = Drop.Accept();
             if (i >= 0 && dr != null) PickChoice(dr, i);
-            return;
+            return false;
         }
         Row? r = _editRow; string t = _editText;
         _editRow = null; _editText = "";
-        if (r == null || t.Length == 0) return;
+        if (r == null) return false;
+        if (r.Kind == RowKind.Item) return CommitItem(r, t.Trim());
+        if (t.Length == 0) return false;
         if (r.K == null)
         {
             if (r.Ctl == KnobKind.Text) CommitLabel?.Invoke(r, t);
             else if (float.TryParse(t, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v)) Apply(r, v);
-            return;
+            return false;
         }
         if (r.Kind == RowKind.Channel)
         {
             if (int.TryParse(t, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out int v)) SetChannel(r, v);
-            return;
+            return false;
         }
         if (r.K.Parse(t)) r.Dirty = true;
+        return false;
+    }
+
+    /// <summary>A list item's edit as a set of the whole list, then a relayout; true when the item count changed.</summary>
+    private bool CommitItem(Row r, string t)
+    {
+        if (r.K is not Knob<TextList> kl) return false;
+        TextList v = kl.V;
+        TextList next = r.Item >= v.Count ? v.Add(t) : v.With(r.Item, t);
+        if (!next.Equals(v)) kl.Set(next);
+        LayoutRows();
+        return next.Count != v.Count;
+    }
+
+    /// <summary>Enter in a list's add box after an append: open the new add box, scrolled into view, so entries can be
+    /// typed one after another.</summary>
+    private void KeepAdding(Knob k)
+    {
+        Row? add = null;
+        foreach (Row r in _rows) if (r.Kind == RowKind.Item && r.Adds && ReferenceEquals(r.K, k)) add = r;
+        if (add == null) return;
+        if (add.Top + add.H > List.Offset + List.H) { List.Offset = add.Top + add.H - List.H; List.Clamp(); }
+        BeginEdit(add, "");
     }
 
     /// <summary>Escape: backs out of an edit, else closes an open list.</summary>
@@ -1080,8 +1168,12 @@ public sealed partial class KnobPanel
                 if (_editRow != null || Drop.Open) CancelEdit(); else Close();
                 break;
             case KeyReturn: case KeyKpEnter:
-                CommitEdit();
+            {
+                Knob? adding = _editRow is { Kind: RowKind.Item, Adds: true } ar && _editText.Trim().Length > 0 ? ar.K : null;
+                Commit();
+                if (adding != null) KeepAdding(adding);
                 break;
+            }
             case KeyBackspace: EditBackspace(); break;
         }
         return Open;
@@ -1206,6 +1298,9 @@ public sealed partial class KnobPanel
                     Slider(b, body, small, r, top, ccy, "", a);
                     continue;
                 }
+                case RowKind.Item:
+                    Item(b, body, r, top, colRight);
+                    continue;
             }
             Knob? k = r.K;
             r.Refresh();
@@ -1218,7 +1313,7 @@ public sealed partial class KnobPanel
                 Fill(b, kx + Pad, top + MasterTop, colRight, top + r.H - MasterBottom, MasterBg);
                 Outline(b, kx + Pad, top + MasterTop, colRight, top + r.H - MasterBottom, ColBorder);
             }
-            else Fill(b, kx + Pad, top + r.H - 1f, colRight, top + r.H, 0xFFFFFF, 0.03f);
+            else if (r.Ctl != KnobKind.List) Fill(b, kx + Pad, top + r.H - 1f, colRight, top + r.H, 0xFFFFFF, 0.03f);
             if (r.OffDefault) Dot(b, kx + 0.45f * em, cy);
             float ctlX0 = right - r.CtlW;
             float labelClip = r.Ctl == KnobKind.Button ? right : ctlX0 - Gap;
@@ -1296,7 +1391,9 @@ public sealed partial class KnobPanel
                     Fill(b, bx0, by0, bx1, by1, Input, alpha);
                     Outline(b, bx0, by0, bx1, by1, editing ? Accent2 : Frame2, alpha);
                     string t = editing ? _editText : r.Value;
-                    float tend = UiText.Draw(b, body, t, bx0 + 0.4f * em, cy - body.LineHeight * 0.5f + body.Ascent, Tx, bx1 - 0.3f * em, alpha);
+                    float tx0 = bx0 + 0.4f * em, tclip = bx1 - 0.3f * em;
+                    int from = editing ? UiText.TailFrom(body, t, tclip - tx0 - 2f) : 0;
+                    float tend = UiText.Draw(b, body, t, from, tx0, cy - body.LineHeight * 0.5f + body.Ascent, Tx, tclip, alpha);
                     if (editing) Fill(b, tend, by0 + 0.2f * em, tend + 1.5f, by1 - 0.2f * em, Hi);
                     break;
                 }
@@ -1323,6 +1420,34 @@ public sealed partial class KnobPanel
         List.Draw(b, C(Accent));
         Drop.Draw(b, body, body.Ascent, C(ListBg), C(Selected), Tx);
         Tip.Draw(b, small, small.Ascent, C(ListBg), Tx, VpW, VpH);
+    }
+
+    /// <summary>A list item row: its text box (the edit text, tail in view, while editing; the placeholder on an empty
+    /// add box) and the remove ×; the add box closes the list with the row separator.</summary>
+    private void Item(VertexBatch b, GlyphAtlas body, Row r, float top, float colRight)
+    {
+        float em = Em, a = Greyed(r) ? OffAlpha : 1f;
+        ItemRect(r, top, out float x0, out float x1, out float y0, out float y1);
+        bool editing = EditingRow(r);
+        Fill(b, x0, y0, x1, y1, Input, a);
+        Outline(b, x0, y0, x1, y1, editing ? Accent2 : Frame2, a);
+        float tx0 = x0 + 0.4f * em, clip = x1 - 0.3f * em, baseY = (y0 + y1) * 0.5f - body.LineHeight * 0.5f + body.Ascent;
+        if (editing)
+        {
+            float end = UiText.Draw(b, body, _editText, UiText.TailFrom(body, _editText, clip - tx0 - 2f), tx0, baseY, Tx, clip, a);
+            Fill(b, end, y0 + 0.2f * em, end + 1.5f, y1 - 0.2f * em, Hi);
+        }
+        else if (r.Value.Length > 0) UiText.Draw(b, body, r.Value, tx0, baseY, Tx, clip, a);
+        else UiText.Draw(b, body, r.Text, tx0, baseY, Tx3, clip, a);
+        if (r.Adds)
+        {
+            Fill(b, List.X + Pad, top + r.H - 1f, colRight, top + r.H, 0xFFFFFF, 0.03f);
+            return;
+        }
+        RemoveRect(r, top, out float rx0, out float rx1, out float ry0, out float ry1);
+        bool hover = ReferenceEquals(r, _hoverRow);
+        Outline(b, rx0, ry0, rx1, ry1, hover ? Accent2 : Frame2, a);
+        UiText.Draw(b, body, "×", rx0 + (rx1 - rx0 - UiText.Measure(body, "×")) * 0.5f, baseY, hover ? Hi : Tx2, rx1, a);
     }
 
     /// <summary>A slider control (a knob row or a channel row): track, fill, grip, the value box (the edit text

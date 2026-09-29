@@ -16,10 +16,14 @@ public sealed unsafe partial class ChatService
     /// <summary>Slice #20: EditBuffer + IsTyping + focus suppression. Filled by build slice 3.</summary>
     private static void InitEditControl(ExtenderLog log, HookService hooks)
     {
-        EditBuffer.SelfCheck(log);     // off-device proof; surfaces in run-demo's cx.log
-        ChatCommands.SelfCheck(log);   // slash-command grammar (#25)
-        TypingSignal.SelfCheck(log);   // chat-bar focus/unfocus latch (off-device)
         RegisterCommands();            // #165: chat's own commands go on the shared registry like anyone's
+        _histPath = HistoryFile.PathBeside(Settings.Path);
+        if (ChatKnobs.HistSave.V) Edit.LoadHistory(HistoryFile.Load(_histPath, log));
+        ChatKnobs.HistSave.Changed = () =>
+        {
+            if (ChatKnobs.HistSave.V) HistoryFile.SaveAsync(_histPath, Edit.History, _log);
+            else HistoryFile.Delete(_histPath, _log);
+        };
 
         GetPlayerByPlayerNameFn getByName = EngineFn.GetPlayerByPlayerName;
         GetPlayerByCreatureNameFn getByCreature = EngineFn.GetPlayerByCreatureName;
@@ -41,6 +45,16 @@ public sealed unsafe partial class ChatService
     /// <summary>The one chat input line; the native shell drives it, all logic is in Core.</summary>
     public static readonly EditBuffer Edit = new();
 
+    /// <summary>Where the sent-line history is saved (<c>chat.histsave</c>); "" when there is no settings path.</summary>
+    private static string _histPath = "";
+
+    /// <summary>The tab the live line belongs to (<c>chat.drafts</c>): where it parks when chat closes unsent or the
+    /// typing moves to another tab.</summary>
+    private static Tab? _typingTab;
+
+    /// <summary>Shortcut expansion as the delegate <see cref="EditBuffer.ExpandBeforeCaret"/> takes, made once.</summary>
+    private static readonly Func<string, string?> ShortcutLookup = Snippets.Lookup;
+
 
     // SDL_Keymod bits (match HotkeyInputService): Ctrl/Shift both sides.
     private const int KmodShift = 0x0003;  // not-an-offset: SDL key/event code
@@ -48,7 +62,7 @@ public sealed unsafe partial class ChatService
 
     // SDL keycodes. Printable ones are their codepoint; nav keys carry SDLK_SCANCODE_MASK (0x40000000).
     private const uint KeyReturn = 0x0D, KeyEsc = 0x1B, KeyBackspace = 0x08, KeyDelete = 0x7F;  // not-an-offset: SDL key/event code
-    private const uint KeyA = 0x61, KeyC = 0x63, KeyV = 0x76, KeyX = 0x78;  // not-an-offset: SDL key/event code
+    private const uint KeyA = 0x61, KeyC = 0x63, KeyV = 0x76, KeyX = 0x78, KeyY = 0x79, KeyZ = 0x7A, KeyTab = 0x09;  // not-an-offset: SDL key/event code
     private const uint KeyRight = 0x4000004F, KeyLeft = 0x40000050, KeyDown = 0x40000051, KeyUp = 0x40000052;  // not-an-offset: SDL key/event code
     private const uint KeyHome = 0x4000004A, KeyEnd = 0x4000004D;  // not-an-offset: SDL key/event code
 
@@ -102,7 +116,7 @@ public sealed unsafe partial class ChatService
             StartTellTo(tellTarget!, _playerResolver?.Resolve(tellTarget!));
             return;
         }
-        Open();
+        Open(draft: text.Length == 0);
         if (text.Length > 0 && IsTyping)
         {
             // text was read Latin1 (char == source byte), so Latin1.GetBytes recovers the original
@@ -125,7 +139,7 @@ public sealed unsafe partial class ChatService
     internal static void OpenWith(char prefix)
     {
         if (IsTyping) return;
-        Open();
+        Open(draft: false);
         if (!IsTyping) return;             // Open() refuses when no window has a sendable channel
         Edit.InsertUtf8(new[] { (byte)prefix });
         _eatEcho = (byte)prefix;
@@ -135,8 +149,10 @@ public sealed unsafe partial class ChatService
     /// <summary>Take the keyboard: reset the line, start SDL text input, gate gameplay keys. Targets the
     /// focused window; falls back to Main if focused has no sendable channel (#41). Refuses if neither does, and
     /// whenever the line could not be seen: out of game (the chatbox is not drawn), with the app unfocused (a
-    /// compositor may still deliver Enter), or with a NUI window over the box -- each would eat every key unseen.</summary>
-    private static void Open()
+    /// compositor may still deliver Enter), or with a NUI window over the box -- each would eat every key unseen.
+    /// <paramref name="draft"/>: take back the line parked on the target tab (<c>chat.drafts</c>); a prefilled open
+    /// starts fresh and leaves it parked.</summary>
+    private static void Open(bool draft = true)
     {
         if (_layout == null || !GameGate.InGame) return;
         ChatWindow target = _layout.Focused;
@@ -152,11 +168,37 @@ public sealed unsafe partial class ChatService
             _log?.Info($"[chat] open refused: focused={UiInputService.AppFocused} nuiOver={Hidden(target)}");
             return;
         }
+        if (IsTyping) ParkDraft();
         IsTyping = true;
         if (TypingSignal.Focus()) NotifyChatBar(TypingSignal.EventFocus, target.SendChannel);
         Edit.Clear();
+        _completer.Reset();
+        _typingTab = target.Active;
+        if (draft && ChatKnobs.Drafts.V) { Edit.Load(_typingTab.Draft); _typingTab.Draft = ""; }
         if (EngineFn.SdlStartTextInput != null) EngineFn.SdlStartTextInput();
         KeyboardMode(true);
+        Rebuild();
+    }
+
+    /// <summary>Park the live line on the tab it belongs to (<c>chat.drafts</c>). A parked line is never overwritten:
+    /// only an empty slot takes one, so a prefilled or command line closing unsent leaves an older draft alone.</summary>
+    private static void ParkDraft()
+    {
+        if (ChatKnobs.Drafts.V && _typingTab != null && _typingTab.Draft.Length == 0) _typingTab.Draft = Edit.Text;
+    }
+
+    /// <summary>The typing moved to another tab or window (a click, a tell opening): park the line on the old tab and
+    /// take the new tab's (<c>chat.drafts</c>).</summary>
+    private static void SyncDraftTab()
+    {
+        if (!IsTyping || _layout == null || !ChatKnobs.Drafts.V) return;
+        Tab now = _layout.Focused.Active;
+        if (ReferenceEquals(now, _typingTab)) return;
+        ParkDraft();
+        Edit.Load(now.Draft);
+        now.Draft = "";
+        _typingTab = now;
+        _completer.Reset();
         Rebuild();
     }
 
@@ -170,9 +212,11 @@ public sealed unsafe partial class ChatService
     public static void CloseChat(bool submit)
     {
         _eatEcho = 0;
+        _completer.Reset();
         if (submit)
         {
             string text = Edit.Submit();
+            if (text.Length > 0 && ChatKnobs.HistSave.V) HistoryFile.SaveAsync(_histPath, Edit.History, _log);
             if (!string.IsNullOrEmpty(text) && CommandRegistry.Global.TryDispatch(text, out string? reply))
             {
                 // Handled by whichever service registered it -- don't send. The chat service's only remaining
@@ -201,7 +245,8 @@ public sealed unsafe partial class ChatService
                     win.SendChannel = prev == Channel.Tell ? Channel.Talk : prev;
             }
         }
-        else Edit.Clear();
+        else { ParkDraft(); Edit.Clear(); }
+        _typingTab = null;
         IsTyping = false;
         // After the send, like vanilla's HandleEnter (ParseChatString, then the unfocus event). Cancel
         // paths (Esc, focus loss, a window losing its sendable channel) all funnel here too, so the
@@ -247,9 +292,12 @@ public sealed unsafe partial class ChatService
             _eatEcho = 0;
             if (n == 1 && p[0] == echo) return;   // the opening keypress's own character, already inserted
         }
+        string s = Encoding.UTF8.GetString(p, n);
         if (_settings.Editing)   // typed chars go to the focused settings value box, not the chat line
-        { _settings.EditInsert(Encoding.UTF8.GetString(p, n)); return; }
-        Edit.InsertUtf8(new ReadOnlySpan<byte>(p, n));
+        { _settings.EditInsert(s); return; }
+        _completer.Reset();
+        if (s == " ") Edit.ExpandBeforeCaret(ShortcutLookup);
+        Edit.Type(s, ChatKnobs.Pairs.V);
         Rebuild();   // reflect the new text in the footer
     }
 
@@ -284,27 +332,46 @@ public sealed unsafe partial class ChatService
         }
         bool shift = (mods & KmodShift) != 0;
         bool ctrl  = (mods & KmodCtrl) != 0;
+        if (key != KeyTab) _completer.Reset();
         if (ctrl)
         {
             if (key == KeyA) { Edit.SelectAll(); Rebuild(); return; }
             if (key == KeyC) { Copy(); return; }
             if (key == KeyV) { Paste(); return; }
             if (key == KeyX) { Cut(); return; }
+            if (key == KeyZ || key == KeyY)
+            {
+                if (ChatKnobs.Undo.V) { if (key == KeyY || shift) Edit.Redo(); else Edit.Undo(); }
+                Rebuild(); return;
+            }
         }
+        bool words = ctrl && ChatKnobs.DelWord.V;
         switch (key)
         {
-            case KeyReturn:    CloseChat(true); break;
+            case KeyReturn:    Edit.ExpandBeforeCaret(ShortcutLookup); CloseChat(true); break;
             case KeyEsc:       CloseChat(false); break;
-            case KeyBackspace: Edit.Backspace(); break;
-            case KeyDelete:    Edit.Delete(); break;
+            case KeyBackspace: if (words) Edit.DeleteWordLeft(); else Edit.Backspace(); break;
+            case KeyDelete:    if (words) Edit.DeleteWordRight(); else Edit.Delete(); break;
             case KeyLeft:      if (ctrl) Edit.MoveWordLeft(shift); else Edit.MoveLeft(shift); break;
             case KeyRight:     if (ctrl) Edit.MoveWordRight(shift); else Edit.MoveRight(shift); break;
             case KeyHome:      Edit.Home(shift); break;
             case KeyEnd:       Edit.End(shift); break;
-            case KeyUp:        Edit.HistoryPrev(); break;
-            case KeyDown:      Edit.HistoryNext(); break;
+            case KeyUp:        if (!RowMove(-1, shift)) Edit.HistoryPrev(ChatKnobs.HistSearch.V); break;
+            case KeyDown:      if (!RowMove(1, shift)) Edit.HistoryNext(); break;
+            case KeyTab:       if (ChatKnobs.Complete.V) Complete(shift); break;
         }
         Rebuild();   // caret move / edit / history recall all change the footer
+    }
+
+    /// <summary>Up / Down inside a wrapped line (<c>chat.rows</c>): true when the caret moved to the row above
+    /// (<paramref name="dir"/> -1) or below; false on the first / last row, where the arrows walk history.</summary>
+    private static bool RowMove(int dir, bool shift)
+    {
+        if (!ChatKnobs.Rows.V || _layout == null || TextRig.Atlas is not GlyphAtlas atlas) return false;
+        int to = InputStripLayout.VerticalMove(_layout.Focused, atlas, Edit.Text, Edit.Cursor, dir);
+        if (to < 0) return false;
+        Edit.SetCaret(to, shift);
+        return true;
     }
 
     private static void Copy()

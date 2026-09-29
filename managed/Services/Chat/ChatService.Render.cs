@@ -355,6 +355,9 @@ public sealed unsafe partial class ChatService
         // stay in-bounds so it's memory-safe, just cosmetic. Add a lock only if the [chatthread] log proves
         // ingest really runs on a separate thread.
         _store.Clear();                     // cosmetic: no prior session's lines leak in
+        if (IsTyping) ParkDraft();          // a disconnect mid-post keeps the post (chat.drafts)
+        _typingTab = null;
+        _completer.Reset();
         Edit.Clear();
         IsTyping = false;
         TypingSignal.Reset();               // session edge: drop the latch, never send (the connection is gone)

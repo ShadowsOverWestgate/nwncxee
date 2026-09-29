@@ -12,7 +12,7 @@ Research it rests on: [`docs/research/feature-disable-census.md`](../research/fe
 (the pinned look). Rejected door: `docs/research/settings-panel-ownership.md` §4 (Path A′).
 
 Conventions in the tables: kind **T** toggle · **S** slider · **D** dropdown · **B** button
-(action row) · **X** text · **Act** action row. Tier **U** User · **A** Advanced · **C**
+(action row) · **X** text · **L** list · **Act** action row. Tier **U** User · **A** Advanced · **C**
 Chat-only · **H** Hidden. Effect **L** live · **R** restart. "today" = the current chat key,
 `cx.cfg` key or `cx-<feature>.cfg` key. Help is written for U rows (mandatory); an A row gets a
 one-liner only where the label is not enough. Chat-only keys keep today's spelling, label =
@@ -220,6 +220,18 @@ state; no row.
 |---|---|---|---|---|---|---|---|
 | chat.enabled | lockchat (chat half) | Enable the CX chatbox | T | on | U | **R** | CX's own chat: multiple windows, tabs, portraits, tells routing. Off, the stock chat window runs. Takes effect at the next launch. |
 | chat.tellopen | tellopen | When a tell arrives | D | nothing / open a tab / open a window · nothing | U | L | Where a tell from someone new lands: nowhere special, a new tab in the main window, or its own window. |
+| chat.pairs | — | Close brackets and quotes | T | on | U | L | *Typing* section. ( [ " or * adds the closing mark after the cursor; typing it again steps over it; Backspace between an empty pair removes both; with a selection the mark wraps it. |
+| chat.complete | — | Complete names with Tab | T | on | U | L | Tab finishes a started name: visible creatures in the area nearest first, then everyone online; Tab again cycles, Shift+Tab goes back. Inside `/t "` it closes the quote. |
+| chat.markup | — | Colour emotes, speech and OOC | T | on | U | L | `*emotes*`, `"speech"` and `((OOC))` take their own colours in the input line; an unclosed mark colours to the end of the line. |
+| chat.counter | — | Show a character count | T | off | U | L | The line's length at the input bar's right end; `n/4000` in a warning colour from 90 % of the cap. |
+| chat.delword | — | Delete whole words with Ctrl | T | on | U | L | *Editing* section. Ctrl+Backspace / Ctrl+Delete delete the word before / after the cursor. |
+| chat.undo | — | Undo and redo | T | on | U | L | Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z), a word at a time. |
+| chat.mouse | — | Place the cursor with the mouse | T | on | U | L | Click places the caret, drag selects, double-click a word, triple-click the line, Shift+click extends. |
+| chat.rows | — | Arrow keys move through a long message | T | on | U | L | Up / Down move between the wrapped rows; history only from the first / last row. |
+| chat.drafts | — | Keep unsent lines | T | on | U | L | Escape parks the line on its tab; each tab keeps its own; a prefilled open (tell prefill, the `/` chord) starts fresh and never overwrites a parked line. |
+| chat.histsearch | — | Search history by what you typed | T | on | U | L | *History* section. With text in the line, Up recalls only earlier lines starting with it. |
+| chat.histsave | — | Remember sent lines between sessions | T | on | U | L | The last 100 sent lines in `cx-chat-history.txt` beside `cx.cfg`; off deletes the file. |
+| chat.emotecol / speechcol / ooccol | — | Emote / Speech / OOC colour | Sw | e0b872ff / f2f2e6ff / 8c96a0ff | A | L | *Markup colours* section; alpha ignored (text draws opaque). |
 | w<N>.* (rect, toggles, inputtop, sendch, anim, hold, fade, tau, outline, font, typeface, tsfmt, tssrc, align, bgmode, autohide, locked, tellshere, col.*, t<M>.*) | same | — | per-window state | | H | | edited on the window; submenu reset leaves it alone |
 
 `/newwin` / `/closewin` stay (actions); `/nw` `/cw` die. Chat's `SettingsWindow` survives as
@@ -230,6 +242,20 @@ rows are the window's own (`w<N>.font` / `w<N>.typeface`, absent = follow `ui.fo
 `ui.typeface`), drawn from a face of its own on the shared sheet. The tab bar keeps only the gear:
 a new window is the panel header's *Copy this window*, closing is the window category's *Close
 this window* (two presses; Main has no row).
+
+**Chat shortcuts** — group `snippets`, parent `chat.enabled`.
+
+| key | today | label | kind | range · default | tier | eff | help |
+|---|---|---|---|---|---|---|---|
+| snippets.enabled | — | Expand chat shortcuts | T | on | U | L | A shortcut typed then ended with a space or Enter becomes its text; Ctrl+Z right after takes it back. |
+| snippets.list | — | Shortcuts | L | empty | U | L | One entry per shortcut, `abbreviation expansion`, split at the first space, matched case-insensitively; first entry wins. |
+
+**List** (kind **L**, `KnobKind.List`, `Knob<TextList>`): an immutable string list with value equality. The
+panel lays one item row per entry under the label -- a text box and a remove × -- and a trailing empty box
+showing the knob's `Hint`, which appends; Enter there appends and opens the next add box; an empty commit
+removes an entry. Items take 240 characters (`KnobPanel.ItemMax`; other boxes keep 64) and a box being typed in
+scrolls to its end. `cx.cfg` and the chat form hold the items on one line joined with `|`, a `|` or `\` inside
+an item escaped with `\`.
 
 **Radial menu** — group `radial` (CX-689..CX-694). Look and animation rows (CX-694) sit in the group
 like every other window's; the chat window's per-window gear is the exception, not the pattern.

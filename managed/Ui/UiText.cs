@@ -10,16 +10,39 @@ public static class UiText
     /// <summary>Draw one string clipped at <paramref name="clipX"/>, returning the pen x it ended at.</summary>
     public static float Draw(VertexBatch b, GlyphAtlas atlas, string s, float startX, float baseline,
                              uint rgb, float clipX, float alpha = 1f)
+        => Draw(b, atlas, s, 0, startX, baseline, rgb, clipX, alpha);
+
+    /// <summary>As <see cref="Draw(VertexBatch, GlyphAtlas, string, float, float, uint, float, float)"/>, from the
+    /// UTF-16 index <paramref name="from"/> on: a text box shows the tail it is typing into.</summary>
+    public static float Draw(VertexBatch b, GlyphAtlas atlas, string s, int from, float startX, float baseline,
+                             uint rgb, float clipX, float alpha = 1f)
     {
         float r = ((rgb >> 16) & 0xFF) / 255f, g = ((rgb >> 8) & 0xFF) / 255f, bl = (rgb & 0xFF) / 255f;
         float penX = startX;
-        foreach (Rune ru in s.EnumerateRunes())
+        foreach (Rune ru in s.AsSpan(from).EnumerateRunes())
         {
             if (penX >= clipX) break;
             if (atlas.TryGet(ru.Value, out Glyph gl)) { b.Glyph(gl, penX, baseline, r, g, bl, alpha); penX += gl.Advance; }
             else penX += atlas.AdvanceOf(ru);
         }
         return penX;
+    }
+
+    /// <summary>The first UTF-16 index of the longest tail of <paramref name="s"/> that fits in <paramref name="width"/>
+    /// (0 when all of it fits); never splits a surrogate pair.</summary>
+    public static int TailFrom(GlyphAtlas atlas, string s, float width)
+    {
+        float w = 0f;
+        int i = s.Length;
+        while (i > 0)
+        {
+            int j = i - 1;
+            if (j > 0 && char.IsLowSurrogate(s[j]) && char.IsHighSurrogate(s[j - 1])) j--;
+            float a = Rune.TryGetRuneAt(s, j, out Rune ru) ? atlas.AdvanceOf(ru) : 0f;
+            if (w + a > width) break;
+            w += a; i = j;
+        }
+        return i;
     }
 
     /// <summary>Advance width of a string (no draw).</summary>

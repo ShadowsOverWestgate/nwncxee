@@ -14,4 +14,7 @@ public interface IPlayerResolver
     /// <summary>The local player's ingest-space playerId, or null off-module / pre-load. Used to
     /// distinguish outbound Tell echoes (which carry your own id) from genuine incoming Tells.</summary>
     uint? LocalIngestId() => null;
+
+    /// <summary>Every CHARACTER name on the roster, in roster order; Tab completion's fallback after the area.</summary>
+    IReadOnlyList<string> OnlineNames() => Array.Empty<string>();
 }

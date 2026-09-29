@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
+using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat.Core;
 using CX.Services.Chat.Render;
@@ -16,6 +17,15 @@ public sealed unsafe partial class ChatService
     private static bool _mdiag;                      // one-shot: log first click coords + rect
     private static int _hoverIndex = -1;             // window under the pointer (-1 = none), for grip visibility
     private static bool _anyTabDrag;                 // true while any window has an active tab drag (#42)
+
+    /// <summary>A press in the edit text is ours until its release (<see cref="_editDrag"/>: the caret follows the
+    /// pointer until then); the click counter tells a double / triple press by time and place.</summary>
+    private static bool _editPress, _editDrag;
+    private static int _clicks, _clickX, _clickY;
+    private static long _clickAt;
+
+    /// <summary>A second press within this long, and this near, is a double click (SDL's own default window).</summary>
+    private const int DoubleClickMs = 500, ClickSlopPx = 4;
 
     /// <summary>Collects the screen rects of the other live extender windows for window-to-window snapping.
     /// Called once at drag-start on the input thread; only one window drags at a time (one mouse), so a single
@@ -34,8 +44,16 @@ public sealed unsafe partial class ChatService
     /// <summary>Pointer press/release. Returns true when it lands on any chat window (the WM shell then
     /// consumes it, so it doesn't fall through to the 3D world). Focused window is checked first (it owns
     /// the popped-out strip/dropdown outside its frame rect); then other windows in reverse draw order (#41).
-    /// Wired as this service's framework Window mouse-button delegate (#64).</summary>
+    /// Wired as this service's framework Window mouse-button delegate (#64). A press that moved the typing to
+    /// another tab or window swaps the unsent lines (<c>chat.drafts</c>).</summary>
     public static bool OnMouseButton(bool down, int button, int x, int y)
+    {
+        bool consumed = MouseButton(down, button, x, y);
+        if (down) SyncDraftTab();
+        return consumed;
+    }
+
+    private static bool MouseButton(bool down, int button, int x, int y)
     {
         if (_layout == null || !GameGate.InGame || button != 1) return false;
         ChatWindow? fwin = _focused;
@@ -91,6 +109,7 @@ public sealed unsafe partial class ChatService
                 if (IsTyping && !fwin.HasSendable) CloseChat(false);
                 Rebuild(); return cs;
             }
+            if (EditPress(fwin, x, y)) return true;
             // Check focused first (owns the strip/dropdown that extends outside the frame).
             if (DownOnWindow(_layout.FocusedIndex, x, y)) return true;
             // Then check other windows in reverse draw order (last drawn = topmost).
@@ -107,7 +126,8 @@ public sealed unsafe partial class ChatService
             }
             return false;
         }
-        // Up: settings first, then tab-drag cross-window drop (#42), then generic grabs.
+        // Up: an edit-text press, then settings, then tab-drag cross-window drop (#42), then generic grabs.
+        if (_editPress) { _editPress = _editDrag = false; return true; }
         if (_settings.MouseUp()) { SaveConfig(); Rebuild(); return true; }
         // Cross-window tab drop: resolve before MouseUp clears the grab state.
         for (int i = 0; i < _layout.Count; i++)
@@ -140,6 +160,32 @@ public sealed unsafe partial class ChatService
             if (cu) { SaveConfig(); Rebuild(); return true; }
         }
         return false;
+    }
+
+    /// <summary>A press in the typing window's edit text (<c>chat.mouse</c>): place the caret (Shift extends the
+    /// selection) and follow the pointer until release; a double press selects the word, a triple the line.</summary>
+    private static bool EditPress(ChatWindow win, int x, int y)
+    {
+        if (!IsTyping || !ChatKnobs.Mouse.V || !win.FooterVisible || win.ChannelListOpen
+            || !InputStripLayout.InEditArea(win, x, y) || TextRig.Atlas is not GlyphAtlas atlas) return false;
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool again = Math.Abs(x - _clickX) <= ClickSlopPx && Math.Abs(y - _clickY) <= ClickSlopPx
+                     && System.Diagnostics.Stopwatch.GetElapsedTime(_clickAt, now).TotalMilliseconds <= DoubleClickMs;
+        _clicks = again ? _clicks % 3 + 1 : 1;
+        _clickAt = now; _clickX = x; _clickY = y;
+        string text = Edit.Text;
+        if (_clicks == 1)
+        {
+            bool shift = EngineFn.SdlGetModState != null && (EngineFn.SdlGetModState() & KmodShift) != 0;
+            Edit.SetCaret(InputStripLayout.HitTest(win, atlas, text, x, y), shift);
+            _editDrag = true;
+        }
+        else if (_clicks == 2) Edit.SelectWordAt(InputStripLayout.HitTest(win, atlas, text, x, y, charUnder: true));
+        else Edit.SelectAll();
+        _editPress = true;
+        _completer.Reset();
+        Rebuild();
+        return true;
     }
 
     /// <summary>Press dispatch on a single window: the [⚙] then ChatWindow.MouseDown. Focuses and returns true if consumed.</summary>
@@ -222,6 +268,12 @@ public sealed unsafe partial class ChatService
     {
         _lastMx = x; _lastMy = y;
         if (_layout == null || !GameGate.InGame) return false;
+        if (_editDrag && IsTyping && TextRig.Atlas is GlyphAtlas ea)
+        {
+            Edit.SetCaret(InputStripLayout.HitTest(_layout.Focused, ea, Edit.Text, x, y), true);
+            Rebuild();
+            return true;
+        }
         if (_settings.Open && _focused != null)
         {
             // The panel draws itself from live state every frame (no rebuild for a move or a hover); only a

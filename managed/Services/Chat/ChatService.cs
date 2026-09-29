@@ -44,11 +44,19 @@ public sealed unsafe partial class ChatService : IExtenderService
         TellTarget.SelfCheck(log);     // #45 tell tab send-decision proof (off-device)
         TellRouter.SelfCheck(log);     // #46 tell auto-open routing proof (off-device)
         WindowRenderer.SelfCheck(log); // #26 portrait-gutter emission proof (off-device)
+        InputMarkup.SelfCheck(log);      // emote/speech/OOC classification of the line being typed (off-device)
+        InputStripLayout.SelfCheck(log); // the input strip's one geometry: hit-test, rows, counter reserve (off-device)
         RowAlign.SelfCheck(log);       // shared row alignment/justify primitive proof (off-device)
         ChatAnim.SelfCheck(log);       // map #13 fade/slide/scroll math proof (off-device)
         ChatConfig.SelfCheck(log);     // per-window pair round-trip proof (off-device)
         TextRig.SelfCheck(log);   // #33 session-clear drops cached engine texture pointers (off-device)
         FontRegistry.SelfCheck(log);
+        EditBuffer.SelfCheck(log);     // the input line's editing contract (off-device)
+        ChatCommands.SelfCheck(log);   // slash-command grammar (#25)
+        TypingSignal.SelfCheck(log);   // chat-bar focus/unfocus latch (off-device)
+        Snippets.SelfCheck(log);       // chat shortcut rows
+        NameCompleter.SelfCheck(log);  // Tab name completion
+        HistoryFile.SelfCheck(log);    // saved sent-line history escaping
         SettingsWindow.ColorResolver = WindowRenderer.CurrentColor;
         string[] names = FontRegistry.Names;   // "default" first: the window's own entry stands in for it
         var faces = new string[names.Length];

@@ -86,6 +86,7 @@ public static class ServiceHost
         // ADR 0025: after every Initialize, so the walk covers every group declared this session -- a User
         // row without help, a layout knob that is not a dropdown, a Restart knob whose Boot moved, all fail here.
         KnobGroup.SelfCheck(log);
+        TextList.SelfCheck(log);
         KnobFile.SelfCheck(log);
 
         // #170: the frame walk must be immutable before the present hook can fire. Sealing here is the

@@ -51,27 +51,47 @@ public sealed unsafe partial class ChatService
         /// <summary>Read the character name for an ingest PlayerId (+0x8), or null if the player is gone.</summary>
         public string? NameOf(uint playerId)
         {
+            foreach (CNWCPlayer player in Roster())
+                if (player.PlayerId == playerId) return CharacterName(player);
+            return null;
+        }
+
+        public IReadOnlyList<string> OnlineNames()
+        {
+            var names = new List<string>();
+            foreach (CNWCPlayer player in Roster())
+                if (CharacterName(player) is string n) names.Add(n);
+            return names;
+        }
+
+        /// <summary>The live roster's non-null entries; empty off-module or when the count is implausible.</summary>
+        private static List<CNWCPlayer> Roster()
+        {
+            var list = new List<CNWCPlayer>();
             IntPtr app = App();
-            if (app == IntPtr.Zero) return null;
+            if (app == IntPtr.Zero) return list;
             CClientExoAppInternal intern = new CClientExoApp(app).Internal;
-            if (intern.IsNull) return null;
+            if (intern.IsNull) return list;
             IntPtr listBase = intern.Players;
             int count = intern.PlayerCount;
-            if (listBase == IntPtr.Zero || count <= 0 || count > 64) return null;
+            if (listBase == IntPtr.Zero || count <= 0 || count > 64) return list;
             for (int i = 0; i < count; i++)
             {
                 var player = new CNWCPlayer(*(IntPtr*)(listBase + i * 8));
-                if (player.IsNull) continue;
-                if (player.PlayerId != playerId) continue;
-                IntPtr buf = player.CreatureName;
-                if (buf == IntPtr.Zero) return null;
-                uint len = player.CreatureNameLen;
-                if (len == 0 || len > 128) return null;
-                var sb = new StringBuilder((int)len);
-                for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
-                return sb.ToString();
+                if (!player.IsNull) list.Add(player);
             }
-            return null;
+            return list;
+        }
+
+        /// <summary>A roster entry's character name (Latin1: char == source byte), or null when unset.</summary>
+        private static string? CharacterName(CNWCPlayer player)
+        {
+            IntPtr buf = player.CreatureName;
+            uint len = player.CreatureNameLen;
+            if (buf == IntPtr.Zero || len == 0 || len > 128) return null;
+            var sb = new StringBuilder((int)len);
+            for (uint k = 0; k < len; k++) sb.Append((char)*(byte*)(buf + (int)k));
+            return sb.ToString();
         }
 
         /// <summary>The local player's ingest-space playerId, from the shared roster walk. Cold (Tell ingest only).</summary>
@@ -162,7 +182,7 @@ public sealed unsafe partial class ChatService
         TellAutoOpen mode = ChatKnobs.TellMode;
         if (mode == TellAutoOpen.Off)
         {
-            Open();
+            Open(draft: false);
             string cmd = $"/t \"{name}\" ";
             // name was read Latin1 (char == source byte); Latin1.GetBytes recovers the original UTF-8
             // bytes. UTF8.GetBytes would double-encode a non-ASCII name into the command.

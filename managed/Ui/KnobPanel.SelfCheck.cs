@@ -13,7 +13,8 @@ public sealed partial class KnobPanel
     /// independent scrolls, geometry that fits 1280×720 and 1920×1080 with no clipped label; then the semantics --
     /// the boxed master, parent-off greying and strip with the action and link rows live, the Advanced
     /// disclosure and its marker + tooltip, Reset to defaults and the dots, the restart badge, the status line,
-    /// the link copy, the two-click confirm, the swatch channels -- and a zero-alloc draw with all of them on.</summary>
+    /// the link copy, the two-click confirm, the swatch channels -- and a zero-alloc draw with all of them on; then the
+    /// list control on a group of its own.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
@@ -342,6 +343,57 @@ public sealed partial class KnobPanel
             check.Expect(R(dens).Value == "3", "a value moved outside the panel re-formats its text on the next draw");
             g.Master.Set(true); pg.Master.Set(true);
             p.Close();
+
+            // List: an item row per entry and a trailing add box; the add box appends (Enter keeps adding), an item box
+            // edits in place, the × or an emptied entry removes, the cfg / chat form is one | line, a press aimed at a row
+            // that a commit just moved is not applied, an off master greys the items, and the draw allocates nothing.
+            var lg = new KnobGroup("cx-panellist", "Hotkeys", "List check", "Enable the list", "The list master.", true,
+                                   Effect.Live, null, null, "", register: false);
+            var lst = lg.List("items", "Shortcuts", new[] { ";a alpha" }, hint: "Add one", help: "One entry each.");
+            p.OpenAt(1280f, 720f, FacePx, body, small); p._subs = new[] { lg }; p.Sub = 0; p.LayoutRows();
+            Row I(int i) { foreach (Row r in p.Rows) if (r.Kind == RowKind.Item && r.Item == i) return r; throw new InvalidOperationException($"no item row {i}"); }
+            void ItemBox(Row r, out float cx, out float cy) { Show(r); p.ItemRect(r, p.List.ToScreen(r.Top), out float x0, out float x1, out float y0, out float y1); cx = (x0 + x1) * 0.5f; cy = (y0 + y1) * 0.5f; }
+            void PressItem(Row r) { ItemBox(r, out float cx, out float cy); Press(cx, cy); }
+            check.Expect(Count(RowKind.Item) == 2 && I(0).Value == ";a alpha" && !I(0).Adds && I(1).Adds && I(1).Text == "Add one" && R(lst).CtlW == 0f,
+                         "a list lays out its entry, then an add box carrying the hint; the label row has no control of its own");
+            PressItem(I(1)); p.EditInsert(";b bravo"); p.Key(0x0D);
+            check.Expect(lst.V.Count == 2 && lst.V[1] == ";b bravo" && p.Editing && p.EditingRow(I(2)), "Enter in the add box appends and opens the next add box");
+            p.EditInsert("  "); p.Key(0x0D);
+            check.Expect(lst.V.Count == 2 && !p.Editing, "Enter on a blank add box appends nothing and stops");
+            PressItem(I(0));
+            check.Expect(p.EditText == ";a alpha", "an item box seeds the edit with its entry");
+            p.EditBackspace(); p.EditInsert("Z"); p.Key(0x0D);
+            check.Expect(lst.V.Count == 2 && lst.V[0] == ";a alphZ", "a commit replaces the entry in place");
+            Row r1 = I(1); Show(r1); p.RemoveRect(r1, p.List.ToScreen(r1.Top), out float lx0, out float lx1, out float ly0, out float ly1);
+            Press((lx0 + lx1) * 0.5f, (ly0 + ly1) * 0.5f);
+            check.Expect(lst.V.Count == 1 && lst.V[0] == ";a alphZ" && Count(RowKind.Item) == 2, "the × removes its entry and the rows follow");
+            PressItem(I(0)); for (int i = 0; i < 8; i++) p.EditBackspace(); p.Key(0x0D);
+            check.Expect(lst.V.Count == 0 && Count(RowKind.Item) == 1 && I(0).Adds && !lst.IsDefault, "an emptied entry is removed; the add box stays");
+            PressItem(I(0)); p.EditInsert(new string('x', ItemMax + 10));
+            check.Expect(p.EditText.Length == ItemMax, "an item takes ItemMax characters");
+            p.CancelEdit();
+            check.Expect(lst.Parse("p|q\\|r") && lst.V.Count == 2 && lst.V[1] == "q|r" && lst.Format() == "p|q\\|r", $"the cfg / chat form is one | line with escapes ({lst.Format()})");
+            p.LayoutRows();
+            check.Expect(Count(RowKind.Item) == 3, "a set from outside the panel shows on the next layout");
+            ItemBox(I(2), out float ax, out float ay);
+            Press(ax, ay); p.EditInsert("s");
+            Press(ax, ay);
+            check.Expect(lst.V.Count == 3 && lst.V[2] == "s" && !p.Editing, "a press on the add box that just appended is not applied to the entry that slid under it");
+            lg.Master!.Set(false);
+            check.Expect(p.Greyed(I(0)) && p.Greyed(I(3)), "an off master greys the items and the add box");
+            Row r0 = I(0); Show(r0); p.RemoveRect(r0, p.List.ToScreen(r0.Top), out lx0, out lx1, out ly0, out ly1);
+            Press((lx0 + lx1) * 0.5f, (ly0 + ly1) * 0.5f);
+            check.Expect(lst.V.Count == 3, "a greyed × removes nothing");
+            lg.Master.Set(true);
+            PressItem(I(0)); p.EditInsert(" and a long enough tail to scroll the box while it is typed in");
+            p.MouseMove(ax, ay);
+            var lvb = new VertexBatch(body.SolidU, body.SolidV);
+            p.Emit(lvb);
+            long lb = GC.GetAllocatedBytesForCurrentThread();
+            for (int i = 0; i < 100; i++) { lvb.Clear(); p.Emit(lvb); }
+            long ld = GC.GetAllocatedBytesForCurrentThread() - lb;
+            check.Expect(ld == 0, $"100 draws of a list with an item being typed allocate nothing ({ld} bytes)");
+            p.CancelEdit(); p.Close();
         }
         finally { Clock = realClock; Tooltip.Clock = realTipClock; CopyText = realCopy; }
 

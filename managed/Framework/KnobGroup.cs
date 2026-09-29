@@ -113,6 +113,17 @@ public sealed partial class KnobGroup
         => Add(new Knob<string>(this, key, label, KnobKind.Text, tier, effect, _section, help ?? "", false,
                                 def, "", "", "", "", null, null, null, null), changed);
 
+    /// <summary>An editable list of text items (<see cref="TextList"/>): the panel shows one text box per item with a
+    /// remove button and a trailing empty box, <paramref name="hint"/> its placeholder, that appends one. The cfg key
+    /// and the chat form hold the items joined with <c>|</c>.</summary>
+    public Knob<TextList> List(string key, string label, string[]? def = null, string hint = "", Tier tier = Tier.User,
+                               Effect effect = Effect.Live, string? help = null, Action? changed = null)
+    {
+        TextList d = def == null ? TextList.Empty : new TextList(def);
+        return Add(new Knob<TextList>(this, key, label, KnobKind.List, tier, effect, _section, help ?? "", false,
+                                      d, d, d, d, "", null, null, null, null) { Hint = hint }, changed);
+    }
+
     /// <summary><paramref name="confirm"/>: the panel fires it on a second press within
     /// <see cref="KnobButton.ConfirmSec"/> only (spec §4.5's revoke rows).</summary>
     public KnobButton Button(string key, string label, Action press, Tier tier = Tier.User, string? help = null, bool confirm = false)

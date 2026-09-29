@@ -36,6 +36,10 @@ public static partial class WindowRenderer
     [System.ThreadStatic] private static List<Rune>? _runesScratch;
     [System.ThreadStatic] private static List<uint>? _colsScratch;
 
+    /// <summary>Per-thread markup class scratch, one byte per UTF-16 char of the edit line. Sized to
+    /// <see cref="EditBuffer.MaxLength"/> on first use, so a keystroke never reallocates it.</summary>
+    [System.ThreadStatic] private static byte[]? _markupScratch;
+
     private const uint EditRgb = 0xF0F0F0;  // not-an-offset: a colour
     /// <summary>Unread ephemeral tab: label + pulsing underline.</summary>
     private const uint UnreadRgb = Warn;
@@ -522,20 +526,17 @@ public static partial class WindowRenderer
 
     /// <summary>The word-wrapped input strip below the frame: a channel chip (top row) + the edit text
     /// wrapped to the strip width, the strip growing downward one <see cref="ChatWindow.FooterH"/> per row.
-    /// Caret and selection are mapped from UTF-16 indices into wrapped rune rows.</summary>
+    /// Geometry comes from <see cref="InputStripLayout"/>, so the caret drawn here and the one a click computes
+    /// are the same. Caret and selection are mapped from UTF-16 indices into wrapped rune rows.</summary>
     private static void EmitInputStrip(VertexBatch b, GlyphAtlas atlas, ChatWindow win, string editText,
                                        int caret, (int start, int end)? selection, Pal p)
     {
         float fh = ChatWindow.FooterH, ins = Inset * Metrics.Scale;
         float baseDrop = (fh - atlas.LineHeight) * 0.5f + atlas.Ascent;
-        float startX = win.X + ChatWindow.DropdownW + ChatWindow.Pad;   // edit line begins right of the dropdown
-        float editW = win.X + win.W - ChatWindow.Pad - startX;          // wrap width for the input text
 
         List<Rune> runes = _runesScratch ??= new List<Rune>();
-        runes.Clear();
-        foreach (Rune r in editText.EnumerateRunes()) runes.Add(r);
-        List<TextWrapper.LineSpan> wraps = TextWrapper.WrapRunes(runes, editW, atlas.AdvanceOfCached);
-        if (wraps.Count == 0) wraps.Add(new TextWrapper.LineSpan(0, 0));   // always at least one (empty) row
+        InputStripLayout.Layout(win, atlas, editText, runes,
+                                out List<TextWrapper.LineSpan> wraps, out float startX, out _);
         int rows = wraps.Count;
         win.FooterRows = rows;   // set BEFORE reading StripTop: in above-mode StripTop depends on FooterHeight
         float fy = win.StripTop;
@@ -549,8 +550,10 @@ public static partial class WindowRenderer
         UiText.Draw(b, atlas, win.SendChannel.ToString(), cx0 + ChatWindow.Pad, fy + baseDrop, Hi, cx1 - ChatWindow.Pad - UiText.Measure(atlas, "▾"));
         UiText.Draw(b, atlas, "▾", cx1 - ChatWindow.Pad * 0.5f - UiText.Measure(atlas, "▾"), fy + baseDrop, Tx2, cx1);
 
-        int caretR = RuneIndex(runes, caret);
-        (int selA, int selB) = selection is (int a, int c) ? (RuneIndex(runes, a), RuneIndex(runes, c)) : (-1, -1);
+        int caretR = InputStripLayout.RuneIndex(runes, caret);
+        (int selA, int selB) = selection is (int a, int c)
+            ? (InputStripLayout.RuneIndex(runes, a), InputStripLayout.RuneIndex(runes, c)) : (-1, -1);
+        List<uint>? cols = ChatKnobs.Markup.V && runes.Count > 0 ? MarkupColors(editText, runes) : null;
 
         for (int w = 0; w < rows; w++)
         {
@@ -564,29 +567,51 @@ public static partial class WindowRenderer
                 float x1 = RowAlign.Measure(atlas, runes, span.Start, re, startX);
                 b.Rect(x0, ry + ins, x1, ry + fh - ins, p.SelBg.r, p.SelBg.g, p.SelBg.b, p.SelBg.a);
             }
-            EmitRunes(b, atlas, runes, span, startX, ry + baseDrop, EditRgb);
+            if (cols != null) EmitRow(b, atlas, runes, cols, span, startX, ry + baseDrop);
+            else EmitRunes(b, atlas, runes, span, startX, ry + baseDrop, EditRgb);
 
-            // Caret on this row? At a row's End it belongs to the NEXT row's start only on a contiguous
-            // hard-break (no consumed space); when a space was consumed, End stays on this row.
-            bool here = caretR >= span.Start && caretR <= span.End
-                        && !(caretR == span.End && w < rows - 1 && wraps[w + 1].Start == span.End);
-            if (here)
+            if (InputStripLayout.CaretOnRow(wraps, w, caretR))
             {
                 float cx = RowAlign.Measure(atlas, runes, span.Start, caretR, startX);
                 b.Rect(cx, ry + ins + 1f, cx + 2f, ry + fh - ins - 1f, p.TabActive.r, p.TabActive.g, p.TabActive.b, 1f);
             }
         }
+
+        if (ChatKnobs.Counter.V)
+        {
+            bool near = editText.Length >= InputStripLayout.CounterWarn;
+            string txt = near ? $"{editText.Length}/{EditBuffer.MaxLength}" : editText.Length.ToString();
+            float right = win.X + win.W - ChatWindow.Pad;
+            UiText.Draw(b, atlas, txt, right - UiText.Measure(atlas, txt),
+                        fy + fh * (rows - 1) + baseDrop, near ? Warn : Tx2, right);
+        }
     }
 
-    /// <summary>Map a UTF-16 index into a rune-list index (they diverge only past the BMP).</summary>
-    private static int RuneIndex(List<Rune> runes, int utf16)
+    /// <summary>Per-rune colours for the edit text: each <see cref="InputMarkup"/> class mapped to its swatch,
+    /// filled into the shared colour scratch so <see cref="EmitRow"/>'s glyph loop stays allocation-free.</summary>
+    private static List<uint> MarkupColors(string editText, List<Rune> runes)
     {
+        byte[]? s = _markupScratch;
+        if (s == null || s.Length < editText.Length)
+            _markupScratch = s = new byte[System.Math.Max(editText.Length, EditBuffer.MaxLength)];
+        InputMarkup.Classify(editText, s.AsSpan(0, editText.Length));
+        List<uint> cols = _colsScratch ??= new List<uint>();
+        cols.Clear();
         int u = 0;
-        for (int k = 0; k < runes.Count; k++) { if (u >= utf16) return k; u += runes[k].Utf16SequenceLength; }
-        return runes.Count;
+        for (int k = 0; k < runes.Count; k++) { cols.Add(ClassRgb(s[u])); u += runes[k].Utf16SequenceLength; }
+        return cols;
     }
 
-    /// <summary>Pen X after runes <paramref name="from"/>..<paramref name="to"/>, emitting nothing.</summary>
+    /// <summary>A markup class's RGB: the swatch value's top 24 bits. The swatch alpha is ignored -- input text
+    /// draws opaque, like the plain <see cref="EditRgb"/> it replaces.</summary>
+    private static uint ClassRgb(byte cls) => cls switch
+    {
+        InputMarkup.Emote  => ChatKnobs.EmoteCol.V >> 8,
+        InputMarkup.Speech => ChatKnobs.SpeechCol.V >> 8,
+        InputMarkup.Ooc    => ChatKnobs.OocCol.V >> 8,
+        _                  => EditRgb,
+    };
+
     /// <summary>Draw one wrapped rune span in a single colour.</summary>
     private static void EmitRunes(VertexBatch b, GlyphAtlas atlas, List<Rune> runes, TextWrapper.LineSpan span,
                                   float startX, float baseline, uint rgb)
