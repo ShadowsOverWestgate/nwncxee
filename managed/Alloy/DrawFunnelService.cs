@@ -11,15 +11,12 @@ namespace CX.Alloy;
 
 /// <summary>The engine notices Alloy needs, and nothing else (#264). Every hook here has a live consumer:
 /// <list type="bullet">
-/// <item><c>PartTriMesh::Draw</c> / <c>PartSkin::Draw</c> -- the vanilla draw, which under
-/// <see cref="RspShim"/> is also the HAND-BACK (#236); <see cref="SkyBox"/>'s capture window (#125); the
-/// caster pass's bone bracket (#96); and the <c>unrecorded-draws</c> counter, the acceptance number for "the
-/// scene walk reached every part the engine draws" (#256). The skin entry's draws/frame row is what says
-/// whether that hook fires at all (#221).</item>
 /// <item><c>Part::~Part</c> -- the death notice (#145, #221). Every other liveness test is an inference.</item>
-/// <item><c>GLRender::RenderVertexData</c> -- the caster pass's capture funnel (#96).</item>
 /// <item><c>VertexDataObject::Repack</c> -- the layout-change edge no scene epoch reports.</item>
+/// <item><c>Gob::Append</c> / <c>Gob::Amputate</c> -- the equipment-swap pair, a cold #397 diagnostic.</item>
 /// </list>
+/// <para>The part draw hooks went with the engine's bucket walk (#264); the draw funnels
+/// (<c>GLRender::RenderVertexData</c> / <c>RenderVertexStreamData</c>) belong to <see cref="RspShim"/>.</para>
 /// <para>Armed by <c>drawhooks</c> in <c>cx.cfg</c> (the default arms this service, <c>stats</c> hands the
 /// draw hooks to <c>DrawStatsService</c>, anything else disables both -- one mode, because both hook the
 /// same symbols). Hot and alloc-free throughout.</para></summary>
@@ -193,7 +190,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         if (++_frame % LogEvery != 0) return;
         _log?.Info("DrawFunnels: " + SceneWalk.Period());
         _log?.Info($"DrawFunnels: [funnels] {_partCount} parts tracked, " +
-                   (_saturated ? $"TABLE SATURATED ({_satLive} live / {_satDead} dead, surplus engine-drawn), " : "") +
+                   (_saturated ? $"TABLE SATURATED ({_satLive} live / {_satDead} dead, surplus NOT DRAWN), " : "") +
                    // #145: parts the engine destroyed under a recorded entry. A 0 that survives an area
                    // transition means Part::~Part is not reaching us, which is indistinguishable from
                    // "nothing died" in every other number here.

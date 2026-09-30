@@ -360,14 +360,13 @@ public sealed unsafe partial class AlloyRenderer
     private static int EnrollOne(int e, ref AlloyCandidate c, int slot, bool canLight, float* keep)
     {
         // #126: a refusal from here on is counted against the class it would have joined -- see the
-        // all-owned-or-none sweep below. The surplus stays engine-drawn, never dropped.
+        // all-owned-or-none sweep below.
         bool watch = AlloyCensus.WatchedEntry(e);
         // #128: the two CAPACITY refusals do not go to the gob. They are not properties of the instance
         // -- the same creature is ownable in an emptier area -- and routing them there turns a full table
         // into a cliff: thousands of gobs marked, the refused set overflows, and the sweep then drops
-        // EVERY instance in the scene rather than the surplus. "The surplus stays engine-drawn, never
-        // dropped" is the rule, and at capacity a creature split across two renderers (a lighting
-        // mismatch) beats every creature in the area reverting.
+        // EVERY instance in the scene rather than the surplus. Only the surplus may go undrawn at
+        // capacity (#264: nothing draws a refused part), never every creature in the area.
         // #308: the slot this tenant held last enrollment, found up front so a KEPT tenant can never be
         // spilled by capacity -- the live count includes this scan's not-yet-swept departures, and
         // refusing a kept tenant on their account would oscillate the whole table at the full boundary.

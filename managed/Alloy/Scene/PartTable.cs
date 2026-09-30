@@ -432,9 +432,9 @@ internal static unsafe class PartTable
 
     /// <summary>The table is full. Reclaim it if it is full of the DEAD (an area transition's debris, which
     /// is what the wipe exists for), and refuse to if it is full of the LIVE (a big area, where wiping is
-    /// the bug). A saturated table degrades the way it already knows how: <see cref="Insert"/> returns -1
-    /// and the group allocator calls <c>Die(e, "groups-full")</c>, so the surplus stays engine-drawn and
-    /// everything already recorded keeps rendering.</summary>
+    /// the bug). A saturated table degrades the way it already knows how: <see cref="Insert"/> returns -1,
+    /// the surplus is NOT DRAWN (no engine walk stands behind a refusal since #264) and everything already
+    /// recorded keeps rendering.</summary>
     internal static void OnTablePressure()
     {
         int live = 0, dead = 0;
@@ -460,7 +460,7 @@ internal static unsafe class PartTable
         Log?.Info($"PartTable: table SATURATED -- {live} live vs {dead} dead entries in " +
                    $"{_partCount} parts. NOT wiping: this is a large area, not " +
                    "transition debris, and wiping live entries is what used to drop the whole world back " +
-                   "to vanilla once a second. Parts past the cap stay engine-drawn.");
+                   "to vanilla once a second. Parts past the cap are not drawn.");
     }
 
     internal static void WipeTables(string why)

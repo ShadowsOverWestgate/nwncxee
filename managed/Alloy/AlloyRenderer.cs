@@ -66,7 +66,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// a module unload) produces no line, which reads as "never armed" rather than "not yet". Report once
     /// early, then settle into the long cadence.</summary>
     internal const int FirstLogAt = 120;
-    /// <summary>Ownership capacity. Beyond this the surplus stays engine-drawn (staging), never dropped.
+    /// <summary>Ownership capacity. Beyond this the surplus is not drawn (#264: no engine walk behind a refusal).
     /// A ceiling that should not be reachable rather than a budget to tune: ~29x the 5631 parts a large stock
     /// area carries, ~400 bytes per slot across the arrays below (62.5MB resident). A cap under the population
     /// is worse than "some tiles render vanilla": WHICH parts spill is a first-come-first-served walk of

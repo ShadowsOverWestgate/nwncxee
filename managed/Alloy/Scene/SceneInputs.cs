@@ -18,8 +18,8 @@ namespace CX.Alloy;
 /// <item>the shared per-frame shadow focus, published as <c>FrameInputs.Focus</c>;</item>
 /// <item>the area's interior flag, which is what tells CasterPass there is no sun to fit.</item>
 /// </list>
-/// <para>All of it runs in the one deterministic per-frame slot (ADR 0007 phase 1:
-/// <c>Scene::AddPartsToDrawBuckets</c>, after ManageSceneBSP and before any draw), and none of it touches
+/// <para>All of it runs at the #132 frame anchor (<c>AlloyRenderer.OnFadeDoors</c>, after the engine's
+/// <c>EnableLights</c> has advanced the fade weights and before any draw), and none of it touches
 /// GL -- it is also where this service drives <see cref="CasterPass.OnPassSlot"/> (#118), so the world casters
 /// bake ahead of the colour pass that samples them. The <c>shadow.enabled=0</c> config setting stands the whole thing down, which
 /// since #118 also means CasterPass never ticks -- without this feed it had nothing to bake.</para>

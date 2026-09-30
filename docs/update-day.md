@@ -26,6 +26,9 @@ one in place. Snapshot every build you ship a file for, while it is still instal
 
 This must report 115/115 RVAs, every offset carried, and an empty worklist.
 
+Once the new binary is imported into the Ghidra project, dump it too (about 15 min):
+`tools/ghidra/decomp-all.sh ~/nwn-decomp/<new name>`.
+
 ## Day of
 
 1. **Generate the build file** (about 5 s, no Ghidra):
