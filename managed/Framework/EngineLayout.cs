@@ -831,6 +831,12 @@ public static unsafe class EngineLayout
     /// <c>Get&lt;bool&gt;</c> bodies.</summary>
     public static readonly int ExoConfigWorkingTable = Field<IntPtr>("CExoConfig", "workingTable");
 
+    /// <summary>CX-99: CExoMoviePlayerInternal + 0x78 -- the GL texture name the decoder uploads each movie
+    /// frame into, and the one thing <c>ShowFrame</c> needs that is not already an argument.
+    /// <c>CExoMoviePlayer::GetTexture</c> is this load behind one indirection on both builds (Windows export
+    /// <c>?GetTexture@CExoMoviePlayer@@QEBAIXZ</c> rva 0x2321a0: <c>mov rax,[rcx]; mov eax,[rax+0x78]</c>).</summary>
+    public static readonly int MovieTexture = Field<uint>("CExoMoviePlayerInternal", "texture");
+
     /// <summary>CClientExoApp -&gt; CClientExoAppInternal*. #439: <c>CClientExoApp::GetInGameGui</c> (Linux
     /// @0x737c70, Windows rva 0x6abbc0) is one line on both builds, <c>*(*(this+8) + 0x90)</c>.</summary>
     public static readonly int ExoAppInternal = Field<CX.Engine.CClientExoAppInternal>("CClientExoApp", "internal");
@@ -872,6 +878,27 @@ public static unsafe class EngineLayout
     /// <summary>CClientExoAppInternal -&gt; the local player's creature object id. <c>CClientExoApp::GetPlayerCreatureId</c>
     /// (Linux nm 0x6377a0, Windows rva 0x6ac1c0) is the one-liner <c>*(*(this+8)+0x48)</c> on both builds.</summary>
     public static readonly int InternalPlayerCreatureId = Field<uint>("CClientExoAppInternal", "playerCreatureId");
+    // ---- CX-100: the one loading screen. The engine's loadscreen panel is the progress and the phase. ----
+    /// <summary>CClientExoAppInternal -&gt; the live <c>CGuiAreaLoadscreen*</c>, null when no load bar is up.
+    /// <c>CClientExoAppInternal::StartLoadBar</c> news it here and <c>EndLoadBar</c> deletes and nulls it
+    /// (Linux @0x6433e0 / @0x642fd0, Windows 0x1406e37f0 / 0x1406d7650 -- both read <c>+0x448</c>, and the
+    /// state int <c>GetLoadBarState</c> returns sits at <c>+0x450</c> on both).</summary>
+    public static readonly int InternalLoadscreen = Field<CX.Engine.CGuiAreaLoadscreen>("CClientExoAppInternal", "loadscreen");
+    /// <summary>CGuiAreaLoadscreen -&gt; its embedded <c>CGuiStatusBar</c> ("LoadBar"). The ctor constructs it in place
+    /// (Linux @0x66bcd0 <c>this+0x130</c>, Windows @0x140836f60 <c>lea rcx,[r14+0x120]</c> into the exported
+    /// <c>??0CGuiStatusBar@@QEAA@XZ</c>), and every load-progress call passes exactly this address to
+    /// <c>CGuiStatusBar::SetStatus</c>.</summary>
+    public static readonly int LoadscreenStatusBar = Field<CX.Engine.CGuiStatusBar>("CGuiAreaLoadscreen", "statusBar", embedded: true);
+    /// <summary>CGuiAreaLoadscreen -&gt; the "the load is over, waiting for the player" int. <c>StartLoadBar</c> zeroes
+    /// it; the two load tails set it to 1 beside <c>SetFade(1,0,0.5)</c> and <c>SetAutoDeleteOnFadeComplete</c>
+    /// (Linux <c>+0x2e8</c>, Windows <c>+0x2e0</c>: the class is 0x388 bytes on Linux and 0x380 under MSVC, and the
+    /// two neighbouring writes shift the same way -- Linux <c>+0x124</c>/<c>+0x120</c> are Windows
+    /// <c>+0x114</c>/<c>+0x110</c>). While it is 0 the engine is still loading; at 1 the panel fades out over live
+    /// world frames, which is where CX hands the screen back.</summary>
+    public static readonly int LoadscreenEndPhase = Field<int>("CGuiAreaLoadscreen", "endPhase", Expect.Byte01);
+    /// <summary>CGuiStatusBar -&gt; the stored fill, 0..100. <c>CGuiStatusBar::SetStatus</c> clamps to that range and
+    /// stores it (Linux @0x594be0 <c>this+0x7c</c>, Windows @0x1401ec270 <c>movss %xmm0,0x80(%rcx)</c>).</summary>
+    public static readonly int StatusBarStatus = Field<float>("CGuiStatusBar", "status");
     /// <summary>CClientExoAppInternal -&gt; CNetLayer* (CX-694). <c>CClientExoApp::GetNetLayer</c> (Linux nm 0x6361a0, Windows
     /// rva 0x6abfb0, unexported: anchored in docs/windows-symbols.md) is the one-liner <c>*(*(this+8)+0x18)</c> on both builds.</summary>
     public static readonly int InternalNetLayer = Field<CX.Engine.CNetLayer>("CClientExoAppInternal", "netLayer");
@@ -1742,6 +1769,52 @@ public static unsafe class EngineLayout
     /// NAMES it: the pre-#443 comment called it "the visible byte", and the visible byte is
     /// <see cref="GobVisible"/> at +0x1a4.</summary>
     public static readonly int GobPropagateHilite = Field<byte>("Gob", "propagateHilite");
+
+    // ---- CX-95: the GUI scene path ----
+
+    /// <summary>CX-95: the scene's NUL-terminated name, <c>"sceneGUI_&lt;panel&gt;"</c> for a panel scene.
+    /// <c>Scene::RenderOnlyGobs</c> strcasecmp's it at this offset on both builds (Linux @0x46837c
+    /// <c>lea 0xf0(%rbx)</c>, Windows rva 0xcfaf5 <c>lea rcx,[rbx+0xf0]</c>) to pick its two lit scenes.</summary>
+    public static readonly int SceneName = Field<byte>("Scene", "name");
+    /// <summary>CX-95: <c>CAurObject::Render(bool propagate)</c> -- the per-gob draw <c>Scene::RenderOnlyGobs</c>
+    /// calls with <c>false</c> (Linux @0x468414 <c>call *0x28</c>, Windows rva 0xcfb50 <c>call *0x20</c>). <c>Gob::Render</c>
+    /// for a model, <c>StringGob::Render</c> for text.</summary>
+    public static readonly int GobRenderSlot = Field("Gob", "vtbl.Render", Expect.VtblSlot, sig: "void(byte propagate)");
+
+    /// <summary>CX-95: a stream draw's element-pool token. <c>GLRender::SetVertexStreamDataObject</c> reads it at
+    /// Linux +0x14 / Windows +0x18, the vertex token at +0x1c / +0x20 and the attribute flags at +0x20 / +0x24
+    /// (Windows rva 0xbacc0 vs Linux @0x4d07a0); <c>CommitVertexData</c> reads the stride at +0x24 / +0x28.
+    /// The indexed byte is +0x8 on both.</summary>
+    public static readonly int VsdoIndexed = Field<byte>("VertexStreamDataObject", "indexed");
+    /// <inheritdoc cref="VsdoIndexed"/>
+    public static readonly int VsdoElemToken = Field<uint>("VertexStreamDataObject", "elemToken");
+    /// <inheritdoc cref="VsdoIndexed"/>
+    public static readonly int VsdoVertToken = Field<uint>("VertexStreamDataObject", "vertToken");
+    /// <inheritdoc cref="VsdoIndexed"/>
+    public static readonly int VsdoFormat = Field<uint>("VertexStreamDataObject", "format");
+    /// <inheritdoc cref="VsdoIndexed"/>
+    public static readonly int VsdoStride = Field<int>("VertexStreamDataObject", "vertexStride");
+
+    /// <summary>CX-95: <c>GLRender::m_material</c>'s MATERIAL struct, per <c>SetMaterialv</c> (Linux @0x4cc060,
+    /// Windows rva 0xb75b0, same switch on both): property 1 ambient at +0, 2 diffuse at +0x10, 3 emissive at
+    /// +0x30, each an RGBA float quad.</summary>
+    public static readonly int GlMatAmbient = Field<System.Numerics.Vector4>("GlMaterial", "ambient");
+    /// <inheritdoc cref="GlMatAmbient"/>
+    public static readonly int GlMatDiffuse = Field<System.Numerics.Vector4>("GlMaterial", "diffuse");
+    /// <inheritdoc cref="GlMatAmbient"/>
+    public static readonly int GlMatEmissive = Field<System.Numerics.Vector4>("GlMaterial", "emissive");
+
+    /// <summary>CX-101: the three fields of nuklear's <c>nk_context</c> that its flush touches, identical on both
+    /// builds. <c>delta_time_seconds</c> is at +0x5088 (<c>nk_sdl_render</c>'s first store on both); the other two
+    /// are inside <c>ctx-&gt;draw_list</c>, which starts at +0x5090 (Linux <c>nk__draw_begin</c> @0xde3db0 is
+    /// <c>add rdi,0x5090</c>; the Windows body inlines the same walk at ctx+0x5160/+0x5168).
+    /// <c>cmd_count</c> sits at draw_list+0xd0 and <c>cmd_offset</c> at +0xd8, both read from
+    /// <c>nk__draw_list_begin</c> @0xde0e60. docs/research/nui-draw-in-alloy.md §3.</summary>
+    public static readonly int NkCtxDeltaTime = Field<float>("NkContext", "deltaTime");
+    /// <inheritdoc cref="NkCtxDeltaTime"/>
+    public static readonly int NkCtxDrawCmdCount = Field<int>("NkContext", "drawCmdCount");
+    /// <inheritdoc cref="NkCtxDeltaTime"/>
+    public static readonly int NkCtxDrawCmdOffset = Field<long>("NkContext", "drawCmdOffset");
 
     // ---- CNWCAnimBase: the highlight CHANNELS (#336) ----
     // No CNWC* class is name-exported on Windows, so the class sweep dumps it EMPTY. #446 took #420's RVA

@@ -782,6 +782,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         ShaderSource.SelfCheck(log);
         TriggerHighlight.SelfCheck(log);
         HighlightGlow.SelfCheck(log);
+        GuiCapture.SelfCheck(log);
+        GuiStream.SelfCheck(log);
+        NuiFlush.SelfCheck(log);
         // #262: Alloy does the bone solve itself now, so its arithmetic is ours to be wrong about. Up here
         // with the other unconditional checks -- a client that never arms still reports whether the maths
         // this build ships is right, and the answer does not depend on any engine symbol.
@@ -886,6 +889,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // (the beam window, the emitter suppression, the bucket gate), so they have to be installed first.
         RspShim.Install(log, hooks);
         _armed = _origRsp != null;
+        // CX-95: after the shim, whose two funnel hooks are where a GUI scene's draws are captured.
+        if (_armed && RspShim.Armed) GuiPass.Install(log, hooks);
+        // CX-101: after GuiPass, so the nk_sdl_render chain reads panels (40), CX windows (20), NUI (1).
+        if (_armed && RspShim.Armed) NuiFlush.Install(log, hooks);
         if (_armed) log.Info(_skinning
             ? "AlloyRenderer: #262 skinmeshes owned -- posed per frame from engine animation state, no draw re-entry (alloy.ownskin=0 in cx.cfg disables)"
             : "AlloyRenderer: skinmeshes stay engine-drawn (cloaks, robes, tails)");
@@ -1338,6 +1345,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         DepthResource.Revoke();
         CullPass.ContextLost();
         PresentTarget.ContextLost();   // #456: names only -- the images died with the context
+        GuiPass.ContextLost();
         _nullSunShadow = 0; _nullCubeShadow = 0;
         PassContextLost();
     }

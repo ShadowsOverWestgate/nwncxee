@@ -500,6 +500,7 @@ def programs(g):
         "grass blade depth": (g["cx_gblade_vs"], g["cx_gblade_df"]),
         "clustered light build": (g["cx_cluster_cs"],),
         "highlight glow": (g["cx_hiliteglow_v"], g["cx_hiliteglow_f"]),
+        "gui": (g["cx_gui_v"], g["cx_gui_f"]),
         "trigger highlight": (g["cx_fullscreen_v"], g["cx_hilitetrig_f"]),
         "halo occlusion probe": (g["cx_haloocc_c"],),
         "oit resolve": (g["cx_fullscreen_v"], g["cx_oitresolve_f"]),

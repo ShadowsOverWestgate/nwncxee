@@ -200,6 +200,7 @@ offset	CExoBase	config	0x0	0x0	# ExoBaseConfig
 offset	CExoBase	userDir	0x38	0x38	# ExoBaseUserDir
 offset	CExoConfig	initializing	0x0	0x0	# ExoConfigInitializing
 offset	CExoConfig	workingTable	0x28	0x28	# ExoConfigWorkingTable
+offset	CExoMoviePlayerInternal	texture	0x78	0x78	# MovieTexture
 offset	CClientExoApp	internal	0x8	0x8	# ExoAppInternal
 offset	CClientExoAppInternal	inGameGui	0x90	0x90	# InternalInGameGui
 offset	CClientExoAppInternal	mainMenuPanel	0x98	0x98	# InternalMainMenuPanel
@@ -213,6 +214,10 @@ offset	CClientExoAppInternal	players	0x38	0x38	# InternalPlayers
 offset	CClientExoAppInternal	playerCount	0x40	0x40	# InternalPlayerCount
 offset	CClientExoAppInternal	playerCreatureId	0x48	0x48	# InternalPlayerCreatureId
 offset	CClientExoAppInternal	netLayer	0x18	0x18	# InternalNetLayer
+offset	CClientExoAppInternal	loadscreen	0x448	0x448	# InternalLoadscreen (CX-100)
+offset	CGuiAreaLoadscreen	statusBar	0x130	0x120	# LoadscreenStatusBar (CX-100)
+offset	CGuiAreaLoadscreen	endPhase	0x2e8	0x2e0	# LoadscreenEndPhase (CX-100)
+offset	CGuiStatusBar	status	0x7c	0x80	# StatusBarStatus (CX-100)
 offset	CNWCModule	hour	0x16c	0x16c	# ModuleHour
 offset	CNWCModule	minutesPerHour	0x15c	0x15c	# ModuleMinutesPerHour
 offset	CGuiInGameChatPrompt	shown	0x230	0x200	# ChatPromptShown
@@ -439,6 +444,19 @@ offset	Scene	hiliteGobs	0x80	0x80	# SceneHiliteGobs
 offset	Scene	hiliteCount	0x88	0x88	# SceneHiliteCount
 offset	Scene	hiliteColors	0x90	0x90	# SceneHiliteColors
 offset	Scene	hiliteTexture	0xa0	0xa0	# SceneHiliteTexture
+offset	Scene	name	0xf0	0xf0	# SceneName
+offset	Gob	vtbl.Render	0x28	0x20	# GobRenderSlot
+offset	VertexStreamDataObject	indexed	0x8	0x8	# VsdoIndexed
+offset	VertexStreamDataObject	elemToken	0x14	0x18	# VsdoElemToken
+offset	VertexStreamDataObject	vertToken	0x1c	0x20	# VsdoVertToken
+offset	VertexStreamDataObject	format	0x20	0x24	# VsdoFormat
+offset	VertexStreamDataObject	vertexStride	0x24	0x28	# VsdoStride
+offset	GlMaterial	ambient	0x0	0x0	# GlMatAmbient
+offset	GlMaterial	diffuse	0x10	0x10	# GlMatDiffuse
+offset	GlMaterial	emissive	0x30	0x30	# GlMatEmissive
+offset	NkContext	deltaTime	0x5088	0x5088	# NkCtxDeltaTime
+offset	NkContext	drawCmdCount	0x5160	0x5160	# NkCtxDrawCmdCount
+offset	NkContext	drawCmdOffset	0x5168	0x5168	# NkCtxDrawCmdOffset
 offset	Gob	propagateHilite	0x1c	0x1c	# GobPropagateHilite
 offset	CNWCAnimBase	hiliteActive	0x9c	0x9c	# AnimHiliteActive
 offset	CNWCAnimBase	hiliteGlow	0xb0	0xb0	# AnimHiliteGlow
@@ -935,9 +953,18 @@ rva	nk_scrollbar_behavior	0xa6f320	# NkScrollbarBehavior
 rva	nk_draw_scrollbar	0xa68af0	# NkDrawScrollbar
 rva	nk_do_scrollbarv	0xa65d10	# NkDoScrollbarV
 rva	nk_do_scrollbarh	0xa65700	# NkDoScrollbarH
+rva	_Z13nk_sdl_renderf	0xa71760	# NkSdlRender
+rva	g_pNuklear	0x14299a0	# Nuklear (DATA)
+rva	_Z21nk_sdl_refresh_configv	0xa70d90	# NkSdlRefreshConfig
+rva	nk_convert	0xa7c340	# NkConvert
+rva	nk_clear	0xa77df0	# NkClear
+rva	nk_sdl.ogl.cmds	0x14299d8	# NkCmds (DATA)
+rva	nk_sdl.ogl.tex_null	0x1429a50	# NkTexNull (DATA)
 
 # lva	static function	linux nm address	# SymbolMap.LinuxAnchored constant
 lva	nk_scrollbar_behavior	0xdf5ba0	# NkScrollbarBehavior
 lva	nk_draw_scrollbar	0xddf6b0	# NkDrawScrollbar
 lva	nk_do_scrollbarv	0xdf6100	# NkDoScrollbarV
 lva	nk_do_scrollbarh	0xdf65c0	# NkDoScrollbarH
+lva	nk_sdl.ogl.cmds	0x1a12a28	# NkCmds (DATA)
+lva	nk_sdl.ogl.tex_null	0x1a12aa0	# NkTexNull (DATA)

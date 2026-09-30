@@ -340,13 +340,26 @@ internal static unsafe class RspShim
         _riDisable(2);
     }
 
+    /// <summary>CX-101: engine draws that reached GL while the GUI was Alloy's -- outside every window and every GUI
+    /// scene. Tier 2's claim is that this stays 0; the first one is said, the total is on the status line.</summary>
+    internal static long StrayDraws;
+
+    private static void Stray()
+    {
+        if (!GuiPass.Capturing || GuiCapture.Open) return;   // inside a GUI scene it is a counted custom-shader hand-off
+        if (StrayDraws++ == 0)
+            _log?.Always("RspShim: an ENGINE draw reached GL while the GUI is Alloy's (outside any GUI scene) -- a tier-2 hole; "
+                       + "the count is on /alloy");
+    }
+
     /// <summary>The swallow, layer 20 of the <c>RenderVertexData</c> chain. Returning here skips every lower
     /// subscriber AND the original -- and <see cref="DrawFunnelService"/>, which sits above at 50, still
     /// runs its bone observation after this returns. That is the whole reason the shim can walk the buckets
-    /// and still issue no draw.</summary>
+    /// and still issue no draw. CX-95: inside a GUI scene it records instead (<see cref="GuiCapture.Vdo"/>).</summary>
     [UnmanagedCallersOnly]
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
+        if (GuiCapture.Open && GuiCapture.Vdo(vdo, item, prim, size, offset)) return;
         if (InWindow)
         {
             _swallowed++; return;
@@ -354,6 +367,7 @@ internal static unsafe class RspShim
         // #260's tagging: outside the window the ENGINE is drawing for itself -- the UI, the menu, a GUI 3D
         // panel -- so the pools this VDO names are the ones that question is about.
         else OwnedBuffers.NoteEngineDraw(vdo);
+        Stray();
         GlRenderVertexDataFn next = *_vdoSlot;
         if (next != null) next(vdo, item, prim, size, offset);
     }
@@ -373,7 +387,9 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnStreamDraw(IntPtr vsdo, uint prim, uint size, uint offset)
     {
+        if (GuiCapture.Open && (vsdo == IntPtr.Zero || GuiCapture.Stream(vsdo, prim, size, offset))) return;
         if (InWindow) { _swallowed++; return; }
+        Stray();
         if (_origStream != null) _origStream(vsdo, prim, size, offset);
     }
 

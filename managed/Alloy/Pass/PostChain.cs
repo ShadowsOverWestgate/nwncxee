@@ -57,6 +57,9 @@ internal static unsafe class PostChain
     /// world renders is the "HDR never engaged, you are seeing the fallback" case, and the arm-time log line
     /// says which target refused.</summary>
     internal static int Resolves { get; private set; }
+    /// <summary>CX-101: resolves since boot, never reset -- "did a world frame cover the screen this frame" is a
+    /// compare against the value at the last present.</summary>
+    internal static int ResolveSeq { get; private set; }
 
     private static bool _on = true;
     /// <summary>#215: the <c>hdr</c> boot decision, published because it is a REFUSAL the cutover has to know
@@ -577,6 +580,7 @@ internal static unsafe class PostChain
         Gl.BindVertexArray(0);
         Armed = false;
         Resolves++;
+        ResolveSeq++;
         LastInto = into;
     }
 

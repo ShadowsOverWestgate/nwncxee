@@ -551,6 +551,7 @@ over six classes for the constructor store runs.
 | `MaxFace` ×4 (`0x1a`/`0x1c`/`0x1e`, stride `0x20`) | `Same` | `MdlNodeTriMesh::BuildVertexIndices` walks `node+0xb0` in `0x20` steps, three `u16`s per face |
 | `VertexPool` `stride` `0xc` | `Same` | the tangent-basis worker locks `node+0x280` and indexes `* 0xc` on both, and resizes to twelve bytes a vertex on each — Linux `count * 0xc`, Windows the strength-reduced `(count + count * 2) * 4` |
 | `GLRender::PROG_FIXED` `programId` `0x64` | `Same` | `GLRender::SetProgram` hands `prog+0x64` to `glUseProgram` |
+| `CExoMoviePlayerInternal` `texture` `0x78` | `Same` | CX-99. `CExoMoviePlayer::GetTexture` is the same two loads on both — Windows export `?GetTexture@CExoMoviePlayer@@QEBAIXZ` (rva `0x2321a0`) is `48 8b 01  8b 40 78  c3`, Linux @0x1165930 `mov rax,[rdi]; mov eax,[rax+0x78]`. `GetWidth` `0x68` and `GetHeight` `0x6c` pair on the same build and are also identical (read, not needed: `ShowFrame` takes both as arguments) |
 
 Five findings the rest of the port inherits:
 

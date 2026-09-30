@@ -55,7 +55,7 @@ a frame that is rendering vanilla anyway. It freezes the moment it stops being t
 | 5 | `AlloyRenderer` never armed (hooks did not install) — **after** every opt-out above, because each of them returns from `Initialize` before `_armed` is set, so asking this first reports the mechanism instead of the request | Idle |
 | 5a | the `RenderSinglePass` shim never armed (an engine symbol or draw funnel did not resolve) — same placement, one layer down; since #458 there is no Alloy-inside-the-engine's-frame mode to fall back to | Idle |
 | 5b | a self-check that gates arming failed — since CX-89 that includes `DoorFade.SelfCheck`: the shim stops calling `Scene::FadeDoors`, so a wrong fade would freeze `Gob+0x10c` and `Gob::HitCheck` would refuse the click. Standing the path down hands the fade back to the engine | Idle |
-| 6 | no module loaded | Idle |
+| 6 | no module loaded — **narrowed by CX-95**: it now means only "there is no world frame". The GUI scenes, the menus included, are Alloy's on their own verdict (`GuiPass.Capturing`: Alloy requested at boot, the 4.6 context up, the GUI program built, `alloy.gui` on), and so are the screen clears and the present (`ScreenOwner.Owned`) | Idle |
 | 7 | no GL 4.6 share-listed context — ADR 0010's macOS/old-driver case; the context creation *is* the check, and it also refuses a context missing the GL 4.5 DSA entry points Alloy creates and edits through (CX-44) | Incapable |
 | 8 | a program did not build, `glMultiDrawElementsBaseVertex`/`glBindBufferBase` missing, or the stream ring's entry points missing or its persistent map refused (CX-45) | Incapable |
 | 8a | GL compute or `glMultiDrawElementsIndirectCount` missing (`CullPass.Capable`) — since #264 the compute cull is the frame's only visibility test, so without it every enumerated part of the area would draw every frame | Incapable |
@@ -71,8 +71,8 @@ Video Options mid-session gets the `Fail` notice instead of a world silently ren
 Entry 11 behaves the same way one step coarser: the snapshot is retaken at every area edge, and a
 player who turns Enhanced Lighting off mid-session gets the `Fail` notice at the next area.
 
-**Entry 6 sits where it does for two reasons, and the second is the load-bearing one.** GUI/menu scenes take
-`Scene::RenderOnlyGobs` anyway — but more importantly, every capability term below it is only answerable on a
+**Entry 6 sits where it does for two reasons, and the second is the load-bearing one.** GUI/menu scenes do not
+need the world verdict (CX-95 gives them their own, above) — but more importantly, every capability term below it is only answerable on a
 *warm* client. The 4.6 context is created from a present inside a world frame, so asking entry 7 at the main
 menu answers "no 4.6 context on this device" on every single boot. The first cut of #263 moved this term to
 the end and put a spurious dropout notice on screen at startup; that is what the "an Idle or Incapable verdict
@@ -329,3 +329,15 @@ only late keyword in play is `sample_framebuffer 1`.
 **Open box (needs a live run, cannot be ticked here):** stand in front content that uses the keyword — a
 Father of Staves is the known case — and read the pair. `0/n` with the staff visible is the fix working;
 anything else names what is left.
+
+## The GUI and the screen (CX-95, CX-101)
+
+A second, smaller verdict sits beside the world's, because the GUI has no world frame to wait for:
+
+| Term | Where | If it fails |
+| --- | --- | --- |
+| Alloy requested at boot (`alloy.enabled`, `alloy.drawhooks=batch`) and the `RenderSinglePass` shim armed (its two funnel hooks are where GUI draws are captured) | `AlloyRenderer.Initialize` → `GuiPass.Install` | nothing installs; the engine draws its GUI |
+| the state caches, `Scene::RenderOnlyGobs` and the screen size resolved | `GuiCapture.Install` | `_log.Always`, the engine draws its GUI |
+| the 4.6 context exists and the GUI program built | `GuiPass.Capturing` | before the first present: the engine's GUI (one or two frames at boot); a build failure is a loud `Fail` and the engine draws the GUI for the session |
+| `alloy.gui` on | `GuiPass.Capturing` | the player's choice, live |
+| the world is Alloy's or absent | `ScreenOwner.Owned` | an engine-drawn world (an `Incapable` verdict) keeps the engine's clears and present; the GUI stays Alloy's over it |

@@ -360,6 +360,17 @@ internal static unsafe class SymbolMap
     public const string HiliteNeutral = "g_vCreatureNeutralHighlight";
     public const string HilitePlaceable = "g_vPlaceableHighlight";
     public const string HiliteDoor = "g_vDoorHighlight";
+    /// <summary>CX-99: <c>CExoMoviePlayerInternal::ShowFrame(int frameW, int frameH, int texW, int texH)</c>
+    /// @0x1165e30 -- the movie's whole DRAW, and nothing else. Its one caller is <c>UpdateMovie</c> @0x1168210,
+    /// which has just decoded a WebM/VP8 frame, converted it from I420 and uploaded it into the player's own
+    /// GL texture (<see cref="EngineLayout.MovieTexture"/>) on stage 0; <c>RenderFrame</c> @0x11694b0 owns the
+    /// pacing (<c>SDL_Delay</c> off <c>GetFrameTimeOffset</c>) and the present, both OUTSIDE this call.
+    /// <para>The body is a colour clear plus one letterboxed textured quad in an ortho matched to the movie's
+    /// aspect (<c>Clear(1)</c>, four identity matrices, <c>SetOrthoTransform</c>, a cached 4-vertex VDO,
+    /// <c>RenderVertexData</c>). Swallowing it is therefore the narrowest possible "no engine draw" for a
+    /// movie: the decode, the upload, the A/V clock and the swap all stay the engine's.</para></summary>
+    [Fn("void(CExoMoviePlayerInternal this, int frameW, int frameH, int texW, int texH)")]
+    public const string MovieShowFrame = "_ZN23CExoMoviePlayerInternal9ShowFrameEiiii";
     // The SDL glue of the client's nuklear is C++-linkage on this build (mangled), so nk_sdl_render
     // must use its mangled name or the hook never installs. Nothing nuklear is anchored on Windows.
     /// <summary>Nuklear's GL flush, called from <c>CGuiMan::UpdateAndRender</c> @0x5809fa straight after
@@ -476,8 +487,35 @@ internal static unsafe class SymbolMap
     public const string GuiObjectHitCheck = "_ZN7CGuiMan17GuiObjectHitCheckEiiii";
     /// <summary>CTlkTable* global; the <c>this</c> for <see cref="TlkGetSimpleString"/>.</summary>
     public const string TlkTable   = "g_pTlkTable";
-    /// <summary>The client's nuklear context (NUI edit-focus probe). Client global -- no Windows anchor.</summary>
+    /// <summary>The client's nuklear context, a <c>nk_context*</c> (Linux @0x1a039e0 -> the context itself at
+    /// @0x1a12b00; Windows rva 0x14299a0 -> 0x1429ab0). The NUI edit-focus probe reads it; CX-101's flush
+    /// converts and clears through it.</summary>
     public const string Nuklear    = "g_pNuklear";
+    // ---- CX-101: nuklear's flush, drawn by Alloy. All three take pointers and ints only, so ONE declaration
+    //      fits both ABIs -- none of native-gui-skinning.md §5.3's by-value nk_rect hazard is on this path.
+    //      docs/research/nui-draw-in-alloy.md §4 records where every address was read.
+    /// <summary><c>nk_sdl_refresh_config()</c> @0xe066a0 (Windows rva 0xa70d90) -- the skin/font reload edge.
+    /// Early-outs on a clear dirty byte at <c>g_pNuklearConfig</c>, so calling it every frame is free.</summary>
+    [Fn("void()")]
+    public const string NkSdlRefreshConfig = "_Z21nk_sdl_refresh_configv";
+    /// <summary><c>nk_flags nk_convert(ctx, cmds, vertices, elements, config)</c> @0xded460 (Windows rva
+    /// 0xa7c340) -- nuklear's command queue into a vertex/index pair and a draw-command list. Returns a byte of
+    /// <c>NK_CONVERT_*</c> flags: 1 invalid param, 2 command buffer full, 4 vertex buffer full, 8 element buffer
+    /// full (read off the accumulator at the tail of the Linux body). Re-runnable: it resets the draw list first.</summary>
+    [Fn("byte(IntPtr ctx, IntPtr cmds, IntPtr vertices, IntPtr elements, IntPtr config)")]
+    public const string NkConvert = "nk_convert";
+    /// <summary><c>nk_clear(ctx)</c> @0xde60d0 (Windows rva 0xa77df0) -- nuklear's per-frame lifecycle: the
+    /// command queue, the draw list and the window seq/cull. Skipping it breaks NUI within a frame or two, so
+    /// a flush that draws nothing still calls it.</summary>
+    [Fn("void(IntPtr ctx)")]
+    public const string NkClear = "nk_clear";
+    /// <summary>DATA: the SDL backend's <c>nk_buffer</c> of draw commands (Linux @0x1a12a28, Windows rva
+    /// 0x14299d8). A file-static with no name on either binary, so it is anchored on both.</summary>
+    public const string NkCmds = "nk_sdl.ogl.cmds";
+    /// <summary>DATA: the backend's <c>nk_draw_null_texture</c> (16 bytes: the atlas handle and the white
+    /// texel's uv) that every solid fill is drawn with (Linux @0x1a12aa0, Windows rva 0x1429a50). Re-read every
+    /// frame -- <see cref="NkSdlRefreshConfig"/> rewrites it whenever the atlas is rebaked.</summary>
+    public const string NkTexNull = "nk_sdl.ogl.tex_null";
     /// <summary>CExoBase* global; deref for the instance whose CExoString@0x38 is the resolved user directory.</summary>
     public const string ExoBase    = "g_pExoBase";
     /// <summary>#571: <c>CExoConfig::Get&lt;T&gt;(std::string const&amp;, bool)</c> @0x4efce0 / @0x4ef6a0 / @0x4f9120 --
@@ -563,6 +601,69 @@ internal static unsafe class SymbolMap
     public const string GlBoundTextures = "_ZN8GLRender15m_boundTexturesE";
     public const string GlActiveTextureStage = "_ZN8GLRender20m_activeTextureStageE";
     public const string GlEnabledTextureStages = "_ZN8GLRender23m_bEnabledTextureStagesE";
+    /// <summary>CX-95: <c>GLRender::m_bEnabledStates</c> @0x19ad0d0 -- the enable-cap CACHE, one bit per
+    /// <c>AuroraEnableEnums</c> value (<c>GLRender::IsEnabled</c> @0x4cae20 is <c>m_bEnabledStates &amp; 1 &lt;&lt; cap</c>).
+    /// The GUI capture reads the caps an engine draw would have run under.</summary>
+    public const string GlEnabledStates = "_ZN8GLRender16m_bEnabledStatesE";
+    /// <summary>CX-95: <c>GLRender::m_globalColor</c> @0x19ad0c0 -- the <c>globalColor</c> uniform's four floats,
+    /// written by <c>SetColorv</c> @0x4d1230 / <c>SetColor4f</c> @0x4d1290.</summary>
+    public const string GlGlobalColor = "_ZN8GLRender13m_globalColorE";
+    /// <summary>CX-95: the <c>AuroraBlendModes</c> pair <c>GLRender::SetBlendFunc</c> @0x4cb0c0 caches and early-outs
+    /// against -- indices into <c>blendTranslationTable</c>.</summary>
+    public const string GlSrcBlendMode = "_ZN8GLRender20cm_nPrevSrcBlendModeE";
+    /// <inheritdoc cref="GlSrcBlendMode"/>
+    public const string GlDstBlendMode = "_ZN8GLRender20cm_nPrevDstBlendModeE";
+    /// <summary>CX-95: <c>GLRender::bDepthMask</c> -- the depth-write byte <c>SetDepthMask</c> @0x4cb580 caches.</summary>
+    public const string GlDepthMask = "_ZN8GLRender10bDepthMaskE";
+    /// <summary>CX-95: <c>GLRender::m_viewport</c> -- four ints {x, y, w, h} that <c>SetViewPort</c> @0x4cb3f0 writes
+    /// beside every glViewport; <c>Camera::RenderScene</c> sets each view's here before <c>Scene::Render</c>.</summary>
+    public const string GlViewport = "_ZN8GLRender10m_viewportE";
+    /// <summary>CX-95: <c>GLRender::m_material</c> @0x19ad180 -- the lit shader's MATERIAL cache
+    /// (<see cref="EngineLayout.GlMatAmbient"/> for its layout).</summary>
+    public const string GlMaterial = "_ZN8GLRender10m_materialE";
+    /// <summary>CX-95: <c>RenderInterface::SetColorv(float*)</c> @0x45cfa0 -- static, a thunk to
+    /// <c>GLRender::SetColorv</c>. <c>Scene::RenderOnlyGobs</c> opens every GUI scene with white.</summary>
+    [Fn("void(float* rgba)")]
+    public const string RiSetColorv = "_ZN15RenderInterface9SetColorvEPf";
+    /// <summary>CX-95: <c>Scene::RenderOnlyGobs()</c> @0x4682e0 -- the draw of every scene with no tile BSP (every
+    /// GUI panel, the menus, the minimap, the cursor overlay): <c>Scene::Render</c> reaches it through
+    /// <c>call *0x278</c> @0x4767d9. Alloy replaces it with its own loop over the same gobs, whose draws it
+    /// captures at the two funnels (<see cref="CX.Alloy.GuiCapture"/>).</summary>
+    [Fn("void(Scene this)")]
+    public const string SceneRenderOnlyGobs = "_ZN5Scene14RenderOnlyGobsEv";
+    /// <summary>CX-95: the window size the engine lays its GUI out in (ints; <c>GLRender::SetViewPortLight</c> @0x4cb4b0
+    /// clamps every view to it) -- the size of the default framebuffer a GUI flush draws into.</summary>
+    public const string ScreenWidth = "g_nScreenWidth";
+    /// <inheritdoc cref="ScreenWidth"/>
+    public const string ScreenHeight = "g_nScreenHeight";
+    /// <summary>CX-100: <c>CGuiStatusBar::SetStatus(float percent)</c> @0x594be0 -- stores the fill (clamped to 0..100)
+    /// and plays the bar's state animation at percent/30. The load screen's bar is one of these; its load and the
+    /// lightmap bake hold share it through this call.</summary>
+    [Fn("void(CGuiStatusBar this, float percent)")]
+    public const string StatusBarSetStatus = "_ZN13CGuiStatusBar9SetStatusEf";
+    /// <summary>CX-95: <c>GLRender::DrawReset()</c> @0x4cfa00 -- the tail of both draw funnels: <c>Disable(0x12)</c>,
+    /// <c>Disable(0x15)</c>, <c>m_nRenderHint = 0</c>, <c>m_pCurrentCustomProgram = 0</c>. A captured draw never reaches the
+    /// funnel, so the capture calls it itself, or a material's custom program stays latched for every later draw.</summary>
+    [Fn("void()")]
+    public const string GlDrawReset = "_ZN8GLRender9DrawResetEv";
+    /// <summary>CX-101: SDL's present -- what <c>GLRender::SwapBuffers</c> @0x4d2070 calls between
+    /// <c>BindDefaultFramebuffer</c> and <c>ResetRenderStates</c>. Alloy's present calls it directly. C linkage.</summary>
+    [Fn("void(IntPtr window)")]
+    public const string SdlGlSwapWindow = "SDL_GL_SwapWindow";
+    /// <summary>CX-101: <c>RenderInterface::Clear(uint mask)</c> @0x45d2a0 -- every engine clear (the frame's
+    /// <c>Clear(3)</c> in <c>Update</c>, each GUI view's <c>Clear(2)</c>, snapshots) funnels through this static thunk
+    /// to <c>GLRender::Clear</c>. Bits: 1 colour, 2 depth+stencil, 4 stencil.</summary>
+    [Fn("void(uint mask)")]
+    public const string RiClear = "_ZN15RenderInterface5ClearEj";
+    /// <summary>CX-101: <c>RenderInterface::SetClearColor(float, float, float, float)</c> @0x45d290 -- a thunk to a
+    /// bare <c>glClearColor</c>. Observed (not swallowed) so Alloy's own frame clear uses the engine's colour.</summary>
+    [Fn("void(float r, float g, float b, float a)")]
+    public const string RiSetClearColor = "_ZN15RenderInterface13SetClearColorEffff";
+    /// <summary>CX-101: the framebuffer <c>GLRender::BindDefaultFramebuffer</c> binds (0 unless the engine renders
+    /// through one of its own), and the draw-framebuffer binding cache <c>GLRender::BindFramebuffer</c> keeps.</summary>
+    public const string GlDefaultFramebuffer = "_ZN8GLRender22cm_nDefaultFramebufferE";
+    /// <inheritdoc cref="GlDefaultFramebuffer"/>
+    public const string GlDrawFramebufferBound = "_ZN8GLRender23m_nDrawFrameBufferBoundE";
     /// <summary>#220: RenderInterface::DeleteTextures(n, names) @0x45d1d0 -- the SINGLE funnel through which
     /// every engine GL texture name dies. Its callers are <c>CAurTextureBasic::~CAurTextureBasic</c>,
     /// <c>::Reset</c>, <c>::glImageBasic</c> (the re-upload path), <c>AurTextureFreeAll</c>,
@@ -1716,7 +1817,8 @@ internal static unsafe class SymbolMap
     /// <summary>Static functions the Linux client has no symbol for (nm lists nothing): resolved from the running
     /// build's <c>lva</c> line (<see cref="ClientBuilds.Lva"/>), as an <c>At()</c> symbol is from its <c>rva</c>
     /// line on Windows. The constant is the function's source name, a key, never looked up as an export.</summary>
-    internal static readonly HashSet<string> LinuxAnchored = new() { NkScrollbarBehavior, NkDrawScrollbar, NkDoScrollbarV, NkDoScrollbarH };
+    internal static readonly HashSet<string> LinuxAnchored = new() { NkScrollbarBehavior, NkDrawScrollbar, NkDoScrollbarV, NkDoScrollbarH,
+                                                                     NkCmds, NkTexNull };
     /// <summary>nuklear's <c>nk_scrollbar_behavior</c> (static: Linux lva 0xdf5ba0, Windows rva 0xa6f320) -- the one
     /// function that turns input into a scrollbar's new offset: the thumb drag (and the one <c>nk_input</c> write,
     /// <c>clicked_pos</c>), the page clicks on the two empty rects, the wheel, the scroll keys. Called only by
@@ -2361,6 +2463,18 @@ internal static unsafe class SymbolMap
     [Fn("void(IntPtr msg, uint dst, uint src)")]
     public const string SendInputMergeItem = "_ZN11CNWCMessage33SendPlayerToServerInput_MergeItemEjj";
 
+    // ---- CX-98: the engine's debug string layer ----
+    /// <summary><c>AurPrintString(const char* text, int col, int row, float r, float g, float b, float a,
+    /// const char* font)</c> @0x435f30 -- the ONE draw primitive of the <c>AurPostString</c> /
+    /// <c>AurPrintString</c> layer. Its three callers are <c>PostedString::Post</c> @0x4362d0 (every
+    /// <c>AurRenderStrings</c> entry), the console cursor in <c>Update</c> @0x430030, and
+    /// <c>CGuiCGModelViewer::Update</c>; inside it are the viewport read, the 10x14 character grid, the
+    /// <c>StringGob</c> build and <c>StringGob::Render</c>. Swallowing it is the whole of CX-98: what is left
+    /// running in <c>AurRenderStrings</c> is the list walk, the expiry (which lives in <c>Post</c>, not here)
+    /// and two CPU-side state caches. A free function -- no <c>this</c>, no by-value return.</summary>
+    [Fn("void(byte* text, int col, int row, float r, float g, float b, float a, byte* font)")]
+    public const string AurPrintString = "_Z14AurPrintStringPKciiffffS0_";
+
     /// <summary>A symbol's Windows resolution. Four forms and no fifth -- the point of #447: a missing key
     /// used to mean both "never looked" and "deliberately Linux-only", so the absence could not be counted.
     /// Now every constant has a row, <see cref="Nm"/>/<see cref="At"/> resolve, <see cref="LinuxOnly"/> is a
@@ -2389,6 +2503,7 @@ internal static unsafe class SymbolMap
         [HandleWMKeyDown]   = Nm("?HandleWMKeyDownMessage@@YAHII@Z"),
         [WinMessageHandler] = Nm("?WinMessageHandler@@YAHPEATSDL_Event@@@Z"),
         [SwapBuffers]       = Nm("?SwapBuffers@GLRender@@CAXPEAUSDL_Window@@@Z"),
+        [MovieShowFrame]    = Nm("?ShowFrame@CExoMoviePlayerInternal@@AEAAXHHHH@Z"),   // CX-99, rva 0x233b20
         [SetText]           = Nm("?SetText@CAuroraStringWrapper@@QEAAXI@Z"),
         [ExoStringInit]     = Nm("?InitFromCharArray@CExoString@@AEAAAEAV1@PEBDI@Z"),
         [C2DAGetCExoStringEntry] = Nm("?GetCExoStringEntry@C2DA@@QEAAHHAEBVCExoString@@PEAV2@@Z"),   // CX-55 step 2
@@ -2399,6 +2514,7 @@ internal static unsafe class SymbolMap
         [ExoConfigGetBool]   = Nm("??$Get@_N@CExoConfig@@QEAA_NAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
         [ExoConfigGetLong]   = Nm("??$Get@_J@CExoConfig@@QEAA_JAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
         [ExoConfigGetDouble] = Nm("??$Get@N@CExoConfig@@QEAANAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
+        [AurPrintString]     = Nm("?AurPrintString@@YAXPEBDHHMMMM0@Z"),   // CX-98: the whole Aurora layer is name-exported
 
         // --- not exported (client GUI / CNWCMessage): Windows RVA, one per build in Framework/Builds/*.tsv.
         //     Anchored on build 0x68e408bc; see docs/windows-symbols.md for how each was. ---
@@ -2676,6 +2792,24 @@ internal static unsafe class SymbolMap
         [GlCurrentCustomProgram] = Nm("?m_pCurrentCustomProgram@GLRender@@0PEAUPROG_FIXED@1@EA"),
         [GlDeleteBuffer] = Nm("?DeleteBuffer@GLRender@@CAXI@Z"),
         [GlEnabledTextureStages] = Nm("?m_bEnabledTextureStages@GLRender@@0IA"),
+        [GlEnabledStates] = Nm("?m_bEnabledStates@GLRender@@0IA"),
+        [GlGlobalColor] = Nm("?m_globalColor@GLRender@@0VVector4@@A"),
+        [GlSrcBlendMode] = Nm("?cm_nPrevSrcBlendMode@GLRender@@0W4AuroraBlendModes@Aurora@@A"),
+        [GlDstBlendMode] = Nm("?cm_nPrevDstBlendMode@GLRender@@0W4AuroraBlendModes@Aurora@@A"),
+        [GlDepthMask] = Nm("?bDepthMask@GLRender@@0EA"),
+        [GlViewport] = Nm("?m_viewport@GLRender@@0PAHA"),
+        [GlMaterial] = Nm("?m_material@GLRender@@0UMATERIAL@1@A"),
+        [RiSetColorv] = Nm("?SetColorv@RenderInterface@@SAXPEAM@Z"),
+        [SceneRenderOnlyGobs] = Nm("?RenderOnlyGobs@Scene@@UEAAXXZ"),
+        [ScreenWidth] = Nm("?g_nScreenWidth@@3HA"),
+        [ScreenHeight] = Nm("?g_nScreenHeight@@3HA"),
+        [StatusBarSetStatus] = Nm("?SetStatus@CGuiStatusBar@@QEAAXM@Z"),
+        [GlDrawReset] = Nm("?DrawReset@GLRender@@CAXXZ"),
+        [SdlGlSwapWindow] = Nm("SDL_GL_SwapWindow"),
+        [RiClear] = Nm("?Clear@RenderInterface@@SAXI@Z"),
+        [RiSetClearColor] = Nm("?SetClearColor@RenderInterface@@SAXMMMM@Z"),
+        [GlDefaultFramebuffer] = Nm("?cm_nDefaultFramebuffer@GLRender@@0IA"),
+        [GlDrawFramebufferBound] = Nm("?m_nDrawFrameBufferBound@GLRender@@0IA"),
         [GlGetPool] = Nm("?GetPool@GLRender@@CAPEBXI@Z"),
         [GlGlobalShaderConstantsF] = Nm("?m_globalShaderConstantsf@GLRender@@0PAMA"),
         [GlGlobalShaderConstantsI] = Nm("?m_globalShaderConstantsi@GLRender@@0PAHA"),
@@ -2729,11 +2863,18 @@ internal static unsafe class SymbolMap
         [MultMatrix] = Nm("?MultMatrix@RenderInterface@@SAXPEAM@Z"),
         [NetProcessReceivedFrames] = Nm("?ProcessReceivedFrames@CNetLayer@@QEAAXH@Z"),
         [NkSdlCopyEvent] = Hole("nuklear is not exported by nwmain.exe"),
-        [NkSdlRender] = Hole("nuklear is not exported by nwmain.exe"),
+        // CX-101: nuklear is unexported on Windows, but nk_sdl_render's Tracy SourceLocationData anchors it and
+        // its BODY names the other four call for call (docs/research/nui-draw-in-alloy.md §4).
+        [NkSdlRender] = At(),             // Tracy "void __cdecl nk_sdl_render(float)"; body identical to Linux @0xe07bb0
+        [NkSdlRefreshConfig] = At(),      // the first call in that body
+        [NkConvert] = At(),               // its rcx/rdx are the ctx and the cmds buffer
+        [NkClear] = At(),                 // the call right after the draw-command walk
+        [NkCmds] = At(),                  // DATA: the `lea rdx` of the nk_convert call
+        [NkTexNull] = At(),               // DATA: the `movaps xmm0,[rip]` into the convert config at +0x18
         [NkWindowIsAnyHovered] = Hole("nuklear is not exported by nwmain.exe"),
         [NuiStatefulWidgetVtbl] = At(),   // RTTI type descriptor -> COL -> vftable
         [NuiWidgetRender] = At(),         // Widget / StatefulWidget RTTI vftable slot 4 (docs/windows-symbols.md)
-        [Nuklear] = Hole("nuklear is not exported by nwmain.exe"),
+        [Nuklear] = At(),                 // DATA: the `mov rax,[rip]` whose +0x5088 takes the frame's delta time
         [OnGainFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
         [OnLostFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
         [PartAnimate] = Nm("?Animate@Part@@UEAAXM@Z"),

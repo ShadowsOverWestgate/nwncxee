@@ -78,6 +78,7 @@ public static class ServiceHost
         FrameRegistry.SelfCheck(log);   // #170: walk order, post-seal refusal, and the zero-alloc AC
         CX.Ui.AtlasSheet.SelfCheck(log);   // #469: pack-and-grow, ceiling refusal, face lookup -- no GL, no stbtt
         CX.Ui.TextStyle.SelfCheck(log);   // per-element text rows + the batch's halos-under-bodies run
+        CX.Ui.LoadScreen.SelfCheck(log);   // CX-100: the two load sources as one monotonic bar
         foreach (IExtenderService service in all)
         {
             try { service.Initialize(log, hooks); }

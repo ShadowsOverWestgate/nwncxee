@@ -53,7 +53,9 @@ internal static class AlloyGate
     private static bool _layoutOk = true;
     private static ExtenderLog? _log;
 
-    private const string NoModule = "no module is loaded";
+    /// <summary>CX-95 narrowed this term: it says there is no WORLD frame, nothing more. The GUI scenes are Alloy's on
+    /// their own verdict (<see cref="GuiPass.Capturing"/>), main menu included.</summary>
+    private const string NoModule = "no module is loaded, so there is no world frame (the GUI is GuiPass's)";
 
     /// <summary>The latched verdict every render site reads. True only in <see cref="AlloyStand.Alloy"/>.</summary>
     internal static bool Alloy => _stand == AlloyStand.Alloy;

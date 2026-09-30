@@ -81,6 +81,7 @@ global using unsafe ActivateTargetModeFn = delegate* unmanaged<nint, void>;
 global using unsafe ActionTargetLMouseDownFn = delegate* unmanaged<nint, void>;
 global using unsafe PerformDefaultActionOnObjectFn = delegate* unmanaged<nint, nint, int>;
 global using unsafe SdlGetKeyboardStateFn = delegate* unmanaged<int*, byte*>;
+global using unsafe MovieShowFrameFn = delegate* unmanaged<nint, int, int, int, int, void>;
 global using unsafe NkSdlRenderFn = delegate* unmanaged<float, void>;
 global using unsafe NkWindowIsAnyHoveredFn = delegate* unmanaged<nint, int>;
 global using unsafe NkSdlCopyEventFn = delegate* unmanaged<nint, void>;
@@ -96,6 +97,9 @@ global using unsafe HandleServerToPlayerChatFn = delegate* unmanaged<nint, byte,
 global using unsafe ShowFloatyTextFn = delegate* unmanaged<nint, nint, CX.Engine.VectorArg, nint, int, void>;
 global using unsafe GetViewPortFn = delegate* unmanaged<float*, void>;
 global using unsafe GuiObjectHitCheckFn = delegate* unmanaged<nint, int, int, int, int, nint>;
+global using unsafe NkSdlRefreshConfigFn = delegate* unmanaged<void>;
+global using unsafe NkConvertFn = delegate* unmanaged<nint, nint, nint, nint, nint, byte>;
+global using unsafe NkClearFn = delegate* unmanaged<nint, void>;
 global using unsafe ExoConfigGetBoolFn = delegate* unmanaged<nint, byte*, byte, byte>;
 global using unsafe ExoConfigGetLongFn = delegate* unmanaged<nint, byte*, byte, long>;
 global using unsafe ExoConfigGetDoubleFn = delegate* unmanaged<nint, byte*, byte, double>;
@@ -111,6 +115,13 @@ global using unsafe RiDisableFn = delegate* unmanaged<int, void>;
 global using unsafe RiIsEnabledFn = delegate* unmanaged<int, byte>;
 global using unsafe RiResetRenderStatesFn = delegate* unmanaged<void>;
 global using unsafe RiBindBufferFn = delegate* unmanaged<uint, uint, void>;
+global using unsafe RiSetColorvFn = delegate* unmanaged<float*, void>;
+global using unsafe SceneRenderOnlyGobsFn = delegate* unmanaged<nint, void>;
+global using unsafe StatusBarSetStatusFn = delegate* unmanaged<nint, float, void>;
+global using unsafe GlDrawResetFn = delegate* unmanaged<void>;
+global using unsafe SdlGlSwapWindowFn = delegate* unmanaged<nint, void>;
+global using unsafe RiClearFn = delegate* unmanaged<uint, void>;
+global using unsafe RiSetClearColorFn = delegate* unmanaged<float, float, float, float, void>;
 global using unsafe RiDeleteTexturesFn = delegate* unmanaged<uint, uint*, void>;
 global using unsafe RiCreateTextureFn = delegate* unmanaged<nint, byte, int, void>;
 global using unsafe RiCreateCubeTextureFn = delegate* unmanaged<nint, byte, int, void>;
@@ -323,6 +334,7 @@ global using unsafe SendGuiInvSelectPanelFn = delegate* unmanaged<nint, byte, in
 global using unsafe SendInputUseObjectFn = delegate* unmanaged<nint, uint, int, int, void>;
 global using unsafe SendInputSplitItemFn = delegate* unmanaged<nint, uint, int, void>;
 global using unsafe SendInputMergeItemFn = delegate* unmanaged<nint, uint, uint, void>;
+global using unsafe AurPrintStringFn = delegate* unmanaged<byte*, int, int, float, float, float, float, byte*, void>;
 using System;
 using CX.Framework;
 
@@ -784,6 +796,8 @@ public readonly unsafe partial struct CClientExoAppInternal(IntPtr ptr)
     public ref int FeedbackWord => ref *(int*)(Ptr + EngineLayout.InternalFeedbackWord);
     /// <inheritdoc cref="EngineLayout.InternalInGameGui"/>
     public ref CGuiInGame InGameGui => ref *(CGuiInGame*)(Ptr + EngineLayout.InternalInGameGui);
+    /// <inheritdoc cref="EngineLayout.InternalLoadscreen"/>
+    public ref CGuiAreaLoadscreen Loadscreen => ref *(CGuiAreaLoadscreen*)(Ptr + EngineLayout.InternalLoadscreen);
     /// <inheritdoc cref="EngineLayout.InternalMainMenuPanel"/>
     public ref IntPtr MainMenuPanel => ref *(IntPtr*)(Ptr + EngineLayout.InternalMainMenuPanel);
     /// <inheritdoc cref="EngineLayout.InternalNetLayer"/>
@@ -920,6 +934,19 @@ public readonly unsafe partial struct CExoKeyTable(IntPtr ptr)
     public ref IntPtr Name => ref *(IntPtr*)(Ptr + EngineLayout.KeyTableName);
 }
 
+/// <summary>Typed view of an engine <c>CExoMoviePlayerInternal*</c>.</summary>
+public readonly unsafe partial struct CExoMoviePlayerInternal(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="SymbolMap.MovieShowFrame"/>
+    public void MovieShowFrame(int frameW, int frameH, int texW, int texH) => EngineFn.MovieShowFrame(Ptr, frameW, frameH, texW, texH);
+    /// <inheritdoc cref="EngineLayout.MovieTexture"/>
+    public ref uint Texture => ref *(uint*)(Ptr + EngineLayout.MovieTexture);
+}
+
 /// <summary>Typed view of an engine <c>CExoResFile*</c>.</summary>
 public readonly unsafe partial struct CExoResFile(IntPtr ptr)
 {
@@ -1021,6 +1048,19 @@ public readonly unsafe partial struct CGameObject(IntPtr ptr)
     public IntPtr AsNWCPlaceableFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GameObjAsNWCPlaceableSlot);
     /// <inheritdoc cref="EngineLayout.GameObjType"/>
     public ref byte Type => ref *(byte*)(Ptr + EngineLayout.GameObjType);
+}
+
+/// <summary>Typed view of an engine <c>CGuiAreaLoadscreen*</c>.</summary>
+public readonly unsafe partial struct CGuiAreaLoadscreen(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.LoadscreenEndPhase"/>
+    public ref int EndPhase => ref *(int*)(Ptr + EngineLayout.LoadscreenEndPhase);
+    /// <inheritdoc cref="EngineLayout.LoadscreenStatusBar"/>
+    public CGuiStatusBar StatusBar => new(Ptr + EngineLayout.LoadscreenStatusBar);
 }
 
 /// <summary>Typed view of an engine <c>CGuiCallback*</c>.</summary>
@@ -1215,6 +1255,19 @@ public readonly unsafe partial struct CGuiPanel(IntPtr ptr)
     public void SetPositionScreen(int x, int y) => EngineFn.SetPositionScreen(Ptr, x, y);
     /// <inheritdoc cref="EngineLayout.GuiPanelState"/>
     public ref uint State => ref *(uint*)(Ptr + EngineLayout.GuiPanelState);
+}
+
+/// <summary>Typed view of an engine <c>CGuiStatusBar*</c>.</summary>
+public readonly unsafe partial struct CGuiStatusBar(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.StatusBarStatus"/>
+    public ref float Status => ref *(float*)(Ptr + EngineLayout.StatusBarStatus);
+    /// <inheritdoc cref="SymbolMap.StatusBarSetStatus"/>
+    public void StatusBarSetStatus(float percent) => EngineFn.StatusBarSetStatus(Ptr, percent);
 }
 
 /// <summary>Typed view of an engine <c>CGuiTextBubble*</c>.</summary>
@@ -2027,6 +2080,21 @@ public readonly unsafe partial struct GLRender__PROG_FIXED(IntPtr ptr)
     public ref uint ProgramId => ref *(uint*)(Ptr + EngineLayout.ProgFixedId);
 }
 
+/// <summary>Typed view of an engine <c>GlMaterial*</c>.</summary>
+public readonly unsafe partial struct GlMaterial(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.GlMatAmbient"/>
+    public ref System.Numerics.Vector4 Ambient => ref *(System.Numerics.Vector4*)(Ptr + EngineLayout.GlMatAmbient);
+    /// <inheritdoc cref="EngineLayout.GlMatDiffuse"/>
+    public ref System.Numerics.Vector4 Diffuse => ref *(System.Numerics.Vector4*)(Ptr + EngineLayout.GlMatDiffuse);
+    /// <inheritdoc cref="EngineLayout.GlMatEmissive"/>
+    public ref System.Numerics.Vector4 Emissive => ref *(System.Numerics.Vector4*)(Ptr + EngineLayout.GlMatEmissive);
+}
+
 /// <summary>Typed view of an engine <c>GlPool*</c>.</summary>
 public readonly unsafe partial struct GlPool(IntPtr ptr)
 {
@@ -2146,6 +2214,10 @@ public readonly unsafe ref partial struct Gob(IntPtr ptr)
     public ref System.Numerics.Vector3 Position => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.GobPosition);
     /// <inheritdoc cref="EngineLayout.GobPropagateHilite"/>
     public ref byte PropagateHilite => ref *(byte*)(Ptr + EngineLayout.GobPropagateHilite);
+    /// <inheritdoc cref="EngineLayout.GobRenderSlot"/>
+    public void Render(byte propagate) => ((delegate* unmanaged<IntPtr, byte, void>)RenderFn)(Ptr, propagate);
+    /// <inheritdoc cref="EngineLayout.GobRenderSlot"/>
+    public IntPtr RenderFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GobRenderSlot);
     /// <inheritdoc cref="EngineLayout.GobRot"/>
     public ref Quat Rot => ref *(Quat*)(Ptr + EngineLayout.GobRot);
     /// <inheritdoc cref="EngineLayout.GobScene"/>
@@ -2462,6 +2534,21 @@ public readonly unsafe partial struct NewController(IntPtr ptr)
     public ref ushort TimeKey => ref *(ushort*)(Ptr + EngineLayout.NewControllerTimeKey);
     /// <inheritdoc cref="EngineLayout.NewControllerValueKey"/>
     public ref ushort ValueKey => ref *(ushort*)(Ptr + EngineLayout.NewControllerValueKey);
+}
+
+/// <summary>Typed view of an engine <c>NkContext*</c>.</summary>
+public readonly unsafe partial struct NkContext(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.NkCtxDeltaTime"/>
+    public ref float DeltaTime => ref *(float*)(Ptr + EngineLayout.NkCtxDeltaTime);
+    /// <inheritdoc cref="EngineLayout.NkCtxDrawCmdCount"/>
+    public ref int DrawCmdCount => ref *(int*)(Ptr + EngineLayout.NkCtxDrawCmdCount);
+    /// <inheritdoc cref="EngineLayout.NkCtxDrawCmdOffset"/>
+    public ref long DrawCmdOffset => ref *(long*)(Ptr + EngineLayout.NkCtxDrawCmdOffset);
 }
 
 /// <summary>Typed view of an engine <c>Nui__JSON__IdNode*</c>.</summary>
@@ -2922,6 +3009,8 @@ public readonly unsafe partial struct Scene(IntPtr ptr)
     public IntPtr IsAnimatingFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.SceneIsAnimatingSlot);
     /// <inheritdoc cref="EngineLayout.SceneLightManager"/>
     public ref LightManager LightManager => ref *(LightManager*)(Ptr + EngineLayout.SceneLightManager);
+    /// <inheritdoc cref="EngineLayout.SceneName"/>
+    public ref byte Name => ref *(byte*)(Ptr + EngineLayout.SceneName);
     /// <inheritdoc cref="SymbolMap.ReloadGrass"/>
     public void ReloadGrass() => EngineFn.ReloadGrass(Ptr);
     /// <inheritdoc cref="EngineLayout.SceneRenderBeamsSlot"/>
@@ -2948,6 +3037,8 @@ public readonly unsafe partial struct Scene(IntPtr ptr)
     public int SceneHitCheck(VectorArg from, VectorArg to, Vec3* hit, CHitInfo info) => EngineFn.SceneHitCheck(Ptr, from, to, hit, info.Ptr);
     /// <inheritdoc cref="SymbolMap.SceneInitBsp"/>
     public void SceneInitBsp(int width, int height, int depth, byte flag, float size) => EngineFn.SceneInitBsp(Ptr, width, height, depth, flag, size);
+    /// <inheritdoc cref="SymbolMap.SceneRenderOnlyGobs"/>
+    public void SceneRenderOnlyGobs() => EngineFn.SceneRenderOnlyGobs(Ptr);
     /// <inheritdoc cref="SymbolMap.SceneSpawnTile"/>
     public IntPtr SceneSpawnTile(byte* resref, System.Numerics.Vector3* pos, int id, int orientation, IntPtr rot) => EngineFn.SceneSpawnTile(Ptr, resref, pos, id, orientation, rot);
     /// <inheritdoc cref="EngineLayout.SceneShadowLightCount"/>
@@ -3171,6 +3262,25 @@ public readonly unsafe ref partial struct VertexPrimitiveDangly(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.VpdVelocity"/>
     public ref IntPtr Velocity => ref *(IntPtr*)(Ptr + EngineLayout.VpdVelocity);
+}
+
+/// <summary>Typed view of an engine <c>VertexStreamDataObject*</c>.</summary>
+public readonly unsafe partial struct VertexStreamDataObject(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.VsdoElemToken"/>
+    public ref uint ElemToken => ref *(uint*)(Ptr + EngineLayout.VsdoElemToken);
+    /// <inheritdoc cref="EngineLayout.VsdoFormat"/>
+    public ref uint Format => ref *(uint*)(Ptr + EngineLayout.VsdoFormat);
+    /// <inheritdoc cref="EngineLayout.VsdoIndexed"/>
+    public ref byte Indexed => ref *(byte*)(Ptr + EngineLayout.VsdoIndexed);
+    /// <inheritdoc cref="EngineLayout.VsdoVertToken"/>
+    public ref uint VertToken => ref *(uint*)(Ptr + EngineLayout.VsdoVertToken);
+    /// <inheritdoc cref="EngineLayout.VsdoStride"/>
+    public ref int VertexStride => ref *(int*)(Ptr + EngineLayout.VsdoStride);
 }
 
 /// <summary>Typed view of an engine <c>aurMatrixStack*</c>.</summary>
@@ -3654,6 +3764,10 @@ public static unsafe class EngineFn
     private static bool _SdlGetKeyboardStateDone;
     /// <inheritdoc cref="SymbolMap.SdlGetKeyboardState"/>
     public static SdlGetKeyboardStateFn SdlGetKeyboardState => (SdlGetKeyboardStateFn)(_SdlGetKeyboardStateDone ? _SdlGetKeyboardState : Resolve(ref _SdlGetKeyboardState, ref _SdlGetKeyboardStateDone, SymbolMap.SdlGetKeyboardState));
+    private static IntPtr _MovieShowFrame;
+    private static bool _MovieShowFrameDone;
+    /// <inheritdoc cref="SymbolMap.MovieShowFrame"/>
+    public static MovieShowFrameFn MovieShowFrame => (MovieShowFrameFn)(_MovieShowFrameDone ? _MovieShowFrame : Resolve(ref _MovieShowFrame, ref _MovieShowFrameDone, SymbolMap.MovieShowFrame));
     private static IntPtr _NkSdlRender;
     private static bool _NkSdlRenderDone;
     /// <inheritdoc cref="SymbolMap.NkSdlRender"/>
@@ -3714,6 +3828,18 @@ public static unsafe class EngineFn
     private static bool _GuiObjectHitCheckDone;
     /// <inheritdoc cref="SymbolMap.GuiObjectHitCheck"/>
     public static GuiObjectHitCheckFn GuiObjectHitCheck => (GuiObjectHitCheckFn)(_GuiObjectHitCheckDone ? _GuiObjectHitCheck : Resolve(ref _GuiObjectHitCheck, ref _GuiObjectHitCheckDone, SymbolMap.GuiObjectHitCheck));
+    private static IntPtr _NkSdlRefreshConfig;
+    private static bool _NkSdlRefreshConfigDone;
+    /// <inheritdoc cref="SymbolMap.NkSdlRefreshConfig"/>
+    public static NkSdlRefreshConfigFn NkSdlRefreshConfig => (NkSdlRefreshConfigFn)(_NkSdlRefreshConfigDone ? _NkSdlRefreshConfig : Resolve(ref _NkSdlRefreshConfig, ref _NkSdlRefreshConfigDone, SymbolMap.NkSdlRefreshConfig));
+    private static IntPtr _NkConvert;
+    private static bool _NkConvertDone;
+    /// <inheritdoc cref="SymbolMap.NkConvert"/>
+    public static NkConvertFn NkConvert => (NkConvertFn)(_NkConvertDone ? _NkConvert : Resolve(ref _NkConvert, ref _NkConvertDone, SymbolMap.NkConvert));
+    private static IntPtr _NkClear;
+    private static bool _NkClearDone;
+    /// <inheritdoc cref="SymbolMap.NkClear"/>
+    public static NkClearFn NkClear => (NkClearFn)(_NkClearDone ? _NkClear : Resolve(ref _NkClear, ref _NkClearDone, SymbolMap.NkClear));
     private static IntPtr _ExoConfigGetBool;
     private static bool _ExoConfigGetBoolDone;
     /// <inheritdoc cref="SymbolMap.ExoConfigGetBool"/>
@@ -3774,6 +3900,34 @@ public static unsafe class EngineFn
     private static bool _RiBindBufferDone;
     /// <inheritdoc cref="SymbolMap.RiBindBuffer"/>
     public static RiBindBufferFn RiBindBuffer => (RiBindBufferFn)(_RiBindBufferDone ? _RiBindBuffer : Resolve(ref _RiBindBuffer, ref _RiBindBufferDone, SymbolMap.RiBindBuffer));
+    private static IntPtr _RiSetColorv;
+    private static bool _RiSetColorvDone;
+    /// <inheritdoc cref="SymbolMap.RiSetColorv"/>
+    public static RiSetColorvFn RiSetColorv => (RiSetColorvFn)(_RiSetColorvDone ? _RiSetColorv : Resolve(ref _RiSetColorv, ref _RiSetColorvDone, SymbolMap.RiSetColorv));
+    private static IntPtr _SceneRenderOnlyGobs;
+    private static bool _SceneRenderOnlyGobsDone;
+    /// <inheritdoc cref="SymbolMap.SceneRenderOnlyGobs"/>
+    public static SceneRenderOnlyGobsFn SceneRenderOnlyGobs => (SceneRenderOnlyGobsFn)(_SceneRenderOnlyGobsDone ? _SceneRenderOnlyGobs : Resolve(ref _SceneRenderOnlyGobs, ref _SceneRenderOnlyGobsDone, SymbolMap.SceneRenderOnlyGobs));
+    private static IntPtr _StatusBarSetStatus;
+    private static bool _StatusBarSetStatusDone;
+    /// <inheritdoc cref="SymbolMap.StatusBarSetStatus"/>
+    public static StatusBarSetStatusFn StatusBarSetStatus => (StatusBarSetStatusFn)(_StatusBarSetStatusDone ? _StatusBarSetStatus : Resolve(ref _StatusBarSetStatus, ref _StatusBarSetStatusDone, SymbolMap.StatusBarSetStatus));
+    private static IntPtr _GlDrawReset;
+    private static bool _GlDrawResetDone;
+    /// <inheritdoc cref="SymbolMap.GlDrawReset"/>
+    public static GlDrawResetFn GlDrawReset => (GlDrawResetFn)(_GlDrawResetDone ? _GlDrawReset : Resolve(ref _GlDrawReset, ref _GlDrawResetDone, SymbolMap.GlDrawReset));
+    private static IntPtr _SdlGlSwapWindow;
+    private static bool _SdlGlSwapWindowDone;
+    /// <inheritdoc cref="SymbolMap.SdlGlSwapWindow"/>
+    public static SdlGlSwapWindowFn SdlGlSwapWindow => (SdlGlSwapWindowFn)(_SdlGlSwapWindowDone ? _SdlGlSwapWindow : Resolve(ref _SdlGlSwapWindow, ref _SdlGlSwapWindowDone, SymbolMap.SdlGlSwapWindow));
+    private static IntPtr _RiClear;
+    private static bool _RiClearDone;
+    /// <inheritdoc cref="SymbolMap.RiClear"/>
+    public static RiClearFn RiClear => (RiClearFn)(_RiClearDone ? _RiClear : Resolve(ref _RiClear, ref _RiClearDone, SymbolMap.RiClear));
+    private static IntPtr _RiSetClearColor;
+    private static bool _RiSetClearColorDone;
+    /// <inheritdoc cref="SymbolMap.RiSetClearColor"/>
+    public static RiSetClearColorFn RiSetClearColor => (RiSetClearColorFn)(_RiSetClearColorDone ? _RiSetClearColor : Resolve(ref _RiSetClearColor, ref _RiSetClearColorDone, SymbolMap.RiSetClearColor));
     private static IntPtr _RiDeleteTextures;
     private static bool _RiDeleteTexturesDone;
     /// <inheritdoc cref="SymbolMap.RiDeleteTextures"/>
@@ -4658,6 +4812,10 @@ public static unsafe class EngineFn
     private static bool _SendInputMergeItemDone;
     /// <inheritdoc cref="SymbolMap.SendInputMergeItem"/>
     public static SendInputMergeItemFn SendInputMergeItem => (SendInputMergeItemFn)(_SendInputMergeItemDone ? _SendInputMergeItem : Resolve(ref _SendInputMergeItem, ref _SendInputMergeItemDone, SymbolMap.SendInputMergeItem));
+    private static IntPtr _AurPrintString;
+    private static bool _AurPrintStringDone;
+    /// <inheritdoc cref="SymbolMap.AurPrintString"/>
+    public static AurPrintStringFn AurPrintString => (AurPrintStringFn)(_AurPrintStringDone ? _AurPrintString : Resolve(ref _AurPrintString, ref _AurPrintStringDone, SymbolMap.AurPrintString));
 }
 
 /// <summary>Typed hook installs, one pair per <c>[Fn]</c> symbol.</summary>
@@ -5155,6 +5313,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.SdlGetKeyboardState"/>; returns the slot holding the next layer, or null.</summary>
     public static SdlGetKeyboardStateFn* ChainSdlGetKeyboardState(this HookService h, SdlGetKeyboardStateFn handler, int priority) =>
         (SdlGetKeyboardStateFn*)h.Chain(SymbolMap.SdlGetKeyboardState, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.MovieShowFrame"/>; returns the original, or null.</summary>
+    public static MovieShowFrameFn InstallMovieShowFrame(this HookService h, MovieShowFrameFn handler) =>
+        (MovieShowFrameFn)h.Install(SymbolMap.MovieShowFrame, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.MovieShowFrame"/>; returns the slot holding the next layer, or null.</summary>
+    public static MovieShowFrameFn* ChainMovieShowFrame(this HookService h, MovieShowFrameFn handler, int priority) =>
+        (MovieShowFrameFn*)h.Chain(SymbolMap.MovieShowFrame, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.NkSdlRender"/>; returns the original, or null.</summary>
     public static NkSdlRenderFn InstallNkSdlRender(this HookService h, NkSdlRenderFn handler) =>
         (NkSdlRenderFn)h.Install(SymbolMap.NkSdlRender, (IntPtr)handler);
@@ -5245,6 +5409,24 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.GuiObjectHitCheck"/>; returns the slot holding the next layer, or null.</summary>
     public static GuiObjectHitCheckFn* ChainGuiObjectHitCheck(this HookService h, GuiObjectHitCheckFn handler, int priority) =>
         (GuiObjectHitCheckFn*)h.Chain(SymbolMap.GuiObjectHitCheck, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NkSdlRefreshConfig"/>; returns the original, or null.</summary>
+    public static NkSdlRefreshConfigFn InstallNkSdlRefreshConfig(this HookService h, NkSdlRefreshConfigFn handler) =>
+        (NkSdlRefreshConfigFn)h.Install(SymbolMap.NkSdlRefreshConfig, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NkSdlRefreshConfig"/>; returns the slot holding the next layer, or null.</summary>
+    public static NkSdlRefreshConfigFn* ChainNkSdlRefreshConfig(this HookService h, NkSdlRefreshConfigFn handler, int priority) =>
+        (NkSdlRefreshConfigFn*)h.Chain(SymbolMap.NkSdlRefreshConfig, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NkConvert"/>; returns the original, or null.</summary>
+    public static NkConvertFn InstallNkConvert(this HookService h, NkConvertFn handler) =>
+        (NkConvertFn)h.Install(SymbolMap.NkConvert, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NkConvert"/>; returns the slot holding the next layer, or null.</summary>
+    public static NkConvertFn* ChainNkConvert(this HookService h, NkConvertFn handler, int priority) =>
+        (NkConvertFn*)h.Chain(SymbolMap.NkConvert, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.NkClear"/>; returns the original, or null.</summary>
+    public static NkClearFn InstallNkClear(this HookService h, NkClearFn handler) =>
+        (NkClearFn)h.Install(SymbolMap.NkClear, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.NkClear"/>; returns the slot holding the next layer, or null.</summary>
+    public static NkClearFn* ChainNkClear(this HookService h, NkClearFn handler, int priority) =>
+        (NkClearFn*)h.Chain(SymbolMap.NkClear, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.ExoConfigGetBool"/>; returns the original, or null.</summary>
     public static ExoConfigGetBoolFn InstallExoConfigGetBool(this HookService h, ExoConfigGetBoolFn handler) =>
         (ExoConfigGetBoolFn)h.Install(SymbolMap.ExoConfigGetBool, (IntPtr)handler);
@@ -5335,6 +5517,48 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.RiBindBuffer"/>; returns the slot holding the next layer, or null.</summary>
     public static RiBindBufferFn* ChainRiBindBuffer(this HookService h, RiBindBufferFn handler, int priority) =>
         (RiBindBufferFn*)h.Chain(SymbolMap.RiBindBuffer, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.RiSetColorv"/>; returns the original, or null.</summary>
+    public static RiSetColorvFn InstallRiSetColorv(this HookService h, RiSetColorvFn handler) =>
+        (RiSetColorvFn)h.Install(SymbolMap.RiSetColorv, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.RiSetColorv"/>; returns the slot holding the next layer, or null.</summary>
+    public static RiSetColorvFn* ChainRiSetColorv(this HookService h, RiSetColorvFn handler, int priority) =>
+        (RiSetColorvFn*)h.Chain(SymbolMap.RiSetColorv, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SceneRenderOnlyGobs"/>; returns the original, or null.</summary>
+    public static SceneRenderOnlyGobsFn InstallSceneRenderOnlyGobs(this HookService h, SceneRenderOnlyGobsFn handler) =>
+        (SceneRenderOnlyGobsFn)h.Install(SymbolMap.SceneRenderOnlyGobs, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SceneRenderOnlyGobs"/>; returns the slot holding the next layer, or null.</summary>
+    public static SceneRenderOnlyGobsFn* ChainSceneRenderOnlyGobs(this HookService h, SceneRenderOnlyGobsFn handler, int priority) =>
+        (SceneRenderOnlyGobsFn*)h.Chain(SymbolMap.SceneRenderOnlyGobs, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.StatusBarSetStatus"/>; returns the original, or null.</summary>
+    public static StatusBarSetStatusFn InstallStatusBarSetStatus(this HookService h, StatusBarSetStatusFn handler) =>
+        (StatusBarSetStatusFn)h.Install(SymbolMap.StatusBarSetStatus, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.StatusBarSetStatus"/>; returns the slot holding the next layer, or null.</summary>
+    public static StatusBarSetStatusFn* ChainStatusBarSetStatus(this HookService h, StatusBarSetStatusFn handler, int priority) =>
+        (StatusBarSetStatusFn*)h.Chain(SymbolMap.StatusBarSetStatus, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GlDrawReset"/>; returns the original, or null.</summary>
+    public static GlDrawResetFn InstallGlDrawReset(this HookService h, GlDrawResetFn handler) =>
+        (GlDrawResetFn)h.Install(SymbolMap.GlDrawReset, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GlDrawReset"/>; returns the slot holding the next layer, or null.</summary>
+    public static GlDrawResetFn* ChainGlDrawReset(this HookService h, GlDrawResetFn handler, int priority) =>
+        (GlDrawResetFn*)h.Chain(SymbolMap.GlDrawReset, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SdlGlSwapWindow"/>; returns the original, or null.</summary>
+    public static SdlGlSwapWindowFn InstallSdlGlSwapWindow(this HookService h, SdlGlSwapWindowFn handler) =>
+        (SdlGlSwapWindowFn)h.Install(SymbolMap.SdlGlSwapWindow, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SdlGlSwapWindow"/>; returns the slot holding the next layer, or null.</summary>
+    public static SdlGlSwapWindowFn* ChainSdlGlSwapWindow(this HookService h, SdlGlSwapWindowFn handler, int priority) =>
+        (SdlGlSwapWindowFn*)h.Chain(SymbolMap.SdlGlSwapWindow, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.RiClear"/>; returns the original, or null.</summary>
+    public static RiClearFn InstallRiClear(this HookService h, RiClearFn handler) =>
+        (RiClearFn)h.Install(SymbolMap.RiClear, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.RiClear"/>; returns the slot holding the next layer, or null.</summary>
+    public static RiClearFn* ChainRiClear(this HookService h, RiClearFn handler, int priority) =>
+        (RiClearFn*)h.Chain(SymbolMap.RiClear, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.RiSetClearColor"/>; returns the original, or null.</summary>
+    public static RiSetClearColorFn InstallRiSetClearColor(this HookService h, RiSetClearColorFn handler) =>
+        (RiSetClearColorFn)h.Install(SymbolMap.RiSetClearColor, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.RiSetClearColor"/>; returns the slot holding the next layer, or null.</summary>
+    public static RiSetClearColorFn* ChainRiSetClearColor(this HookService h, RiSetClearColorFn handler, int priority) =>
+        (RiSetClearColorFn*)h.Chain(SymbolMap.RiSetClearColor, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.RiDeleteTextures"/>; returns the original, or null.</summary>
     public static RiDeleteTexturesFn InstallRiDeleteTextures(this HookService h, RiDeleteTexturesFn handler) =>
         (RiDeleteTexturesFn)h.Install(SymbolMap.RiDeleteTextures, (IntPtr)handler);
@@ -6607,4 +6831,10 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.SendInputMergeItem"/>; returns the slot holding the next layer, or null.</summary>
     public static SendInputMergeItemFn* ChainSendInputMergeItem(this HookService h, SendInputMergeItemFn handler, int priority) =>
         (SendInputMergeItemFn*)h.Chain(SymbolMap.SendInputMergeItem, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AurPrintString"/>; returns the original, or null.</summary>
+    public static AurPrintStringFn InstallAurPrintString(this HookService h, AurPrintStringFn handler) =>
+        (AurPrintStringFn)h.Install(SymbolMap.AurPrintString, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AurPrintString"/>; returns the slot holding the next layer, or null.</summary>
+    public static AurPrintStringFn* ChainAurPrintString(this HookService h, AurPrintStringFn handler, int priority) =>
+        (AurPrintStringFn*)h.Chain(SymbolMap.AurPrintString, (IntPtr)handler, priority);
 }

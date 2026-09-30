@@ -26,6 +26,7 @@ public static unsafe class Gl
     public const uint INTERNALFORMAT_SUPPORTED = 0x826F, TEXTURE_COMPRESSED_BLOCK_WIDTH = 0x82B1,
                       TEXTURE_COMPRESSED_BLOCK_HEIGHT = 0x82B2, TEXTURE_COMPRESSED_BLOCK_SIZE = 0x82B3;
     public const uint CULL_FACE = 0x0B44, SCISSOR_TEST = 0x0C11;
+    public const uint MULTISAMPLE = 0x809D, STENCIL_TEST = 0x0B90;
     /// <summary>#292: the face <c>glCullFace</c> discards. BACK is the engine's own default
     /// (<c>Scene::RenderDrawBucket</c> @0x46d060 restores <c>SetCullFace(1)</c> on every exit).</summary>
     public const uint BACK = 0x0405;
@@ -492,6 +493,9 @@ public static unsafe class Gl
     /// <c>gl_InstanceID</c> does NOT include the base -- divisor-1 vertex attributes do, which is why the
     /// per-blade data is an attribute stream and not an SSBO indexed by the id.</summary>
     public static delegate* unmanaged<uint, int, int, int, uint, void> DrawArraysInstancedBaseInstance;
+    /// <summary>glDrawElementsInstancedBaseVertexBaseInstance (GL 4.2): mode, count, type, indices, instancecount,
+    /// basevertex, baseinstance. CX-95's GUI draws name their record through <c>gl_BaseInstance</c>.</summary>
+    public static delegate* unmanaged<uint, int, uint, void*, int, int, uint, void> DrawElementsInstancedBaseVertexBaseInstance;
     /// <summary>glDrawArraysIndirect (GL 4.0): mode, indirect (byte offset into the bound DRAW_INDIRECT_BUFFER).
     /// CX-24: the grass scatter writes the instance count, so it never reaches the CPU.</summary>
     public static delegate* unmanaged<uint, void*, void> DrawArraysIndirect;
@@ -729,6 +733,8 @@ public static unsafe class Gl
         DrawArraysIndirect = (delegate* unmanaged<uint, void*, void>)P("glDrawArraysIndirect");
         DrawArraysInstancedBaseInstance =
             (delegate* unmanaged<uint, int, int, int, uint, void>)P("glDrawArraysInstancedBaseInstance");
+        DrawElementsInstancedBaseVertexBaseInstance =
+            (delegate* unmanaged<uint, int, uint, void*, int, int, uint, void>)P("glDrawElementsInstancedBaseVertexBaseInstance");
         FenceSync = (delegate* unmanaged<uint, uint, IntPtr>)P("glFenceSync");
         ClientWaitSync = (delegate* unmanaged<IntPtr, uint, ulong, uint>)P("glClientWaitSync");
         DeleteSync = (delegate* unmanaged<IntPtr, void>)P("glDeleteSync");

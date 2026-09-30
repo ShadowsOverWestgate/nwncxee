@@ -92,6 +92,29 @@ internal static unsafe class PresentTarget
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
     }
 
+    /// <summary>CX-95: the present texture and its size, for the GUI pass's own framebuffer (colour = this texture,
+    /// depth its own): the GUI draws into the same image the world frame composited into.</summary>
+    internal static uint Tex => _tex;
+    /// <inheritdoc cref="Tex"/>
+    internal static int Width => _w;
+    /// <inheritdoc cref="Tex"/>
+    internal static int Height => _h;
+
+    /// <summary>CX-95: the reverse of <see cref="HandBack"/>, in the ENGINE context: copy the real default
+    /// framebuffer INTO the present texture, so a GUI flush draws over what is on screen now -- the world frame's
+    /// hand-back, or the engine's clear on a frame with no world.</summary>
+    internal static void TakeBack()
+    {
+        if (!Needed || _tex == 0) return;
+        if (_fboEng == 0) { uint f; Gl.GenFramebuffers(1, &f); _fboEng = f; }
+        Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, _fboEng);
+        Gl.FramebufferTexture2D(Gl.DRAW_FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _tex, 0);
+        Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, 0);
+        Gl.BlitFramebuffer(0, 0, _w, _h, 0, 0, _w, _h, Gl.COLOR_BUFFER_BIT, (uint)Gl.NEAREST);
+        Gl.DrainErrors(4);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+    }
+
     /// <summary>GL names die with the context. Names only -- the images are gone already.</summary>
     internal static void ContextLost() { _tex = 0; _fbo46 = 0; _fboEng = 0; _w = _h = 0; }
 }

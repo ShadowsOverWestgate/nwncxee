@@ -386,9 +386,9 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
-    /// <summary>A new enrollment re-asks every deferred VDO. Called from <c>Enroll</c>, which is the edge the
-    /// drip is scoped to.</summary>
-    private static void DripRearm() { _dripN = 0; _dripDeferred = 0; _dripCapped = 0; }
+    /// <summary>A new enrollment re-asks every deferred VDO. Called from <c>Enroll</c>, which is the edge the drip is
+    /// scoped to -- and, outside a module where there is no enrollment, by the GUI pass when a harvest failed (CX-95).</summary>
+    internal static void DripRearm() { _dripN = 0; _dripDeferred = 0; _dripCapped = 0; }
 
     /// <summary>Did the last enrollment leave VDOs it never got to ask? Both states are transient by
     /// nature -- a deferral is waiting on pool residency, an overflow on a free slot -- and neither raises
@@ -588,6 +588,15 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The sky dome's VAO. Off the class mask: the dome is not an <see cref="AlloyClass"/>, and its
     /// own pass line reports it.</summary>
     internal static uint SkyVao(int v) => _vVao46[v];
+
+    /// <summary>CX-95: does slot <paramref name="v"/> still hold <paramref name="vdo"/>'s harvest? A world edge can
+    /// retire a slot and a recycled address changes the signature, so a remembered slot is asked this every use.</summary>
+    internal static bool SlotHolds(int v, IntPtr vdo) => (uint)v < (uint)_vdoCount && _vVdo[v] == vdo && _vSig[v] == VdoSig.Of(vdo);
+    /// <summary>CX-95: the slot's 4.6 VAO, built on demand; 0 = not drawable. Inside the bracket.</summary>
+    internal static uint GuiVao(int v) => (uint)v < (uint)_vdoCount && _vVdo[v] != IntPtr.Zero && EnsureVao(v) ? _vVao46[v] : 0;
+    /// <summary>CX-95: does the slot's VAO carry the bone streams (so a captured palette applies)?</summary>
+    internal static bool GuiSlotSkinned(int v) => _vSkin[v] && _skinning;
+
 
     /// <summary>#136: the same streams under the ENGINE's attribute locations, for a draw issued against an
     /// engine-compiled program. <c>GLRender::ConnectShaderData</c> @0x4ce8e0 binds them explicitly --

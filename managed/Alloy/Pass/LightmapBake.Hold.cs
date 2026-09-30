@@ -49,13 +49,12 @@ internal static unsafe partial class LightmapBake
     private static long _quietT;
     private static long _firstLandT;
     private static Window? _surface;
-    private static readonly VertexBatch _batch = new(0f, 0f);
     private static int _captionN = -1, _captionM = -1, _captionPhase = -1, _chartsSeen = -1;
-    private static bool _captionSkip;
-    /// <summary>The skip line's rect (px), the click target beside Escape.</summary>
-    private static float _skipX0, _skipX1, _skipY0, _skipY1;
-    /// <summary>Caption and skip-line colours (rgb).</summary>
-    private const uint CaptionRgb = 0xE8E4DA, SkipRgb = 0x9A968C;   // not-an-offset: colours
+    /// <summary>The caption <see cref="LoadScreen"/> shows for us; rebuilt only when one of its numbers moves.</summary>
+    private static string _caption = "";
+
+    /// <summary>CX-100: can a bake hold follow the engine's load? Then the load screen's bar is shared (<see cref="LoadScreen"/>).</summary>
+    internal static bool HoldHooked => _loadedSlot != null && Enabled;
 
     /// <summary>The hold is up: the send is ours to make.</summary>
     internal static bool Held => _heldMsg != IntPtr.Zero;
@@ -70,6 +69,7 @@ internal static unsafe partial class LightmapBake
         if (!Enabled || Lightmap.HoldSeconds.V <= 0 || _surface == null)
         {
             _log?.Info(Enabled ? "LightmapBake: AreaLoaded send passed through -- hold disabled (lightmap.hold 0)" : "LightmapBake: AreaLoaded send passed through -- no bake");
+            LoadScreen.End();   // CX-100: no bake phase follows, so the engine's load owns the rest of the shared bar
             Forward(msg); return;
         }
         bool silent = AreaHitReady(out int planned);
@@ -177,10 +177,14 @@ internal static unsafe partial class LightmapBake
     internal static void BeginAreaEdge() => _areaEdge = true;
     internal static void EndAreaEdge() { _areaEdge = false; _edgePresent = GlContextService.Presents; OnAreaLoaded(); StampEdge(); TakeAreaKey(); }
 
-    /// <summary>The window is the input side only (Escape, the clicks it eats); the draw is at the present,
-    /// after the GL bracket hands the engine's context back -- the window roll-call sits under the engine's
-    /// loadscreen (the NUI chain), and the first live run showed the stock screen, not this one.</summary>
-    private static void End() { _silentHold = false; _heldMsg = IntPtr.Zero; Hold = false; _skipOpen = false; _surface!.SuppressChords = false; }
+    /// <summary>The window is the input side only (Escape, the clicks it eats); the draw is <see cref="LoadScreen"/>'s,
+    /// at the present, after the GL bracket hands the engine's context back -- the window roll-call sits under the
+    /// engine's loadscreen (the NUI chain), and the first live run showed the stock screen, not this one.</summary>
+    private static void End()
+    {
+        _silentHold = false; _heldMsg = IntPtr.Zero; Hold = false; _skipOpen = false; _surface!.SuppressChords = false;
+        LoadScreen.End();   // CX-100: the hold was the last phase of the one screen, so the screen is over too
+    }
 
     private static void InstallSurface(ExtenderLog log)
     {
@@ -191,7 +195,7 @@ internal static unsafe partial class LightmapBake
             OnMouseButton = (down, button, x, y) =>
             {
                 if (!Held) return false;
-                if (down && button == 1 && _skipOpen && x >= _skipX0 && x < _skipX1 && y >= _skipY0 && y < _skipY1) Release("skipped");
+                if (down && button == 1 && _skipOpen && LoadScreen.HitSkip(x, y)) Release("skipped");
                 return true;
             },
         };
@@ -200,9 +204,10 @@ internal static unsafe partial class LightmapBake
 
     private static float HeldSeconds => (Stopwatch.GetTimestamp() - _holdT0) / (float)Stopwatch.Frequency;
 
-    /// <summary>Per presented frame. Ticks the exits, then draws the backdrop, the bar and the captions over
-    /// everything the engine drew. ponytail: the caption is a string built whenever its number moves (most
-    /// frames of the chart phase) -- under an opaque backdrop a gen0 pause shows nowhere; a char buffer if it ever does.</summary>
+    /// <summary>Per presented frame. Ticks the exits, then feeds <see cref="LoadScreen"/> -- the ONE loading
+    /// screen the engine's own load phase already drew (CX-100) -- and draws it over everything the engine drew.
+    /// ponytail: the caption is a string built whenever its number moves (most frames of the chart phase) --
+    /// under an opaque backdrop a gen0 pause shows nowhere; a char buffer if it ever does.</summary>
     private static void DrawSurface()
     {
         if (!Held) return;
@@ -216,14 +221,21 @@ internal static unsafe partial class LightmapBake
         if (!Enabled) { Release("bake stood down"); return; }
         if (_silentHold) { if (s >= SilentCapSeconds) Release($"silent hold ceiling -- {_areaClaimed} of {_areaBase} baseline rects claimed"); return; }
         _skipOpen = s >= Lightmap.HoldSeconds.V;
-        float w = TextRig.ViewportW, h = TextRig.ViewportH;
-        GlyphAtlas? atlas = TextRig.Atlas;
-        if (w <= 0 || atlas == null) return;
         int phase = _closed && MeshChart.InFlight == 0 && AlloyRenderer.ChartDeferred == 0 ? 1 : 0;
         int n = phase == 0 ? MeshChart.Done : PagesDone(), m = phase == 0 ? MeshChart.Offered : _layers;
-        if (n != _captionN || m != _captionM || phase != _captionPhase || _skipOpen != _captionSkip) Bake(atlas, w, h, phase, n, m);
-        TextRig.DrawBatch(_batch.AsSpan(), _batch.VertexCount);
+        if (n != _captionN || m != _captionM || phase != _captionPhase)
+        {
+            _captionN = n; _captionM = m; _captionPhase = phase;
+            _caption = phase == 0 ? $"Building light charts {n}/{m}" : $"Baking the shadows... {n}/{m} pages";
+        }
+        LoadScreen.BakeStep(BakeFraction(phase, n, m), _caption, _skipOpen);
+        LoadScreen.Draw();
     }
+
+    /// <summary>The hold's two sub-phases as one 0..1 term: charts fill the first half, pages the second. Without
+    /// the split the bar would stall at the charts' full mark while the pages counted up from zero.</summary>
+    internal static float BakeFraction(int phase, int n, int m)
+        => (Math.Clamp(phase, 0, 1) + (m > 0 ? Math.Clamp(n / (float)m, 0f, 1f) : 0f)) * 0.5f;
 
     /// <summary>The present "Compiling shaders" last went up in: once per present, the screen keeps it until the next.</summary>
     private static int _noticeAt = -1;
@@ -241,22 +253,18 @@ internal static unsafe partial class LightmapBake
     internal static void CompileNotice()
     {
         int now = GlContextService.Presents;
-        if (!Held && _edgePresent != now || _noticeAt == now || !GlContextService.Inside || TextRig.Atlas is not { } atlas) return;
+        if (!Held && _edgePresent != now || _noticeAt == now || !GlContextService.Inside || TextRig.Atlas == null) return;
+        // CX-100: under the engine's load screen the frozen screen is the notice; a CX backdrop would be a second one.
+        if (LoadScreen.PanelUp) return;
         int w = TextRig.ViewportW, h = TextRig.ViewportH;
         if (w <= 0 || h <= 0) return;
-        _noticeAt = now; _captionPhase = -1;   // the batch is shared: the hold's caption rebakes at its next present
-        _batch.Reset(atlas.SolidU, atlas.SolidV);
-        _batch.Rect(0, 0, w, h, 0.04f, 0.04f, 0.05f, 1f);
-        const string caption = "Compiling shaders…", sub = "Only once: the result is saved for next time";
-        float y0 = h * 0.72f;
-        UiText.Draw(_batch, atlas, caption, (w - UiText.Measure(atlas, caption)) * 0.5f, y0 - atlas.LineHeight * 0.6f, CaptionRgb, w);
-        UiText.Draw(_batch, atlas, sub, (w - UiText.Measure(atlas, sub)) * 0.5f, y0 + atlas.LineHeight * 1.4f, SkipRgb, w);
+        _noticeAt = now; _captionPhase = -1;   // the screen's batches are shared: the hold's caption rebakes at its next present
         GlContextService.Leave();
         int* vp = stackalloc int[4];
         Gl.GetIntegerv(Gl.VIEWPORT, vp);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         Gl.Viewport(0, 0, w, h);
-        TextRig.DrawBatch(_batch.AsSpan(), _batch.VertexCount);
+        LoadScreen.Notice("Compiling shaders…", "Only once: the result is saved for next time");
         GlContextService.SwapNow();
         UiHostService.HandBack();
         Gl.Viewport(vp[0], vp[1], vp[2], vp[3]);   // GLRender::SetViewPort caches no GL state, so the raw value is all it had
@@ -278,29 +286,6 @@ internal static unsafe partial class LightmapBake
         return done;
     }
 
-    /// <summary>Backdrop, one bar (the phase's N/M), the caption and the skip line. Cold: runs on a change.</summary>
-    private static void Bake(GlyphAtlas atlas, float w, float h, int phase, int n, int m)
-    {
-        _captionN = n; _captionM = m; _captionPhase = phase; _captionSkip = _skipOpen;
-        _batch.Reset(atlas.SolidU, atlas.SolidV);
-        _batch.Rect(0, 0, w, h, 0.04f, 0.04f, 0.05f, 1f);
-        float barW = MathF.Min(w * 0.5f, 640f * Metrics.Scale), barH = 10f * Metrics.Scale;
-        float x0 = (w - barW) * 0.5f, y0 = h * 0.72f;
-        _batch.Rect(x0, y0, x0 + barW, y0 + barH, 0.16f, 0.16f, 0.18f, 1f);
-        float f = m > 0 ? Math.Clamp(n / (float)m, 0f, 1f) : 0f;
-        _batch.Rect(x0, y0, x0 + barW * f, y0 + barH, 0.78f, 0.66f, 0.36f, 1f);
-        string caption = phase == 0 ? $"Building light charts {n}/{m}" : $"Baking the shadows... {n}/{m} pages";
-        float tw = UiText.Measure(atlas, caption);
-        UiText.Draw(_batch, atlas, caption, (w - tw) * 0.5f, y0 - atlas.LineHeight * 0.6f, CaptionRgb, w);
-        if (_skipOpen)
-        {
-            const string skip = "Press Escape to skip";
-            float sw = UiText.Measure(atlas, skip), sx = (w - sw) * 0.5f, sy = y0 + barH + atlas.LineHeight * 1.4f;
-            UiText.Draw(_batch, atlas, skip, sx, sy, SkipRgb, w);
-            _skipX0 = sx - 8f; _skipX1 = sx + sw + 8f; _skipY0 = sy - atlas.Ascent - 4f; _skipY1 = sy + atlas.LineHeight * 0.5f + 4f;
-        }
-    }
-
     /// <summary>Headless: the drain clock and the exits, no GL, no window.</summary>
     internal static bool HoldSelfCheck(ExtenderLog log)
     {
@@ -308,6 +293,11 @@ internal static unsafe partial class LightmapBake
         check.Expect(CapSeconds > Lightmap.HoldSeconds.Max, "the cap must sit past the knob's range or the skip line never shows");
         check.Expect(QuietFrames < 60, "the drain clock is a second or more: a second visit would not hold ~0 s");
         check.Expect(AlloyRenderer.MaxOwned / HoldSweepPerFrame == 1, "the hold's sweep no longer covers the whole table in one frame, so QuietFrames' sweep term is wrong");
+        check.Expect(BakeFraction(0, 0, 0) == 0f, "an unopened chart phase starts the bake term at zero");
+        check.Expect(BakeFraction(0, 4, 4) == 0.5f, "a finished chart phase hands over at the halfway mark");
+        check.Expect(BakeFraction(1, 0, 4) == 0.5f, "...and the page phase picks it up there, so the bar never stalls");
+        check.Expect(BakeFraction(1, 4, 4) == 1f, "a finished bake fills the bake term");
+        check.Expect(BakeFraction(0, 9, 0) == 0f, "a zero denominator is a zero term, not a NaN");
         check.Expect(IdleSeconds < CapSeconds && IdleSeconds <= Lightmap.HoldSeconds.Max, "the idle exit must come before the cap and the skip");
         // CX-56: the idle exit counts presents -- the draw slot runs at every present while the bake's frame
         // moves only inside the Alloy pass -- with the seconds kept as the ceiling, Drained's two-arm shape.

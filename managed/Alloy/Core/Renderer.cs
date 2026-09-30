@@ -22,7 +22,7 @@ internal static class Renderer
     internal static readonly Knob<string> Highlight, DrawHooks, DumpTex, SkipTex;
     internal static readonly Knob<bool> TileDissolve, Bcn, Hdr, Gl46, OwnedTex, PltCpu, TexSingle, DdsRead, HandleDrop, OwnedGeom,
                                         Spirv, VanillaBridge, HostFs, OwnSkin, EnrollDelta, DumpShaders, GlDebug, EngineZones,
-                                        NwSyncRead;
+                                        NwSyncRead, Gui, Movie;
     internal static readonly Knob<int> Border, Oit, OitLayers, TexCache, Bindless, BcnDrip, TexPrefetch, TexDelete, MaxElements, RasterRead, TexStream, TexLoad, ModelLoad, MdlCache,
                                        EnrollBudget, ClusterCap, SwapProbe, GlSync, SkipBuckets;
     internal static readonly Knob<bool> Light, Prepass, AoTest, Retest, HlDiag, Poll, PrepassKey, PrepassFeat, IdTarget,
@@ -39,9 +39,11 @@ internal static class Renderer
     /// machine cannot run the Alloy renderer".</summary>
     internal static string Status()
     {
-        string s = AlloyGate.Alloy ? "Running: Alloy" : $"Running: Vanilla — {AlloyGate.Reason}";
+        string s = AlloyGate.Alloy ? "Running: Alloy"
+                 : AlloyGate.Stand == AlloyStand.Idle ? $"World: idle — {AlloyGate.Reason}"
+                 : $"Running: Vanilla — {AlloyGate.Reason}";
         if (AlloyGate.Failed) s += $" — the Alloy renderer FAILED: {AlloyGate.CapabilityReason}";
-        return s;
+        return s + " — " + GuiPass.Stats() + "; " + NuiFlush.Stats();
     }
 
     private static string AutoInt(int v) => v < 0 ? "auto" : v.ToString(CultureInfo.InvariantCulture);
@@ -70,6 +72,9 @@ internal static class Renderer
         Scale = G.Slider("scale", "Render scale", 0.25f, 2f, 0.05f, 1f,
                          help: "Size of the 3D frame relative to your screen. Below 1 renders fewer pixels and upscales (faster); "
                              + "above 1 supersamples (sharper, slower). The UI is never scaled.");
+        Gui = G.Toggle("gui", "Draw the interface with Alloy", true, Tier.Advanced,
+                       help: "Menus, panels, text, the minimap and the cursor are drawn by CX's renderer from what the game "
+                           + "lays out. Off, the game's own renderer draws them again.");
         G.Section("Geometry");
         Highlight = G.Dropdown("highlight", "Selection highlight", new[] { "glow", "outline" }, "outline",
                                help: "How a selected or hovered object is marked: an outline with a light fill, or a soft glow around the object.");
@@ -153,6 +158,9 @@ internal static class Renderer
         GlSync = G.Slider("glsync", "glsync", 0, 1, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
         SkipBuckets = G.Slider("skipbuckets", "skipbuckets", 0, 2, 1, 2, tier: Tier.ChatOnly, effect: Effect.Restart);
         EngineZones = G.Toggle("enginezones", "enginezones", true, Tier.ChatOnly, Effect.Restart);
+        // CX-99: 0 hands every movie frame back to the engine's own quad. Live, because a movie is the one
+        // surface a player can be stuck staring at with no way to restart into a different config.
+        Movie = G.Toggle("movie", "movie", true, Tier.ChatOnly);
 
         // The world pass's live dials (the former /draw): a dial can change what a persistent record MEANS
         // (#242), and one dirty-all on a chat command is free, so every one of them invalidates.

@@ -191,7 +191,8 @@ public sealed unsafe class UiHostService : IExtenderService
                        + $"  into={CX.Alloy.PostChain.LastInto} resolves={CX.Alloy.PostChain.Resolves}");
         }
         long tSwap = FrameZones.Now;
-        if (_swapOrig != null) _swapOrig(window); // present
+        // CX-101: Alloy issues the present when the screen is Alloy's; otherwise the engine's GLRender::SwapBuffers.
+        if (!CX.Alloy.ScreenOwner.Present(window) && _swapOrig != null) _swapOrig(window);
         FrameZones.Add(FrameZones.Zone.Present, tSwap);
         FrameStats();
         FrameRegistry.Global.Run(FramePhase.PostPresent);
@@ -208,14 +209,20 @@ public sealed unsafe class UiHostService : IExtenderService
 
     /// <summary>Refresh the session gate, the UI scale and the viewport, run the z-order roll-call, then hand
     /// the GL state back. The hand-back is #210 (G1) one call earlier: our raw GL desyncs GLRender's shadow
-    /// cache, and what renders next is NUI, not the present.</summary>
+    /// cache, and what renders next is NUI, not the present.
+    /// <para>CX-99: the roll-call alone stands aside while a movie is on screen. Everything above it still
+    /// runs -- the session gate is what the module-unload edge is read from, and a movie can play inside a
+    /// module. It matters on the FALLBACK path (and on Windows, where <c>nk_sdl_render</c> is not exported
+    /// and the fallback is the only path): <c>CGuiMan::UpdateAndRender</c> skips <c>nk_sdl_render</c> outright
+    /// while a movie plays, so the normal site never reaches a movie frame.</para></summary>
     private static void DrawWindows()
     {
         RefreshGate();
         SyncUiScale(); ApplyFont();   // #593: every frame, not only in game -- the menu gear and panel honour the UI scale
         TextRig.SampleViewport();     // CX-709: the frame's one GL_VIEWPORT query; every draw below reads the pair
         long tUi = FrameZones.Now;
-        UiHost.DrawFrame();                       // draw every registered window in z-order (content-owned)
+        if (!CX.Alloy.MovieService.OnScreen)
+            UiHost.DrawFrame();                   // draw every registered window in z-order (content-owned)
         FrameZones.Add(FrameZones.Zone.Ui, tUi);
         HandBack();
     }

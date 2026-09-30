@@ -663,7 +663,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Find (or harvest) the VAO-cache slot for a VDO. Harvesting reads the engine VAO's attribute
     /// formats -- engine context, read-only queries, binding restored -- so the 4.6 side can rebuild an
     /// equivalent VAO over the same shared buffers.</summary>
-    private static int VdoSlot(IntPtr vdo)
+    internal static int VdoSlot(IntPtr vdo)
     {
         int s = -1;
         for (int v = 0; v < _vdoCount; v++)
