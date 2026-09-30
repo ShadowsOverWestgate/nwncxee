@@ -86,6 +86,11 @@ internal static class TextureSlots
     /// unit on <see cref="Ssao"/>'s argument, re-bound at every lit program bind; the OIT accumulate takes
     /// the unit back (<see cref="OitDepth"/>) and the stage falls back to a hard compare under uOit.</summary>
     internal const uint CoverEsm = SnapshotDepth;
+    /// <summary>CX-102: the cover layer as plain depth, read by the SPLASH vertex stage to place each impact
+    /// at its landing point. The map block's first unit on <see cref="GrassPush"/>'s argument -- the
+    /// precipitation programs bind no material maps, and the splash program is the only thing in that
+    /// bracket that binds a sampler2D below unit 10 at all.</summary>
+    internal const uint CoverDepth = MapBase;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
     /// <summary>#642: the two shadow cube arrays again, through a sampler object with no compare mode, for the
@@ -94,6 +99,10 @@ internal static class TextureSlots
     /// the driver once and leaves the search off (uLocalPcss.x = 0) where it is short -- the declaration
     /// stays, so a strict-16 driver would fail the lit link, which the limits line names.</summary>
     internal const uint LocalShadowRaw = 16, LocalShadowDynRaw = 17;
+    /// <summary>R2: the area wetness map (<see cref="Weather"/>), read by the lit stage and the grass blade.
+    /// Past the 0..15 budget for <see cref="LocalShadowRaw"/>'s reason -- every unit below is spent in the lit
+    /// bracket -- and declared by <c>layout(binding)</c>, so no bind-time <c>glUniform1i</c> can miss it.</summary>
+    internal const uint WetMap = 18;
     /// <summary>#379 follow-up: the SAME prepass depth, on the same unit, read by the LIT stage -- so a
     /// fragment can ask whether the visibility at its pixel was computed from ITS OWN surface. Under #119 the
     /// prepass and the colour pass compute gl_Position character-for-character, so a prepassed fragment's
@@ -154,6 +163,10 @@ internal static class TextureSlots
           $"{LocalShadowRaw} uLocalShadowRaw");
         check.Expect(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowDynRaw}) uniform samplerCubeArray uLocalDynShadowRaw;"),
           $"{LocalShadowDynRaw} uLocalDynShadowRaw");
+        check.Expect(Weather.MapLib.Contains($"layout(binding = {WetMap}) uniform sampler2D uWxMap;")
+          && ShaderStages.Source(AlloyRenderer.ShdLitFs).Contains($"layout(binding = {WetMap}) uniform sampler2D uWxMap;")
+          && GrassField.EmbeddedFs.Contains($"layout(binding = {WetMap}) uniform sampler2D uWxMap;"),
+          $"{WetMap} uWxMap");
         check.Expect(AlloyLights.SunShadowLib.Contains("uniform sampler2DArrayShadow uSunDynShadow;"),
           $"{SunShadowDyn} uSunDynShadow");
         for (int i = 0; i < MapSamplers.Length; i++)
@@ -183,6 +196,7 @@ internal static class TextureSlots
         check.Expect(AlloyRenderer.OitOutFs.Contains("uniform sampler2D uOitDepth;"), $"{OitDepth} uOitDepth (blended output)");
         check.Expect(AlloyRenderer.OitOutFs.Contains("uniform ivec2 uOitDim;") && AlloyRenderer.OitOutFs.Contains("uniform float uOitBias;") && AlloyRenderer.OitOutFs.Contains("uniform int uOitGob;"), "uOitDim/uOitBias/uOitGob are what OitPass.Upload and IssueColour write");
         check.Expect(Particles.ParticleFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SceneDepth} uSceneDepth");
+        check.Expect(Weather.SplashVs.Contains("uniform sampler2D uCoverDepth;"), $"{CoverDepth} uCoverDepth (splash program)");
 
         // ...and the units themselves. MapSamplers is what the lit program's bind loop walks, so a name added
         // there without a unit to put it on would silently land on the probe's.

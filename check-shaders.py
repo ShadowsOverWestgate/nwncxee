@@ -37,7 +37,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 SHADERS = os.path.join(ROOT, "managed/Alloy/Shaders")
 MANAGED = os.path.join(ROOT, "managed")
 # ShaderResource.Tokens' sizing tokens. Any legal value compiles the same shapes.
-TOKENS = {"$CAP$": "128", "$SORT$": "32", "$DYNSPH$": "4", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3",
+TOKENS = {"$CAP$": "128", "$SORT$": "32", "$DYNSPH$": "4", "$CUBES$": "64", "$GROUP$": "8", "$SRGB$": "2.2", "$BAND$": "45.0, 0.0667", "$AA$": "3",
           # #352: the hosted post chain built with sharpen + vibrance on (the two hosted option bits), high quality
           "$POSTMASK$": "9", "$SQM$": "2"}
 INCLUDE = re.compile(r'^\s*#include\s+"([^"]+\.glsl)"\s*$')
@@ -486,6 +486,7 @@ def programs(g):
         "halos": (g["cx_halo_vs"], g["cx_halo_fs"]),
         "weather rain": (g["cx_weather_vs"], g["cx_rain_fs"]),
         "weather snow": (g["cx_weather_vs"], g["cx_snow_fs"]),
+        "weather splash": (g["cx_splash_vs"], g["cx_splash_fs"]),
         "ssao temporal": (g["cx_fullscreen_v"], g["cx_ssaotemp_f"]),
         "motion vectors": (g["cx_fullscreen_v"], g["cx_motioncam_f"]),
         "mover motion": (g["cx_motion_v"], g["cx_motion_f"]),

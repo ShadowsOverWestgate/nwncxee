@@ -73,9 +73,12 @@ internal static unsafe class DanglyPhysics
     /// declared signature is per SYMBOL, and this symbol has two.</para></summary>
     private static delegate* unmanaged<IntPtr, Vector3*, Vector3*, float, void> _getWindWin;
 
-    /// <summary>The wind at <paramref name="pos"/>, through whichever order this platform uses.</summary>
+    /// <summary>The wind at <paramref name="pos"/>. CX-110: <see cref="AlloyWind"/> answers it off Alloy's own
+    /// clock, noise field and point-source list; <c>view.wind 0</c> falls back to the engine call, through
+    /// whichever argument order this platform uses.</summary>
     private static Vector3 Wind(IntPtr scene, Vector3* pos, float dt)
     {
+        if (AlloyWind.Owned) return AlloyWind.Wind(*pos, dt);
         if (!OperatingSystem.IsWindows()) return _getWind(scene, pos, dt);
         Vector3 r = default;
         _getWindWin(scene, &r, pos, dt);
@@ -226,10 +229,10 @@ internal static unsafe class DanglyPhysics
              out float dw, out float dx, out float dy, out float dz);
         Vector3 tLocal = Qrot(-prevRot[0], prevRot[1], prevRot[2], prevRot[3], ppos - wpos);
 
-        // The area's wind, from the engine, at this part's world position -- the same call vanilla makes and
-        // with vanilla's clamped dt. Not WindManager+0x20: the Scene's manager is default-constructed with a
-        // ZERO base vector and nothing but the setglobalwind console command ever writes it, so every bit of
-        // felt wind in normal play is the point-source term this call composes in.
+        // The area's wind at this part's world position, with vanilla's clamped dt. CX-110: CX's own field,
+        // and its base vector still comes off WindManager+0x20 -- which is ZERO in normal play, because the
+        // Scene's manager is default-constructed and nothing but the setglobalwind console command ever writes
+        // it, so every bit of felt wind is the point-source term the field composes in.
         Vector3 windW = Wind(scene, &wpos, Math.Clamp(dt, MinChildDt, MaxChildDt));
         if (!float.IsFinite(windW.X) || !float.IsFinite(windW.Y) || !float.IsFinite(windW.Z)) windW = Vector3.Zero;
         // The breeze wanders rather than blowing down a fixed axis -- a banner pinned to one compass
@@ -287,7 +290,8 @@ internal static unsafe class DanglyPhysics
             float speed = v.Length();
             if (speed > MaxSpeed) v *= MaxSpeed / speed;
 
-            float cap = disp * w * cage;
+            // a constraint over 255 or a negative displacement (custom models) inverts Clamp's bounds, which throws
+            float cap = MathF.Max(disp * w * cage, 0f);
             Vector3 d = p - r;
             p = r + new Vector3(Math.Clamp(d.X, -cap, cap),
                                 Math.Clamp(d.Y, -cap, cap),

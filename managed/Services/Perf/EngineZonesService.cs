@@ -28,11 +28,18 @@ public sealed unsafe class EngineZonesService : IExtenderService
         _image = hooks.ChainAurGetImageWrapper(&OnImage, ImagePriority);
         _bsp = hooks.InstallManageSceneBSP(&OnBsp);
         _buckets = hooks.InstallAddPartsToDrawBuckets(&OnBuckets);
-        // 2 by default (2026-09-06, live: Buckets 0,7 -> 0,2-0,3ms, gob parts intact); 0 is the A/B, 1 the
-        // experiment that empties the world of gob parts.
+        // 3 by default: both engine walks stand down on an Alloy world frame. 2 keeps ManageSceneBSP and
+        // thins only the bucket build's tile loops (the 2026-09-06 default: Buckets 0,7 -> 0,2-0,3ms), 0 is
+        // the full A/B, and 1 is the old experiment that empties the world of gob parts.
         int skip = Alloy.Renderer.SkipBuckets.Boot;
-        _skipBuckets = skip == 1;
+        _skipBuckets = skip == 1 || skip == 3;
         _bucketsCadence = skip == 2;
+        // CX-104: 3 skips the BSP walk as well. Everything it produced for the FRAME is Alloy's (the tile
+        // fade ramp, the grass bins, the emitter/trigger/beam lists, the visible-gob list, ProcessGob and the
+        // LOD call), and everything it produced for the rest of the CLIENT is CX.Alloy.ScenePrep's (the
+        // in-view byte, gobbucket, the three LightManager steps). ScenePrep.Needed is the per-frame veto:
+        // any /buckets A/B or validator that wants an engine list re-arms both walks.
+        _skipBsp = skip == 3;
         if (_bucketsCadence)
         {
             _meshBuckets = (byte*)Native.Sym(SymbolMap.MeshBuckets); _fadeBuckets = (byte*)Native.Sym(SymbolMap.FadeBuckets);
@@ -45,8 +52,9 @@ public sealed unsafe class EngineZonesService : IExtenderService
             { _bucketsCadence = false; log.Info($"EngineZones: alloy.skipbuckets=2 refused -- unresolved:{missing}"); }
         }
         log.Info("EngineZones: timing the engine loop's net / resman / AI / GUI steps and resource demands into [zones] (config alloy.enginezones=0 disables)" +
-                 (_skipBuckets ? " -- EXPERIMENT alloy.skipbuckets=1: the world scene's AddPartsToDrawBuckets is SKIPPED while Alloy draws (expect no gob parts)" : "") +
-                 (_bucketsCadence ? $" -- alloy.skipbuckets=2: the tile-part loops of AddPartsToDrawBuckets run every {BucketsEvery}th frame while Alloy draws (alloy.skipbuckets=0 restores them)" : ""));
+                 (_skipBuckets && !_skipBsp ? " -- EXPERIMENT alloy.skipbuckets=1: the world scene's AddPartsToDrawBuckets is SKIPPED while Alloy draws (expect no gob parts)" : "") +
+                 (_bucketsCadence ? $" -- alloy.skipbuckets=2: the tile-part loops of AddPartsToDrawBuckets run every {BucketsEvery}th frame while Alloy draws (alloy.skipbuckets=0 restores them)" : "") +
+                 (_skipBsp ? " -- alloy.skipbuckets=3 (default): ManageSceneBSP and AddPartsToDrawBuckets both stand down on an Alloy world frame, and CX.Alloy.ScenePrep owns what they did for the rest of the client (the in-view byte, gobbucket, the LightManager steps); /buckets reports it, and any A/B there re-arms both walks" : ""));
     }
 
     private static ResManDemandFn _demand;
@@ -59,6 +67,8 @@ public sealed unsafe class EngineZonesService : IExtenderService
     private static long OnBsp(IntPtr scene)
     {
         bool world = new CX.Engine.Scene(scene).BspRoot != IntPtr.Zero;
+        if (world && _skipBsp && CX.Alloy.AlloyGate.Alloy && !CX.Alloy.ScenePrep.Needed)
+        { _bspSkipped++; return 0; }
         long t = world ? FrameZones.Now : 0;
         long r = _bsp != null ? _bsp(scene) : 0;
         if (world) FrameZones.Add(FrameZones.Zone.Bsp, t);
@@ -72,6 +82,15 @@ public sealed unsafe class EngineZonesService : IExtenderService
     /// Never on a GUI panel's scene and never while the engine renders (vanilla=1).</summary>
     private static bool _skipBuckets;
     private static long _bucketsSkipped;
+    /// <summary>CX-104: <c>alloy.skipbuckets=3</c> -- the whole BSP walk stands down on an Alloy world frame.
+    /// What it produced is Alloy's: the tile fade ramp (<c>TileFadeRamp</c>), the grass bins, the emitter,
+    /// trigger and beam lists, the visible-gob list (<c>AlloyRenderer.VisibleGobs</c>), the per-gob LOD call
+    /// and <c>Gob::ProcessGob</c> (both driven from <c>GobXform.Tick</c> under this same knob). Its remaining
+    /// side effects with no owner are the BSP RE-FILING of moved parts and gobs (<c>SceneBSPUpdatePart</c> /
+    /// <c>SceneBSPUpdateGob</c>, which hit testing walks), the camera fade planes and
+    /// <c>Gob::IsInViewVolume</c>'s <c>gob+0x1b</c>.</summary>
+    private static bool _skipBsp;
+    private static long _bspSkipped;
     /// <summary><c>alloy.skipbuckets=2</c>: the six flat loops over the BSP walk's tile-part lists (matrix rewrite
     /// of STATIC parts plus the filing of buckets nothing reads) run every <see cref="BucketsEvery"/>th frame;
     /// the gob loop (ProcessGob, the attached-hierarchy sync, the part-tree matrix walk creatures and
@@ -111,7 +130,10 @@ public sealed unsafe class EngineZonesService : IExtenderService
     private static long OnBuckets(IntPtr scene)
     {
         bool world = new CX.Engine.Scene(scene).BspRoot != IntPtr.Zero;
-        if (world && _skipBuckets && CX.Alloy.AlloyGate.Alloy) { _bucketsSkipped++; return 0; }
+        // Under 3 the two skips travel together: the bucket build's inputs are the lists the BSP visitor
+        // fills, so re-arming the walk without re-arming this would leave an A/B reading half a frame.
+        if (world && _skipBuckets && CX.Alloy.AlloyGate.Alloy
+            && (!_skipBsp || !CX.Alloy.ScenePrep.Needed)) { _bucketsSkipped++; return 0; }
         if (world && _bucketsCadence && CX.Alloy.AlloyGate.Alloy && (++_bucketsFrame % BucketsEvery) != 0) ThinTileLists();
         long t = world ? FrameZones.Now : 0;
         long r = _buckets != null ? _buckets(scene) : 0;

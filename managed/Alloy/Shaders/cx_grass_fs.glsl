@@ -2,6 +2,7 @@
 #include "cx_localshadow.glsl"
 #include "cx_lightfrag.glsl"
 #include "cx_sunshadow.glsl"
+#include "cx_wx_edge.glsl"
 #include "cx_keyfog.glsl"
 #include "cx_vanenv_f.glsl"
 #include "cx_hook_f.glsl"

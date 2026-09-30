@@ -98,6 +98,47 @@ internal static unsafe partial class AlloyCensus
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
         Array.Clear(OwnRefusedByClass);
 
+        // CX-105: the INACTIVE-LOD exemption. SceneWalk enumerates a gob's alternate roots while a level
+        // change is registered, so their parts become candidates -- and one refusable part on an alternate LOD
+        // used to drop the WHOLE CREATURE for the pending window. Vanilla draws nothing for that part
+        // (Scene::AddPartsTreeToDrawBuckets @0x460880 walks gob+0x90 alone), so by the census's own rule -- the
+        // one the StHidden exemption states -- it must veto neither its gob nor its class.
+        // The active root must still veto: this is the check that says the exemption is narrow.
+        int le = MaxParts - 3;
+        byte savedState = _pState[le]; IntPtr savedGob = _pGob[le], savedRoot = _pRoot[le];
+        bool savedAlt = _pLodAlt[le];
+        int savedNoVetoed = _ownNoVetoed;
+        IntPtr active = (IntPtr)owner, alternate = (IntPtr)part;
+        gv.PartTree = new CX.Engine.Part(active);
+        _pGob[le] = (IntPtr)gob; _pLodAlt[le] = true; _pRoot[le] = active;
+        check.Expect(!InactiveLodPart(le), "a part of the root the gob IS showing is not exempt");
+        _pRoot[le] = alternate;
+        check.Expect(InactiveLodPart(le), "...and one of a root it is not showing is");
+        _pLodAlt[le] = false;
+        check.Expect(!InactiveLodPart(le), "a part the walk did not reach down an LOD root is never exempt");
+        _pLodAlt[le] = true; _pGob[le] = IntPtr.Zero;
+        check.Expect(!InactiveLodPart(le), "...nor a gobless one, without dereferencing");
+        _pGob[le] = (IntPtr)gob; _pRoot[le] = IntPtr.Zero;
+        check.Expect(!InactiveLodPart(le), "...nor one with no recorded root");
+
+        // ...and the latch that carries that verdict into every gate: neither arm of OwnRefuse may fire.
+        _ownNoVeto = true;
+        OwnRefuse(2, (IntPtr)gob);
+        OwnRefuse(2, IntPtr.Zero);
+        check.Expect(!GobRefused((IntPtr)gob) && _refGobCount == 0,
+                     "an inactive-LOD refusal does not drop its creature");
+        check.Expect(OwnRefusedByClass[2] == 0,
+                     "...and does not trip the class-wide blended drop either");
+        check.Expect(_ownNoVetoed == savedNoVetoed + 2, "...and is counted, so the census still reports it");
+        _ownNoVeto = false;
+        OwnRefuse(2, (IntPtr)gob);
+        check.Expect(GobRefused((IntPtr)gob), "a refusal on the ACTIVE root still drops its creature");
+        Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
+        Array.Clear(OwnRefusedByClass);
+        _ownNoVetoed = savedNoVetoed;
+        _pState[le] = savedState; _pGob[le] = savedGob; _pRoot[le] = savedRoot; _pLodAlt[le] = savedAlt;
+        gv.PartTree = default;
+
         // CX-90: the late keywords' precedence. Off-device because the live signal is a class that renders
         // or does not -- and the two values of one keyword are different classes, which is exactly the
         // confusion a wrong answer here would restore.

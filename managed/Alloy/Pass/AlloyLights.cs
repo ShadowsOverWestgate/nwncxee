@@ -49,6 +49,9 @@ internal static unsafe class AlloyLights
     internal const int SortCap = 32;
     /// <summary>Compute workgroup size; the dispatch is 1D over clusters and decodes (x,y,z) from the id.</summary>
     internal const int GroupSize = 64;
+    /// <summary>Words of header per cluster: the binned/live pair, then R4's reflection-candidate count.
+    /// <c>CxClusterN</c> / <c>CxClusterLive</c> / <c>CxClusterRefl</c> are the only readers.</summary>
+    internal const int ClusterHeadWords = 2;
     /// <summary>SSBO binding points, shared by the compute and the lit fragment program.</summary>
     private const uint BindLights = 0, BindCounts = 1, BindIndices = 2, BindStats = 3, BindMovers = 25;
     /// <summary>Point-light attenuation, as the ENGINE computes it (#140). Verified against
@@ -229,6 +232,37 @@ internal static unsafe class AlloyLights
     internal static string DescribeAtten() =>
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}";
 
+    /// <summary>cx_lightbuild's HotReach cone test, transcribed for <see cref="SelfCheck"/>: does the sphere (fc, fr)
+    /// touch the cone from <paramref name="l"/> tangent to the sphere (c, rr)?</summary>
+    private static bool HotConeReaches(Vector3 l, Vector3 c, float rr, Vector3 fc, float fr)
+    {
+        Vector3 ax = c - l; float d = ax.Length();
+        if (d * d <= 2f * rr * rr) return true;
+        ax /= d;
+        float sn = rr / d, cs = MathF.Sqrt(1f - sn * sn);
+        Vector3 v = fc - l; float along = Vector3.Dot(v, ax);
+        if (along < -fr) return false;
+        float perp = MathF.Sqrt(MathF.Max(Vector3.Dot(v, v) - along * along, 0f));
+        return cs * perp - along * sn <= fr;
+    }
+
+    /// <summary>R5: <c>cx_lightfrag</c>'s sphere-light normalisation (Karis 2013), transcribed for
+    /// <see cref="SelfCheck"/> -- the alpha a specular lobe widens to at <paramref name="dist"/> from a
+    /// source sphere of <paramref name="radius"/>, the same sphere #139 already wraps the diffuse
+    /// terminator with.</summary>
+    internal static float SphereAlpha(float alpha, float radius, float dist)
+        => MathF.Min(alpha + (radius <= 0f ? 0f : radius * 0.5f / MathF.Max(dist, 1e-3f)), 1f);
+
+    /// <summary>...and the energy that widening leaves: <c>(alpha / alpha')^2</c>, which is what the
+    /// alpha^2 numerator staying behind in <c>CxSpecBase</c> while the denominator takes alpha' amounts to.</summary>
+    internal static float SphereEnergy(float alpha, float alphaP)
+    { float k = alpha / MathF.Max(alphaP, 1e-4f); return k * k; }
+
+    /// <summary>The pair's PEAK (at N.H = 1) in the shader's own split: <c>alpha^2</c> out of
+    /// <c>CxSpecBase</c> over <c>alpha'^4</c> out of the widened GGX denominator.</summary>
+    internal static float SpherePeak(float alpha, float alphaP)
+    { float a2 = alphaP * alphaP; return alpha * alpha / MathF.Max(a2 * a2, 1e-20f); }
+
     /// <summary>Headless check of the lighting maths: the subsurface term is the stock one, the attenuation
     /// constants latch the way the engine computes them, and the curve has the shape the receiver assumes.
     /// Runs off-device; restores whatever it touched.</summary>
@@ -247,6 +281,40 @@ internal static unsafe class AlloyLights
           && AlloyRenderer.OwnedLitFsMain.Contains("pointSpec += lm * (1.0 - CxGlossW(rough)) * CxLoopSpec(CxSpecLobe"),
           "a glossy lobe carries its light's shadow whatever the cap says, in the pages' place too");
         check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
+
+        // R5: the sphere-light normalisation. A punctual GGX peak is 1/alpha^2, which on a water film's
+        // 0.02 is fifteen hundred times the irradiance -- the "solar flare". The properties that make the
+        // fix a redistribution and not a dimming knob: identity at radius 0, alpha' never under alpha,
+        // energy never above 1, and convergence back to the punctual lobe with distance.
+        check.Expect(SphereAlpha(0.2f, 0f, 1f) == 0.2f && SphereEnergy(0.2f, SphereAlpha(0.2f, 0f, 1f)) == 1f
+          && MathF.Abs(SpherePeak(0.2f, SphereAlpha(0.2f, 0f, 1f)) - 1f / (0.2f * 0.2f)) < 1e-3f,
+          "a source of radius 0 is the punctual lobe exactly: alpha' = alpha, energy 1, peak 1/alpha^2");
+        bool mono = true, bounded = true;
+        for (int i = 1; i <= 40; i++)
+        {
+            float alpha = 0.02f + i * 0.02f, d = 0.1f + i * 0.5f;
+            float ap = SphereAlpha(alpha, 1f, d);
+            mono &= ap >= alpha - 1e-6f && ap <= 1f;
+            bounded &= SphereEnergy(alpha, ap) <= 1f + 1e-6f && SpherePeak(alpha, ap) <= 1f / (alpha * alpha) + 1e-3f;
+        }
+        check.Expect(mono, "alpha' is never under alpha and never over 1, at any roughness or distance");
+        check.Expect(bounded, "the widening can only take energy OUT of the lobe, never add it");
+        // ...and the case the owner reported: a film at a metre from a torch-sized sphere
+        float apFilm = SphereAlpha(0.0256f, 1f, 1f);
+        check.Expect(MathF.Abs(apFilm - 0.5256f) < 1e-4f && SphereEnergy(0.0256f, apFilm) < 0.01f,
+          $"a water film a metre from a 1 m sphere keeps under a hundredth of its punctual peak energy (alpha' {apFilm:F4})");
+        check.Expect(SphereAlpha(0.0256f, 1f, 1000f) - 0.0256f < 1e-3f, "...and converges back to the punctual lobe with distance");
+        check.Expect(FragmentLib.Contains("float CxSrcSpread(float dist) { return uWrap <= 0.0 ? 0.0 : uWrap * uFalloff.y * 0.5 / max(dist, 1e-3); }")
+          && FragmentLib.Contains("float ap = min(rough + spread, 1.0);")
+          && FragmentLib.Contains("float den = 1.0 - NdotH * NdotH * (1.0 - ap * ap);")
+          && FragmentLib.Contains("float spread = CxSrcSpread(sqrt(f2) * pr.w);")
+          && FragmentLib.Contains("d *= 1.0 / mix(NdotL, 1.0, CxSmithK(rough));"),
+          "the lobe widens by the source sphere in the DENOMINATOR alone, with the surface's own Smith k");
+        check.Expect(AlloyRenderer.MaterialLib.Contains("float ap = min(a + spread, 1.0);")
+          && AlloyRenderer.MaterialLib.Contains("cxCoat * CxCoatLobe(N, V, L, cxCoatRough, spread)")
+          && AlloyRenderer.MaterialLib.Contains("spc = min(spc, vec3(CX_FILM_LIGHT_MAX));")
+          && AlloyRenderer.OwnedLitFsMain.Contains("cxCoatRough = sqrt(min(cxCoatRough * cxCoatRough + aaKernel, 1.0));"),
+          "the coat's lobe widens with it, its film highlights are firefly-clamped, and it takes the specular-AA kernel");
 
         // #140: the engine's attenuation constants, and the property that actually matters -- the curve's
         // peak is the engine's own max-intensity setting in LINEAR space. Get the sign of the exponent
@@ -273,6 +341,23 @@ internal static unsafe class AlloyLights
         LatchAtten(2f, 1f, 1f);
         check.Expect(_atten == wide, "...and so does a min above max, which would invert the falloff");
         _atten = savedAtten; AttenLatched = savedLatched;
+
+        // The hot partition (cx_lightbuild HotReach) may only drop a froxel the lit stage's per-fragment ray test
+        // would also have refused: every "near" point must sit inside the tangent cone the build tests.
+        var rng = new Random(674);
+        float R() => (float)rng.NextDouble() * 20f - 10f;
+        int near = 0, escaped = 0;
+        for (int t = 0; t < 20000; t++)
+        {
+            var l = new Vector3(R(), R(), R()); var c = new Vector3(R(), R(), R()); var p = new Vector3(R(), R(), R());
+            float rr = (float)rng.NextDouble() * 2f + 0.3f;
+            Vector3 dp = p - l; float dl = MathF.Max(dp.Length(), 1e-4f);
+            Vector3 dc = c - l; float tt = Vector3.Dot(dc, dp) / dl;
+            if (!(tt > -rr && tt < dl + rr && Vector3.Dot(dc, dc) - tt * tt <= rr * rr)) continue;
+            near++;
+            if (!HotConeReaches(l, c, rr, p, 0f)) escaped++;
+        }
+        check.Expect(near > 100 && escaped == 0, $"every point the lit stage calls near ({near}) is inside the build's cone ({escaped} escaped)");
         log.Info(check.Ok ? "AlloyLights.SelfCheck: passed" : "AlloyLights.SelfCheck: FAILED");
         return check.Ok;
     }
@@ -293,7 +378,8 @@ internal static unsafe class AlloyLights
     private static uint _prog, _bufLights, _bufCounts, _bufIndices, _bufStats, _bufMovers;
     private static int _moversGen = -1;
     private static bool _failed;
-    private static int _locView = -1, _locProjXY = -1, _locZ = -1, _locCount = -1, _locGrid = -1, _locReach = -1, _locBinCap = -1, _locBinAtten = -1;
+    private static int _locView = -1, _locProjXY = -1, _locZ = -1, _locCount = -1, _locGrid = -1, _locReach = -1, _locBinCap = -1, _locBinAtten = -1, _locReflK = -1;
+    private static int _locDynPage = -1, _locHot = -1;
     private static readonly uint[] _query = new uint[2];
     private static bool _queryPending0, _queryPending1;
     private static int _queryAt;
@@ -328,6 +414,7 @@ internal static unsafe class AlloyLights
     internal static void Forget()
     {
         _prog = 0; _bufLights = 0; _bufCounts = 0; _bufIndices = 0; _bufStats = 0; _bufMovers = 0; _moversGen = -1;
+        _statsRead.ContextLost();
         _query[0] = 0; _query[1] = 0; _queryPending0 = false; _queryPending1 = false;
         _uploadFrame = -1; _uploaded = 0;
     }
@@ -434,12 +521,18 @@ internal static unsafe class AlloyLights
         Gl.Uniform1f(_locReach, _binReach);
         Gl.Uniform1i(_locBinCap, _binCap);
         Gl.Uniform2f(_locBinAtten, _atten.X, _atten.Y);
+        // the hot partition reads the same mover spheres and dyn pages the lit stage will, so they go up first
+        fixed (float* dp = CasterPass.CubeDynPage) Gl.Uniform1fv(_locDynPage, CasterPass.MaxCubes, dp);
+        Gl.Uniform2f(_locHot, Lightmap.Movers.V ? 1f : 0f, Shadows.CubeDist.V);
+        // R4: 0 unless a water film can exist this frame, and then the build is what it always was
+        Gl.Uniform1i(_locReflK, Weather.ReflK);
+        UploadMovers();
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindLights, _bufLights);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, _bufCounts);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIndices, _bufIndices);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindStats, _bufStats);
         Gl.DispatchCompute((ClusterCount + GroupSize - 1) / GroupSize, 1, 1);
-        // BUFFER_UPDATE: TakeClusterOverflow reads _bufStats back with GetBufferSubData, which SHADER_STORAGE alone does not order (GL 4.6 7.13)
+        // BUFFER_UPDATE: TakeClusterOverflow copies _bufStats out, which SHADER_STORAGE alone does not order (GL 4.6 7.13)
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
 
         if (timing)
@@ -463,6 +556,12 @@ internal static unsafe class AlloyLights
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindLights, _bufLights);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, _bufCounts);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIndices, _bufIndices);
+        UploadMovers();
+    }
+
+    /// <summary>The mover spheres, once per rewrite, bound where both the cluster build and the lit stage read them.</summary>
+    private static void UploadMovers()
+    {
         if (_moversGen != CasterPass.CubeDynSphereGen)
         {
             _moversGen = CasterPass.CubeDynSphereGen;
@@ -492,6 +591,8 @@ internal static unsafe class AlloyLights
         *(Vector2*)(b + AlloyRenderer.PbSss) = new Vector2(_sss, SssOn ? SssK(_sss) : 0f);
         *(float*)(b + AlloyRenderer.PbWrapN) = _wrapN;
         *(float*)(b + AlloyRenderer.PbDayDim) = DayDim;
+        float rel = Lighting.Relevance.V;
+        *(Vector2*)(b + AlloyRenderer.PbRelevance) = new Vector2(rel, rel * 2f);
     }
 
     /// <summary>#139/#326: the local-cube receiver's three softness terms -- PCF radius in texels, the screen
@@ -549,17 +650,22 @@ internal static unsafe class AlloyLights
         if (slot == 0) _queryPending0 = false; else _queryPending1 = false;
     }
 
-    /// <summary>Read + reset the GPU-side cluster-overflow counter. Cold: called from the period log only,
-    /// where one small readback is affordable.</summary>
+    /// <summary>Copy out + reset the GPU-side cluster-overflow counter, and return the count copied out two calls
+    /// ago (a period late). Once a period; it was a <c>glGetBufferSubData</c>, which waited out the whole frame.</summary>
     internal static uint TakeClusterOverflow()
     {
-        if (!Ready) return 0;
-        uint v = 0;
-        Gl.GetNamedBufferSubData(_bufStats, IntPtr.Zero, (IntPtr)sizeof(uint), &v);
+        if (!Ready || !GpuReadback.EntryPoints || !_statsRead.Ensure(sizeof(uint))) return 0;
+        int w = _statsSeq % GpuReadback.Slots, r = (_statsSeq + 1) % GpuReadback.Slots;
+        _statsSeq++;
+        _statsRead.Copy(_bufStats, 0, w, 0, sizeof(uint));
+        _statsRead.Fence(w);
         uint zero = 0;
         Gl.NamedBufferSubData(_bufStats, IntPtr.Zero, (IntPtr)sizeof(uint), &zero);
-        return v;
+        uint* v = (uint*)_statsRead.Ready(r);
+        return v != null ? *v : 0;
     }
+    private static GpuReadback _statsRead;
+    private static int _statsSeq;
 
     /// <summary>One-line description of the rig's state for the Alloy draw period log.</summary>
     internal static string Diag(uint overflow) =>
@@ -585,13 +691,16 @@ internal static unsafe class AlloyLights
         _locReach = GlProgram.Loc(prog, "uReach");
         _locBinCap = GlProgram.Loc(prog, "uBinCap"); _locBinAtten = GlProgram.Loc(prog, "uAtten");
         _locGrid = GlProgram.Loc(prog, "uGrid");
+        _locDynPage = GlProgram.Loc(prog, "uDynPage"); _locHot = GlProgram.Loc(prog, "uHot");
+        _locReflK = GlProgram.Loc(prog, "uReflK");
 
         uint b;
         Gl.CreateBuffers(1, &b); _bufLights = b;
         Gl.NamedBufferData(_bufLights, (IntPtr)(InitialLights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         _ssboLights = InitialLights;
         Gl.CreateBuffers(1, &b); _bufCounts = b;
-        Gl.NamedBufferData(_bufCounts, (IntPtr)(ClusterCount * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
+        // TWO words per cluster since R4: the binned/live pair, then the reflection-candidate count
+        Gl.NamedBufferData(_bufCounts, (IntPtr)(ClusterCount * ClusterHeadWords * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
         Gl.CreateBuffers(1, &b); _bufIndices = b;
         Gl.NamedBufferData(_bufIndices, (IntPtr)((long)ClusterCount * ClusterCap * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
         Gl.CreateBuffers(1, &b); _bufMovers = b;

@@ -32,7 +32,8 @@ uniform int uSoftEdge;                  // 1 = blended fringe: the ramp goes out
 uniform float uEdge;                    // cutout ramp width, in units of the analytic one-pixel edge
 uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
 uniform float uRootAo;                  // darkening at the root, 0..1
-uniform vec4 uLook;                     // x backlit transmission, y specular sheen (CX-24), z rain wetness, w its darkening
+uniform vec4 uLook;                     // x backlit transmission, y specular sheen (CX-24), z rain wetness where the map has not reached, w the wet-darkening exponent scale
+#include "cx_wx_map.glsl"
 uniform vec2 uSnow;                     // y = winter look: straw colour, snow on the tips
 uniform float uGroundTint;              // fraction of the blade's height that fades into the ground under its root
 uniform sampler2D uGround;              // the frame as it stood before the grass: the lit, fogged ground

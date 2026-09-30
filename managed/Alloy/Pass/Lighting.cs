@@ -12,9 +12,9 @@ internal static class Lighting
     internal static readonly KnobGroup G;
     internal static readonly Knob<float> Gain, Ambient, Sun, Overbright, Sss, Wrap, WrapNdl, Hot, HotSize, Radius, Falloff,
                                          ProbeGain, BinReach, Flicker, FlickerSpeed, AmbientDir,
-                                         Daylight, DayLow, DayHigh, SsrRough, SsrPlanarCull;
-    internal static readonly Knob<int> Fadeout, ProbeSize, BinCap, SsrDetail, SsrPlanarRes;
-    internal static readonly Knob<bool> Probe, ReachFade, HiddenLights, Brdf, SpecAa, Ssr, SsrPlanar;
+                                         Daylight, DayLow, DayHigh, SsrRough, SsrPlanarCull, Relevance;
+    internal static readonly Knob<int> Fadeout, ProbeSize, BinCap, SsrDetail, SsrPlanarRes, MaxLit;
+    internal static readonly Knob<bool> Probe, ReachFade, HiddenLights, Brdf, SpecAa, Ssr, SsrPlanar, Registry;
 
     static Lighting()
     {
@@ -60,6 +60,15 @@ internal static class Lighting
                            help: "1 = stock falloff exactly.");
         Fadeout = G.Slider("fadeout", "Departed-light fade", 0, 120, 1, SceneInputs.FadeFramesBoot, "frames", Tier.Advanced,
                            help: "Frames a light takes to fade after it leaves.");
+        // CX-108: the A/B for the light registry. Default ON -- owning the enumeration is the point of the
+        // ticket -- and 0 puts the light walk back on the engine's own LightManager lists, which is the one
+        // question worth asking first if lighting looks wrong after this.
+        Registry = G.Toggle("registry", "Track lights ourselves", true, Tier.Advanced,
+                            help: "Alloy keeps its own list of the area's lights, so a light appears, fades and dies with "
+                                + "the thing that carries it. Off reads the game's own per-frame light list instead.");
+        MaxLit = G.Slider("maxlit", "Lights lit at once", 0, 256, 1, 0, tier: Tier.Advanced,
+                          help: "0 follows the game's own Max Lights video option (it caps at 128); a higher number lights "
+                              + "more of a dense area at once, and 256 effectively removes the limit.");
         G.Section("Reflections");
         Probe = G.Toggle("probe", "Reflections from the scene", true,
                          help: "Materials with an environment map reflect a capture of the surroundings instead of the stock sphere map.");
@@ -99,8 +108,10 @@ internal static class Lighting
         G.Section("");
         BinReach = G.Slider("binreach", "Light reach", 0.1f, 4f, 0.05f, 0.8f, tier: Tier.Advanced,
                             help: "Fraction of each light's authored radius that lights the scene. 1 is the stock radius; lower is cheaper.");
-        BinCap = G.Slider("bincap", "Lights per pixel", 0, AlloyLights.SortCap, 1, 12, tier: Tier.Advanced,
-                          help: "The strongest N lights a pixel keeps. 0 keeps every light; lower is cheaper but can draw a grid edge where lights overlap.");
+        BinCap = G.Slider("bincap", "Lights per cluster", 0, AlloyLights.SortCap, 1, 0, tier: Tier.Advanced,
+                          help: "0 keeps every light and lets the faint-light cutoff thin them per pixel. A cap keeps the N strongest per screen cluster: cheaper, but it draws the cluster grid where more lights overlap.");
+        Relevance = G.Slider("relevance", "Faint-light cutoff", 0f, 0.1f, 0.005f, 0.01f, tier: Tier.Advanced,
+                             help: "A light dimmer than this share of the brightest light at a pixel fades out and is skipped. Decided per pixel, so it never draws a grid. 0 = every light.");
         ReachFade = G.Toggle("reachfade", "reachfade", true, Tier.ChatOnly);
     }
 }

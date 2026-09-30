@@ -21,10 +21,21 @@ internal static unsafe partial class Weather
     private const float HollowStepM = 0.12f;
     /// <summary>Weather that starts this soon after an area edge was already running there: arrive soaked.</summary>
     private const float ArriveWindowSec = 10f;
+    /// <summary>R5: the share of the cover-edge knob the shelter kernel's world radius takes. The ramp a
+    /// disk of that radius produces is about twice the radius across, so the knob stays "the feather, in
+    /// metres" and the kernel is what delivers it.</summary>
+    private const float EdgeKernelShare = 0.4f;
+    /// <summary>...floored, so a zeroed cover-edge knob still filters at roughly one cover texel rather
+    /// than collapsing to a single compare and its stair steps.</summary>
+    private const float EdgeKernelMinM = 0.06f;
+    /// <summary>The tap ceiling <c>cx_wx_edge</c>'s loop is written to.</summary>
+    private const int EdgeTapsMax = 12;
 
     internal static Knob<bool> Arrive = null!;
+    internal static Knob<float> EdgeBreak = null!, RunOff = null!, ShoreRim = null!;
+    internal static Knob<int> EdgeTaps = null!;
     internal static Knob<float> WetStrength = null!, SnowStrength = null!, AccumSec = null!, DrySec = null!, MeltSec = null!,
-                                PuddleThreshold = null!, PuddleCoverage = null!, PuddleEdge = null!, Splash = null!,
+                                PuddleThreshold = null!, PuddleEdge = null!, Splash = null!,
                                 SnowAlbedo = null!, SnowSlope = null!, SnowPile = null!, SnowBump = null!, SnowSparkle = null!, SnowWrap = null!, SnowSky = null!, SnowPileWidth = null!, SnowVary = null!, SnowDepth = null!, SnowSteps = null!;
     private static float _wet, _snow, _puddle;
     private static long _surfTicks, _enterTicks;
@@ -33,11 +44,8 @@ internal static unsafe partial class Weather
     internal static float Snow => _snow;
     internal static float Puddle => _puddle;
 
-    /// <summary>How far wet surfaces darken at full wetness: the lit stage's splice and the grass share it.</summary>
-    internal const float WetDarkening = 0.45f;
-
-    /// <summary>The wetness the lit stage's splice is handed (0 while the weather is off), for stages that
-    /// take no rain occlusion map of their own.</summary>
+    /// <summary>The wetness the lit stage's splice is handed (0 while the weather is off), for ground the
+    /// wetness map has not reached and for stages that read neither map nor cover.</summary>
     internal static float WetShown => !_off && Enabled.V ? _wet * WetStrength.V : 0f;
 
     private static void DeclareSurfaceKnobs()
@@ -53,8 +61,16 @@ internal static unsafe partial class Weather
                             help: "Seconds of full-density weather to fully wet or snow the ground.");
         DrySec = G.Slider("dry", "Dry-out time", 10f, 1800f, 10f, 180f, "s", help: "Seconds for wet ground to dry after the rain stops.");
         MeltSec = G.Slider("melt", "Melt time", 30f, 7200f, 30f, 900f, "s", help: "Seconds for snow cover to melt after the snowfall ends.");
-        Splash = G.Slider("splash", "Rain impacts", 0f, 1f, 0.05f, 1f,
-                          help: "Drops ring the puddles they hit. 0 = off.");
+        Splash = G.Slider("splash", "Puddle ripples", 0f, 1f, 0.05f, 1f,
+                          help: "Rings spread where drops hit standing water, at their own size in the world -- they shrink with distance like anything else. 0 = off.");
+        EdgeBreak = G.Slider("edgebreak", "Shelter edge breakup", 0f, 1f, 0.05f, 0.5f,
+                             help: "How ragged the line between wet and sheltered ground is. 0 draws the roof's own outline; higher lets splash-back and gusts wander it, which is what a real eave leaves.");
+        EdgeTaps = G.Slider("edgetaps", "Shelter edge taps", 1, EdgeTapsMax, 1, 8, tier: Tier.Advanced,
+                            help: "Depth compares each wet fragment makes against the cover map to find the edge. Fewer is cheaper and grainier at the boundary.");
+        RunOff = G.Slider("runoff", "Run-off on walls", 0f, 1f, 0.05f, 0.6f,
+                          help: "Rain running down a wall it strikes: streaks rather than an even sheen, and a darker band where the run-off collects at the foot. 0 = even.");
+        ShoreRim = G.Slider("shorerim", "Puddle rim", 0f, 1f, 0.05f, 0.7f,
+                            help: "Ground right at a puddle's edge is soaked through: a darker, more saturated rim around standing water. 0 = none.");
         G.Section("Snow look");
         SnowAlbedo = G.Slider("snowalbedo", "Snow brightness", 0.3f, 1f, 0.05f, 0.9f, help: "Albedo of settled snow. Fresh snow is near white.");
         SnowSlope = G.Slider("snowslope", "Snow holds to", 10f, 85f, 5f, 55f, "°",
@@ -79,10 +95,8 @@ internal static unsafe partial class Weather
         G.Section("Puddles");
         PuddleThreshold = G.Slider("puddle", "Puddle threshold", 0f, 1f, 0.05f, 0.5f,
                                    help: "Wetness at which puddles start to fill. 1 = never.");
-        PuddleCoverage = G.Slider("puddlecover", "Puddle coverage", 0f, 1f, 0.05f, 0.5f,
-                                  help: "How much low ground pools at full fill.");
         PuddleEdge = G.Slider("puddleedge", "Puddle edge", 0.02f, 0.5f, 0.01f, 0.2f, tier: Tier.Advanced,
-                              help: "Softness of a puddle's shoreline.");
+                              help: "Softness of a puddle's shoreline, as a share of its depth.");
     }
 
     /// <summary>The integrators, by wall clock. Called from every lit upload; the small deltas between two
@@ -109,7 +123,7 @@ internal static unsafe partial class Weather
 
     /// <summary>Per lit program bind: the amounts, the look, and the cover view (zero matrix = no map, which the
     /// stage reads as fully exposed). Absent on a stale content override (location -1): GL ignores it.</summary>
-    internal static void UploadLit(int locWeather, int locLook, int locCoverVp, int locCoverLayer, int locSnowLook, int locSnowLight, int locSnowPom, bool capturing)
+    internal static void UploadLit(int locWeather, int locLook, int locCoverVp, int locCoverLayer, int locSnowLook, int locSnowLight, int locSnowPom, int locEdge, int locRun, bool capturing)
     {
         if (locWeather < 0) return;
         TickSurface();
@@ -117,7 +131,8 @@ internal static unsafe partial class Weather
         Gl.Uniform4f(locWeather, on ? _wet * WetStrength.V : 0f, on ? _snow * SnowStrength.V : 0f,
                      on ? _puddle : 0f, on ? Viz.V : 0f);
         float radius = MathF.Max(CoverRange.V, 1f);
-        Gl.Uniform4f(locLook, WetDarkening, SnowAlbedo.V, PuddleEdge.V, PuddleCoverage.V);
+        // w = the water film's roughness in the engine's alpha units; the knob is perceptual
+        Gl.Uniform4f(locLook, WetDark.V, SnowAlbedo.V, PuddleEdge.V, FilmRough.V * FilmRough.V);
         Gl.Uniform4f(locSnowLook, SnowSparkle.V, SnowBump.V, SnowPile.V, MathF.Cos(SnowSlope.V * MathF.PI / 180f));
         // z = the drift width in cover-view uv (the fit is 2 x radius across), w = ground variation
         Gl.Uniform4f(locSnowLight, SnowWrap.V, SnowSky.V, SnowPileWidth.V * 0.5f / radius, SnowVary.V);
@@ -127,15 +142,84 @@ internal static unsafe partial class Weather
         Gl.UniformMatrix4fv(locCoverVp, 1, 0, (float*)&vp);
         // z = uv per metre in the cover view (the fit is 2 x radius across), for the soft-edge taps
         Gl.Uniform4f(locCoverLayer, CasterPass.CoverLayer, HollowStepM / (CoverDepthRadii * radius), CoverSoft.V * 0.5f / radius, SplashRate(capturing));
+        UploadEdge(locEdge, cover);
+        if (locRun >= 0) Gl.Uniform4f(locRun, on ? RunOff.V : 0f, on ? ShoreRim.V : 0f, 0f, 0f);
+    }
+
+    /// <summary>R5: the shelter kernel <c>cx_wx_edge</c>'s <c>CxWetOpen</c> runs -- uv per metre in the cover
+    /// view, the kernel's world radius, the breakup amount and the tap count. A zero uv per metre is "no
+    /// cover map" and every consumer falls back to its own coarse read, so this is also how the test stands
+    /// down on a captured or weather-less frame.</summary>
+    private static void UploadEdge(int locEdge, bool cover)
+    {
+        if (locEdge < 0) return;
+        float radius = MathF.Max(CoverRange.V, 1f);
+        Gl.Uniform4f(locEdge, cover ? 0.5f / radius : 0f,
+                     MathF.Max(CoverSoft.V * EdgeKernelShare, EdgeKernelMinM), EdgeBreak.V,
+                     Math.Clamp(EdgeTaps.V, 1, EdgeTapsMax));
+    }
+
+    /// <summary>The grass programs' shelter read: the cover view, its layer and the kernel, so a blade
+    /// draws the SAME boundary the ground under it does. The lit stage gets these through
+    /// <see cref="UploadLit"/>; nothing else may grow its own shelter test.</summary>
+    internal static void UploadGrassEdge(int locCoverVp, int locCoverLayer, int locEdge)
+    {
+        bool cover = !_off && Enabled.V && Cover.V && CasterPass.CoverFresh && CasterPass.CascadesFresh;
+        Matrix4x4 vp = cover ? CasterPass.CoverVp : default;
+        if (locCoverVp >= 0) Gl.UniformMatrix4fv(locCoverVp, 1, 0, (float*)&vp);
+        if (locCoverLayer >= 0) Gl.Uniform4f(locCoverLayer, CasterPass.CoverLayer, 0f, 0f, 0f);
+        UploadEdge(locEdge, cover);
     }
 
     /// <summary>Drops per cell per period, 0..1: the density under the splash knob while it rains.</summary>
     internal static float SplashRate(bool capturing)
         => !capturing && !_off && Enabled.V && CurrentKind == Kind.Rain ? Density * Splash.V : 0f;
 
-    private static void ResetSurface() { _wet = _snow = _puddle = 0f; _enterTicks = Stopwatch.GetTimestamp(); }
+    /// <summary>The value a GLSL library declares for <c>const float NAME = V;</c>, or NaN when it does not
+    /// declare one. Read once at SelfCheck to hold the ripple library's own constants to each other.</summary>
+    private static float GlslConst(string src, string name)
+    {
+        int at = src.IndexOf("const float " + name + " = ", StringComparison.Ordinal);
+        if (at < 0) return float.NaN;
+        at += 12 + name.Length + 3;
+        int end = src.IndexOf(';', at);
+        return end > at && float.TryParse(src.AsSpan(at, end - at), System.Globalization.NumberStyles.Float,
+                                          System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : float.NaN;
+    }
+
+    private static void ResetSurface() { _wet = _snow = _puddle = 0f; _enterTicks = Stopwatch.GetTimestamp(); MapReset(); }
 
     private static string SurfaceStats() => $" wet {_wet:F2} snow {_snow:F2} puddle {_puddle:F2}";
+
+    /// <summary>CX-102: the ripple library is world-sized and the pixel footprint only fades it. The two
+    /// halves of that are a text check on the library and a real arithmetic one on its constants -- the 2x2
+    /// cell neighbourhood <see cref="RippleLib"/> walks is exact ONLY while the crest reach stays under half
+    /// a cell, and a ring quietly appearing from a cell nobody sampled is a hole in the field with no log
+    /// line behind it.</summary>
+    private static void RippleSelfCheck(Checker check)
+    {
+        string r = RippleLib;
+        check.Expect(!r.Contains("CX_IMPACT_RUNGS") && !r.Contains("CX_IMPACT_STEP") && !r.Contains("CxWeatherImpactAt(")
+          && !r.Contains("vec2 CxWeatherImpact(") && !r.Contains("CxWeatherImpactRough("),
+          "the mip ladder and its entry points are gone from the ripple library");
+        float cell = GlslConst(r, "CX_RIPPLE_CELL_M"), reach = GlslConst(r, "CX_RIPPLE_REACH_M");
+        float life = GlslConst(r, "CX_RIPPLE_LIFE"), crest = GlslConst(r, "CX_RIPPLE_CREST_M");
+        check.Expect(reach > 0.04f && reach < 0.12f && life >= 0.35f && life <= 0.7f && crest > 0.004f && crest < reach,
+          $"a ring is a real drop's ring: {reach * 100f:F0} cm of reach over {life:F2} s, crest {crest * 100f:F1} cm");
+        check.Expect(reach < cell * 0.5f,
+          $"the 2x2 cell walk covers the reach ({reach:F3} m < half of the {cell:F2} m cell)");
+        check.Expect(r.Contains("vec2 CxRippleLayer(vec2 p, float rate, float salt)")
+          && r.Contains("kept = CxWeatherRippleFade(px);") && r.Contains("return -g * kept;"),
+          "the footprint FADES the rings and never reaches the lattice or the reach that size them");
+        check.Expect(ShaderStages.Source(AlloyRenderer.ShdLitFs).Contains("CxWeatherRipple(vWorld.xy, uCoverLayer.w, CxWeatherImpactPx(vWorld, V), wxRing)")
+          && ShaderStages.Source(AlloyRenderer.ShdWaterFs).Contains("CxWeatherRipple(vWaterSurfaceCoords.xy, uSplash, CxWeatherImpactPx(vWorld, V), fSplashFade)"),
+          "the film and the water surface both ring from the one library");
+    }
+
+    /// <summary>The world-space ripple library: rings of a fixed physical size, spawned per world cell, and
+    /// the footprint fade that takes them out once a crest is thinner than a pixel or two (CX-102). The
+    /// water stage includes it too, so the sea and the puddles ring alike.</summary>
+    internal static string RippleLib => ShaderSource.Get("cx_wx_impact.glsl");
 
     /// <summary>The lit main's splice, between material synthesis and the lighting: exposure, then the three
     /// masks, then the surface rewritten under them, on every surface: content that hosts its own weather body
@@ -175,18 +259,29 @@ internal static unsafe partial class Weather
           && WeatherVs.Contains("#define CX_CLUSTER_XY cxClusterXY") && WeatherVs.Contains("CxSunShadow(P, N, ndl, ndl)")
           && RainFs.Contains("uTint * vLight") && SnowFs.Contains("uTint * vLight"),
           "rain and snow take the light rig per vertex and both fragment stages multiply it in");
+        check.Expect(RainFs.Contains("scatter * cov") && SnowFs.Contains("scatter * cov")
+          && RainFs.Contains("dot(scatter, CX_WX_LUMA)") && SnowFs.Contains("dot(scatter, CX_WX_LUMA)"),
+          "both precipitation stages write PREMULTIPLIED scatter with a scatter-proportional extinction");
         check.Expect(KindOf(1) == Kind.Rain && KindOf(2) == Kind.Snow && KindOf(0) == Kind.None && KindOf(7) == Kind.None,
           "stock rows 1/2 map to rain/snow, row 0 and the fog row to none");
+        RippleSelfCheck(check);
+        SplashSelfCheck(check);
         float d = Density; Kind k = CurrentKind; bool en = Enabled.V;
+        // the rates are the player's cx.cfg (weather.accum=5 reads 20x faster): pin the declared ones
+        float accum = AccumSec.V, dry = DrySec.V, melt = MeltSec.V;
+        AccumSec.V = AccumSec.Default; DrySec.V = DrySec.Default; MeltSec.V = MeltSec.Default;
         Enabled.V = true; Density = 1f; CurrentKind = Kind.Rain; _wet = 0f; _surfTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
-        TickSurface(); check.Expect(_wet > 0f && _wet < 0.01f, "one 100ms rain tick soaks a little, not a lot");
+        TickSurface(); check.Expect(_wet > 0f && _wet < 0.01f, $"one 100ms rain tick soaks a little, not a lot (wet {_wet:F4}, accum {AccumSec.V:F0}s, interior {FrameInputs.Interior}, enter {_enterTicks != 0})");
         CurrentKind = Kind.None; Density = 0f; float w = _wet; _surfTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
         TickSurface(); check.Expect(_wet < w, "a dry tick decays");
         ResetSurface(); Density = 1f; CurrentKind = Kind.Snow; _surfTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
         TickSurface(); check.Expect(_snow == 1f && _wet == 0f, "snow already running at the area edge arrives fully settled");
         _enterTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency * 60; _snow = 0f; _surfTicks = Stopwatch.GetTimestamp() - Stopwatch.Frequency / 10;
-        TickSurface(); check.Expect(_snow > 0f && _snow < 0.01f, "snow starting a minute after the edge accumulates from nothing");
+        TickSurface(); check.Expect(_snow > 0f && _snow < 0.01f, $"snow starting a minute after the edge accumulates from nothing (snow {_snow:F4})");
         Density = d; CurrentKind = k; Enabled.V = en; _wet = _snow = _puddle = 0f; _surfTicks = 0; _enterTicks = 0;
+        AccumSec.V = accum; DrySec.V = dry; MeltSec.V = melt;
+        MapSelfCheck(check, lit);
+        SurfaceLookSelfCheck(check, lit);
         log.Info(check.Ok ? "Weather.SelfCheck: passed" : "Weather.SelfCheck: FAILED");
     }
 }

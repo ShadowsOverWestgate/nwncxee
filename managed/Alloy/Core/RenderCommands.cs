@@ -17,5 +17,6 @@ internal static class RenderCommands
         _ = Lighting.G;
         _ = Shadows.G;
         _ = GpuStatic.G; _ = Grass.G; _ = Post.G; _ = Ao.G; _ = Lod.G; _ = Fog.G; _ = Water.G; _ = Effects.G; _ = Particles.G; _ = Dangly.G; _ = Weather.G; _ = Lightmap.G;
+        _ = Buckets.G;   // CX-104: the scene-visibility A/Bs; /buckets has to exist in a stood-down session too
     }
 }

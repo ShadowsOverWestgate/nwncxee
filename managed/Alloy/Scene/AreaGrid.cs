@@ -1,0 +1,169 @@
+using System;
+using CX.Framework;
+
+namespace CX.Alloy;
+
+/// <summary>CX-104: <b>Alloy's own spatial index of the area</b>, in place of the enumeration hints it used to
+/// take from <c>ManageSceneBSP</c>'s buckets. An NWN area is a grid of 10-unit tiles, so a tile-aligned uniform
+/// grid is the natural index: every STATIC slot (a part with no gob, whose world box
+/// <c>ComputePartBBox</c> @0x561370 populated at tile spawn) is filed once per enrolment and never moves, and a
+/// per-pass query is one box test per occupied cell plus one append per slot it yields -- O(visible), never
+/// O(area).
+///
+/// <para><b>Why only static slots.</b> A part ON a gob is a mover by construction (its matrix is recomposed
+/// whenever its gob's inputs change) and Alloy routes every one of them each pass anyway, so filing them would
+/// buy a re-file per motion and save nothing. A part with no populated world box -- the engine zeroes
+/// <c>part+0x64..0x78</c> in the <c>PartTriMesh</c> ctor and only <c>Scene::SpawnTile</c> ever fills it -- is
+/// UNBOUNDED and always visible, which is exactly what it already was (<c>NeverCull</c>). So the index is a
+/// strict improvement with no new way to lose geometry, and <c>indexed=</c> / <c>unboxed=</c> on the period line
+/// is the number that says how much of the world it actually covers.</para>
+///
+/// <para>The grid WRAPS at <see cref="Dim"/> cells: a slot 640 units away aliases into the same cell, which
+/// costs a candidate and never a miss, because each cell carries the real AABB of everything filed in it and the
+/// query tests that. An area larger than the wrap therefore degrades into coarser cells rather than into a
+/// wrong answer.</para></summary>
+internal static unsafe class AreaGrid
+{
+    /// <summary>One NWN tile per cell, and a 64 x 64 grid -- 640 units, comfortably past the largest shipped
+    /// area (32 x 32 tiles) and past any camera far plane.</summary>
+    internal const float CellSize = 10f;
+    internal const int Bits = 6, Dim = 1 << Bits, Mask = Dim - 1, Cells = Dim * Dim;
+
+    /// <summary>Per cell: the head of its slot list (-1 empty) and the real world AABB of everything in it.</summary>
+    private static readonly int[] _head = new int[Cells];
+    private static readonly float[] _box = new float[Cells * 6];
+    /// <summary>Per slot: the next slot in its cell's list. Sized by the ownership table, like every other
+    /// per-slot column, and written only by <see cref="Add"/>.</summary>
+    private static readonly int[] _next = new int[AlloyRenderer.MaxOwned];
+    private static int _filed, _occupied;
+
+    /// <summary>Slots with no world box of their own: always visible, exactly as their <c>NeverCull</c> sphere
+    /// already made them.</summary>
+    private static readonly int[] _unboxed = new int[AlloyRenderer.MaxOwned];
+    private static int _unboxedN;
+
+    internal static int Filed => _filed;
+    internal static int Unboxed => _unboxedN;
+    internal static int Occupied => _occupied;
+
+    /// <summary>Start a fresh index. Called once per enrolment, which is the only edge that can change which
+    /// slot holds which part.</summary>
+    internal static void Begin()
+    {
+        for (int c = 0; c < Cells; c++) _head[c] = -1;
+        _filed = 0; _unboxedN = 0; _occupied = 0;
+    }
+
+    /// <summary>File <paramref name="slot"/> under its world AABB (six floats, min then max).</summary>
+    internal static void Add(int slot, float* box)
+    {
+        int cell = Cell(box[0], box[1]);
+        if (_head[cell] < 0)
+        {
+            _occupied++;
+            int o = cell * 6;
+            for (int k = 0; k < 6; k++) _box[o + k] = box[k];
+        }
+        else
+        {
+            int o = cell * 6;
+            for (int k = 0; k < 3; k++) if (box[k] < _box[o + k]) _box[o + k] = box[k];
+            for (int k = 3; k < 6; k++) if (box[k] > _box[o + k]) _box[o + k] = box[k];
+        }
+        _next[slot] = _head[cell];
+        _head[cell] = slot;
+        _filed++;
+    }
+
+    /// <summary>File <paramref name="slot"/> as unboundable: no world box, so every pass sees it.</summary>
+    internal static void AddUnboxed(int slot)
+    {
+        if (_unboxedN < _unboxed.Length) _unboxed[_unboxedN++] = slot;
+    }
+
+    /// <summary>The cell a world XY falls in. Wraps, so any coordinate is a valid cell.</summary>
+    internal static int Cell(float x, float y)
+    {
+        int ix = (int)MathF.Floor(x / CellSize) & Mask;
+        int iy = (int)MathF.Floor(y / CellSize) & Mask;
+        return (iy << Bits) | ix;
+    }
+
+    /// <summary>Append every filed slot whose cell survives <paramref name="planes"/> (six vec4s, the
+    /// <see cref="CullPass.Planes"/> convention: a point is inside when <c>dot(n, p) + d &gt;= 0</c>) into
+    /// <paramref name="into"/> from <paramref name="n"/>, plus every unboundable slot. <paramref name="slack"/>
+    /// grows each cell box, so a cell about to enter the view is yielded the frame before. Returns the new
+    /// count; allocation-free.</summary>
+    internal static int Query(float* planes, float slack, int[] into, int n)
+    {
+        for (int k = 0; k < _unboxedN && n < into.Length; k++) into[n++] = _unboxed[k];
+        fixed (float* boxes = _box)
+            for (int c = 0; c < Cells; c++)
+            {
+                int head = _head[c];
+                if (head < 0) continue;
+                if (!BoxInFrustum(planes, boxes + c * 6, slack)) continue;
+                for (int i = head; i >= 0 && n < into.Length; i = _next[i]) into[n++] = i;
+            }
+        return n;
+    }
+
+    /// <summary>The standard n-vertex box test: for each plane, the box corner FARTHEST along the plane normal.
+    /// Behind every one of the six and the box cannot be in view.</summary>
+    internal static bool BoxInFrustum(float* planes, float* box, float slack)
+    {
+        for (int f = 0; f < 6; f++)
+        {
+            float* p = planes + f * 4;
+            float x = p[0] >= 0f ? box[3] + slack : box[0] - slack;
+            float y = p[1] >= 0f ? box[4] + slack : box[1] - slack;
+            float z = p[2] >= 0f ? box[5] + slack : box[2] - slack;
+            if (p[0] * x + p[1] * y + p[2] * z + p[3] < 0f) return false;
+        }
+        return true;
+    }
+
+    /// <summary>Off-device: the two properties the index lives by -- a slot comes back from a query that
+    /// contains its cell and does not from one that does not, and an unboundable slot comes back from every
+    /// query. A wrong answer here is geometry that vanishes at a viewing angle, which is the hardest kind of
+    /// bug to catch live.</summary>
+    internal static bool SelfCheck(ExtenderLog log)
+    {
+        var check = new Checker(log, "AreaGrid.SelfCheck");
+        Begin();
+        float* near = stackalloc float[6] { 0f, 0f, 0f, 1f, 1f, 1f };            // cell (0,0)
+        float* far = stackalloc float[6] { 300f, 300f, 0f, 301f, 301f, 1f };     // cell (30,30)
+        Add(0, near);
+        Add(1, far);
+        AddUnboxed(2);
+        check.Expect(Filed == 2 && Unboxed == 1 && Occupied == 2, "two cells filed, one slot unboundable");
+        check.Expect(Cell(0f, 0f) != Cell(300f, 300f), "two tiles 30 apart are different cells");
+        check.Expect(Cell(0f, 0f) == Cell(Dim * CellSize, 0f), "the grid wraps at its width");
+        check.Expect(Cell(-1f, -1f) == Cell(Dim * CellSize - 1f, Dim * CellSize - 1f),
+                     "...and a negative coordinate wraps into the far corner rather than out of the table");
+
+        // A half-space keeping x >= 100: the near cell is out, the far one is in, the unboundable one always in.
+        float* planes = stackalloc float[24];
+        for (int f = 0; f < 6; f++) { planes[f * 4] = 0f; planes[f * 4 + 1] = 0f; planes[f * 4 + 2] = 0f; planes[f * 4 + 3] = 1f; }
+        planes[0] = 1f; planes[3] = -100f;
+        int[] into = new int[8];
+        int n = Query(planes, 0f, into, 0);
+        bool sawNear = false, sawFar = false, sawUnboxed = false;
+        for (int k = 0; k < n; k++) { if (into[k] == 0) sawNear = true; if (into[k] == 1) sawFar = true; if (into[k] == 2) sawUnboxed = true; }
+        check.Expect(!sawNear && sawFar && sawUnboxed, "the query yields the cell in the half-space, not the one behind it");
+        // ...and the slack pulls a cell in: 100 units of it reaches the near cell's far corner at x = 1.
+        n = Query(planes, 100f, into, 0);
+        sawNear = false;
+        for (int k = 0; k < n; k++) if (into[k] == 0) sawNear = true;
+        check.Expect(sawNear, "the route slack yields a cell about to enter the view");
+        // A plane nothing can satisfy empties the query but keeps the unboundable slots.
+        planes[0] = 1f; planes[3] = -1e9f;
+        n = Query(planes, 0f, into, 0);
+        check.Expect(n == 1 && into[0] == 2, "a frustum that reaches nothing still yields the unboundable slots");
+
+        Begin();
+        log.Info(check.Ok ? "AreaGrid.SelfCheck: passed"
+                          : "AreaGrid.SelfCheck: FAILED -- the area index would hide geometry from a pass");
+        return check.Ok;
+    }
+}

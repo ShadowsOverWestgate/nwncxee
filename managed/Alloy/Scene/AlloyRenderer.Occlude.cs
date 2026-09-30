@@ -78,7 +78,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The followed gob (the PC), ManageSceneBSP's chain as <c>SceneInputs</c> walks it.</summary>
     private static IntPtr OccludeTargetGob()
     {
-        var cam = new Camera(*_occCamera);
+        var cam = new Camera(AlloyCamera.World);
         if (cam.IsNull) return IntPtr.Zero;
         CAurBehavior hv = cam.BehaviorHost;
         if (hv.IsNull) return IntPtr.Zero;

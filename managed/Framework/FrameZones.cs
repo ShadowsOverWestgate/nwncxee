@@ -174,6 +174,13 @@ public static class FrameZones
         /// <summary>#674: the lightmap bake's frame step (adopt, pack, the light steps, the readback), inside
         /// <see cref="Passes"/> and subtracted from it.</summary>
         Lightmap,
+        /// <summary>Nested in <see cref="Enroll"/>: the scene walk's per-frame tick (<c>SceneWalk.Tick</c>), the
+        /// beam/halo/sky enrolments, and the texture drip net of <see cref="Bcn"/> and <see cref="Prebuild"/> --
+        /// the zone's standing cost, apart from the enrolment scan itself.</summary>
+        EnWalk, EnFx, EnDrip,
+        /// <summary>Nested in <see cref="Passes"/>: the stream ring's region fence (<c>GpuRing.Acquire</c>) --
+        /// the CPU waiting for the GPU to drain the frame before last. Large here means GPU-bound.</summary>
+        Wait,
 
         Count,
     }

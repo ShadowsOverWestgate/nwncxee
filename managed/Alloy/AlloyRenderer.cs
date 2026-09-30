@@ -32,9 +32,10 @@ namespace CX.Alloy;
 /// batch) (#84, #242).</para>
 /// <para>WHERE the Alloy block runs is load-bearing: CX-89 made the anchor a direct call out of
 /// <see cref="RspShim.Run"/> (<see cref="FrameAnchor"/>), at the step <c>Scene::FadeDoors</c> used to hold --
-/// after the scene fog and the door fade, before anything draws. The camera is valid from the moment <c>Camera::RenderScene</c> writes
-/// view/projection into <c>m_aurMtxStack</c> (nm 0x19e2f60; proj +0x18, view +0x70), before the vcall: the
-/// engine never uses the GL matrix stack (#108, #132).</para>
+/// after the scene fog and the door fade, before anything draws. CX-109: the view and projection come from
+/// <see cref="AlloyCamera.WorldView"/> -- Alloy's own, computed at this view's <c>Camera::RenderScene</c> out
+/// of the camera object's fields -- so the anchor no longer depends on when the engine happens to write
+/// <c>m_aurMtxStack</c>.</para>
 /// <para>Ownership is a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>), rebuilt wholesale
 /// at a frame boundary (enrollment, on a scene-walk delta, before the Alloy block) -- the frame-atomic swap. The
 /// only mid-frame mutation is revocation. <c>vanilla=1</c> in cx.cfg is the restart-only kill switch (#263).
@@ -128,10 +129,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// mark is reported. <see cref="CasterPass"/> keeps it as a hard cap; a shadow that does not bake is a
     /// missing shadow, not a missing creature.</summary>
     internal const int MaxBoneSlots = 512;
-    /// <summary>The <c>m_aurMtxStack</c> entry a matrix is read from: PROJECTION=0, VIEW=1, MODEL=2. An INDEX
-    /// into the global array of stacks, which <see cref="CX.Engine.aurMatrixStack"/>'s indexer steps by.
-    /// </summary>
-    internal const int ModeProjection = 0, ModeView = 1;
     /// <summary>A parameter list longer than this is not a .mtr, it is a bad pointer -- refuse it rather than
     /// walk off into the heap. Real materials declare a handful.</summary>
     internal const int MaxParams = 64;
@@ -235,6 +232,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex,   // CX-43: the rest of the receiver and the light curve ride CxPass
                    Probe, Capture,
                    Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm,
+                   WxMapXf, WxMapP,                    // R2: the area wetness map's fit and look
+                   WxEdge, WxRun,                      // R5: the shelter kernel, and the run-off / shoreline terms
                    LmPages, LmMovers,                  // #674
                    LightOcc,                           // light.hidden
                    Material;                           // ADR 0026: light.brdf / ambientdir / specaa
@@ -329,11 +328,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     /// <summary>#134: one line naming what the Alloy draw loop did with the watched part. Always returns
     /// true, so it reads as the reason at a skip site: <c>{ Counters._skipTex++; if (W(i, "tex")) continue; }</c>.</summary>
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
     private static bool W(int i, string why)
+    {
+        // the watch is almost never set, and every rejected slot passes through here: test it before the slot's column
+        if (AlloyCensus._watchEntry >= 0) WSlow(i, why);
+        return true;
+    }
+    private static void WSlow(int i, string why)
     {
         if (AlloyCensus.WatchedEntry(_oEntry[i]) && Diag._watchDrawLeft-- > 0)
             _log?.Info($"[dumpframe] DRAW {why} (slot {i}, capture bucket {_oBucket[i]}, cls {(AlloyClass)_oCls[i]})");
-        return true;
     }
     /// <summary>The <see cref="Counters._cutBy"/> labels, by index.</summary>
     private static readonly string[] CutTerms = { "vao", "feat", "dissolve", "blend", "cull", "prim", "lit", "tex" };
@@ -426,18 +431,18 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (_qSpan[0] == 0) fixed (uint* q = _qSpan) Gl.GenQueries(4, q);
         if (which == 0)
         {
-            int prev = 1 - _qSpanAt;
-            if (_qSpanPending[prev])
+            // Both slots, not just the one closed last: with the GPU two frames behind, both are pending, and
+            // harvesting only the newer one wedged the meter at 0 for the session.
+            for (int s = 0; s < 2; s++)
             {
-                int ready; Gl.GetQueryObjectiv(_qSpan[prev * 2 + 1], Gl.QUERY_RESULT_AVAILABLE, &ready);
-                if (ready != 0)
-                {
-                    ulong t0, t1;
-                    Gl.GetQueryObjectui64v(_qSpan[prev * 2], Gl.QUERY_RESULT, &t0);
-                    Gl.GetQueryObjectui64v(_qSpan[prev * 2 + 1], Gl.QUERY_RESULT, &t1);
-                    _qSpanPending[prev] = false;
-                    if (t1 > t0 && t1 - t0 < 10_000_000_000UL) { _spanSum += t1 - t0; _spanN++; }
-                }
+                if (!_qSpanPending[s]) continue;
+                int ready; Gl.GetQueryObjectiv(_qSpan[s * 2 + 1], Gl.QUERY_RESULT_AVAILABLE, &ready);
+                if (ready == 0) continue;
+                ulong t0, t1;
+                Gl.GetQueryObjectui64v(_qSpan[s * 2], Gl.QUERY_RESULT, &t0);
+                Gl.GetQueryObjectui64v(_qSpan[s * 2 + 1], Gl.QUERY_RESULT, &t1);
+                _qSpanPending[s] = false;
+                if (t1 > t0 && t1 - t0 < 10_000_000_000UL) { _spanSum += t1 - t0; _spanN++; }
             }
             if (_qSpanPending[_qSpanAt]) return;
             Gl.QueryCounter(_qSpan[_qSpanAt * 2], Gl.TIMESTAMP);
@@ -456,6 +461,27 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     { if (_qOpen == (int)t) { _qTerm[(int)t].End(Gl.TIME_ELAPSED); _qOpen = -1; } }
 
     private static double GpuMs(GpuTerm t) => _qTerm[(int)t].Avg / 1e6;
+
+    /// <summary>The colour-bracket loop's CPU ticks per <see cref="PassId"/> this period, children included: the
+    /// pass the untimed half of the Passes zone lives in.</summary>
+    private static readonly long[] _passCpu = new long[(int)PassId.PostStack + 1];
+
+    /// <summary>The five passes with the most CPU per frame this period, clearing the tally. Cold (period line).</summary>
+    private static string PassCpuNote(int frames)
+    {
+        var sb = new System.Text.StringBuilder(", pass cpu ms/frame:");
+        double k = 1000.0 / System.Diagnostics.Stopwatch.Frequency / Math.Max(1, frames);
+        for (int n = 0; n < 5; n++)
+        {
+            int best = -1;
+            for (int i = 0; i < _passCpu.Length; i++) if (_passCpu[i] > 0 && (best < 0 || _passCpu[i] > _passCpu[best])) best = i;
+            if (best < 0) break;
+            sb.Append(' ').Append((PassId)best).Append(' ').Append((_passCpu[best] * k).ToString("F2"));
+            _passCpu[best] = 0;
+        }
+        Array.Clear(_passCpu);
+        return sb.ToString();
+    }
 
     /// <summary>The read-only half of <see cref="HandleFor"/>: the handle if one was minted, 0 otherwise. Safe
     /// off the main thread as long as nothing mints during the stage, which nothing does.</summary>
@@ -805,6 +831,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // crash on the first world frame, not a misrender, so it joins the gating chain.
         StockConfig.Attach(log);
         if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !MaterialExtSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
+            || !AreaGrid.SelfCheck(log) || !GobLod.SelfCheck(log) || !GobXform.SelfCheck(log)
             || !Issue.RunsSelfCheck(log) || !StreamRing.SelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
             || !PartTable.ItemResidentSelfCheck(log)
@@ -823,7 +850,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         _getTexture = EngineFn.MatGetTexture;
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         if (CycleTextures.SelfCheck(log)) CycleTextures.Attach(log, hooks);   // #331; a failed check freezes cycles, not Alloy
-        ResolveChase(log);   // #330: the three engine sets the chase is bounded by; unresolved = unbounded
         _mtxStacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
         _runtime = (byte*)Native.Sym(SymbolMap.GlShaderRuntimeData);
         if (_runtime == null)
@@ -976,7 +1002,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // #256: the world walk FIRST -- one int load in the common case, a re-walk on the engine's own
             // membership epoch. Enrollment is then edge-triggered on what that walk changed, which is what
             // retires the 60-frame cadence: there is no clock here any more.
+            long tSub = FrameZones.Now;
             SceneWalk.Tick(scene);
+            FrameZones.Add(FrameZones.Zone.EnWalk, tSub);
+            tSub = FrameZones.Now;
             // #261: bucket 15 is not part of the world walk and never will be -- it is a per-frame,
             // culled classification the engine builds ahead of RSP. Read here rather than enrolled on an
             // edge, in engine context, because that is what the beam VAO harvest needs.
@@ -985,6 +1014,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // #261: the sky's three gobs are not in Scene+0x130 either -- they hang off Scene+0x18/+0x38 and
             // only Scene::RenderSkyBoxes ever walked them. Same slot, same reason as beams.
             SkyBox.Enroll(scene);
+            FrameZones.Add(FrameZones.Zone.EnFx, tSub);
+            tSub = FrameZones.Now;
+            long drip0 = FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild);
             // #284: the unbuilt-texture retry, and it belongs HERE and not in the 4.6 bracket.
             // CAurTexture::BuildAndStore re-runs the engine's own upload -- SetActiveTexture, AurTextureBindTID,
             // RenderInterface::CreateTexture -- and the engine caches what it thinks is bound. Run inside
@@ -995,6 +1027,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             // context reason -- PartSkin::PostProcess @0x483120 ends in RenderInterface pool traffic, and
             // its only vanilla caller was RenderSkinned, i.e. a draw this branch no longer performs.
             SkinPose.DripPrepares();
+            FrameZones.Add(FrameZones.Zone.EnDrip, tSub,
+                           FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild) - drip0);
             // The FLOOR, and it is not a cadence: nothing here fires because time passed, it only delays an
             // edge that has already happened. Enrollment is the cold path (handle wipe, full table scan,
             // texture re-intern, VAO retire) and the walk's delta signal is unbounded by construction --
@@ -1004,7 +1038,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             if (_sinceEnroll < int.MaxValue) _sinceEnroll++;
             bool due = SceneWalk.Dirty || scene != _enrollScene;
             // #329: a walk in progress steps every frame; the floor and the edge gate only its BEGIN.
-            if (Walking(scene) || (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene))) { Enroll(scene); FrameZones.MarkEnrollFrame(); }
+            // CX-105 (review): a LOD swap waiting to commit bypasses the floor. It is a delta enrolment of
+            // the handful of parts one gob's alternate roots add, and the floor exists to bound the COLD full
+            // scan -- while making that swap wait ten frames is what left the gob undrawn across it.
+            if (Walking(scene) || (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene || GobLod.WantEnroll)))
+            { Enroll(scene); FrameZones.MarkEnrollFrame(); }
             FrameZones.Add(FrameZones.Zone.Enroll, tEnroll, FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild) - bcn0);
         }
         // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
@@ -1139,7 +1177,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             ref SkyBox.Part p = ref SkyBox.At(i);
             p.Vao = SkyBox.Drawable(i) ? VdoSlot(p.Vdo) : -1;
         }
-        SampleEngineSets();   // #330: engine context, after AddPartsToDrawBuckets, before the first chase
+        SampleEngineSets(scene);   // CX-103: engine context, before the first record build -- which gobs moved
         DrawOwned();
     }
 
@@ -1354,6 +1392,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// wipe and a lost 4.6 context all invalidate every recorded identity wholesale.</summary>
     public static void EndFrame()
     {
+        // CX-109: the per-present frame edge the world-camera sighting is stamped against. HERE rather than in
+        // GuiPass, which only installs when the GUI capture arms -- a sighting that never expires would leave
+        // a freed camera readable after a module unload.
+        AlloyCamera.NewFrame();
+        BenchTick();
+        // CX-110: and the wind's own, which ages its gusts on a frame that never reached a world
+        // Scene::Render (the main menu) -- see AlloyWind's remarks.
+        AlloyWind.NewFrame();
         if (!_armed) return;
         _frameSeq++;
         // Disarming must never be silent: the [alloy] period line is the only evidence this pass runs at
@@ -1371,7 +1417,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         }
         if (!GlContextService.Available) { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost(); }
         bool inModule = GameGate.InModule;
-        if (_wasInModule && !inModule) { RevokeAll("module unload"); Programs._spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); }
+        if (_wasInModule && !inModule) { RevokeAll("module unload"); Programs._spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); AlloyEnvMap.ModuleUnloaded(); }
         _wasInModule = inModule;
         if (_tableGen != PartTable.TableGen) { RevokeAll("part table wiped"); _tableGen = PartTable.TableGen; }
 
@@ -1399,10 +1445,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Weather.ResetPeriod();
         Particles.ResetPeriod();
         Counters._watchSubmitted = 0;
-        Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0; Counters._skipUnplaced = 0;
+        Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0;
         ResetChasePeriod();
         Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
-        Counters._recWritten = 0; Counters._recStable = 0; PassBinds = 0; PassUploads = 0;
+        Counters._recWritten = 0; Counters._recStable = 0; PassBinds = 0; PassUploads = 0; Issue.WholeUploads = 0; Issue.WholeBytes = 0;
         ResetStaticPeriod();
         Counters._nrmDeclared = Counters._nrmBound = 0;
         Array.Clear(Counters._drawsByClass);
@@ -1495,10 +1541,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                         $"{(CullPass.Mode >= CullPass.ModeHiZ ? "frustum+hi-Z" : "frustum only")}; bounds span " +
                         $"{CullPass.SpreadX:F0}x{CullPass.SpreadY:F0}x{CullPass.SpreadZ:F0}u, largest radius " +
                         $"{CullPass.SpreadMaxR:F0}u), ") +
+                   (Renderer.CullWatch.V ? $"cullwatch {CullPass.WatchCollapses} collapse(s) over {CullPass.WatchReads} reads ({CullPass.WatchLate} late), " : "") +
                    // #285: every reason on this list is a HOLE -- geometry that nothing renders this frame.
                    $"NOT DRAWN this frame: unlit-pass {(float)Counters._skipNoLight / Counters._frames:F0} identity {(float)Counters._skipIdentity / Counters._frames:F0} " +
                    $"inactive-LOD {(float)Counters._skipLod / Counters._frames:F0} " +
-                   $"unplaced {(float)Counters._skipUnplaced / Counters._frames:F0} " +
                    $"dissolve {(float)Counters._ownDissolve / Counters._frames:F0} owned, fade {(float)Counters._ownFade / Counters._frames:F0} owned " +
                    $"fog-out {(float)Counters._skipFogTile / Counters._frames:F0} tile + {(float)Counters._skipFogGob / Counters._frames:F0} gob " +
                    $"no-mdl {(float)Counters._skipNoMdl / Counters._frames:F0} tex {(float)Counters._skipTex / Counters._frames:F0}" +
@@ -1549,6 +1595,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"{(float)Counters._recStable / Counters._frames:F0} stable ({_recOwnCap} slots), " +
                    // CX-43: program switches that took the pass terms, and how many of them had to send the block
                    $"pass block {(float)PassBinds / Counters._frames:F1} binds/frame, {(float)PassUploads / Counters._frames:F1} sends/frame, " +
+                   $"record table {Issue.WholeUploads} whole upload(s) ({Issue.WholeBytes >> 20} MiB) over {Counters._frames} frames, " +
                    StaticNote() + ", " +
                    // #330: how much of the engine chase the view bounded away, and the poll audit.
                    ChaseNote() + ", " +
@@ -1605,6 +1652,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $" (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame
                    // count is the acceptance criterion ("probe capture does not run per frame") failing.
+                   PassCpuNote(Counters._frames) +
                    $", {StreamRing.Diag()}" +
                    $", probe {(EnvProbe.Ready ? $"ready ({EnvProbe.Captures} captures)" : "none yet")}" +
                    "; " +
@@ -1663,11 +1711,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         /// separate a camera-dependent bail-out (keyhole, tile fade) from a content one, which is exactly the
         /// distinction a part that is Alloy head-on and vanilla at the screen edge turns on.</summary>
         internal static long _skipLod;
-        /// <summary>Fault 1: gob-tree parts held back because the engine has not once placed their gob since
-        /// the slot was tenanted (<see cref="PartPlaced"/>). A steady nonzero count is the gate doing its job
-        /// -- those parts were being drawn at the area's (0,0) corner; a count that rises with the owned
-        /// total instead means the gobbucket sample has stopped agreeing with the walk.</summary>
-        internal static long _skipUnplaced;
         internal static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
                              _skipRange, _skipVao;
         /// <summary>...and the causes behind the <c>tex</c> fallback, which are different bugs wearing one

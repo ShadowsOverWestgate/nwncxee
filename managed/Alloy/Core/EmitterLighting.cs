@@ -5,9 +5,15 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>
-/// <c>LightManager::GetEmitterLighting</c>, and the ABI it needs on each platform. Both callers -- the
-/// <see cref="RspShim"/> focus-lighting item and the particle tint -- come through here: two declarations of
-/// one contract is how the second copy stays Linux-shaped after someone fixes the first (#456).
+/// What the scene's lights make of one world point -- the particle tint. CX-108 made this ALLOY's arithmetic
+/// (<see cref="LightFade.Accumulate"/>), because the engine's <c>LightManager::GetEmitterLighting</c>
+/// @0x4c1970 reads the manager's active list at <c>+0x60</c> and both area lights, and Alloy reads no
+/// <c>LightManager</c> field.
+/// <para>The engine call is kept behind <c>light.registry 0</c>, and with it the one piece of ABI in Alloy
+/// that no declared signature can describe -- so the A/B also keeps that ABI exercised rather than rotting.
+/// The <c>lightManager</c> and <c>lights</c> parameters are the engine call's; on the owned path the first is
+/// ignored and the second (an exclusion list, always null at the one live call site) would be an exclusion by
+/// gob.</para>
 /// </summary>
 /// <remarks>
 /// <para>This is the one engine call Alloy makes that returns a class BY VALUE, so its divergence is not an
@@ -34,16 +40,24 @@ internal static unsafe class EmitterLighting
     /// declared signature describes it.</summary>
     private static IntPtr _fn;
 
-    /// <summary>Resolved on this client? Callers gate on this exactly as they gated on their own pointer.</summary>
-    internal static bool Ready => _fn != IntPtr.Zero;
+    /// <summary>Resolved on this client? Callers gate on this exactly as they gated on their own pointer. True
+    /// while the registry is the source: the arithmetic is Alloy's and needs no symbol.</summary>
+    internal static bool Ready => LightRegistry.Live || _fn != IntPtr.Zero;
 
     internal static void Resolve() => _fn = Native.Sym(SymbolMap.GetEmitterLighting);
 
-    /// <summary>What <paramref name="lightManager"/> makes of the light at <paramref name="pos"/>, given a
-    /// collected <c>List&lt;PartLight*&gt;</c>. <paramref name="lights"/> may be null -- the engine reads
-    /// that as an empty list.</summary>
+    /// <summary>The scene lighting at <paramref name="pos"/>. <paramref name="lightManager"/> and
+    /// <paramref name="lights"/> are the engine call's arguments and are used only on the
+    /// <c>light.registry 0</c> path; <paramref name="lights"/> may be null there -- the engine reads that as an
+    /// empty exclusion list.</summary>
     internal static V3 At(V3 pos, IntPtr lightManager, IntPtr lights)
     {
+        if (LightRegistry.Live)
+        {
+            System.Numerics.Vector3 c = LightFade.Accumulate(new System.Numerics.Vector3(pos.X, pos.Y, pos.Z), IntPtr.Zero);
+            return new V3 { X = c.X, Y = c.Y, Z = c.Z };
+        }
+        if (_fn == IntPtr.Zero) return new V3 { X = 1f, Y = 1f, Z = 1f };
         // NativeAOT folds IsWindows() to a constant, so this is not a branch on either platform.
         if (OperatingSystem.IsWindows())
         {

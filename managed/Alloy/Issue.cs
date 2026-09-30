@@ -104,6 +104,7 @@ internal static unsafe class Issue
         // issuing thousands of scattered SubData calls into a buffer that can no longer orphan -- one
         // enrollment's worth of hitch, once a cadence, in exactly the "just left the city" case.
         bool whole = grew || _recDirtyAll || _recDirtyN > _drawN / 4;
+        if (whole) { WholeUploads++; WholeBytes += (long)cap * DrawFloats * sizeof(float); }
         if (!whole) Array.Sort(_recDirty, 0, _recDirtyN);
         fixed (float* p = _dData)
         {
@@ -120,6 +121,10 @@ internal static unsafe class Issue
         fixed (int* p = _dSlot)
             return StreamRing.Stream(StreamRing.Site.DrawSlots, BindDrawIdx, p, (long)_drawN * sizeof(int), out _slotRange);
     }
+
+    /// <summary>This period's whole-table record uploads and their bytes: every one is a SubData over the whole
+    /// capacity into a buffer the GPU may still be reading.</summary>
+    internal static long WholeUploads, WholeBytes;
 
     /// <summary>CX-45: the staged draw-to-slot array's ring slice, for <see cref="BindStagedSlots"/>.</summary>
     internal static StreamRing.Range _slotRange;
@@ -355,8 +360,9 @@ internal static unsafe class Issue
                     Gl.Uniform1i(L.SsaoHalf, SsaoPass.Half ? 1 : 0);
                     Gl.Uniform2f(L.LightOcc, Lighting.HiddenLights.V ? 1f : 0f, GlossyRough);
                     UploadMaterialModel(L.Material);
-                    Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, L.SnowLook, L.SnowLight, L.SnowPom, _capturing);
+                    Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, L.SnowLook, L.SnowLight, L.SnowPom, L.WxEdge, L.WxRun, _capturing);
                     Weather.BindEsm(L.CoverEsm, _oitOn || lists);
+                    Weather.UploadMap(L.WxMapXf, L.WxMapP, _capturing);
                     litBase = L.Base; litCut = L.Cut; litOitBias = L.OitBias; litOitGob = L.OitGob; boundOitBias = -1f; boundOitGob = -1;
                     litSsaoOn = L.SsaoOn; litAoDirect = L.AoDirect;
                     boundSsao = -1;

@@ -143,7 +143,11 @@ internal static unsafe class GuiCapture
         l.First = DrawN; l.Count = 0;
         var sc = new Scene(scene);
         byte* name = (byte*)Unsafe.AsPointer(ref sc.Name);
-        DepthOf(name, ref _latch, out l.Near, out l.Far, out l.Clear);
+        // CX-109: this view's own camera supplies the view angle, so a zero-FOV non-GUI-named scene is treated
+        // as GUI exactly as the engine does. An unmeasured view falls back to a non-zero placeholder, i.e. to
+        // the scene-name rule alone -- which is what this did before the camera was in hand.
+        ref readonly AlloyView cv = ref AlloyCamera.ActiveView;
+        DepthOf(name, ref _latch, out l.Near, out l.Far, out l.Clear, cv.Valid ? cv.Fovy : 1f);
         _disable(CapAlphaTest);
         _disable(CapFog);
         float* white = stackalloc float[4] { 1f, 1f, 1f, 1f };
@@ -166,19 +170,18 @@ internal static unsafe class GuiCapture
     private static bool _latch;
     internal static void NewFrame() => _latch = false;
 
-    /// <summary><c>Camera::RenderScene</c>'s depth decision for one view, by the scene's name: case-sensitive PREFIX
-    /// compares (<c>repz cmpsb</c> over the literal's length, 8 for <c>"sceneGUI"</c>). ponytail: the engine also treats
-    /// an ortho camera with a non-GUI name as GUI; the capture has the scene, not the camera, and no such scene is known.</summary>
-    internal static void DepthOf(byte* name, ref bool latch, out float near, out float far, out bool clear)
+    /// <summary><c>Camera::RenderScene</c>'s depth decision for one view. The RANGE is
+    /// <see cref="AlloyCamera.DepthRange"/>'s -- one implementation of the name table, and CX-109 closed the
+    /// ponytail this method carried by handing it <paramref name="fovy"/>: the engine treats ANY camera with a
+    /// zero view angle as GUI, which the capture could not see from the scene alone. What stays here is the
+    /// CLEAR, because the latch is per RUN of GUI views rather than per view.</summary>
+    internal static void DepthOf(byte* name, ref bool latch, out float near, out float far, out bool clear,
+                                float fovy = 1f)
     {
-        if (!Prefix(name, "sceneGUI"u8)) { near = 0f; far = 1f; clear = false; latch = false; return; }
-        clear = !latch;
-        latch = true;
-        bool front = Prefix(name, "sceneGUI_MouseOverlay"u8) || Prefix(name, "sceneGUI_Overlay"u8)
-                  || Prefix(name, "sceneGUI_pnl_vidopts"u8) || Prefix(name, "sceneGUI_PNL_CONNECTSTAT"u8)
-                  || Prefix(name, "sceneGUI_PNL_UTIL_OK"u8);
-        near = front ? 0f : 0.021f;
-        far = front ? 0.02f : 0.1f;
+        bool gui = fovy == 0f || Prefix(name, "sceneGUI"u8);
+        clear = gui && !latch;
+        latch = gui;
+        AlloyCamera.DepthRange(name, fovy, out near, out far);
     }
 
     private static bool Prefix(byte* s, ReadOnlySpan<byte> want)
@@ -355,8 +358,17 @@ internal static unsafe class GuiCapture
     }
 
     /// <summary>Everything the engine's program would have been fed, read off <c>GLRender</c>'s caches into the draw
-    /// and its record: the three matrix stacks and the texture stack, stage 0's texture, the blend/depth/cull caps,
-    /// the global colour and (lit) the material. Returns the record's flag bits so far.</summary>
+    /// and its record: stage 0's texture, the blend/depth/cull caps, the global colour and (lit) the material, plus
+    /// the transforms.
+    /// <para>CX-109: the VIEW and PROJECTION come from <see cref="AlloyCamera.ActiveView"/> -- Alloy's own
+    /// arithmetic for the camera whose view is rendering. The MODEL and TEXTURE matrices are still read off
+    /// <c>m_aurMtxStack</c>, and that is the documented exception to CX-109's "reads neither": they are per-draw
+    /// state the engine pushes during its own GUI traversal (<c>Gob::Render</c> -&gt; <c>Gob::PartDraw</c>,
+    /// <c>StringGob::Render</c> -&gt; <c>CAurFont::TextOut</c>), and the funnel this capture sits on --
+    /// <c>GLRender::RenderVertexData(vdo, item, prim, size, offset)</c> -- carries a VDO and an item index and
+    /// NO part pointer, so there is nothing here to compose a model matrix from. Owning it means replacing the
+    /// traversal, which is tier 4 (CX-115 part trees, CX-119 <c>StringGob</c>).</para>
+    /// Returns the record's flag bits so far.</summary>
     private static int Snapshot(ref Draw d)
     {
         uint caps = *_caps;
@@ -369,8 +381,10 @@ internal static unsafe class GuiCapture
         d.Tex = (*_texStages & 1) != 0 && _bound[0] == TargetTex2D ? _bound[1] : 0;
 
         var st = new aurMatrixStack((IntPtr)_stacks);
-        Matrix4x4 mv = st[ModeModel].Top * st[ModeView].Top;
-        Matrix4x4 mvp = mv * st[ModeProj].Top;
+        ref readonly AlloyView av = ref AlloyCamera.ActiveView;
+        bool own = AlloyCamera.Owned && av.Valid;
+        Matrix4x4 mv = st[ModeModel].Top * (own ? av.View : st[ModeView].Top);
+        Matrix4x4 mvp = mv * (own ? av.Proj : st[ModeProj].Top);
         ref Matrix4x4 tm = ref st[ModeTexture].Top;
         fixed (float* r = &Records[DrawN * RecFloats])
         {

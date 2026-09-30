@@ -43,6 +43,12 @@ public sealed unsafe class CrossfadeService : IExtenderService
     /// <summary>Smoothstep inside (0, 1); the weights the engine sets outright (0, 1) pass unchanged.</summary>
     internal static float Ease(float w) => w > 0f && w < 1f ? w * w * (3f - 2f * w) : w;
 
+    /// <summary>CX-106 re-seat: the weight the hierarchy walk should be handed, knob included. The owned
+    /// animation runtime never calls <see cref="SymbolMap.AnimateHierarchy"/>, so the chain above cannot fire
+    /// on that path; it applies this once, exactly where the engine's outermost call would have been eased.
+    /// The chain stays for <c>anim.owned 0</c>.</summary>
+    internal static float Weight(float w) => AnimKnobs.Crossfade.V ? Ease(w) : w;
+
     /// <summary>The remap keeps the ends, never falls, starts and ends level (a step at either end smaller than the
     /// linear step squared, times a margin), and leaves 0, 1, outside values and NaN alone.</summary>
     internal static bool SelfCheck()

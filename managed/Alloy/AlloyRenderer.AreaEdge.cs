@@ -59,6 +59,8 @@ public sealed unsafe partial class AlloyRenderer
         RevokeAll(why);                    // ownership slots, VDO slots, and every pass's captured world
         PartTable.WipeTables(why);         // part records, and the per-record SetupArrays / pose latches
         int ledger = OwnedTextures.AreaEdge();
+        GobXform.AreaEdge();               // CX-103: every gob address in the registry is about to recycle
+        GobLod.Reset();                    // CX-105: ...and every pending LOD swap named one of them
         InvalidateRecords();               // ...and the per-slot draw-arg range cache (_cIdx/_cOff/_cBase)
         LightmapBake.EndAreaEdge();
         _log?.Info($"AlloyRenderer: [areaedge] {why} -- dropped {parts} part records, {owned} owned slots, "

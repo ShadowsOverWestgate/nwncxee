@@ -39,12 +39,6 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class SkyBox
 {
-    /// <summary>The model stack: <c>m_aurMtxStack</c> index 2 (PROJECTION=0, VIEW=1).
-    /// <c>RenderSkyBoxes</c> replaces the PROJECTION (push/identity/SetPerspectiveTransform @0x466aa2)
-    /// and leaves the model stack alone, so this top is the base every composed sky matrix sits on -- and it
-    /// is the same value at the Alloy slot, because every engine walk brackets its own model writes with
-    /// Push/PopCurrentMatrix.</summary>
-    private const int ModeModel = 2;
     /// <summary>A skybox model is a handful of parts and there are at most three gobs in play -- 11 was the
     /// most ever logged. Sized as a ceiling anyway (one Part struct is small), because a sky refused for want
     /// of a slot is a whole-screen hole.</summary>
@@ -83,7 +77,6 @@ internal static unsafe class SkyBox
 
     private static readonly Part[] _parts = new Part[MaxParts];
     private static int _count;
-    private static byte* _stacks;
     private static ExtenderLog? _log;
     /// <summary><c>Part::GetWorld(Vector&amp;, Quaternion&amp;)</c> -- no Part subclass overrides vtable slot
     /// 0x20, so this is called by symbol rather than through a vptr.</summary>
@@ -91,8 +84,6 @@ internal static unsafe class SkyBox
     /// <summary><c>Gob::GetAdjustedScale</c> -- a plain float return, which is why the scale comes from here
     /// while the position and orientation come from <see cref="_getWorld"/>'s out parameters.</summary>
     private static GobGetAdjustedScaleFn _gobScale;
-    /// <summary>The model stack top, read once per enrollment; every composed matrix ends on it.</summary>
-    private static Matrix4x4 _base = Matrix4x4.Identity;
     private static int _enrolled, _attached, _hosted;
     private static bool _off;
     /// <summary>The player's own switch (<c>effects.sky</c>). Distinct from <see cref="_off"/>, which means
@@ -109,11 +100,10 @@ internal static unsafe class SkyBox
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
         _getWorld = EngineFn.PartGetWorld;
         _gobScale = EngineFn.GobGetAdjustedScale;
-        if (_stacks == null || _getWorld == null || _gobScale == null)
-        { _off = true; log.Always("SkyBox: matrix stack, Part::GetWorld or Gob::GetAdjustedScale unresolved -- the sky is NOT DRAWN (nothing else draws it since CX-87)"); }
+        if (_getWorld == null || _gobScale == null)
+        { _off = true; log.Always("SkyBox: Part::GetWorld or Gob::GetAdjustedScale unresolved -- the sky is NOT DRAWN (nothing else draws it since CX-87)"); }
     }
 
     /// <summary>#261: the sky, read off the Scene's own gobs. Once per world frame, in ENGINE context,
@@ -127,7 +117,6 @@ internal static unsafe class SkyBox
         _count = 0;
         if (_off || Disabled || scene == IntPtr.Zero) { Scene = IntPtr.Zero; return; }
         Scene = scene;
-        _base = new aurMatrixStack((IntPtr)_stacks)[ModeModel].Top;
         Vector3 cam = new CX.Engine.Scene(scene).SkyPos;
         Span<Role> roles = stackalloc Role[3];
         int n = Roles(scene, roles);
@@ -210,8 +199,10 @@ internal static unsafe class SkyBox
         e.Ported = !AlloyCensus.HasUnportedShader(mat);
         e.Prog = 0;      // filled at staging, where a GL context exists to build a program in
         e.Vao = -1;
+        // CX-109: no model-stack base left to multiply by -- RenderSkyBoxes leaves the model stack alone and
+        // that base is the identity (AlloyCamera.ModelBase, docs/research/camera-loop.md §2).
         e.Model = Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rot)
-                  * Matrix4x4.CreateTranslation(pos) * _base;
+                  * Matrix4x4.CreateTranslation(pos);
         _enrolled++;
     }
 

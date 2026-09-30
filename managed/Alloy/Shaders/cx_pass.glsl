@@ -38,5 +38,6 @@ layout(std140, binding = 0) uniform CxPass
     vec2 uSss;                // #375: the stock subsurface term as (wrap, energy)
     float uWrapN;             // #143: the distance-INDEPENDENT wrap floor; 0 = off
     float uDayDim;            // 1 / the daylight ratio: every lamp term's scale, 1 at night and indoors
+    vec2 uRelevance;          // light.relevance: (cut, full) as shares of the fragment's brightest light; x = 0 keeps all
 };
 #endif

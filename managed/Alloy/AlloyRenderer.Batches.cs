@@ -71,6 +71,7 @@ public sealed unsafe partial class AlloyRenderer
             for (int d = 0; d < nd; d++)
             { int i = _orderTmp[d]; _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = true; n++; }
         }
+        AuditVisible(n, sph);
         {
         int[] list = RouteRange((int)AlloyClass.Blended, out int from, out int to);
         for (int k = from; k < to; k++)
@@ -144,10 +145,9 @@ public sealed unsafe partial class AlloyRenderer
         }
         if (!IdentityOk(i, tri))
         { Counters._skipIdentity++; W(i, "skipped: identity changed -- revoked"); Revoke(i); return false; }
-        // Fault 1: the engine has never composed this gob's world matrix, so vp+0x18 is still the identity
-        // the VertexPrimitive ctor left and the part would draw at the area's (0,0) corner. See PartPlaced.
-        if (!PartPlaced(i))
-        { Counters._skipUnplaced++; SetCastOk(i, false); W(i, "skipped: gob never placed -- identity matrix"); return false; }
+        // CX-103: no placement gate. Alloy composes every enrolled gob's matrix (GobXform), so "the engine
+        // never placed this gob" -- the Fault 1 latch, and the part drawn at the area's (0,0) corner -- cannot
+        // happen any more.
         // #336: a part of a LOD tree the gob is not showing. The engine draws GobPartTree alone; the walk
         // enrols all three trees so a swap is a field read, and this is that read. Casts nothing either.
         if (_oLodRoot[i] != IntPtr.Zero && new Gob(_oGob[i]).PartTree.Ptr != _oLodRoot[i])
@@ -366,8 +366,10 @@ public sealed unsafe partial class AlloyRenderer
         float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
         if (_oMx[i])
         {
-            float* m = new NodeRef(_oNode[i]).Matrix;
-            cx = m[12]; cy = m[13]; cz = m[14];
+            // CX-103: composed, not read off vp+0x18. Blended matrix-class parts are the small minority of a
+            // scene by construction, so this is a handful of composes per pass.
+            Matrix4x4 m = GobXform.Armed ? GobXform.Compose(_oTri[i], _oGob[i]) : new NodeRef(_oNode[i]).Model;
+            cx = m.M41; cy = m.M42; cz = m.M43;
         }
         float dx = cx - _eyePos.X, dy = cy - _eyePos.Y, dz = cz - _eyePos.Z;
         return dx * dx + dy * dy + dz * dz;
@@ -662,6 +664,7 @@ public sealed unsafe partial class AlloyRenderer
         CycleTextures.Tick();
         var dropped = CycleTextures.Dropped;
         if (dropped.Length == 0) return;
+        NoteTexStalePending();
         for (int i = 0; i < _ownCount; i++)
             if (_recCtl[i] != IntPtr.Zero && dropped.IndexOf(_recCtl[i]) >= 0) { _recCtl[i] = IntPtr.Zero; _recTexStale[i] = true; }
     }
@@ -944,7 +947,7 @@ public sealed unsafe partial class AlloyRenderer
         public long OwnDissolve, NrmDeclared, NrmBound, RecStable, RecWritten;
         public long StFrozen, StSettled, StThawed;
         public long MxChased, MxCached, DisAsked, DisCached, DisBoxed, DisNoFeat, DisGobUnpierced, DisNoLit;
-        public long PollMissMx, PollMissDis, PollMissBox;
+        public long PollMissDis, PollMissBox;
         public bool CastChanged;
     }
     private static readonly StageCounters[] _stageCounters = new StageCounters[StagePool.MaxChunks];
@@ -955,7 +958,7 @@ public sealed unsafe partial class AlloyRenderer
         _stFrozen += c.StFrozen; _stSettled += c.StSettled; _stThawed += c.StThawed;
         _mxChased += c.MxChased; _mxCached += c.MxCached; _disAsked += c.DisAsked; _disCached += c.DisCached;
         _disBoxed += c.DisBoxed; _disNoFeat += c.DisNoFeat; _disGobUnpierced += c.DisGobUnpierced; _disNoLit += c.DisNoLit;
-        _pollMissMx += c.PollMissMx; _pollMissDis += c.PollMissDis; _pollMissBox += c.PollMissBox;
+        _pollMissDis += c.PollMissDis; _pollMissBox += c.PollMissBox;
         if (c.CastChanged) CasterGen++;
         c = default;
     }
@@ -997,7 +1000,7 @@ public sealed unsafe partial class AlloyRenderer
             int cls = _passCls[k];
             // #129: never stamp what the frame cannot draw -- see _waterArmed. Ahead of the stale check
             // below because it is a decision about the PASS, not about this part.
-            if (cls == (int)AlloyClass.Water && !_waterArmed) { BreakChaseContinuity(); return Skipped; }
+            if (cls == (int)AlloyClass.Water && !_waterArmed) return Skipped;
             IntPtr tri = _oTri[i];
             if (tri == IntPtr.Zero) return Skipped;
             var part = new PartRef(tri);
@@ -1010,7 +1013,7 @@ public sealed unsafe partial class AlloyRenderer
             // painted flat. #285: that skip is a HOLE, not a hand-back -- see `unlit-pass` on the [alloy]
             // line, which must read 0 on a pass that has a lighting rig at all.
             bool lit = _oLit[i];
-            if (lit && !lightingOn) { Inc(ref Counters._skipNoLight); BreakChaseContinuity(); W(i, "skipped: lighting off this pass"); return Skipped; }
+            if (lit && !lightingOn) { Inc(ref Counters._skipNoLight); W(i, "skipped: lighting off this pass"); return Skipped; }
             // #322: identity was verified (and a mismatch revoked) by RouteParts this pass -- every engine
             // read below sits behind that verdict, not behind a second copy of the same four compares.
             bool samp = main && (k & (ChaseEvery - 1)) == 0;
@@ -1119,8 +1122,13 @@ public sealed unsafe partial class AlloyRenderer
                 // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
                 // frame. The DIFFUSE compare above stays per frame; it is the animated one.
                 for (int s = 0; !texDirty && lit && colour && s < MapSlots; s++)
-                    if ((_oSlots[i] & SlotBit(s)) != 0 && mat.MapTexture(s).Ptr != _recAurS[i * MapSlots + s])
+                {
+                    if ((_oSlots[i] & SlotBit(s)) == 0) continue;
+                    IntPtr was = _recAurS[i * MapSlots + s];
+                    if (mat.MapTexture(s).Ptr != was
+                        || (_recSlotQueued[i] && _recTidS[i * MapSlots + s] == 0 && was != IntPtr.Zero && AurTex.Tid(was) != 0))
                         texDirty = true;
+                }
                 if (!texDirty) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
                 else
                 {
@@ -1222,7 +1230,7 @@ public sealed unsafe partial class AlloyRenderer
                             { if (!main && OwnedTextures.IsOwned(t)) { c = snap; return Deferred; } t = 0; }
                             _recAurS[i * MapSlots + s] = sa.Ptr;   // stamped only past the gates: a deferred slot must re-resolve
                             if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
-                            else if (TexStream.On && AurTex.Tid(sa.Ptr) == 0) slotQueued = true;   // CX-52 step 5: still in the build queue
+                            else if (TexStream.On && AurTex.Tid(sa.Ptr) == 0) slotQueued = true;   // CX-52 step 5: no id yet, re-asked on the colour cadence
                         }
                     }
                     if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
@@ -1240,7 +1248,7 @@ public sealed unsafe partial class AlloyRenderer
                     // classed against the unbuilt texture (GetIsOpaque answers "not opaque" for one), so re-enrol it.
                     if (!nullTex && _recTexStale[i] && TexStream.On && _recTid[i] != 0 && _recTid[i] == OwnedTextures.WhiteName)
                     { TexStream.Landed(_oEntry[i]); _recArrive[i] = TexStream.Clock; }
-                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _recTexStale[i] = nullTex || slotQueued;
+                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _recTexStale[i] = nullTex; _recSlotQueued[i] = slotQueued;
                     for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
                 }
             }

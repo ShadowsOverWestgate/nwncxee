@@ -1468,7 +1468,51 @@ public static unsafe class EngineLayout
     /// <see cref="TileGeomFade"/> zeroed beside it); while set, the @0x481000 visitor holds the ramp at 0.
     /// Alloy reads the ramp, not the flag: the flag has no expression the ramp does not already carry.
     /// Same on Windows by the ctor pairing (identical stores over 0x7c..0xcb).</summary>
-    public static readonly int TileFoggedByWar = Field("TileData", "foggedByWar");
+    public static readonly int TileFoggedByWar = Field<byte>("TileData", "foggedByWar");
+
+    // ---- CX-104 buckets: Alloy's own visibility sets, in place of the engine's per-frame buckets ----
+
+    /// <summary><c>Part::AsPartEmitter()</c> and <c>Part::AsPartTrigger()</c> -- the two class filters
+    /// <c>SceneBSPAddPart</c> @0x47ca10 discriminates a tile's parts with, and so the ones
+    /// <see cref="CX.Alloy.SceneParts"/> classifies its registry by. MEASURED on both programs with
+    /// <c>tools/abi/vtable-slots.py Part</c> (no Ghidra: the ELF exports <c>_ZTV4Part</c> and nwmain.exe's
+    /// vftable is found by scanning .rdata), which prints the whole table side by side -- both are the
+    /// class-wide -0x8 of #433, like the four Part slots already here.</summary>
+    public static readonly int PartAsEmitterSlot = Field("Part", "vtbl.AsPartEmitter", Expect.VtblSlot, sig: "PartEmitter()");
+    /// <inheritdoc cref="PartAsEmitterSlot"/>
+    public static readonly int PartAsTriggerSlot = Field("Part", "vtbl.AsPartTrigger", Expect.VtblSlot, sig: "PartTrigger()");
+
+    /// <summary>The MDL <c>tilefade</c> property (<c>MdlNodeTriMesh::InternalParseField</c> @0x43f7a0 parses
+    /// the keyword straight into this int): 1 = the mesh fades when it stands between the camera and the
+    /// player, 2 = the cap that shows through the hole, 4 = no shadow. It is the class code the whole tile
+    /// fade turns on -- <c>CheckFadePlane</c> @0x47bf30 tests only <c>== 1</c> parts,
+    /// <c>ProcessTriMeshParts</c> @0x480d40 reads the copy <c>PartTriMesh+0xa4</c>
+    /// (<c>MdlNodeTriMesh::InternalCreateInstance</c> @0x43cdc0 assigns one from the other), and
+    /// <c>ProcessStaticParts</c> @0x470970 files 2 and 4 into the tile's own side lists at spawn.
+    /// <para>Windows: read through the MODEL rather than the part copy on purpose. Every
+    /// <c>MdlNodeTriMesh</c> row measured so far is delta 0 (0xb0, 0xb8, 0xc0, 0xcc, 0xe8, 0xf4, 0x118,
+    /// 0x248, 0x260, 0x26c, 0x270, 0x278, 0x280, 0x284) and two of them bracket this one, where
+    /// <c>PartTriMesh</c> is segmented and would need the +0x8 run to be assumed past its last measured
+    /// row.</para></summary>
+    public static readonly int MdlTileFade = Field<int>("MdlNodeTriMesh", "tileFade");
+
+    /// <summary>The radius of the sphere the engine files an emitter into the BSP with and culls it by:
+    /// <c>SceneBSPAddPart</c> @0x47ca10 passes <c>BSPFitSphere(root, em+0x238, *(float*)(em+0x214))</c> and
+    /// <c>PartOutside(PartEmitter*, List&lt;Plane&gt;&amp;)</c> @0x47a290 runs
+    /// <c>SphereAbovePlane(worldPos, em+0x214, plane)</c> per frustum plane. Alloy's emitter set applies the
+    /// same test against its own frustum. Windows: bracketed by <see cref="EmSeeded"/> (0x210) and
+    /// <see cref="EmBirthing"/> (0x244), both measured at -0x8, so 0x20c.</summary>
+    public static readonly int EmViewRadius = Field<float>("PartEmitter", "viewRadius");
+
+    /// <summary>The area's grass bins, where the SCENE owns them rather than where a frame left them:
+    /// <c>Scene::InitBins</c> @0x472390 sizes <c>Scene+0x1d0</c> as a
+    /// <c>CExoArrayList&lt;List&lt;CAurTriangleBin*&gt;&gt;</c> -- an outer array of 0x10-byte list heads,
+    /// one per bin column, each holding one row of the bin grid. <c>binbucket</c> is the per-FRAME slice of
+    /// this; the grid is the area. Windows by the Scene class's own note above: 0x0..0x1e0 is identical
+    /// across 32 offsets paired over 38 functions.</summary>
+    public static readonly int SceneBinGrid = Field<IntPtr>("Scene", "binGrid");
+    /// <inheritdoc cref="SceneBinGrid"/>
+    public static readonly int SceneBinGridCount = Field<int>("Scene", "binGridCount");
 
     // ---- the grass classes ----
 
@@ -1477,6 +1521,14 @@ public static unsafe class EngineLayout
     public static readonly int BinLists = Field<IntPtr>("CAurTriangleBin", "lists");
     /// <inheritdoc cref="BinLists"/>
     public static readonly int BinListCount = Field<int>("CAurTriangleBin", "listCount");
+    /// <summary>CX-104: the bin's bounding sphere -- centre at +0x24, radius at +0x30. Two witnesses on the
+    /// same pair: <c>SceneBSPAddBin</c> @0x47c440 files the bin with
+    /// <c>BSPFitSphere(root, bin+0x24, *(float*)(bin+0x30))</c> and <c>BinOutside</c> @0x47a620 culls it with
+    /// <c>SphereAbovePlane(bin+0x24, *(float*)(bin+0x30), plane)</c>. Windows by the class-wide delta 0 in
+    /// <see cref="BinLists"/>' note.</summary>
+    public static readonly int BinCentre = Field<System.Numerics.Vector3>("CAurTriangleBin", "centre");
+    /// <inheritdoc cref="BinCentre"/>
+    public static readonly int BinRadius = Field<float>("CAurTriangleBin", "radius");
 
     /// <summary><c>CAurTriangleList</c>: the flat vertex array (three vec3 per face, stride 0x24) with its
     /// FLOAT count at +8, the parallel per-face blade counts at +0x30 with their count at +0x38, and the
@@ -2429,6 +2481,131 @@ public static unsafe class EngineLayout
     /// <summary>LookAtAnimation -&gt; the "finished" byte <c>Deactivate</c> sets and <c>Gob::Animate</c> deletes
     /// the object on. Control's own gate: set, the aim block is skipped for the release latch at +0x68.</summary>
     public static readonly int LookAtFinished = Field<byte>("LookAtAnimation", "finished");
+
+    // ---- CX-106 anim: the owned animation runtime (docs/research/anim-runtime.md) ----
+    // Every row below was measured on BOTH builds by disassembling the same function pair on each:
+    // Scene::Animate (0x469810 / rva 0xc5210), Gob::Animate (0x49d8c0 / rva 0x4dbd0),
+    // AnimateHierarchy (0x499990 / rva 0x4fe90), AnimateEvents (0x497f30 / rva 0x4fce0) and
+    // MdlNodeAnimMesh::InternalControl (0x499320 / rva 0x51e60). Only two of them move.
+
+    /// <summary>Scene -&gt; its animation frame counter. <c>Gob::Animate</c> compares
+    /// <see cref="GobAnimFrame"/> against it and returns outright when they match, which is what makes it
+    /// safe for one gob to be reached twice in a frame.</summary>
+    public static readonly int SceneAnimFrame = Field<int>("Scene", "animFrame");
+    /// <inheritdoc cref="SceneAnimFrame"/>
+    public static readonly int GobAnimFrame = Field<int>("Gob", "animFrame");
+    /// <summary>Gob -&gt; the PREVIOUS frame's world position, latched by <c>Gob::Animate</c> right after the
+    /// wind point source reads it. All three components are <c>-1e7</c> before the first latch.</summary>
+    public static readonly int GobPrevPosition = Field<System.Numerics.Vector3>("Gob", "prevPosition");
+    /// <summary>Gob -&gt; the PREVIOUS frame's world rotation, latched beside <see cref="GobPrevPosition"/>.</summary>
+    public static readonly int GobPrevRot = Field<CX.Engine.Quat>("Gob", "prevRot");
+    /// <summary>Gob -&gt; "I am a wind point source", with <see cref="GobWindStrength"/> its falloff. Only
+    /// <c>Gob::SetWind</c> @0x436f40 writes them (a bool store and a float), reached through the Gob vtable
+    /// (+0x1c0) from <c>CNWCObject::SetWind</c> @0x7e8df0 -- so moving creatures DO raise gusts. The Gob ctor
+    /// zeroes the byte alone: its two neighbours are padding.</summary>
+    public static readonly int GobWindSource = Field<byte>("Gob", "windSource", Expect.Byte01);
+    /// <inheritdoc cref="GobWindSource"/>
+    public static readonly int GobWindStrength = Field<float>("Gob", "windStrength");
+    /// <summary>Gob: non-zero exempts the gob from <c>Gob::Animate</c>'s view-volume gate, so it keeps
+    /// animating off screen. Nothing in 8193.37-17 ever writes it, so the live escape is
+    /// <c>Model+0x8e &amp; 1</c> (<see cref="NodeOwnerFlags"/>) alone.</summary>
+    public static readonly int GobAnimOffScreen = Field<int>("Gob", "animOffScreen");
+    /// <summary>Gob: a <c>short</c> that counts 0..4 once per animate; the bounding sphere is refreshed on
+    /// the frame it comes back to 0.</summary>
+    public static readonly int GobSphereTick = Field<short>("Gob", "sphereTick");
+    /// <summary>Gob -&gt; its <c>CExoArrayList&lt;SafePointer&lt;CAurObject&gt;*&gt;</c> (data +0x8, count
+    /// +0x10, capacity +0x14). <c>Gob::~Gob</c> zeroes every registered <c>SafePointer</c>, which is how
+    /// <c>Gob::Animate</c> and <c>Gob::DoEvent</c> notice that an event they fired destroyed the gob.</summary>
+    public static readonly int GobSafePointers = Field<IntPtr>("Gob", "safePointers");
+    /// <inheritdoc cref="GobSafePointers"/>
+    public static readonly int GobSafePointerCount = Field<int>("Gob", "safePointerCount");
+    /// <summary>A <c>SafePointer&lt;CAurObject&gt;</c> is 12 bytes: the object at +0, its index in the owner's
+    /// list at +8. Not a field row -- a record size, like <see cref="NewControllerStride"/>.</summary>
+    public const int SafePointerStride = 0xc, SafePointerIndex = 0x8;
+
+    /// <summary>AnimRun -&gt; last frame's <see cref="AnimRunTime"/>. The animation-event window is
+    /// <c>(prevTime, time]</c> forward, <c>[time, prevTime)</c> in reverse.</summary>
+    public static readonly int AnimRunPrevTime = Field<float>("AnimRun", "prevTime");
+    /// <summary>AnimRun -&gt; the value copied into the <c>position_scale_factor</c> global before the pose,
+    /// which every position track is multiplied by. The AnimRun constructor sets it to 1.</summary>
+    public static readonly int AnimRunPosScale = Field<float>("AnimRun", "posScale");
+    /// <summary>AnimRun: set when a fade-out reaches weight 0; the NEXT visit fires <c>done&lt;anim&gt;</c>
+    /// and destroys the run.</summary>
+    public static readonly int AnimRunDone = Field<int>("AnimRun", "done", Expect.Byte01);
+    /// <summary>Animation -&gt; its keyed event array (stride <see cref="AnimEventStride"/>: a float time at
+    /// +0, an inline name at +4) and the count beside it.</summary>
+    public static readonly int AnimationEvents = Field<IntPtr>("Animation", "events");
+    /// <inheritdoc cref="AnimationEvents"/>
+    public static readonly int AnimationEventCount = Field<int>("Animation", "eventCount");
+    /// <inheritdoc cref="AnimationEvents"/>
+    public const int AnimEventStride = 0x24, AnimEventName = 4;
+
+    /// <summary>MdlNode -&gt; a RAW function pointer (not a vtable slot): one of the seven
+    /// <c>MdlNode*Control</c> thunks its constructor installs, which is what
+    /// <see cref="CX.Alloy.AnimHierarchy"/> identifies the node class by.
+    /// <c>void (*)(MdlNode*, Part*, float tPrev, float tCur, float weight)</c>.</summary>
+    public static readonly int MdlNodeControl = Field<IntPtr>("MdlNode", "control");
+    /// <summary>PartLight: zero here makes <c>AnimateHierarchy</c> fire
+    /// <c>DoEvent("AnimateStaticLight", light)</c> on the owning gob, once per controlled light part.
+    /// One of the two rows in this block that MOVES on Windows.</summary>
+    public static readonly int LightStaticLit = Field<int>("PartLight", "staticLit");
+    /// <summary>LookAtAnimation -&gt; the synthetic <c>Animation</c> it built, and the <c>AnimRun</c> playing
+    /// it. <c>Gob::Animate</c> drops every queue entry whose animation is that one, frees the run, then
+    /// deletes the LookAtAnimation itself.</summary>
+    public static readonly int LookAtAnimation_ = Field<CX.Engine.Animation>("LookAtAnimation", "animation");
+    /// <inheritdoc cref="LookAtAnimation_"/>
+    public static readonly int LookAtRun = Field<CX.Engine.AnimRun>("LookAtAnimation", "run");
+
+    /// <summary>MdlNodeAnimMesh: the morph target count per vertex stream, the seconds per morph frame, and
+    /// the two packed VERTEX-MAJOR pools -- element <c>(v, f)</c> of the position pool is at
+    /// <c>morphVerts[(vertFrames*v + f)*3]</c>, of the UV pool at <c>morphUvs[(uvFrames*v + f)*2]</c>.</summary>
+    public static readonly int MorphVertexCount = Field<ushort>("MdlNodeAnimMesh", "morphVertexCount");
+    /// <inheritdoc cref="MorphVertexCount"/>
+    public static readonly int MorphSamplePeriod = Field<float>("MdlNodeAnimMesh", "samplePeriod");
+    /// <inheritdoc cref="MorphVertexCount"/>
+    public static readonly int MorphVerts = Field<IntPtr>("MdlNodeAnimMesh", "morphVerts");
+    /// <inheritdoc cref="MorphVertexCount"/>
+    public static readonly int MorphUvs = Field<IntPtr>("MdlNodeAnimMesh", "morphUvs");
+    /// <inheritdoc cref="MorphVertexCount"/>
+    public static readonly int MorphVertFrames = Field<int>("MdlNodeAnimMesh", "vertFrames");
+    /// <inheritdoc cref="MorphVertexCount"/>
+    public static readonly int MorphUvFrames = Field<int>("MdlNodeAnimMesh", "uvFrames");
+    /// <summary>The dynamic item a morph writes is interleaved <c>[x, y, z, u, v]</c> -- five floats a
+    /// vertex, which is what <c>MdlNodeAnimMesh::InternalControl</c>'s own pointer arithmetic walks.</summary>
+    public const int MorphStrideFloats = 5;
+
+    /// <summary>Virtual slot of <c>Gob::Animate(float)</c> -- the slot <c>Scene::Animate</c> dispatches over
+    /// its child list, and the test that says a child is a plain Gob rather than a Camera.</summary>
+    public static readonly int GobAnimateSlot = Field("Gob", "vtbl.Animate", Expect.VtblSlot, sig: "void(float dt)");
+    /// <summary>Virtual slot of <c>Gob::DoEvent(char const*, void*)</c> -- THE seam into game code.</summary>
+    public static readonly int GobDoEventSlot =
+        Field("Gob", "vtbl.DoEvent", Expect.VtblSlot, sig: "void(byte* name, IntPtr data)");
+    /// <summary>Virtual slot of <c>Gob::IsAnimating()</c>.</summary>
+    public static readonly int GobIsAnimatingSlot = Field("Gob", "vtbl.IsAnimating", Expect.VtblSlot, sig: "byte()");
+    /// <summary>Virtual slot of <c>Gob::IsInViewVolume()</c>.</summary>
+    public static readonly int GobInViewSlot = Field("Gob", "vtbl.IsInViewVolume", Expect.VtblSlot, sig: "byte()");
+    /// <summary>Virtual slot of <c>Gob::GetMinimumSphere()</c> -- void on both builds (the MSVC name ends
+    /// <c>XXZ</c>), called purely to refresh the cached sphere.</summary>
+    public static readonly int GobMinSphereSlot = Field("Gob", "vtbl.GetMinimumSphere", Expect.VtblSlot, sig: "void()");
+    /// <summary>Virtual slot of <c>Part::Animate(float)</c> -- the per-part tick, virtual so that
+    /// <c>PartDanglyMesh::Animate</c> (and through it <see cref="CX.Alloy.DanglyPhysics"/>) is reached.</summary>
+    public static readonly int PartAnimateSlot = Field("Part", "vtbl.Animate", Expect.VtblSlot, sig: "void(float dt)");
+    /// <summary>Virtual slot of <c>Part::AsPartAnimMesh()</c>.</summary>
+    public static readonly int PartAsAnimMeshSlot = Field("Part", "vtbl.AsPartAnimMesh", Expect.VtblSlot, sig: "IntPtr()");
+    /// <summary>Virtual slot of a <c>CAurBehavior</c>'s <c>Control(float dt)</c> -- dispatched once per gob
+    /// from <c>Gob::Animate</c>, BEFORE the pose and before any event (docs/research/anim-runtime.md
+    /// section 7). The base implementation recurses into each dependency gob's <c>Gob::Animate</c>, so an
+    /// attach parent is animated before its child; the BEHAV stream replaces the individual classes'
+    /// bodies, and this dispatch reaches its port.</summary>
+    public static readonly int BehaviorControlSlot = Field("CAurBehavior", "vtbl.Control", Expect.VtblSlot, sig: "void(float dt)");
+    /// <summary>Virtual slot of <c>LookAtAnimation::IsActive()</c>.</summary>
+    public static readonly int LookAtIsActiveSlot = Field("LookAtAnimation", "vtbl.IsActive", Expect.VtblSlot, sig: "byte()");
+    /// <summary>Virtual slot of <c>LookAtAnimation::Control()</c>.</summary>
+    public static readonly int LookAtControlSlot = Field("LookAtAnimation", "vtbl.Control", Expect.VtblSlot, sig: "void()");
+    /// <summary>Virtual slot of the LookAtAnimation DELETING destructor. Itanium gives it a slot of its own
+    /// and one argument; MSVC merges it into slot 0 and passes <c>1</c> as a second argument, so this call
+    /// has two shapes and no <c>sig:</c>.</summary>
+    public static readonly int LookAtDeleteSlot = Field("LookAtAnimation", "vtbl.Delete", Expect.VtblSlot);
     /// <summary>LookAtAnimation -&gt; the looker's <c>Gob*</c>: the distance check reads its position at +0xa8 on
     /// both builds, and the ctor stores its third argument here.</summary>
     public static readonly int LookAtGob = Field<CX.Engine.Gob>("LookAtAnimation", "gob");
@@ -2778,6 +2955,21 @@ public static unsafe class EngineLayout
     public static readonly int CamViewX = Field<float>("Camera", "viewX");
     /// <inheritdoc cref="CamViewX"/>
     public static readonly int CamViewY = Field<float>("Camera", "viewY");
+    /// <summary>CX-104: Camera -&gt; the world-space frustum as a <c>List&lt;Plane&gt;</c> head (six planes, and
+    /// the list's own <c>{items, count}</c> pair). <c>Camera::RenderScene</c> builds it every frame and sets the
+    /// "set" flag beside it, so it is an INPUT to the scene walk rather than something the walk produces --
+    /// <c>ManageSceneBSP</c> @0x47fa80 only takes its address, for <c>BSPTraverseVolumeApprox</c> and the
+    /// <c>GobOutside</c>/<c>PartOutside</c>/<c>BinOutside</c> tests. It stays current when the walk is skipped,
+    /// which is why <see cref="CX.Alloy.ScenePrep"/> can hand it straight to
+    /// <see cref="SymbolMap.GobOutside"/>.
+    /// <para>The offset is the LIST HEAD, read off <c>Camera::GetViewVolume(int)</c>'s one load on both builds:
+    /// Linux nm @0x4a3a60 is <c>*(long*)(this + 0x4e8) + i*0x10</c>, Windows rva 0x59000 is
+    /// <c>mov 0x4f0(%rcx),%rax</c>. The extra +4 over Camera's usual +0x4 window is the alignment padding the
+    /// int at <c>Camera::ViewVolumeSet</c> (Linux +0x4e4, Windows +0x4e8) pushes the 8-byte pointer past.
+    /// Untyped row on purpose: a list head is not a field, and the accessor is a
+    /// <see cref="CX.Engine.Camera.ViewVolume"/> concept.</para></summary>
+    public static readonly int CamViewVolume = Field("Camera", "viewVolume");
+
 
     /// <summary>CClientExoAppInternal + 0x180: bit 0 = the "show mouse-over feedback" option, bit 1 =
     /// highlight-all (Tab) currently held. The engine tests the WHOLE word, which is why Tab plates even with
@@ -3129,6 +3321,156 @@ public static unsafe class EngineLayout
     /// <inheritdoc cref="NuiIdNodeKey"/>
     public static readonly int NuiIdNodeElement = Field<IntPtr>("Nui::JSON::IdNode", "element");
 
+    // ---- CX-108 lights ----
+    // Alloy's own light registry and selection (docs/research/light-registry.md). Every value below is
+    // MEASURED on both binaries with objdump: LightManager is name-exported on Windows, so
+    // `PrioritizeLights` (rva 0x7ff60) reads there exactly as it does here and no Ghidra run was needed.
+
+    /// <summary><c>Part::AsPartLight()</c> -- the engine's own PartLight discriminator, a pure this-or-null
+    /// cast (<c>Part::AsPartLight</c> @0x444450 returns 0, <c>PartLight::AsPartLight</c> @0x452c50 returns
+    /// <c>this</c>). <c>SceneBSPAddPart</c> @0x47ca10 files a light by asking exactly this, and so does
+    /// Alloy's light registry over the <c>NonMeshParts</c> seam -- the light half of what
+    /// <see cref="PartAsTriMeshSlot"/> is to geometry. <c>tools/abi/vtable-slots.py Part</c> prints both.</summary>
+    public static readonly int PartAsLightSlot = Field("Part", "vtbl.AsPartLight", Expect.VtblSlot, sig: "PartLight()");
+
+    /// <summary>CX-108: the light's own priority OVERRIDE, and zero means "use the MDL node's"
+    /// (<see cref="MdlLightPriority"/>). <c>LightManager::PrioritizeLights</c> @0x4c0940 is the reader;
+    /// <c>Gob::SetLightPriority</c> @0x43f760 and the tileset main-light setter (which writes 4) are the
+    /// writers, and <c>PartLight::PartLight</c> zeroes it.</summary>
+    public static readonly int LightPriority = Field<int>("PartLight", "priority");
+
+    /// <summary>CX-108: the MDL light node's <c>lightpriority</c> field
+    /// (<c>MdlNodeLight::InternalParseField</c> @0x44baf0 parses the name into it; the constructor defaults
+    /// it to 5). Lower sorts first, so a builder's 1 outranks the default.</summary>
+    public static readonly int MdlLightPriority = Field<int>("MdlNodeLight", "lightPriority");
+
+    /// <summary>CX-108: the BSP node inventory's <c>CExoArrayList&lt;PartLight*&gt;</c> -- the TILE lights,
+    /// items at <c>*(BSPNode+0x70) + 0</c> and count at <c>+8</c>. <c>SceneBSPAddPart</c> @0x47ca10 files a
+    /// light here, and it is the only container that holds one: <c>CollapsePartTree</c> @0x462ff0 clears
+    /// every tile part's child list, so no part-tree walk can reach a tile light.
+    /// <para>Sub-offsets of the same record <see cref="BspDataTriMesh"/> names, which is measured as a
+    /// whole-body function pair on both builds -- and this list is that record's first member.</para></summary>
+    public static readonly int BspDataLight = Field("BSPNode", "light");
+    /// <inheritdoc cref="BspDataLight"/>
+    public static readonly int BspDataLightCount = Field("BSPNode", "lightCount");
+
+    // ================= CX-107 behaviours (docs/research/behaviour-solvers.md §1, §6.1) =================
+    // The behaviour solvers Alloy ports write engine fields through the same virtuals the engine does, so
+    // every slot below was measured on BOTH images: the Windows Gob and Part vtables were located by
+    // searching .rdata for the 64-bit VA of a known exported method and walking the table (Gob's is the
+    // second GetPosition hit at 0xd88ac0; the first is StringGob's). Every one is -8 for the usual reason
+    // (#433: MSVC gives a virtual destructor one slot, Itanium two) -- and the DELETING destructor is
+    // therefore Windows slot 0 against Linux slot 8, not -8.
+
+    /// <summary>The weak-reference back-list every <c>CAurObject</c> keeps
+    /// (<c>CExoArrayList&lt;SafePointer&lt;CAurObject&gt;*&gt;</c>: data, count, capacity). A solver
+    /// registers a stack <c>SafePointer</c> here for the length of its solve, so an owner destroyed inside a
+    /// dependency's <c>Animate</c> nulls it instead of leaving a dangling pointer. Same place on both
+    /// builds -- <c>GobHighlight</c> is 0x18 on both, and this list sits immediately before it.</summary>
+    public static readonly int AurObjBackRefs = Field<IntPtr>("CAurObject", "backRefs");
+    /// <inheritdoc cref="AurObjBackRefs"/>
+    public static readonly int AurObjBackRefCount = Field<int>("CAurObject", "backRefCount");
+
+    /// <summary>A behaviour's dependency list, the same <c>CExoArrayList</c> shape: the objects whose
+    /// <c>Animate</c> the base solve drags forward before reading their part transforms.</summary>
+    public static readonly int BehaviorDeps = Field<IntPtr>("CAurBehavior", "deps");
+    /// <inheritdoc cref="BehaviorDeps"/>
+    public static readonly int BehaviorDepCount = Field<int>("CAurBehavior", "depCount");
+
+    /// <summary>The attach family's parent <c>CAurPart*</c> (the part whose world transform the owner is
+    /// snapped to) and its "delete me rather than detach when the parent dies" flag, set by
+    /// <c>Message("diewithoutparent &lt;n&gt;")</c>.</summary>
+    public static readonly int AttachPart = Field<IntPtr>("CAurBehaviorAttach", "part");
+    /// <inheritdoc cref="AttachPart"/>
+    public static readonly int AttachDieWithoutParent = Field<int>("CAurBehaviorAttach", "dieWithoutParent");
+    /// <summary>The translate / rotate subclasses' own offset <c>Vector</c> at the same place (one subclass
+    /// each, so one row): a world translation rotated by the owner's orientation, or Euler degrees
+    /// <c>(pitch, roll, yaw)</c> fed to <c>YawPitchRoll(z, x, y)</c>.</summary>
+    public static readonly int AttachOffset = Field<System.Numerics.Vector3>("CAurBehaviorAttach", "offset");
+    /// <summary><c>CAurBehaviorCrossSceneAttachWithOffset</c>'s constant world offset, added to the owner's
+    /// position after the snap.</summary>
+    public static readonly int CrossAttachOffset = Field<System.Numerics.Vector3>("CAurBehaviorCrossSceneAttach", "offset");
+
+    /// <summary>The subwindow solver's two dummy parts (top-left and bottom-right of the GUI viewport) and
+    /// the <c>setPosition</c> flag <c>GuiAttachViewport</c> passes.</summary>
+    public static readonly int SubwindowPartA = Field<IntPtr>("CAurBehaviorSubwindow", "partA");
+    /// <inheritdoc cref="SubwindowPartA"/>
+    public static readonly int SubwindowPartB = Field<IntPtr>("CAurBehaviorSubwindow", "partB");
+    /// <inheritdoc cref="SubwindowPartA"/>
+    public static readonly int SubwindowSetPos = Field<byte>("CAurBehaviorSubwindow", "setPos");
+
+    /// <summary>The camera-follow target offset added to the target's position before the focus lerp
+    /// (ctor default <c>(0, 0, 1)</c>: chest height), and the focus lag rate that drives
+    /// <c>a = 1 - 0.5^(dt*rate)</c> (default 1.0). The rest of the class is already declared above
+    /// (#536).</summary>
+    public static readonly int FollowOffset = Field<System.Numerics.Vector3>("CAurBehaviorCameraFollow", "offset");
+    /// <inheritdoc cref="FollowOffset"/>
+    public static readonly int FollowLag = Field<float>("CAurBehaviorCameraFollow", "lag");
+
+    /// <summary><c>CAurBehaviorNavigate</c>'s four per-frame inputs, each consumed and cleared by one solve:
+    /// yaw rate, pitch rate, forward speed, strafe speed (deg/s and units/s).</summary>
+    public static readonly int NavigateYawRate = Field<float>("CAurBehaviorNavigate", "yawRate");
+    /// <inheritdoc cref="NavigateYawRate"/>
+    public static readonly int NavigatePitchRate = Field<float>("CAurBehaviorNavigate", "pitchRate");
+    /// <inheritdoc cref="NavigateYawRate"/>
+    public static readonly int NavigateForward = Field<float>("CAurBehaviorNavigate", "forward");
+    /// <inheritdoc cref="NavigateYawRate"/>
+    public static readonly int NavigateStrafe = Field<float>("CAurBehaviorNavigate", "strafe");
+    /// <summary>Cleared by every <c>Navigate::Control</c> and read by nothing; kept so the port leaves the
+    /// object in the same state the engine would.</summary>
+    public static readonly int NavigateSpare = Field<float>("CAurBehaviorNavigate", "spare");
+
+    /// <summary><c>CAurBehaviorCameraOnAStick</c>'s spring: last solved position, stick length (2.5), gain
+    /// (20.0), pitch (70.0), fixed height (4.0), the mode int and the direction <c>Vector</c>. UNREACHABLE
+    /// in this build -- nothing constructs the class -- so these are decompiler evidence only.</summary>
+    public static readonly int StickLast = Field<System.Numerics.Vector3>("CAurBehaviorCameraOnAStick", "last");
+    /// <inheritdoc cref="StickLast"/>
+    public static readonly int StickLength = Field<float>("CAurBehaviorCameraOnAStick", "length");
+    /// <inheritdoc cref="StickLast"/>
+    public static readonly int StickGain = Field<float>("CAurBehaviorCameraOnAStick", "gain");
+    /// <inheritdoc cref="StickLast"/>
+    public static readonly int StickPitch = Field<float>("CAurBehaviorCameraOnAStick", "pitch");
+    /// <inheritdoc cref="StickLast"/>
+    public static readonly int StickHeight = Field<float>("CAurBehaviorCameraOnAStick", "height");
+    /// <inheritdoc cref="StickLast"/>
+    public static readonly int StickMode = Field<int>("CAurBehaviorCameraOnAStick", "mode");
+    /// <inheritdoc cref="StickLast"/>
+    public static readonly int StickDir = Field<System.Numerics.Vector3>("CAurBehaviorCameraOnAStick", "dir");
+
+    /// <summary><c>CAurObject::SetBehavior(CAurBehavior*)</c> -- passing null is how a solver whose parent
+    /// died detaches; the setter DELETES the behaviour, so nothing may touch <c>this</c> afterwards.</summary>
+    public static readonly int GobSetBehaviorSlot = Field("Gob", "vtbl.SetBehavior", Expect.VtblSlot, sig: "void(IntPtr behavior)");
+    /// <summary><c>CAurObject::GetBehavior(int type)</c> -- with -1, "the behaviour you have"; the
+    /// identity test every solve makes before and after touching the owner.</summary>
+    public static readonly int GobGetBehaviorSlot = Field("Gob", "vtbl.GetBehavior", Expect.VtblSlot, sig: "IntPtr(int type)");
+    /// <summary>The DELETING destructor: <c>Gob::~Gob</c> + <c>operator delete</c>. An attach behaviour with
+    /// <c>diewithoutparent</c> set deletes its owner through it. Itanium's two destructor slots are
+    /// complete-then-deleting at 0x00/0x08; MSVC has one, at 0x00 -- so this row is the one slot in the
+    /// table that is NOT -8, and MSVC's takes a flags argument (<c>mov edx,1</c> at rva 0x202897) that
+    /// Itanium's does not. No signature is declared for that reason.</summary>
+    public static readonly int GobDeleteSlot = Field("Gob", "vtbl.Delete", Expect.VtblSlot);
+    /// <summary><c>CAurObject::GetName()</c> -- <c>Gob+0x24</c>, the inline name buffer. The subwindow
+    /// solver keys on four exact panel names.</summary>
+    public static readonly int GobGetNameSlot = Field("Gob", "vtbl.GetName", Expect.VtblSlot, sig: "IntPtr()");
+    /// <summary><c>CAurObject::GetScene()</c> and <c>CAurObject::AsCamera()</c> -- the subwindow solver's
+    /// two lookups: the panel's scene, and the owner's <c>Camera</c> base (which sits 8 bytes before the
+    /// <c>CAurObject</c> a <c>CAurCamera</c> hands out).</summary>
+    public static readonly int GobGetSceneSlot = Field("Gob", "vtbl.GetScene", Expect.VtblSlot, sig: "IntPtr()");
+    /// <inheritdoc cref="GobGetSceneSlot"/>
+    public static readonly int GobAsCameraSlot = Field("Gob", "vtbl.AsCamera", Expect.VtblSlot, sig: "IntPtr()");
+    /// <summary><c>CAurObject::SetPosition(Vector)</c> and <c>SetOrientation(Quaternion)</c> -- the only
+    /// writers the solvers' offsets go through, and the reason the overrides matter
+    /// (<c>CNWCVisualEffect</c>, <c>CNWCCreature</c>, <c>CNWCItem</c>, <c>StringGob</c> all do more than
+    /// store). No signature is declared: the MSVC mangling
+    /// (<c>?SetPosition@Gob@@UEAA?AVVector@@V2@@Z</c>) says both RETURN their argument by value, which SysV
+    /// answers in xmm0/xmm1 with the argument also in xmm0/xmm1, and Win64 answers through a buffer in rdx
+    /// with the argument by reference in r8 -- <c>(this, sret, &amp;arg)</c>. No single signature describes
+    /// that, so <c>CX.Alloy.BehaviorCall</c> carries both argument lists, the way
+    /// <see cref="CX.Alloy.AurXform"/> does for the getters.</summary>
+    public static readonly int GobSetPositionSlot = Field("Gob", "vtbl.SetPosition", Expect.VtblSlot);
+    /// <inheritdoc cref="GobSetPositionSlot"/>
+    public static readonly int GobSetOrientationSlot = Field("Gob", "vtbl.SetOrientation", Expect.VtblSlot);
+
     // ================= engine constants that are not offsets =================
     // They rode into this table with #436 because the file they lived in was the offset file. They are
     // magic VALUES the engine compares against, not places -- no row, nothing to resolve per platform.
@@ -3217,6 +3559,10 @@ public static unsafe class EngineLayout
         None,
         /// <summary>A boolean field: the dword is 0 or 1. A wrong offset lands in a pointer or a float.</summary>
         Byte01,
+        /// <summary><see cref="Byte01"/> on a ONE-byte field, which is what <c>Field&lt;byte&gt;</c> turns it into:
+        /// the dword read would take in padding bytes no constructor writes (Gob+0x199's two neighbours stood
+        /// the renderer down on heap garbage).</summary>
+        Bool8,
         /// <summary>A vtable slot: <c>*(*obj + off)</c> is a code address inside the client image.</summary>
         VtblSlot,
     }
@@ -3251,6 +3597,9 @@ public static unsafe class EngineLayout
             case Expect.Byte01:
                 int v = *(int*)(obj + r.Value);
                 return v == 0 || v == 1;
+            case Expect.Bool8:
+                byte b = *(byte*)(obj + r.Value);
+                return b <= 1;
             case Expect.VtblSlot:
                 IntPtr vtbl = *(IntPtr*)obj;
                 if (vtbl == IntPtr.Zero) return true;   // no instance to judge, not a failed probe
@@ -3260,6 +3609,51 @@ public static unsafe class EngineLayout
                 return true;
         }
     }
+
+    // ---- CX-103/104/105 ----
+
+    /// <summary>CX-103: Gob -&gt; its <c>CAurObjectVisualTransformData</c>, whose FIRST member is the scale
+    /// <c>LerpFloat</c>. <c>Gob::GetVisualTransformData</c> @0x436e70 is <c>return this + 0x1c0;</c> and
+    /// <c>Gob::GetAdjustedScale</c> @0x437cf0 reads exactly that address as a <c>LerpFloat</c>. The gob loop of
+    /// <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 folds each ATTACH-CHAIN ancestor's
+    /// <c>Lerped(ancestor+0x1c0)</c> into the pushed scale, which is the one placement term
+    /// <c>Part::GetWorld</c> does not carry -- so the owned composition reads it here.
+    /// <para>Windows: name-exported as <c>?GetVisualTransformData@Gob@@UEAAAEBUCAurObjectVisualTransformData@@XZ</c>,
+    /// and the offset sits inside the Gob region #448 paired as identical.</para></summary>
+    public static readonly int GobScaleLerp = Field<CX.Engine.LerpFloat>("Gob", "scaleLerp", embedded: true);
+    /// <summary>CX-103: the other factor of <c>Gob::GetAdjustedScale</c> -- <c>Lerped(gob+0x1c0) *
+    /// *(float*)(gob+0x49c)</c>. Read only as a CHANGE-DETECTION input (a plain load, where the getter is six
+    /// <c>LerpFloat::Lerped</c> calls); the composed scale still comes from the getter.</summary>
+    public static readonly int GobScaleBase = Field<float>("Gob", "scaleBase");
+    /// <summary>CX-104: the gob's bounding sphere, in the form the engine's own BSP visitor @0x481000 uses --
+    /// radius at +0x178, LOCAL centre at +0x17c. That visitor computes the LOD distance as
+    /// <c>|camPos - (gob.position + gob.rot * centre)|^2</c>, and <c>Scene::AddPartsToDrawBuckets</c> feeds the
+    /// same pair to <c>SphereAbovePlane</c>. Alloy's visible-gob list uses it the same way.</summary>
+    public static readonly int GobRadius = Field<float>("Gob", "radius");
+    /// <inheritdoc cref="GobRadius"/>
+    public static readonly int GobCentre = Field<System.Numerics.Vector3>("Gob", "centre");
+    /// <summary>CX-103: the gob loop's <c>SynchronizeHierarchies(gob+0x90, parent+0x90)</c> gate. An attached
+    /// gob with this set has its part tree's locals OVERWRITTEN from its parent's every frame, by
+    /// <c>Scene::AddPartsToDrawBuckets</c>. The owned composition reads the locals AFTER that write (the shim
+    /// runs later in the frame), so the field is a "this gob's locals are the parent's" note for the
+    /// skip-experiment's consumer list rather than a term of the matrix.</summary>
+    public static readonly int GobSyncHier = Field<byte>("Gob", "syncHier");
+    /// <summary>CX-105: <c>Gob::ProcessGob</c>'s dirty byte. <c>Gob::SetLODModel</c> @0x43e6a0 sets it on every
+    /// LOD swap and <c>ProcessGob</c> @0x43e920 clears it after refreshing <see cref="GobVisible"/> and the
+    /// tree's geometry flags -- so it is the engine's own "this gob's active tree changed" note.</summary>
+    public static readonly int GobGeomDirty = Field<byte>("Gob", "geomDirty");
+    /// <summary>CX-105: <c>Gob::SetLODModel</c>'s four inputs and its output level. The squared camera
+    /// distance at +0x140 (written by the BSP visitor @0x481000, also the gobbucket sort key), the current
+    /// level 0/1/2 at +0x440, and the two switch distances at +0x444 (level 1) and +0x448 (level 2), each
+    /// scaled by <c>g_fLODScaleFactor</c> and compared SQUARED. A negative +0x140 stands the whole function
+    /// down.</summary>
+    public static readonly int GobLodDist2 = Field<float>("Gob", "lodDist2");
+    /// <inheritdoc cref="GobLodDist2"/>
+    public static readonly int GobLodLevel = Field<int>("Gob", "lodLevel");
+    /// <inheritdoc cref="GobLodDist2"/>
+    public static readonly int GobLodNear = Field<float>("Gob", "lodNear");
+    /// <inheritdoc cref="GobLodDist2"/>
+    public static readonly int GobLodFar = Field<float>("Gob", "lodFar");
 
     // ================= plumbing =================
 
@@ -3288,7 +3682,7 @@ public static unsafe class EngineLayout
     /// <param name="embedded">The field IS a <typeparamref name="T"/> record, not a pointer to one: the view hands
     /// out its address.</param>
     private static int Field<T>(string cls, string field, Expect probe = Expect.None, int count = 0, bool embedded = false) where T : allows ref struct
-        => Field(cls, field, probe);
+        => Field(cls, field, probe == Expect.Byte01 && typeof(T) == typeof(byte) ? Expect.Bool8 : probe);
 
     /// <summary>Every declared (class, field), for <see cref="ClientBuilds"/>' completeness check.</summary>
     internal static IEnumerable<(string Class, string Field)> Declared
@@ -3404,6 +3798,41 @@ public static unsafe class EngineLayout
             if (hi > _imageHi) _imageHi = hi;
         }
     }
+
+    // ---- CX-109/110 ----
+
+    /// <summary>Camera -&gt; the <c>Scene*</c> the camera renders. <c>Camera::RenderScene</c> @0x4a7920 opens
+    /// with <c>if (this+0x90 == 0) return</c> and takes the Scene it dispatches <c>vtable+0x20</c>
+    /// (<c>Scene::Render</c>) on from here; <c>Camera::AttachToScene</c> is its writer. Same offset on both
+    /// builds -- read off the Windows <c>Camera::RenderScene</c> (rva 0x5a5d0), which is
+    /// <c>*(longlong *)(this + 0x90)</c> there too, and it sits below Camera's measured <c>+0x4</c> segment
+    /// (<see cref="CamViewX"/>).</summary>
+    public static readonly int CameraScene = Field<CX.Engine.Scene>("Camera", "scene");
+
+    /// <summary>WindManager -&gt; the base wind <c>Vector</c>. Zero in normal play: the Scene builds its
+    /// manager with the default ctor @0x491b90, which zeroes it, and the only writer in the binary is
+    /// <c>Scene::SetGlobalWind</c> @0x45f0a0 -- the <c>setglobalwind</c> console command, with no callers of
+    /// its own. Read each tick anyway, so a console or script-set wind still blows
+    /// (<see cref="CX.Alloy.AlloyWind"/>).
+    /// <para>Every WindManager row here is IDENTICAL on Windows, read off <c>WindManager::updateTimer</c>
+    /// (rva 0xf2250), <c>GetGlobalWind</c> (rva 0xf1560) and <c>pointSourceWindVector</c> (rva 0xf2070):
+    /// <c>+0x20..+0x34</c>, <c>+0x838</c>/<c>+0x840</c>, <c>+0x848</c>/<c>+0x84c</c>, <c>+0x850</c>,
+    /// <c>+0x854</c>/<c>+0x858</c> and the 0x1c point-source stride all appear unchanged.</para></summary>
+    public static readonly int WindBase = Field<System.Numerics.Vector3>("WindManager", "baseWind");
+    /// <summary>WindManager -&gt; the maximum yaw deviation, in the units
+    /// <c>WindManager::GetGlobalWind</c> @0x490ab0 hands <c>sincosf</c> (so the quaternion turns by twice it).
+    /// The default ctor writes 130.0; <c>WindManager::SetMaximumDeviation</c> @0x4904d0 is the other writer.
+    /// <inheritdoc cref="WindBase"/></summary>
+    public static readonly int WindMaxYaw = Field<float>("WindManager", "maxYaw");
+    /// <summary>WindManager -&gt; the maximum PITCH deviation, the second of
+    /// <c>SetMaximumDeviation</c>'s pair. Default 0, i.e. vanilla wind does not tilt.
+    /// <inheritdoc cref="WindBase"/></summary>
+    public static readonly int WindMaxPitch = Field<float>("WindManager", "maxPitch");
+    /// <summary>WindManager -&gt; how long one noise field lasts, in seconds
+    /// (<c>WindManager::SetUpdateTimeoutValue</c> @0x490450; default 0.5). The accumulator at <c>+0x854</c>
+    /// and the blend at <c>+0x850</c> are the ENGINE's clock and Alloy keeps its own, so neither has a row.
+    /// <inheritdoc cref="WindBase"/></summary>
+    public static readonly int WindPeriod = Field<float>("WindManager", "period");
 
     /// <summary>
     /// #432: the one runnable check. Proves the three forms register and count, that the build key reads,

@@ -116,11 +116,26 @@ public sealed unsafe partial class AlloyRenderer
         // row-major v*M convention: clip = v * Model * View * Proj; raw bytes read column-major by GLSL are
         // the transpose, so uVP * d.model * vec4(aPos,1) is exact -- (M*V*P)^T = (V*P)^T * M^T, which is why
         // #84 can hoist view*proj to a per-program uniform and leave only the model matrix per draw.
-        _sceneEnv = _enrollScene != IntPtr.Zero && !new Scene(_enrollScene).EnvMap.IsNull;
+        _sceneEnv = AlloyEnvMap.Present(_enrollScene);
 
-        var stacks = new aurMatrixStack((IntPtr)_mtxStacks);
-        Matrix4x4 view = stacks[ModeView].Top;
-        Matrix4x4 proj = stacks[ModeProjection].Top;
+        // CX-109: the view and projection are ALLOY's, built at this view's Camera::RenderScene out of the
+        // camera object's own fields rather than read back off m_aurMtxStack. view.cameraloop 0 is the A/B,
+        // and AlloyCamera.Describe() prints the largest element difference against the engine's own pair.
+        Matrix4x4 view, proj;
+        if (AlloyCamera.Owned)
+        {
+            ref readonly AlloyView wv = ref AlloyCamera.WorldView;
+            // CX-45: no quiet fallback. A pass with no measured camera would draw the world through an
+            // identity view -- geometry everywhere and nothing recognisable -- so it sits the frame out.
+            if (!wv.Valid)
+            { NoFrameBehindUs("Alloy has no measured world camera (Camera::RenderScene never reached a world scene)"); return false; }
+            view = wv.View;
+            proj = wv.Proj;
+            // The parity instrument, at the ONE place both matrices are meant to describe the same camera.
+            AlloyCamera.NoteParity();
+        }
+        else if (!AlloyCamera.EngineMatrices(out view, out proj))
+        { NoFrameBehindUs("m_aurMtxStack is unresolved and view.cameraloop is off"); return false; }
         // #389: the ONE site the projection is read, so the ONE site the TAA jitter goes in: an NDC offset is
         // a shear of the clip x/y by w, and in this row-vector convention w = z*M34, so the offset lands in
         // M31/M32 scaled by M34 (sign-agnostic). Every owned stage, the hosted stock text (_projMtx) and the
@@ -292,6 +307,7 @@ public sealed unsafe partial class AlloyRenderer
         foreach ((PassId id, Bracket bracket) in FrameGraph.Passes)
         {
             if (bracket != Bracket.Colour) continue;
+            long tId = FrameZones.Now;
             switch (id)
             {
                 case PassId.DepthPrepass:
@@ -533,6 +549,7 @@ public sealed unsafe partial class AlloyRenderer
                     FrameZones.Add(FrameZones.Zone.Post, tPost);
                     break;
             }
+            _passCpu[(int)id] += FrameZones.Now - tId;
         }
         PaintStreamFailures(display);
         GpuSpanEnd();

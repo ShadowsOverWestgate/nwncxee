@@ -53,5 +53,8 @@ public unsafe struct GpuQuery
     /// <summary>Period mean, 0 when nothing was harvested (which reads as "no measurement", not "free").</summary>
     public double Avg => _n == 0 ? 0.0 : (double)_sum / _n;
     public bool Measured => _n > 0;
+    /// <summary>Raw running totals since the last <see cref="Reset"/>, for a caller that takes its own deltas.</summary>
+    public ulong Sum => _sum;
+    public int N => _n;
     public void Reset() { _sum = 0; _n = 0; }
 }

@@ -414,7 +414,12 @@ public sealed unsafe partial class AlloyRenderer
         }
         mx = _oMx[slot];
         known = _recGen[slot] == _recEpoch;
-        live = mx && _oNode[slot] != IntPtr.Zero ? new NodeRef(_oNode[slot]).Model.Translation : Vector3.Zero;
+        // CX-103: "live" is what Alloy composes for the slot THIS instant, not what the engine's draw-bucket
+        // build left at vp+0x18 -- the record is built from the composition, so that is the pair that has to
+        // agree. alloy.xformcheck is where the engine's matrix is compared.
+        live = !mx || _oTri[slot] == IntPtr.Zero ? Vector3.Zero
+             : GobXform.Armed ? GobXform.Compose(_oTri[slot], _oGob[slot]).Translation
+             : _oNode[slot] == IntPtr.Zero ? Vector3.Zero : new NodeRef(_oNode[slot]).Model.Translation;
     }
 
     /// <summary>The shadow pass's own copy of the buffer names it binds: the persistent per-draw records and

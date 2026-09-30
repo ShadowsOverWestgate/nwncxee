@@ -159,14 +159,24 @@ float cxCoat, cxCoatRough;      // clear-coat weight and alpha; 0 weight = no co
 vec3 cxSheen; float cxSheenRough;   // sheen colour (linear) and alpha; 0 alpha = no sheen
 
 /// The clear coat's lobe per unit irradiance: GGX, Kelemen's visibility, a fixed 0.04 dielectric
-/// (KHR_materials_clearcoat). Pi-less, like every lobe in the lit stage.
-float CxCoatLobe(vec3 N, vec3 V, vec3 L, float a)
+/// (KHR_materials_clearcoat). Pi-less, like every lobe in the lit stage. <paramref name="spread"/> is the
+/// sphere-light widening (<c>CxSrcSpread</c>), in the denominator alone so the numerator carries Karis'
+/// energy factor -- a water film's alpha is near the CX_ALPHA_MIN floor, and this coat is where an
+/// unbounded peak showed up as a flare.
+float CxCoatLobe(vec3 N, vec3 V, vec3 L, float a, float spread)
 {
     vec3 H = normalize(V + L);
     float NoH = clamp(dot(N, H), 0.0, 1.0), LoH = clamp(dot(L, H), 0.0, 1.0);
-    float a2 = a * a, den = 1.0 - NoH * NoH * (1.0 - a2);
+    float ap = min(a + spread, 1.0);
+    float a2 = a * a, den = 1.0 - NoH * NoH * (1.0 - ap * ap);
     return a2 / max(den * den, 1e-8) * (0.25 / max(LoH * LoH, 1e-4)) * mix(CX_DIELECTRIC_F0, 1.0, CxFresnel(LoH));
 }
+float CxCoatLobe(vec3 N, vec3 V, vec3 L, float a) { return CxCoatLobe(N, V, L, a, 0.0); }
+
+/// The radiance ceiling one light's water-film highlight may reach, in the linear units the colour target
+/// holds. Sunlit metal peaks well under it; a near-mirror lobe on a lamp at arm's length from the ground
+/// does not, and that is the "solar flare".
+const float CX_FILM_LIGHT_MAX = 8.0;
 
 /// The sheen's lobe per unit irradiance: Estevez & Kulla's "Charlie" distribution with Neubelt's
 /// visibility (KHR_materials_sheen) -- the retro-reflective rim of cloth and velvet. Pi-less.
@@ -179,7 +189,45 @@ float CxSheenLobe(vec3 N, vec3 V, vec3 L, float a)
     return d / (4.0 * max(NoL + NoV - NoL * NoV, 1e-4));
 }
 
-vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L)
+/// R4: the highlights a water film mirrors from the BAKED static lights the main walk no longer reaches.
+/// The cluster build ranks the few brightest per froxel and permutes them to the front of the cold tail
+/// (cx_lightbuild), so this is a walk of two to four lights, each on the COAT's lobe alone -- the pages
+/// already hold what the base owes them -- and only the strongest pays one cube tap for its own
+/// visibility. Never reached on a dry frame: the count is 0 and the caller is gated on the film.
+/// Lives here, past CxCoatLobe, rather than in cx_lightfrag, which is composed before this file.
+vec3 CxFilmStatics(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float coat, float coatRough, float onMover)
+{
+    uint cl = CxCluster(viewDepth);
+    uint live = CxClusterLive(cl);
+    uint last = min(live + CxClusterRefl(cl), CX_CLUSTER_CAP);
+    uint base = cl * CX_CLUSTER_CAP;
+    vec3 acc = vec3(0.0), bSpc = vec3(0.0);
+    float bLum = 0.0, bNdl = 0.0;
+    int bSlot = -1;
+    for (uint k = live; k < last; k++)
+    {
+        uint li = uClIdx[base + k];
+        vec4 pr = uLights[li * 2u];
+        vec4 cs = uLights[li * 2u + 1u];
+        vec3 c, L; float att, f2, ndlRaw, ndl;
+        if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;
+        if (ndl <= 0.0) continue;
+        vec3 spc = c * (att * ndl) * (coat * CxCoatLobe(N, V, L, coatRough, CxSrcSpread(sqrt(f2) * pr.w)));
+        // the firefly clamp: the sphere normalisation above bounds the lobe by the source's own size, and
+        // this bounds what is left, per light. A lamp set into the paving of a plaza is a real value no
+        // bloom or tonemap in the chain is built for, and one badly placed one must not own the frame.
+        spc = min(spc, vec3(CX_FILM_LIGHT_MAX));
+        acc += spc;
+        float lum = dot(spc, vec3(0.2126, 0.7152, 0.0722));
+        int slot = CxLightSlot(int(cs.w));
+        if (slot >= 0 && lum > bLum) { bLum = lum; bSlot = slot; bNdl = ndlRaw; bSpc = spc; }
+    }
+    if (bSlot >= 0)
+        acc -= bSpc * (1.0 - CxLocalShadowQ(bSlot, worldPos, N, bNdl, onMover, viewDepth, false));
+    return acc * uDayDim;
+}
+
+vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L, float spread)
 {
     vec3 s = lobe * cxSpecScale;
     // Schlick per channel, F0 + (1 - F0) Fc, so coloured specular whitens at grazing. The lobe carries the
@@ -189,7 +237,12 @@ vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L)
         float fc = CxFresnel(clamp(dot(normalize(V + L), V), 0.0, 1.0)) * cxFresnel;
         s *= mix(cxF0, vec3(1.0), fc) / max(mix(cxSpec, 1.0, fc), 1e-4);
     }
-    if (cxCoat > 0.0) s += vec3(cxCoat * CxCoatLobe(N, V, L, cxCoatRough));
+    if (cxCoat > 0.0) s += vec3(cxCoat * CxCoatLobe(N, V, L, cxCoatRough, spread));
+    // the sheen is a broad retro-reflective rim by construction: a source's size cannot widen it usefully
     if (cxSheenRough > 0.0) s += cxSheen * CxSheenLobe(N, V, L, cxSheenRough);
     return s;
 }
+
+/// The punctual form, for the terms that are not point lights: the sun and the lightmap's dominant
+/// direction. Declared past the body it forwards to, as GLSL requires.
+vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L) { return CxLoopSpec(lobe, N, V, L, 0.0); }

@@ -224,10 +224,10 @@ void main()
     float fDepthOffset = fScreenFBDepth + vPosViewThis.z;
 
     vec3 N = CxWaterNormal(vWaterSurfaceCoords);
-    // rain rings the surface too (weather.splash), on a level one; the same train the puddles carry
+    // rain rings the surface too (weather.splash), on a level one; the same world-sized rings the puddles carry
     float fSplashFade = 0.0;
     if (uSplash > 0.0 && vSurfaceNormalWorld.z > 0.9)
-        N = normalize(N + vec3(CxWeatherImpact(vWaterSurfaceCoords.xy, uSplash, CxWeatherImpactPx(vWorld, V), fSplashFade), 0.0));
+        N = normalize(N + vec3(CxWeatherRipple(vWaterSurfaceCoords.xy, uSplash, CxWeatherImpactPx(vWorld, V), fSplashFade), 0.0));
     vec3 vFragmentNormal = normalize(mat3(uView) * N);
 
     // ---- lighting: stock's ComputeLighting, answered by the froxel walk ----------------------
@@ -235,7 +235,7 @@ void main()
     // fSpecularity = 1.0 -- stock sets it to one on purpose and factors water's real F0 in at the
     // composite, through the Fresnel term. Doing it in both places is the double-count to avoid.
     float fRoughness = 0.00025 + 0.00025 * -vPosView.z;
-    if (uSplash > 0.0 && vSurfaceNormalWorld.z > 0.9) fRoughness = CxWeatherImpactRough(fRoughness, fSplashFade, 1.0, uSplash);
+    if (uSplash > 0.0 && vSurfaceNormalWorld.z > 0.9) fRoughness = CxWeatherRippleRough(fRoughness, fSplashFade, 1.0, uSplash);
     float NdotV = max(dot(N, V), CX_ANGLE_MIN_W);
     float sunRaw = clamp(dot(N, uAreaDir), 0.0, 1.0);
     float sunVis = CxSunShadow(vWorld, N, sunRaw, sunRaw);

@@ -61,6 +61,8 @@ internal static unsafe partial class Weather
         DeclareKnobs();
         DeclareCoverKnobs();
         DeclareSurfaceKnobs();
+        DeclareSplashKnobs();
+        DeclareMapKnobs();
         G.Section("Weather types");
         RainRows = G.Text("rainrows", "Rain rows", "1,3,6,9", Tier.Advanced,
                           help: "weathertypes.2da rows drawn as rain (stock: 1).", changed: ParseRows);

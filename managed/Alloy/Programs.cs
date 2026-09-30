@@ -293,9 +293,12 @@ internal static unsafe class Programs
     }
 
     /// <summary>What the owned stages ask of the driver beyond the GL 4.6 floor: three vertex-stage SSBO
-    /// blocks (draw, draw index, bones; floor 0) and the whole 16-unit fragment sampler budget
-    /// (<see cref="TextureSlots"/> ends at 15; floor 16, so zero margin).</summary>
-    private const int VsSsboNeed = 3, TexUnitsNeed = 16;
+    /// blocks (draw, draw index, bones; floor 0) and the fragment sampler budget the lit stage declares.
+    /// The 0..15 budget is the one the bind sites spend, but the lit stage also declares three units past
+    /// it by <c>layout(binding)</c> -- #642's two raw cube arrays and R2's wetness map -- so the honest
+    /// need is the highest of those plus one, and the floor is 16.</summary>
+    private static readonly int TexUnitsNeed = (int)TextureSlots.WetMap + 1;
+    private const int VsSsboNeed = 3;
 
     /// <summary>Build the lit variant. A failure disarms lit ownership for the session (and the next
     /// enrollment hands every lit part back to the engine) -- never a silent fallback to fullbright, which
@@ -424,6 +427,8 @@ internal static unsafe class Programs
         L.Weather = GlProgram.Loc(prog, "uWeather"); L.WeatherLook = GlProgram.Loc(prog, "uWeatherLook");
         L.CoverVp = GlProgram.Loc(prog, "uCoverVp"); L.CoverLayer = GlProgram.Loc(prog, "uCoverLayer");
         L.SnowLook = GlProgram.Loc(prog, "uSnowLook"); L.SnowLight = GlProgram.Loc(prog, "uSnowLight"); L.CoverEsm = GlProgram.Loc(prog, "uCoverEsmP"); L.SnowPom = GlProgram.Loc(prog, "uSnowPom");
+        L.WxMapXf = GlProgram.Loc(prog, "uWxMapXf"); L.WxMapP = GlProgram.Loc(prog, "uWxMapP");
+        L.WxEdge = GlProgram.Loc(prog, "uWxEdge"); L.WxRun = GlProgram.Loc(prog, "uWxRun");
         L.Feat = FeatLocs(prog);
         // Bind the two shadow samplers to their units ONCE, here, and not only on the frames a map is fresh.
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers

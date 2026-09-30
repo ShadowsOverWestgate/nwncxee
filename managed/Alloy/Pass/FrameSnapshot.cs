@@ -42,12 +42,12 @@ internal static unsafe class FrameSnapshot
     /// carries and this port first shipped without.</summary>
     internal const uint EnvUnit = TextureSlots.WaterEnv;
 
-    /// <summary><c>Scene+0x1e8</c>: the scene's environment map, a <c>SafePointer&lt;CAurTexture&gt;</c> whose
-    /// first word is the borrowed texture. <c>Scene::Render</c> @0x5762d0 fills it once per scene from the
-    /// TILESET's own resref (<c>CNWTileSet::GetEnvMapResRef</c>) and falls back to
-    /// <c>AurTextureGetFallbackEnvironmentMap</c> when the tileset names none -- so it is present even where
-    /// the MATERIAL has no env map, which is the case the <c>[water]</c> census line's <c>env=False</c>
-    /// reports and which made this term look inapplicable.</summary>
+    /// <summary>The environment map. <c>Scene::Render</c> @0x4762d0 fills <c>Scene+0x1e8</c> ONCE per scene
+    /// from the TILESET's own resref (<c>CNWTileSet::GetEnvMapResRef</c>), falling back to
+    /// <c>AurTextureGetFallbackEnvironmentMap</c> (<c>chrome1</c>) when the tileset names none -- so it is
+    /// present even where the MATERIAL has no env map, which is the case the <c>[water]</c> census line's
+    /// <c>env=False</c> reports and which made this term look inapplicable. CX-110: that choice and that
+    /// fallback are <see cref="AlloyEnvMap"/>'s now.</summary>
 
     /// <summary><c>water.enabled</c> off stands the class down; on brings it back at the next pass. Armed
     /// and idling rather than un-installed, so the toggle is live either way.</summary>
@@ -283,15 +283,15 @@ internal static unsafe class FrameSnapshot
         Gl.ActiveTexture(Gl.TEXTURE0);
     }
 
-    /// <summary>The scene's environment-map texture id, or 0 when there is none to sample. Read off the LIVE
-    /// scene rather than cached: <c>currentscene</c> moves with the area, and the texture behind it is
-    /// borrowed.</summary>
+    /// <summary>The environment-map texture id for this pass, or 0 when there is none to sample. CX-110:
+    /// <see cref="AlloyEnvMap"/> makes the CHOICE (the area tileset's resref, else the engine's own
+    /// <c>chrome1</c> fallback) and Alloy holds the reference, so <c>Scene+0x1e8</c> is not read --
+    /// <c>view.envmap 0</c> reads it again, which is the A/B. The id is still re-fetched per bind for
+    /// <c>AurTex</c>'s reason: the pointer is borrowed and an area transition frees it.</summary>
     private static int SceneEnvTid()
     {
-        if (_pCurrentScene == null) return 0;
-        IntPtr scene = *_pCurrentScene;
-        if (scene == IntPtr.Zero) return 0;
-        return CX.Framework.AurTex.Tid(new Scene(scene).EnvMap.Ptr);
+        IntPtr scene = _pCurrentScene != null ? *_pCurrentScene : IntPtr.Zero;
+        return AlloyEnvMap.Tid(scene);
     }
 
     /// <summary>Is the environment term live this pass? The stage reads it as a switch, because a missing

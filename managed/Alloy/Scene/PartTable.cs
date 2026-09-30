@@ -62,9 +62,14 @@ internal static unsafe class PartTable
     /// <para>CX-39: hand-written on purpose -- the calling CONVENTION is the point of this pointer, and a
     /// declared signature carries none.</para></summary>
     internal static delegate* unmanaged[SuppressGCTransition]<IntPtr, IntPtr, byte> _keyhole;
-    internal static IntPtr _camSlot;   // &CurrentCamera; live CAurCamera* is *_camSlot
-    /// <summary>The live <c>CAurCamera*</c>, or zero before the symbol resolved or while no camera renders.</summary>
-    internal static IntPtr CurrentCamera => _camSlot == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)_camSlot;
+    internal static IntPtr _camSlot;   // &CurrentCamera; the KEYHOLE gate only -- see CurrentCamera
+    /// <summary>The camera the world view renders from, or zero when there is none.
+    /// <para>CX-109: <see cref="AlloyCamera.World"/> IS the answer now -- Alloy's own latch, set at the world
+    /// view's <c>Camera::RenderScene</c> and good for the whole frame, where the engine's <c>CurrentCamera</c>
+    /// global was null outside a scene render. <see cref="_camSlot"/> stays as the RESOLUTION check behind
+    /// <see cref="KeyholeArmed"/>, which is about whether this client's symbol table is complete, not about
+    /// which camera is live.</para></summary>
+    internal static IntPtr CurrentCamera => AlloyCamera.World;
     /// <inheritdoc cref="Camera.KeyholeWordCount"/>
     internal const int CamKeyholeWords = Camera.KeyholeWordCount;
 

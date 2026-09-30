@@ -52,7 +52,8 @@ internal static unsafe partial class Weather
         StreakLen = G.Slider("streak", "Rain streak length", 0.1f, 2f, 0.05f, 0.35f, "m", help: "Mean length of one rain streak (each varies 0.5x-1.3x).");
         FlakeSize = G.Slider("flake", "Snowflake size", 0.01f, 0.2f, 0.01f, 0.05f, "m", help: "Diameter of one flake.");
         Brightness = G.Slider("bright", "Brightness", 0f, 3f, 0.1f, 0.6f, help: "Streaks and flakes take the light where they fall (sun, shadow, lamps); this scales it.");
-        Opacity = G.Slider("opacity", "Rain opacity", 0.02f, 1f, 0.02f, 0.7f, help: "How solid a streak is. Real rain is faint.");
+        Opacity = G.Slider("opacity", "Rain opacity", 0.02f, 1f, 0.02f, 0.7f,
+                           help: "How much of the scene one lit streak hides. A streak with no light on it is invisible whatever this says.");
         Range = G.Slider("range", "Range", 6f, 40f, 1f, 20f, "m", Tier.Advanced, help: "Size of the box around the camera the field fills.");
         RainSpeed = G.Slider("rainspeed", "Rain speed", 2f, 30f, 0.5f, 12f, "m/s", Tier.Advanced);
         SnowSpeed = G.Slider("snowspeed", "Snow speed", 0.2f, 6f, 0.1f, 1.2f, "m/s", Tier.Advanced);
@@ -67,7 +68,7 @@ internal static unsafe partial class Weather
         Drips = G.Slider("drips", "Roof drips", 0f, 1f, 0.05f, 0.25f,
                          help: "Drops fall from roof edges and overhangs while the roofs are wet, and keep falling for the dry-out time after the rain stops. 0 = off.");
         MaxCount = G.Slider("count", "count", 500, 40000, 500, 16000, tier: Tier.ChatOnly);
-        Viz = G.Slider("viz", "viz", 0, VizMax, 1, 0, tier: Tier.ChatOnly, help: "1 streak contact fade, 2 exposure on the world, 3 record class (red creature, green object, blue tileset)");
+        Viz = G.Slider("viz", "viz", 0, VizMax, 1, 0, tier: Tier.ChatOnly, help: "1 streak contact fade, 2 exposure on the world, 3 record class (red creature, green object, blue tileset), 4 the wetness map (red wet, green fill, blue standing water; black = not latched)");
     }
 
     private static void InstallDraw(ExtenderLog log) => InstallCover(log);
@@ -104,6 +105,7 @@ internal static unsafe partial class Weather
         double wrap = Range.V * PhaseWrapLengths;
         _phase = (_phase + dt * speed) % wrap;
         _wobble = (_wobble + dt) % WobbleWrap;
+        SplashTick(dt);
     }
 
     /// <summary>The weather pass, after the halos: alpha over, depth-tested against the finished frame, no
@@ -114,19 +116,26 @@ internal static unsafe partial class Weather
         _count = 0; _drips = 0;
         // an interior has no sky: nothing falls and nothing soaks, whatever weather the area was given
         if (_off || _failed || !Enabled.V || FrameInputs.Interior) return;
+        // R2: the area wetness map's own update, before the precipitation's early-out -- it has to dry after
+        // the rain stops, which is exactly the frame nothing falls on.
+        MapTick();
         bool snow = CurrentKind == Kind.Snow;
         int count = CurrentKind != Kind.None && Density > 0f ? (int)(MaxCount.V * Density * DensityScale.V * (snow ? 0.5f : 1f)) : 0;
         int drips = !snow && Cover.V && CasterPass.CoverFresh ? (int)(MaxCount.V * Drips.V * _wet) : 0;
-        if (count <= 0 && drips <= 0) return;
+        int splashes = SplashCount();
+        if (count <= 0 && drips <= 0 && splashes <= 0) return;
         Tick(wind);
         if (!SceneDepth.Take(viewport)) return;
         SceneDepth.Bind();
+        // R1: PREMULTIPLIED. The stages write the scatter already weighted by coverage and an extinction
+        // proportional to it, so an unlit drop is transparent instead of a dark film over the scene.
         new PassState(depth: true, depthWrite: false, blend: true,
-                      blendSrc: AlloyRenderer.GlSrcAlpha, blendDst: Gl.ONE_MINUS_SRC_ALPHA).Apply();
+                      blendSrc: AlloyRenderer.GlOne, blendDst: Gl.ONE_MINUS_SRC_ALPHA).Apply();
         if (_vao == 0) { uint v; Gl.CreateVertexArrays(1, &v); _vao = v; }
         Gl.BindVertexArray(_vao);
         if (count > 0 && Submit(snow ? 2 : 1, count, view, proj, eye, viewport, near, far, lightingOn)) { _count = count; _drawn += count; }
         if (drips > 0 && Submit(3, drips, view, proj, eye, viewport, near, far, lightingOn)) { _drips = drips; _drawn += drips; }
+        DrawSplash(view, proj, viewport, eye, near, far, lightingOn);
         Gl.BindVertexArray(0);
         Gl.Disable(Gl.BLEND);
         Gl.DepthMask(1);
@@ -194,11 +203,11 @@ internal static unsafe partial class Weather
         return true;
     }
 
-    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; EsmLost(); }
+    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; SplashLost(); EsmLost(); MapLost(); }
     internal static void ResetPeriod() => _drawn = 0;
     internal static string Stats() => _off ? "weather unavailable" : !Enabled.V ? "weather off"
-        : $"weather {CurrentKind} {Density * 100f:F0}% {_count} instances, {_drips} drips{CoverStats()}{SurfaceStats()}, records {AlloyRenderer.RecCreature} creature / {AlloyRenderer.RecObject} object / {AlloyRenderer.RecTile} tile";
-    private static string DescribeDraw() => $" fall ({_fall.X:F2} {_fall.Y:F2} {_fall.Z:F2}) count {_count} drips {_drips}{CoverStats()}";
+        : $"weather {CurrentKind} {Density * 100f:F0}% {_count} instances, {_drips} drips{SplashStats()}{CoverStats()}{SurfaceStats()}{MapStats()}, records {AlloyRenderer.RecCreature} creature / {AlloyRenderer.RecObject} object / {AlloyRenderer.RecTile} tile";
+    private static string DescribeDraw() => $" fall ({_fall.X:F2} {_fall.Y:F2} {_fall.Z:F2}) count {_count} drips {_drips}{SplashStats()}{CoverStats()}";
 
     /// <summary>One instanced quad per drop or flake; every position is a function of the instance id, the
     /// camera and the fall phase, so a hak override of this stage can reshape the field but never grow a

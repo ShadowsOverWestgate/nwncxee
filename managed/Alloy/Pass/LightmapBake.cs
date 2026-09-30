@@ -768,7 +768,8 @@ internal static unsafe partial class LightmapBake
     /// them, the scratch cleared and every rect's coverage laid down.</summary>
     private static bool BeginPage()
     {
-        if (_frame - _queuedAt < (Hold ? HoldSettleFrames : SettleFrames)) return false;
+        // a queued rect is a pending one: with none pending, the scan below is 20-30k rects for nothing, every frame
+        if (_pending == 0 || _frame - _queuedAt < (Hold ? HoldSettleFrames : SettleFrames)) return false;
         int page = int.MaxValue;
         for (int ri = 0; ri < _rectN; ri++)
             if (_rects[ri].State == RState.Queued && _rects[ri].Page < page) page = _rects[ri].Page;

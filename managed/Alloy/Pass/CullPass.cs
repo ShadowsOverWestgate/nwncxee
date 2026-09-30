@@ -116,16 +116,17 @@ internal static unsafe class CullPass
     private static Matrix4x4 _pyrVp;
 
     /// <summary>#243 (AC5): what the last readable dispatch actually kept. Copied out of the count buffer
-    /// three frames late through a small ring, so the period line can report culled-vs-drawn without a
+    /// two samples late through a mapped ring, so the period line can report culled-vs-drawn without a
     /// readback anywhere near the submission path.</summary>
-    private static readonly uint[] _readBuf = new uint[3];
+    private static GpuReadback _sampleRead;
     /// <summary>How many count words each ring slot actually holds. Without it a frame whose batch cut came
     /// out shorter reads the tail of a copy three frames older as if it were counts -- which is exactly the
     /// "keeps 7474870/frame" nonsense the first live run printed.</summary>
     private static readonly int[] _readN = new int[3];
     private static readonly int[] _readDrawN = new int[3];
+    /// <summary>Capacity tracker for a sample slot: <see cref="RingPhases"/> ranges of per-batch counts.</summary>
     private static uint[] _counts = new uint[1024];
-    private static int _readSeq, _readCap;
+    private static int _readSeq;
     internal static long CulledDraws, KeptDraws, CullFrames;
     /// <summary>#489 (AC2): what the prepass's two phases kept, the same three-frames-late way. The staged
     /// figure the period line already prints is the ceiling; these are the GPU's counts under it.</summary>
@@ -222,7 +223,8 @@ internal static unsafe class CullPass
         _prog = 0; _progHiZ = 0; _progSort = 0; _failed = false;
         _src = default; _sphBuf = 0; _keyBuf = 0; _rejBuf = 0; _cmdCap = 0; _cntCap = 0; _sphCap = 0;
         Array.Clear(_cmdBuf); Array.Clear(_slotBuf); Array.Clear(_cntBuf);
-        Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); _readCap = 0;
+        _sampleRead.ContextLost(); Array.Clear(_readN); Array.Clear(_readDrawN);
+        _watchRead.ContextLost(); Array.Clear(_watchN);
         _pyrTex = 0; _pyrFbo = 0; _pyrVao = 0; _pyrW = 0; _pyrH = 0; _pyrLevels = 0; _pyrGen = -1;
         _pyrStale = false; RetestPending = false;
         _phase = -1; _compactBelow = 0;
@@ -461,7 +463,49 @@ internal static unsafe class CullPass
         // GetBufferSubData behind it cost 2-5ms of every frame (a mapped read of a GPU-written buffer is a
         // wait there, however old the buffer), where NVIDIA charged nothing.
         if (phase == PhaseColour && ++_sampleTick >= SamplePeriod) { _sampleTick = 0; Sample(); }
+        if (phase == PhaseColour && Renderer.CullWatch.V) Watch();
         return true;
+    }
+
+    /// <summary>The flicker hunt's GPU half (<c>alloy.cullwatch</c>): a fenced 3-slot ring of the colour
+    /// dispatch's per-batch kept counts, read once its fence has passed and never waited on. A frame whose
+    /// cull kept almost nothing of a full draw list is logged with its <see cref="AlloyRenderer.FrameSeq"/>,
+    /// the number the CPU-side [vischeck] line carries too.</summary>
+    private static GpuReadback _watchRead;
+    private static readonly int[] _watchN = new int[3], _watchDraws = new int[3], _watchFrame = new int[3];
+    private static int _watchSeq, _watchLogged;
+    internal static long WatchReads, WatchLate, WatchCollapses;
+
+    private static void Watch()
+    {
+        int w = _watchSeq % GpuReadback.Slots, r = (_watchSeq + 1) % GpuReadback.Slots;
+        _watchSeq++;
+        if (_watchN[r] > 0)
+        {
+            uint* c = (uint*)_watchRead.Ready(r);
+            if (c != null)
+            {
+                int n = _watchN[r];
+                long kept = 0;
+                for (int i = 0; i < n; i++) kept += c[i];
+                WatchReads++;
+                if (_watchDraws[r] > 400 && kept * 8 < _watchDraws[r])
+                {
+                    WatchCollapses++;
+                    if (_watchLogged++ < 6)
+                        _log?.Always($"CullPass: [cullwatch] COLLAPSE frame {_watchFrame[r]}: the colour cull kept {kept} of "
+                                   + $"{_watchDraws[r]} draws over {n} batches (mode {Mode}, hi-Z {(Mode >= ModeHiZ ? "on" : "off")})");
+                }
+                _watchN[r] = 0;
+            }
+            else WatchLate++;
+        }
+        if (_groups <= 0 || !GpuReadback.EntryPoints) return;
+        long need = (long)_counts.Length * sizeof(uint);
+        if (need > _watchRead.SlotBytes) { Array.Clear(_watchN); if (!_watchRead.Ensure(need)) return; }
+        _watchRead.Copy(_cntBuf[PhaseColour], 0, w, 0, (long)_groups * sizeof(uint));
+        _watchRead.Fence(w);
+        _watchN[w] = _groups; _watchDraws[w] = _drawN; _watchFrame[w] = AlloyRenderer.FrameSeq;
     }
 
     /// <summary>Texture unit the pyramid takes for the dispatch -- see <see cref="TextureSlots.HiZ"/> for
@@ -575,30 +619,28 @@ internal static unsafe class CullPass
         return true;
     }
 
-    /// <summary>#243 (AC5): the culled-vs-drawn figure, taken three frames behind the dispatch that produced
-    /// it. A <c>glCopyBufferSubData</c> into a small ring is a GPU-side copy; the read that follows names a
-    /// buffer the GPU finished with two frames ago, so it is not the readback the ticket forbids -- nothing
-    /// on the submission path waits for it.</summary>
+    /// <summary>#243 (AC5): the culled-vs-drawn figure, taken two samples behind the dispatch that produced it,
+    /// off a <see cref="GpuReadback"/> once the copy has landed. Never a <c>glGetBufferSubData</c>: NVIDIA queues
+    /// that behind the whole frame so far and waits it out, whichever buffer it names.</summary>
     private static void Sample()
     {
-        if (_groups <= 0) return;
-        int w = _readSeq % 3, r = (_readSeq + 1) % 3;
+        if (_groups <= 0 || !GpuReadback.EntryPoints) return;
+        int w = _readSeq % GpuReadback.Slots, r = (_readSeq + 1) % GpuReadback.Slots;
         _readSeq++;
-        var bytes = (IntPtr)((long)_groups * sizeof(uint));
-        Gl.EnsureStorage(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
-               _readBuf[w] == 0 || _counts.Length > _readCap);
-        _readCap = _counts.Length;
+        long bytes = (long)_groups * sizeof(uint);
+        long need = (long)_counts.Length * sizeof(uint);
+        if (need > _sampleRead.SlotBytes) { Array.Clear(_readN); if (!_sampleRead.Ensure(need)) return; }
         // #489: the three screen phases' counts back to back -- colour, then prepass phase one, then phase two.
         for (int ph = 0; ph < RingPhases; ph++)
-            Gl.CopyNamedBufferSubData(_cntBuf[ph == 0 ? PhaseColour : ph == 1 ? PhasePrepass : PhaseRetest], _readBuf[w],
-                                      IntPtr.Zero, (IntPtr)((long)ph * _groups * sizeof(uint)), bytes);
+            _sampleRead.Copy(_cntBuf[ph == 0 ? PhaseColour : ph == 1 ? PhasePrepass : PhaseRetest], 0, w, ph * bytes, bytes);
+        _sampleRead.Fence(w);
         _readN[w] = _groups; _readDrawN[w] = _drawN;
-        if (_readBuf[r] == 0 || _readN[r] <= 0) return;
-        fixed (uint* c = _counts)
-            Gl.GetNamedBufferSubData(_readBuf[r], IntPtr.Zero, (IntPtr)((long)RingPhases * _readN[r] * sizeof(uint)), c);
+        if (_readN[r] <= 0) return;
+        uint* c = (uint*)_sampleRead.Ready(r);
+        if (c == null) return;
         long kept = 0, pre = 0, re = 0;
         for (int i = 0; i < _readN[r]; i++)
-        { kept += _counts[i]; pre += _counts[_readN[r] + i]; re += _counts[2 * _readN[r] + i]; }
+        { kept += c[i]; pre += c[_readN[r] + i]; re += c[2 * _readN[r] + i]; }
         // Against the draw count of the frame that WROTE those counts, not this frame's.
         KeptDraws += Math.Min(kept, _readDrawN[r]);
         CulledDraws += Math.Max(_readDrawN[r] - kept, 0);

@@ -29,7 +29,9 @@ internal static unsafe class DoorFade
     /// (<c>AlloyRenderer.VisLoadCap</c>): a list this long is a bad read, not a busy area.</summary>
     private const int MaxGobs = 1 << 13;
 
-    private static EngineList _gobBucket;
+    /// <summary>CX-104: frames the visible set was unreadable and the whole scene's gobs were stepped. Zero is
+    /// the expected value; a rate here means the renderer's own visibility answer is not standing up.</summary>
+    private static long _visAllFrames;
     private static float* _minAlpha;
     private static float* _deltaT;
     private static IntPtr* _currentCamera;
@@ -46,38 +48,51 @@ internal static unsafe class DoorFade
     internal static void Resolve(ExtenderLog log)
     {
         _log = log;
-        _gobBucket = new EngineList(Native.Sym(SymbolMap.GobBucket));
         _minAlpha = (float*)Native.Sym(SymbolMap.MinDoorAlpha);
         _deltaT = (float*)Native.Sym(SymbolMap.DeltaT);
         _currentCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
-        Missing = _gobBucket.IsNull ? SymbolMap.GobBucket
-                : _minAlpha == null ? SymbolMap.MinDoorAlpha
+        // CX-104: gobbucket is no longer on this list -- the population comes from AlloyRenderer.VisibleGobs,
+        // which answers for itself, so an unresolved bucket global is no longer a reason to stand the whole
+        // Alloy path down over the door fade.
+        Missing = _minAlpha == null ? SymbolMap.MinDoorAlpha
                 : _deltaT == null ? SymbolMap.DeltaT
                 : _currentCamera == null ? SymbolMap.CurrentCamera : null;
     }
 
     /// <summary>Step every visible door's fade, once per Alloy frame, BEFORE the frame draws -- the slot
-    /// <c>Scene::FadeDoors</c> held. The population is the engine's own <c>gobbucket</c>, refilled by
-    /// <c>ManageSceneBSP</c> @0x47fa80 ahead of the pass, so a door out of view keeps its alpha exactly as
-    /// vanilla left it. Runs in engine context and touches no GL.</summary>
+    /// <c>Scene::FadeDoors</c> held. The population is Alloy's own visible-gob set
+    /// (<see cref="AlloyRenderer.VisibleGobs"/>), so a door out of view keeps its alpha exactly as vanilla left
+    /// it. CX-104: that accessor is the one visibility answer every pass shares -- reading the
+    /// <c>gobbucket</c> global here as well meant two readers could disagree about which frame's list they
+    /// were on, and a Tick at the top of <see cref="RspShim.Run"/> reads a list the anchor has not sampled
+    /// yet. Runs in engine context and touches no GL.</summary>
     internal static void Tick(IntPtr scene)
     {
         if (Missing != null || scene == IntPtr.Zero) return;
         if (_armed) { _armed = false; LogDoors(scene); }
-        int n = _gobBucket.Count;
-        IntPtr* items = (IntPtr*)_gobBucket.Items;
+        // A set the renderer could not read is not a licence to freeze every door: without it there is no
+        // in-view answer at all, and a frozen alpha is a door that cannot be clicked (see the class remarks).
+        // So the whole scene's gobs are stepped instead -- the same population, minus the cull.
+        if (!AlloyRenderer.VisibleGobs(out IntPtr* items, out int n))
+        {
+            var all = new Scene(scene);
+            items = (IntPtr*)all.Gobs;
+            n = all.GobCount;
+            _visAllFrames++;
+        }
         if (n <= 0 || items == null) return;
         if (n > MaxGobs)
         {
             if (!_cappedLogged)
             {
                 _cappedLogged = true;
-                _log?.Always($"DoorFade: gobbucket read {n} entries (cap {MaxGobs}) -- the door fade sits out "
-                         + "this frame; doors will neither fade nor refuse clicks, and this list is not sane");
+                _log?.Always($"DoorFade: the visible-gob set read {n} entries (cap {MaxGobs}) -- the door fade "
+                         + "sits out this frame; doors will neither fade nor refuse clicks, and this list is "
+                         + "not sane");
             }
             return;
         }
-        var cam = new Camera(*_currentCamera);
+        var cam = new Camera(AlloyCamera.World);
         if (cam.IsNull) return;
         Vector3 camPos = cam.Pos;
         // Scene+0x190 is the SCENE FOCUS (Scene::SetSceneFocus @0x477890 is its only writer; the sky parks
@@ -195,10 +210,14 @@ internal static unsafe class DoorFade
     {
         ExtenderLog? log = _log;
         if (log == null) return;
-        int n = _gobBucket.Count;
-        IntPtr* items = (IntPtr*)_gobBucket.Items;
-        if (n <= 0 || n > MaxGobs || items == null) { log.Info($"DoorFade: gobbucket count {n} -- nothing to report"); return; }
-        var cam = new Camera(*_currentCamera);
+        if (!AlloyRenderer.VisibleGobs(out IntPtr* items, out int n))
+        {
+            var sc = new Scene(scene);
+            items = (IntPtr*)sc.Gobs;
+            n = sc.GobCount;
+        }
+        if (n <= 0 || n > MaxGobs || items == null) { log.Info($"DoorFade: visible-gob count {n} -- nothing to report"); return; }
+        var cam = new Camera(AlloyCamera.World);
         if (cam.IsNull) { log.Info("DoorFade: no CurrentCamera -- outside a scene render"); return; }
         Vector3 camPos = cam.Pos;
         Vector3 focus = new Scene(scene).SkyPos;
@@ -220,7 +239,7 @@ internal static unsafe class DoorFade
                    + (clickable ? "" : " UNCLICKABLE (Gob::HitCheck skips a door at the floor)"));
         }
         log.Info($"DoorFade: {doors} door gob(s) in view, {stuck} at the floor; DeltaT={*_deltaT:0.0000}s, "
-               + $"full fade {FadeSeconds:0.00}s");
+               + $"full fade {FadeSeconds:0.00}s, {_visAllFrames} frame(s) stepped over the whole scene");
     }
 
     /// <summary>Off-device (run-demo.sh): the fade integrator, the clamp and the face test. All three fail

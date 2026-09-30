@@ -684,6 +684,7 @@ offset	CGuiInGamePopUpBubble	anchorY	0x158	0x150	# BubbleAnchorY
 offset	CGuiInGamePopUpBubble	liveText	0x14c	0x144	# BubbleLiveText
 offset	Camera	viewX	0x4d4	0x4d8	# CamViewX
 offset	Camera	viewY	0x4d8	0x4dc	# CamViewY
+offset	Camera	viewVolume	0x4e8	0x4f0	# CamViewVolume
 offset	CClientExoAppInternal	feedbackWord	0x180	0x180	# InternalFeedbackWord
 offset	Gob	inView	0x1b	0x1b	# GobInView
 offset	Gob	lookAt	0x1b0	0x1b0	# GobLookAt
@@ -790,6 +791,121 @@ offset	Nui::Layout::LayoutGroup	scaleConstraints	0x668	0x7a0	# NuiGroupScaleCons
 offset	Nui::JSON::JsonWindow	idsHead	0x418	0x468	# NuiIdsHead
 offset	Nui::JSON::IdNode	key	0x8	0x10	# NuiIdNodeKey
 offset	Nui::JSON::IdNode	element	0x28	0x30	# NuiIdNodeElement
+# ---- CX-103/104/105: the scene pipeline's own rows. Gob 0x0..0x4b8 is the region #448 paired as identical
+# (28 offsets over 50 functions, no conflict), which is why the two columns match for every Gob row here.
+offset	Gob	scaleLerp	0x1c0	0x1c0	# GobScaleLerp
+offset	Gob	scaleBase	0x49c	0x49c	# GobScaleBase
+offset	Gob	radius	0x178	0x178	# GobRadius
+offset	Gob	centre	0x17c	0x17c	# GobCentre
+offset	Gob	syncHier	0x1b8	0x1b8	# GobSyncHier
+offset	Gob	geomDirty	0x1a5	0x1a5	# GobGeomDirty
+offset	Gob	lodDist2	0x140	0x140	# GobLodDist2
+offset	Gob	lodLevel	0x440	0x440	# GobLodLevel
+offset	Gob	lodNear	0x444	0x444	# GobLodNear
+offset	Gob	lodFar	0x448	0x448	# GobLodFar
+# ---- CX-108 lights ----
+# Alloy's own light registry and selection (docs/research/light-registry.md). Measured with objdump on
+# both binaries: LightManager is name-exported on Windows, so PrioritizeLights (rva 0x7ff60) reads there
+# exactly as it does at 0x4c0940 here.
+offset	Part	vtbl.AsPartLight	0x50	0x48	# PartAsLightSlot
+offset	PartLight	priority	0x8c	0x90	# LightPriority
+offset	MdlNodeLight	lightPriority	0xf0	0xf8	# MdlLightPriority
+offset	BSPNode	light	0x0	0x0	# BspDataLight
+offset	BSPNode	lightCount	0x8	0x8	# BspDataLightCount
+
+# ---- CX-104 buckets: Alloy's own visibility sets in place of the engine's per-frame buckets ----
+offset	Part	vtbl.AsPartEmitter	0x70	0x68	# PartAsEmitterSlot
+offset	Part	vtbl.AsPartTrigger	0xb0	0xa8	# PartAsTriggerSlot
+offset	MdlNodeTriMesh	tileFade	0x224	0x224	# MdlTileFade
+offset	PartEmitter	viewRadius	0x214	0x20c	# EmViewRadius
+offset	Scene	binGrid	0x1d0	0x1d0	# SceneBinGrid
+offset	Scene	binGridCount	0x1d8	0x1d8	# SceneBinGridCount
+offset	CAurTriangleBin	centre	0x24	0x24	# BinCentre
+offset	CAurTriangleBin	radius	0x30	0x30	# BinRadius
+
+# ---- CX-107 behaviours (docs/research/behaviour-solvers.md) ----
+# The field offsets were read off BOTH images: the Linux ones from ~/nwn-decomp/8193.37-17, the Windows
+# ones from nwmain.exe's own disassembly of the exported constructors (??0CAurBehavior*@@) and of
+# ?Control@CAurBehaviorCrossSceneAttach*@@ -- no Ghidra run was needed, and no value here is an inference
+# from "the class looked the same". The one divergence is CrossSceneAttachWithOffset's offset Vector:
+# Linux 0x84, Windows 0x88 (MSVC aligned it past the stopSceneChanges byte; `lea rdx,[rsi+0x88]` at
+# rva 0x202a5d against `Vector::operator+=`).
+# The vtable slots come from the Windows Gob table at .rdata 0xd88ac0 and the Part table at 0xd84418,
+# plus the live call sites (Animate `[rax+0x28]`, SetBehavior `[rax+0xa8]`, GetWorld `[rax+0x18]`,
+# SetOrientation `[rax+0xb8]`). Gob's DELETING destructor is the one slot that is not -8: Itanium spends
+# two slots on a virtual destructor (0x00 complete, 0x08 deleting), MSVC one (0x00) -- and MSVC's takes a
+# flags argument in edx (`mov edx,0x1` at rva 0x202897).
+offset	CAurObject	backRefs	0x8	0x8	# AurObjBackRefs
+offset	CAurObject	backRefCount	0x10	0x10	# AurObjBackRefCount
+offset	CAurBehavior	deps	0x8	0x8	# BehaviorDeps
+offset	CAurBehavior	depCount	0x10	0x10	# BehaviorDepCount
+offset	CAurBehaviorAttach	part	0x30	0x30	# AttachPart
+offset	CAurBehaviorAttach	dieWithoutParent	0x3c	0x3c	# AttachDieWithoutParent
+offset	CAurBehaviorAttach	offset	0x70	0x70	# AttachOffset
+offset	CAurBehaviorCrossSceneAttach	offset	0x84	0x88	# CrossAttachOffset
+offset	CAurBehaviorSubwindow	partA	0x30	0x30	# SubwindowPartA
+offset	CAurBehaviorSubwindow	partB	0x38	0x38	# SubwindowPartB
+offset	CAurBehaviorSubwindow	setPos	0x40	0x40	# SubwindowSetPos
+offset	CAurBehaviorCameraFollow	offset	0x3c	0x3c	# FollowOffset
+offset	CAurBehaviorCameraFollow	lag	0x50	0x50	# FollowLag
+offset	CAurBehaviorNavigate	yawRate	0x20	0x20	# NavigateYawRate
+offset	CAurBehaviorNavigate	pitchRate	0x24	0x24	# NavigatePitchRate
+offset	CAurBehaviorNavigate	forward	0x28	0x28	# NavigateForward
+offset	CAurBehaviorNavigate	spare	0x2c	0x2c	# NavigateSpare
+offset	CAurBehaviorNavigate	strafe	0x30	0x30	# NavigateStrafe
+offset	CAurBehaviorCameraOnAStick	last	0x34	0x34	# StickLast
+offset	CAurBehaviorCameraOnAStick	length	0x44	0x44	# StickLength
+offset	CAurBehaviorCameraOnAStick	gain	0x48	0x48	# StickGain
+offset	CAurBehaviorCameraOnAStick	pitch	0x50	0x50	# StickPitch
+offset	CAurBehaviorCameraOnAStick	height	0x54	0x54	# StickHeight
+offset	CAurBehaviorCameraOnAStick	mode	0x58	0x58	# StickMode
+offset	CAurBehaviorCameraOnAStick	dir	0x5c	0x5c	# StickDir
+offset	Gob	vtbl.Animate	0x30	0x28	# GobAnimateSlot
+offset	Gob	vtbl.SetBehavior	0xb0	0xa8	# GobSetBehaviorSlot
+offset	Gob	vtbl.GetBehavior	0x230	0x228	# GobGetBehaviorSlot
+offset	Gob	vtbl.Delete	0x8	0x0	# GobDeleteSlot
+offset	Gob	vtbl.GetName	0x18	0x10	# GobGetNameSlot
+offset	Gob	vtbl.GetScene	0x220	0x218	# GobGetSceneSlot
+offset	Gob	vtbl.AsCamera	0x280	0x278	# GobAsCameraSlot
+offset	Gob	vtbl.SetPosition	0xb8	0xb0	# GobSetPositionSlot
+offset	Gob	vtbl.SetOrientation	0xc0	0xb8	# GobSetOrientationSlot
+
+# ---- CX-106 anim: the owned animation runtime (docs/research/anim-runtime.md) ----
+offset	Scene	animFrame	0x1b8	0x1b8	# SceneAnimFrame
+offset	Gob	animFrame	0x458	0x458	# GobAnimFrame
+offset	Gob	prevPosition	0xc4	0xc4	# GobPrevPosition
+offset	Gob	prevRot	0xd0	0xd0	# GobPrevRot
+offset	Gob	windSource	0x199	0x199	# GobWindSource
+offset	Gob	windStrength	0x1a0	0x1a0	# GobWindStrength
+offset	Gob	animOffScreen	0xf0	0xf0	# GobAnimOffScreen
+offset	Gob	sphereTick	0x188	0x188	# GobSphereTick
+offset	Gob	safePointers	0x8	0x8	# GobSafePointers
+offset	Gob	safePointerCount	0x10	0x10	# GobSafePointerCount
+offset	AnimRun	prevTime	0x10	0x10	# AnimRunPrevTime
+offset	AnimRun	posScale	0x20	0x20	# AnimRunPosScale
+offset	AnimRun	done	0x24	0x24	# AnimRunDone
+offset	Animation	events	0xd8	0xd8	# AnimationEvents
+offset	Animation	eventCount	0xe0	0xe0	# AnimationEventCount
+offset	MdlNode	control	0x18	0x18	# MdlNodeControl
+offset	PartLight	staticLit	0x88	0x8c	# LightStaticLit
+offset	LookAtAnimation	animation	0x10	0x10	# LookAtAnimation_
+offset	LookAtAnimation	run	0x18	0x18	# LookAtRun
+offset	MdlNodeAnimMesh	morphVertexCount	0x284	0x284	# MorphVertexCount
+offset	MdlNodeAnimMesh	samplePeriod	0x2c8	0x2c8	# MorphSamplePeriod
+offset	MdlNodeAnimMesh	morphVerts	0x300	0x300	# MorphVerts
+offset	MdlNodeAnimMesh	morphUvs	0x308	0x308	# MorphUvs
+offset	MdlNodeAnimMesh	vertFrames	0x310	0x310	# MorphVertFrames
+offset	MdlNodeAnimMesh	uvFrames	0x314	0x314	# MorphUvFrames
+offset	Gob	vtbl.DoEvent	0x2a0	0x298	# GobDoEventSlot
+offset	Gob	vtbl.IsAnimating	0x268	0x260	# GobIsAnimatingSlot
+offset	Gob	vtbl.IsInViewVolume	0x2c0	0x2b8	# GobInViewSlot
+offset	Gob	vtbl.GetMinimumSphere	0x2d0	0x2c8	# GobMinSphereSlot
+offset	Part	vtbl.Animate	0xd8	0xd0	# PartAnimateSlot
+offset	Part	vtbl.AsPartAnimMesh	0x68	0x60	# PartAsAnimMeshSlot
+offset	CAurBehavior	vtbl.Control	0x20	0x18	# BehaviorControlSlot
+offset	LookAtAnimation	vtbl.IsActive	0x10	0x8	# LookAtIsActiveSlot
+offset	LookAtAnimation	vtbl.Control	0x20	0x18	# LookAtControlSlot
+offset	LookAtAnimation	vtbl.Delete	0x8	0x0	# LookAtDeleteSlot
 
 # rva	linux symbol	windows rva	# SymbolMap constant
 rva	_ZN11CNWCMessage27HandleServerToPlayerMessageEPhj	0x7a41a0	# HandleServerToPlayerMessage
@@ -968,3 +1084,10 @@ lva	nk_do_scrollbarv	0xdf6100	# NkDoScrollbarV
 lva	nk_do_scrollbarh	0xdf65c0	# NkDoScrollbarH
 lva	nk_sdl.ogl.cmds	0x1a12a28	# NkCmds (DATA)
 lva	nk_sdl.ogl.tex_null	0x1a12aa0	# NkTexNull (DATA)
+
+# ---- CX-109/110 ----
+offset	Camera	scene	0x90	0x90	# CameraScene
+offset	WindManager	baseWind	0x20	0x20	# WindBase
+offset	WindManager	maxYaw	0x848	0x848	# WindMaxYaw
+offset	WindManager	maxPitch	0x84c	0x84c	# WindMaxPitch
+offset	WindManager	period	0x858	0x858	# WindPeriod

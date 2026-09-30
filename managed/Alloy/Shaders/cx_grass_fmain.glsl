@@ -20,9 +20,19 @@ void main()
 
     vec3 N = normalize(vNrm);
     vec3 albedo = CxLinear(texel.rgb);
-    // CX-51: rain darkens the field as it darkens the ground under it (no rain occlusion map here: a blade
-    // under a roof is wet too); the wet sheen is the reflection below
-    albedo *= 1.0 - uLook.w * uLook.z;
+    // R2: rain darkens the field as it darkens the ground under it, off the SAME area wetness map the lit
+    // stage reads -- so a blade under a roof is dry, which the old hard-coded copy could not tell. Where
+    // the map has not reached, uLook.z is the global integrator, as CX-51 shipped it.
+    vec4 gWx = CxWetMap(vWorld.xy);
+    bool gMapped = CxWetMapped(gWx);
+    // R5: the shelter test is the lit stage's own -- the cover map at its own resolution, not the wetness
+    // map's texel. The blade stands on the ground, so the test is made against the ground's up.
+    float gOpen = CxWetOpen(vWorld, vec3(0.0, 0.0, 1.0), gMapped ? CxWetShelter(gWx, vWorld.z) : 1.0);
+    float gWet = clamp((gMapped ? gWx.x * uWxMapXf.w : uLook.z) * gOpen, 0.0, 1.0);
+    // R3: Lagarde's soak -- the albedo is raised to a power, so the green deepens instead of greying, and
+    // CX_WX_LEAF_SOAK holds a waxy blade well short of the exponent porous stone takes. Bounded in
+    // CxWetSoak: the bare pow here was the black grass at the top of the darkening knob.
+    albedo = CxWetSoak(albedo, uLook.w * gWet * CX_WX_LEAF_SOAK);
     if (uSnow.y > 0.0)
     {
         // winter: the green drains to straw (luminance under a warm tint), and the upper blade takes
@@ -61,7 +71,7 @@ void main()
     // it a lit or reflective patch of ground shows around blades that ignore it, as if glued on.
     if (uProbeMips > 0.0)
     {
-        float gRough = mix(0.6, 0.35, uLook.z);
+        float gRough = mix(0.6, 0.35, gWet);
         vec3 Nv = faceforward(N, -V, N);   // two-sided: the face toward the eye
         vec3 R = reflect(-V, Nv);
         vec2 gAb = CxEnvBrdf(max(dot(Nv, V), 1e-3), sqrt(gRough));

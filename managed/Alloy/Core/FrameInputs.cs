@@ -98,6 +98,15 @@ public static class FrameInputs
     /// own area chain); false until an area is known, which is the exterior-shaped default.</summary>
     public static bool Interior;
 
+    /// <summary>The current area's world XY extent in metres -- its tile grid times
+    /// <see cref="AreaBorder.TileSize"/>, so tile (0,0) spans [0,10) and the area runs to
+    /// (TileWidth, TileHeight) * 10. Zero until an area is known. Read once per frame beside
+    /// <see cref="Interior"/>; R2's wetness map is fitted to it.</summary>
+    public static Vector2 AreaExtent;
+    /// <summary>The <c>CNWCArea*</c> <see cref="AreaExtent"/> and <see cref="Interior"/> were read from:
+    /// compared for the area edge, never dereferenced by a consumer.</summary>
+    public static IntPtr AreaPtr;
+
     /// <summary>True once <see cref="Focus"/> holds this frame's shadow focus (the player anchor).</summary>
     public static bool HasFocus;
     /// <summary>The shadow focus (player position) -- the nearest-K key for overflow areas.</summary>

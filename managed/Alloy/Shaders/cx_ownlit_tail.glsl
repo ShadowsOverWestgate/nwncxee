@@ -7,6 +7,10 @@
     // lit ground, is what the eye gets
     float wxTransmit = 1.0;
     vec3 reflW = vec3(0.0);
+    // R4: the film's own split-sum weight, in the film's roughness -- what the screen march has to trace
+    // where standing water is the mirror. cxCoat already carries the film's coverage, so this is taken at
+    // its full strength and the BASE weight is what it displaces, never a second fade on top of it.
+    vec3 reflFilm = vec3(0.0);
     if (uCapture != 1)
     {
         vec3 R = reflect(-V, N);
@@ -15,7 +19,13 @@
         reflW = min((reflF0 * reflAb.x + reflAb.y) * msc * CxSpecOcclusion(NoV, occl, rough) * coatT * uProbeGain, vec3(1.0));
         if (uProbeMips > 0.0)
             specLight += CxProbeFetch(uProbe, vWorld, R, sqrt(rough) * (uProbeMips - 1.0)) * reflW;
-        wxTransmit = 1.0 - max(reflW.r, max(reflW.g, reflW.b)) * wxPuddle;
+        if (wxFilm > 0.0 && cxCoat > 0.0)
+        {
+            vec2 fab = CxEnvBrdf(NoV, sqrt(cxCoatRough));
+            reflFilm = vec3(min(cxCoat * (CX_DIELECTRIC_F0 * fab.x + fab.y)
+                                * CxSpecOcclusion(NoV, occl, cxCoatRough) * uProbeGain, 1.0));
+        }
+        wxTransmit = 1.0 - max(max(reflW.r, max(reflW.g, reflW.b)), reflFilm.r) * wxFilm;
     }
     // 6 = the specular lobe alone: exactly what #120 adds. A part that reads flat in the composite is
     //     either black here (no lobe at all) or washed out by the diffuse, and nothing else tells the
@@ -71,6 +81,8 @@
     // inc_standard.shd puts them -- noir, racial vision, then the targeting shape.
     // ponytail: the fog mixes in display space, so (1 - f) is the linear transmittance only approximately;
     // the display overlays never reach the swapped-in reflection. Exact = Ssr refogging, if a foggy puddle shows it.
-    CxReflOut(N, rough, reflW * (kh * (1.0 - CxFogFactor(vWorld, vDepth))));
+    // R4: where the water film dominates, the record carries the FILM's roughness and the film's weight --
+    // the screen march must trace the mirror the film is, not the matte bed the base roughness describes.
+    CxReflOut(N, mix(rough, cxCoatRough, wxFilm), max(reflW, reflFilm) * (kh * (1.0 - CxFogFactor(vWorld, vDepth))));
     frag = CxOitOut(vec4(CxDisplayOverlays(CxFog(lit * kh, vWorld, vDepth)), coverage * d.rot.w));
 }

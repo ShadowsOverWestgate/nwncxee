@@ -293,6 +293,12 @@ public sealed unsafe partial class AlloyRenderer
     /// per slot on purpose: a global generation re-staged the whole world on every drip frame (Restage
     /// 5,7ms in hitch frames against 0,8 mean, measured).</summary>
     private static readonly bool[] _recTexStale = new bool[MaxOwned];
+    /// <summary>This slot has a map slot whose texture had no GL id at its last resolve. NOT stale: the
+    /// texture is re-asked on the slot's colour cadence and the record rewritten only once it has an id. It
+    /// used to ride <see cref="_recTexStale"/>, and a map the engine never queues (nothing binds it under
+    /// Alloy, so nothing builds it) then rewrote, re-minted and force-routed its record EVERY frame -- 7,000
+    /// records a frame in an area with .mtr normal maps.</summary>
+    private static readonly bool[] _recSlotQueued = new bool[MaxOwned];
     /// <summary>CX-52: when this slot's diffuse replaced the white stand-in, on <see cref="TexStream.Clock"/>; 0 = it
     /// never drew the stand-in. Staged into the record's <see cref="ArriveFloat"/> for the colour pass's fade.</summary>
     private static readonly float[] _recArrive = new float[MaxOwned];
@@ -365,10 +371,24 @@ public sealed unsafe partial class AlloyRenderer
         _swapN = 0; _swapOverflow = false;
     }
 
+    /// <summary>CX-104 (review): a slot marked <see cref="_recTexStale"/> by a COLD path -- a retired or
+    /// swapped owned texture name, a dropped cycle controller, a zeroed bindless handle -- is re-resolved by
+    /// <c>RouteWanted</c>, which only ever sees the slots the visible set VISITED. The index-driven set holds
+    /// the gob slots and the grid's frustum hits, so an off-frustum static slot would keep a zeroed handle
+    /// block until an enrolment happened to rebuild the set wholesale: harmless on screen (nothing draws it)
+    /// but the caster bake samples that block for off-screen casters, and a zeroed one reads fully opaque
+    /// where the part's real diffuse is a cutout. This raises the next visible-set rebuild to a FULL walk,
+    /// which is all the re-resolve needs -- <c>RouteWanted</c> already routes a tex-stale slot regardless of
+    /// the frustum once it is visited. One O(live) scan per retire event, which is what the record-epoch bump
+    /// this replaced cost on every one of them.</summary>
+    internal static void NoteTexStalePending() => _texStalePending = true;
+    private static volatile bool _texStalePending;
+
     /// <summary>Mark every record that minted a handle on <paramref name="name"/>. Cold (once per retired
     /// name), MaxOwned x 8 int compares.</summary>
     internal static void NoteOwnedNameRetired(uint name)
     {
+        NoteTexStalePending();
         int n = (int)name;
         for (int i = 0; i < _ownCount; i++)
         {
@@ -385,6 +405,7 @@ public sealed unsafe partial class AlloyRenderer
     internal static void NoteOwnedNamesRetired(List<uint> names, HashSet<uint> handles)
     {
         if (names.Count == 0 && handles.Count == 0) return;
+        NoteTexStalePending();
         foreach (uint n in names) if (n >= _nameMark.Length) { InvalidateRecords(); return; }
         foreach (uint n in handles) if (n >= _nameMark.Length) { InvalidateRecords(); return; }
         foreach (uint n in names) _nameMark[n] = 1;
@@ -411,6 +432,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void ZeroHandle(ulong v)
     {
         if (v == 0) return;
+        NoteTexStalePending();
         int n = _ownCount * 8;
         for (int j = 0; j < n; j++)
         {

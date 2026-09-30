@@ -25,8 +25,16 @@ namespace CX.Alloy;
 /// <para>The geometry SOURCE is still the engine's. <c>CAurTriangleList</c> holds the tile faces that carry a
 /// grass material in world space, plus the per-face blade count the tileset's <c>GrassDensity</c> produced;
 /// this class reads those and does its own scatter. Placement is the tileset's, while the DENSITY is a client
-/// dial (<c>/grass density</c>) applied to the authored per-face ratios. The engine still builds its own bins
-/// and VDOs at area load, untouched, which is what keeps ADR 0010's vanilla render mode whole.</para>
+/// dial (<c>/grass density</c>) applied to the authored per-face ratios. The bins themselves are the engine's,
+/// built at area load by <c>Scene::InitBins</c> @0x472390 and <c>Scene::AddFacesToBins</c>, untouched.</para>
+/// <para>CX-104 correction: the engine's grass VERTEX OBJECTS are not built at area load. Their only builder
+/// is <c>AurProcessActiveBins</c> @0x47d840, which runs per frame from inside <c>ManageSceneBSP</c> @0x47fa80
+/// over <c>g_pActiveBins</c>, and <c>CAurTriangleList::RenderGrassPolys</c> refuses outright without one. This
+/// pass does not care -- it bakes from the raw face data at <c>CAurTriangleList+0</c> and enumerates the bins
+/// itself (<see cref="OwnedBins"/>) -- but it means the ENGINE's grass draw needs that walk. Under
+/// <c>alloy.skipbuckets=3</c> the walk is only skipped while Alloy is drawing the frame, and any A/B that
+/// wants the engine's grass back (<c>/buckets grassbins 0</c>) re-arms it, so vanilla render mode and the
+/// stand-down path both still get their vertex objects. See <see cref="ScenePrep.Needed"/>.</para>
 /// <para>Not in the depth prepass, deliberately: grass displaces vertices, so the prepass would record its
 /// rest silhouette and the colour pass's LEQUAL would punch holes wherever the wind moved a blade. Grass
 /// therefore does NOT carry the character-for-character <see cref="AlloyRenderer"/> clip expression, and
@@ -232,6 +240,8 @@ internal static unsafe partial class GrassField
     private struct Loc
     {
         public int Look, Segments, Width, Probe;
+        public int WxMapXf, WxMapP;   // R2: the area wetness map's fit and look
+        public int CoverVp, CoverLayer, WxEdge;   // R5: the cover map's own shelter test, shared with the lit stage
         public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Viz, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
         public int PushTex, PushGain, PushWindow;
         public int SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex;   // CX-43: the rest of the receiver rides CxPass
@@ -363,14 +373,14 @@ internal static unsafe partial class GrassField
     }
 
     /// <summary>Once per PassGen: bake, upload, push map. The seen count is kept for a second caller.</summary>
-    private static int Prepare()
+    private static int Prepare(Matrix4x4* vp)
     {
         if (_prepGen == AlloyRenderer.PassGen) return _seen;
         _prepGen = AlloyRenderer.PassGen;
         if (_rebake) { _rebake = false; Forget(); }
         _frame++;
         _frames++;
-        _seen = Collect();
+        _seen = Collect(vp);
         if (_seen == 0) return 0;
         Upload();
         BuildPush();
@@ -392,7 +402,7 @@ internal static unsafe partial class GrassField
         // re-attempt a bake budget's worth of patches that scatter nothing.
         if (Grass.Density.V <= 0f) { _drawnGen = AlloyRenderer.PassGen; return; }
 
-        int n = Prepare();
+        int n = Prepare(vp);
         if (n == 0) { _drawnGen = AlloyRenderer.PassGen; return; }
         Issue(n, vp, viewport, near, far, lightingOn);
         // Stamped even on a frame that drew nothing visible: the Alloy pass OWNS the class this pass, and a
@@ -400,18 +410,22 @@ internal static unsafe partial class GrassField
         _drawnGen = AlloyRenderer.PassGen;
     }
 
-    /// <summary>Walk <c>binbucket</c> -- the BSP visibility walk's own active-bin list, rebuilt every frame --
+    /// <summary>Walk this frame's bins -- CX-104: Alloy's own set, culled out of the scene's bin grid
+    /// (<see cref="OwnedBins"/>), or the engine's <c>binbucket</c> when that stands down or the knob asks --
     /// baking whatever is new and marking everything sighted. A bin that stops appearing has gone out of view
     /// or been freed; either way it simply stops being drawn, and no pointer of it is ever touched again.</summary>
-    private static int Collect()
+    private static int Collect(Matrix4x4* vp)
     {
-        IntPtr* bins = (IntPtr*)_binBucket.Items;
-        int binCount = _binBucket.Count;
-        if (bins == null || binCount <= 0) return 0;
+        ReadOnlySpan<IntPtr> owned;
+        bool own = OwnedBins(vp, out owned);
+        IntPtr* bins = own ? null : (IntPtr*)_binBucket.Items;
+        int binCount = own ? owned.Length : _binBucket.Count;
+        if (binCount <= 0 || (!own && bins == null)) return 0;
+        if (Buckets.Validate.V && own) BucketValidator.Compare(BucketValidator.KindBin, owned, _binBucket);
         int budget = BakePerFrame, seen = 0;
         for (int b = 0; b < binCount; b++)
         {
-            IntPtr bin = bins[b];
+            IntPtr bin = own ? owned[b] : bins[b];
             if (bin == IntPtr.Zero) continue;
             var tb = new CAurTriangleBin(bin);
             IntPtr* lists = (IntPtr*)tb.Lists;
@@ -1068,7 +1082,9 @@ internal static unsafe partial class GrassField
         Gl.Uniform1f(loc.RootAo, Grass.RootAo.V);
         Gl.Uniform1f(loc.GroundTint, Grass.GTint.V);
         Gl.Uniform1i(loc.GroundOn, ground ? 1 : 0);
-        Gl.Uniform4f(loc.Look, Grass.Backlight.V, Grass.Sheen.V, Weather.WetShown, Weather.WetDarkening);
+        Gl.Uniform4f(loc.Look, Grass.Backlight.V, Grass.Sheen.V, Weather.WetShown, Weather.WetDark.V);
+        Weather.UploadMap(loc.WxMapXf, loc.WxMapP, false);
+        Weather.UploadGrassEdge(loc.CoverVp, loc.CoverLayer, loc.WxEdge);
         AlloyRenderer.BindPass(loc.CubeCount, viewport, near, far);
     }
 
@@ -1532,6 +1548,8 @@ internal static unsafe partial class GrassField
     /// <c>AlloyRenderer.SelfCheck</c> can assert the embedded text satisfies the guards it is checked
     /// against (#132), which it must, or every session rebuilds from it.</summary>
     internal static string EmbeddedFs => ShaderStages.Source(ShdGrassFs);
+    /// <summary>...and the procedural blade's, for the suites that assert both carry one wetness path.</summary>
+    internal static string EmbeddedBladeFs => ShaderStages.Source(ShdBladeFs);
 
     /// <summary>#350: the grass stage splices content too; the module edge drops it for a rebuild.</summary>
     internal static void DropProgram()
@@ -1651,6 +1669,8 @@ internal static unsafe partial class GrassField
             SunTex = GlProgram.Loc(prog, "uSunShadow"), SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"),
             CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"),
             CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
+            WxMapXf = GlProgram.Loc(prog, "uWxMapXf"), WxMapP = GlProgram.Loc(prog, "uWxMapP"),
+            CoverVp = GlProgram.Loc(prog, "uCoverVp"), CoverLayer = GlProgram.Loc(prog, "uCoverLayer"), WxEdge = GlProgram.Loc(prog, "uWxEdge"),
         };
 
     private static bool EnsureProgramTail(uint prog)
@@ -1761,6 +1781,7 @@ internal static unsafe partial class GrassField
                // clearly targeting something means PartTriMesh::GetIsOpaque did not resolve and everything
                // counts as solid again.
                $", {_reticles} non-solid skipped"
-               + (SceneWalk.WorldScene == IntPtr.Zero ? " (NO WORLD SCENE -- displacement off)" : "");
+               + (SceneWalk.WorldScene == IntPtr.Zero ? " (NO WORLD SCENE -- displacement off)" : "")
+               + ", " + BinSourceNote();   // CX-104: which list the patches came from
     }
 }

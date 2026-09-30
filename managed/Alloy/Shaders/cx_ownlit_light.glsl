@@ -19,8 +19,6 @@
         {
             float cp = d.ext0.w >= 0.0 ? d.ext0.w : CX_COAT_ROUGH_DEFAULT;
             cxCoatRough = max(cp * cp, CX_ALPHA_MIN);
-            // what the coat reflects never reaches the layer under it
-            coatT = 1.0 - cxCoat * mix(CX_DIELECTRIC_F0, 1.0, CxFresnel(NoV));
         }
         if (max(d.ext1.r, max(d.ext1.g, d.ext1.b)) > 0.0)
         {
@@ -29,6 +27,20 @@
             cxSheenRough = max(sp * sp, CX_ALPHA_MIN);
         }
     }
+    // R3: standing water is a clear coat on ANY material, the engine model included -- the one layer the
+    // film is, over a damp base it does not rewrite. The thicker layer sets the roughness.
+    if (wxFilm > 0.0)
+    {
+        if (wxFilm >= cxCoat) cxCoatRough = wxFilmRough;
+        cxCoat = max(cxCoat, wxFilm);
+    }
+    // ...and the coat's lobe takes the same specular-AA kernel the base does (Kaplanyan & Hoffman 2016).
+    // A film's alpha sits near the CX_ALPHA_MIN floor -- far narrower than a pixel of plaza -- and a lobe
+    // that narrow on a normal field with any variance across the pixel does not draw a highlight, it draws
+    // a thin bright curve that crawls as the camera moves.
+    if (cxCoatRough > 0.0 && uMaterial.z > 0.5) cxCoatRough = sqrt(min(cxCoatRough * cxCoatRough + aaKernel, 1.0));
+    // what the coat reflects never reaches the layer under it
+    if (cxCoat > 0.0) coatT = 1.0 - cxCoat * mix(CX_DIELECTRIC_F0, 1.0, CxFresnel(NoV));
     cxF0 = F0; cxSpec = spec;
     cxSpecScale = (uMaterial.x > 0.5 ? vec3(1.0) : specColor) * CxSpecBase(NoV, rough) * msc * coatT;
     // the diffuse share: the engine's (1 - fSpecularity); a physical metal has none at all. The max()
@@ -91,6 +103,11 @@
     float dirOcc = mix(1.0, occl, uAoDirect);
     vec3 specLight = (sunSpec * CxLoopSpec(CxSpecLobe(N, V, uAreaDir, rough, spec), N, V, uAreaDir) + pointSpec)
                      * dirOcc;
+    // R4: the film's own highlights from the baked statics the loop skipped -- a walk of two to four
+    // lights on the coat's lobe, capped at one cube tap. The base stayed matte, so it never joined the
+    // mirror path that walks the whole static list.
+    if (wxFilm > 0.0 && baked && cxCoat > 0.0 && uCapture != 2)
+        specLight += CxFilmStatics(vWorld, N, V, vDepth, cxCoat, cxCoatRough, onMover) * dirOcc;
     vec3 diffuse = (sun + sunSss + point) * dirOcc;
     // the 0.15 ambient floor and the sun-facing wrap are inc_lighting.shd:679 verbatim; the height
     // map's occlusion scales the AMBIENT, which is the term it is actually occluding

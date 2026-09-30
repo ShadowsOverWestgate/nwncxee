@@ -755,8 +755,10 @@ public sealed unsafe class PoseService : IExtenderService
         return s;
     }
 
-    /// <summary>The group's status line.</summary>
-    internal static string Report() => !_armed ? "pose layer unhooked" : "pose layer on";
+    /// <summary>The <c>/anim</c> status line: the owned animation runtime first (CX-106 -- it is what PLAYS
+    /// the animations), then the pose layer that post-processes them.</summary>
+    internal static string Report()
+        => CX.Alloy.AnimRuntime.Describe() + "; " + (!_armed ? "pose layer unhooked" : "pose layer on");
 
     /// <summary>The pure parts off-device: bone names, the animation gate, the springs, the two-bone solve, the
     /// stride factor, the foot lock, and the signs of lean, aim and flinch.</summary>

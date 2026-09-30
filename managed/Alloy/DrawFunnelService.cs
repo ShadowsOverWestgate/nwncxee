@@ -59,6 +59,9 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // #256: enumeration is the SOURCE of every record now, so it resolves before the tables arm. Without
         // it there is no discovery at all -- nothing below may pretend otherwise by falling back to capture.
         if (!SceneWalk.Resolve(log)) return;
+        // CX-103: the transform owner. It stands DOWN rather than compose a scale it cannot read,
+        // so a missing symbol costs the ownership, not the frame.
+        GobXform.Resolve(log);
 
         SkyBox.Install(log, hooks);   // #261: resolves symbols only -- there is no sky hook any more
         // Chained, not Install()ed: Repack has several subscribers (#88).
@@ -162,6 +165,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // next scan (the busy-area transition crash). Unconditional -- an enrolled tenant can outlive its
         // part-table entry's state.
         AlloyRenderer.NotePartDeath(part);
+        NonMeshParts.Died(part);
         _origPartDtor(part);
     }
 

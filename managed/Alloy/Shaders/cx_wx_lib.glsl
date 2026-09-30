@@ -2,17 +2,38 @@
 // the sun array's cover layer). Exposure is a four-tap PCF like a cascade's; the hollow test is eight
 // compares against this point's own depth minus a step -- a neighbour standing higher fails it.
 #include "cx_wx_impact.glsl"
+#include "cx_wx_map.glsl"
+#include "cx_wx_edge.glsl"
 // ---- #617/#618/#619: weather on surfaces --------------------------------------------------------
 uniform vec4 uWeather;         // x wetness, y snow, z puddle fill (all 0..1), w = /weather viz
 uniform vec4 uWeatherLook;     // x wet darkening, y snow albedo, z puddle edge, w puddle coverage
-uniform mat4 uCoverVp;         // world -> the cover view's clip space; zero = no map (fully exposed)
-uniform vec4 uCoverLayer;      // x = the sun-array layer holding the map, y = the hollow step in depth units, z = the edge feather in uv, w = rain impact rate (0 = none)
+// uCoverVp / uCoverLayer are declared by cx_wx_edge above: the shelter test owns them now, and the reads
+// below share them.
 uniform vec4 uSnowLook;        // x sparkle, y mound relief, z drift against walls, w = cos(steepest slope snow holds to)
 uniform vec4 uSnowLight;       // x scatter wrap, y sky in the shade, z drift width in cover uv, w ground variation
 uniform vec4 uSnowPom;         // x relief height in metres (0 = off), y march steps, z = 1 when tileset parts take no cover
 
 uniform sampler2D uCoverEsm;   // the filtered cover map (Weather.Esm), on the snapshot-depth unit
 uniform vec4 uCoverEsmP;       // x = the variance floor in depth units squared, y = height bias in depth units, z = 1 when the map is bound
+// R5, the realism terms the splice reads: x = run-off down walls and the band at their foot,
+// y = the puddle shoreline's rim, zw spare.
+uniform vec4 uWxRun;
+
+/// Up-facing enough to be ground rather than a wall: past this a face takes the even wetting, under it
+/// the run-off streaks.
+const float CX_WX_WALL_UP = 0.85;
+/// Metres of fall the streak noise spans down a wall -- a run-off streak is long and thin, so the noise
+/// is slack along z and tight across the face.
+const float CX_WX_STREAK_Z = 0.5;
+/// The driest a streak leaves a wall, as a share of the even wetting. The bright side goes as far the
+/// other way, so the streaks REDISTRIBUTE the wetness rather than removing it.
+const float CX_WX_STREAK_MIN = 0.35;
+/// Metres up the wall the run-off band at its foot reaches, and metres out along the face the ground's
+/// own height is read from (the map texel under the wall holds the wall's top, not the floor).
+const float CX_WX_FOOT_M = 0.35;
+/// The shoreline rim's width, as a share of the puddle-depth knob: ground this far under the water's own
+/// level, in depth terms, is soaked through without being covered.
+const float CX_WX_SHORE = 0.6;
 
 float CxWeatherExposure(vec3 worldPos, vec3 N)
 {

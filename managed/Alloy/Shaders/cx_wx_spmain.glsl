@@ -1,0 +1,149 @@
+// CX-102: the splash. One instanced quad per crown part, placed where the rain actually lands -- the cover
+// map is an orthographic depth view along the fall vector, so its depth over a point IS the first surface
+// the rain reaches there: a roof, a ledge, a wall top, the ground, and never anything under shelter. The
+// owner's complaint was that impacts only showed where a puddle happened to be reflecting a light; this
+// draws them wherever rain falls, lit like the drops and independent of any reflection.
+// No CPU work per splash and no buffer: the instance id hashes to a point on a camera-centred disc and to
+// a time slice, and each slice re-draws the point, so the field never strobes in fixed spots.
+
+/// Droplets in one crown. The last two are each dropped on their own hash, so a crown is three to five.
+const int CX_SPLASH_DROPS = 5;
+/// Parts per crown: the ring on the ground (index 0), then the droplets. The C# side sizes the draw by this.
+const int CX_SPLASH_PARTS = CX_SPLASH_DROPS + 1;
+const float CX_SPLASH_G = 9.81;
+/// Launch speed of a crown droplet, m/s: what a rain drop throws back up off a hard surface.
+const vec2 CX_SPLASH_V0 = vec2(1.1, 1.9);
+/// The ring's own reach, metres. Pinned to the puddle rings' CX_RIPPLE_REACH_M -- the same drop makes both,
+/// so the one on the water and the one on the stone beside it may not be different sizes (Weather.SelfCheck).
+const float CX_SPLASH_RING_M = 0.08;
+/// Width of a droplet streak, metres. Its LENGTH is the distance it covers in one exposure.
+const float CX_SPLASH_DROP_M = 0.008;
+/// Seconds of travel one streak is drawn over: its own motion blur.
+const float CX_SPLASH_BLUR_S = 0.025;
+/// Share of the area ambient a crown takes with the sun straight behind it: the floor that keeps an impact
+/// readable in dim light. Premultiplied scatter means it can only ADD -- where the area ambient is nothing
+/// so is the splash, so this never becomes a grey film in the dark.
+const float CX_SPLASH_AMB = 0.3;
+/// Metres the ring quad stands off the surface under it, against z-fighting with that surface.
+const float CX_SPLASH_LIFT = 0.02;
+/// The ring's crest, as a share of its reach: what the ring's own footprint fade is measured against, and
+/// what cx_splash_f draws it as.
+const float CX_SPLASH_CREST = 0.3;
+/// Crest widths on screen: under the first the ring is gone, past the second it is at full strength. The
+/// ring's WORLD size never moves with distance -- this only fades it, which is the whole point of CX-102.
+const vec2 CX_SPLASH_PX = vec2(1.0, 2.5);
+/// Screen width a droplet streak is never drawn narrower than, in pixels. A millimetre-scale droplet is a
+/// fraction of a pixel past a few metres, and a sub-pixel quad does not dim -- it FLICKERS, as the rasteriser
+/// catches and misses it. Widening it to about a pixel and dividing the scatter by the area that added is
+/// the energy-conserving answer, and it is the DROPLETS only; the ring above never moves.
+const float CX_SPLASH_MINPX = 1.2;
+
+vec3 CxCoverWorld(vec2 uv, float d)
+{
+    vec4 w = uCoverVpInv * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    return w.xyz / w.w;
+}
+
+/// Where the rain lands over `xy`: the cover view's first hit along the fall. Two passes, the second a
+/// Newton step -- the first projection has to guess the height and the reconstruction knows it, so
+/// re-projecting at the real Z takes out the lateral error the fall's lean caused (the map scatter's own
+/// trick). `ok` false = no map, outside its fit, or nothing stood in that ray.
+vec3 CxSplashLand(vec2 xy, out bool ok)
+{
+    ok = false;
+    vec3 p = vec3(xy, uSplashC.z);
+    if (uCoverVp[3][3] == 0.0) return p;
+    for (int i = 0; i < 2; i++)
+    {
+        vec4 c = uCoverVp * vec4(xy, p.z, 1.0);
+        vec3 n = c.xyz / c.w;
+        if (any(greaterThan(abs(n.xy), vec2(1.0)))) return p;
+        vec2 uv = n.xy * 0.5 + 0.5;
+        float d = texture(uCoverDepth, uv).r;
+        if (d >= 1.0) return p;
+        p = CxCoverWorld(uv, d);
+    }
+    ok = true;
+    return p;
+}
+
+void main()
+{
+    uint id = uint(gl_InstanceID);
+    uint crown = id / uint(CX_SPLASH_PARTS);
+    int part = int(id % uint(CX_SPLASH_PARTS));
+    vec3 hc = CxHash3(crown * 2654435761u + 7u);
+    float ph = uSplashP.x / uSplashP.y + hc.z;
+    float slice = floor(ph);
+    float age = fract(ph);
+    // the landing point is re-drawn every lifetime: one fixed point per instance would read as a sprinkler
+    vec3 hp = CxHash3(crown * 374761393u + uint(slice) * 668265263u + 1u);
+    float rad = uSplashP.z * sqrt(hp.x);          // sqrt: uniform over the disc's AREA, not its radius
+    float ang = hp.y * 6.2831853;
+    vec2 xy = uSplashC.xy + vec2(cos(ang), sin(ang)) * rad;
+    bool ok;
+    vec3 L = CxSplashLand(xy, ok);
+    // no edge: the field thins by crown COUNT from three quarters of the disc out, the way the drops do --
+    // a brightness ramp on a circle reads as a ring on the ground
+    float edge = 1.0 - smoothstep(0.75, 1.0, rad / max(uSplashP.z, 1e-3));
+    bool alive = ok && fract(hp.z * 91.7) <= edge;
+
+    vec2 corner = vec2(float((gl_VertexID & 1) * 2 - 1), float((gl_VertexID >> 1) * 2 - 1));
+    vec3 P = L, axis = vec3(0.0), side = vec3(0.0);
+    vec3 N = vec3(0.0, 0.0, 1.0);
+    float len = 0.0;
+    if (part > 0)
+    {
+        vec3 hd = CxHash3(crown * 2246822519u + uint(slice) * 3266489917u + uint(part));
+        if (part >= CX_SPLASH_DROPS - 1 && hd.z > 0.5) alive = false;
+        float a = (float(part) - 0.5 + hc.y) * 6.2831853 / float(CX_SPLASH_DROPS);
+        float theta = 0.5 + 0.45 * hd.x;          // radians off vertical: a crown leans out 29 to 54 degrees
+        vec3 dir = vec3(cos(a) * sin(theta), sin(a) * sin(theta), cos(theta));
+        float v0 = mix(CX_SPLASH_V0.x, CX_SPLASH_V0.y, hd.y);
+        float t = age * uSplashP.y;
+        vec3 vel = dir * v0 - vec3(0.0, 0.0, CX_SPLASH_G * t);
+        P = L + dir * (v0 * t) - vec3(0.0, 0.0, 0.5 * CX_SPLASH_G * t * t);
+        if (P.z < L.z) alive = false;             // back in the water: the droplet is spent
+        vec3 toCam = uEye - P;
+        axis = normalize(vel);
+        side = normalize(cross(axis, toCam));
+        len = clamp(length(vel) * CX_SPLASH_BLUR_S, CX_SPLASH_DROP_M, CX_SPLASH_DROP_M * 5.0);
+        // a droplet has no surface: the camera-facing direction stands in for its normal, so a lamp behind
+        // the camera lights it and one behind the droplet does not -- the drop stage's own read
+        N = normalize(toCam);
+    }
+
+    vec4 cv = uView * vec4(P, 1.0);
+    float px = uSplashP.w / max(-cv.z, 0.05);     // pixels per metre at this part's own depth
+    float dim;
+    vec3 pos;
+    if (part == 0)
+    {
+        // the ring: a world-XY quad over the landing point, its radius run out inside the fragment stage so
+        // the quad never changes size. Strictly world-sized -- the footprint only FADES it.
+        dim = smoothstep(CX_SPLASH_PX.x, CX_SPLASH_PX.y, CX_SPLASH_RING_M * CX_SPLASH_CREST * px);
+        pos = P + vec3(corner * (CX_SPLASH_RING_M * 1.15), CX_SPLASH_LIFT);
+    }
+    else
+    {
+        float floorM = CX_SPLASH_MINPX / max(px, 1e-3);
+        float w = max(CX_SPLASH_DROP_M, floorM), l = max(len, floorM);
+        dim = (CX_SPLASH_DROP_M * len) / (w * l);
+        pos = P + axis * (corner.y * l * 0.5) + side * (corner.x * w * 0.5);
+    }
+
+    vUV = corner;
+    vAge = age;
+    vPart = float(part);
+    vSeed = (0.4 + 0.6 * fract(hc.x * 7.31)) * dim;
+    vLight = uAreaAmbient + uAreaDiffuse * 0.5;
+    if (uLit != 0 && alive)
+    {
+        vec4 cc = uProj * cv;
+        cxClusterXY = (cc.xy / max(cc.w, 1e-3) * 0.5 + 0.5) * vec2(uGrid.xy);
+        float ndl = clamp(dot(N, uAreaDir), 0.0, 1.0);
+        vec3 sun = uAreaDiffuse * (ndl * CxSunShadow(P, N, ndl, ndl));
+        vLight = uAreaAmbient * mix(CX_SPLASH_AMB, 1.0, ndl) + sun + CxClusteredDiffuse(P, N, max(-cv.z, 1e-3));
+    }
+    gl_Position = alive && dim > 0.0 ? uProj * (uView * vec4(pos, 1.0)) : vec4(2.0, 2.0, 2.0, 1.0);
+}

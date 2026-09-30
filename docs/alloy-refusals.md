@@ -82,7 +82,12 @@ does not freeze" self-check now pins.
 
 Three checks cannot be asked before the frame is taken — an offset viewport, an incomplete HDR framebuffer,
 and an engine depth attachment whose format the owned depth texture cannot be matched to (all `PostChain`) —
-plus a `MakeCurrent` that refuses mid-frame (`glXMakeCurrent`, or `wglMakeCurrent` on Windows) (`AlloyRenderer.NoFrameBehindUs`).
+plus a `MakeCurrent` that refuses mid-frame (`glXMakeCurrent`, or `wglMakeCurrent` on Windows), and since
+CX-109 **no measured world camera**: `AlloyCamera` derives every view's projection and view matrix itself, so a
+frame that reaches the anchor with no measured world view (`Camera::RenderScene` never hooked, or
+`g_nScreenWidth`/`g_nScreenHeight` unresolved) has no camera to draw from and sits out rather than drawing the
+world through an identity view; with `view.cameraloop 0` the same slot refuses on an unresolved
+`m_aurMtxStack` instead (all `AlloyRenderer.NoFrameBehindUs`).
 
 All four call `AlloyGate.Fail` — and so does every capability latch that can only be taken *after* the freeze:
 `AlloyRenderer` when the multidraw or stream-ring entry points are missing, `StreamRing` when the driver refuses

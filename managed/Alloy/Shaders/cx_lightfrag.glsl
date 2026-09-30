@@ -1,7 +1,10 @@
 #include "cx_pass.glsl"
 layout(std430, binding = 0) readonly buffer CxLightBuf { vec4 uLights[]; };
-// low 16 bits = lights binned, high 16 = how many of them lead the list before the cold statics
-// (cx_lightbuild). Read through CxClusterN / CxClusterLive, never raw.
+// TWO words per cluster. The first: low 16 bits = lights binned, high 16 = how many of them lead the list
+// before the cold statics (cx_lightbuild). The second: R4's reflection-candidate count -- how many entries
+// right after the live prefix are the brightest baked statics a water film may mirror. It is 0 on every
+// frame with no film, and then the build and every walk are what they were. Read through CxClusterN /
+// CxClusterLive / CxClusterRefl, never raw.
 layout(std430, binding = 1) readonly buffer CxClusterCount { uint uClCount[]; };
 layout(std430, binding = 2) readonly buffer CxClusterIdx { uint uClIdx[]; };
 // CasterPass.CubeDynSphere: CX_DYN_SPHERES spheres (xyz, r; r < 0 unused) per cube slot round the movers
@@ -58,8 +61,10 @@ float CxWrap(float ndl, float w)
 #ifndef CX_CLUSTER_XY
 #define CX_CLUSTER_XY ((gl_FragCoord.xy - uTile.xy) / uTile.zw)
 #endif
-uint CxClusterN(uint cl) { return min(uClCount[cl] & 0xffffu, CX_CLUSTER_CAP); }
-uint CxClusterLive(uint cl) { return min(uClCount[cl] >> 16u, CX_CLUSTER_CAP); }
+uint CxClusterN(uint cl) { return min(uClCount[cl * 2u] & 0xffffu, CX_CLUSTER_CAP); }
+uint CxClusterLive(uint cl) { return min(uClCount[cl * 2u] >> 16u, CX_CLUSTER_CAP); }
+/// R4: the entries at [live, live + refl) -- the cold statics a water film mirrors. 0 = no film this frame.
+uint CxClusterRefl(uint cl) { return min(uClCount[cl * 2u + 1u], CX_CLUSTER_CAP); }
 uint CxCluster(float viewDepth)
 {
     vec2 tile = CX_CLUSTER_XY;
@@ -97,11 +102,23 @@ float CxSmithK(float rough) { return uMaterial.x > 0.5 ? rough * 0.5 : rough; }
 // ADR 0026: one light's full specular radiance per unit irradiance, from the engine lobe `lobe` -- the
 // view-side normalisation, the specular colour and the clear-coat and sheen layers folded in. Defined
 // by cx_material.glsl from the fragment's own material; only the lit stage defines CX_LIT_MATERIAL.
-vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L);
-#define CX_LOOP_SPEC(lobe, N, V, L) CxLoopSpec(lobe, N, V, L)
+vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L, float spread);
+#define CX_LOOP_SPEC(lobe, N, V, L, spread) CxLoopSpec(lobe, N, V, L, spread)
 #else
-#define CX_LOOP_SPEC(lobe, N, V, L) vec3(lobe)
+#define CX_LOOP_SPEC(lobe, N, V, L, spread) vec3(lobe)
 #endif
+
+// Karis 2013 ("Real Shading in UE4", the sphere-light normalisation): a light is not a point. It is the
+// SPHERE of radius uWrap x uFalloff.y that #139's diffuse wrap already models with the same number, and a
+// specular lobe cannot be narrower than the image of the source it reflects. Alpha therefore widens by
+// this at distance `dist` -- half the sine of the half-angle the sphere subtends -- and the lobe dims to
+// match, so the peak is bounded by the source's real size instead of running to 1/alpha^2.
+// <para>This is what made a lamp a hand's breadth off wet ground read as a blinding flare: a water film's
+// alpha is 0.02-0.05, whose punctual peak is one to two thousand times the irradiance, and bloom then
+// spread it over the screen. It changes dry glossy surfaces near lights too -- their highlights are
+// broader, dimmer and bounded -- which is the same physical correction #139 already made to the diffuse
+// terminator, and 0 on the wrap knob turns both back off together.</para>
+float CxSrcSpread(float dist) { return uWrap <= 0.0 ? 0.0 : uWrap * uFalloff.y * 0.5 / max(dist, 1e-3); }
 
 // #120, corrected by the live A/B on #121: the specular lobe every lit term goes through, as the
 // ENGINE computes it (inc_lighting.shd:150-265 at the ship quality mode -- inc_config.shd's
@@ -123,24 +140,52 @@ vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L);
 /// every angle -- the lit main's choice for a bare material, whose grazing lobe otherwise outshines its diffuse.
 float cxFresnel = 1.0;
 
-float CxSpecLobe(vec3 N, vec3 V, vec3 L, float rough, float spec)
+/// `spread` is the sphere-light widening from <see cref="CxSrcSpread"/>; 0 is the punctual lobe, bit for
+/// bit, which is what the sun and the lightmap's dominant direction pass.
+float CxSpecLobe(vec3 N, vec3 V, vec3 L, float rough, float spec, float spread)
 {
     vec3 H = normalize(V + L);
     float NdotH = clamp(dot(N, H), 0.0, 1.0);
     float VdotH = clamp(dot(H, V), 0.0, 1.0);
     float NdotL = clamp(dot(N, L), 0.0, 1.0);
-    float a2 = rough * rough;
-    // GGX distribution minus its alpha^2 numerator, which lives in CxSpecBase
-    float den = 1.0 - NdotH * NdotH * (1.0 - a2);
+    // GGX distribution minus its alpha^2 numerator, which lives in CxSpecBase -- and the sphere's WIDENED
+    // alpha goes in the denominator only. That pair IS Karis' normalised lobe, alpha^2 over den(alpha')^2:
+    // the (alpha/alpha')^2 energy factor is the numerator staying behind, with no second term to get
+    // wrong. den grows with alpha, so the result can only ever go DOWN.
+    float ap = min(rough + spread, 1.0);
+    float den = 1.0 - NdotH * NdotH * (1.0 - ap * ap);
     float d = 1.0 / max(den * den, 1e-8);
+    // ...and the microfacet shadowing keeps the SURFACE's own roughness: the source's size widens the
+    // distribution, it does not make the surface rougher.
     d *= 1.0 / mix(NdotL, 1.0, CxSmithK(rough));   // geometric shadowing, light side
     return d * mix(spec, 1.0, CxFresnel(VdotH) * cxFresnel);
 }
+float CxSpecLobe(vec3 N, vec3 V, vec3 L, float rough, float spec) { return CxSpecLobe(N, V, L, rough, spec, 0.0); }
 
 // The half that does not vary per light: alpha^2/4 and the view-side shadowing term.
 float CxSpecBase(float NdotV, float rough)
 {
     return rough * rough * 0.25 / mix(max(NdotV, CX_ANGLE_MIN), 1.0, CxSmithK(rough));
+}
+
+// light.relevance: how brightly light `li` could reach `worldPos` -- CxPointLight's curve and reach fade
+// times the colour's luma, zero at and past the reach. Continuous in position, so a per-fragment cut on
+// it has no edge to draw. Ratios only: the global gain and the rim exponent cancel out of them.
+float CxLightImportance(uint li, vec3 worldPos)
+{
+    vec4 pr = uLights[li * 2u];
+    vec3 d = pr.xyz - worldPos;
+    float f2 = dot(d, d) / max(pr.w * pr.w, 1e-8);
+    if (f2 >= 1.0) return 0.0;
+    float fade = 1.0 - f2;
+    if (uReach > 0.0)
+    {
+        float r2 = uReach * uReach;
+        if (f2 > r2) return 0.0;
+        fade *= min((r2 - f2) / (r2 * 0.3), 1.0);
+    }
+    vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
+    return fade / (at.x + at.y * f2) * dot(uLights[li * 2u + 1u].rgb, vec3(0.299, 0.587, 0.114));
 }
 
 // #674: one light's colour, attenuation and geometry -- the per-light body, shared by the cluster loop
@@ -287,9 +332,17 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     // the same cap over HOT lights, ranked by the luminance they would take back: the capN strongest
     // get the soft dyn shadow, the rest one tap per map (uncapped, 15 hot lights x 8 taps was the frame)
     float hA = 0.0, hB = 0.0; int hASlot = -1, hBSlot = -1, hACh = 4, hBCh = 4; float hANdl = 0.0, hBNdl = 0.0;
+    // light.relevance: the brightest light reaching this fragment, over the WHOLE list -- the live prefix moves
+    // per froxel, the whole list only by lights that contribute exactly nothing here, so this is continuous
+    float relMax = 0.0;
+    if (uRelevance.x > 0.0)
+        for (uint k = 0u, nAll = CxClusterN(cl); k < nAll; k++) relMax = max(relMax, CxLightImportance(uClIdx[base + k], worldPos));
     for (uint k = 0u; k < n; k++)
     {
         uint li = uClIdx[base + k];
+        float relW = uRelevance.x > 0.0
+                   ? smoothstep(uRelevance.x, uRelevance.y, CxLightImportance(li, worldPos) / max(relMax, 1e-8)) : 1.0;
+        if (relW <= 0.0) continue;
         vec4 pr = uLights[li * 2u];
         vec4 cs = uLights[li * 2u + 1u];
         // the record's spare w carries this light's cube slot (-1 = it casts no shadow this frame),
@@ -332,6 +385,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         }
         vec3 c, L; float att, f2, ndlRaw, ndl;
         if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;
+        c *= relW;
         // slot -2 = ambient class: vanilla adds c*att to the ambient term, no N.L, no shadow
         if (slot == -2) { if (!inPages) acc += c * att; continue; }
         if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
@@ -359,8 +413,11 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
             if (!mirror) continue;
         }
         vec3 dif = c * (att * ndl);
-        float lobe = CxSpecLobe(N, V, L, rough, specularity);
-        vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L);
+        // the source's own size, from what the curve already computed: dd = f2 * R^2, so the distance is
+        // sqrt(f2) * R and no second length() is paid for it
+        float spread = CxSrcSpread(sqrt(f2) * pr.w);
+        float lobe = CxSpecLobe(N, V, L, rough, specularity, spread);
+        vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L, spread);
         if (mirror) spc *= glossW;
         // a glossy surface's lobe is the mirror image of the source, and the source must be in view of
         // the FRAGMENT: a lamp on a terrace mirrors in the street from where the ground first sees over

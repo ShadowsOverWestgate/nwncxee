@@ -117,7 +117,7 @@ internal static unsafe partial class EmitterSim
 
         float cap = node.ConeCap;
         if (cap == 0f) return;
-        IntPtr cam = *_currentCamera;
+        IntPtr cam = AlloyCamera.World;
         if (cam == IntPtr.Zero) return;
         Vector3 view = Norm(p.Pos - new CX.Engine.Camera(cam).Pos);
         if (view == Vector3.Zero) return;

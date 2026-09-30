@@ -51,27 +51,38 @@ internal static unsafe class TriggerHighlight
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
+        // CX-104: kept resolved for the validator and for the /buckets triggers 0 A/B only. The population
+        // comes from SceneParts, so a bucket that does not resolve is no longer a reason to lose the feature.
         _bucket = new EngineList(Native.Sym(SymbolMap.TriggerBucket));
         if (_bucket.IsNull)
-        {
-            _failed = true;
-            log.Always($"TriggerHighlight: {SymbolMap.TriggerBucket} did not resolve -- area transitions will "
-                     + "not highlight on hover this session (the engine's own overlay is not replayed either)");
-        }
+            log.Info($"TriggerHighlight: {SymbolMap.TriggerBucket} did not resolve -- the engine-list A/B and "
+                   + "the validator are unavailable; the owned trigger registry is unaffected");
     }
 
     /// <summary>Once per world frame, in ENGINE context and BEFORE the frame anchor: snapshot the highlighted
-    /// triggers. <c>Scene::AddPartsToDrawBuckets</c> fills the bucket ahead of RSP and <c>ClearBuckets</c>
-    /// empties it after, so it is already final here. Allocation-free.</summary>
+    /// triggers. CX-104: the population is the AREA's triggers (<see cref="SceneParts.Triggers"/>) and not the
+    /// frame's <c>triggerbucket</c>, with NO in-view test of its own -- deliberately. This pass is a
+    /// depth-reconstructed fullscreen decal, so a trigger whose prism covers no visible pixel contributes
+    /// nothing and culling it saves one header in an SSBO; and the alpha filter below already narrows the
+    /// population to the one trigger under the cursor
+    /// (<c>AurPartTriggerSetHighlight</c> writes 0.0 for every other). Allocation-free.</summary>
     internal static void Enroll()
     {
         _count = 0; _points = 0;
-        if (_failed || _bucket.IsNull) return;
-        int n = _bucket.Count;
+        if (_failed) return;
+        bool own = Buckets.Triggers.V && SceneParts.Ready;
+        if (!own && _bucket.IsNull) return;
+        ReadOnlySpan<IntPtr> triggers = SceneParts.Triggers;
+        int n = own ? triggers.Length : _bucket.Count;
+        if (own && !_bucket.IsNull)
+        {
+            if (n == 0) SceneParts.WarnEmpty(BucketValidator.KindTrigger, 0, _bucket.Count);
+            if (Buckets.Validate.V) BucketValidator.Compare(BucketValidator.KindTrigger, triggers, _bucket);
+        }
         fixed (float* s = _stage)
             for (int i = 0; i < n && _count < MaxTriggers; i++)
             {
-                var t = new PartTrigger(_bucket[i]);
+                var t = new PartTrigger(own ? triggers[i] : _bucket[i]);
                 if (t.IsNull || t.Highlighted == 0 || t.Half == 0) continue;
                 float alpha = t.HighlightColour[3];
                 if (!(alpha > 0f)) continue;

@@ -10,7 +10,7 @@ namespace CX.Alloy;
 /// index, one freshness gate; the map itself is <see cref="CasterPass.CoverVp"/>'s layer of the sun array.</summary>
 internal static unsafe partial class Weather
 {
-    internal const int VizMax = 3;
+    internal const int VizMax = 4;
     internal static Knob<bool> Cover = null!, WaterRoof = null!;
     internal static Knob<float> CoverRange = null!, CoverSoft = null!;
 

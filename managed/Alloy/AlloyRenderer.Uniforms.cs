@@ -199,7 +199,7 @@ public sealed unsafe partial class AlloyRenderer
                        PbSunFocus = 3424, PbSunCascades = 3436, PbAmbient = 3440, PbLocalFloor = 3452, PbDiffuse = 3456,
                        PbProbeMips = 3468, PbDir = 3472, PbProbeGain = 3484, PbLocalPlane = 3488, PbSceneEnv = 3496,
                        PbTile = 3504, PbGrid = 3520, PbReach = 3532, PbFalloff = 3536, PbWrap = 3548, PbZ = 3552,
-                       PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584, PbDayDim = 3588;
+                       PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584, PbDayDim = 3588, PbRelevance = 3592;
     /// <summary>The block as staged and as last sent. Native, allocated once, so a refill allocates nothing.</summary>
     private static byte* _passStage, _passSent;
     private static uint _passBuf;

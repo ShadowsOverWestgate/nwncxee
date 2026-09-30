@@ -19,17 +19,26 @@ namespace CX.Alloy;
 /// it through <c>Gob::CollectLights</c> @0x43fa90 plus <c>LightManager::GetEmitterLighting</c> @0x4c1970;
 /// both are folded into the walk below.</item>
 /// </list>
-/// <para><b>The weight is written back.</b> Three engine readers of <c>+0x90</c> survive the cutover --
-/// <c>GetEmitterLighting</c> @0x4c1970 (still called for the particle tint), <c>GetNearestLights</c>
-/// @0x4c15f0 (the GUI 3D scenes, via <c>Scene::RenderOnlyGobs</c>, which the shim does not replace) and
-/// <c>RenderLightRanges</c> @0x4c35a0 (a debug draw the shim dropped) -- so the port stores into the field
-/// instead of keeping a private table, and <c>alloy.enabled=0</c> hands the engine weights it recognises.</para>
+/// <para><b>The weight is written back</b> -- and CX-108 re-checked who reads it (docs/research/light-registry.md
+/// §8). On a stock Alloy frame, NOBODY does: <c>GetEmitterLighting</c> @0x4c1970 is ported
+/// (<see cref="Accumulate"/>) and its other caller <c>PartEmitter::RenderEmitter</c> is only reached through
+/// the <c>DoEmitterBucket</c> that <c>EmitterSim</c> replaced; <c>GetNearestLights</c> @0x4c15f0 went with
+/// <c>Scene::RenderOnlyGobs</c>, which <c>GuiCapture</c> (CX-95) replaced and whose replacement drops the
+/// call; <c>RenderLightRanges</c> @0x4c35a0 went with RSP's overlay block. The store stays anyway, because it
+/// is two instructions and it is what makes <c>alloy.enabled=0</c>, <c>light.registry 0</c> and
+/// <c>emitsim.enabled=0</c> hand the engine weights it recognises instead of whatever the last Alloy frame
+/// left.</para>
 /// <para><b>No active list.</b> The engine carries the lit set as a second <c>CExoArrayList</c> at
 /// <c>LightManager+0x60</c>; this does not, because "in the list" and "weight &gt; 0" are the same predicate:
 /// every removal path in <c>ControlLightsFade</c> zeroes the weight and every add path sets it above zero.
-/// What the list bought was a linear <c>IndexOf</c> per light per frame; what replaces it is one pointer set
-/// over this frame's list. Nothing outside <c>ControlLightsFade</c> and that dropped debug draw read
-/// <c>+0x60</c>, and <c>LightManager::RemoveLight</c> @0x4c1f40 keeps it free of dangling entries either way.</para>
+/// What the list bought was a linear <c>IndexOf</c> per light per frame; what replaces it is
+/// <see cref="LightRegistry.Wanted"/>, which is a bool per entry. Nothing outside <c>ControlLightsFade</c> and
+/// that dropped debug draw read <c>+0x60</c>.</para>
+/// <para><b>CX-108: the WANTED set is Alloy's.</b> The engine decided it in <c>ManageSceneBSP</c> --
+/// <c>SetupLightsForThisPositionAndRadius</c> filled <c>LightManager+0x40</c> and <c>PrioritizeLights</c>
+/// sorted it -- and this file read that list. <see cref="LightRegistry.Select"/> ports the filter, the score
+/// and the <c>GetMaxLights</c> cap, so the fade below runs off Alloy's own verdict and reads no
+/// <c>LightManager</c> field. The engine still fills and sorts its own list every frame; nothing reads it.</para>
 /// <para><b>Deliberately NOT ported:</b> the GL half of <c>ControlLightsFade</c> -- <c>SetLightGL</c>,
 /// <c>SetAreaAmbientLight</c>/<c>SetAreaDiffuseLight</c>, <c>DisableLight</c> and
 /// <c>SetHeadLightProperties</c> @0x4c12e0. Those upload the ENGINE's fixed-function light state, which under
@@ -106,11 +115,51 @@ internal static unsafe class LightFade
     /// and <see cref="FrameInputs.AreaDiffuse"/> by, inside that anchor.
     /// <para><paramref name="fullDynamic"/> is <c>g_bFullDynamicLighting</c>, which gated the engine call the
     /// same way (#235): clear, the engine lights from static buckets and never ran the fade, so neither does
-    /// this. The focus lighting is NOT gated -- it was its own unconditional RSP step.</para></summary>
+    /// this. The focus lighting is NOT gated -- it was its own unconditional RSP step.</para>
+    /// <para>CX-108: this is also the frame's LIGHT SLOT. <see cref="LightRegistry.Select"/> runs first, here
+    /// and nowhere else, because everything downstream in the frame -- this fade, the area terms
+    /// (<see cref="FrameRead"/>), the light walk (<see cref="SceneInputs"/>) and the halos -- has to read one
+    /// verdict, and this is the earliest Alloy code in the frame that touches a light.</para></summary>
     internal static void Tick(IntPtr scene, bool fullDynamic)
     {
         Moved = 0;
         if (!Ready || scene == IntPtr.Zero) return;
+        LightRegistry.Select(scene);
+        if (LightRegistry.Live) { TickOwned(new Scene(scene), fullDynamic); return; }
+        TickEngineLists(scene, fullDynamic);
+    }
+
+    /// <summary>CX-108: the fade over ALLOY's light set. One walk of the registry -- a light the frame wants
+    /// travels to full weight, one it does not eases back to zero -- and then the focus value over the same
+    /// set. There is no "departed" pass any more: a light that left the candidate set is simply not
+    /// <see cref="LightRegistry.Wanted"/>, and one that left the SCENE is not in the registry at all, so the
+    /// weight the engine used to snap to zero is eased out on the curve instead.</summary>
+    private static void TickOwned(Scene sc, bool fullDynamic)
+    {
+        float dt = MathF.Max(*_deltaT, DtFloor);
+        IntPtr onlyGob = *_onlyGob;
+        int n = LightRegistry.Count;
+        if (fullDynamic)
+            for (int i = 0; i < n; i++)
+            {
+                PartLight light = LightRegistry.Light(i);
+                if (light.IsNull) continue;   // retired since the last Select -- never dereference it
+                light.Fade = Advance(light, LightRegistry.Wanted(i), dt);
+            }
+        var amb = new PartLight(LightRegistry.AreaAmbient);
+        var dif = new PartLight(LightRegistry.AreaDiffuse);
+        if (fullDynamic)
+        {
+            if (!amb.IsNull) amb.Fade = Area(amb, onlyGob, dt);
+            if (!dif.IsNull) dif.Fade = Area(dif, onlyGob, dt);
+        }
+        Publish(Accumulate(sc.SkyPos, *_focusObject));
+    }
+
+    /// <summary>The A/B path (<c>light.registry 0</c>, or a client where the registry could not arm): the
+    /// original CX-85 tick, reading the engine's own per-frame list and master list.</summary>
+    private static void TickEngineLists(IntPtr scene, bool fullDynamic)
+    {
         var sc = new Scene(scene);
         LightManager lm = sc.LightManager;
         if (lm.IsNull) return;
@@ -166,10 +215,58 @@ internal static unsafe class LightFade
                                _hlAmbient[2] + _hlDiffuse[2]);
         if (!amb.IsNull) acc += amb.Colour * amb.Fade;
         if (!dif.IsNull) acc += dif.Colour * dif.Fade;
-        // Clamped at the top only, as the engine clamps it: an authored negative stays negative.
+        Publish(acc);
+    }
+
+    /// <summary>Clamp the accumulator and store it in the <c>focuslighting</c> global. Clamped at the top only,
+    /// as the engine clamps it: an authored negative stays negative.</summary>
+    private static void Publish(Vector3 acc)
+    {
         _focusValue = new Vector3(MathF.Min(acc.X, 1f), MathF.Min(acc.Y, 1f), MathF.Min(acc.Z, 1f));
         _focusLighting[0] = _focusValue.X; _focusLighting[1] = _focusValue.Y; _focusLighting[2] = _focusValue.Z;
     }
+
+    /// <summary>CX-108: <c>LightManager::GetEmitterLighting</c> @0x4c1970, ported -- what the scene's lights
+    /// make of one world point. The sum over Alloy's light set of <c>colour * (1 - d / raw range) * fade</c>,
+    /// plus the head light's two globals when it is on, plus each area light's <c>colour * fade</c>, clamped at
+    /// 1 per channel. <paramref name="excludeGob"/> drops the lights belonging to one object, which is what
+    /// <c>Gob::CollectLights</c>' exclusion list did for the focus value.
+    /// <para>Two callers, the same arithmetic: the <c>focuslighting</c> global
+    /// (<c>CNWCArea::GetIsDark</c> reads it) and the particle tint (<see cref="EmitterLighting"/>). Read-only
+    /// and allocation-free -- the fade weights it multiplies by were advanced earlier in the frame.</para>
+    /// <para>The engine walked its ACTIVE list at <c>LightManager+0x60</c>; this walks the registry and skips
+    /// a zero weight, which is the same set -- "in the active list" and "weight &gt; 0" are one predicate
+    /// (every removal path in <c>ControlLightsFade</c> zeroes the weight, every add path raises it).</para></summary>
+    internal static Vector3 Accumulate(Vector3 pos, IntPtr excludeGob)
+    {
+        Vector3 acc = default;
+        int n = LightRegistry.Count;
+        for (int i = 0; i < n; i++)
+        {
+            PartLight light = LightRegistry.Light(i);
+            if (light.IsNull) continue;
+            float w = light.Fade;
+            if (w <= 0f) continue;
+            if (excludeGob != IntPtr.Zero && new Part(light.Ptr).Gob.Ptr == excludeGob) continue;
+            float t = Attenuate((light.Pos - pos).Length(), light.Range);
+            if (t > 0f) acc += light.Colour * (t * w);
+        }
+        if (_headLight != null && *_headLight != 0)
+            acc += new Vector3(_hlAmbient[0] + _hlDiffuse[0], _hlAmbient[1] + _hlDiffuse[1],
+                               _hlAmbient[2] + _hlDiffuse[2]);
+        var amb = new PartLight(LightRegistry.AreaAmbient);
+        var dif = new PartLight(LightRegistry.AreaDiffuse);
+        if (!amb.IsNull) acc += amb.Colour * amb.Fade;
+        if (!dif.IsNull) acc += dif.Colour * dif.Fade;
+        return new Vector3(MathF.Min(acc.X, 1f), MathF.Min(acc.Y, 1f), MathF.Min(acc.Z, 1f));
+    }
+
+    /// <summary>CX-108: is the head light on? <see cref="LightRegistry"/>'s cap asks, because a lit head light
+    /// costs the area two of its <c>GetMaxLights</c> slots exactly as it does here.</summary>
+    internal static bool HeadLightOn => _headLight != null && *_headLight != 0;
+
+    /// <summary>CX-108: the two slots a lit head light costs, for the registry's cap.</summary>
+    internal static int HeadLightCost => HeadLightSlots;
 
     /// <summary>How many of this frame's lights may be LIT at once: <c>GetMaxLights</c> less the headlight's
     /// two slots and -- while a single gob is previewed in isolation -- no further than the run of leading

@@ -216,7 +216,7 @@ internal static class ShaderContract
             ("uTile", AlloyRenderer.PbTile), ("uGrid", AlloyRenderer.PbGrid), ("uReach", AlloyRenderer.PbReach),
             ("uFalloff", AlloyRenderer.PbFalloff), ("uWrap", AlloyRenderer.PbWrap), ("uZ", AlloyRenderer.PbZ),
             ("uAtten", AlloyRenderer.PbAtten), ("uHot", AlloyRenderer.PbHot), ("uSss", AlloyRenderer.PbSss),
-            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim) };
+            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim), ("uRelevance", AlloyRenderer.PbRelevance) };
         foreach ((string name, int off) in pinned)
         {
             int at = Std140Offset(members, name, out int size);
@@ -432,7 +432,7 @@ internal static class ShaderContract
                   // silent and wrong by exactly itself.
                   && OwnedLitFsMain.Contains("cxSpecScale = (uMaterial.x > 0.5 ? vec3(1.0) : specColor) * CxSpecBase(NoV, rough)")
                   && !OwnedLitFsMain.Contains("* (specColor * CxSpecBase(")
-                  && AlloyLights.FragmentLib.Contains("vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L);")
+                  && AlloyLights.FragmentLib.Contains("vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L, spread);")
                   && MaterialLib.Contains("vec3 s = lobe * cxSpecScale;")
                   && OwnedLitFsHead.Contains("#define CX_LIT_MATERIAL 1")
                   && AlloyLights.FragmentLib.Contains("vec3 CxClusteredLight(")
@@ -456,8 +456,10 @@ internal static class ShaderContract
                   && OwnedLitFsMain.Contains("uCapture != 1 && uProbeMips > 0.0")
                   && OwnedLitFsMain.Contains("if (int(d.feat.x) == CX_FEAT_SKIN || d.feat.w < 0.0) discard;")
                   && OwnedLitFsMain.Contains("frag = vec4(lit, 1.0 / max(distance(vWorld, uEyePos), 1e-3));")
-                  // ...and CX-51's record: the weight the probe term took is the one Ssr swaps the screen in under
-                  && OwnedLitFsMain.Contains("CxReflOut(N, rough, reflW")
+                  // ...and CX-51's record: the weight the probe term took is the one Ssr swaps the screen in
+                  // under -- R4 widened it to the stronger of the base weight and the water film's, at the
+                  // roughness the film's own lobe has where it dominates (both collapse to the base dry)
+                  && OwnedLitFsMain.Contains("CxReflOut(N, mix(rough, cxCoatRough, wxFilm), max(reflW, reflFilm)")
                   // #124/#132: the dissolve and the fog, and the order they apply in. Both are LINEAR now --
                   // #124 welded the engine's keyhole-then-encode-then-fog order and #132 unwelded it, so the
                   // whole tail is one linear expression and the encode is the resolve's. Swap the two and

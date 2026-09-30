@@ -170,7 +170,35 @@ teardown, and even sky's `Scene` pointer and drawn-generation are reachable no o
 | Extra `.mtr` slots texture11+ (`MaterialExtraSlots`, #275) | `SharedMaterial::ParseField` hook records the name, `SharedMaterial::Init` hook loads it (`LoadTexture` = an ADDREF'd `AurTextureGetReference`) | `SharedMaterial::~SharedMaterial` hook: `AurTextureRelease` per still-live pointer, entry freed. **No registry `Revoke`** -- the reference lives exactly as long as the engine's own eleven do | the three hooks (`MaterialExtraSlots.Initialize`) | none -- holds no GL; the texture is the engine's |
 | Chart table `(slot, item) -> arena ranges` + both arena mirrors (`MeshChart`, #673) | `MeshChart.Offer` claims on the enrollment walk, `MeshChart.Pump` files the worker's result | `MeshChart.Revoke` clears the table and rewinds both arenas; `ForgetSlot` on a re-pointed VDO slot (`ForgetLodSlot`) | registry `Revoke`; `Enroll.cs` slot reuse | `MeshChart.ContextLost` forgets the three names, keeps the mirrors |
 | Bake rects `key -> page rect`, per-slot bake records, the static-light classification (`LightmapBake`, #674) | `LightmapBake.Enrol` from the staging loop's chart pick; a rect lands from the cache thread (`Adopt`) or the page finish; the classification on the light walk | `LightmapBake.Revoke` forgets every rect and record and rewinds the page packing (the page textures stay, re-packed from zero); `Vacate` from `FreeSlot`; the classification voids on the world edge, a registry-count change and the `ComputeStaticLighting` hook | registry `Revoke`; `Enroll.cs` slot reuse | `LightmapBake.ContextLost` forgets the pages, scratch pair, cube, PBO, programs and the record buffer, then `Revoke` |
+| Light registry `_id/_gob/_root` keyed on `PartLight*` (`LightRegistry`, CX-108) | `LightRegistry.Visit` (the `NonMeshParts` seam) and `WalkDone`'s own BSP light pass; the two area terms are picked in `Select` | `LightRegistry.Revoke` clears the table and both area terms; per light `Drop` from `WalkDone`'s sweep (left the scene) or `Died` (`Part::~Part`, which marks the slot FREED so a recycled address is re-recorded) | registry `Revoke`; `DrawFunnelService` -> `NonMeshParts.Died` | none -- CPU only |
+| Scene-part registry + per-class lists (`SceneParts`, CX-104) | `NonMeshParts.Visit` down a gob's part tree, plus `SceneParts.WalkDone`'s own BSP scan of each tile's `TileData+0x30` part list; classified by the `Part::AsPart*` virtuals | `SceneParts.Reset`; per entry the walk-generation `Sweep` (the part left the scene) and `Died` (`Part::~Part`, which zeroes the dense-list slot IMMEDIATELY rather than at the next walk -- a consumer reading the list in between would deref freed memory) | registry `Revoke`; `NonMeshParts.Died` | none -- CPU only |
+| Tile registry, boxes, fade-part slabs and both fade factors (`TileFadeRamp`, CX-104) | `SceneParts`' BSP scan: `NoteTile` interns the `TileData*`, `NoteTilePart` grows the box and records the `tilefade 1` surfaces | `TileFadeRamp.Reset`; per tile `EndRebuild` frees a tile the rebuild did not reach. A tile that SURVIVES a rebuild keeps its fade and reveal factors deliberately -- a placeable spawning bumps the scene epoch, and snapping every roof back to opaque there would be visible | registry `Revoke` via `SceneParts.Reset` | none -- CPU only |
+| Gob registry `_key/_raw/_rawTree/_term/_movedAt/_markAt` keyed on `Gob*` (`GobXform`, CX-103) | `GobXform.Tick`, one entry per gob in `Scene+0x130`; `Mark` inserts one for a gob a runtime names before the first `Tick` sees it | **`GobXform.AreaEdge()` only** -- there is no gob death notice to hook (`DrawFunnelService` hooks `Part::~Part`, `Gob::Append` and `Gob::Amputate`, not `Gob::~Gob`), so a gob that dies mid-area leaves its entry standing until the area edge | registry `Revoke` (`AlloyRenderer.AreaEdge`) | none -- CPU only |
+| Pending LOD swaps `_pKey/_pWant/_pAt/_pCoolAt` keyed on `Gob*` (`GobLod`, CX-105) | `OnSetLod` registers one when it wants a level change; the engine calls it only for gobs it has just walked, so the key is live at insert | `GobLod.Reset()` on the area edge and on `alloy.ownlod`; per entry on commit, on the camera coming back inside the band, and on the `PendingMax` timeout. A registration is never a write to the engine, so a forgotten one needs no undo | registry `Revoke`; the knob | none -- CPU only |
+| Owned grass bin list (`GrassField.Bins`, CX-104) | `RefreshOwnedBins`, once per `PassGen`, from `Scene+0x1d0` (the scene's own bin grid) | rebuilt wholesale every pass generation -- it is a per-frame list, not a table, so a freed bin can only be read for the frame the grid still names it | — | none -- CPU only; the patch table it feeds is `GrassField.Forget`'s |
 | Bindless handle cache `_hTid/_hVal/_hRes` | `AlloyRenderer.HandleFor` | `DropHandle`, per owned name, from `OwnedTextures.Drain` before the texture is deleted | — the enrollment `WipeHandles` is now a no-op while `ownedtex` is armed (#220) | `Issue.ForgetHandles`, via `OwnedTextures.ContextLost` |
+
+### `GobXform`'s registry has no gob death notice, and why that is safe
+
+The two `Gob*`-keyed tables above are the only ones on this page revoked by the area edge alone. There is no
+`Gob::~Gob` hook, so the question is what happens between a gob dying and the next area edge.
+
+- **Nothing iterates a dead gob.** `Tick` walks `Scene+0x130`, which the engine unlinks the gob from
+  (`Scene::ChildRemove` @0x462cc0), and `DriveSkipped` walks the same list. `Moved` compares a pointer and
+  never dereferences it.
+- **The one place a gob IS dereferenced** -- `RootTerm`/`Read`/`AttachScale` under `Compose` -- is reached only
+  from a slot that passed `RouteLive`, i.e. behind `PartTable.EntryLive`. `Gob::~Gob` @0x444140 calls the
+  deleting destructor of its part tree at `gob+0x90`, so `Part::~Part` fires for every part of the ACTIVE root
+  before the gob's own memory goes; that is the notice, and it is the same one the pre-existing
+  `RouteLive` LOD read and `AlloyCensus.GobDiffuseMul` already wait on. A gob does not outlive its parts'
+  destruction. (The dtor does **not** destruct `gob+0x98`/`+0xa0`, so an inactive LOD root's parts are leaked
+  by the engine rather than freed -- their records are reclaimed by `SceneWalk.Sweep` as unreachable, and a
+  `Find` on one of them until then matches live memory.)
+- **A recycled address** is the residual: a new gob allocated where a dead one stood inherits the entry. The
+  cheap change-detection set therefore includes `gob+0x90`, which a fresh `CreateInstanceTree` makes different
+  -- so the new tenant reads MOVED and its cached term is recomputed on the frame it first appears. Without
+  that column the window was one frame, and only for a new gob whose raw position, orientation and scale base
+  were bit-identical to the dead one's.
 
 Two more pointer-keyed tables are **enrollment-scoped scratch**, listed for completeness rather than
 because they have an edge: `AlloyRenderer._mKey/_mVal` (the material→texture-sort-key intern, cleared

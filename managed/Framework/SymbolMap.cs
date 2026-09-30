@@ -877,9 +877,14 @@ internal static unsafe class SymbolMap
     public const string FullDynamicLighting = "g_bFullDynamicLighting";
     /// <summary>#233: <c>triggerbucket</c> @0x19abbd0 -- the trigger draw bucket, a
     /// <c>CExoArrayList&lt;Part*&gt;</c> whose COUNT sits at <c>+8</c> (the <c>DAT_01aabbd8</c> that
-    /// <c>Scene::DoTriggerBucket</c> and <c>Scene::DoHighlightTriggers</c> both gate on). Refilled by
-    /// <c>Scene::AddPartsToDrawBuckets</c> before RSP and reset by <c>ClearBuckets</c> after, so it is
-    /// already correct when the shim reads it. Data symbol; read only.</summary>
+    /// <c>Scene::DoTriggerBucket</c> and <c>Scene::DoHighlightTriggers</c> both gate on).
+    /// <para>CX-104 correction: its writer is <b>the BSP visitor @0x481000</b>, not
+    /// <c>Scene::AddPartsToDrawBuckets</c> -- the visitor appends every <c>PartTrigger</c> of a visited node
+    /// that <c>PartOutside</c> keeps, and <c>ClearBuckets</c> @0x47f4e0 (also inside <c>ManageSceneBSP</c>)
+    /// zeroes the count. The string <c>triggerbucket</c> appears nowhere in the bucket build's decompilation.
+    /// So the bucket is filled and cleared entirely inside the walk <c>alloy.skipbuckets=3</c> skips, which is
+    /// what made <see cref="CX.Alloy.SceneParts"/>' own trigger registry the population rather than a
+    /// preference. Data symbol; read only.</para></summary>
     public const string TriggerBucket = "triggerbucket";
     /// <summary>#330: <c>gobbucket</c> @0x19abbf0 -- the engine's per-frame VISIBLE gob list, a
     /// <c>CExoArrayList&lt;Gob*&gt;</c> (items at +0, count at +8). <c>ManageSceneBSP</c> @0x47fa80 refills it from
@@ -924,9 +929,12 @@ internal static unsafe class SymbolMap
     public const string RefreshHilite = "_ZN12CNWCAnimBase13RefreshHiliteEv";
     /// <summary>#330: <c>fadingoutbucket</c> @0x19abba0 and <c>fadinginbucket</c> @0x19abbb0 -- the tiles whose
     /// fade factor is being stepped this frame. <c>HandleFadingOutBucket</c> @0x47f870 /
-    /// <c>HandleFadingInBucket</c> @0x47f670 write <c>TileData+0x74</c> for each member from
-    /// <c>ManageSceneBSP</c>, which commits +0x74 into the live +0x70 at its top on the next frame. Same
-    /// list layout as <see cref="GobBucket"/>. Data symbols; read only.</summary>
+    /// <c>HandleFadingInBucket</c> @0x47f670 read <c>TileData+0x70</c> and write <c>TileData+0x74</c> for each
+    /// member from <c>ManageSceneBSP</c>, which commits +0x74 into the live +0x70 at its top on the next frame
+    /// -- and, in the same inlined <c>ResetTileFading</c> loop, sets the <c>+0xc0</c> fade-state enum back to
+    /// its unclassified 4 and zeroes <c>Scene+0x1b0</c>. So the whole ramp, both ends of it, lives inside the
+    /// walk <c>alloy.skipbuckets=3</c> skips (see <see cref="CX.Alloy.TileFadeRamp"/>). Same list layout as
+    /// <see cref="GobBucket"/>. Data symbols; read only.</summary>
     public const string FadingOutBucket = "fadingoutbucket", FadingInBucket = "fadinginbucket";
     // ---- the engine draw funnel Alloy sits on, Linux-only -> DrawFunnelService stands down on Windows ----
     /// <summary>#125: Scene::RenderSkyBoxes() @0x466910 -- the whole per-area skybox draw, called from
@@ -960,6 +968,44 @@ internal static unsafe class SymbolMap
     /// ABI: <c>(Gob* /*rdi*/)</c>.</summary>
     [Fn("void(Gob this)")]
     public const string GobProcessGob = "_ZN3Gob10ProcessGobEv";
+    // ---- CX-104: the in-view-volume byte, gob+0x1b. ManageSceneBSP @0x47fa80 runs it in TWO phases --
+    //      step 3 clears it on EVERY gob in Scene+0x130 (_global.c:809816, the vtable +0x2b8 call the
+    //      bypass research had down as a "bounds refresh"; it is Gob::DisableInViewVolume), then the BSP
+    //      visitor @0x481000 sets it on every gob a visited node holds that survives GobOutside. The two
+    //      phases are not interchangeable: Enable PROPAGATES to the gob's attachments, so setting and
+    //      clearing in one pass would let a later clear undo a propagated set. CX.Alloy.ScenePrep keeps
+    //      the two phases when alloy.skipbuckets=3 stands that walk down.
+    /// <summary><c>Gob::DisableInViewVolume()</c> @0x436f30 -- the whole body is <c>gob+0x1b = 0</c>. Vtable
+    /// slot +0x2b8, and the call <c>ManageSceneBSP</c> makes over every gob in the scene before it traverses.
+    /// Called rather than written directly so an override, if one ever appears, still runs.
+    /// ABI: <c>(Gob* /*rdi*/)</c>.</summary>
+    [Fn("void(Gob this)")]
+    public const string GobDisableInViewVolume = "_ZN3Gob19DisableInViewVolumeEv";
+    /// <summary><c>Gob::EnableInViewVolume()</c> @0x436f10 -- <c>gob+0x1b = 1</c> and then
+    /// <c>this-&gt;vt[0x2a0]("propagateviewvolume", 0)</c>, i.e. <c>Gob::DoEvent</c>, which is how an attached
+    /// gob inherits its host's verdict. That propagation is the reason this is CALLED and not a byte store.
+    /// Vtable slot +0x2b0; the BSP visitor @0x481000 is its only engine caller.
+    /// ABI: <c>(Gob* /*rdi*/)</c>.</summary>
+    [Fn("void(Gob this)")]
+    public const string GobEnableInViewVolume = "_ZN3Gob18EnableInViewVolumeEv";
+    /// <summary><c>GobOutside(Gob*, List&lt;Plane&gt;&amp;)</c> @0x47a4f0 -- the engine's own per-gob frustum
+    /// test, and the one the BSP visitor gates <see cref="GobEnableInViewVolume"/> on. Builds the gob's world
+    /// bounding sphere from its own virtuals -- centre = <c>GetPosition() + GetRotation() * (gob+0x17c)</c>,
+    /// radius = <c>GetAdjustedScale() * (gob+0x178)</c> -- and returns 1 as soon as <c>SphereAbovePlane</c> is
+    /// positive against any plane in the list, i.e. OUTSIDE. Called, not transcribed: it reads the camera's
+    /// own plane array and reproducing the three virtuals would put a second copy of the engine's bounding
+    /// sphere in the repo. ABI: <c>(Gob* /*rdi*/, List&lt;Plane&gt;* /*rsi*/) -&gt; int /*eax*/</c>.</summary>
+    [Fn("int(Gob this, IntPtr planes)")]
+    public const string GobOutside = "_Z10GobOutsideP3GobR4ListI5PlaneE";
+    /// <summary><c>CExoArrayList&lt;Gob*&gt;::Add(Gob*)</c> @0x445f50 -- the append <c>ManageSceneBSP</c> step 11
+    /// builds <see cref="GobBucket"/> with. Called rather than written, because the list GROWS: the count at
+    /// <c>+8</c> against the allocation at <c>+0xc</c> is the engine's bookkeeping and a hand-rolled store past
+    /// the allocation is a heap overrun. Idempotent in the sense that matters here -- the caller clears the
+    /// count first, exactly as <c>ClearBuckets</c> @0x47f4e0 does.
+    /// ABI: <c>(CExoArrayList&lt;Gob*&gt;* /*rdi*/, Gob* /*rsi*/)</c>.</summary>
+    [Fn("void(IntPtr list, IntPtr gob)")]
+    public const string GobListAdd = "_ZN13CExoArrayListIP3GobE3AddES1_";
+
 
     // ---- #130/#261: the beam globals. Beams are NOT walked by Scene::RenderDrawBucket -- they live in
     //      DRAW BUCKET 15, which Scene::RenderBeams @0x46aba0 (vt+0x1d8) walks with its own program and its
@@ -1257,6 +1303,12 @@ internal static unsafe class SymbolMap
     /// per frame is the whole maintenance signal for the enumerated record set (ADR 0018: re-read, never
     /// infer). Global, so a GUI 3D panel bumps it too -- which is the measurement #256 owes.</summary>
     public const string SceneSequence = "_ZN5Scene8SequenceE";
+    /// <summary>CX-104: <c>Scene::geomFadeEnabled</c> @0x18aa19c -- the "Hide second-story tiles" option as the
+    /// tile fade reads it. <c>graphics.second-story-tiles.mode</c> (0/1/2, default 1) reaches it through
+    /// <c>CNWCArea::SetHideFadeGeometryMode</c> @0x704ef0 -> Scene vtable +0xb8, i.e.
+    /// <c>Scene::SetGeomFadeProperties</c> @0x45e1d0, as 1 (automatic), 2 (never) and 4 (always). Data symbol;
+    /// read only.</summary>
+    public const string GeomFadeEnabled = "_ZN5Scene15geomFadeEnabledE";
     /// <summary>#256: <c>countpart</c> @0x18da6b8 -- the engine's own live-part census, incremented in
     /// <c>Part::Part</c> and decremented in <c>Part::~Part</c>. The bring-up validator: it counts every
     /// <c>Part</c> in every scene (GUI panels included), so it is an upper bound on the walk, never an
@@ -1526,6 +1578,44 @@ internal static unsafe class SymbolMap
     /// <see cref="LightFade"/> fades IN. Static, no <c>this</c>.</summary>
     [Fn("int()")]
     public const string LightMgrGetMaxLights = "_ZN12LightManager12GetMaxLightsEv";
+
+    // ---- CX-104: the three LightManager steps ManageSceneBSP @0x47fa80 makes around its BSP walk
+    //      (vtable +0x38, +0x40 then +0x10, decompiled at _global.c:809916/809917/809988). Under
+    //      alloy.skipbuckets=3 that walk does not run, so CX.Alloy.ScenePrep makes them itself, in the
+    //      engine's order. Called DIRECTLY and not through the vtable: _ZTV12LightManager is the only
+    //      LightManager vtable in the binary (no derived class), so the concrete function IS what the
+    //      vcall dispatches to. All three are name-exported on both builds.
+    /// <summary><c>LightManager::UpdateLights()</c> @0x4c06c0 -- walks the master light list and refreshes
+    /// every <c>PartLight</c>'s WORLD position (<c>+0xac</c>) through <c>Part::GetWorld</c>, then re-picks the
+    /// area diffuse (<c>LightManager+0x98</c>) and ambient (<c>+0xa0</c>) from the two lights whose range is
+    /// &gt;= 1000. <b>The only per-frame writer of <c>PartLight+0xac</c> anywhere in the client</b> -- the other
+    /// two are <c>AddLight</c> (registration) and <c>BSPCreateStaticProjections</c> (the per-area bake) -- and
+    /// Alloy reads that field as <c>light.Pos</c> in five places (the registry's candidacy and score, the fade
+    /// accumulation behind <c>focuslighting</c>, halo placement, the light snapshot). So this one is CALLED,
+    /// never skipped: dropping it freezes every light welded to a moving part at its last position and takes
+    /// <c>CNWCArea::GetIsDark</c> stale with it. ABI: <c>(LightManager* /*rdi*/)</c>.</summary>
+    [Fn("void(LightManager this)")]
+    public const string LightMgrUpdateLights = "_ZN12LightManager12UpdateLightsEv";
+    /// <summary><c>LightManager::SetupLightsForThisPositionAndRadius(Vector const&amp;, float)</c> @0x4c1df0 --
+    /// refills the per-frame candidate list (<c>LightManager+0x40</c>/<c>+0x48</c>) with the master lights that
+    /// are enabled, coloured, positive-intensity, under range 1000 and within
+    /// <c>GetLightAdjustedRadius + radius</c> of the point. <c>ManageSceneBSP</c> passes
+    /// <c>Scene::m_vSceneFocus</c> (<c>Scene+0x190</c>) and <c>max(45.0f, Scene+0x148 /*fog end*/)</c> -- the
+    /// float is invisible in the decompilation and was read off the disassembly at 0x480093.
+    /// <para><see cref="CX.Alloy.LightRegistry"/> reproduces this list, so on a live registry it is dead work;
+    /// it is called only for the <c>light.registry 0</c> A/B, whose fallbacks read the engine list directly.
+    /// </para>ABI: <c>(LightManager* /*rdi*/, Vector const* /*rsi*/, float /*xmm0*/)</c>.</summary>
+    [Fn("void(LightManager this, IntPtr pos, float radius)")]
+    public const string LightMgrSetupLights = "_ZN12LightManager35SetupLightsForThisPositionAndRadiusERK6Vectorf";
+    /// <summary><c>LightManager::PrioritizeLights(Vector const&amp;)</c> @0x4c0940 -- scores each candidate
+    /// (<c>PartLight+0x98</c> distance, <c>+0x9c</c> score), sorts the candidate list by it
+    /// (<c>PrioritizeIllumination</c>) and rebuilds the shadow list <c>LightManager+0x50</c>/<c>+0x58</c>
+    /// (<c>PrioritizeShadow</c>). Alloy's own cap and score replace the ordering, but the shadow list is what
+    /// <c>BSPCreateStaticProjections</c> reads on the AREA-LOAD bake, and whether a skipped frame can ever
+    /// precede that bake was not established -- so this is called too rather than dropped on an argument.
+    /// ABI: <c>(LightManager* /*rdi*/, Vector const* /*rsi*/)</c>.</summary>
+    [Fn("void(LightManager this, IntPtr pos)")]
+    public const string LightMgrPrioritizeLights = "_ZN12LightManager16PrioritizeLightsERK6Vector";
     /// <summary>CX-85: <c>CAurInternal::m_nHeadLightEnabled</c> @0x18aa03c -- a SHORT (2 bytes on both builds).
     /// Non-zero costs <see cref="LightFade"/> two light slots and adds the two headlight colours to the focus
     /// lighting, exactly as <c>ControlLightsFade</c> @0x4c2050 and <c>GetEmitterLighting</c> @0x4c1970 do.</summary>
@@ -1677,6 +1767,76 @@ internal static unsafe class SymbolMap
     public const string CtrlGetVector = "_ZN13NewController14GetVectorValueEfP7MdlNodeR6Vector";
     /// <summary>CX-28: the float <c>GetVectorValue</c> multiplies a position track by (both builds). Data symbol; read only.</summary>
     public const string PositionScaleFactor = "position_scale_factor";
+
+    // ---- CX-106 anim: the owned animation runtime (docs/research/anim-runtime.md) ----
+    // Every symbol in this block is NAME-EXPORTED by nwmain.exe, so the block carries no RVA row.
+
+    /// <summary><c>Scene::Animate(float dt)</c> @0x469810 -- the whole per-frame animation walk: latch the
+    /// <c>currentscene</c> global, dispatch <see cref="EngineLayout.GobAnimateSlot"/> over
+    /// <c>Scene+0x130</c> from the END of the list to the front, clear the latch. Virtual (Scene vtbl +0x28 /
+    /// Windows +0x20) with one implementation, so hooking the symbol catches every caller --
+    /// <c>CGuiMan::UpdateAndRender</c> runs it once per <c>CSceneView</c> (the world viewport and every GUI
+    /// scene are entries in the same list) plus two overlay views, and <c>CGuiPanel::AnimateScene</c> adds
+    /// ad-hoc ones. It does NOT touch <see cref="EngineLayout.SceneAnimFrame"/> -- <c>Scene::Render</c>
+    /// @0x4762d0 does.</summary>
+    [Fn("void(Scene this, float dt)")]
+    public const string SceneAnimate = "_ZN5Scene7AnimateEf";
+    /// <summary><c>NewController::GetFloatValue(float t, MdlNode*, float&amp;)</c> @0x498480 -- a scalar
+    /// track's value. The owned runtime evaluates linear tracks itself and calls this only for a BEZIER one,
+    /// whose control-point arithmetic differs from the vector overload's in a way that looks like an engine
+    /// bug (docs/research/anim-runtime.md section 8); reproducing that is pure risk.</summary>
+    [Fn("int(NewController self, float t, IntPtr node, float* v)")]
+    public const string CtrlGetFloat = "_ZN13NewController13GetFloatValueEfP7MdlNodeRf";
+    /// <summary><c>NewController::ReportKeys(Part*, MdlNode*, float from, float to)</c> @0x498b20 -- the
+    /// per-key TRACE channel, run after every controller of a node while <c>AnimRun::m_pTraceRun</c> is set
+    /// (<c>AnimRun</c> flag 0x100 only). It reaches game code through <c>DoEvent("ReportKey", ...)</c>, so
+    /// the owned runtime calls the engine's own rather than port a path nothing in ordinary play arms.</summary>
+    [Fn("void(NewController self, IntPtr part, IntPtr node, float from, float to)")]
+    public const string CtrlReportKeys = "_ZN13NewController10ReportKeysEP4PartP7MdlNodeff";
+    /// <summary><c>PartEmitter::CalculateRadius()</c> @0x4ac350 -- what
+    /// <c>MdlNodeEmitter::InternalControl</c> does AFTER its controller pass, and the only work any of the
+    /// six subclass controllers adds beyond a discarded type check.</summary>
+    [Fn("void(IntPtr emitter)")]
+    public const string EmitterCalcRadius = "_ZN11PartEmitter15CalculateRadiusEv";
+    /// <summary><c>CExoArrayList&lt;AnimRun*&gt;::Remove(AnimRun*)</c> @0x49f290 -- linear find then
+    /// <c>DelIndex</c>; order-preserving. The owned queue advance removes exactly where the engine does.</summary>
+    [Fn("void(IntPtr list, IntPtr run)")]
+    public const string AnimRunListRemove = "_ZN13CExoArrayListIP7AnimRunE6RemoveES1_";
+    /// <summary><c>CExoArrayList&lt;AnimRun*&gt;::DelIndex(int)</c> @0x49f240 -- the look-at teardown's
+    /// removal, which unlinks WITHOUT freeing the run.</summary>
+    [Fn("void(IntPtr list, int index)")]
+    public const string AnimRunListDelIndex = "_ZN13CExoArrayListIP7AnimRunE8DelIndexEi";
+    /// <summary><c>CExoArrayList&lt;SafePointer&lt;CAurObject&gt;*&gt;::Add</c> @0x49f3f0 -- registers the
+    /// death notice <c>Gob::Animate</c> takes on itself before it runs any game code. Called rather than
+    /// reimplemented because the growth path is the engine's allocator.</summary>
+    [Fn("void(IntPtr list, IntPtr safePointer)")]
+    public const string SafePointerAdd = "_ZN13CExoArrayListIP11SafePointerI10CAurObjectEE3AddES3_";
+    /// <summary>DATA: <c>AnimRun::m_pTraceRun</c> @0x19ac168, with <c>m_AnimFlags</c> @0x19ac170 and
+    /// <c>m_AnimLength</c> @0x19ac164 -- the three globals a flag-0x100 run publishes for the duration of
+    /// its pose, and the only thing that arms <see cref="CtrlReportKeys"/>.</summary>
+    public const string AnimTraceRun = "_ZN7AnimRun11m_pTraceRunE";
+    /// <inheritdoc cref="AnimTraceRun"/>
+    public const string AnimTraceFlags = "_ZN7AnimRun11m_AnimFlagsE";
+    /// <inheritdoc cref="AnimTraceRun"/>
+    public const string AnimTraceLength = "_ZN7AnimRun12m_AnimLengthE";
+    /// <summary>The seven <c>MdlNode*Control</c> thunks a node constructor installs at
+    /// <see cref="EngineLayout.MdlNodeControl"/>. They are the node's CLASS, as the animation runtime sees
+    /// it: <see cref="CX.Alloy.AnimHierarchy"/> compares the field against these addresses and hands a node
+    /// it does not recognise straight back to its own pointer.</summary>
+    public const string MdlNodeControlFn = "_Z14MdlNodeControlPvP4Partfff";
+    /// <inheritdoc cref="MdlNodeControlFn"/>
+    public const string MdlNodeAnimMeshControlFn = "_Z22MdlNodeAnimMeshControlPvP4Partfff";
+    /// <inheritdoc cref="MdlNodeControlFn"/>
+    public const string MdlNodeCameraControlFn = "_Z20MdlNodeCameraControlPvP4Partfff";
+    /// <inheritdoc cref="MdlNodeControlFn"/>
+    public const string MdlNodeEmitterControlFn = "_Z21MdlNodeEmitterControlPvP4Partfff";
+    /// <inheritdoc cref="MdlNodeControlFn"/>
+    public const string MdlNodeLightControlFn = "_Z19MdlNodeLightControlPvP4Partfff";
+    /// <inheritdoc cref="MdlNodeControlFn"/>
+    public const string MdlNodeReferenceControlFn = "_Z23MdlNodeReferenceControlPvP4Partfff";
+    /// <inheritdoc cref="MdlNodeControlFn"/>
+    public const string MdlNodeTriMeshControlFn = "_Z21MdlNodeTriMeshControlPvP4Partfff";
+
     /// <summary><c>CNWCAnimBase::GetAnimationName(ushort)</c> @0x9ccd80 -- a creature's anim id to its animation name
     /// (vtable +0x60), then <c>GetAnimationReplace</c>. <c>SetAnimation</c>, <c>GetAnimationLength</c> and
     /// <c>GetAnimationTime</c> all resolve through it, so an id swapped here swaps the length and pacing too. Returns
@@ -1707,6 +1867,11 @@ internal static unsafe class SymbolMap
     // NULL, NULL, NULL, 0, false) loads/caches a CAurTexture*; AurTextureGetTID(tex) returns its GL
     // texture id (0 until the engine's RefreshTextures pass uploads it). Chat portraits (#26) bind it
     // directly -- no decode, no upload. See ConvertPortrait for the H/L/M/S/T size suffixes.
+    // CX-110: AlloyEnvMap's per-frame env-map lookup is this same call. It returns a BORROWED pointer and
+    // takes no reference (AurTextureGetReference @0x48e480 is this plus a second call that passes the result
+    // back in argument 2), which is the whole reason the env map keeps the resref and re-fetches every world
+    // frame rather than holding a pointer -- the engine frees AND RELOADS its textures on an area transition
+    // (agent memory aurtexture-lifetime), and a reference taken over that cannot be released safely.
     [Fn("IntPtr(byte* name, IntPtr tex, byte* plt, int* scheme, int count, byte byName)")]
     public const string AurTextureGet    = "_Z13AurTextureGetPKcP11CAurTextureS0_Piib";
     [Fn("int(IntPtr tex)")]
@@ -1910,6 +2075,32 @@ internal static unsafe class SymbolMap
     public const string ManageSceneBSP         = "_Z14ManageSceneBSPP5Scene";
     [Fn("long(Scene this)")]
     public const string AddPartsToDrawBuckets  = "_ZN5Scene21AddPartsToDrawBucketsEv";
+    // ---- CX-103/104/105: the scene pipeline's own symbols ----
+    /// <summary>CX-103: <c>LerpFloat::Lerped() const</c> @0x5f8fc0 -- the engine's interpolator, evaluated
+    /// against its own <c>CWorldTimer</c> clock. Alloy calls it on <see cref="EngineLayout.GobScaleLerp"/> for
+    /// each ancestor of an attached gob, which is the scale term the gob loop of
+    /// <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 folds in and <c>Part::GetWorld</c> does not.
+    /// Windows: name-exported <c>?Lerped@LerpFloat@@QEBAMXZ</c>.</summary>
+    [Fn("float(LerpFloat this)")]
+    public const string LerpFloatLerped = "_ZNK9LerpFloat6LerpedEv";
+    /// <summary>CX-105: <c>Gob::SetLODModel()</c> @0x43e6a0 -- rotates a gob's three part-tree roots
+    /// (<c>gob+0x90/0x98/0xa0</c>) and their three <c>Model*</c> (<c>gob+0x68/0x70/0x78</c>) so the ACTIVE pair
+    /// is at <c>+0x90</c>/<c>+0x68</c>, writes the level to <see cref="EngineLayout.GobLodLevel"/>, calls
+    /// <c>Gob::Reset</c> and sets <see cref="EngineLayout.GobGeomDirty"/>. Its only caller is the BSP visitor
+    /// @0x481000, once per in-view gob per frame, which is why <see cref="CX.Alloy.SceneWalk"/> had to
+    /// enumerate all three roots. Alloy hooks it to CHOOSE the level (it writes
+    /// <see cref="EngineLayout.GobLodDist2"/>, calls the original so the engine does its own swap, then
+    /// restores the field) and to learn the swap edge. Windows: name-exported
+    /// <c>?SetLODModel@Gob@@QEAAXXZ</c>.</summary>
+    [Fn("void(Gob this)")]
+    public const string GobSetLODModel = "_ZN3Gob11SetLODModelEv";
+    /// <summary>CX-105: <c>g_bEnableLOD</c> @0x18aa148 (int) and <c>g_fLODScaleFactor</c> @0x18aa14c (float) --
+    /// the two globals <c>Gob::SetLODModel</c> reads. Alloy's chooser honours both, so the console variables
+    /// keep meaning what they say. Data symbols; read only.</summary>
+    public const string EnableLod = "g_bEnableLOD";
+    /// <inheritdoc cref="EnableLod"/>
+    public const string LodScaleFactor = "g_fLODScaleFactor";
+
     /// <summary>The BSP visit callback's per-frame tile-part lists that AddPartsToDrawBuckets' six flat loops
     /// consume. meshbuckets/fadebuckets are <c>List&lt;Bucket&gt;</c> objects (CExoArrayList: items at +0,
     /// count at +8, alloc at +0xc) whose 16-byte {items, count} pairs live on the heap, one per texture id
@@ -2475,6 +2666,124 @@ internal static unsafe class SymbolMap
     [Fn("void(byte* text, int col, int row, float r, float g, float b, float a, byte* font)")]
     public const string AurPrintString = "_Z14AurPrintStringPKciiffffS0_";
 
+    // ---- CX-109/110 ----
+    /// <summary><c>Camera::RenderScene()</c> @0x4a7920 -- the per-view loop: viewport and upscale, the
+    /// perspective/ortho and view transforms, the world-space frustum planes, the <c>CurrentCamera</c> latch,
+    /// the GUI depth range and its once-per-run depth clear, and then <c>Scene::Render</c> through the Scene's
+    /// vtable +0x20. Every view goes through it -- the world view and each <c>CGuiPanel</c> 3D view -- and
+    /// every call is VIRTUAL (the binary has no direct caller), so the hook sits on the function itself and
+    /// tells world from GUI by <c>Scene+0x188</c>. <see cref="CX.Alloy.AlloyCamera"/> measures each view here
+    /// and then calls the original, whose remaining outputs are the BSP frustum, the model matrix stack and
+    /// the GUI views' own state (docs/research/camera-loop.md §1).</summary>
+    [Fn("void(Camera this)")]
+    public const string CameraRenderScene = "_ZN6Camera11RenderSceneEv";
+    /// <summary><c>CNWTileSet::GetEnvMapResRef()</c> @0x5e10a0 -- the tileset's environment-map name, a
+    /// 17-byte <c>CResRef</c> copied straight out of <c>CNWTileSet+0x32</c> and returned BY VALUE, so the
+    /// hidden buffer is ordered per OS by the <c>sret</c> declaration (#456). <c>Scene::Render</c> @0x4762d0
+    /// is its only caller; <see cref="CX.Alloy.AlloyEnvMap"/> is the second.</summary>
+    [Fn("sret(CNWTileSet this)")]
+    public const string TileSetGetEnvMapResRef = "_ZN10CNWTileSet15GetEnvMapResRefEv";
+    /// <summary><c>Camera::UpscaleViewport(float* screenViewport, float* cameraRect, float* out)</c> @0x5a44b0
+    /// -- the GUI-scale rewrite of a panel view's viewport. It is a pure QUERY (it writes nothing but its
+    /// 10-float <c>out</c>: rect at 0..3, a mode at 4, two offsets at 5/6, two centring terms at 7/8 and the
+    /// scale at 9) and it is a table of ~20 named <c>sceneGUI_*</c> panels behind
+    /// <c>|CAurora::GetGUIScale() - 1| &gt;= 0.09</c>, so it answers false for the WORLD view on every client.
+    /// <see cref="CX.Alloy.AlloyCamera"/> calls it for a GUI view rather than porting the table: the table is
+    /// the engine's layout policy, not render arithmetic, and what Alloy needs from it is the rect its own
+    /// projection and view matrices are built at (docs/research/camera-loop.md §1).</summary>
+    [Fn("byte(Camera this, float* screenViewport, float* cameraRect, float* into)")]
+    public const string CameraUpscaleViewport = "_ZN6Camera15UpscaleViewportEPfS0_S0_";
+    /// <summary><c>WindManager::updateTimer(float dt)</c> @0x491200 -- the engine's own wind clock: advance the
+    /// blend, swap and refill the noise field pair at the period, and age the point sources out. Called from
+    /// <c>Scene::Render</c> @0x476520 and nowhere else, in the WORLD branch only, once per world frame,
+    /// whatever the renderer is doing. <see cref="CX.Alloy.AlloyWind"/> hooks it because that is what makes
+    /// its own clock advance on a vanilla frame too: the gusts it collects come from
+    /// <see cref="AddPointSourceWind"/>, which the engine calls whether or not Alloy draws
+    /// (docs/research/camera-loop.md §5).</summary>
+    [Fn("void(WindManager this, float dt)")]
+    public const string WindUpdateTimer = "_ZN11WindManager11updateTimerEf";
+
+    // ---- CX-107 behaviours ----
+    // The 13 CAurBehavior::Control implementations Alloy replaces, plus the four leaf engine calls the
+    // ports make. Every one is NAME-EXPORTED on nwmain.exe (`?Control@<Class>@@UEAAHM@Z`), so CX-107
+    // needed no RVA anchoring at all; the MSVC mangling also settles the declared signature as
+    // `virtual int Control(float)` for all thirteen. docs/research/behaviour-solvers.md §3, §6.
+    // CameraFollowControl is declared above (#536) and is the one of the thirteen that already existed.
+
+    /// <summary><c>CAurBehavior::Control(float)</c> @0x4a0510 -- the base solve: walk the dependency list
+    /// backwards calling each dependency's <c>CAurObject::Animate(dt)</c>, prune dead ones, then answer
+    /// "am I still the owner's behaviour". Nothing constructs a bare <c>CAurBehavior</c>; hooked anyway so
+    /// that if one ever exists, the port runs.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string BehaviorControl = "_ZN12CAurBehavior7ControlEf";
+    /// <summary><c>CAurBehaviorAttach::Control(float)</c> @0x4a2810 -- snaps the owner's position and
+    /// orientation to the parent part's world transform (<c>Part::GetWorld</c> straight into
+    /// <c>Gob+0xa8</c>/<c>+0xb4</c>), or detaches/deletes the owner when the parent has died. The base of
+    /// the whole VFX-on-a-hand family.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string AttachControl = "_ZN18CAurBehaviorAttach7ControlEf";
+    /// <summary><c>CAurBehaviorAttachTranslate::Control(float)</c> @0x4a2960 -- attach, then offset the
+    /// owner by <c>orientation * m_vTranslation</c> (<c>+0x70</c>).</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string AttachTranslateControl = "_ZN27CAurBehaviorAttachTranslate7ControlEf";
+    /// <summary><c>CAurBehaviorAttachRotate::Control(float)</c> @0x4a2ad0 -- attach, then post-multiply the
+    /// owner's orientation by <c>YawPitchRoll(m_vRotation.z, .x, .y)</c> (<c>+0x70</c>).</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string AttachRotateControl = "_ZN24CAurBehaviorAttachRotate7ControlEf";
+    /// <summary><c>CAurBehaviorAttachNoOrientation::Control(float)</c> @0x4a2bd0 -- attach position only:
+    /// the orientation is read before the snap and written back after.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string AttachNoOrientationControl = "_ZN31CAurBehaviorAttachNoOrientation7ControlEf";
+    /// <summary><c>CAurBehaviorAttachGUIScale::Control(float)</c> @0x4a2c80 -- attach, then divide the
+    /// owner's x and y (not z) by <c>CAurora::GetGUIScale()</c>.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string AttachGuiScaleControl = "_ZN26CAurBehaviorAttachGUIScale7ControlEf";
+    /// <summary><c>CAurBehaviorCrossSceneAttach::Control(float)</c> @0x58b5d0 -- the GUI's attach
+    /// (<c>GuiAurAttachToObject</c>): the same snap with the base walk flattened to the single parent, and
+    /// it always returns 1.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string CrossSceneAttachControl = "_ZN28CAurBehaviorCrossSceneAttach7ControlEf";
+    /// <summary><c>CAurBehaviorCrossSceneAttachWithOffset::Control(float)</c> @0x58c280 -- as above plus a
+    /// constant world offset at <c>+0x84</c>.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string CrossSceneAttachOffsetControl = "_ZN38CAurBehaviorCrossSceneAttachWithOffset7ControlEf";
+    /// <summary><c>CAurBehaviorSubwindow::Control(float)</c> @0x58b720 -- maps two dummy parts of a GUI
+    /// panel to the owning camera's viewport (<c>Camera::SetViewPort</c>). The GUI-scale surface of the 3D
+    /// panels (character appearance, the chat portraits).</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string SubwindowControl = "_ZN21CAurBehaviorSubwindow7ControlEf";
+    /// <summary><c>CAurBehaviorNavigate::Control(float)</c> @0x4a0660 -- the <c>navigate</c> console
+    /// function's free-fly: yaw/pitch rates and forward/strafe speeds, each consumed and cleared per
+    /// frame.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string NavigateControl = "_ZN20CAurBehaviorNavigate7ControlEf";
+    /// <summary><c>CAurBehaviorCameraLooseFollow::Control(float)</c> @0x4a1010 -- UNREACHABLE in this
+    /// build (no constructor call site anywhere) and unfinished: its body posts on-screen debug strings
+    /// every frame. Hooked so the stand-down is visible, not ported.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string CameraLooseFollowControl = "_ZN29CAurBehaviorCameraLooseFollow7ControlEf";
+    /// <summary><c>CAurBehaviorCameraOnAStick::Control(float)</c> @0x4a0c70 -- UNREACHABLE in this build
+    /// (no constructor call site); ported, but the port can never be exercised.</summary>
+    [Fn("int(IntPtr self, float dt)")]
+    public const string CameraOnAStickControl = "_ZN26CAurBehaviorCameraOnAStick7ControlEf";
+
+    /// <summary><c>CExoArrayList&lt;SafePointer&lt;CAurObject&gt;*&gt;::Add</c> @0x49f3f0 -- appends one
+    /// weak reference to an object's back-reference list (<c>CAurObject+0x08</c>), growing 0 -&gt; 16 -&gt;
+    /// 2n through the engine's allocator. Every solver registers a stack <c>SafePointer</c> on its owner so
+    /// that an owner destroyed inside a dependency's <c>Animate</c> is survivable; the port does the same,
+    /// through the engine's own list so the allocation is never the GC's.</summary>
+    [Fn("void(IntPtr list, IntPtr safePointer)")]
+    public const string SafePtrListAdd = "_ZN13CExoArrayListIP11SafePointerI10CAurObjectEE3AddES3_";
+    /// <summary><c>Camera::SetViewPort(float x, float y, float w, float h)</c> @0x4a38a0 -- what the
+    /// subwindow solver writes. Virtual, but the only implementation in either image, so it is called by
+    /// symbol rather than through a vtable slot nobody has measured.</summary>
+    [Fn("void(IntPtr camera, float x, float y, float w, float h)")]
+    public const string CameraSetViewPort = "_ZN6Camera11SetViewPortEffff";
+    /// <summary><c>Scene::GetObject(char const*)</c> @0x45e880 -- the by-name lookup the subwindow solver
+    /// uses to find <c>cameraGUI_pnl_chr_genm1</c>. Virtual with one implementation in either image.</summary>
+    [Fn("IntPtr(IntPtr scene, byte* name)")]
+    public const string SceneGetObject = "_ZN5Scene9GetObjectEPKc";
+
     /// <summary>A symbol's Windows resolution. Four forms and no fifth -- the point of #447: a missing key
     /// used to mean both "never looked" and "deliberately Linux-only", so the absence could not be counted.
     /// Now every constant has a row, <see cref="Nm"/>/<see cref="At"/> resolve, <see cref="LinuxOnly"/> is a
@@ -2515,6 +2824,26 @@ internal static unsafe class SymbolMap
         [ExoConfigGetLong]   = Nm("??$Get@_J@CExoConfig@@QEAA_JAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
         [ExoConfigGetDouble] = Nm("??$Get@N@CExoConfig@@QEAANAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@_N@Z"),
         [AurPrintString]     = Nm("?AurPrintString@@YAXPEBDHHMMMM0@Z"),   // CX-98: the whole Aurora layer is name-exported
+
+        // ---- CX-107 behaviours ----
+        // Read straight off nwmain.exe's export table (tools: docs/research/behaviour-solvers.md §6).
+        // All thirteen Controls are `?Control@<Class>@@UEAAHM@Z`: `H` return, `M` (float) argument, no
+        // by-value crossing, so one declared signature covers both platforms.
+        [BehaviorControl]               = Nm("?Control@CAurBehavior@@UEAAHM@Z"),
+        [AttachControl]                 = Nm("?Control@CAurBehaviorAttach@@UEAAHM@Z"),
+        [AttachTranslateControl]        = Nm("?Control@CAurBehaviorAttachTranslate@@UEAAHM@Z"),
+        [AttachRotateControl]           = Nm("?Control@CAurBehaviorAttachRotate@@UEAAHM@Z"),
+        [AttachNoOrientationControl]    = Nm("?Control@CAurBehaviorAttachNoOrientation@@UEAAHM@Z"),
+        [AttachGuiScaleControl]         = Nm("?Control@CAurBehaviorAttachGUIScale@@UEAAHM@Z"),
+        [CrossSceneAttachControl]       = Nm("?Control@CAurBehaviorCrossSceneAttach@@UEAAHM@Z"),
+        [CrossSceneAttachOffsetControl] = Nm("?Control@CAurBehaviorCrossSceneAttachWithOffset@@UEAAHM@Z"),
+        [SubwindowControl]              = Nm("?Control@CAurBehaviorSubwindow@@UEAAHM@Z"),
+        [NavigateControl]               = Nm("?Control@CAurBehaviorNavigate@@UEAAHM@Z"),
+        [CameraLooseFollowControl]      = Nm("?Control@CAurBehaviorCameraLooseFollow@@UEAAHM@Z"),
+        [CameraOnAStickControl]         = Nm("?Control@CAurBehaviorCameraOnAStick@@UEAAHM@Z"),
+        [SafePtrListAdd]      = Nm("?Add@?$CExoArrayList@PEAV?$SafePointer@VCAurObject@@@@@@QEAAXPEAV?$SafePointer@VCAurObject@@@@@Z"),
+        [CameraSetViewPort]   = Nm("?SetViewPort@Camera@@UEAAXMMMM@Z"),
+        [SceneGetObject]      = Nm("?GetObject@Scene@@UEAAPEAVCAurObject@@PEBD@Z"),
 
         // --- not exported (client GUI / CNWCMessage): Windows RVA, one per build in Framework/Builds/*.tsv.
         //     Anchored on build 0x68e408bc; see docs/windows-symbols.md for how each was. ---
@@ -2569,6 +2898,24 @@ internal static unsafe class SymbolMap
         [AnimGetName] = At(),   // the only user of "pausewalkfl" and "runfr" (and every "CustomNN" name)
         [SpawnHitVisuals] = At(),   // anchor: its own "SpawnHitVisuals" log tag, 5 refs all inside it
         [LookAtControl]      = Nm("?Control@LookAtAnimation@@UEAAXXZ"),
+        // ---- CX-106 anim ----
+        [SceneAnimate]              = Nm("?Animate@Scene@@UEAAXM@Z"),
+        [CtrlGetFloat]              = Nm("?GetFloatValue@NewController@@QEAAHMPEAVMdlNode@@AEAM@Z"),
+        [CtrlReportKeys]            = Nm("?ReportKeys@NewController@@QEAAXPEAVPart@@PEAVMdlNode@@MM@Z"),
+        [EmitterCalcRadius]         = Nm("?CalculateRadius@PartEmitter@@QEAAXXZ"),
+        [AnimRunListRemove]         = Nm("?Remove@?$CExoArrayList@PEAVAnimRun@@@@QEAAXPEAVAnimRun@@@Z"),
+        [AnimRunListDelIndex]       = Nm("?DelIndex@?$CExoArrayList@PEAVAnimRun@@@@QEAAXH@Z"),
+        [SafePointerAdd]            = Nm("?Add@?$CExoArrayList@PEAV?$SafePointer@VCAurObject@@@@@@QEAAXPEAV?$SafePointer@VCAurObject@@@@@Z"),
+        [AnimTraceRun]              = Nm("?m_pTraceRun@AnimRun@@2PEAV1@EA"),
+        [AnimTraceFlags]            = Nm("?m_AnimFlags@AnimRun@@2HA"),
+        [AnimTraceLength]           = Nm("?m_AnimLength@AnimRun@@2MA"),
+        [MdlNodeControlFn]          = Nm("?MdlNodeControl@@YAXPEAXPEAVPart@@MMM@Z"),
+        [MdlNodeAnimMeshControlFn]  = Nm("?MdlNodeAnimMeshControl@@YAXPEAXPEAVPart@@MMM@Z"),
+        [MdlNodeCameraControlFn]    = Nm("?MdlNodeCameraControl@@YAXPEAXPEAVPart@@MMM@Z"),
+        [MdlNodeEmitterControlFn]   = Nm("?MdlNodeEmitterControl@@YAXPEAXPEAVPart@@MMM@Z"),
+        [MdlNodeLightControlFn]     = Nm("?MdlNodeLightControl@@YAXPEAXPEAVPart@@MMM@Z"),
+        [MdlNodeReferenceControlFn] = Nm("?MdlNodeReferenceControl@@YAXPEAXPEAVPart@@MMM@Z"),
+        [MdlNodeTriMeshControlFn]   = Nm("?MdlNodeTriMeshControl@@YAXPEAXPEAVPart@@MMM@Z"),
         // auto-target: CActionTarget is client-side (not name-exported on Windows). Both anchored by the
         // 'AcTg' GetGuiObjType tag cluster and confirmed by decompile -- ActivateTargetMode is the same
         // CaptureMouse/CaptureKeyboard/RegisterUpdate/RegisterActionTargetGUI body, HandleLMouseDown the
@@ -2724,6 +3071,10 @@ internal static unsafe class SymbolMap
         [AurTextureGlImageBasic] = Nm("?glImageBasic@CAurTextureBasic@@QEAAH_N@Z"),
         [OperatorNewArray] = Nm("??2MaxTree@@SAPEAX_K@Z"),
         [AurTextureNullPtr] = Nm("?m_pNullTexture@CAurTextureBasic@@2V?$SafePointer@VCAurTexture@@@@A"),
+        [LerpFloatLerped] = Nm("?Lerped@LerpFloat@@QEBAMXZ"),
+        [GobSetLODModel] = Nm("?SetLODModel@Gob@@QEAAXXZ"),
+        [EnableLod] = Nm("?g_bEnableLOD@@3HA"),
+        [LodScaleFactor] = Nm("?g_fLODScaleFactor@@3MA"),
         [BinBucket] = Nm("?binbucket@@3V?$List@PEAVCAurTriangleBin@@@@A"),
         [CapBuckets] = Nm("?capbuckets@@3PAVBucket@@A"),
         [FadeBuckets] = Nm("?fadebuckets@@3V?$List@VBucket@@@@A"),
@@ -2834,7 +3185,11 @@ internal static unsafe class SymbolMap
         [AddPointSourceWind] = Nm("?AddPointSourceWind@WindManager@@QEAAXVVector@@MMM@Z"),
         [GobBucket] = Nm("?gobbucket@@3V?$List@PEAVGob@@@@A"),
         [GobCollectLights] = Nm("?CollectLights@Gob@@QEAAXAEAV?$List@PEAVPartLight@@@@@Z"),
+        [GobDisableInViewVolume] = Nm("?DisableInViewVolume@Gob@@UEAAXXZ"),
+        [GobEnableInViewVolume] = Nm("?EnableInViewVolume@Gob@@UEAAXXZ"),
         [GobGetAdjustedScale] = Nm("?GetAdjustedScale@Gob@@UEBAMXZ"),
+        [GobListAdd] = Nm("?Add@?$CExoArrayList@PEAVGob@@@@QEAAXPEAVGob@@@Z"),
+        [GobOutside] = Nm("?GobOutside@@YAHPEAVGob@@AEAV?$List@VPlane@@@@@Z"),
         [GobProcessGob] = Nm("?ProcessGob@Gob@@QEAAXXZ"),
         [GrassEnabled] = Nm("?m_bGrassIsEnabled@Scene@@0_NA"),
         [GrassFarDistance] = Nm("?m_fGrassFarRenderDistance@Scene@@0MA"),
@@ -2850,6 +3205,9 @@ internal static unsafe class SymbolMap
         [LightAreaDiffuseDir] = Nm("?m_lightAreaDiffuseDirection@GLRender@@0VVector@@A"),
         [LightManagerOnlyGob] = Nm("?m_pOnlyGob@LightManager@@0PEAVGob@@EA"),
         [LightMgrGetMaxLights] = Nm("?GetMaxLights@LightManager@@SAHXZ"),
+        [LightMgrPrioritizeLights] = Nm("?PrioritizeLights@LightManager@@UEAAXAEBVVector@@@Z"),
+        [LightMgrSetupLights] = Nm("?SetupLightsForThisPositionAndRadius@LightManager@@UEAAXAEBVVector@@M@Z"),
+        [LightMgrUpdateLights] = Nm("?UpdateLights@LightManager@@UEAAXXZ"),
         [LoadMatrixIdentity] = Nm("?LoadMatrixIdentity@RenderInterface@@SAXXZ"),
         [MAurMtxStack] = Nm("?m_aurMtxStack@@3PAVaurMatrixStack@@A"),
         [MCurrentMatrix] = Nm("?m_nCurrentMatrix@GLRender@@0IA"),
@@ -2963,6 +3321,7 @@ internal static unsafe class SymbolMap
         [HitInfoReset] = Nm("?Reset@CHitInfo@@QEAAXH_JH@Z"),
         [SceneInitBsp] = Nm("?InitBSP@Scene@@UEAAXHHH_NM@Z"),
         [SceneSequence] = Nm("?Sequence@Scene@@2IA"),
+        [GeomFadeEnabled] = Nm("?geomFadeEnabled@Scene@@2HA"),
         [SceneSpawnTile] = Nm("?SpawnTile@Scene@@UEAAPEAVCAurObject@@PEBDAEBVVector@@HHPEAVQuaternion@@@Z"),
         [SetMatrixMode] = Nm("?SetMatrixMode@RenderInterface@@SAXW4AuroraTransStates@Aurora@@@Z"),
         [SetModelMatrix] = Nm("?SetModelMatrix@GLRender@@CAXAEBVMatrix4x4@@@Z"),
@@ -3095,6 +3454,13 @@ internal static unsafe class SymbolMap
         [SendInputUseObject]     = At(),   // 6 / 11
         [SendInputSplitItem]     = At(),   // 6 / 23
         [SendInputMergeItem]     = At(),   // 6 / 22
+
+        // ---- CX-109/110 ---- both name-exported (Camera and CNWTileSet are in nwmain.exe's export table,
+        // confirmed against it: ?RenderScene@Camera@@UEAAXXZ and ?GetEnvMapResRef@CNWTileSet@@QEAA?AVCResRef@@XZ).
+        [CameraRenderScene]      = Nm("?RenderScene@Camera@@UEAAXXZ"),
+        [TileSetGetEnvMapResRef] = Nm("?GetEnvMapResRef@CNWTileSet@@QEAA?AVCResRef@@XZ"),
+        [CameraUpscaleViewport]  = Nm("?UpscaleViewport@Camera@@QEAA_NPEAM00@Z"),
+        [WindUpdateTimer]        = Nm("?updateTimer@WindManager@@QEAAXM@Z"),
     };
 
     /// <summary>Why a symbol does not resolve on Windows, in the words of its own row. A key that is missing

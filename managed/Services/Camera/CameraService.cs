@@ -31,6 +31,12 @@ namespace CX.Services.Camera;
 /// <para><b>Hot.</b> Runs inside <c>CNWCArea::Update</c> once per world frame: pointer reads, float math, no
 /// allocation. The knobs are plain field reads (ADR 0025); every string lives on the frame-end tick and the
 /// <c>/knobs</c> note.</para>
+/// <para>CX-107 put Alloy's own port of the solve UNDER this layer, at the bottom of the same funchook chain
+/// (<c>CX.Alloy.BehaviorSolvers</c>, priority -100), so <c>*_next</c> is now the port rather than the
+/// trampoline whenever <c>behav.owned</c> is on. Nothing here changed and nothing here needs to: the port
+/// writes the same behaviour fields and the same <c>Camera+0xb0</c>/<c>+0xbc</c> pose, and
+/// <see cref="Recenter"/>'s yaw velocity is consumed by it exactly as the engine consumed it. That is the
+/// whole point of chaining below rather than replacing the hook.</para>
 /// </summary>
 public sealed unsafe class CameraService : IExtenderService
 {

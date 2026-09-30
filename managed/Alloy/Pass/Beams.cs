@@ -21,12 +21,14 @@ namespace CX.Alloy;
 /// (<c>Part::AsPartBeam</c>), then the VDO at <c>PartBeam+0xa0</c>. No hook on <c>Scene::RenderBeams</c> or
 /// <c>PartBeam::Draw</c>, no capture window and no colour mask: the table is rebuilt from the engine's own
 /// live classification every frame, so nothing can go stale.</para>
-/// <para><b>The model matrix is read, not captured.</b> <c>RenderBeams</c> pushes nothing onto the matrix
-/// stack (verified in the disassembly), <c>Scene::RenderDrawBucket</c> @0x46d0b0 brackets every per-part
-/// <c>SetModelMatrix</c> with <c>PushCurrentMatrix</c>/<c>PopCurrentMatrix</c>, and RSP's own
-/// push/identity/pop pair sits AFTER the beam call (@0x471985, against @0x46f13b). So the model stack top is
-/// invariant across the whole of RSP and reading it at the Alloy slot yields the value the engine's own draw
-/// would have used.</para>
+/// <para><b>The model matrix is the IDENTITY, not a read.</b> <c>RenderBeams</c> pushes nothing onto the
+/// matrix stack (verified in the disassembly), <c>Scene::RenderDrawBucket</c> @0x46d0b0 brackets every
+/// per-part <c>SetModelMatrix</c> with <c>PushCurrentMatrix</c>/<c>PopCurrentMatrix</c>, and RSP's own
+/// push/identity/pop pair sits AFTER the beam call (@0x471985, against @0x46f13b) -- so a beam draws on
+/// whatever base the frame left in the model stack, and CX-109 established that that base is the identity
+/// (<see cref="AlloyCamera.ModelBase"/>, <c>docs/research/camera-loop.md</c> §2). Beam volumes are baked in
+/// world space by <c>BSPCreateStaticProjections</c>, which is why the identity is also the only base that
+/// makes sense for them.</para>
 /// </summary>
 internal static unsafe class Beams
 {
@@ -62,10 +64,6 @@ internal static unsafe class Beams
     private const uint GlSrcAlpha = 0x0302, GlOne = 1;   // not-an-offset: GL blend-factor enums
     /// <summary>A handful of static volumes per area; past this a beam is left to the engine.</summary>
     private const int MaxBeams = 2048, MaxVdos = 512;
-    /// <summary>The matrix stack the model matrix comes off -- index 2 of <c>m_aurMtxStack</c> (same entry
-    /// <see cref="SkyBox"/> reads). Read once per enrollment -- see the class remarks for why the top is the
-    /// same value at the Alloy slot as it is at <c>RenderBeams</c>'s.</summary>
-    private const int ModeModel = 2;
     /// <summary>The bucket <c>RenderBeams</c> asks the scene's <c>DrawBucketManager</c> for.</summary>
     private const int BeamBucket = 0xf;   // not-an-offset: a draw-bucket index, not a place in memory
 
@@ -98,9 +96,8 @@ internal static unsafe class Beams
     private static int _vdoCount;
 
     private static ExtenderLog? _log;
-    private static byte* _stacks;
-    /// <summary>The model stack top, read once per enrollment. Every beam shares it: the bucket-15 volumes
-    /// are baked in one space and <c>RenderBeams</c> sets no per-part transform.</summary>
+    /// <summary>The model base, taken once per enrollment. Every beam shares it: the bucket-15 volumes are
+    /// baked in one space and <c>RenderBeams</c> sets no per-part transform.</summary>
     private static Matrix4x4 _model = Matrix4x4.Identity;
     private static int* _enable;
     private static float* _alpha;
@@ -119,29 +116,47 @@ internal static unsafe class Beams
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         _enable = (int*)Native.Sym(SymbolMap.EnableBeams);
         _alpha = (float*)Native.Sym(SymbolMap.ProjectionAlpha);
-        if (_stacks == null || _primTable == null)
-        { _off = true; log.Info("Beams: matrix stack or prim table unresolved -- light beams stay vanilla"); return; }
+        if (_primTable == null)
+        { _off = true; log.Info("Beams: prim table unresolved -- light beams stay vanilla"); return; }
         // #261: no hooks. The population is the engine's bucket 15, read at the Alloy slot.
         log.Info("Beams: armed -- bucket-15 volumes enumerated and drawn by Alloy (/effects beams toggles)");
     }
 
-    /// <summary>#261: the population, read straight off the engine's bucket 15. Once per world frame, in
-    /// ENGINE context, before the frame anchor -- <see cref="Harvest"/> queries engine VAOs and cannot run
-    /// anywhere else. Allocation-free; a handful of items per area.
-    /// <para>The table is rebuilt from scratch each call rather than aged. Bucket 15 holds exactly the live,
-    /// classified beams for this frame, so membership needs no sighting window, no tombstone and no
-    /// reconciliation against what the engine walked -- the engine's walk IS this walk.</para></summary>
+    /// <summary>The population. Once per world frame, in ENGINE context, before the frame anchor --
+    /// <see cref="Harvest"/> queries engine VAOs and cannot run anywhere else. Allocation-free; a handful of
+    /// items per area.
+    /// <para>CX-104: the source is <see cref="SceneParts.Beams"/>, Alloy's own registry of the AREA's beam
+    /// parts, and not the engine's draw bucket 15. That bucket is filled by <c>AddPartsToDrawBuckets</c>
+    /// @0x4751d0 from <c>staticbeambucket</c>, which the BSP visitor (@0x481000) fills from the nodes the
+    /// frustum reached -- so it is the frame's in-view slice, and reading it made this pass's membership a
+    /// side effect of the engine's traversal. The registry is a MEMBERSHIP list, so every beam in the area is
+    /// enrolled and the GPU clips the ones off screen: a static projection volume is tens of vertices and an
+    /// area holds a handful, so the frustum test the engine did here buys nothing worth an offset nobody has
+    /// measured on Windows. <c>/buckets beams 0</c> is the A/B back to the bucket.</para>
+    /// <para>The table is still rebuilt from scratch each call rather than aged -- the registry has already
+    /// done the aging, and a dead entry is a zero the loop skips.</para></summary>
     internal static void Enroll(IntPtr scene)
     {
         if (_off || Disabled || scene == IntPtr.Zero) return;
         if (scene != _scene) { Forget(); _scene = scene; }
         _count = 0;
-        _model = new aurMatrixStack((IntPtr)_stacks)[ModeModel].Top;
+        _model = AlloyCamera.ModelBase;   // CX-109: the world frame's model base, no longer a stack read
         DrawBucket buckets = new CX.Engine.Scene(scene).DrawBuckets;
+        if (Buckets.Beams.V && SceneParts.Ready)
+        {
+            ReadOnlySpan<IntPtr> beams = SceneParts.Beams;
+            _owned = beams.Length;
+            if (_owned == 0) SceneParts.WarnEmpty(BucketValidator.KindBeam, 0, BucketCount(buckets));
+            if (Buckets.Validate.V)
+                BucketValidator.CompareDrawBucket(BucketValidator.KindBeam, beams, buckets, BeamBucket,
+                                                  BucketGate.BucketPhases);
+            for (int i = 0; i < beams.Length; i++) if (beams[i] != IntPtr.Zero) Capture(beams[i]);
+            return;
+        }
+        _owned = -1;
         for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
         {
             DrawBucket bucket = buckets[BeamBucket * BucketGate.BucketPhases + phase];
@@ -156,6 +171,23 @@ internal static unsafe class Beams
                 if (!beam.IsNull) Capture(beam.Ptr);
             }
         }
+    }
+
+    /// <summary>Beams the registry offered this frame, or -1 when the enrolment read the engine's bucket.
+    /// </summary>
+    private static int _owned = -1;
+
+    /// <summary>How many parts the engine's own bucket 15 holds across its phases -- for the one-shot
+    /// "registry empty while the engine had some" line only.</summary>
+    private static int BucketCount(DrawBucket buckets)
+    {
+        int n = 0;
+        for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
+        {
+            DrawBucket b = buckets[BeamBucket * BucketGate.BucketPhases + phase];
+            if (b.Items != null && b.Count > 0) n += b.Count;
+        }
+        return n;
     }
 
     private static void Capture(IntPtr part)
@@ -410,7 +442,9 @@ internal static unsafe class Beams
     internal static void ResetPeriod() { _enrolled = 0; _refused = 0; _drawn = 0; }
 
     internal static string Stats() => Disabled ? "beams off (/effects beams 0)" : _off ? "beams vanilla (unavailable)"
-        : $"beams {_count} in bucket 15, {_enrolled} enrolled, {_drawn} drawn"
+        : $"beams {_count} captured from "
+          + (_owned < 0 ? "the engine's bucket 15" : $"CX's own registry ({_owned} in the area)")
+          + $", {_enrolled} enrolled, {_drawn} drawn"
           + (_refused == 0 ? "" : $", {_refused} REFUSED (unindexed VDO, no attribute pair, or table full)");
 
     /// <summary>Off-device: the two pieces of this file that are decisions rather than replays -- the light

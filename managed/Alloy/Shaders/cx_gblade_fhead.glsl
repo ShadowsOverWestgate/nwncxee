@@ -31,7 +31,8 @@ uniform int uVLit;
 uniform float uRootAo;
 uniform vec2 uSnow;
 uniform float uGroundTint;
-uniform vec4 uLook;                     // x backlit transmission, y specular sheen, z rain wetness, w its darkening
+uniform vec4 uLook;                     // x backlit transmission, y specular sheen, z rain wetness where the map has not reached, w the wet-darkening exponent scale
+#include "cx_wx_map.glsl"
 uniform sampler2D uGround;
 uniform int uGroundOn;
 layout(location = 0) out vec4 frag;

@@ -50,7 +50,7 @@ firing.** Live-unverified.
 
 For every gob in the scene with at least one part Alloy is not drawing, one `[holes]` line per part of
 that gob: entry state (including `hidden(part+0x34)`), `OwnFlag`, ownership slot and class, the
-per-slot gates the route walk refuses on (`unplaced`, `inactive-lod`, `record-stale`, `tex-stale`,
+per-slot gates the route walk refuses on (`inactive-lod`, `record-stale`, `tex-stale`,
 `fading`, `posed`), and `PartForensic` -- node name, the ancestor chain of visible bytes, the gob and
 its append roots. Read it **column-wise**: what differs between the limb that drew and the limb that
 did not is the diagnosis. Capped at 32 gobs and 16 parts each.

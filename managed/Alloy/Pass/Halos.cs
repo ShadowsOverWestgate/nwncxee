@@ -19,7 +19,7 @@ namespace CX.Alloy;
 /// <para><b>CX-85: the whole-halo fade is ours too.</b> The shim no longer calls
 /// <c>Scene::RenderLensFlares</c>, so nothing engine-side integrates <c>PartLight+0xa0</c> any more. This pass
 /// does, off Alloy's own depth: <see cref="OccCs"/> samples <see cref="SceneDepth"/> once per halo, the answer
-/// comes back through a three-deep buffer ring TWO frames later (so no read ever waits on the GPU), and
+/// comes back through a <see cref="GpuReadback"/> TWO frames later (so no read ever waits on the GPU), and
 /// <see cref="Step"/> walks the field toward it at the engine's own 3-per-second rate. The field is still
 /// written, not shadowed, so <c>alloy.enabled=0</c> hands the engine a weight it recognises.</para></summary>
 internal static unsafe class Halos
@@ -44,9 +44,7 @@ internal static unsafe class Halos
     /// <summary>The probe's fixed-point scale and its "no sample" slot value -- off screen or behind the
     /// camera, where the fade HOLDS rather than decaying toward an answer nobody measured.</summary>
     private const int VisScale = 1024, VisNone = 0;
-    /// <summary>Ring depth. Two would do (the read names the buffer the GPU finished with last frame); three
-    /// is what <see cref="CullPass"/>'s readback settled on and there is no reason for this one to differ.</summary>
-    private const int Ring = 3;
+    private const int Ring = GpuReadback.Slots;
     private const int OccGroup = 64;   // not-an-offset: local_size_x in cx_haloocc_c.glsl
 
     private static GetLensFlareLightsFn _getFlareLights;
@@ -63,11 +61,18 @@ internal static unsafe class Halos
     private static int _drawn;
 
     private static uint _occProg;
-    private static readonly uint[] _visBuf = new uint[Ring];
+    /// <summary>The probe's output (one uint per halo, device-local) and the mapped ring it is copied into.</summary>
+    private static uint _visDev;
+    private static GpuReadback _visRead;
     private static readonly int[] _visN = new int[Ring];
     private static IntPtr[] _visKey = new IntPtr[Ring * InitialHalos];
     private static uint[] _vis = new uint[InitialHalos];
     private static int _visSeq, _visCap;
+    /// <summary>The last sample the probe read back and the keys it measured, for <see cref="Occlude"/>: read
+    /// in Alloy's context by <see cref="Collect"/>, consumed on the engine's side with no GL call at all.</summary>
+    private static IntPtr[] _readyKey = new IntPtr[InitialHalos];
+    private static int _readyN;
+    private static long _occLate;
     private static int _occLoView, _occLoProj, _occLoDepth, _occLoCount;
     private static bool _occFailed;
     private static int _occFaded;
@@ -89,13 +94,25 @@ internal static unsafe class Halos
     {
         _count = 0;
         if (_off || !Effects.Halos.V || scene == IntPtr.Zero) return;
-        LightManager lm = new Scene(scene).LightManager;
-        if (lm.IsNull) return;
-        byte* list = (byte*)_getFlareLights(lm.Ptr);
-        if (list == null) return;
-        IntPtr* items = *(IntPtr**)list;
-        int n = *(int*)(list + 8);
-        if (items == null || n <= 0) return;
+        // CX-108: the POPULATION is Alloy's light set. `GetLensFlareLights` @0x4c1d80 only filtered the
+        // engine's near-camera candidate list by the very node test pass 1 below already applies, so what it
+        // bought was the candidate list -- and that is a LightManager read. The registry's set is the whole
+        // area, so the distance cut it had for free is made explicit in Reaches().
+        bool owned = LightRegistry.Live;
+        IntPtr* items = null;
+        int n;
+        if (owned) n = LightRegistry.Count;
+        else
+        {
+            LightManager lm = new Scene(scene).LightManager;
+            if (lm.IsNull) return;
+            byte* list = (byte*)_getFlareLights(lm.Ptr);
+            if (list == null) return;
+            items = *(IntPtr**)list;
+            n = *(int*)(list + 8);
+            if (items == null) return;
+        }
+        if (n <= 0) return;
         if (n * Floats > _stage.Length) _stage = new float[n * Floats];
         if (n > _stageKey.Length) _stageKey = new IntPtr[n];
 
@@ -103,12 +120,13 @@ internal static unsafe class Halos
         // ring sample may name a light that has since been freed and this list is what proves it has not.
         for (int i = 0; i < n; i++)
         {
-            var pl = new PartLight(items[i]);
+            var pl = new PartLight(owned ? LightRegistry.Light(i).Ptr : items[i]);
             if (pl.IsNull) continue;
             var nd = new MdlNodeLight(new Part(pl.Ptr).Node.Ptr);
             if (nd.IsNull || nd.FlareCount <= 0) continue;
             float* sizes = (float*)nd.FlareSizes;
             if ((sizes != null ? sizes[0] : 1f) <= 0f) continue;
+            if (owned && !Reaches(pl, nd)) continue;
             _stageKey[_count++] = pl.Ptr;
         }
         Occlude();
@@ -134,8 +152,22 @@ internal static unsafe class Halos
         }
     }
 
-    /// <summary>Read the probe's answer from the ring slot the GPU finished with two frames ago and walk each
-    /// flare's <c>PartLight+0xa0</c> toward it. A sample whose light is no longer a halo is dropped on the
+    /// <summary>CX-108: can this flare be in view at all? The engine's flare population was its near-camera
+    /// candidate list, so a flare past the scene's far plane was never staged; Alloy's registry is area-wide,
+    /// and without this a distant lamp in open air would paint a halo through the fog.
+    /// <para>The camera is LAST frame's -- this runs before <see cref="FrameRead"/> -- which is a frame of lag
+    /// on a fade that already takes a third of a second. No camera yet keeps every flare, which is the
+    /// first-frame answer the rest of the pass expects.</para></summary>
+    private static bool Reaches(PartLight light, MdlNodeLight node)
+    {
+        if (!FrameInputs.HasCamera || !FrameInputs.HasPerspective) return true;
+        float slack = node.FlareRadius + Effects.HaloSize.V;
+        float far = FrameInputs.CamFar + slack;
+        return (light.Pos - FrameInputs.CameraPos).LengthSquared() < far * far;
+    }
+
+    /// <summary>Take the probe's last answer (<see cref="Collect"/> read it, fenced, in Alloy's context) and walk
+    /// each flare's <c>PartLight+0xa0</c> toward it. No GL call: this runs in the ENGINE's context. A sample whose light is no longer a halo is dropped on the
     /// floor: matching by pointer against this frame's list is what keeps a freed light out of the write.
     /// <para>No sample (off screen, or the probe never ran) HOLDS the fade. That is deliberate and it is the
     /// reason <see cref="_occFailed"/> exists as well: a fade nobody is integrating must not silently read as
@@ -144,12 +176,8 @@ internal static unsafe class Halos
     private static void Occlude()
     {
         if (_occFailed || _count == 0) return;
-        int r = (_visSeq + 1) % Ring;
-        int have = _visN[r];
-        if (have <= 0 || _visBuf[r] == 0 || Gl.GetNamedBufferSubData == null) return;
-        if (have > _vis.Length) _vis = new uint[have];
-        fixed (uint* v = _vis)
-            Gl.GetNamedBufferSubData(_visBuf[r], IntPtr.Zero, (IntPtr)((long)have * sizeof(uint)), v);
+        int have = _readyN;
+        if (have <= 0) return;
         float dt = LightFade.Delta(FlareDtFloor);
         if (dt <= 0f) return;
         _occFaded = 0;
@@ -157,7 +185,7 @@ internal static unsafe class Halos
         {
             uint s = _vis[i];
             if (s == VisNone) continue;
-            IntPtr key = _visKey[r * _visCap + i];
+            IntPtr key = _readyKey[i];
             int live = -1;
             // ponytail: linear match, O(samples x halos) -- tens of flares per view; a key->index map if that grows
             for (int j = 0; j < _count && live < 0; j++) if (_stageKey[j] == key) live = j;
@@ -232,16 +260,17 @@ internal static unsafe class Halos
     private static void Probe(Matrix4x4* view, Matrix4x4* proj)
     {
         if (!EnsureProbe()) return;
+        Collect();
         int w = _visSeq % Ring;
-        bool grow = _count > _visCap;
-        if (grow)
+        if (_count > _visCap)
         {
             _visCap = Math.Max(_count, InitialHalos);
             _visKey = new IntPtr[Ring * _visCap];
             for (int i = 0; i < Ring; i++) _visN[i] = 0;   // the old keys' indices no longer address this ring
+            if (!_visRead.Ensure((long)_visCap * sizeof(uint))) { Fail("the driver refused the readback mapping"); return; }
+            Gl.EnsureStorage(ref _visDev, (long)_visCap * sizeof(uint), true);
         }
-        Gl.EnsureStorage(ref _visBuf[w], (long)_visCap * sizeof(uint), grow || _visBuf[w] == 0);
-        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindVis, _visBuf[w]);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindVis, _visDev);
         Gl.UseProgram(_occProg);
         Gl.UniformMatrix4fv(_occLoView, 1, 0, (float*)view);
         Gl.UniformMatrix4fv(_occLoProj, 1, 0, (float*)proj);
@@ -249,17 +278,36 @@ internal static unsafe class Halos
         Gl.Uniform1i(_occLoCount, _count);
         Gl.DispatchCompute((uint)((_count + OccGroup - 1) / OccGroup), 1, 1);
         Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
+        _visRead.Copy(_visDev, 0, w, 0, (long)_count * sizeof(uint));
+        _visRead.Fence(w);
         for (int i = 0; i < _count; i++) _visKey[w * _visCap + i] = _stageKey[i];
         _visN[w] = _count;
         _visSeq++;
+    }
+
+    /// <summary>Take the slot written two probes ago off the mapping, once its copy has landed. It used to be a
+    /// <c>glGetNamedBufferSubData</c>, which NVIDIA queues behind the whole frame submitted so far and waits out:
+    /// 7-9 ms of CPU a frame the moment an area had one flare light, fence or no fence. A slot still in flight
+    /// keeps the previous sample (counted <see cref="_occLate"/>).</summary>
+    private static void Collect()
+    {
+        int r = (_visSeq + 1) % Ring;
+        int have = _visN[r];
+        if (have <= 0) return;
+        uint* src = (uint*)_visRead.Ready(r);
+        if (src == null) { _occLate++; return; }
+        if (have > _vis.Length) _vis = new uint[have];
+        if (have > _readyKey.Length) _readyKey = new IntPtr[have];
+        for (int i = 0; i < have; i++) { _vis[i] = src[i]; _readyKey[i] = _visKey[r * _visCap + i]; }
+        _readyN = have;
     }
 
     private static bool EnsureProbe()
     {
         if (_occProg != 0) return true;
         if (_occFailed) return false;
-        if (Gl.DispatchCompute == null || Gl.MemoryBarrier == null || Gl.GetNamedBufferSubData == null)
-            return Fail("this context has no compute or no buffer readback");
+        if (Gl.DispatchCompute == null || Gl.MemoryBarrier == null || !GpuReadback.EntryPoints)
+            return Fail("this context has no compute, no persistent mapping or no fences");
         _occProg = GlProgram.Compute(OccCs, ShaderSource.Get(OccCs + ".glsl"), _log, "Halos occlusion probe");
         if (_occProg == 0) return Fail("the probe program did not build");
         _occLoView = GlProgram.Loc(_occProg, "uView");
@@ -303,13 +351,16 @@ internal static unsafe class Halos
     internal static void ContextLost()
     {
         _prog = 0; _buf = 0; _vao = 0; _ssboCap = 0;
-        _occProg = 0; _visCap = 0; _visSeq = 0;
-        for (int i = 0; i < Ring; i++) { _visBuf[i] = 0; _visN[i] = 0; }
+        _occProg = 0; _visCap = 0; _visSeq = 0; _readyN = 0;
+        // The fences died with the context, like the buffers: forgotten, never deleted.
+        _visDev = 0; _visRead.ContextLost();
+        for (int i = 0; i < Ring; i++) _visN[i] = 0;
     }
 
-    internal static void ResetPeriod() { _drawn = 0; _occFaded = 0; }
+    internal static void ResetPeriod() { _drawn = 0; _occFaded = 0; _occLate = 0; }
     internal static string Stats() => _off ? "halos unavailable" : !Effects.Halos.V ? "halos off"
-        : $"halos {_count} flare lights, {_drawn} drawn, {(_occFailed ? "occlusion fade OFF" : $"{_occFaded} fading")}";
+        : $"halos {_count} flare lights, {_drawn} drawn, {(_occFailed ? "occlusion fade OFF" : $"{_occFaded} fading")}"
+          + (_occLate > 0 ? $", {_occLate} probe reads deferred (GPU behind)" : "");
     internal static string Describe() => $"{(_off ? "UNAVAILABLE" : Effects.Halos.V ? "on" : "off")} size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2} viz {Effects.HaloViz.V}";
 
     /// <summary>CX-85: the occlusion integrator, headless. It is the whole of what the port owns on the CPU

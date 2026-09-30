@@ -27,6 +27,10 @@ internal static class Renderer
                                        EnrollBudget, ClusterCap, SwapProbe, GlSync, SkipBuckets;
     internal static readonly Knob<bool> Light, Prepass, AoTest, Retest, HlDiag, Poll, PrepassKey, PrepassFeat, IdTarget,
                                         BlendDepth, GpuMeter, VisList, WashTest, DepthEqual;
+    // ---- CX-103/104/105: the scene pipeline's dials ----
+    internal static readonly Knob<bool> OwnXform, XformCheck, OwnLod, BucketCheck, CullWatch;
+    internal static readonly Knob<int> XformRefresh;
+    internal static readonly Knob<float> LodHyst;
     internal static readonly Knob<int> Viz, Threads, Cull, HlChan, OitViz;
     internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap, Holes, Doors;
 
@@ -156,7 +160,7 @@ internal static class Renderer
         GlDebug = G.Toggle("gldebug", "gldebug", false, Tier.ChatOnly, Effect.Restart);
         SwapProbe = G.Slider("swapprobe", "swapprobe", 0, 100000, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
         GlSync = G.Slider("glsync", "glsync", 0, 1, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
-        SkipBuckets = G.Slider("skipbuckets", "skipbuckets", 0, 2, 1, 2, tier: Tier.ChatOnly, effect: Effect.Restart);
+        SkipBuckets = G.Slider("skipbuckets", "skipbuckets", 0, 3, 1, 3, tier: Tier.ChatOnly, effect: Effect.Restart);
         EngineZones = G.Toggle("enginezones", "enginezones", true, Tier.ChatOnly, Effect.Restart);
         // CX-99: 0 hands every movie frame back to the engine's own quad. Live, because a movie is the one
         // surface a player can be stuck staring at with no way to restart into a different config.
@@ -186,8 +190,32 @@ internal static class Renderer
         WashTest = G.Toggle("washtest", "washtest", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         OitViz = G.Slider("oitviz", "oitviz", 0, 5, 1, 0, tier: Tier.ChatOnly);
 
+        // ---- CX-103/104/105 ----
+        // CX-103: Alloy composes every world matrix. 0 reads Scene::AddPartsTreeToDrawBuckets' vp+0x18 again,
+        // which is the A/B -- and shows the fault the ticket removed, because the Fault 1 placement latch went
+        // with the chase: a gob the engine never placed draws at the area's (0,0) corner.
+        OwnXform = G.Toggle("ownxform", "ownxform", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
+        // The one remaining read of vp+0x18: compose AND read, and count the disagreements on [alloy].
+        XformCheck = G.Toggle("xformcheck", "xformcheck", false, Tier.ChatOnly);
+        // The flicker hunt's GPU half: every colour dispatch's kept total, read back fenced and never waited
+        // on. Off by default -- a per-frame read of a GPU-written buffer is a real wait on Mesa.
+        CullWatch = G.Toggle("cullwatch", "cullwatch", false, Tier.ChatOnly);
+        // The net under the cheap change detection while the ENGINE still animates (CX-106/CX-107 will call
+        // GobMotion.Mark instead): every gob is recomposed at least once every N frames.
+        XformRefresh = G.Slider("xformrefresh", "xformrefresh", 1, 64, 1, 8, tier: Tier.ChatOnly);
+        // CX-105: Alloy chooses each gob's LOD, with hysteresis vanilla has none of. 0 hands the choice back
+        // AND puts SceneWalk back to enumerating all three roots per gob.
+        OwnLod = G.Toggle("ownlod", "ownlod", true, Tier.ChatOnly, changed: GobLod.Reset);
+        LodHyst = G.Slider("lodhyst", "lodhyst", 0f, 1f, 0.01f, 0.1f, tier: Tier.ChatOnly);
+        // CX-104: the engine draw buckets as a VALIDATOR (ADR 0018 demotes them to exactly this). Off by
+        // default now that nothing in the frame reads them -- on, it walks Scene+0x208 once per period and
+        // reports the parts the engine classified that Alloy has no record for.
+        BucketCheck = G.Toggle("bucketcheck", "bucketcheck", false, Tier.ChatOnly);
+
         Consts = G.Button("consts", "consts", AlloyRenderer.LogScriptables, Tier.ChatOnly);
         FrameDumpBtn = G.Button("framedump", "framedump", FrameDump.Arm, Tier.ChatOnly);
+        G.Button("bench", "bench", AlloyRenderer.BenchArm, Tier.ChatOnly,
+                 help: "Hold the camera still: steps the GPU-cost settings, measures each, restores them, logs a [bench] table.");
         ShaderDump = G.Button("shaderdump", "shaderdump", ShaderStages.DumpToLog, Tier.ChatOnly);
         Snap = G.Button("snap", "snap", FrameTap.Arm, Tier.ChatOnly);
         // CX-92: the per-instance hole dump -- which part of which creature Alloy is not drawing, and why.

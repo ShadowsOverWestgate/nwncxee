@@ -97,10 +97,10 @@ internal static unsafe class CasterGather
     /// <summary>The latent count sample's ring: one copy per frame of the LAST view's per-batch counts, read
     /// back two frames later -- <see cref="CullPass"/>'s own instrument shape, so the culled-vs-drawn figure
     /// reaches the period line without a readback on the draw path.</summary>
-    private static readonly uint[] _readBuf = new uint[3];
+    private static GpuReadback _sampleRead;
     private static readonly int[] _readN = new int[3];
     private static readonly int[] _readDrawN = new int[3];
-    private static readonly int[] _readCap = new int[3];
+    /// <summary>Capacity tracker for a sample slot: the per-batch counts plus the receiver tally.</summary>
     private static uint[] _counts = new uint[1024];
     private static int _readSeq;
     private static bool _dispatched;
@@ -138,7 +138,7 @@ internal static unsafe class CasterGather
         _layerProg = 0; _layerFailed = false; _viewBuf = 0; _viewCap = 0;
         _lyCmdCap = 0; _lyCntCap = 0; _lyAt = 0;
         Array.Clear(_lyCmd); Array.Clear(_lyCnt);
-        Array.Clear(_readBuf); Array.Clear(_readN); Array.Clear(_readDrawN); Array.Clear(_readCap); Array.Clear(_readViews); Array.Clear(_readRxViews);
+        _sampleRead.ContextLost(); Array.Clear(_readN); Array.Clear(_readDrawN); Array.Clear(_readViews); Array.Clear(_readRxViews);
         _drawN = 0; _groups = 0; _dispatched = false; _sampleBuf = 0; _sampleViews = 0;
     }
 
@@ -281,10 +281,10 @@ internal static unsafe class CasterGather
     /// deleting shadows shows in it immediately.</summary>
     internal static void Sample()
     {
-        if (!_dispatched || _groups <= 0 || _sampleBuf == 0) return;
+        if (!_dispatched || _groups <= 0 || _sampleBuf == 0 || !GpuReadback.EntryPoints) return;
         // Sample-only entry points: a driver without them loses the figure, never the shadows.
         _dispatched = false;
-        int w = _readSeq % 3, r = (_readSeq + 1) % 3;
+        int w = _readSeq % GpuReadback.Slots, r = (_readSeq + 1) % GpuReadback.Slots;
         _readSeq++;
         if (_groups + 1 > _counts.Length)
         {
@@ -292,28 +292,26 @@ internal static unsafe class CasterGather
             while (cap < _groups + 1) cap *= 2;
             _counts = new uint[cap];
         }
-        // Capacity is PER RING SLOT: after a growth the other two slots still hold their old size, and a
-        // shared cap would skip re-sizing them -- a copy past the end of a too-small buffer.
-        Gl.EnsureStorage(ref _readBuf[w], (long)_counts.Length * sizeof(uint),
-               _readBuf[w] == 0 || _counts.Length > _readCap[w]);
-        _readCap[w] = _counts.Length;
+        // a regrow drops every slot in flight, so none is read at a size it was not written at
+        long need = (long)_counts.Length * sizeof(uint);
+        if (need > _sampleRead.SlotBytes) { Array.Clear(_readN); if (!_sampleRead.Ensure(need)) return; }
         // No extra barrier: the dispatch's own MemoryBarrier names BUFFER_UPDATE_BARRIER_BIT, which is the
         // bit that orders shader-storage writes before buffer-copy reads, and it stands between the last
         // dispatch's atomicAdds and this copy in command order.
-        Gl.CopyNamedBufferSubData(_sampleBuf, _readBuf[w], IntPtr.Zero, IntPtr.Zero,
-                                  (IntPtr)((long)(_groups + 1) * sizeof(uint)));
+        _sampleRead.Copy(_sampleBuf, 0, w, 0, (long)(_groups + 1) * sizeof(uint));
+        _sampleRead.Fence(w);
         _readN[w] = _groups; _readDrawN[w] = _drawN; _readViews[w] = _sampleViews; _readRxViews[w] = _sampleRxViews;
-        if (_readBuf[r] == 0 || _readN[r] <= 0) return;
-        fixed (uint* c = _counts)
-            Gl.GetNamedBufferSubData(_readBuf[r], IntPtr.Zero, (IntPtr)((long)(_readN[r] + 1) * sizeof(uint)), c);
+        if (_readN[r] <= 0) return;
+        uint* c = (uint*)_sampleRead.Ready(r);
+        if (c == null) return;
         long kept = 0;
-        for (int i = 0; i < _readN[r]; i++) kept += _counts[i];
+        for (int i = 0; i < _readN[r]; i++) kept += c[i];
         // Against the draw count of the frame that WROTE those counts, not this frame's; a layered chunk's
         // counts cover every view it dispatched, so they are averaged back to one view -- the receiver
         // tally over the views that carried the flag.
         int views = Math.Max(_readViews[r], 1), rxViews = Math.Max(_readRxViews[r], 1);
         SampledKept += Math.Min(kept / views, _readDrawN[r]);
-        SampledRx += Math.Min(_counts[_readN[r]] / rxViews, _readDrawN[r]);
+        SampledRx += Math.Min(c[_readN[r]] / rxViews, _readDrawN[r]);
         SampledStaged += _readDrawN[r];
         Samples++;
     }

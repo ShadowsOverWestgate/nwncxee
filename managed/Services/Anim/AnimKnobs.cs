@@ -32,6 +32,11 @@ internal static class AnimKnobs
     internal static readonly Gated<bool> Drive;
     internal static readonly Gated<bool> Aim;
     internal static readonly Gated<float> Hit;
+    /// <summary>CX-106: does Alloy own the animation runtime? On, <c>Scene::Animate</c> and the body of
+    /// <c>Gob::Animate</c> are ours; off, both are the engine's and this is the A/B for anything that looks
+    /// wrong in an animation. NOT gated on <see cref="Enabled"/> -- the runtime is what plays the
+    /// animations, not a correction on top of them.</summary>
+    internal static readonly Knob<bool> Owned;
 
     static AnimKnobs()
     {
@@ -85,6 +90,11 @@ internal static class AnimKnobs
             help: "During an attack the upper body bends toward the target's height: a bow shot at a creature on a ledge or a swing at a giant tilts up, a strike at a rat tilts down."), false);
         Hit = new(G.Slider("hitreact", "Hit reactions", 0f, 200f, 10f, 100f, "%", tier: Tier.ChatOnly,
             help: "A landed hit knocks the upper body away from the blow, harder for more damage and for a critical hit, on top of the engine's own flinch. 0 turns it off."), 0f);
+        Owned = G.Toggle("owned", "Play animations in CX", true, tier: Tier.ChatOnly,
+            help: "CX advances every animation itself -- the queue, the crossfades, the controllers, the "
+                + "vertex morphs and the animation events -- instead of the engine. Off, the engine does it, "
+                + "which is the A/B for anything that looks or sounds wrong in an animation: a missing "
+                + "footstep, a pose that jumps, a crossfade that snaps. Only with the CX renderer.");
         G.Status = PoseService.Report;
     }
 

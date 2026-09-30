@@ -224,10 +224,18 @@ internal static unsafe class RspShim
         // tick, 2026-08-31) -- net it out the same way, or the shim re-reports the whole CasterPass CPU.
         long shadow0 = FrameZones.Ticks(FrameZones.Zone.Shadow);
         var sc = new Scene(scene);
+        // CX-104: the non-render side effects of the engine's scene walk, when alloy.skipbuckets=3 stood it
+        // down -- the in-view byte animation gates on, the gob-picking bucket and the three LightManager
+        // steps. HERE because this is still inside the same Scene::Render the skipped walk ran in, and
+        // because everything below reads what it writes.
+        ScenePrep.Tick(scene);
+        // CX-104: Alloy's own visible-gob list, in place of the engine's `gobbucket`. HERE and not later
+        // because DoorFade and GrassField read it (AlloyRenderer.VisibleGobs) before the anchor.
+        AlloyRenderer.SampleVisibleGobs(scene);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         // CX-83: snapshotted BEFORE the anchor, because the Alloy frame that draws the highlight runs inside
-        // it. Scene::AddPartsToDrawBuckets fills the trigger bucket outside RSP and ahead of it, so the
-        // bucket is already final here.
+        // it. CX-104: the population is SceneParts' own trigger registry, so the timing no longer depends on
+        // when anything fills `triggerbucket` -- which the BSP visitor, not the bucket build, ever did.
         TriggerHighlight.Enroll();
         // CX-85: RSP's very first step (@0x46e6a5) was LightManager::EnableLights, i.e.
         // ControlLightsFade(+0x60, +0x40, 0), the one writer of every PartLight's fade weight at +0x90 --
@@ -264,14 +272,22 @@ internal static unsafe class RspShim
         // CX-89: the anchor is Alloy's own call now, not an after-original hook on Scene::FadeDoors -- which is
         // not called on an Alloy frame at all. DoorFade.Tick replaces the fade it also did (same field, same
         // rule), and it goes FIRST because the frame draws the alpha it writes.
+        // CX-110: the environment map for this frame, HERE because the lookup can build a texture and building
+        // one inside Alloy's 4.6 bracket would upload it into the wrong context. (The wind clock is NOT here:
+        // it hangs off the engine's own WindManager::updateTimer site, which runs on every world frame.)
+        AlloyEnvMap.Tick(scene);
+        TileFadeRamp.Tick(scene);   // CX-104: the tile fade the frame draws, ahead of the anchor that reads it
         DoorFade.Tick(scene);
         AlloyRenderer.FrameAnchor(scene);       // #132's anchor: the whole Alloy frame draws here
         long anchorChild = FrameZones.Ticks(FrameZones.Zone.Alloy) - ca1
                          + FrameZones.Ticks(FrameZones.Zone.Shadow) - cs1;
         long s3 = Stopwatch.GetTimestamp();
-        // #264: DoBinBucket @0x474c50 reads nothing the bucket walk left behind -- it iterates the
-        // `binbucket` global (wind update, camera distance, the grass sort) -- so with the walk gone it
-        // simply runs at RSP's own position and nothing else moves.
+        // #264: DoBinBucket @0x474c50 reads nothing the DRAW-BUCKET build left behind, so it simply runs at
+        // RSP's own position. CX-104: it does read `binbucket`, which the BSP visitor fills and ClearBuckets
+        // zeroes -- both inside ManageSceneBSP -- so under alloy.skipbuckets=3 that list is frozen. Harmless
+        // here because GrassField's hook on this very symbol swallows the call outright on a pass Alloy drew,
+        // which is every pass the skip is taken on; the call stays for the passes Alloy did not draw, and
+        // those re-arm the walk.
         sc.DoBinBucket();                      // grass wind + per-bin LOD distance
         long s4 = Stopwatch.GetTimestamp(); _stepTicks[3] += s4 - s3;
         // CX-85 moved the focuslighting write into LightFade.Tick above and the flare occlusion fade into

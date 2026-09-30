@@ -13,8 +13,9 @@ namespace CX.Alloy;
 /// those views need to be CORRECT rather than merely drawn, all of it gathered from the engine's own
 /// structures:
 /// <list type="bullet">
-/// <item>the LightManager MASTER light list, walked whole every frame into <see cref="FrameInputs"/> --
-/// the area-wide, camera-independent snapshot the clustered lighting (#83) and the cubes both read;</item>
+/// <item>ALLOY's light set (CX-108: <see cref="LightRegistry"/>, not the engine's master list), walked whole
+/// every frame into <see cref="FrameInputs"/> -- the area-wide, camera-independent snapshot the clustered
+/// lighting (#83) and the cubes both read;</item>
 /// <item>the shared per-frame shadow focus, published as <c>FrameInputs.Focus</c>;</item>
 /// <item>the area's interior flag, which is what tells CasterPass there is no sun to fit.</item>
 /// </list>
@@ -54,7 +55,7 @@ public sealed unsafe class SceneInputs : IExtenderService
 
     // The point-light cubes moved to CasterPass (#95): the Alloy multidraw path renders every local light's six
     // faces into one cube ARRAY, and the receiver samples them as a samplerCubeArrayShadow. What is left here is
-    // the light WALK that feeds it -- the LightManager master list, the shared shadow focus and the area's
+    // the light WALK that feeds it -- Alloy's own light set (CX-108), the shared shadow focus and the area's
     // interior flag.
     //
     // #282 took the rest: a BSP sphere re-walk that re-submitted camera-culled tile parts into the engine's
@@ -143,7 +144,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         // #238: one zone over the whole slot -- the light walk, the focus and the caster bake are one
         // non-overlapping span of the frame, and it is a SIBLING of the shim rather than nested in it.
         long tShadow = FrameZones.Now;
-        WalkMasterList(new Scene(scene).LightManager);
+        WalkLights(scene);
         FrameZones.Add(FrameZones.Zone.Lwalk, tShadow);
         if (_stage < 2) { _passDoneThisFrame = true; return; }
         // The shadow focus every Alloy view fits around.
@@ -156,8 +157,13 @@ public sealed unsafe class SceneInputs : IExtenderService
         {
             _interiorDecided = true;
             bool wasInterior = _interior;
-            _interior = AreaIsInterior();
+            CNWCArea a = CurrentArea();
+            _interior = !a.IsNull && (a.Flags & 1) != 0;
             FrameInputs.Interior = _interior;
+            FrameInputs.AreaPtr = a.Ptr;
+            // R2: the area's world XY extent, for the wetness map's fit. Tile (0,0) spans [0,10).
+            FrameInputs.AreaExtent = a.IsNull ? default
+                : new Vector2(a.TileWidth * AreaBorder.TileSize, a.TileHeight * AreaBorder.TileSize);
             if (_interior != wasInterior || !_interiorLogged)
             { _interiorLogged = true; _log?.Info($"SceneInputs: area is {(_interior ? "INTERIOR -- no sun shadows" : "exterior -- sun shadows on")}"); }
         }
@@ -442,20 +448,31 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static bool _lightDiag => Shadows.LightDiag.V;
 
 
-    /// <summary>Record EVERY shadow-worthy point light from the LightManager's master list into
-    /// <see cref="FrameInputs"/> -- the area-wide, camera-independent snapshot feeding the Alloy pass's
-    /// light SSBO and the cube set. Runs ONCE per frame from the deterministic pass
-    /// slot (ADR 0007 phase 2), while the manager is alive inside <c>Scene::Render</c>. Alloc-free;
-    /// pointers are only read inside this call, never retained.</summary>
-    private static void WalkMasterList(LightManager lm)
+    /// <summary>Record EVERY point light of the area into <see cref="FrameInputs"/> -- the area-wide,
+    /// camera-independent snapshot feeding the Alloy pass's light SSBO and the cube set. Runs ONCE per frame
+    /// from the deterministic pass slot (ADR 0007 phase 2). Alloc-free; pointers are only read inside this
+    /// call, never retained.
+    /// <para>CX-108: the ENUMERATION is <see cref="LightRegistry"/>'s -- Alloy's own set, built on the scene
+    /// walk's edges and a BSP light pass. <c>light.registry 0</c> reads the engine's <c>LightManager</c> master
+    /// list instead, which is where this walk read it from #257 to CX-108; everything below the enumeration is
+    /// shared between the two, so the A/B compares the source and nothing else.</para></summary>
+    private static void WalkLights(IntPtr scene)
     {
-        if (lm.IsNull || !GameGate.InModule) return;
+        if (scene == IntPtr.Zero || !GameGate.InModule) return;
+        bool owned = LightRegistry.Live;
+        LightManager lm = owned ? default : new Scene(scene).LightManager;
+        if (!owned && lm.IsNull) return;
         // The area edge frees every PartLight* and malloc hands the addresses back: a peak table keyed on
         // them must not outlive the area, or a new light inherits a stranger's reach for FlkHold frames.
         CNWCArea area = CurrentArea();
         if (area.Ptr != _flkArea) { _flkArea = area.Ptr; Array.Clear(_flkId); }
-        int count = lm.MasterCount;
-        if (lm.MasterData == IntPtr.Zero) count = 0;   // an empty list still walks: the lightmap set closes on "no light"
+        int count;
+        if (owned) count = LightRegistry.Count;
+        else
+        {
+            count = lm.MasterCount;
+            if (lm.MasterData == IntPtr.Zero) count = 0;   // an empty list still walks: the lightmap set closes on "no light"
+        }
         float radiusMult = LatchAtten();
         // BOTH snapshots restart here, not at the frame edge. CasterPass consumes the local-light set later
         // in this same pass slot, and the roll-call this service's frame edge rides runs at the present --
@@ -480,7 +497,7 @@ public sealed unsafe class SceneInputs : IExtenderService
         _flkSeq++;
         for (int i = 0; i < count; i++)
         {
-            PartLight light = lm.Master(i);
+            PartLight light = owned ? LightRegistry.Light(i) : lm.Master(i);
             if (light.IsNull) continue;
             if (walkDiag && FrameInputs.HasCamera)
             {
@@ -761,18 +778,10 @@ public sealed unsafe class SceneInputs : IExtenderService
         return _focus;
     }
 
-    /// <summary>True when the current area carries the ARE interior flag. Walks the engine's own chain
-    /// (**g_pAppManager -&gt; CClientExoApp::GetModule -&gt; module+0xf8 -&gt; area flags at +8, bit 0; the global
-    /// needs TWO derefs -- CAppManager first, its first field is the CClientExoApp*), every deref guarded;
-    /// false (exterior, sun maps on) whenever the chain is unavailable. Alloc-free, once per frame.</summary>
-    private static bool AreaIsInterior()
-    {
-        CNWCArea area = CurrentArea();
-        return !area.IsNull && (area.Flags & 1) != 0;
-    }
-
-    /// <summary>The current CNWCArea, or the null view while the chain is unavailable. Compared, never
-    /// retained.</summary>
+    /// <summary>The current CNWCArea, or the null view while the chain is unavailable. Walks the engine's own
+    /// chain (**g_pAppManager -&gt; CClientExoApp::GetModule -&gt; module+0xf8; the global needs TWO derefs --
+    /// CAppManager first, its first field is the CClientExoApp*), every deref guarded. Compared, never
+    /// retained. Alloc-free, once per frame.</summary>
     private static CNWCArea CurrentArea()
     {
         if (_appMgr == IntPtr.Zero || _getModule == null) return default;
@@ -796,7 +805,7 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static Vector3? CameraTargetFocus()
     {
         if (_currentCamera == IntPtr.Zero) return null;
-        var cam = new Camera(*(IntPtr*)_currentCamera);
+        var cam = new Camera(AlloyCamera.World);
         if (cam.IsNull) return null;
         CAurBehavior hv = cam.BehaviorHost;
         if (hv.IsNull) return null;

@@ -8,6 +8,8 @@ layout(std430, binding = 0) readonly buffer LightBuf { vec4 uLights[]; };
 layout(std430, binding = 1) writeonly buffer ClusterCount { uint uClCount[]; };
 layout(std430, binding = 2) buffer ClusterIdx { uint uClIdx[]; };
 layout(std430, binding = 3) buffer Stats { uint uOverflow; };
+// CasterPass.CubeDynSphere, the lit stage's own mover spheres (xyz, r; r < 0 unused), $DYNSPH$ per cube slot
+layout(std430, binding = 25) readonly buffer DynMovers { vec4 uDynMovers[]; };
 uniform mat4 uView;
 uniform vec2 uProjXY;
 uniform vec2 uZ;
@@ -16,8 +18,45 @@ uniform int uLightCount;
 uniform float uReach;
 uniform int uBinCap;
 uniform vec2 uAtten;
+// per cube slot: its dyn page plus one (0 = no mover near the light), as the lit stage's uLocalDynPage
+uniform float uDynPage[$CUBES$];
+// x = lightmap.movers (1 = a static light can go hot), y = shadow.cubedist (0 = no cut)
+uniform vec2 uHot;
+// R4 (weather.filmlights): how many cold statics to rank as reflection candidates for a water film.
+// 0 = none, which is every frame with no film, and then this pass writes exactly what it always did.
+uniform int uReflK;
+const int CX_REFL_MAX = 4;
 const uint CAP = $CAP$u;
 const uint SORT = $SORT$u;
+const int DYNSPH = $DYNSPH$;
+const int CUBES = $CUBES$;
+
+// Could a baked static light in cube slot `slot` go HOT anywhere in this froxel -- could the lit stage's
+// per-fragment ray test (cx_lightfrag: the light-to-fragment segment within r + 0.3 of a mover sphere) pass
+// for a point in it? Every such point lies in the cone from the light tangent to the inflated sphere, so a
+// froxel whose bounding sphere (fc, fr) misses every slot's cone cannot hold one. Conservative by design.
+bool HotReach(int slot, vec3 e, vec3 fc, float fr)
+{
+    if (slot < 0 || slot >= CUBES || uDynPage[slot] < 0.5) return false;
+    for (int q = 0; q < DYNSPH; q++)
+    {
+        vec4 ms = uDynMovers[slot * DYNSPH + q];
+        if (ms.w < 0.0) continue;
+        vec3 ax = (uView * vec4(ms.xyz, 1.0)).xyz - e;
+        float rr = ms.w + 0.3, d = length(ax);
+        // the lit test also passes a centre up to rr BEHIND the light along the ray, reachable only while the
+        // light is within sqrt(2) rr of it: every direction, then
+        if (d * d <= 2.0 * rr * rr) return true;
+        ax /= d;
+        float sn = rr / d, cs = sqrt(1.0 - sn * sn);
+        vec3 v = fc - e;
+        float along = dot(v, ax);
+        if (along < -fr) continue;   // the froxel is wholly behind the light
+        float perp = sqrt(max(dot(v, v) - along * along, 0.0));
+        if (cs * perp - along * sn <= fr) return true;
+    }
+    return false;
+}
 
 void main()
 {
@@ -82,17 +121,58 @@ void main()
         }
         sc[j] = s; uClIdx[base + j] = uint(i);
     }
-    // Cold statics to the back: a static light with no cube (the static bit over slot -1, whatever its CX-56
-    // set index: w = 255 + 512 * (set + 1)) is in the pages and can never go hot, so a baked matte receiver
-    // stops at the live count in the high half.
+    // Cold statics to the back: a static light is in the pages, and a baked matte receiver owes it nothing
+    // unless it goes HOT -- which needs a cube with a dyn page, lightmap.movers, a froxel nearer than the
+    // cube distance and a mover whose shadow cone reaches the froxel (HotReach). Everything else trails the
+    // list, and such a receiver stops at the live count in the high half. Glossy and unbaked receivers walk
+    // the whole list, so the order changes nothing for them.
     uint live = 0u, tail = n;
+    vec3 fc = 0.5 * (lo + hi);
+    float fr = 0.5 * length(hi - lo);
+    bool hotOn = uHot.x > 0.5 && !(uHot.y > 0.0 && d0 >= uHot.y);
     while (live < tail)
     {
-        int w = int(uLights[uClIdx[base + live] * 2u + 1u].w);
-        if (w < 128 || (w - 255) % 512 != 0) { live++; continue; }
+        uint li = uClIdx[base + live];
+        int w = int(uLights[li * 2u + 1u].w);
+        int set = (w - 128) / 512 - 1;
+        if (w < 128 || hotOn && HotReach(w - 256 - 512 * (set + 1), (uView * vec4(uLights[li * 2u].xyz, 1.0)).xyz, fc, fr))
+        { live++; continue; }
         tail--;
         uint t = uClIdx[base + live]; uClIdx[base + live] = uClIdx[base + tail]; uClIdx[base + tail] = t;
     }
-    uClCount[id] = n | (live << 16u);
+    // R4: the reflection candidates -- the K cold statics with the strongest curve x luma at this froxel,
+    // permuted to the front of the cold tail so the lit stage can walk [live, live + refl) and nothing
+    // else. A PERMUTATION, never an overwrite: a glossy or unbaked receiver still walks the whole list.
+    uint refl = 0u;
+    if (uReflK > 0 && tail > live)
+    {
+        int K = min(uReflK, CX_REFL_MAX);
+        float rs[CX_REFL_MAX]; uint rp[CX_REFL_MAX];
+        for (uint k = live; k < tail; k++)
+        {
+            uint li = uClIdx[base + k];
+            vec4 pr = uLights[li * 2u];
+            vec3 e = (uView * vec4(pr.xyz, 1.0)).xyz;
+            vec3 dv = e - clamp(e, lo, hi);
+            float f2 = dot(dv, dv) / max(pr.w * pr.w, 1e-6);
+            float s = (1.0 - f2) / (at.x + at.y * f2) * dot(uLights[li * 2u + 1u].rgb, vec3(0.299, 0.587, 0.114));
+            uint j;
+            if (refl < uint(K)) { j = refl; refl++; }
+            else if (s > rs[K - 1]) j = uint(K) - 1u;
+            else continue;
+            while (j > 0u && rs[j - 1u] < s) { rs[j] = rs[j - 1u]; rp[j] = rp[j - 1u]; j--; }
+            rs[j] = s; rp[j] = k;
+        }
+        for (uint j = 0u; j < refl; j++)
+        {
+            uint dst = live + j, src = rp[j];
+            if (src == dst) continue;
+            uint sw = uClIdx[base + dst]; uClIdx[base + dst] = uClIdx[base + src]; uClIdx[base + src] = sw;
+            // a later candidate standing on the slot just claimed moved to where this one came from
+            for (uint q = j + 1u; q < refl; q++) if (rp[q] == dst) rp[q] = src;
+        }
+    }
+    uClCount[id * 2u] = n | (live << 16u);
+    uClCount[id * 2u + 1u] = refl;
     if (dropped != 0u && uBinCap <= 0) atomicAdd(uOverflow, 1u);
 }

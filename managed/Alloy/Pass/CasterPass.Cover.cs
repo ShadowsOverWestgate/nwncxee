@@ -21,6 +21,9 @@ public sealed unsafe partial class CasterPass
     /// <summary>The sun-array layer holding the map (the cascade count).</summary>
     internal static int CoverLayer => _cascades;
     internal static bool CoverFresh => _coverStamp == _frameSeq && CascadeTex != 0;
+    /// <summary>The world point the latched cover fit is centred on -- R2's wetness map dispatches over the
+    /// map rect this window covers, and takes its z as the height its forward projection starts from.</summary>
+    internal static Vector3 CoverCentre => _coverC;
     internal static int CoverBakes, CoverHeld;
     private static Matrix4x4 _coverKeyVp;
     private static Vector3 _coverC;

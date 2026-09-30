@@ -1,20 +1,59 @@
-            // #618/#619: the weather on exposed surfaces -- exposure is the rain occlusion map, the amounts are
-            // the CPU integrators'. Every surface takes it, a hosted weather body (td_ground_fs) included.
-            float wxWet = 0.0, wxSnow = 0.0, wxPuddle = 0.0, wxPile = 0.0;
+            // #618/#619 + R2/R3: the weather on exposed surfaces. WHERE comes from the area wetness map
+            // where it has reached (one fetch: the latched top-down surface's height, the basin's water
+            // level and its relief) and from the cover map plus the CPU integrators everywhere else. Snow
+            // keeps the older reads whole. Every surface takes it, a hosted weather body (td_ground_fs)
+            // included.
+            float wxWet = 0.0, wxSnow = 0.0, wxFilm = 0.0, wxPile = 0.0, wxFilmRough = 0.0, wxShore = 0.0;
             vec2 wxDriftDir = vec2(0.0), wxP = vWorld.xy;
+            if (uWeather.w > 3.5)
+            {
+                // /weather viz 4: the map. Red the damp wetness, green the basin's level, blue the metres of
+                // standing water over this point; BLACK where the cover view has not latched this texel yet.
+                vec4 vm = CxWetMap(vWorld.xy);
+                frag = vec4(CxWetMapped(vm) ? vec3(vm.x, vm.y, CxWetDepth(vm) / max(uWxMapP.x, 1e-4)) : vec3(0.0), 1.0);
+                return;
+            }
             if (uWeather.w > 2.5) { frag = d.emi.w < -0.5 ? vec4(1.0, 0.0, 0.0, 1.0) : d.emi.w > 0.5 ? vec4(0.0, 0.0, 1.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0); return; }
             if (uWeather.x > 0.0 || uWeather.y > 0.0 || uWeather.w > 1.5)
             {
                 float wxExp = CxWeatherExposure(vWorld, N);
-                if (uWeather.w > 1.5) { frag = vec4(vec3(wxExp), 1.0); return; }
                 vec3 Ng = normalize(vNrm);
+                // /weather viz 2 paints the test that decides WETNESS -- the cover map's own filtered
+                // compare (cx_wx_edge), not the variance read snow still takes.
+                if (uWeather.w > 1.5) { frag = vec4(vec3(CxWetOpen(vWorld, Ng, wxExp)), 1.0); return; }
                 float up = clamp(Ng.z, 0.0, 1.0);
                 float n1 = CxWeatherNoise(vWorld.xy * 0.7), n2 = CxWeatherNoise(vWorld.xy * 3.1);
                 // rain wets a face as much as the fall strikes it, relative to open ground: a wall parallel to the
                 // fall stays dry, a windward one takes the lean. The fall is the cover view's axis (it is baked along it).
                 vec3 wxFall = uCoverVp[3][3] == 0.0 ? vec3(0.0, 0.0, -1.0) : normalize(vec3(uCoverVp[0][2], uCoverVp[1][2], uCoverVp[2][2]));
                 if (wxFall.z > 0.0) wxFall = -wxFall;
-                wxWet = uWeather.x * wxExp * clamp(dot(Ng, -wxFall) / max(-wxFall.z, 0.2), 0.0, 1.0);
+                // R2: the map's record drives HOW MUCH -- what has soaked in, what the basin holds, how far
+                // this texel stands above its low point. It no longer draws the EDGE: at 1.6 texels a metre
+                // on a large area its one-fetch shelter test stair-stepped the dry strip under an eave in
+                // half-metre blocks. The edge comes off the cover map at its own resolution (cx_wx_edge),
+                // and the map's coarse test is only what a point outside the cover window falls back to.
+                vec4 wxM = CxWetMap(vWorld.xy);
+                bool wxMapped = CxWetMapped(wxM);
+                float wxWetExp = CxWetOpen(vWorld, Ng, wxMapped ? CxWetShelter(wxM, vWorld.z) : wxExp);
+                float wxWetAmt = clamp(wxMapped ? wxM.x * uWxMapXf.w : uWeather.x, 0.0, 1.0);
+                wxWet = wxWetAmt * wxWetExp * clamp(dot(Ng, -wxFall) / max(-wxFall.z, 0.2), 0.0, 1.0);
+                if (up < CX_WX_WALL_UP && wxWet > 0.0)
+                {
+                    // R5: rain does not wet a wall evenly -- it strikes it, then RUNS DOWN, so the wet is
+                    // streaky, and the run-off collects in a dark band at the foot. The streak noise is
+                    // stretched down z (tight across the wall, slack along it); the foot band needs the
+                    // height of the GROUND beside the wall, which is the map's latched surface one step out
+                    // along the face -- the texel under the wall itself is the wall's own top.
+                    float wxStreak = CxWxEdgeNoise(vec2(dot(vWorld.xy, vec2(3.1, 2.7)), vWorld.z * CX_WX_STREAK_Z));
+                    wxWet *= mix(1.0, CX_WX_STREAK_MIN + (1.0 - CX_WX_STREAK_MIN) * 2.0 * wxStreak, uWxRun.x);
+                    vec4 wxFoot = CxWetMap(vWorld.xy + Ng.xy * CX_WX_FOOT_M);
+                    if (CxWetMapped(wxFoot))
+                    {
+                        float wxBand = 1.0 - smoothstep(0.0, CX_WX_FOOT_M, vWorld.z - wxFoot.z);
+                        wxWet = max(wxWet, wxBand * wxWetAmt * wxWetExp * uWxRun.x);
+                    }
+                    wxWet = min(wxWet, 1.0);
+                }
                 if (uWeather.y > 0.0 && d.emi.w >= -0.5 && !(uSnowPom.z > 0.5 && d.emi.w > 0.5))   // no snow on a creature (emi.w -1), nor on a listed tileset's tiles
                 {
                     float wxSlope = smoothstep(uSnowLook.w - 0.15, uSnowLook.w + 0.15, up + (n1 - 0.5) * 0.4);
@@ -54,14 +93,35 @@
                         wxPile = mix(wxPile, pileTop, s);
                     }
                 }
-                if (uWeather.z > 0.0 && up > 0.5)
+                if (up > 0.5)
                 {
-                    // concave = the AO says low ground, or the rain view says the neighbours stand higher
-                    float conc = clamp((1.0 - occl) * 1.5 + CxWeatherHollow(vWorld), 0.0, 1.0);
                     float wxFlat = smoothstep(0.9, 0.98, up);
-                    float m = conc * 0.5 + n1 * 0.6 + n2 * 0.15 + uWeatherLook.w - 0.7;
-                    wxPuddle = uWeather.z * wxFlat * wxExp * smoothstep(0.5 - uWeatherLook.z, 0.5 + uWeatherLook.z, m);
+                    if (wxMapped)
+                    {
+                        // R2: standing water is the basin's level less this texel's own relief, so a puddle
+                        // has a real shoreline and drains from its edge inward as the level falls. The map
+                        // cannot resolve relief finer than its own texel and no real ground is flat at the
+                        // centimetre scale, so a noise micro-relief stands in for what it cannot see -- a
+                        // flat plaza breaks into pools instead of sheeting over as one mirror.
+                        float wxMicro = uWxMapP.x * 0.6 * (0.35 * n1 + 0.65 * n2);
+                        float wxD = CxWetDepth(wxM) - wxMicro;
+                        wxFilm = wxWetExp * wxFlat * smoothstep(0.0, uWxMapP.y, wxD);
+                        // R5: the SHORELINE. Ground the water has just left, or has not quite reached, is
+                        // soaked right through -- darker and more saturated than the dry stone outside it
+                        // and than the film over it, which is what gives a real puddle its rim.
+                        wxShore = wxWetExp * wxFlat * (1.0 - wxFilm)
+                                * smoothstep(-CX_WX_SHORE * uWxMapP.x, 0.0, wxD) * uWxRun.y;
+                    }
+                    else if (uWeather.z > 0.0)
+                    {
+                        // no map here yet: #619's estimate -- concave = the AO says low ground, or the rain
+                        // view says the neighbours stand higher
+                        float conc = clamp((1.0 - occl) * 1.5 + CxWeatherHollow(vWorld), 0.0, 1.0);
+                        float m = conc * 0.5 + n1 * 0.6 + n2 * 0.15 - 0.2;
+                        wxFilm = uWeather.z * wxFlat * wxExp * smoothstep(0.5 - uWeatherLook.z, 0.5 + uWeatherLook.z, m);
+                    }
                 }
+                wxWet = clamp(max(wxWet, wxShore * wxWetAmt), 0.0, 1.0);
                 if (wxSnow > 0.0)
                 {
                     albedo = mix(albedo, vec3(uWeatherLook.y), wxSnow);
@@ -82,20 +142,44 @@
                 }
                 if (wxWet > 0.0)
                 {
-                    albedo *= 1.0 - uWeatherLook.x * wxWet;
-                    rough = mix(rough, 0.35, wxWet); spec = max(spec, 0.25 * wxWet);
+                    // R3, Lagarde ("Water drop 2 - Rendering wet surfaces"): water soaks INTO a porous
+                    // surface, and a soaked one darkens and SATURATES -- albedo raised to a power, where a
+                    // linear scale only greys it. Stone and dirt deepen; polished stone and metal barely move.
+                    // ponytail: porosity is a heuristic off the stock parameters (rough, non-metal, low
+                    // specularity = porous). The upgrade is a .mtr porosity channel through ADR 0026's
+                    // material layers, read the way CxRoughness is.
+                    float wxPoro = (1.0 - metal) * smoothstep(0.25, 0.7, rough)
+                                 * (1.0 - clamp((spec - CX_DIELECTRIC_F0) / 0.2, 0.0, 1.0));
+                    // through CxWetSoak, which caps the exponent per fragment: a bare pow ran a dark
+                    // albedo to black at the higher end of the darkening knob (cx_wx_soak)
+                    albedo = CxWetSoak(albedo, uWeatherLook.x * wxPoro * wxWet);
+                    // ...and the BASE roughness drops only moderately, and never under the ceiling a dry
+                    // fragment was above: below uLightOcc.y every wet pixel joins the mirror path, which
+                    // walks every static light in the cluster -- which was the frame, on a rainy plaza
+                    rough = max(mix(rough, rough * 0.6, wxWet), min(rough, uLightOcc.y));
+                    spec = max(spec, 0.25 * wxWet);
                 }
-                if (wxPuddle > 0.0)
+                if (wxFilm > 0.0)
                 {
-                    albedo *= 1.0 - 0.5 * wxPuddle;
-                    rough = mix(rough, 0.03, wxPuddle); spec = max(spec, 0.4 * wxPuddle);
-                    SpecularColor = mix(SpecularColor, vec3(1.0), wxPuddle);   // the water reflects, not the stone under it
-                    N = normalize(mix(N, vec3(0.0, 0.0, 1.0), wxPuddle));
+                    // standing water is a LAYER over the damp base, not a rewrite of the stone: a thin
+                    // clear coat (cx_ownlit_light hands it to cxCoat / cxCoatRough) with the base normal
+                    // flattened toward the water's own plane beneath it. The base keeps its roughness, and
+                    // with it the cheap lighting path.
+                    wxFilmRough = max(uWeatherLook.w, CX_ALPHA_MIN);
+                    // toward the GEOMETRIC normal, not toward the world's up. Water drowns a bed's
+                    // normal-map detail but not its macro shape -- a sloped street under a film is still
+                    // sloped -- and the old blend between the mapped normal and a world plane swept the
+                    // near-mirror lobe's alignment smoothly across a whole surface, which is what drew
+                    // the film's highlight as a bright ARC rather than a reflection. A film only exists
+                    // where the face is near-flat (wxFlat), so the geometric normal IS the water plane.
+                    N = normalize(mix(N, Ng, wxFilm));
+                    albedo = CxWetSoak(albedo, uWeatherLook.x * wxFilm);
                 }
-                if (uCoverLayer.w > 0.0 && wxPuddle > 0.0 && up > 0.9)
+                if (uCoverLayer.w > 0.0 && wxFilm > 0.0 && up > 0.9)
                 {
-                    float wxRing, wxAmp = wxExp * wxPuddle;
-                    N = normalize(N + vec3(CxWeatherImpact(vWorld.xy, uCoverLayer.w, CxWeatherImpactPx(vWorld, V), wxRing) * wxAmp, 0.0));
-                    rough = CxWeatherImpactRough(rough, wxRing, wxAmp, uCoverLayer.w);
+                    // the rings a drop leaves are on the FILM, so they roughen the coat and not the bed
+                    float wxRing, wxAmp = wxWetExp * wxFilm;
+                    N = normalize(N + vec3(CxWeatherRipple(vWorld.xy, uCoverLayer.w, CxWeatherImpactPx(vWorld, V), wxRing) * wxAmp, 0.0));
+                    wxFilmRough = CxWeatherRippleRough(wxFilmRough, wxRing, wxAmp, uCoverLayer.w);
                 }
             }

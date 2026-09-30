@@ -129,9 +129,6 @@ internal static unsafe partial class Particles
     /// emitter's model matrix to the centre and its two axes, which is exact for an affine matrix and four
     /// transforms cheaper per particle than transforming the corners.</summary>
     private const int RecFloats = 24;
-    /// <summary>The <c>m_aurMtxStack</c> entry the model matrix comes off -- index 2. Named rather than
-    /// open-coded because <see cref="Beams"/> and <see cref="SkyBox"/> read the same one.</summary>
-    private const int ModeModel = 2;
     /// <summary>The SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
     /// 5-7 the caster's, 12-16 <see cref="CullPass"/>'s; 10/11 are the record and index buffers the vertex
     /// stage names, and #288's two descriptor buffers take the next free pair above the cull's.</summary>
@@ -257,8 +254,7 @@ internal static unsafe partial class Particles
     private static EmitterGetGobAlphaFn _gobAlpha;
     private static EmitterIsSplatFn _isSplat;
     private static EmitterIsTintedFn _isTinted;
-    private static IntPtr* _currentScene, _currentCamera;
-    private static byte* _stacks;
+    private static IntPtr* _currentScene;
 
     /// <summary><see cref="_off"/> is the RESOLUTION latch -- a helper, a global or a hook that did not
     /// come up, so this client cannot run the Alloy pass at all. It is not the user toggle
@@ -349,12 +345,10 @@ internal static unsafe partial class Particles
         _isTinted = EngineFn.EmitterIsTinted;
         EmitterLighting.Resolve();
         _currentScene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
-        _currentCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
-        _stacks = (byte*)Native.Sym(SymbolMap.MAurMtxStack);
 
         if (_getTexture == null || _bindInUnit == null || _tileAlpha == null || _gobAlpha == null || _isSplat == null
             || _isTinted == null || !EmitterLighting.Ready || _currentScene == null
-            || _currentCamera == null || _stacks == null || !AurTex.Ready)
+            || !AurTex.Ready)
         {
             _off = true;
             log.Info("Particles: an emitter helper, a global or AurTex did not resolve -- emitters stay vanilla");
@@ -470,10 +464,11 @@ internal static unsafe partial class Particles
         e.Ptr = em;
         e.CapFrame = _frame;
         e.Parts = parts; e.PartCount = count;
-        // RenderEmitter pushes nothing, so the top of the model stack IS the transform the engine's own
-        // draw ran under. Almost always identity -- particles simulate in world space -- but reading it
-        // costs nothing and an emitter under a transform would otherwise land at the origin.
-        e.Model = new aurMatrixStack((IntPtr)_stacks)[ModeModel].Top;
+        // RenderEmitter pushes nothing and Scene::DoEmitterBucket does no matrix work either, so an emitter
+        // draws on whatever base the frame left in the model stack -- which CX-109 established is the identity
+        // (AlloyCamera.ModelBase, docs/research/camera-loop.md §2). Particles simulate in world space, so this
+        // is also the only base that would place them correctly.
+        e.Model = AlloyCamera.ModelBase;
         e.Ident = e.Model.IsIdentity;
         if (_orderN < MaxEmitters) _order[_orderN++] = s;
         return s;
@@ -491,7 +486,7 @@ internal static unsafe partial class Particles
         if (_off || !Enabled.V || _failed || _orderN == 0 || Gl.DrawArrays == null) return;
         if (!EnsureProgram()) return;
 
-        IntPtr cam = *_currentCamera;
+        IntPtr cam = AlloyCamera.World;
         if (cam == IntPtr.Zero) return;
         Basis(cam, out Vector3 camFwd, out Vector4 camQ, out Vector3 axisY, out Vector3 axisX);
         // The eye, from the view matrix rather than from the camera object: the sphere normal has to bulge
@@ -904,11 +899,13 @@ internal static unsafe partial class Particles
             Vector3 p3 = emv.Pos;
             EmitterLighting.V3 wp = new() { X = p3.X, Y = p3.Y, Z = p3.Z };
             IntPtr scene = *_currentScene;
-            IntPtr lights = scene != IntPtr.Zero ? new CX.Engine.Scene(scene).LightManager.Ptr : IntPtr.Zero;
+            // CX-108: the registry's tint takes no manager; only the light.registry 0 path reads Scene+0x158.
+            bool owned = LightRegistry.Live;
+            IntPtr lights = owned || scene == IntPtr.Zero ? IntPtr.Zero : new CX.Engine.Scene(scene).LightManager.Ptr;
             // The engine does not null-check the list because at its call site there always is one. Ours
             // runs a pass later, where an area transition can have taken it -- and the scan walks it
             // unconditionally, so a null would be a wild read rather than a black tint.
-            if (lights != IntPtr.Zero)
+            if (owned || lights != IntPtr.Zero)
             {
                 EmitterLighting.V3 t = EmitterLighting.At(wp, lights, IntPtr.Zero);
                 cStart = new Vector3(cStart.X * t.X, cStart.Y * t.Y, cStart.Z * t.Z);

@@ -9,9 +9,15 @@ void main()
         albedo = mix(albedo, lum * vec3(1.15, 0.95, 0.6), uSnow.y * 0.8);
         albedo = mix(albedo, vec3(0.85), uSnow.y * smoothstep(0.45, 0.9, vRoot) * 0.85);
     }
-    // CX-51: rain darkens the field as it darkens the ground under it (no rain occlusion map here: a blade
-    // under a roof is wet too); the wet sheen is the reflection below
-    albedo *= 1.0 - uLook.w * uLook.z;
+    // R5: rain darkens the blade as it darkens the ground under it, off the same wetness map and the same
+    // cover-map shelter test the cards and the lit stage read -- a blade under a roof is dry now. The soak
+    // is bounded (cx_wx_soak): the linear scale this line used to be went NEGATIVE past a darkening knob
+    // of 1 at full wetness, which is the black grass.
+    vec4 bWx = CxWetMap(vWorld.xy);
+    bool bMapped = CxWetMapped(bWx);
+    float bWet = clamp((bMapped ? bWx.x * uWxMapXf.w : uLook.z)
+                     * CxWetOpen(vWorld, vec3(0.0, 0.0, 1.0), bMapped ? CxWetShelter(bWx, vWorld.z) : 1.0), 0.0, 1.0);
+    albedo = CxWetSoak(albedo, uLook.w * bWet * CX_WX_LEAF_SOAK);
     vec3 N = normalize(vNrm);
     vec3 V = normalize(uEyePos - vWorld);
     float ndlRaw = dot(N, uAreaDir);
@@ -35,7 +41,7 @@ void main()
     // it a lit or reflective patch of ground shows around blades that ignore it, as if glued on.
     if (uProbeMips > 0.0)
     {
-        float gRough = mix(0.6, 0.35, uLook.z);
+        float gRough = mix(0.6, 0.35, bWet);
         vec3 Nv = faceforward(N, -V, N);   // two-sided: the face toward the eye
         vec3 R = reflect(-V, Nv);
         vec2 gAb = CxEnvBrdf(max(dot(Nv, V), 1e-3), sqrt(gRough));

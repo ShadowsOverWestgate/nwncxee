@@ -115,7 +115,7 @@ internal static unsafe class ShaderResource
 
     /// <summary>Expand the sizing tokens an Alloy pipeline source may carry, so a shipped .shd tracks the
     /// CPU-side constants rather than freezing a copy of them: <c>$CAP$</c> lights per cluster (the CPU sizes
-    /// the index SSBO from it), <c>$SORT$</c> the cluster build sort array (#410), <c>$DYNSPH$</c> mover spheres per cube slot, <c>$GROUP$</c> compute workgroup size, <c>$SRGB$</c> the engine's sRGB
+    /// the index SSBO from it), <c>$SORT$</c> the cluster build sort array (#410), <c>$DYNSPH$</c> mover spheres per cube slot, <c>$CUBES$</c> cube slots, <c>$GROUP$</c> compute workgroup size, <c>$SRGB$</c> the engine's sRGB
     /// exponent, <c>$AA$</c> the SMAA preset level the anti-aliasing option picked, <c>$POSTMASK$</c>/<c>$SQM$</c>
     /// the hosted post chain's option mask and shader quality (#352), pinned by its build. <see cref="GlProgram"/>
     /// applies it to every stage it compiles, embedded or overridden, so both read the same.</summary>
@@ -123,6 +123,7 @@ internal static unsafe class ShaderResource
         .Replace("$CAP$", AlloyLights.ClusterCap.ToString())
         .Replace("$SORT$", AlloyLights.SortCap.ToString())
         .Replace("$DYNSPH$", CasterPass.DynSpheres.ToString())
+        .Replace("$CUBES$", CasterPass.MaxCubes.ToString())
         .Replace("$GROUP$", AlloyLights.GroupSize.ToString())
         .Replace("$SRGB$", AlloyLights.SrgbGamma.ToString("0.0#", CultureInfo.InvariantCulture))
         .Replace("$AA$", SmaaStage.Level.ToString())

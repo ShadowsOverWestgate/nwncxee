@@ -30,7 +30,9 @@ namespace CX.Alloy;
 /// <c>RenderInterface::LoadMatrixIdentity</c> and <c>RenderInterface::SetColor4f</c>. Both of those are
 /// CPU-side state caches -- <c>GLRender::LoadMatrixIdentity</c> touches <c>m_aurMtxStack</c> and a dirty
 /// flag, <c>GLRender::SetColor4f</c> a global colour -- so the layer issues no GL call at all, let alone a
-/// draw.</para>
+/// draw. CX-109 gave that first one a second job: it is the once-per-frame write that leaves the MODEL stack
+/// at the identity (it carries no <c>SetMatrixMode</c>, and the mode the frame leaves selected is 2), which is
+/// the evidence behind <see cref="AlloyCamera.ModelBase"/>.</para>
 /// <para><b>The layer is player-visible, so retiring it was not an option.</b>
 /// <c>CNWCMessage::HandleServerToPlayerCCMessage</c> case 0x16 reads (text, id, x, y, anchor, colour,
 /// fadeColour, life, font) off the wire and calls <c>AurPostStringEx</c>: that is NWScript

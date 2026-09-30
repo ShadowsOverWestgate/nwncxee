@@ -148,8 +148,10 @@ internal static unsafe partial class EmitterSim
         BounceWorld.Install(log);
 
         // Item 7 of the standards review: this used to name CurrentScene for an unresolved CAMERA.
-        Missing = _bucket.IsNull ? SymbolMap.EmitterBucket
-                : _dt == null ? SymbolMap.DeltaT
+        // CX-104: emitterbucket is NOT on this list any more. The population is SceneParts' registry, and the
+        // bucket is kept resolved only for the /buckets emitters 0 A/B and the validator -- so a global that
+        // does not resolve no longer stands the whole Alloy path down over a list nothing reads.
+        Missing = _dt == null ? SymbolMap.DeltaT
                 : _currentCamera == null ? SymbolMap.CurrentCamera
                 : _getWorld == null ? SymbolMap.PartGetWorld
                 : _animate == null ? SymbolMap.AnimateParticles
@@ -184,25 +186,39 @@ internal static unsafe partial class EmitterSim
         // calling the engine's walk would draw an inventory model's sparks over the map.
         if (!AlloyRenderer.IsWorldScene(scene)) { _foreign++; return; }
 
-        int n = _bucket.Count;
+        // CX-104: the population is Alloy's own registry of the AREA's emitters, with the engine's own
+        // per-emitter in-view test applied to it here (see InView). `emitterbucket` was the frame's in-view
+        // slice of the same set, refilled by the BSP visitor @0x481000 -- which made this walk's membership a
+        // side effect of the engine's traversal and of anything else that appended to that global.
+        bool own = Buckets.Emitters.V && SceneParts.Ready;
+        if (!own && _bucket.IsNull) { _orderN = 0; return; }
+        ReadOnlySpan<IntPtr> registry = SceneParts.Emitters;
+        IntPtr* items = own ? null : (IntPtr*)_bucket.Items;
+        int n = own ? registry.Length : _bucket.Count;
+        if (own && n == 0 && !_bucket.IsNull) SceneParts.WarnEmpty(BucketValidator.KindEmitter, 0, _bucket.Count);
         if (n <= 0) { _orderN = 0; return; }
         float dt = *_dt;
         // The engine's own gate: a scene that is not animating holds every emitter except the ones whose gob
         // forces animation. Holding means "do not step", NOT "do not draw" -- the sort and the enrolment
         // still run, or a paused game loses its particles rather than freezing them.
         bool animating = sc.IsAnimating() != 0;
-        IntPtr cam = *_currentCamera;
+        IntPtr cam = AlloyCamera.World;
         Vector3 eye = cam != IntPtr.Zero ? new CX.Engine.Camera(cam).Pos : Vector3.Zero;
+        bool cull = own && BuildViewPlanes();
 
         // Cold, and deliberately here rather than inside a mover: a tile's collision set is built between
         // emitters, never in the middle of one's integration.
         if (Bouncing.V) BounceWorld.Pump(scene);
         _orderN = 0;
-        IntPtr* items = (IntPtr*)_bucket.Items;
+        _inView = 0; _outOfView = 0; _selN = 0;
+        bool record = own && Buckets.Validate.V;
         for (int i = 0; i < n; i++)
         {
-            IntPtr em = items[i];
+            IntPtr em = own ? registry[i] : items[i];
             if (em == IntPtr.Zero) continue;
+            if (cull && !InView(em)) { _outOfView++; continue; }
+            _inView++;
+            if (record && _selN < MaxEmitters) _selected[_selN++] = em;
             int s = Find(em);
             if (s < 0) { _full++; continue; }
             ref Slot slot = ref _tab[s];
@@ -235,6 +251,51 @@ internal static unsafe partial class EmitterSim
             Particles.Enroll(slot.Em, scene, _ptrs + slot.Base, slot.Live);
         }
         Reclaim();
+        if (own && Buckets.Validate.V)
+            BucketValidator.Compare(BucketValidator.KindEmitter, new ReadOnlySpan<IntPtr>(_selected, 0, _selN),
+                                    _bucket);
+    }
+
+    /// <summary>The in-view set this frame, for the validator alone -- the walk above cannot hand the
+    /// validator a span of what it kept without recording it, and recording it is one store per emitter.
+    /// </summary>
+    private static readonly IntPtr[] _selected = new IntPtr[MaxEmitters];
+    private static int _selN;
+    private static int _inView, _outOfView;
+
+    /// <summary>Six inward-facing camera planes, rebuilt once per <see cref="Step"/>. False = no camera to
+    /// build them from, and every registered emitter is stepped -- an instrument that cannot see may not hide
+    /// the world.</summary>
+    private static readonly float[] _viewPlanes = new float[24];
+    private static bool BuildViewPlanes()
+    {
+        if (!FrameInputs.HasCamera || !FrameInputs.HasPerspective) return false;
+        fixed (float* planes = _viewPlanes)
+            ShadowMath.ReceiverPlanes(FrameInputs.CameraPos, FrameInputs.SceneCamFwd, FrameInputs.CamFovy,
+                                      FrameInputs.CamAspect, FrameInputs.CamNear, FrameInputs.CamFar, 0f,
+                                      new Span<float>(planes, 24));
+        return true;
+    }
+
+    /// <summary>The engine's own emitter cull, <c>PartOutside(PartEmitter*, List&lt;Plane&gt;&amp;)</c>
+    /// @0x47a290: the emitter's WORLD position (the <c>Part::GetWorld</c> vcall, taken fresh rather than off
+    /// last frame's cached <c>PartEmitter+0x1e8</c>) against its own view radius at
+    /// <see cref="EngineLayout.EmViewRadius"/>, one sphere-vs-plane test per plane. Finer than the engine's,
+    /// which also required the emitter's whole BSP node to be in the frustum.</summary>
+    private static bool InView(IntPtr em)
+    {
+        Vector3 pos;
+        Quat rot;
+        _getWorld(em, &pos, (float*)&rot);
+        float r = new PartEmitter(em).ViewRadius;
+        fixed (float* planes = _viewPlanes)
+            for (int i = 0; i < 6; i++)
+            {
+                float d = planes[i * 4] * pos.X + planes[i * 4 + 1] * pos.Y + planes[i * 4 + 2] * pos.Z
+                        + planes[i * 4 + 3];
+                if (d < -r) return false;
+            }
+        return true;
     }
 
     /// <summary>The engine's own draw order, which is <c>FUN_0055f140</c> @0x45f140 exactly: ASCENDING
@@ -490,6 +551,11 @@ internal static unsafe partial class EmitterSim
         if (_reclaimed != 0) s += $" reclaimed={_reclaimed}";
         if (_full != 0) s += $" table-full={_full}";
         if (_foreign != 0) s += $" foreign-scene={_foreign}";
+        // CX-104: where the population came from, and how much of it the owned cull kept. A zero culled count
+        // in a big area means the cull is not running (no camera), not that everything is on screen.
+        s += Buckets.Emitters.V && SceneParts.Ready
+           ? $" src=registry({SceneParts.Emitters.Length}) inview={_inView} culled={_outOfView}"
+           : " src=emitterbucket";
         if (Bouncing.V) s += BounceWorld.Stats(f);
         _emitters = 0; _particles = 0; _spawned = 0; _died = 0; _chunk = 0; _bounced = 0;
         _p2pNoTarget = 0; _capped = 0; _poolResets = 0; _reclaimed = 0; _full = 0; _foreign = 0;

@@ -50,7 +50,6 @@ public sealed unsafe partial class AlloyRenderer
     {
         string s = "";
         if (_oTri[i] == IntPtr.Zero) return "slot vacated";
-        if (!_oPlaced[i]) s += " unplaced";
         if (_oLodRoot[i] != IntPtr.Zero && _oGob[i] != IntPtr.Zero
             && new Gob(_oGob[i]).PartTree.Ptr != _oLodRoot[i]) s += " inactive-lod";
         if (_recGen[i] != _recEpoch) s += " record-stale";

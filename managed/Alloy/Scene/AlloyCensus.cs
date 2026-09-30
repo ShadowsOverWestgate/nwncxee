@@ -200,6 +200,8 @@ internal static unsafe partial class AlloyCensus
         // the candidate struct is reused across the whole enrollment scan, and enrollment reads Gob back on a
         // REFUSAL -- so a gate that fires before the part loads must not leave the previous entry's gob behind
         c.Gob = IntPtr.Zero;
+        // ...and the veto latch with it: the previous entry's answer must not absorb this one's refusal.
+        _ownNoVeto = false;
         // CX-92: a HELD hidden entry is not a death and must not refuse its creature. part+0x34 == 0 is the
         // engine's own subtree gate (Scene::AddPartsTreeToDrawBuckets @0x460880 and Gob::PartDraw @0x451d50
         // both return on it before recursing), so vanilla draws nothing for it either and every sibling on
@@ -233,6 +235,10 @@ internal static unsafe partial class AlloyCensus
                 && _pPart[e] != IntPtr.Zero && new PartRef(_pPart[e]).Gob.Ptr == _pGob[e])
             {
                 if (_pState[e] == StUnbound && SceneWalk.RecordHasNoGeometry(e)) _ownInstNoGeom++;
+                // CX-105: ...and an unbound or dead part of a root the gob is not showing is not its
+                // creature's problem either. The guard above has just proved _pGob[e] is the live part's gob,
+                // which is what makes the dereference safe here.
+                else if (InactiveLodPart(e)) _ownNoVetoed++;
                 else { NoteInstRefusing(e); OwnRefuse(0, _pGob[e]); }
             }
             return Gate("state");
@@ -288,6 +294,10 @@ internal static unsafe partial class AlloyCensus
         // gob. The gates ABOVE this line need no attribution -- a stale or foreign-scene part is not drawing.
         c.Gob = p.Gob.Ptr;
         c.LodRoot = PartTable._pLodAlt[e] ? PartTable._pRoot[e] : IntPtr.Zero;
+        // CX-105: from here on the gob is known and is the live part's, so the inactive-LOD question can be
+        // asked -- and it must be asked BEFORE the first gate that can refuse with it.
+        _ownNoVeto = c.LodRoot != IntPtr.Zero && c.Gob != IntPtr.Zero
+                     && new Gob(c.Gob).PartTree.Ptr != c.LodRoot;
         // A SharedMaterial is NOT a reason to hand a part back. Ghidra Material::GetTexture @0x4c5810
         // resolves every slot through it already (shared+0xd8+i*0x10+8, else the material's own), so the
         // texture we captured is the right one. All it adds on top is a custom shader program
@@ -436,11 +446,16 @@ internal static unsafe partial class AlloyCensus
     /// <summary>Which gate would refuse this entry, by name -- the real chain, run for its answer only.</summary>
     internal static string WhyNotOwnable(int e)
     {
+        // A dry run rewrites the per-entry latches, and this one is called from the INPUT thread (/alloy
+        // holes). _ownGate is only a label, but absorbing a real refusal would cost a creature -- so the
+        // veto latch is restored, not merely re-set by the next census call.
+        bool savedNoVeto = _ownNoVeto;
         _ownDry = true;
         var scratch = default(AlloyCandidate);
         scratch.Cls = -1;
         bool ok = TryOwnCandidate(e, ref scratch);
         _ownDry = false;
+        _ownNoVeto = savedNoVeto;
         string cls = scratch.Cls < 0 ? "?" : ((AlloyClass)scratch.Cls).ToString();
         return $"{(ok ? "ownable-but-not-enrolled" : _ownGate ?? "?")} cls={cls}";
     }
@@ -694,6 +709,12 @@ internal static unsafe partial class AlloyCensus
     /// blended wall in the area back to vanilla for an enrollment.</summary>
     internal static void OwnRefuse(int cls, IntPtr gob)
     {
+        // CX-105: a part of an INACTIVE LOD root may not veto anything. Neither arm -- not the gob (the
+        // all-owned-or-none sweep would drop the whole creature) and not the class (the class-wide blended
+        // drop would flap every blended wall in the area) -- because the part is one vanilla draws nothing
+        // for: Scene::AddPartsTreeToDrawBuckets @0x460880 walks gob+0x90 alone. The same rule the StHidden
+        // exemption states, applied to the other subtree the engine gates off. See NoVeto.
+        if (_ownNoVeto) { _ownNoVetoed++; return; }
         if (gob == IntPtr.Zero) { OwnRefusedByClass[cls]++; return; }
         if (_refGobCount * 2 >= RefGobHash) { RefusedGobOverflow = true; return; }
         int h = (int)(((ulong)gob >> 4) & (RefGobHash - 1));
@@ -703,6 +724,37 @@ internal static unsafe partial class AlloyCensus
             h = (h + 1) & (RefGobHash - 1);
         }
         _refGob[h] = gob; _refGobCount++;
+    }
+
+    /// <summary>CX-105: is the candidate the census is holding a part of an INACTIVE LOD root -- i.e. one the
+    /// engine's own draw never reaches? Set once per entry, read by <see cref="OwnRefuse"/>, so every gate in
+    /// the chain and every later gate in <c>SeatSlot</c> is covered by one test rather than by a flag threaded
+    /// through each of them. The census is single-threaded and runs once per entry per enrollment, which is
+    /// what makes a latch sound here (the same shape as <see cref="_ownGate"/> and <see cref="_ownDry"/>).
+    /// <para>Load-bearing since CX-105's deferred swap: <see cref="SceneWalk"/> enumerates a gob's alternate
+    /// roots while a level change is registered, so their parts become candidates for those two frames. Without
+    /// this, one refusable part on an alternate LOD dropped the whole creature for the pending window -- and a
+    /// creature vanishing is worse than any LOD pop. It is also a latent fix for the pre-CX-105 enumeration,
+    /// where all three roots were candidates permanently.</para></summary>
+    private static bool _ownNoVeto;
+    /// <summary>Refusals the rule above absorbed, for the census line: a steady nonzero count is alternate-LOD
+    /// geometry Alloy cannot own, which is exactly why the gob must not be judged by it.</summary>
+    internal static int _ownNoVetoed;
+
+    /// <summary>CX-105: does entry <paramref name="e"/> belong to a root its gob is NOT showing?
+    /// <para><see cref="PartTable._pLodAlt"/> is set only for a part the walk reached down one of a gob's three
+    /// LOD roots, so an appended item, a tile part and a gob with no alternates all answer false and keep
+    /// vetoing exactly as before. A part of the ACTIVE root also answers false, which is what keeps a real
+    /// refusal on the tree being drawn from being hidden.</para>
+    /// <para>Dereferences the gob, so every caller must already have established that the gob is the live
+    /// part's (the active-state path reads <c>c.Gob</c> straight off it; the dead-state path is inside the
+    /// guard that compares them).</para></summary>
+    internal static bool InactiveLodPart(int e)
+    {
+        if (!PartTable._pLodAlt[e]) return false;
+        IntPtr gob = _pGob[e], root = PartTable._pRoot[e];
+        if (gob == IntPtr.Zero || root == IntPtr.Zero) return false;
+        return new Gob(gob).PartTree.Ptr != root;
     }
 
     /// <summary>Did any part of this instance get refused this enrollment? Cold: once per Alloy slot, in the
@@ -788,6 +840,7 @@ internal static unsafe partial class AlloyCensus
         _ownScene = scene;
         _ownSeen = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
+            _ownNoVetoed = 0;
             _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing = _ownInstNoGeom = _ownInstHidden =
             _ownRejUnrenderable = _ownRejDupSibling = _ownNoDiffuse = 0;
         Array.Clear(_instWhy); Array.Clear(_instWhyN);
@@ -821,6 +874,7 @@ internal static unsafe partial class AlloyCensus
         $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan " +
         $"({_ownInstRefusing} of them DRAWING, i.e. taking their whole creature OUT OF THE FRAME{InstWhyNote()}), " +
         $"{_ownInstNoGeom} geometry-less parts left on their instance, " +
+        $"{_ownNoVetoed} inactive-LOD refusals absorbed, " +
         $"{_ownInstHidden} held hidden on part+0x34, " +
         $"{_pInstRecorded} recorded ever, " +
         $"volumetric={_ownRejFbSample}, " +

@@ -129,6 +129,55 @@ Alloy owns everything after that** — upload format, mip policy, VRAM budget an
 and arrays. Container parsing stays with the engine: Alloy does not parse KEY/BIF/HAK/NWSync or
 MDL/MDB/DDS/TGA/PLT/MTR. It owns residency.
 
+### Amendment (CX-103/104/105, 2026-09-30): the world matrices, the area index and the LOD choice are Alloy's
+
+M5 put *transforms* on the engine's side and demoted the `Scene+0x208` bucket arrays to "a validator, not a
+source". Tier 3 of CX-102 makes both literal.
+
+**The matrix.** `Scene::AddPartsTreeToDrawBuckets` @0x460880 is the engine's only writer of a gob part's
+`VertexPrimitive+0x18`, and it only reaches gobs in `gobbucket` — so a gob it never placed held the identity
+its `VertexPrimitive` ctor left and drew at the area's (0,0) corner, and Alloy needed a *bounded chase* over
+three engine-owned sets to know when the field could have moved. From CX-103 **Alloy composes the matrix**:
+the `part+0x48` parent chain, `Gob::GetAdjustedScale`/`GetAdjustedPosition`/`GetAdjustedOrientation`, and each
+attach-chain ancestor's visual-transform scale lerp — the similarity-transform form the engine's own
+`Part::GetWorld` @0x437930 accumulates, proved off-device to equal the matrix-stack product
+`Transform`/`Scale` build. The chase, the `gobbucket` visited set and the Fault 1 placement latch are gone.
+`vp+0x18` is read in exactly one place: the `alloy.xformcheck` validator, which composes AND reads and counts
+the disagreements.
+
+**The index.** `AreaGrid` is Alloy's own tile-aligned grid of the STATIC slots — a part with no gob, whose
+world box `ComputePartBBox` @0x561370 populated at tile spawn — rebuilt at each enrolment, which is the only
+edge that changes which slot holds which part. The per-pass visible set is the grid's frustum query plus the
+gob slots (movers by construction) plus what the grid could not bound, radix-sorted back into enrollment
+order so the batch key survives. `alloy.bucketcheck` is where the bucket arrays now live: off by default,
+because nothing in the frame reads them.
+
+**The LOD.** `Gob::SetLODModel` @0x43e6a0 rotates a gob's three part-tree roots with no notice, which is why
+the walk enumerated all three. Alloy hooks it, chooses the band with hysteresis vanilla has none of, and lets
+the engine perform its own permutation — so the walk enumerates one root per gob and a swap is the edge it
+never had.
+
+The swap is **deferred**, and that is load-bearing rather than an optimisation. `RouteLive`'s active-root gate
+refuses a part whose root is not `gob+0x90`, so the instant the engine rotates, every enrolled part of the old
+root stops drawing — while the new root's parts are not in the part table until the re-walk and have no
+ownership slot until the enrolment after it, which the `EnrollFloor` delays by up to ten frames. The first cut
+therefore made a gob **invisible across its own LOD swap**. So Alloy registers the wanted level instead of
+performing it, `SceneWalk` enumerates that gob's alternate roots while the registration stands, the enrolment
+that seats them bypasses the floor, and the rotation is performed only once every root's parts are bound and
+seated — at which point `gob+0x90` and the gate's verdict flip together with both sides' records live. A
+candidate that never becomes drawable is cancelled with a cooldown and the gob keeps the LOD it is already
+drawing. One root per gob in the steady state, three for the two frames a swap takes.
+
+Two halves of one decision follow from that. **A part of an inactive LOD root vetoes nothing**
+(`AlloyCensus.InactiveLodPart`): the engine's draw walks `gob+0x90` alone, so by the census's own rule — the
+one the `StHidden` exemption states — a part it never reaches may refuse neither its gob (the
+all-owned-or-none sweep would drop the whole creature for the pending window) nor its class (the class-wide
+blended drop would flap every blended wall in the area). And **a swap is never made onto a tree Alloy cannot
+own whole**: such a candidate's parts stay unseated, so readiness answers no until the timeout and the gob
+keeps the LOD it is drawing. The exemption stops the WAIT from costing the creature; the readiness rule stops
+the SWAP from costing it. Extra triangles at distance beats an invisible creature, and `lod-stuck=` plus the
+census's `N inactive-LOD refusals absorbed` are the two numbers that say it is happening.
+
 ### Amendment (CX-86, 2026-09-30): the particle simulation is Alloy's
 
 M3 left particle *movement* on the engine's side of the boundary, and #131/#148/#261 all restated

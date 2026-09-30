@@ -65,12 +65,12 @@ internal static unsafe class FrameRead
         ReadCamera();
         var sc = new Scene(scene);
         ReadFog(sc);
-        ReadAreaTerms(sc.LightManager);
+        ReadAreaTerms(sc);
     }
 
     private static void ReadCamera()
     {
-        var cam = new Camera(*(IntPtr*)_currentCamera);
+        var cam = new Camera(AlloyCamera.World);
         // No camera bound means we are outside a scene render; the last frame's constants stand rather than
         // collapsing to zero, which is what every consumer's Has* flag already expects.
         if (cam.IsNull) return;
@@ -125,9 +125,26 @@ internal static unsafe class FrameRead
 
     /// <summary>The two index -1 lights, read where they live instead of intercepted where they are pushed.
     /// Colours land LINEAR, the same curve <c>RenderInterface::GetColorSpaceFromSRGB</c> applies before the
-    /// engine's own uniform, because the Alloy pass shades in linear.</summary>
-    private static void ReadAreaTerms(LightManager lm)
+    /// engine's own uniform, because the Alloy pass shades in linear.
+    /// <para>CX-108: the pair comes from <see cref="LightRegistry"/>, which picks them the way
+    /// <c>LightManager::UpdateLights</c> @0x4c06c0 does -- a light of the area's own set with
+    /// <c>range &gt;= 1000</c>, split on <c>kind</c> -- rather than out of <c>LightManager+0x98/+0xa0</c>.
+    /// The engine's day/night blend needs no port: <c>CNWCArea::UpdateDayNightCycle</c> @0x706a20 lerps the
+    /// area's day and night colour sets and drives these very <c>PartLight</c>s through
+    /// <c>CNWCArea::SetGlobalLightAmbient</c>/<c>Diffuse</c>, which is game-layer simulation upstream of the
+    /// field, so what is read here already carries the transition.</para></summary>
+    private static void ReadAreaTerms(Scene sc)
     {
+        if (LightRegistry.Live)
+        {
+            var ra = new PartLight(LightRegistry.AreaAmbient);
+            var rd = new PartLight(LightRegistry.AreaDiffuse);
+            if (!ra.IsNull) ApplyAreaTerm(ra);
+            if (!rd.IsNull) ApplyAreaTerm(rd);
+            return;
+        }
+        // light.registry 0: the engine's own two fields, which is where CX-85 read them.
+        LightManager lm = sc.LightManager;
         if (lm.IsNull) return;
         PartLight amb = lm.AreaAmbient, dif = lm.AreaDiffuse;
         if (!amb.IsNull) ApplyAreaTerm(amb);

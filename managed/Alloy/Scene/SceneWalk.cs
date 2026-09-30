@@ -38,6 +38,13 @@ internal static unsafe class SceneWalk
     /// does not, this is a sizing decision after all.</para></summary>
     private const int StackMax = 4096;
     private static readonly IntPtr[] _stack = new IntPtr[StackMax];
+    /// <summary>The lights-only descent into a hidden subtree (<see cref="HiddenLights"/>), apart from
+    /// <see cref="_stack"/> because it runs while that one is mid-walk.</summary>
+    private static readonly IntPtr[] _lightStack = new IntPtr[StackMax];
+    /// <summary>The walk is in a gob's OWN tree (<c>Gob+0x90</c>), where a hidden subtree still hands its lights
+    /// to the registry: <c>Scene::ListSpecialPartsR</c> @0x462d50 registers every light on that tree and never
+    /// reads <c>part+0x34</c>, so a placeable's lamp under a hidden node is lit in vanilla.</summary>
+    private static bool _mainTree;
 
     private static int* _sequence;
     private static int* _countPart;
@@ -119,7 +126,7 @@ internal static unsafe class SceneWalk
     /// and re-read every tick, because being shown again is an edge nothing announces.</summary>
     private static long _hidden;
     private static long _framesSinceLog, _bumpsSinceLog, _walkTicks, _walksSinceLog, _added, _swept, _bound;
-    private static int _lastWalked, _lastRoots, _lastLodAltGobs;
+    private static int _lastWalked, _lastRoots, _lastLodAltGobs, _lastLodPending;
     /// <summary>The tree the walk is inside, for <c>_pRoot</c>, and whether its gob carries LOD alternates.</summary>
     private static IntPtr _curRoot;
     private static bool _curLodAlt;
@@ -150,6 +157,15 @@ internal static unsafe class SceneWalk
 
     internal static void Tick(IntPtr scene)
     {
+        // CX-104's skip experiment: with the engine's walks skipped, nothing calls Gob::ProcessGob or
+        // Gob::SetLODModel. Alloy drives them HERE, ahead of the walk, because ProcessGob refreshes the
+        // geometry flags this walk reads and SetLODModel is the edge it consumes below (review: driving them
+        // from the frame anchor put both a frame behind the walk).
+        GobLod.DriveSkipped(scene);
+        // CX-105: an LOD swap is a membership edge. Consumed HERE and not at the frame anchor because
+        // Gob::SetLODModel fires inside ManageSceneBSP, ahead of this walk (and, on the skip path, in the line
+        // above) -- so the re-walk lands on the same frame as the swap rather than the frame after.
+        GobLod.Tick();
         if (!Ready || scene == IntPtr.Zero) return;
         AlloyProbe.Once(ref _probedScene, "Scene", scene, _log);
         WorldScene = AlloyRenderer.IsWorldScene(scene) ? scene : IntPtr.Zero;
@@ -183,7 +199,10 @@ internal static unsafe class SceneWalk
         // Its own counter, NOT _framesSinceLog: that one is reset by the period line, which is ticked from
         // a different (per-present, not per-world-frame) clock, so once it crossed the threshold the check
         // would run every frame until the two happened to line up.
-        if (++_sinceCheck >= AlloyRenderer.LogEvery)
+        // CX-104: behind alloy.bucketcheck, off by default. Nothing in the frame reads an engine bucket any
+        // more, so the walk no longer pays an O(bucket) audit of them unless a live session asks -- and the
+        // audit is only meaningful while the engine still fills them (see alloy.skipbuckets).
+        if (Renderer.BucketCheck.V && ++_sinceCheck >= AlloyRenderer.LogEvery)
         { _sinceCheck = 0; _lastMiss = CrossCheck(new Scene(scene).DrawBuckets, out _lastSample, out _lastSampleAll); }
     }
 
@@ -234,7 +253,7 @@ internal static unsafe class SceneWalk
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         Gen++;
         _walks++; _walksSinceLog++;
-        _lastWalked = 0; _lastRoots = 0; _lastLodAltGobs = 0;
+        _lastWalked = 0; _lastRoots = 0; _lastLodAltGobs = 0; _lastLodPending = 0;
 
         _hiddenN = 0;   // CX-92: the held set is this walk's, like the unbound queue
         var sc = new Scene(scene);
@@ -252,9 +271,24 @@ internal static unsafe class SceneWalk
                 var gv = new Gob(gob);
                 _curLodAlt = !gv.LodRoot1.IsNull || !gv.LodRoot2.IsNull;
                 if (_curLodAlt) _lastLodAltGobs++;
+                _mainTree = true;
                 Tree(gv.PartTree.Ptr);
-                Tree(gv.LodRoot1.Ptr);
-                Tree(gv.LodRoot2.Ptr);
+                _mainTree = false;
+                // CX-105: ONE root per gob while Alloy owns the LOD choice. The three-root enumeration was
+                // here because Gob::SetLODModel @0x43e6a0 rotated them with no notice of any kind; GobLod is
+                // that notice now, and a swap asks for the re-walk this loop runs. Unarmed (alloy.ownlod 0, or
+                // a symbol that did not resolve) the old enumeration is exactly correct and comes back.
+                // ...and the ALTERNATES are enumerated for a gob with a swap registered, until it commits
+                // (review): GobLod defers the rotation until every root's parts are in this table and owned,
+                // so that they are enrolled BEFORE gob+0x90 moves and RouteLive's active-root gate never has
+                // a frame with nothing to draw. Two frames of three roots per swap, one root the rest of the
+                // time.
+                if (!GobLod.Armed || GobLod.Pending(gob))
+                {
+                    Tree(gv.LodRoot1.Ptr);
+                    Tree(gv.LodRoot2.Ptr);
+                    _lastLodPending++;
+                }
                 _curLodAlt = false;
                 IntPtr* roots = (IntPtr*)gv.AppendRoots;
                 int nRoots = gv.AppendCount;
@@ -273,6 +307,7 @@ internal static unsafe class SceneWalk
         _walkingBsp = false;
 
         Sweep();
+        NonMeshParts.WalkDone(Gen);
         _walkTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
     }
 
@@ -306,7 +341,12 @@ internal static unsafe class SceneWalk
             // an equipment swap leaves the old item appended and hidden, not amputated, and a walk that read
             // only the mesh part drew both shields coincident. Tile parts (SceneBSPAddPart @0x47ca10) never
             // consult the byte, so the BSP walk does not either.
-            if (!_walkingBsp && new Part(part).Visible == 0) { _hidden++; HoldHidden(part); continue; }
+            if (!_walkingBsp && new Part(part).Visible == 0)
+            {
+                _hidden++; HoldHidden(part);
+                if (_mainTree) HiddenLights(part);
+                continue;
+            }
             ShowHidden(part);
             Visit(part);
             IntPtr* kids = (IntPtr*)new Part(part).Children;
@@ -318,6 +358,28 @@ internal static unsafe class SceneWalk
                 if (k == IntPtr.Zero) continue;
                 if (sp >= StackMax) { _overflow++; break; }
                 _stack[sp++] = k;
+            }
+        }
+    }
+
+    /// <summary>Every light under the hidden <paramref name="root"/>, to the registry and nothing else: the
+    /// subtree's meshes stay pruned, exactly as the engine's draw gate prunes them.</summary>
+    private static void HiddenLights(IntPtr root)
+    {
+        int sp = 0;
+        _lightStack[sp++] = root;
+        while (sp > 0)
+        {
+            var part = new Part(_lightStack[--sp]);
+            if (!part.AsPartLight().IsNull) LightRegistry.Visit(part.Ptr, false, Gen);
+            IntPtr* kids = (IntPtr*)part.Children;
+            int n = part.ChildCount;
+            if (kids == null) continue;
+            for (int i = 0; i < n; i++)
+            {
+                if (kids[i] == IntPtr.Zero) continue;
+                if (sp >= StackMax) { _overflow++; break; }
+                _lightStack[sp++] = kids[i];
             }
         }
     }
@@ -337,7 +399,7 @@ internal static unsafe class SceneWalk
         // resolves every bucket item through it). The RETURNED pointer is the record key, because that is
         // what PartTriMesh::Draw receives as `this` and therefore what every Find() elsewhere looks up.
         IntPtr part = new Part(walked).AsPartTriMesh().Ptr;
-        if (part == IntPtr.Zero) { _nonMesh++; return; }
+        if (part == IntPtr.Zero) { _nonMesh++; NonMeshParts.Visit(walked, _walkingBsp, Gen); return; }
         int e = Find(part);
         if (e < 0)
         {
@@ -611,12 +673,17 @@ internal static unsafe class SceneWalk
     private static void Rebind()
     {
         int left = 0;
+        _rebindTick++;
         for (int i = 0; i < _unboundCount; i++)
         {
             int e = _unbound[i];
             byte st = _pState[e];
             if (st != StUnbound && st != StStale) continue;   // bound, released or swept since
             if (_pWalkGen[e] != Gen) continue;                // not in the scene any more
+            // Already answered "no geometry": only a model becoming resident moves that, so it is re-read on a
+            // staggered 1-in-NoGeomEvery cadence rather than every frame (700 empty tiles were 0,16 ms a frame).
+            if (st == StUnbound && RecordHasNoGeometry(e) && ((e + _rebindTick) & (NoGeomEvery - 1)) != 0)
+            { _unbound[left++] = e; continue; }
             // A record that produced nothing STAYS queued -- what it is waiting for is its model becoming
             // resident, which nothing in this frame announces. It costs one GeomSig read per tick and no
             // SetupArrays call until the totals move, so the drain drains without the verdict being final.
@@ -639,7 +706,9 @@ internal static unsafe class SceneWalk
     /// The queue is therefore a standing population rather than a draining one, and what bounds its cost is
     /// <see cref="PartTable._pGeomSig"/> (no call while the totals hold) and not its length.</para></summary>
     private static readonly int[] _unbound = new int[MaxParts];
-    private static int _unboundCount;
+    private static int _unboundCount, _rebindTick;
+    /// <summary>How often a record already answered "no geometry" is re-read for its model arriving. Power of two.</summary>
+    private const int NoGeomEvery = 16;
 
     /// <summary>Queue an entry for binding. Only on a transition INTO the unbound states, so an entry
     /// already waiting is not enqueued twice; <see cref="Sweep"/>'s rebuild is the backstop.</summary>
@@ -703,7 +772,7 @@ internal static unsafe class SceneWalk
     /// <para>ponytail: buckets 7 (neighbour caps) and 8 (a tile mid-fade) are deliberately NOT produced.
     /// Both are per-FRAME conditions the engine reroutes into from <c>HandleFading{In,Out}Bucket</c>
     /// @0x47f670/@0x47f870, not properties of the part. The Alloy pass asks the fade question live, per
-    /// frame, through <see cref="PartTable.TileFadeFactor"/>, which is where it is always current.</para>
+    /// frame, through <see cref="TileFadeRamp"/>, which is where it is always current.</para>
     /// </summary>
     internal static int Classify(IntPtr part, IntPtr mat)
     {
@@ -754,7 +823,7 @@ internal static unsafe class SceneWalk
             if (NoGeometry(_pGeomSig[e])) _waitingGeom++;
         }
         string s = $"[enum] walks={_walks} ({_walksSinceLog} this period) epoch moved on {_bumps} frames ({perFrame:0.000}/frame) walk={ms:0.00}ms "
-                 + $"roots={_lastRoots} ({_lastLodAltGobs} gobs with LOD alternates) parts walked={_lastWalked} records={_partCount} active={active} "
+                 + $"roots={_lastRoots} ({_lastLodAltGobs} gobs with LOD alternates, {_lastLodPending} enumerated whole for a pending swap) parts walked={_lastWalked} records={_partCount} active={active} "
                  // The unbound residue, split by whether the record hangs off a Gob. This is step 5's
                  // starting number and the two halves want different answers: a GOB record that never binds
                  // is most likely an inactive LOD alternate (the walk enumerates all three roots, the engine
@@ -775,7 +844,9 @@ internal static unsafe class SceneWalk
                  // in every scene, GUI 3D panels included. bucket-miss is the sharp one -- it must be 0.
                  // CX-90: hole / class size. The left number must be 0 -- it is the part of bucket 5 nothing
                  // draws -- and the right one is what the late keywords put there at all.
-                 + $"countpart={cp} bucket-miss={_lastMiss} sample-class={_lastSample}/{_lastSampleAll}";
+                 + $"countpart={cp} "
+                 + (Renderer.BucketCheck.V ? $"bucket-miss={_lastMiss} sample-class={_lastSample}/{_lastSampleAll}"
+                                           : "bucket-check off (alloy.bucketcheck 1)");
         _bumpsSinceLog = 0; _framesSinceLog = 0;
         _walksSinceLog = 0; _walkTicks = 0; _added = 0; _swept = 0; _bound = 0; _setups = 0; _reasks = 0;
         return s;

@@ -49,15 +49,22 @@ internal static unsafe class AurXform
     /// <summary>Names whichever of the two did not resolve, for the caller's one stand-down line.</summary>
     internal static string Missing => _wind == IntPtr.Zero ? SymbolMap.SceneGetWindVector : SymbolMap.AddPointSourceWind;
 
-    /// <summary>The wind displacement to add to a particle stepped over <paramref name="dt"/>, from
-    /// <c>Scene::GetWindVector</c> -- global wind plus every live point source, sampled at
-    /// <paramref name="pos"/>.
+    /// <summary>The wind displacement to add to a particle stepped over <paramref name="dt"/>: global wind
+    /// plus every live point source, sampled at <paramref name="pos"/>.
+    /// <para>CX-110: <see cref="CX.Alloy.AlloyWind"/> answers this, off its own clock and its own noise field.
+    /// <c>view.wind 0</c> sends it back to <c>Scene::GetWindVector</c>, which is what the two declarations
+    /// below are still for.</para>
     /// <para><see cref="CX.Alloy.DanglyPhysics"/> holds the same two declarations for the same symbol, for
     /// the same reason; it resolves them in its own <c>Install</c> because it stands down on its own terms.
     /// Two copies of one ABI is the wart #456 named, and the mitigation is this pointer between them.</para>
     /// </summary>
     internal static V3 Wind(IntPtr scene, V3 pos, float dt)
     {
+        if (CX.Alloy.AlloyWind.Owned)
+        {
+            System.Numerics.Vector3 w = CX.Alloy.AlloyWind.Wind(new System.Numerics.Vector3(pos.X, pos.Y, pos.Z), dt);
+            return new V3 { X = w.X, Y = w.Y, Z = w.Z };
+        }
         if (OperatingSystem.IsWindows())
         {
             V3 r = default;
@@ -67,14 +74,23 @@ internal static unsafe class AurXform
         return ((delegate* unmanaged<IntPtr, V3*, float, V3>)_wind)(scene, &pos, dt);
     }
 
-    /// <summary>A detonation's gust: <c>WindManager::AddPointSourceWind(pos, strength, falloff, 1)</c>.
-    /// <paramref name="windManager"/> is <see cref="EngineLayout.SceneWindManager"/>'s pointer.</summary>
-    internal static void Gust(IntPtr windManager, V3 pos, float strength, float falloff)
+    /// <summary>A detonation's gust: <c>WindManager::AddPointSourceWind(pos, radius, life, strength)</c>,
+    /// with the strength defaulting to 1.0 exactly as <c>ExplosionEmitter::Update</c> @0x4b259e pins it; a moving
+    /// gob's gust (<c>Gob::Animate</c> @0x49dc91) passes <see cref="EngineLayout.GobWindStrength"/> instead.
+    /// <paramref name="windManager"/> is <see cref="EngineLayout.SceneWindManager"/>'s pointer.
+    /// <para>CX-110 corrected the parameter NAMES, not the call: <c>PointSourceWind::PointSourceWind</c>
+    /// @0x490410 stores xmm2 at <c>+0x0c</c> (the radius the falloff is measured over), xmm3 at BOTH
+    /// <c>+0x10</c> and <c>+0x14</c> (the lifetime and its remaining half) and xmm4 at <c>+0x18</c> (the
+    /// strength), on both builds. The engine's own call site passes <c>MdlNodeEmitter+0xa4</c> in the lifetime
+    /// slot, which is the slot CX's caller already fills, so the positions were right all along.</para>
+    /// <para><see cref="CX.Alloy.AlloyWind"/> hooks this function, so a gust raised here lands in Alloy's list
+    /// as well as the engine's without a second call.</para></summary>
+    internal static void Gust(IntPtr windManager, V3 pos, float radius, float life, float strength = 1f)
     {
         if (OperatingSystem.IsWindows())
-            ((delegate* unmanaged<IntPtr, V3*, float, float, float, void>)_gust)(windManager, &pos, strength, falloff, 1f);
+            ((delegate* unmanaged<IntPtr, V3*, float, float, float, void>)_gust)(windManager, &pos, radius, life, strength);
         else
-            ((delegate* unmanaged<V3, IntPtr, float, float, float, void>)_gust)(pos, windManager, strength, falloff, 1f);
+            ((delegate* unmanaged<V3, IntPtr, float, float, float, void>)_gust)(pos, windManager, radius, life, strength);
     }
 
     /// <summary>A <c>CAurObject</c>'s rotation through its own virtual: <see cref="EngineLayout.GobGetOrientationSlot"/>.</summary>

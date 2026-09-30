@@ -116,7 +116,9 @@ internal static unsafe class StreamRing
         _open = false;
         if (Refused || (_map == null && !Create())) return;
         _at = (_at + 1) % Regions;
+        long t0 = FrameZones.Now;
         _open = GpuRing.Acquire(_fence!, _at);
+        FrameZones.Add(FrameZones.Zone.Wait, t0);
     }
 
     private static bool Create()

@@ -84,6 +84,19 @@ internal static class RenderPasses
             Stats = LightmapBake.Stats,
         }, log);
 
+        // CX-108: not a draw pass -- Alloy's light registry, which every lighting consumer enumerates instead
+        // of LightManager's per-frame lists. Registered BEFORE "lightmap" is not necessary (the bake is fed by
+        // the light walk, not by this table directly), but its Revoke is: every pointer in it names parts of
+        // the area that just went, and the two area terms are re-picked on the new area's first walk.
+        r.Register(new PassLifecycle
+        {
+            Name = "lightreg",
+            Attach = LightRegistry.Attach,
+            SelfCheck = LightRegistry.SelfCheck,
+            Revoke = LightRegistry.Revoke,
+            Stats = LightRegistry.Stats,
+        }, log);
+
         // #129: FrameSnapshot first, because FrameGraph's own check asserts that the ownable-bucket list AGREES
         // with whether Alloy water can draw -- so water's boot knobs have to be read before that check runs.
         r.Register(new PassLifecycle
@@ -116,6 +129,17 @@ internal static class RenderPasses
         // CX-29: not a pass and not Alloy's -- the pose layer runs under either renderer. Registered for its
         // clause on the [alloy] period line only.
         r.Register(new PassLifecycle { Name = "pose", Stats = PoseService.Stats }, log);
+        // CX-106: not a pass either -- the animation RUNTIME. Registered here so that being registered at all
+        // is the boot renderer choice (RenderPasses.Register is not reached with alloy.enabled=0), which is
+        // the gate ADR 0010 asks for. No GL objects and no captured world state, so no ContextLost and no
+        // Revoke; its only resources are the engine's own AnimRun records.
+        r.Register(new PassLifecycle
+        {
+            Name = "animrt",
+            Install = AnimRuntime.Install,
+            SelfCheck = AnimRuntime.SelfCheck,
+            Stats = AnimRuntime.Stats,
+        }, log);
         r.Register(new PassLifecycle
         {
             Name = "sky",
@@ -127,6 +151,27 @@ internal static class RenderPasses
             ContextLost = SkyStage.Forget,
             Revoke = SkyBox.Forget,
             Stats = _ => SkyBox.Stats() + " | " + SkyTick.Stats(),
+        }, log);
+        r.Register(new PassLifecycle
+        {
+            // CX-104: not a pass -- the scene-visibility registries every pass below reads instead of an
+            // engine bucket. Registered FIRST so its Install resolves before grass, emitsim and beams ask it
+            // for a population, and so its SelfCheck is the first line in the log.
+            Name = "buckets",
+            // The knob group declares in RenderCommands.Register, with every other Graphics group, so
+            // /buckets exists even in a session the renderer stands down. Symbols resolve at Install for the
+            // reason DoorFade does -- Native.Sym on a .bss data symbol answers only on the last boot pass.
+            Install = (log, _) =>
+            {
+                SceneParts.Resolve(log);
+                TileFadeRamp.Resolve(log);
+                BucketValidator.Resolve(log);
+                ScenePrep.Resolve(log);
+            },
+            SelfCheck = l => TileFadeRamp.SelfCheck(l),
+            Revoke = SceneParts.Reset,
+            Stats = _ => SceneParts.Note() + " | " + TileFadeRamp.Note() + " | " + ScenePrep.Note()
+                       + (Buckets.Validate.V ? " | " + BucketValidator.Note() : ""),
         }, log);
         r.Register(new PassLifecycle
         {
@@ -308,6 +353,24 @@ internal static class RenderPasses
             Stats = _ => NwSyncReader.Note(),
         }, log);
 
+        // CX-109/CX-110: not a draw pass -- the per-view camera step, the wind clock and the environment-map
+        // choice. Registered here for the same reason ownedtex is: what they need IS a pass lifecycle (a boot
+        // gate, engine hooks, off-device checks, a world edge and a line on the period report). Their
+        // Install runs inside PassRegistry's walk, i.e. only on a client where the Alloy pass can arm.
+        r.Register(new PassLifecycle
+        {
+            Name = "view",
+            Attach = l => { AlloyCamera.Attach(l); AlloyWind.Attach(l); AlloyEnvMap.Attach(l); },
+            Install = (l, h) => { AlloyCamera.Install(l, h); AlloyWind.Install(l, h); AlloyEnvMap.Install(l, h); },
+            SelfCheck = l => { AlloyCamera.SelfCheck(l); AlloyWind.SelfCheck(l); AlloyEnvMap.SelfCheck(l); },
+            // The world edge drops the gusts the departed gobs registered, and makes the environment map
+            // re-adopt its name (the engine frees AND RELOADS textures across an area transition, so nothing
+            // about the previous area's answer may be assumed -- AlloyEnvMap's remarks). No ContextLost:
+            // none of the three owns a GL name.
+            Revoke = () => { AlloyWind.Revoke(); AlloyEnvMap.Revoke(); },
+            Stats = f => Join(AlloyCamera.Stats(f), AlloyWind.Stats(f)),
+        }, log);
+
         // CasterPass is deliberately NOT here yet. It runs in the SHADOW bracket, installs through its own
         // service, and its stand-down is a latched Disarm rather than a context edge -- so it does not fit
         // these slots without changing what they mean. Folding the shadow pass in is #176's work, which is
@@ -315,4 +378,8 @@ internal static class RenderPasses
 
         r.Seal();
     }
+
+    /// <summary>Two period-line clauses, comma-joined, with an empty one costing nothing.</summary>
+    private static string Join(string a, string b)
+        => a.Length == 0 ? b : b.Length == 0 ? a : a + ", " + b;
 }
