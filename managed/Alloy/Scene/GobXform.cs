@@ -256,6 +256,11 @@ internal static unsafe partial class GobXform
     internal static Matrix4x4 Build(float s, Quaternion q, Vector3 p)
         => Matrix4x4.CreateScale(s) * Matrix4x4.CreateFromQuaternion(q) * Matrix4x4.CreateTranslation(p);
 
+    /// <summary>The uniform scale a world matrix carries: its first row's length, since every scale in the
+    /// chain is uniform and the rows are <c>s</c> times a rotation's. What a local radius is multiplied by to
+    /// bound the part the matrix actually draws.</summary>
+    internal static float ScaleOf(in Matrix4x4 m) => new Vector3(m.M11, m.M12, m.M13).Length();
+
     /// <summary>The gob's own term, memoised for this frame: the adjusted scale times every ancestor's
     /// visual-transform scale lerp, and the adjusted orientation and position. The three getters fold the
     /// gob's <c>LerpFloat</c> visual transform in, which is why they are CALLED rather than transcribed

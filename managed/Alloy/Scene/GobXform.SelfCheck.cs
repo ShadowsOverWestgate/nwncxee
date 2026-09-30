@@ -54,6 +54,8 @@ internal static unsafe partial class GobXform
             Matrix4x4 got = Build(cs * sGob, qGob * cq, Vector3.Transform(cp * sGob, qGob) + pGob);
             check.Expect(Close(got, want, 1e-3f),
                          "the composed matrix equals the engine's own matrix-stack product, gob + two parts");
+            check.Expect(MathF.Abs(ScaleOf(want) - sGob * sRoot * sLeaf) < 1e-3f,
+                         "ScaleOf reads the whole scale chain off the engine's product, so a cull sphere scales with the gob");
 
             // ...and the root alone, which is the creature-body case (one part, one gob).
             Matrix4x4 wantRoot = Stack(Stack(Matrix4x4.Identity, pGob, qGob, sGob), pRoot, qRoot, sRoot);

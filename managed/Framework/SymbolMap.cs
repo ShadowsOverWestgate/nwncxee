@@ -990,11 +990,11 @@ internal static unsafe class SymbolMap
     public const string GobEnableInViewVolume = "_ZN3Gob18EnableInViewVolumeEv";
     /// <summary><c>GobOutside(Gob*, List&lt;Plane&gt;&amp;)</c> @0x47a4f0 -- the engine's own per-gob frustum
     /// test, and the one the BSP visitor gates <see cref="GobEnableInViewVolume"/> on. Builds the gob's world
-    /// bounding sphere from its own virtuals -- centre = <c>GetPosition() + GetRotation() * (gob+0x17c)</c>,
-    /// radius = <c>GetAdjustedScale() * (gob+0x178)</c> -- and returns 1 as soon as <c>SphereAbovePlane</c> is
-    /// positive against any plane in the list, i.e. OUTSIDE. Called, not transcribed: it reads the camera's
-    /// own plane array and reproducing the three virtuals would put a second copy of the engine's bounding
-    /// sphere in the repo. ABI: <c>(Gob* /*rdi*/, List&lt;Plane&gt;* /*rsi*/) -&gt; int /*eax*/</c>.</summary>
+    /// bounding sphere from its own virtuals -- centre = <c>GetAdjustedPosition() + GetAdjustedOrientation() *
+    /// (gob+0x17c)</c>, radius = <c>GetAdjustedScale() * (gob+0x178)</c> -- and returns 1 as soon as
+    /// <c>SphereAbovePlane</c> is positive against any plane in the list, i.e. OUTSIDE. The centre offset is NOT
+    /// scaled, so a scaled gob tests a sphere anchored by its pivot; <c>ScenePrep.Outside</c> is this with that
+    /// fixed and no longer calls it. ABI: <c>(Gob* /*rdi*/, List&lt;Plane&gt;* /*rsi*/) -&gt; int /*eax*/</c>.</summary>
     [Fn("int(Gob this, IntPtr planes)")]
     public const string GobOutside = "_Z10GobOutsideP3GobR4ListI5PlaneE";
     /// <summary><c>CExoArrayList&lt;Gob*&gt;::Add(Gob*)</c> @0x445f50 -- the append <c>ManageSceneBSP</c> step 11

@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using CX.Engine;
 using CX.Framework;
 
@@ -14,7 +15,8 @@ namespace CX.Alloy;
 /// <item><b>The in-view byte, <c>gob+0x1b</c>.</b> <c>ManageSceneBSP</c> ran it in two phases: step 3 cleared
 /// it on every gob in <c>Scene+0x130</c> (<c>Gob::DisableInViewVolume</c>, vtable +0x2b8), then the BSP visitor
 /// @0x481000 set it (<c>Gob::EnableInViewVolume</c>, +0x2b0) on every gob a visited node held that
-/// <c>GobOutside</c> said was inside the frustum. It is not a render flag: <c>Gob::Animate</c> @0x49d8c0 skips
+/// <c>GobOutside</c> said was inside the frustum -- a test that loses scaled gobs, so this one sets it from
+/// <see cref="Outside(IntPtr, EngineList)"/> instead. It is not a render flag: <c>Gob::Animate</c> @0x49d8c0 skips
 /// a gob's whole animation step while it is clear, and so do Alloy's own
 /// <c>AnimRuntime.Visible</c> and <c>PoseService</c>. Frozen, an off-screen creature never animates
 /// again once the camera turns away. The two phases are kept separate because Enable PROPAGATES to the
@@ -72,7 +74,6 @@ internal static unsafe class ScenePrep
         _gobBucket = new EngineList(Native.Sym(SymbolMap.GobBucket));
         Missing = EngineFn.GobDisableInViewVolume == null ? SymbolMap.GobDisableInViewVolume
                 : EngineFn.GobEnableInViewVolume == null ? SymbolMap.GobEnableInViewVolume
-                : EngineFn.GobOutside == null ? SymbolMap.GobOutside
                 : EngineFn.GobListAdd == null ? SymbolMap.GobListAdd
                 : _gobBucket.IsNull ? SymbolMap.GobBucket
                 : EngineFn.LightMgrUpdateLights == null ? SymbolMap.LightMgrUpdateLights
@@ -143,7 +144,7 @@ internal static unsafe class ScenePrep
         if (gobs == null || n <= 0) return;
         var cam = new Camera(AlloyCamera.World);
         if (cam.IsNull) return;
-        IntPtr planes = cam.ViewVolume.Ptr;
+        EngineList planes = cam.ViewVolume;
 
         for (int i = 0; i < n; i++)
             if (gobs[i] != IntPtr.Zero) new Gob(gobs[i]).GobDisableInViewVolume();
@@ -153,9 +154,8 @@ internal static unsafe class ScenePrep
         {
             IntPtr gob = gobs[i];
             if (gob == IntPtr.Zero) continue;
-            var g = new Gob(gob);
-            if (g.GobOutside(planes) != 0) continue;
-            g.GobEnableInViewVolume();
+            if (Outside(gob, planes)) continue;
+            new Gob(gob).GobEnableInViewVolume();
             _inView++;
         }
 
@@ -172,6 +172,31 @@ internal static unsafe class ScenePrep
             EngineFn.GobListAdd(_gobBucket.Ptr, gob);
             _bucketed++;
         }
+    }
+
+    /// <summary><c>GobOutside</c> @0x47a4f0 with its one fault fixed. The engine scales the radius
+    /// (<c>GetAdjustedScale() * gob+0x178</c>) but not the local centre <c>gob+0x17c</c>, so a scaled gob's sphere
+    /// stays anchored by its pivot, and a placeable scaled up goes out of view -- unclickable, not animated --
+    /// while its body is still on screen. The same three virtuals (+0x2d8/+0x2e0/+0x2e8), the offset scaled.</summary>
+    private static bool Outside(IntPtr gob, EngineList planes)
+    {
+        var g = new Gob(gob);
+        AurXform.V3 p = AurXform.AdjustedPosition(gob);
+        return Outside(new Vector3(p.X, p.Y, p.Z), AurXform.AdjustedOrientation(gob), g.GetAdjustedScale(),
+                       g.Centre, g.Radius, (float*)planes.Items, planes.Count);
+    }
+
+    /// <summary>The pure half: the gob's local sphere through <c>Scale(s) x Rot(q) x Translate(p)</c> (the gob
+    /// term of <see cref="GobXform"/>'s composition), then <c>SphereAbovePlane</c> @0x5b3340 over each
+    /// {n, d} plane -- <c>dot(n, c) + d - r &gt; 0</c> against any one is outside.</summary>
+    internal static bool Outside(Vector3 pos, Quaternion rot, float scale, Vector3 centre, float radius,
+                                 float* planes, int n)
+    {
+        Vector3 c = pos + Vector3.Transform(centre * scale, rot);
+        float r = radius * scale;
+        for (int k = 0; k < n; k++, planes += 4)
+            if (planes[0] * c.X + planes[1] * c.Y + planes[2] * c.Z + planes[3] - r > 0f) return true;
+        return false;
     }
 
     /// <summary>The clause the <c>buckets</c> knob group prints.</summary>
@@ -211,14 +236,20 @@ internal static unsafe class ScenePrep
         for (int k = 0; k < flag.Length; k++) if (host[k] == i) Enable(k, host, flag);
     }
 
-    /// <summary>Off-device: the light radius floor, and that the in-view sweep MUST be two-phase. The second
-    /// is the footgun -- gob 0 is in view and gob 1 is its attachment, out of view, so a folded pass clears
-    /// gob 1 after gob 0's Enable propagated onto it and the attachment stops animating. No engine object is
+    /// <summary>Off-device: the light radius floor, that the in-view sweep MUST be two-phase, and that a scaled
+    /// gob's sphere scales its centre. The sweep is the footgun -- gob 0 is in view and gob 1 is its
+    /// attachment, out of view, so a folded pass clears gob 1 after gob 0's Enable propagated onto it and the
+    /// attachment stops animating. The sphere case is a pillar (local centre 2.5 up, radius 2.5) scaled 4x
+    /// with only its top in view: <c>GobOutside</c>'s unscaled centre calls it out. No engine object is
     /// touched.</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
         bool ok = LightRadiusFloor == 45f && MathF.Max(LightRadiusFloor, 40f) == 45f
                && MathF.Max(LightRadiusFloor, 200f) == 200f && SkipAll == 3;
+        float* above15 = stackalloc float[] { 0f, 0f, -1f, 15f };
+        Vector3 centre = new(0f, 0f, 2.5f);
+        ok &= !Outside(Vector3.Zero, Quaternion.Identity, 4f, centre, 2.5f, above15, 1)
+              && Outside(Vector3.Zero, Quaternion.Identity, 1f, centre, 2.5f * 4f, above15, 1);
         ReadOnlySpan<bool> inside = [true, false, false];
         ReadOnlySpan<int> host = [-1, 0, -1];
         Span<bool> flag = [false, false, true];
@@ -228,9 +259,10 @@ internal static unsafe class ScenePrep
         bool foldedLosesAttachment = flag[0] && !flag[1] && !flag[2];
         ok &= foldedLosesAttachment;
         log.Info(ok ? $"ScenePrep.SelfCheck: passed (light radius floor {LightRadiusFloor}, skip step {SkipAll}; "
-                    + "the two-phase sweep keeps a propagated set that a folded pass loses)"
-                    : "ScenePrep.SelfCheck: FAILED -- the light radius floor or the in-view phase order drifted "
-                    + "from ManageSceneBSP's");
+                    + "the two-phase sweep keeps a propagated set that a folded pass loses; a scaled gob's "
+                    + "sphere scales its centre)"
+                    : "ScenePrep.SelfCheck: FAILED -- the light radius floor, the in-view phase order or the "
+                    + "scaled in-view sphere drifted");
         return ok;
     }
 }

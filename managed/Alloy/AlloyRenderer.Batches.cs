@@ -412,9 +412,14 @@ public sealed unsafe partial class AlloyRenderer
         internal float FeatX, FeatY;
     }
 
-    /// <summary>#243: this record's world bounding sphere, for the cull. The local bbox centre and radius
-    /// are enrolment-stable (<c>_oCx..</c>, <c>_oR</c>); what moves is the model matrix, so the sphere is
-    /// that centre through it and that radius scaled by the matrix's largest row.
+    /// <summary>#243: this record's world bounding sphere, for the cull. The local radius is
+    /// enrolment-stable (<c>_oR</c>); what moves is the model matrix, so a matrix-class sphere is centred on
+    /// its translation (the node origin the radius is measured about) and its radius is scaled by
+    /// <see cref="GobXform.ScaleOf"/> -- the whole scale chain, the gob's visual transform included. Without
+    /// that factor a placeable scaled k times culled as one k times smaller about its pivot: the vanilla
+    /// "big placeable vanishes when its base leaves the screen" (the engine files a gob by its unscaled model
+    /// radius, <c>SceneBSPUpdateGob</c> @0x47c380, and tests it about an unscaled centre, <c>GobOutside</c>), in
+    /// every Alloy cull at once.
     /// <para>Three kinds of part are EXEMPTED with <see cref="NeverCull"/> rather than bounded: a posed
     /// skinmesh (its vertices are placed by 64 bone matrices, not by this one), a dangly mesh (its vertices
     /// move under a matrix that does not -- #241's standing observation), and a displacing feature (wind
@@ -428,15 +433,11 @@ public sealed unsafe partial class AlloyRenderer
             if (_oBone[i] >= 0 || ShaderFeatures.OutOfPrepass(feat) || PartTable.IsDangly(tri)
                 || !(_oR[i] > 0f))
             { s[0] = 0f; s[1] = 0f; s[2] = 0f; s[3] = NeverCull; return; }
-            // A matrix-class part's world centre is its model matrix TRANSLATION, and its radius is the
-            // bbox extent unscaled. Not derived here -- copied from the three live-verified sites that
-            // already answer this question the same way (EyeDist2 above, CasterPass's rigid matrix path and
-            // its live-caster copy), whose note is explicit that the bbox centre is NOT object-space. The
-            // repo rule is NEVER GUESS, and transforming the centre by the matrix would be a guess that adds
-            // the node translation a second time.
-            float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
-            if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; }
-            s[0] = cx; s[1] = cy; s[2] = cz; s[3] = _oR[i];
+            // The centre is the model TRANSLATION, not _oC* through the matrix: that bbox centre is not
+            // object-space (EyeDist2, CasterPass), and transforming it would add the node translation twice.
+            float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i], r = _oR[i];
+            if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; r *= GobXform.ScaleOf(f.Model); }
+            s[0] = cx; s[1] = cy; s[2] = cz; s[3] = r;
         }
     }
 
@@ -444,16 +445,15 @@ public sealed unsafe partial class AlloyRenderer
     /// diagonal (tiles are 10u square; WaterBodies.TileHalf is the same convention's other half).</summary>
     private const float DegenerateCasterRadius = 7.1f;
 
-    /// <summary>#302: the same sphere, GEOMETRIC even for the three exempted kinds. See
-    /// <c>_dCastSph</c> for why the shadow pass cannot use a <see cref="NeverCull"/> one.</summary>
+    /// <summary>#302: the same sphere, GEOMETRIC even for the three exempted kinds, and scaled the same way.
+    /// See <c>_dCastSph</c> for why the shadow pass cannot use a <see cref="NeverCull"/> one.</summary>
     private static void WriteCasterSphere(int i, in RecordFrameState f)
     {
         fixed (float* sp = _dCastSph)
         {
             float* s = sp + (long)i * 4;
-            float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
-            if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; }
-            float r = _oR[i];
+            float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i], r = _oR[i];
+            if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; r *= GobXform.ScaleOf(f.Model); }
             // Review, restoring the deleted MinSkinRadius insurance: a skinmesh's bbox is its BIND pose,
             // and an animated pose (an extended arm, a swinging cloak) reaches past it. The slack keeps the
             // reach culls and the staleness volumes honest about where the pose can actually be; keyed on

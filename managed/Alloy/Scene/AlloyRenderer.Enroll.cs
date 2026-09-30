@@ -484,7 +484,7 @@ public sealed unsafe partial class AlloyRenderer
         _oCx[i] = (lo[0] + hi[0]) * 0.5f; _oCy[i] = (lo[1] + hi[1]) * 0.5f; _oCz[i] = (lo[2] + hi[2]) * 0.5f;
         float ex = hi[0] - lo[0], ey = hi[1] - lo[1], ez = hi[2] - lo[2];
         _oR[i] = 0.5f * MathF.Sqrt(ex * ex + ey * ey + ez * ez);
-        if (!(_oR[i] > 0f) && c.Gob != IntPtr.Zero) _oR[i] = MeshRadius(c.Tri, c.Vdo, c.Item, v);
+        if (!(_oR[i] > 0f) && c.Gob != IntPtr.Zero) _oR[i] = MeshRadius(c.Vdo, c.Item, v);
         // #330: spawn-time fields the chase keys on without touching the part again.
         _oFadeTile[i] = tri.Tile != IntPtr.Zero && TileFadeRamp.Fades(c.Tri) ? tri.Tile : IntPtr.Zero;
         _oTile[i] = tri.Tile != IntPtr.Zero ? tri.Tile : _oTileGob[i] ? new Gob(c.Gob).TileData.Ptr : IntPtr.Zero;
@@ -1047,9 +1047,10 @@ public sealed unsafe partial class AlloyRenderer
     /// every gob part read as radius 0 and the caster pass stood a tile's diagonal (7.1 m) in for it -- a
     /// candle flame claimed a moving-caster page under its light like a house would (run 10). The node's
     /// own face array is load-time temporary data the engine frees (run 11 read it as infinity). Local
-    /// space about the node origin (the sphere's centre is the model translation), the part scale applied;
-    /// 0 keeps the old fallback.</summary>
-    private static float MeshRadius(IntPtr tri, IntPtr vdoPtr, int item, int s)
+    /// space about the node origin (the sphere's centre is the model translation), UNSCALED: the model
+    /// matrix carries every scale on the way to the world, the gob's visual transform included, and the
+    /// sphere writers take it from there; 0 keeps the old fallback.</summary>
+    private static float MeshRadius(IntPtr vdoPtr, int item, int s)
     {
         if (vdoPtr == IntPtr.Zero || item < 0 || !_vPos[s].Present || _vPos[s].Type != 0x1406 || _vPos[s].Size != 3) return 0f;   // 0x1406 = GL_FLOAT, the constant alone (Scene/ is GL-free, #206)
         var vdo = new VdoRef(vdoPtr);
@@ -1069,8 +1070,6 @@ public sealed unsafe partial class AlloyRenderer
             float d = pv[0] * pv[0] + pv[1] * pv[1] + pv[2] * pv[2];
             if (d > r2) r2 = d;
         }
-        if (!float.IsFinite(r2)) return 0f;
-        float scale = new Part(tri).Scale;
-        return MathF.Sqrt(r2) * (scale > 0f && float.IsFinite(scale) ? scale : 1f);
+        return float.IsFinite(r2) ? MathF.Sqrt(r2) : 0f;
     }
 }
