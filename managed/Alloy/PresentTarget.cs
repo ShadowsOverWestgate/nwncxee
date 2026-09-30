@@ -16,10 +16,11 @@ namespace CX.Alloy;
 /// so the two contexts genuinely address back buffers that fall out of phase across each swap, and Alloy's
 /// frame lands in whichever one is not about to be presented. That is the black-every-other-frame report.</para>
 /// <para>The fix is to stop writing the presented buffer from the context that does not present it. Alloy
-/// composites into a texture instead, and the engine context blits that texture -- and the owned depth the
-/// engine's overlays test against -- into the real default framebuffer after the bracket closes. Textures
-/// are shared across the share group; framebuffer OBJECTS are not, so each side keeps its own container
-/// over the same images.</para>
+/// composites into a texture instead, and the engine context blits that texture into the real default
+/// framebuffer after the bracket closes. Textures are shared across the share group; framebuffer OBJECTS are
+/// not, so each side keeps its own container over the same images.</para>
+/// <para>CX-84 dropped the depth half of that blit: the engine's two highlight overlays were the only things
+/// that ever depth-tested against the default framebuffer after the bracket, and both are Alloy passes now.</para>
 /// <para>Windows only, deliberately: on Linux the assumption holds, the blit would be pure cost, and the
 /// map's rule is that the Linux frame stays bit-identical.</para>
 /// </remarks>
@@ -30,7 +31,6 @@ internal static unsafe class PresentTarget
 
     private static uint _tex, _fbo46, _fboEng;
     private static int _w, _h;
-    private static uint _depthTex;
     private static ExtenderLog? _log;
     private static bool _announced, _blitFailed;
 
@@ -41,12 +41,10 @@ internal static unsafe class PresentTarget
     internal static uint Fbo46 => _fbo46;
 
     /// <summary>Size the present colour texture to the default framebuffer, once per frame, before anything
-    /// binds it. <paramref name="depthTex"/> is the owned depth the engine's overlays test against; it rides
-    /// the same blit, because the depth hand-back is the same cross-context write as the colour one.</summary>
-    internal static void Ensure(int w, int h, uint depthTex)
+    /// binds it.</summary>
+    internal static void Ensure(int w, int h)
     {
         if (!Needed || w <= 0 || h <= 0) return;
-        _depthTex = depthTex;
         if (_tex != 0 && w == _w && h == _h) return;
         // RGBA8: this holds the FINISHED, display-space frame -- the composite has already encoded and
         // dithered it, so anything wider would be storing precision the default framebuffer cannot take.
@@ -70,40 +68,30 @@ internal static unsafe class PresentTarget
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
     }
 
-    /// <summary>Blit the finished frame -- colour, and the owned depth the engine's overlays test against --
-    /// into the real default framebuffer. MUST run in the ENGINE's context, after the bracket has closed:
-    /// that is the whole point, and calling it inside the bracket reintroduces the bug it exists to fix.</summary>
+    /// <summary>Blit the finished frame into the real default framebuffer. MUST run in the ENGINE's context,
+    /// after the bracket has closed: that is the whole point, and calling it inside the bracket reintroduces
+    /// the bug it exists to fix.</summary>
     internal static void HandBack()
     {
         if (!Needed || _tex == 0 || _fbo46 == 0) return;
         if (_fboEng == 0) { uint f; Gl.GenFramebuffers(1, &f); _fboEng = f; }
         Gl.BindFramebuffer(Gl.READ_FRAMEBUFFER, _fboEng);
-        Gl.FramebufferTexture2D(Gl.READ_FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _tex, 0);
         // Re-attached every frame for the reason BindTarget re-attaches: GL reuses freed names, and a cached
         // attachment can outlive the image it names across a device reset.
-        Gl.FramebufferTexture2D(Gl.READ_FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _depthTex, 0);
+        Gl.FramebufferTexture2D(Gl.READ_FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, Gl.TEXTURE_2D, _tex, 0);
         Gl.BindFramebuffer(Gl.DRAW_FRAMEBUFFER, 0);
-        // TWO blits, not one with both bits. A depth blit whose formats do not match is GL_INVALID_OPERATION
-        // and discards the WHOLE call -- which would cost the colour copy, the one thing this class exists
-        // to deliver. The depth is best-effort: it buys the engine's overlays their occlusion, and its
-        // absence is a wrong-looking highlight, not a black frame.
         Gl.BlitFramebuffer(0, 0, _w, _h, 0, 0, _w, _h, Gl.COLOR_BUFFER_BIT, (uint)Gl.NEAREST);
-        if (_depthTex != 0)
-            Gl.BlitFramebuffer(0, 0, _w, _h, 0, 0, _w, _h, Gl.DEPTH_BUFFER_BIT, (uint)Gl.NEAREST);
-        // Said once, not drained silently. A depth hand-back that fails is invisible in the colour frame and
-        // shows up only as the engine's overlays testing against the wrong buffer -- a highlight drawing
-        // through a wall, which is a bug report nobody would connect back to this line.
         uint err = Gl.GetError == null ? 0 : Gl.GetError();
         if (err != 0 && !_blitFailed)
         {
             _blitFailed = true;
-            _log?.Always($"PresentTarget: the hand-back blit returned GL error 0x{err:x} -- the colour frame "
-                       + "is fine, but the engine's highlight overlays are testing against the wrong depth (#456)");
+            _log?.Always($"PresentTarget: the hand-back blit returned GL error 0x{err:x} -- the Alloy frame "
+                       + "is finished but may not have reached the presented buffer (#456)");
         }
         Gl.DrainErrors(4);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
     }
 
     /// <summary>GL names die with the context. Names only -- the images are gone already.</summary>
-    internal static void ContextLost() { _tex = 0; _fbo46 = 0; _fboEng = 0; _w = _h = 0; _depthTex = 0; }
+    internal static void ContextLost() { _tex = 0; _fbo46 = 0; _fboEng = 0; _w = _h = 0; }
 }

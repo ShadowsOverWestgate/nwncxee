@@ -119,11 +119,14 @@ internal static class RenderPasses
         r.Register(new PassLifecycle
         {
             Name = "sky",
-            // #261 deleted SkyComposite with its scratch target, so the sky holds no GL objects again: it
-            // draws enrolled parts through the Alloy draw service's own programs and VAOs.
-            SelfCheck = SkyBox.SelfCheck,
+            // CX-88 gave the sky GL objects again -- one program per custom fragment stage the content names
+            // -- so it owns a ContextLost edge as well as a Revoke one. CX-87 added the simulation tick.
+            Attach = SkyStage.Attach,
+            Install = (l, _) => SkyTick.Install(l),
+            SelfCheck = l => { SkyBox.SelfCheck(l); SkyTick.SelfCheck(l); SkyStage.SelfCheck(l); },
+            ContextLost = SkyStage.Forget,
             Revoke = SkyBox.Forget,
-            Stats = _ => SkyBox.Stats(),
+            Stats = _ => SkyBox.Stats() + " | " + SkyTick.Stats(),
         }, log);
         r.Register(new PassLifecycle
         {
@@ -156,8 +159,20 @@ internal static class RenderPasses
         {
             Name = "halos",
             Install = Halos.Install,
+            SelfCheck = Halos.SelfCheck,
             ContextLost = Halos.ContextLost,
             Stats = _ => Halos.Stats(),
+        }, log);
+        r.Register(new PassLifecycle
+        {
+            // CX-86: registered BEFORE "particles" so its SelfCheck runs first -- the pass reads the pool this
+            // one owns, and a failing simulation check should be the first line in the log, not the second.
+            Name = "emitsim",
+            Install = EmitterSim.Install,
+            SelfCheck = EmitterSim.SelfCheck,
+            Revoke = EmitterSim.Reset,
+            ContextLost = EmitterSim.Reset,
+            Stats = f => EmitterSim.Stats(f),
         }, log);
         r.Register(new PassLifecycle
         {
@@ -277,7 +292,7 @@ internal static class RenderPasses
         {
             Name = "draw",
             ContextLost = AlloyRenderer.ContextLost,
-            SelfCheck = l => { CullPass.SelfCheck(l); AlloyRenderer.EnrollSelfCheck(l); },
+            SelfCheck = l => { CullPass.SelfCheck(l); AlloyRenderer.EnrollSelfCheck(l); TargetShape.SelfCheck(l); },
         }, log);
         // CX-54 step 3: not a pass either -- the NWSync store, read by Alloy so a worker can fetch a manifest
         // resource without the main-thread resource manager. It wants the same four slots: a boot gate, the two

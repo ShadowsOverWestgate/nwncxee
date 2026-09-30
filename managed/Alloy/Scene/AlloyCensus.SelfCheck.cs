@@ -71,11 +71,11 @@ internal static unsafe partial class AlloyCensus
         // ...and none of that made the instance unownable, which is the whole of #128 over #134
         check.Expect(!GobUnownable((IntPtr)gob), "a MODULATING instance is still ownable: the terms are folded, not refused");
         gv.Highlight = 1;
-        // #285: and neither is a HIGHLIGHT. Refusing one used to hand the part to the engine's walk; since
-        // #264 it hands it to nothing, so a hovered placeable disappeared under its own glow.
-        check.Expect(!GobUnownable((IntPtr)gob), "a highlight is OWNABLE -- the engine's glow overlay composites over it");
+        // CX-91: gob+0x18 is the SKYBOX flag (Scene::SetSkyBox @0x45e260), whatever the build-file key calls
+        // it, and a skybox gob is the sky's path, not the world walk's. Never a world-frame refusal.
+        check.Expect(!GobUnownable((IntPtr)gob), "the gob+0x18 flag is not an ownership question");
         gv.Highlight = 0; gv.SceneTint = 1;
-        check.Expect(GobUnownable((IntPtr)gob), "a scene tint is not -- it REPLACES the surface with one unlit colour");
+        check.Expect(GobUnownable((IntPtr)gob), "a scene tint is -- it REPLACES the surface with the fog colour, unlit");
         gv.SceneTint = 0;
         check.Expect(!GobHasEnvMap((IntPtr)gob), "a bare gob overrides no env map");
         gv.EnvOverride = (IntPtr)owner;
@@ -98,17 +98,29 @@ internal static unsafe partial class AlloyCensus
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
         Array.Clear(OwnRefusedByClass);
 
+        // CX-90: the late keywords' precedence. Off-device because the live signal is a class that renders
+        // or does not -- and the two values of one keyword are different classes, which is exactly the
+        // confusion a wrong answer here would restore.
+        check.Expect(!RefusedByLateKeywords(0, false, false), "an ordinary material passes");
+        check.Expect(!RefusedByLateKeywords(SampleFbLate, false, false), "sample_framebuffer 1 is ownable: it asks for draw order, not shading");
+        check.Expect(!RefusedByLateKeywords(SampleFbWater, false, true), "sample_framebuffer 2 is water, which the water class draws");
+        check.Expect(!RefusedByLateKeywords(0, false, true), "and so is bumpy-shiny water, which declares no keyword at all");
+        check.Expect(RefusedByLateKeywords(0, true, false), "volumetric is refused: the engine draws it twice per pass");
+        check.Expect(RefusedByLateKeywords(SampleFbLate, true, false), "volumetric beats the late keyword");
+        check.Expect(RefusedByLateKeywords(3, false, false), "an unknown sample_framebuffer value is refused, not guessed at");
+        check.Expect(OwnableBucket(SceneWalk.SampleBucket), "...and bucket 5 is in the ownable set");
+
         // #285: the reject cross. The value of this instrument is entirely in the two axes not being
-        // transposed -- a note that reads "item/Water" for a water part refused by the VDO gate is worse
+        // transposed -- a note that reads "empty-item/Water" for a water part refused by the VDO gate is worse
         // than no note, because it sends the next reader to the wrong gate.
         Array.Clear(OwnRejByReason);
         check.Expect(RejCrossNote().Length == 0, "no refusals, no by-gate note");
         RejReason(RejVdo, (int)AlloyClass.Water);
         RejReason(RejItem, (int)AlloyClass.Cutout);
         RejReason(RejItem, (int)AlloyClass.Cutout);
-        check.Expect(RejCrossNote() == " [by gate: vdo/Water=1 item/Cutout=2]", $"the cross reads gate/class: {RejCrossNote()}");
+        check.Expect(RejCrossNote() == " [by gate: vdo/Water=1 empty-item/Cutout=2]", $"the cross reads gate/class: {RejCrossNote()}");
         RejReason(RejCount - 1, AlloyClasses.Count);   // out of range: dropped, never a corrupted neighbour
-        check.Expect(RejCrossNote() == " [by gate: vdo/Water=1 item/Cutout=2]", "an out-of-range class is dropped");
+        check.Expect(RejCrossNote() == " [by gate: vdo/Water=1 empty-item/Cutout=2]", "an out-of-range class is dropped");
         Array.Clear(OwnRejByReason);
 
         // The table-pressure decision, which is the whole of the "renderer keeps falling back to vanilla in

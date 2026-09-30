@@ -94,7 +94,7 @@ Practical requirements, none of which the extender can check for you:
 A build failure of any kind rebuilds the embedded stage and says so in the log, so a bad
 module costs a log line rather than the frame.
 
-## The twenty-nine stages
+## The thirty-three stages
 
 These are the stage resrefs. The libraries they include are listed by the dump; see
 [Libraries](#libraries).
@@ -121,6 +121,9 @@ These are the stage resrefs. The libraries they include are listed by the dump; 
 | `cx_smaawgt_fs` | fragment | The aa stage's second pass: SMAA blend weights from the edges and the embedded area/search tables. |
 | `cx_smaablend_fs` | fragment | The aa stage proper: SMAA neighbourhood blend of `uSrc` by the weights, display space in and out. |
 | `cx_toon_fs` | fragment | The post stack's cel stage: the client's Toon video option and its three sliders -- a plane-fit depth and colour ink, and an opt-in luminance posterise. Display space in and out. |
+| `cx_sharpen_fs` | fragment | CX-93: the post stack's sharpen stage -- the client's Sharpen video option. The stock effect's asymmetric edge darkening plus its global lift, without its own AA (the stack has SMAA/TAA ahead of it). Display space in and out. |
+| `cx_vibrance_fs` | fragment | CX-93: the post stack's vibrance stage -- the client's Vibrance video option at the engine's own amount (`uVibrance`), saturating the greyest pixels hardest and restoring luminance. Display space in and out. |
+| `cx_fbpost_fs` | fragment | #352: the hosted content post chain. Its `// $VANILLA inc_postpr` region is replaced at build by the resource chain's `inc_postpr.shd`, so a hak or NWSync fork of that file is what runs; the stage stands down when nothing supplies it. Display space in and out. |
 | `cx_taa_fs` | fragment | #389: the taa stage's copy-out of the history `TaaStage.Prepare` resolved (`uHist`). The accumulator itself is embedded, not overridable. |
 | `cx_ssao_fs` | fragment | Ambient occlusion (#379, ADR 0021): GTAO visibility from the prepass depth, R8, read by the lit stage's ambient term. Not a post stage: runs before the colour pass. |
 | `cx_ssaoblur_fs` | fragment | The depth-aware 4x4 blur that folds the AO pass's dither pattern away. |
@@ -129,6 +132,7 @@ These are the stage resrefs. The libraries they include are listed by the dump; 
 | `cx_weather_vs` | vertex | Rain and snow (#616): one instanced quad per drop or flake, its lattice point a hash of `gl_InstanceID` in a fall-aligned box that wraps around the camera as `uPhase` slides it; a streak along `uFall` or a camera-facing disc. Tests the instance against the rain occlusion map (`uCover`, a layer of the sun array, #617) and sends a sheltered one off-screen. No buffer, no attributes. |
 | `cx_rain_fs` | fragment | The rain streak: a tapered core, faded where it meets geometry through `uSceneDepth` (`uSoft` = 1/m). Alpha over the linear frame, so no encode. `uViz` 1 paints the fade. |
 | `cx_snow_fs` | fragment | The snowflake: a soft disc, the same contact fade. Alpha over the linear frame. |
+| `cx_sky_fs` | fragment | CX-88: the sky, as the ENVIRONMENT a content sky stage runs in -- the names `inc_common`/`inc_uniforms`/`inc_standard` give a sky fragment stage, from Alloy's values and under the engine's own names. The `// $VANILLA-MAIN $SKYFS$` region is replaced at build with the material's own `customShaderFS` (SoW: `fst_sky`), main renamed; `$SKYFS$` is expanded by the extender, so leave it a token. The wrapper samples the diffuse, calls the stage, and takes its DISPLAY-space result to linear -- which is why there is no decode pass. The vertex half is `cx_own_vs`. |
 
 One more file appears in the dump: `cx_ownlit_bl_ref.shd`. It is **reference
 only** — the lit stage after the extender's own bindless rewrite. The extender never asks
@@ -153,6 +157,13 @@ entry can carry. `ShaderSource.SelfCheck` refuses a longer name.
   libraries with a log line, the same way a broken stage override does.
 - The guards below read the text that actually ran, library overrides included. A stage
   they refuse is rebuilt from embedded stages **and** embedded libraries.
+- **`cx_target` is the spell-targeting ground shape** (CX-93). It used to be the engine's own
+  `inc_target.shd`, spliced in from the resource chain; it is Alloy's code now, so a content repo that
+  wants a different shape — a different outline, a wider cone, a metamagic-aware range — ships
+  `cx_target.shd` rather than forking a stock resref. Its uniform names are still the engine's
+  (`targetShape`, `targetShapeSizeX`, `targetShapeSpellRange`, `targetShapeColour`, …), because the values
+  are the engine's own global shader constants; `CxTargetStrength()` and `CxTargetApply()` are what the
+  stages call.
 
 ## The guards
 

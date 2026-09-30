@@ -373,8 +373,8 @@ symbol `m_aurMtxStack` — `SymbolMap.cs:361`.)
 `vp` is pass-local and unpublished. Publishing it into a `public static Matrix4x4 SceneVp` + a frame
 sequence number is the exact, no-reconstruction answer. **Latch it only for the WORLD scene** — GUI 3D
 panels (the paperdoll and friends) drive the same `Scene` render virtuals, and latching their camera
-would put every plate at the wrong place for a frame. `AlloyRenderer.OnFadeDoors` already gates on
-`IsWorldScene(scene)` (`managed/Alloy/AlloyRenderer.cs:1127-1132`); latch at that gated site, or gate the
+would put every plate at the wrong place for a frame. `AlloyRenderer.FrameAnchor` already gates on
+`IsWorldScene(scene)`; latch at that gated site, or gate the
 colour-pass latch the same way. Note the convention comment above it: **row-vector
 `v*M`**, and GLSL reads the raw bytes as the transpose. `System.Numerics` is row-vector too, so
 `Vector4.Transform(new Vector4(world,1), vp)` is the right call — the precedent is
@@ -390,7 +390,7 @@ public static Vector3 WorldToLightNdc(Matrix4x4 lightViewProj, Vector3 world)
 
 **Option B — reconstruct from `FrameInputs` (no Alloy edit).**
 `managed/Alloy/Core/FrameInputs.cs:20-45` is already latched once per world frame by
-`FrameRead.Tick` at the frame anchor (`AlloyRenderer.OnFadeDoors`, `AlloyRenderer.cs:1128`):
+`FrameRead.Tick` at the frame anchor (`AlloyRenderer.FrameAnchor`):
 
 ```csharp
 public static bool HasCamera;
@@ -426,8 +426,8 @@ clip-z range differs from the engine's; irrelevant for x/y, relevant if you ever
 
 ### The `vanilla=1` hole
 
-`AlloyRenderer.Initialize` returns at the opt-out **before** installing the `FadeDoors` anchor
-(`managed/Alloy/AlloyRenderer.cs:835-836`):
+`AlloyRenderer.Initialize` returns at the opt-out **before** anything that would latch a camera
+(since CX-89 the anchor is a direct call from the shim, so it installs no `FadeDoors` hook at all):
 
 ```csharp
 if (AlloyGate.OptedOut)
@@ -449,7 +449,8 @@ if (AlloyGate.OptedOut)
 // else: Alloy is arming; read FrameInputs / the published SceneVp instead.
 ```
 
-Under `vanilla=1` the `FadeDoors` symbol is genuinely free, so a plain `Install` is correct — no `Chain`,
+The `FadeDoors` symbol is genuinely free since CX-89 — CX hooks it on no path — so a plain `Install` is
+correct here, no `Chain`,
 and no need to touch `AlloyRenderer`. The one-service alternative (nameplates simply require Alloy, with
 a logged stand-down line like every other gated service) is also acceptable; pick one and say so in the
 init log.

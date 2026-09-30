@@ -141,7 +141,7 @@ Per-row provenance is the XML doc on the row itself. The verdict per class:
 | `PartTriMesh` | segmented: `+0x4` from `0x64`, `+0x8` from `0x88` | ctor block `0x64..0x93` → `0x68..0x97`; `WithinRange` reads the six bbox floats at `0x68..0x7c`; `0x88`/`0x96`/`0xa0`/`0xb0` paired at `+0x8` |
 | `PartDanglyMesh` | **unresolved** | no validated pair on either build — and a base's delta need not carry into a subclass |
 | `PartLight` | segmented: own block `+0x4` | `0x64`/`0x68`/`0x6c` paired; the Windows-only set `0x70 0x78 0x80 0xa8 0xb0 0xb8` is the Linux set shifted `+0x4` |
-| `LightManager` | identical `0x0..0xc0` | 6 paired, plus #430's ten-function hand read |
+
 | `Camera` | base region 0, `0x4c4..0x4e4` `+0x4`, above that `+0x8` | 18 offsets over 16 functions, including `0xe50` and `0xe64` at `+0x8` |
 | `Material` | identical `0x0..0xd0` | `0x0 0x40 0x50 0xd0` paired |
 | `SharedMaterial` | **unresolved** | `0xd8`/`0x1c0`/`0x1c8`/`0x1e8` pair at delta 0, yet Windows touches `0x190 0x1a1 0x1b2` — the resref stride `+0x8` from Linux's `0x188 0x199 0x1aa` — and Linux's `0x1f1` has no Windows counterpart. Unexplained, so nothing is resolved on it |
@@ -210,7 +210,8 @@ keeping: `Halos` read `PartLight+0xa0` as a fade and the table had `LightFade` a
 `+0x90`, which looked like one field written down twice. It is two fields.
 `Scene::RenderLensFlares` @`0x471860` integrates `+0xa0` toward 1.0 while a light
 is unoccluded and multiplies the flare colour by it;
-`LightManager::ControlLightsFade` @`0x4c2050` scales the area terms by `+0x90`;
+`LightManager::ControlLightsFade` @`0x4c2050` scaled the area terms by `+0x90` (CX-85 ported both
+integrators into `Alloy/Scene/LightFade.cs` and `Halos`, which write the same two fields);
 and the `PartLight` constructor stores eight bytes at `0x8c` and again at `0x9c`,
 so both dwords exist. The same shape repeated at `TileData`: `PartEmitter`'s fade
 owner reads `+0xc8`, `HandleFadingInBucket` drives `+0x70`/`+0x74`, and those are
@@ -542,7 +543,7 @@ over six classes for the constructor store runs.
 | `TileData` `fade` `0x70`, `pendingFade` `0x74` | `Same` | `ManageSceneBSP`'s commit is one statement, `tile+0x70 = tile+0x74`, in the same loop over `scene+0x1a8` |
 | `DrawBucket` `stride` `0x10` | `Same` | `GetDrawBucketByItemType` and `AddPartToBucket`, one line each, same `*0x10` |
 | `CAurBehaviorCameraFollow` `target` `0x20` | `Same` | `GetTargetWorldPosition`, one line each |
-| `MdlNodeLight` ×4 (flares) | `Diverges`, **two segments** | `Scene::RenderLensFlares`: radius `0x9c`→`0xa0` (+4), count/sizes/shifts `0xa8`/`0xc0`/`0xd0`→`0xb0`/`0xc8`/`0xd8` (+8) |
+| `MdlNodeLight` ×5 (flares + `fadingLight`) | `Diverges`, **two segments** | `Scene::RenderLensFlares`: radius `0x9c`→`0xa0` (+4), count/sizes/shifts `0xa8`/`0xc0`/`0xd0`→`0xb0`/`0xc8`/`0xd8` (+8). CX-85 read `fadingLight 0x108`→`0x110` off `LightManager::ControlLightsFade` (rva `0x7ddb0`), the same upper segment — the fifth row on a class that pairs on none of its own nine functions |
 | `MdlNodeEmitter` `noCull` | `Diverges` `0x164` → `0x168` | `PartEmitter::RenderEmitter` and `RenderStandard` both branch on it into `Enable(3)`/`Disable(3)` |
 | `Model` `ownerFlags` | `Diverges` `0x8e` → `0x92` | `PartTriMesh::Mat`'s `& 8` test on `gob+0x68`; the class pinned by `Model::Model`'s store run and `Model::AddRef`'s count (`0x90`→`0x94`) |
 | `PartTriMesh` `selfIllum` | `Diverges` `0x7c` → `0x80` | `PartTriMesh::Mat` loads three floats into the emission scratch and hands them to `SetMaterialv(0, 3)` |

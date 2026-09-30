@@ -99,23 +99,45 @@ internal static unsafe partial class AlloyCensus
         return shared != IntPtr.Zero && new SharedRef(shared).SampleFb == SampleFbWater;
     }
 
-    /// <summary><c>sample_framebuffer</c>'s two values: 1 routes to draw bucket 5 (refraction glass), 2 to
+    /// <summary><c>sample_framebuffer</c>'s two values: 1 routes to draw bucket 5 (the late class), 2 to
     /// bucket 6 (water). Different classes, not degrees of one.</summary>
     internal const int SampleFbWater = 2;
+
+    /// <summary>CX-90: <c>sample_framebuffer 1</c> -- draw bucket 5. The engine's own changelog
+    /// (<c>lang/en/docs/patchnotes/87.8193.35.md</c>) states the whole of what it buys: "renders near the end
+    /// of the frame. Allows rendering refractions and similar." It is a draw-ORDER keyword; the refraction is
+    /// the material's own fragment shader's business, and the copy it would read is bound by the engine on
+    /// texture units 11/12 as <c>texFBColor</c>/<c>texFBDepth</c>
+    /// (<c>Camera::BindRenderSubframeTextures</c> @0x4a6ab0, called from <c>CopyRenderSubframe</c> @0x4a6b90).
+    /// <para>No stock shader samples those from world geometry (only <c>fswater.shd</c> and
+    /// <c>fsparticle.shd</c>'s depth tap do) and no stock <c>.mtr</c> declares the keyword at all, so there is
+    /// no vanilla shading behaviour attached to it -- see <c>docs/alloy-refusals.md</c>.</para></summary>
+    internal const int SampleFbLate = 1;
+
+    /// <summary>CX-90: does a material's pair of late-draw keywords refuse the part outright? Pure, so the
+    /// precedence is testable off-device: <c>volumetric</c> always does (the engine draws it TWICE per pass,
+    /// back faces to depth and then front faces against that depth -- a two-pass trick no one-owner scheme
+    /// survives, and <c>AddPartsTreeToDrawBuckets</c> files it in buckets 3 AND 5 accordingly), and so does
+    /// any <c>sample_framebuffer</c> value that is neither water nor <see cref="SampleFbLate"/>.
+    /// <para><paramref name="water"/> is <see cref="IsWater"/>'s verdict, not <c>sampleFb == 2</c>: the
+    /// bumpy-shiny route reaches bucket 6 with the keyword absent.</para></summary>
+    internal static bool RefusedByLateKeywords(int sampleFb, bool volumetric, bool water)
+        => volumetric || (sampleFb != 0 && !water && sampleFb != SampleFbLate);
 
     /// <summary>Draw buckets the Alloy pass takes parts from. 0/1 are the static tile pair (#82), and #126
     /// adds the three residual static classes named by <see cref="AlloyClass"/>: 4 additive, 7 the
     /// tilefade cap, 8 the fade buckets. #134 and #128 then added the dynamic gob pair 2/3 -- drawn from
     /// Scene::RenderDynamicGeometry rather than from RenderSinglePass's own walk, but through the same
     /// RenderDrawBucket this service brackets, which is why owning placeables and then creatures needed no new
-    /// capture point. What stays the engine's is 5, framebuffer-sampling geometry, and 6, water, both of
-    /// which the Alloy pass has no program for and both of which <see cref="TryOwnCandidate"/> also rejects
-    /// on the material so a mis-bucketed part cannot slip through.
+    /// capture point. CX-90 adds 5, the late class: <c>sample_framebuffer 1</c> asks for draw ORDER and
+    /// nothing else, so its parts are classified off their material like every other part and drawn in the
+    /// pass that material implies -- what <see cref="TryOwnCandidate"/> still rejects there is
+    /// <c>volumetric</c> (<see cref="RefusedByLateKeywords"/>).
     /// <para>Membership here and suppression in <c>AlloyRenderer.IterSight</c> are ONE list: suppressing a
     /// bucket we do not draw drops geometry, and drawing one we do not suppress double-draws it.</para></summary>
     internal static bool OwnableBucket(int bucket)
         => bucket == 0 || bucket == 1 || bucket == GobOpaqueBucket || bucket == GobBlendBucket
-           || bucket == 4 || bucket == 7 || bucket == AlphaBucket
+           || bucket == 4 || bucket == 7 || bucket == AlphaBucket || bucket == SceneWalk.SampleBucket
            || (bucket == AlloyRenderer.WaterBucket && FrameSnapshot.Usable);
 
     /// <summary>#82 ownership enrollment: is the part in table slot <paramref name="e"/> in the ownable-now
@@ -124,10 +146,9 @@ internal static unsafe partial class AlloyCensus
     /// modifiers, indexed VDO, an <see cref="OwnableBucket"/>, a live index range, and sighted within the
     /// last frame. Neither a SharedMaterial nor the _nm/_sm map slots reject any more -- see the notes at
     /// their tests.
-    /// <para>#126: opacity classifies rather than rejects. What still rejects on the material is the pair the
-    /// Alloy pass has no program for -- <c>sample_framebuffer</c> (buckets 5/6) -- and <c>volumetric</c>,
-    /// which the engine files in TWO buckets and draws twice per pass, so owning it would break the
-    /// one-owner invariant by construction.</para>
+    /// <para>#126: opacity classifies rather than rejects. CX-90 narrowed the material refusal to
+    /// <see cref="RefusedByLateKeywords"/>: <c>volumetric</c>, which the engine files in TWO buckets and draws
+    /// twice per pass, so owning it would break the one-owner invariant by construction.</para>
     /// Cold: one call per table slot per enrollment.</summary>
     internal static bool TryOwnCandidate(int e, ref AlloyCandidate c)
     {
@@ -179,6 +200,11 @@ internal static unsafe partial class AlloyCensus
         // the candidate struct is reused across the whole enrollment scan, and enrollment reads Gob back on a
         // REFUSAL -- so a gate that fires before the part loads must not leave the previous entry's gob behind
         c.Gob = IntPtr.Zero;
+        // CX-92: a HELD hidden entry is not a death and must not refuse its creature. part+0x34 == 0 is the
+        // engine's own subtree gate (Scene::AddPartsTreeToDrawBuckets @0x460880 and Gob::PartDraw @0x451d50
+        // both return on it before recursing), so vanilla draws nothing for it either and every sibling on
+        // the gob still draws -- the same exemption the geometry-less case gets below, for the same reason.
+        if (_pState[e] == StHidden) { if (!_ownDry) _ownInstHidden++; return Gate("hidden"); }
         if (_pState[e] != StActive)
         {
             if (!_ownDry && _pGob[e] != IntPtr.Zero) _ownInstDead++;
@@ -223,21 +249,22 @@ internal static unsafe partial class AlloyCensus
         // The captured node/material were last checked against the live part by the scene walk, which may be
         // several frames ago; every gate below dereferences them. StActive plus the #145 dtor hook says the
         // PART is alive, not that it still wears these. A mismatch is the walk's own "identity-changed" case
-        // arriving early -- refuse, and let the next walk recapture. #264: asked of EVERY candidate now. It
-        // used to be skipped for a freshly sighted part, and there are no sightings; enrollment is
-        // edge-triggered (#256), so the cost is one pointer pair per candidate per edge.
+        // arriving early. #264: asked of EVERY candidate now. It used to be skipped for a freshly sighted
+        // part, and there are no sightings; enrollment is edge-triggered (#256), so the cost is one pointer
+        // pair per candidate per edge.
+        // CX-91: DRIFT IS NOT A REFUSAL. #256 refused and queued the re-read, which was right while an
+        // unowned part still drew vanilla; since #264 the frame between the notice and the next Rebind() tick
+        // is the part missing. The re-read happens HERE instead and the candidate carries on with the
+        // refreshed columns, so only a record the rebind could not make usable is still counted.
         if (_pPart[e] != IntPtr.Zero)
         {
             var live = new PartRef(_pPart[e]);
-            if (live.Node.Ptr != _pNode[e] || live.Material.Ptr != _pMat[e])
+            // ...and the VDO's item table is part of that identity: SetupArrays' RemoveItem and a re-minted
+            // VDO block both leave the cached item naming a slot the object no longer has.
+            if (live.Node.Ptr != _pNode[e] || live.Material.Ptr != _pMat[e] || !PartTable.ItemResident(e))
             {
-                // #256: refuse AND re-read. Under capture a drifted record came back by being re-Recorded
-                // from a later draw; there is no such draw now, so an in-place material swap
-                // (Gob::ReplaceTexture @0x43e980) would strand the part in vanilla until the area changed.
-                // ponytail: this makes the entry Dirty, so a material that drifts EVERY frame would enroll
-                // every frame. `enrolls=` on the period line is the number that says whether one does.
-                if (!_ownDry) SceneWalk.Rebind(e, live);
-                Bump(ref _ownRejStaleMoved); return Gate("stale-identity");
+                if (_ownDry || !SceneWalk.RebindNow(e, live))
+                { Bump(ref _ownRejStaleMoved); return Gate("stale-identity"); }
             }
         }
         if (!OwnableBucket(_pBucket[e])) { Bump(ref _ownRejBucket); return Gate("bucket"); }
@@ -272,18 +299,13 @@ internal static unsafe partial class AlloyCensus
         // three-way split is what says how much of it there is, and which shaders.
         var s = m.Shared;
         IntPtr shared = s.Ptr;
-        // #126: sample_framebuffer and volumetric reject on the MATERIAL, ahead of everything else, because
-        // they are the two classes the Alloy pass has no answer for: the first is buckets 5/6 (refraction
-        // glass and water, both of which read a framebuffer copy this pass does not take yet), and the second
-        // the engine files in two buckets and draws twice per pass, which no one-owner scheme survives. Both
-        // are SharedMaterial keywords parsed straight out of the .mtr (SharedMaterial::ParseField @0x4c6760).
-        // #129: ...except sample_framebuffer 2, which IS water and which the Alloy pass now draws. The two
-        // values are different classes, not degrees of one: 1 is refraction glass (draw bucket 5) and 2 is
-        // water (bucket 6), and Scene::AddPartsTreeToDrawBuckets @0x460880 branches on exactly that.
+        // CX-90: the material refusal is down to volumetric alone -- the .mtr keywords are parsed by
+        // SharedMaterial::ParseField @0x4c6760 and spent by Scene::AddPartsTreeToDrawBuckets @0x460880, and
+        // the precedence + the reason each value is or is not ownable live in RefusedByLateKeywords.
         bool water = IsWater(mat, shared);
         if (water) NoteWaterMaterial(mat, shared);
-        if (!s.IsNull && ((s.SampleFb != 0 && !water) || s.Volumetric))
-        { Bump(ref _ownRejFbSample); return Gate("fb/volumetric"); }
+        if (!s.IsNull && RefusedByLateKeywords(s.SampleFb, s.Volumetric, water))
+        { Bump(ref _ownRejFbSample); return Gate("volumetric"); }
         // ...and the classification itself, which from here on is what a refusal is counted AGAINST: the
         // blended class is all-owned-or-none (#107 s2), so every gate below has to say which class it ate.
         c.Src = m.SrcBlend; c.Dst = m.DstBlend;
@@ -320,7 +342,17 @@ internal static unsafe partial class AlloyCensus
             && --_classDiagLeft >= 0)
             _log?.Info($"[dumpframe] CLASS entry={e} tex={TexName(_pTex0[e])} slots={SlotNames(m)} scanned={gradedOk} graded={graded:F2} opaque={Engine.IsOpaque(p)} env={Engine.HasEnvMap(m)}/{GobHasEnvMap(c.Gob)} transparency={!s.IsNull && s.Transparency} alpha={p.Alpha:F2} blend={m.SrcBlend}/{m.DstBlend} dst={c.Dst} -> cls={(AlloyClass)c.Cls} {PartForensic(e)}");
         if (!_ownDry) _ownByClass[c.Cls]++;
-        if (v == IntPtr.Zero || vd.Mode != 1 || _pTex0[e] == IntPtr.Zero)
+        // CX-91: a material with NO diffuse slot is not a refusal -- the engine draws it untextured.
+        // Material::BindAllStandardTextures @0x4c6e30 answers a null slot with
+        // SetActiveTextureAndBind(unit, 4, 0), which is GLRender::SetTextureStageEnabled(unit, 0)
+        // @0x4c93d0 -- the stage drops out of m_bEnabledTextureStages and contributes no multiply -- and
+        // PartTriMesh::Draw @0x4513d0 then calls RenderFlat anyway. That is the white stand-in the draw loop
+        // already has for a live diffuse with no GL id, so this enrols and takes it.
+        if (!_ownDry && _pTex0[e] == IntPtr.Zero) _ownNoDiffuse++;
+        // ...and the structural pair stays as a guard. Both are impossible for a bound record (SceneWalk
+        // releases a non-mode-1 VDO and the drift gate above re-reads a vacated one), so a nonzero count here
+        // is a table bug and not content.
+        if (v == IntPtr.Zero || vd.Mode != 1)
         { Refuse(ref _ownRejVdo, c, RejVdo); return Gate("vdo"); }
         // #284: a diffuse that is a live texture with no GL id is a part the draw loop will draw on the white
         // stand-in (null-tex), and the engine has no retry -- its queue is one-shot and drains whether or not the build
@@ -354,9 +386,13 @@ internal static unsafe partial class AlloyCensus
         if (c.Env) Bump(ref _ownWithEnv);
         long elem = vd.ElemItems;
         int it = _pItem[e];
-        if (elem == 0 || it < 0 || it >= vd.ElemCount || it >= vd.VertCount)
-        { Refuse(ref _ownRejItem, c, RejItem); return Gate("item"); }
-        if (*(int*)(elem + it * 8 + 4) <= 0) { Refuse(ref _ownRejItem, c, RejItem); return Gate("item-range"); }
+        // The out-of-range half of this pair moved to the drift gate (CX-91), which re-reads instead of
+        // refusing; what is left is the item the VDO holds with ZERO indices in it, and that IS a correct
+        // skip: RenderFlat @0x450eb0 passes GetItemElementSize straight to RenderVertexData as the index
+        // count, so vanilla issues a draw of nothing for it too.
+        if (elem == 0 || it < 0 || it >= vd.ElemCount || it >= vd.VertCount
+            || *(int*)(elem + it * 8 + 4) <= 0)
+        { Refuse(ref _ownRejItem, c, RejItem); return Gate("empty-item"); }
         // #397: the stock ashlw_072.mdl carries ShLwMain_070 AND ShLwMain_072 -- two coincident meshes, same
         // parent, same local transform, same counts, different diffuse. The engine draws both in tree order
         // and the LATER one wins the depth tie every frame; Alloy's order is not tree order, so the shield
@@ -389,7 +425,7 @@ internal static unsafe partial class AlloyCensus
     /// <summary>The gates that refuse a part AFTER it has a class. Index into <see cref="OwnRejByReason"/>;
     /// <see cref="RejNames"/> is the printed name of each.</summary>
     internal const int RejVdo = 0, RejSceneTint = 1, RejItem = 2, RejTableFull = 3, RejNoVao = 4, RejCount = 5;
-    private static readonly string[] RejNames = { "vdo", "scene-tint", "item", "table-full", "no-vao-slot" };
+    private static readonly string[] RejNames = { "vdo", "scene-tint", "empty-item", "table-full", "no-vao-slot" };
     internal static void RejReason(int reason, int cls)
     { if (cls >= 0 && cls < AlloyClasses.Count) OwnRejByReason[reason * AlloyClasses.Count + cls]++; }
     internal static string? _ownGate;
@@ -416,17 +452,23 @@ internal static unsafe partial class AlloyCensus
 
     /// <summary>Does this instance carry state no Alloy program can reproduce? ONE case -- the SCENE TINT
     /// (<c>gob+0x19</c>), which <c>PartTriMesh::Mat</c> @0x450960 draws as
-    /// <c>SetColor4f(currentscene+0x14c..0x154)</c> under <c>Disable(5)</c>: the whole surface replaced by one
-    /// unlit colour, not arithmetic on any term the CxDraw record carries. COUNTED, not owned -- see
-    /// <c>instance-state</c> on the [alloy] line and <c>scene-tint</c> on the census line (#128, #285).
+    /// <c>SetColor4f(scene+0x14c..0x154, 1.0)</c> under <c>Disable(5)</c>: the whole surface replaced by the
+    /// scene's FOG COLOUR (<c>Scene::SetFogColor</c> @0x45e220 is that field's setter), unlit, the gob alpha
+    /// discarded. COUNTED, not owned -- <c>scene-tint</c> on the census line (#128, #285).
+    /// <para>CX-91: and it is a CORRECT SKIP, not a hole in the world frame. The flag has exactly two
+    /// writers -- <c>Gob::Gob</c> (0) and <c>Scene::SetSkyFade</c> @0x45e2b0 (1) -- and the only object ever
+    /// passed to the latter is the <c>skyfade1</c> model <c>CNWCArea::LoadSkyBox</c> makes. That gob is never
+    /// <c>Gob::SetScene</c>'d, so it is not in <c>Scene+0x130</c> and the walk cannot reach it; and the engine
+    /// draws it from <c>Scene::RenderSkyBoxes</c> @0x466910 alone, outside every draw bucket, which is the
+    /// sky's own path (#125/#136). A world-table draw of it would be a second sky at world depth.
     /// <para>Everything else <c>Mat</c> does with a gob is arithmetic on terms the record already carries --
     /// an alpha multiply, a component-wise colour multiply and a self-illum add -- so those are FOLDED
     /// (<see cref="GobAlphaMul"/> and its two neighbours) rather than refused; a creature fades through
     /// <c>gob+0x108</c>, so refusing modulation would refuse every creature on screen. The flags are read as
     /// VALUES, not as arms: <c>gob+0xf6</c> is set on essentially every instance while its colour is (1,1,1).
-    /// The HIGHLIGHT (<c>gob+0x18</c>) is not refused either: Alloy draws the part normally and the engine's
-    /// glow overlay draws on top, which is vanilla composition; what is given up is <c>Mat</c>'s
-    /// flat-white-unlit highlight branch, and a lit part under a glow beats no part at all (#285).</para>
+    /// <c>gob+0x18</c> is not refused either -- and CX-91 read its writers: it is the SKYBOX flag
+    /// (<c>Scene::SetSkyBox</c> @0x45e260), not a highlight, and all it costs is <c>Mat</c>'s
+    /// white-unlit skybox branch on a gob the world walk cannot reach (#285).</para>
     /// <para>The per-gob ENV OVERRIDE is not a special class: <c>PartTriMesh::Draw</c> @0x4513d0 routes on
     /// <c>gob+0x480 || Material::HasEnvMap</c> into ONE function, and <c>RenderEnvironmentMapped</c> @0x451040
     /// picks gob+0x480 else mat+0x40 else <c>currentscene+0x1e8</c>, binds it, then calls <c>RenderFlat</c>.
@@ -436,7 +478,7 @@ internal static unsafe partial class AlloyCensus
     /// (the reflection's STRENGTH); the owned record stages ambient.w as 1. Fold it into that slot if
     /// instanced content ever reads too shiny.</para>
     /// Cold, at enrollment only: <c>gob+0x19</c> is the SKYFADE flag, written by <c>Gob::Gob</c> (0) and
-    /// <c>Scene::SetSkyFade</c> @0x55e2b0 (1, once per area load on the <c>skyfade1</c> gob before it has
+    /// <c>Scene::SetSkyFade</c> @0x45e2b0 (1, once per area load on the <c>skyfade1</c> gob before it has
     /// parts) and never cleared, so the enrollment refusal is the whole answer (#330).</summary>
     internal static bool GobUnownable(IntPtr gob)
     {
@@ -593,6 +635,10 @@ internal static unsafe partial class AlloyCensus
     /// the engine's own totals call empty. Vanilla draws nothing for it and keeps its siblings, so neither
     /// does this. A number that tracks a missing object is the one that says this exemption is what saved it.</summary>
     internal static int _ownInstNoGeom;
+    /// <summary>CX-92: entries HELD hidden on the engine's <c>part+0x34</c> subtree gate this scan. Exempt
+    /// from the all-owned-or-none refusal for the geometry-less case's reason -- vanilla draws nothing for
+    /// them either -- and counted so "a creature is short one limb" can be told from "nothing is hidden".</summary>
+    internal static int _ownInstHidden;
     /// <summary>Which gate killed the parts in <see cref="_ownInstRefusing"/>. The one thing the #128
     /// coverage line could not say, and the only thing that separates "the sweep is doing its job" from a
     /// class the binder cannot take -- <c>_pDeath</c> has held the answer per entry all along, unaggregated.
@@ -730,6 +776,9 @@ internal static unsafe partial class AlloyCensus
                       _ownRejUnrenderable,
                       _ownWithMaps, _ownRejItem, _ownSharedPlain, _ownSharedShader, _ownRejScene,
                       _ownWithEnv, _ownSharedFeature;
+    /// <summary>CX-91: candidates enrolled with no diffuse slot at all, drawn on the white stand-in the way
+    /// a disabled texture stage draws in vanilla. Coverage, never a refusal.</summary>
+    internal static int _ownNoDiffuse;
     internal static IntPtr _ownScene;
 
     /// <summary>Reset the enrollment reject counters and set the Scene this scan enrolls for; call once
@@ -739,8 +788,8 @@ internal static unsafe partial class AlloyCensus
         _ownScene = scene;
         _ownSeen = _ownRejStaleMoved = _ownRejBucket = _ownRejVdo = _ownRejGob = _ownWithEnv =
             _ownWithMaps = _ownRejItem = _ownSharedPlain = _ownSharedShader = _ownRejScene =
-            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing = _ownInstNoGeom =
-            _ownRejUnrenderable = _ownRejDupSibling = 0;
+            _ownSharedFeature = _ownRejFbSample = _ownInstSeen = _ownInstDead = _ownInstRefusing = _ownInstNoGeom = _ownInstHidden =
+            _ownRejUnrenderable = _ownRejDupSibling = _ownNoDiffuse = 0;
         Array.Clear(_instWhy); Array.Clear(_instWhyN);
         Array.Clear(_ownByClass); Array.Clear(OwnRefusedByClass); Array.Clear(OwnRejByReason);
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
@@ -764,15 +813,17 @@ internal static unsafe partial class AlloyCensus
     /// <summary>Why the last enrollment scan rejected what it rejected -- one line, cold.</summary>
     internal static string OwnScanDiag() =>
         $"active={_ownSeen} rejects: stale-identity={_ownRejStaleMoved} bucket={_ownRejBucket} vdo={_ownRejVdo} " +
-        $"scene-tint={_ownRejGob} item={_ownRejItem} foreign-scene={_ownRejScene} " +
+        $"scene-tint={_ownRejGob} empty-item={_ownRejItem} foreign-scene={_ownRejScene} " +
         $"unrenderable={_ownRejUnrenderable} dup-sibling={_ownRejDupSibling} " +
+        $"| no-diffuse={_ownNoDiffuse} owned on the white stand-in " +
         // #128: the instanced population's own fate. "Creatures are not owned" reads identically to
         // "creatures are not in the table"; these three tell them apart without another round trip.
         $"| instances: {_ownInstSeen} live, {_ownInstDead} dead before the scan " +
         $"({_ownInstRefusing} of them DRAWING, i.e. taking their whole creature OUT OF THE FRAME{InstWhyNote()}), " +
         $"{_ownInstNoGeom} geometry-less parts left on their instance, " +
+        $"{_ownInstHidden} held hidden on part+0x34, " +
         $"{_pInstRecorded} recorded ever, " +
-        $"fb-sampling/volumetric={_ownRejFbSample}, " +
+        $"volumetric={_ownRejFbSample}, " +
         // #126: the classification, as coverage. Cutout-vs-blended is the split the whole transparency
         // model turns on, so it is reported rather than inferred from the draw counts.
         $"classes: {_ownByClass[0]} opaque / {_ownByClass[1]} cutout / {_ownByClass[2]} blended / " +
@@ -842,7 +893,7 @@ internal static unsafe partial class AlloyCensus
     /// <summary>#397: where a watched part sits -- its node name, the ancestor chain with each part's
     /// <c>+0x34</c> visible byte, the gob, and whether the gob's append-roots list holds it. Two parts
     /// naming one attach node is the doubled-shield shape. Cold: dumptex lines only.</summary>
-    private static string PartForensic(int e)
+    internal static string PartForensic(int e)
     {
         IntPtr part = _pPart[e];
         if (part == IntPtr.Zero) return "part=0";

@@ -24,7 +24,8 @@ internal enum AlloyClass
     Blended = 2,
     /// <summary>#129: water. Not a blend mode at all -- a SHADING class, the one the engine routes on
     /// <c>Material::HasBumpyShinyMap</c> (with <c>g_nEnableBumpyWater</c>) or the <c>.mtr</c>'s
-    /// <c>sample_framebuffer 2</c>, both of which land in draw bucket 6
+    /// <c>sample_framebuffer 2</c> (value 1 is the late class and draw bucket 5, a different thing --
+    /// see <c>AlloyCensus.SampleFbLate</c>), both of which land in draw bucket 6
     /// (<c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880). It sits between blended and additive because
     /// that is where its INPUT is ready: it samples a copy of the finished frame, and ADR 0011 puts the one
     /// copy after the blended class (so a fading tile is in it) and before additive (so torch glow is not,
@@ -50,7 +51,12 @@ internal static class AlloyClasses
     /// <para>Deliberately not classified by draw bucket: bucket membership is recomputed every frame
     /// (a tile starts fading and moves to 8, a wall starts dissolving and moves to 1) while these terms are
     /// material state. The one bucket that overrides is the tilefade cap -- see <see cref="AlloyClass.Opaque"/>
-    /// -- and the one per-frame overlay is the fade, which the draw loop applies live.</para></summary>
+    /// -- and the one per-frame overlay is the fade, which the draw loop applies live.</para>
+    /// <para>CX-90: which is also why the late class (<c>sample_framebuffer 1</c>, draw bucket 5) gets no
+    /// class of its own. That keyword asks the engine to draw the part near the end of the frame with the
+    /// framebuffer copy bound, and carries no shading of its own -- so Alloy classifies such a part off the
+    /// terms below like any other, which for the content that uses it (<c>transparency 1</c> glass) is the
+    /// blended class, sorted, rather than vanilla's unsorted late slot.</para></summary>
     /// <para>#129: <paramref name="water"/> comes first of all, because it is the engine's own precedence --
     /// <c>AddPartsTreeToDrawBuckets</c> tests bumpy-shiny before it looks at the blend pair, and
     /// <c>sample_framebuffer == 2</c> before it looks at anything else on the SharedMaterial. Water materials

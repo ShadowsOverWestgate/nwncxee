@@ -94,7 +94,7 @@ public sealed unsafe partial class AlloyRenderer
         viewport[2] = PostChain.RenderSize(t.Vp2); viewport[3] = PostChain.RenderSize(t.Vp3);
         bool srgb = t.Srgb;
         // #456: sized to the DEFAULT framebuffer, before any pass binds a target.
-        PresentTarget.Ensure(display[2], display[3], PostChain.DepthTex);
+        PresentTarget.Ensure(display[2], display[3]);
         float* engClear = stackalloc float[4] { t.Clear0, t.Clear1, t.Clear2, t.Clear3 };
         float engClearDepth = t.ClearDepth;
         // ...and the refusals that need no bracket at all, ahead of the preamble they would otherwise
@@ -526,7 +526,9 @@ public sealed unsafe partial class AlloyRenderer
                     // #389: the JITTERED camera for the mask (a biased LEQUAL against the jittered depth;
                     // the clean camera z-fought it, live), and the jitter handed over so the composite
                     // reads the mask back into the accumulated frame's space.
-                    Highlight.OutlineHighlightPass(groups, &vp, jx, jy, viewport, display);
+                    Highlight.OutlineHighlightPass(groups, &vp, &view, &proj, jx, jy, viewport, display);
+                    // CX-83: the area-transition highlight, in the slot the engine's DoHighlightTriggers had.
+                    TriggerHighlight.Draw(&vp, display);
                     GpuEnd(GpuTerm.Post);
                     FrameZones.Add(FrameZones.Zone.Post, tPost);
                     break;
@@ -992,7 +994,10 @@ public sealed unsafe partial class AlloyRenderer
             Gl.ColorMask(1, 1, 1, 0);   // the dome is infinitely far: the clear's alpha 0 already says so
             // the real sky behind the world, so a wet street mirrors the dome and not the clear colour; the
             // dome is parked at this frame's camera, which is where the probe stands
-            SkyOwnedPass(&vp, faceVp, hosted: false);
+            // CX-88: the WHOLE dome, hosted stage included -- an Alloy sky program takes uVP like every
+            // other Alloy draw, so a cube face is just another view. #136's engine-program replay could not
+            // be pointed at one, which is what the ProbeClear sky stand-in was for.
+            SkyOwnedPass(&vp, faceVp);
             Gl.DepthMask(1);   // the sky pass leaves the mask off, and the next face's depth clear honours it
         }
         Gl.ColorMask(1, 1, 1, 1);
@@ -1070,10 +1075,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Area light (ambient + sun, brightest channel) below which a domeless area is still fading in.</summary>
     private const float ProbeDarkFloor = 1e-3f;
 
-    /// <summary>What the probe's faces are cleared to -- the sky stand-in where no dome covers: an area with
-    /// the skybox off, or one whose sky is hosted engine parts only (<see cref="SkyOwnedPass"/> draws the
-    /// owned dome into the capture). The sky's own average when fog has read one; else the area's ambient
-    /// plus half its directional -- a black clear would make outdoor metal reflect a black dome.</summary>
+    /// <summary>What the probe's faces are cleared to -- the sky stand-in where no dome covers, which since
+    /// CX-88 means only an area with the skybox off or one whose sky refused to stage. The sky's own average
+    /// when fog has read one; else the area's ambient plus half its directional -- a black clear would make
+    /// outdoor metal reflect a black dome.</summary>
     private static Vector3 ProbeClear()
     {
         if (SceneFog.TrySky(out Vector3 sky)) return sky;

@@ -128,11 +128,11 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>#346: the spell-targeting shape's terms, straight out of the engine's global-constant
     /// tables -- the same values <c>GLRender::SetUniforms</c> hands the engine's own copy of the same
-    /// shader. Written under the ENGINE's uniform names: the stage compiles <c>inc_target.shd</c> itself
-    /// (see <see cref="TargetFs"/>), so these are its declarations, not ours.
-    /// <para>Only what that file reads is uploaded. The harms/helps/ignores flags and the spell and feat ids
-    /// are declared there and sampled by nothing, and a program that carries no targeting code at all gets
-    /// location -1 for every one of these, which GL ignores.</para>
+    /// shader. Written under the ENGINE's uniform names, which <see cref="TargetFs"/> keeps: the values are the
+    /// engine's, so the names are too, and a content override of that library reads the same contract.
+    /// <para>Only what the shape reads is uploaded. The harms/helps/ignores flags and the spell and feat ids
+    /// are part of the engine's own declaration and sampled by nothing, and a program that carries no targeting
+    /// code at all gets location -1 for every one of these, which GL ignores.</para>
     /// <para>Nothing is converted. The colour is the engine's own display-space vec4 and the fragment stage
     /// mixes with it inside the same encode bracket the fog uses, so a shape drawn on an Alloy tile and one
     /// drawn on a vanilla tile are the same strength.</para></summary>

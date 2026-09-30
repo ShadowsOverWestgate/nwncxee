@@ -52,7 +52,7 @@ INSTANCE = re.compile(r"@@[QAI]E[AB]A")
 # per OS. Each row below instead had its argument order decided AT THE CALL SITE. Value = where to look.
 SRET_HANDLED = {
     "GetEmitterLighting":      "managed/Alloy/Core/EmitterLighting.cs",
-    "SceneGetWindVector":      "managed/Alloy/Scene/DanglyPhysics.cs (Wind)",
+    "SceneGetWindVector":      "managed/Alloy/Scene/DanglyPhysics.cs (Wind), managed/Alloy/Core/AurXform.cs (Wind)",
     "TlkGetSimpleString":      "managed/Services/CombatText/CombatTextNative.cs",
     "ExoResManGet":            "managed/Services/Nui/NuiItemIcons.cs (OnGetItanium / OnGetWin64, a hook)",
 }

@@ -201,7 +201,7 @@ internal static unsafe class PostChain
         _scratchFbo = 0; _scratchTex = 0; _scratchW = 0; _scratchH = 0; _scratchFormat = 0;
         _depFormat = 0; _depW = 0; _depH = 0;
         _handbackBad = 0;
-        _defaultProbed = false; _defaultFormat = 0; _defaultOk = null;
+        _defaultProbed = false; _defaultFormat = 0;
         _progDown = 0; _progUp = 0; _progComposite = 0; _vao = 0;
         _progFailed = false; Armed = false; _down.Forget();
     }
@@ -374,19 +374,10 @@ internal static unsafe class PostChain
     {
         if (Gl.BlitFramebuffer == null || _depthTex == 0) return;
         int dst; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &dst);
-        if (dst == 0) { DefaultDepthOk = RspShim.WantsEngineOverlays && BlitDepthToDefault(dstW, dstH); return; }
-        // #462: on Windows the frame lands in PresentTarget's texture, and HandBack blits the owned depth
-        // into the real default framebuffer after the bracket -- so this IS the default-target case, with the
-        // hand-back done by the engine context instead of here. Without this branch DefaultDepthOk never
-        // armed on Windows and the engine's highlight glow never drew there.
-        if (dst == PresentTarget.Fbo46)
-        {
-            if (_defaultOk == null) _defaultOk = DefaultFormat() != 0;
-            DefaultDepthOk = RspShim.WantsEngineOverlays && _defaultOk == true;
-            DefaultStencilOk = DefaultDepthOk && _defaultHasStencil;
-            return;
-        }
-        DefaultDepthOk = false;   // an engine attachment: ResolveDepth's own hand-back, not the overlays'
+        // CX-84: nothing engine-side draws after the bracket any more (the two highlight overlays are Alloy
+        // passes), so the DEFAULT framebuffer needs no owned depth and no stencil -- there is nothing left to
+        // depth-test there. Both of those targets are a return, not a blit.
+        if (dst == 0 || dst == PresentTarget.Fbo46) return;
         uint err = BlitDepthInto((uint)dst, dstW, dstH);
         if (err == 0) return;
         // Stand THIS format down: the frame already drew with depth the engine never received, and a
@@ -396,32 +387,14 @@ internal static unsafe class PostChain
                  + "owned depth cannot be handed back to the frame target, so the Alloy frame stands down.");
     }
 
-    /// <summary>#232/#233: true when the frame's owned depth reached the DEFAULT framebuffer, so the
-    /// engine's dropped highlight overlays may be run after the bracket and still be occluded by the world.
-    /// False on any frame that did not blit -- and the overlays are then skipped rather than drawn through
-    /// walls.</summary>
-    internal static bool DefaultDepthOk;
-
-    /// <summary>#233: and whether it carries STENCIL, which is a separate question with a worse failure.
-    /// <c>Scene::DoHighlightTriggers</c> builds a silhouette mask and then draws a FULL-SCREEN quad through
-    /// <c>SetStencilFunc(3, 0x80, ~0)</c>; with no stencil buffer the ops are no-ops and the test always
-    /// passes, so that quad paints the whole screen instead of the trigger. Depth-only is survivable and the
-    /// gob highlight still runs; the trigger half does not.</summary>
-    internal static bool DefaultStencilOk;
-
-    /// <summary>Whether the default framebuffer has been found to carry usable depth; null until asked.
-    /// Asked once per session -- the window's depth buffer is fixed at context creation.</summary>
-    private static bool? _defaultOk;
-
-    /// <summary>The stencil half of that one-shot answer.</summary>
-    private static bool _defaultHasStencil;
-
-    /// <summary>The default framebuffer's depth format as its bit widths and component type describe it
-    /// (the ladder <see cref="DefaultFormat"/> reads); 0 = no depth. Under the M4 shim the owned depth
-    /// is ALLOCATED to this, so the hand-back is the format-matched blit GL 4.6 18.3.1 requires: the author's
-    /// driver tolerated D24 into D24S8, and Mesa raises no error for the mismatch either -- it just does
-    /// what it likes with it (docs/research/opengl-46-portability-audit.md, E4).</summary>
-    private static uint _defaultFormat, _defaultMismatchFmt;
+    /// <summary>The default framebuffer's depth format as its bit widths and component type describe it;
+    /// 0 = no depth. The owned depth attachment is ALLOCATED to this, which is what keeps
+    /// <see cref="ResolveDepth"/>'s blit into a real engine attachment legal (GL 4.6 18.3.1: a depth blit
+    /// cannot convert) and, failing that, is simply the format this driver's window was given. Asked once per
+    /// session -- the window's depth buffer is fixed at context creation. CX-84 removed its second reader:
+    /// there is no hand-back to the default framebuffer any more, because nothing engine-side draws after the
+    /// bracket that would depth-test there.</summary>
+    private static uint _defaultFormat;
     private static bool _defaultProbed;
 
     private static uint DefaultFormat()
@@ -438,48 +411,16 @@ internal static unsafe class PostChain
             comp = RenderTarget.AttachmentParam(Gl.DEPTH, Gl.FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE);
             Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prev);
         }
-        _defaultHasStencil = sbits > 0;
         _defaultFormat = bits <= 0 ? 0
             : sbits > 0 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH32F_STENCIL8 : Gl.DEPTH24_STENCIL8)
             : bits >= 32 ? (comp == (int)Gl.FLOAT ? Gl.DEPTH_COMPONENT32F : Gl.DEPTH_COMPONENT32)
             : bits >= 24 ? Gl.DEPTH_COMPONENT24 : Gl.DEPTH_COMPONENT16;
         _log?.Info(bits > 0
-            ? $"PostChain: default framebuffer carries {bits}-bit depth and {sbits}-bit stencil (0x{_defaultFormat:x}) -- the "
-            + $"engine highlight overlays (#232) get the owned depth handed back and are occluded by the "
-            + $"world{(sbits > 0 ? ", and the trigger highlight (#233) has its stencil" : "; the TRIGGER highlight (#233) stands down, having no stencil to mask its full-screen quad")}"
-            : "PostChain: the default framebuffer has NO depth buffer -- the engine highlight overlays "
-            + "(#232/#233) stand down rather than draw through walls");
+            ? $"PostChain: default framebuffer carries {bits}-bit depth and {sbits}-bit stencil "
+            + $"(0x{_defaultFormat:x}) -- the owned depth attachment is allocated to match it"
+            : "PostChain: the default framebuffer has NO depth buffer -- the owned depth attachment falls "
+            + "back to DEPTH_COMPONENT24");
         return _defaultFormat;
-    }
-
-    /// <summary>#232/#233: the same hand-back as <see cref="ResolveDepth"/>, but into the DEFAULT
-    /// framebuffer, which under the shim is the only target there is. Nothing else writes that depth buffer
-    /// on an Alloy frame -- the engine's world draws are all swallowed -- so the engine overlays the shim
-    /// re-runs after the bracket would depth-test against an uncleared buffer and appear through walls.
-    /// <para>Gated on the window actually having depth bits, asked of the framebuffer rather than assumed:
-    /// a blit whose destination has no depth buffer drops the bit SILENTLY and returns no error, so
-    /// glGetError cannot be the check. A failure here stands the OVERLAYS down, never the Alloy frame --
-    /// the frame itself does not need this blit.</para></summary>
-    private static bool BlitDepthToDefault(int dstW, int dstH)
-    {
-        if (Gl.BlitFramebuffer == null || _depthTex == 0) return false;
-        if (_defaultOk == null) _defaultOk = DefaultFormat() != 0;
-        if (_defaultOk != true) return false;
-        if (_defaultFormat != _depFormat && _defaultMismatchFmt != _depFormat)
-        {
-            _defaultMismatchFmt = _depFormat;
-            _log?.Info($"PostChain: WARN the depth hand-back blits 0x{_depFormat:x} into a default framebuffer of " +
-                       $"0x{_defaultFormat:x} -- GL 4.6 18.3.1 makes a mismatched depth blit INVALID_OPERATION, and Mesa " +
-                       "raises no error for it (main/blit.c), so the verdict below cannot see it; overlays may occlude wrong");
-        }
-        DefaultStencilOk = _defaultHasStencil;
-        uint err = BlitDepthInto(0, dstW, dstH);
-        if (err == 0) return true;
-        _defaultOk = false;
-        DefaultStencilOk = false;
-        _log?.Info($"PostChain: the depth hand-back to the default framebuffer raised 0x{err:x} -- the "
-                 + "engine highlight overlays (#232/#233) stand down for this session");
-        return false;
     }
 
     /// <summary>Alloy's own depth attachment, sized to the target and format-matched to the engine's.

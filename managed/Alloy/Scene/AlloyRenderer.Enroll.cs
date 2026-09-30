@@ -315,7 +315,7 @@ public sealed unsafe partial class AlloyRenderer
         // the texture-key interning is scoped to ONE enrollment: it is a sort proxy only, so a fresh table
         // every time is both cheaper than invalidating it and immune to the recycled-pointer problem
         Array.Clear(_mKey, 0, MatHash);
-        _matCount = 0;
+        _matCount = 1;   // key 0 is reserved for the untextured parts (CX-91), whose null pointer cannot intern
         _capacitySpill = 0;
         AlloyCensus.OwnScanBegin(scene);
     }
@@ -1020,6 +1020,9 @@ public sealed unsafe partial class AlloyRenderer
     /// the batch correctly.</summary>
     private static int TexKey(IntPtr tex)
     {
+        // CX-91: an untextured part has no pointer to intern -- and probing on IntPtr.Zero would either match
+        // an empty slot or insert itself, so the same part would sort differently from one scan to the next.
+        if (tex == IntPtr.Zero) return 0;
         // Fibonacci hashing takes the TOP bits of the product, so the shift is bound to the table size --
         // a literal here silently clusters every key into the first 1/N of the table when MatHash grows,
         // which is exactly what raising it from 2048 nearly did.

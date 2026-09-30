@@ -145,6 +145,13 @@ internal static unsafe class EnvProbe
               "the world edge drops the cube's freshness AND its BSP key -- a recycled BSP address must not read as the same area");
             check.Expect(Tex == 9, "...and keeps the GL objects: they belong to the context, not to the world");
             Tex = 0;
+
+            check.Expect(Finite(stackalloc float[] { 0f, 0.5f, 16f }) && !Finite(stackalloc float[] { 0.2f, float.NaN })
+                         && !Finite(stackalloc float[] { float.PositiveInfinity }), "a NaN or Inf capture is not published");
+            string sky = ShaderSource.Get("cx_sky_f.glsl");
+            check.Expect(sky.Contains("mix(clamp(FragmentColor, 0.0, 1.0), vec4(0.0), isnan(FragmentColor))")
+                         && sky.Contains("CxOitOut(vec4(rgb, c.a))"),
+                         "a hosted sky stage is clamped as the engine's UNORM target clamps it, NaN to 0");
         }
         finally { _log = quiet; }
         log.Info(check.Ok ? "EnvProbe.SelfCheck: passed" : "EnvProbe.SelfCheck: FAILED");
@@ -208,15 +215,32 @@ internal static unsafe class EnvProbe
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         Gl.GenerateTextureMipmap(_cap);
         Prefilter();
-        Ready = true;
         Captures++;
-        // the roughest level's up and down faces, one texel each: a black probe shows here and nowhere else
+        // the roughest level's six faces, one texel each: a black probe shows here and nowhere else, and a
+        // NaN anywhere in the capture has reached this level through the box chain
         float* px = stackalloc float[24];
         Gl.MemoryBarrier(Gl.TEXTURE_UPDATE_BARRIER_BIT);
         if (Gl.GetTextureImage != null) Gl.GetTextureImage(Tex, Mips - 1, Gl.RGBA, Gl.FLOAT, 24 * sizeof(float), px);
+        Ready = Finite(new ReadOnlySpan<float>(px, 24));
         _log?.Info($"EnvProbe: captured area probe #{Captures} at ({Origin.X:F0},{Origin.Y:F0},{Origin.Z:F0}) " +
                    $"-- {Size}px x 6 faces, {Mips} mips, area bsp 0x{(ulong)_bsp:x}; " +
                    $"up ({px[16]:F2},{px[17]:F2},{px[18]:F2}) down ({px[20]:F2},{px[21]:F2},{px[22]:F2})");
+        if (!Ready && _poisoned++ == 0)
+            _log?.Always($"EnvProbe: capture #{Captures} holds NaN/Inf -- NOT PUBLISHED, the area has no ambient " +
+                         "specular or ambient direction until a clean capture (a stage in the capture wrote a " +
+                         "non-finite colour)");
+    }
+
+    /// <summary>Non-finite captures so far; only the first is logged loudly (a refused probe re-captures every
+    /// <see cref="MinFrames"/>).</summary>
+    private static int _poisoned;
+
+    /// <summary>Every value a real number? A NaN texel reads back as 16 through <c>CxProbeFetch</c>'s cap on
+    /// NVIDIA (<c>min</c> returns the non-NaN operand), which is a white sheen on every lit surface.</summary>
+    internal static bool Finite(ReadOnlySpan<float> v)
+    {
+        foreach (float f in v) if (!float.IsFinite(f)) return false;
+        return true;
     }
 
     /// <summary>The 4.6 context went away with the objects in it. Nothing is deleted here -- the context that

@@ -139,6 +139,9 @@ global using unsafe RefreshHiliteFn = delegate* unmanaged<nint, void>;
 global using unsafe RenderSkyBoxesFn = delegate* unmanaged<nint, void>;
 global using unsafe PartGetWorldFn = delegate* unmanaged<nint, System.Numerics.Vector3*, float*, void>;
 global using unsafe GobGetAdjustedScaleFn = delegate* unmanaged<nint, float>;
+global using unsafe GobProcessGobFn = delegate* unmanaged<nint, void>;
+global using unsafe AnimateParticlesFn = delegate* unmanaged<nint, float, void>;
+global using unsafe RenderNothingFn = delegate* unmanaged<nint, void>;
 global using unsafe RenderEmitterFn = delegate* unmanaged<nint, void>;
 global using unsafe PartEmitterDtorFn = delegate* unmanaged<nint, void>;
 global using unsafe EmitterGetTileAlphaFn = delegate* unmanaged<nint, float>;
@@ -191,6 +194,9 @@ global using unsafe GlUseProgramConditionallyFn = delegate* unmanaged<uint, void
 global using unsafe RiGetGlobalShaderParamfFn = delegate* unmanaged<uint, float>;
 global using unsafe RiGetGlobalShaderParamiFn = delegate* unmanaged<uint, int>;
 global using unsafe GetLightAdjustedRadiusFn = delegate* unmanaged<nint, float>;
+global using unsafe GetLightFadeSpeedFn = delegate* unmanaged<nint, float>;
+global using unsafe GetIsLightInViewVolumeFn = delegate* unmanaged<nint, byte>;
+global using unsafe LightMgrGetMaxLightsFn = delegate* unmanaged<int>;
 global using unsafe PartGetIsOpaqueFn = delegate* unmanaged<nint, byte>;
 global using unsafe CameraFollowControlFn = delegate* unmanaged<nint, float, int>;
 global using unsafe TurnCameraFn = delegate* unmanaged<nint, float, int, void>;
@@ -2098,6 +2104,10 @@ public readonly unsafe ref partial struct Gob(IntPtr ptr)
     public ref int ExternalType => ref *(int*)(Ptr + EngineLayout.GobExternalType);
     /// <inheritdoc cref="EngineLayout.GobFadeAlpha"/>
     public ref float FadeAlpha => ref *(float*)(Ptr + EngineLayout.GobFadeAlpha);
+    /// <inheritdoc cref="EngineLayout.GobGetAdjustedOrientationSlot"/>
+    public IntPtr GetAdjustedOrientationFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GobGetAdjustedOrientationSlot);
+    /// <inheritdoc cref="EngineLayout.GobGetAdjustedPositionSlot"/>
+    public IntPtr GetAdjustedPositionFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GobGetAdjustedPositionSlot);
     /// <inheritdoc cref="EngineLayout.GobAdjustedScaleSlot"/>
     public float GetAdjustedScale() => ((delegate* unmanaged<IntPtr, float>)GetAdjustedScaleFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.GobAdjustedScaleSlot"/>
@@ -2106,12 +2116,22 @@ public readonly unsafe ref partial struct Gob(IntPtr ptr)
     public void GetAttachedGobs(IntPtr list) => ((delegate* unmanaged<IntPtr, IntPtr, void>)GetAttachedGobsFn)(Ptr, list);
     /// <inheritdoc cref="EngineLayout.GobAttachedGobsSlot"/>
     public IntPtr GetAttachedGobsFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GobAttachedGobsSlot);
+    /// <inheritdoc cref="EngineLayout.GobGetOrientationSlot"/>
+    public IntPtr GetOrientationFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GobGetOrientationSlot);
+    /// <inheritdoc cref="EngineLayout.GobGetPositionSlot"/>
+    public IntPtr GetPositionFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GobGetPositionSlot);
     /// <inheritdoc cref="SymbolMap.GobGetAdjustedScale"/>
     public float GobGetAdjustedScale() => EngineFn.GobGetAdjustedScale(Ptr);
+    /// <inheritdoc cref="SymbolMap.GobProcessGob"/>
+    public void GobProcessGob() => EngineFn.GobProcessGob(Ptr);
     /// <inheritdoc cref="EngineLayout.GobHighlight"/>
     public ref byte Highlight => ref *(byte*)(Ptr + EngineLayout.GobHighlight);
     /// <inheritdoc cref="EngineLayout.GobInView"/>
     public ref byte InView => ref *(byte*)(Ptr + EngineLayout.GobInView);
+    /// <inheritdoc cref="EngineLayout.GobIsForceAnimatedSlot"/>
+    public byte IsForceAnimated() => ((delegate* unmanaged<IntPtr, byte>)IsForceAnimatedFn)(Ptr);
+    /// <inheritdoc cref="EngineLayout.GobIsForceAnimatedSlot"/>
+    public IntPtr IsForceAnimatedFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.GobIsForceAnimatedSlot);
     /// <inheritdoc cref="EngineLayout.GobLodRoot1"/>
     public Part LodRoot1 { get => new(*(IntPtr*)(Ptr + EngineLayout.GobLodRoot1)); set => *(IntPtr*)(Ptr + EngineLayout.GobLodRoot1) = value.Ptr; }
     /// <inheritdoc cref="EngineLayout.GobLodRoot2"/>
@@ -2126,6 +2146,8 @@ public readonly unsafe ref partial struct Gob(IntPtr ptr)
     public ref System.Numerics.Vector3 Position => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.GobPosition);
     /// <inheritdoc cref="EngineLayout.GobPropagateHilite"/>
     public ref byte PropagateHilite => ref *(byte*)(Ptr + EngineLayout.GobPropagateHilite);
+    /// <inheritdoc cref="EngineLayout.GobRot"/>
+    public ref Quat Rot => ref *(Quat*)(Ptr + EngineLayout.GobRot);
     /// <inheritdoc cref="EngineLayout.GobScene"/>
     public ref IntPtr Scene => ref *(IntPtr*)(Ptr + EngineLayout.GobScene);
     /// <inheritdoc cref="EngineLayout.GobSceneTint"/>
@@ -2153,12 +2175,29 @@ public readonly unsafe partial struct LightManager(IntPtr ptr)
     public void EnableLights() => ((delegate* unmanaged<IntPtr, void>)EnableLightsFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.LightMgrEnableLightsSlot"/>
     public IntPtr EnableLightsFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.LightMgrEnableLightsSlot);
+    /// <inheritdoc cref="EngineLayout.LmFrameCount"/>
+    public ref int FrameCount => ref *(int*)(Ptr + EngineLayout.LmFrameCount);
+    /// <inheritdoc cref="EngineLayout.LmFrameData"/>
+    public ref IntPtr FrameData => ref *(IntPtr*)(Ptr + EngineLayout.LmFrameData);
     /// <inheritdoc cref="SymbolMap.GetLensFlareLights"/>
     public IntPtr GetLensFlareLights() => EngineFn.GetLensFlareLights(Ptr);
     /// <inheritdoc cref="EngineLayout.LmMasterCount"/>
     public ref int MasterCount => ref *(int*)(Ptr + EngineLayout.LmMasterCount);
     /// <inheritdoc cref="EngineLayout.LmMasterData"/>
     public ref IntPtr MasterData => ref *(IntPtr*)(Ptr + EngineLayout.LmMasterData);
+}
+
+/// <summary>Typed view of an engine <c>LightningEmitter*</c>.</summary>
+public readonly unsafe partial struct LightningEmitter(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.BoltLastDelta"/>
+    public ref System.Numerics.Vector3 LastDelta => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.BoltLastDelta);
+    /// <inheritdoc cref="EngineLayout.BoltLastPos"/>
+    public ref System.Numerics.Vector3 LastPos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.BoltLastPos);
 }
 
 /// <summary>Typed view of an engine <c>LookAtAnimation*</c>.</summary>
@@ -2294,16 +2333,32 @@ public readonly unsafe partial struct MdlNodeEmitter(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.EmitterChunkModel"/>
+    public Span<byte> ChunkModel { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.EmitterChunkModel), 16); }
+    /// <inheritdoc cref="EngineLayout.EmitterConeCap"/>
+    public ref float ConeCap => ref *(float*)(Ptr + EngineLayout.EmitterConeCap);
     /// <inheritdoc cref="SymbolMap.EmitterIsSplat"/>
     public byte EmitterIsSplat() => EngineFn.EmitterIsSplat(Ptr);
     /// <inheritdoc cref="SymbolMap.EmitterIsTinted"/>
     public byte EmitterIsTinted() => EngineFn.EmitterIsTinted(Ptr);
+    /// <inheritdoc cref="EngineLayout.EmitterFlags"/>
+    public ref int Flags => ref *(int*)(Ptr + EngineLayout.EmitterFlags);
     /// <inheritdoc cref="EngineLayout.EmitterGridX"/>
     public ref int GridX => ref *(int*)(Ptr + EngineLayout.EmitterGridX);
     /// <inheritdoc cref="EngineLayout.EmitterGridY"/>
     public ref int GridY => ref *(int*)(Ptr + EngineLayout.EmitterGridY);
+    /// <inheritdoc cref="EngineLayout.EmitterLoop"/>
+    public ref int Loop => ref *(int*)(Ptr + EngineLayout.EmitterLoop);
     /// <inheritdoc cref="EngineLayout.EmitterNoCull"/>
     public ref int NoCull => ref *(int*)(Ptr + EngineLayout.EmitterNoCull);
+    /// <inheritdoc cref="EngineLayout.EmitterRenderOrder"/>
+    public ref short RenderOrder => ref *(short*)(Ptr + EngineLayout.EmitterRenderOrder);
+    /// <inheritdoc cref="EngineLayout.EmitterUpdate"/>
+    public Span<byte> Update { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.EmitterUpdate), 16); }
+    /// <inheritdoc cref="EngineLayout.EmitterWindFalloff"/>
+    public ref float WindFalloff => ref *(float*)(Ptr + EngineLayout.EmitterWindFalloff);
+    /// <inheritdoc cref="EngineLayout.EmitterWindStrength"/>
+    public ref float WindStrength => ref *(float*)(Ptr + EngineLayout.EmitterWindStrength);
 }
 
 /// <summary>Typed view of an engine <c>MdlNodeLight*</c>.</summary>
@@ -2313,6 +2368,8 @@ public readonly unsafe partial struct MdlNodeLight(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.LightFadingLight"/>
+    public ref int FadingLight => ref *(int*)(Ptr + EngineLayout.LightFadingLight);
     /// <inheritdoc cref="EngineLayout.FlareCount"/>
     public ref int FlareCount => ref *(int*)(Ptr + EngineLayout.FlareCount);
     /// <inheritdoc cref="EngineLayout.FlareRadius"/>
@@ -2351,6 +2408,10 @@ public readonly unsafe ref partial struct MdlNodeTriMesh(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.MdlAmbient"/>
     public ref System.Numerics.Vector3 Ambient => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.MdlAmbient);
+    /// <inheritdoc cref="EngineLayout.MdlBboxMax"/>
+    public ref System.Numerics.Vector3 BboxMax => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.MdlBboxMax);
+    /// <inheritdoc cref="EngineLayout.MdlBboxMin"/>
+    public ref System.Numerics.Vector3 BboxMin => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.MdlBboxMin);
     /// <inheritdoc cref="EngineLayout.MdlDiffuse"/>
     public ref System.Numerics.Vector3 Diffuse => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.MdlDiffuse);
     /// <inheritdoc cref="EngineLayout.MeshFaceCount"/>
@@ -2487,6 +2548,10 @@ public readonly unsafe ref partial struct Part(IntPtr ptr)
     public PartBeam AsPartBeam() => new PartBeam(((delegate* unmanaged<IntPtr, IntPtr>)AsPartBeamFn)(Ptr));
     /// <inheritdoc cref="EngineLayout.PartAsPartBeamSlot"/>
     public IntPtr AsPartBeamFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.PartAsPartBeamSlot);
+    /// <inheritdoc cref="EngineLayout.PartAsSkinSlot"/>
+    public IntPtr AsPartSkin() => ((delegate* unmanaged<IntPtr, IntPtr>)AsPartSkinFn)(Ptr);
+    /// <inheritdoc cref="EngineLayout.PartAsSkinSlot"/>
+    public IntPtr AsPartSkinFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.PartAsSkinSlot);
     /// <inheritdoc cref="EngineLayout.PartAsTriMeshSlot"/>
     public PartTriMesh AsPartTriMesh() => new PartTriMesh(((delegate* unmanaged<IntPtr, IntPtr>)AsPartTriMeshFn)(Ptr));
     /// <inheritdoc cref="EngineLayout.PartAsTriMeshSlot"/>
@@ -2558,14 +2623,40 @@ public readonly unsafe ref partial struct PartEmitter(IntPtr ptr)
     public ref float AlphaEnd => ref *(float*)(Ptr + EngineLayout.EmAlphaEnd);
     /// <inheritdoc cref="EngineLayout.EmAlphaStart"/>
     public ref float AlphaStart => ref *(float*)(Ptr + EngineLayout.EmAlphaStart);
+    /// <inheritdoc cref="SymbolMap.AnimateParticles"/>
+    public void AnimateParticles(float dt) => EngineFn.AnimateParticles(Ptr, dt);
+    /// <inheritdoc cref="EngineLayout.EmBasis"/>
+    public Span<float> Basis { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.EmBasis), 9); }
+    /// <inheritdoc cref="EngineLayout.EmBezier2"/>
+    public ref float Bezier2 => ref *(float*)(Ptr + EngineLayout.EmBezier2);
+    /// <inheritdoc cref="EngineLayout.EmBezier3"/>
+    public ref float Bezier3 => ref *(float*)(Ptr + EngineLayout.EmBezier3);
+    /// <inheritdoc cref="EngineLayout.EmBirthRate"/>
+    public ref float BirthRate => ref *(float*)(Ptr + EngineLayout.EmBirthRate);
+    /// <inheritdoc cref="EngineLayout.EmBirthing"/>
+    public ref byte Birthing => ref *(byte*)(Ptr + EngineLayout.EmBirthing);
     /// <inheritdoc cref="EngineLayout.EmBlend"/>
     public ref int Blend => ref *(int*)(Ptr + EngineLayout.EmBlend);
+    /// <inheritdoc cref="EngineLayout.EmBlurLength"/>
+    public ref float BlurLength => ref *(float*)(Ptr + EngineLayout.EmBlurLength);
+    /// <inheritdoc cref="EngineLayout.EmBoltDelay"/>
+    public ref float BoltDelay => ref *(float*)(Ptr + EngineLayout.EmBoltDelay);
+    /// <inheritdoc cref="EngineLayout.EmBoltRadius"/>
+    public ref float BoltRadius => ref *(float*)(Ptr + EngineLayout.EmBoltRadius);
+    /// <inheritdoc cref="EngineLayout.EmBounce"/>
+    public ref float Bounce => ref *(float*)(Ptr + EngineLayout.EmBounce);
     /// <inheritdoc cref="EngineLayout.EmColorEnd"/>
     public ref System.Numerics.Vector3 ColorEnd => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.EmColorEnd);
     /// <inheritdoc cref="EngineLayout.EmColorStart"/>
     public ref System.Numerics.Vector3 ColorStart => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.EmColorStart);
+    /// <inheritdoc cref="EngineLayout.EmCombineTime"/>
+    public ref float CombineTime => ref *(float*)(Ptr + EngineLayout.EmCombineTime);
     /// <inheritdoc cref="EngineLayout.EmCount"/>
     public ref int Count => ref *(int*)(Ptr + EngineLayout.EmCount);
+    /// <inheritdoc cref="EngineLayout.EmDeadSpace"/>
+    public ref float DeadSpace => ref *(float*)(Ptr + EngineLayout.EmDeadSpace);
+    /// <inheritdoc cref="EngineLayout.EmDetonate"/>
+    public ref byte Detonate => ref *(byte*)(Ptr + EngineLayout.EmDetonate);
     /// <inheritdoc cref="SymbolMap.EmitterGetGobAlpha"/>
     public float EmitterGetGobAlpha() => EngineFn.EmitterGetGobAlpha(Ptr);
     /// <inheritdoc cref="SymbolMap.EmitterGetTileAlpha"/>
@@ -2576,22 +2667,48 @@ public readonly unsafe ref partial struct PartEmitter(IntPtr ptr)
     public ref float FrameEnd => ref *(float*)(Ptr + EngineLayout.EmFrameEnd);
     /// <inheritdoc cref="EngineLayout.EmFrameStart"/>
     public ref float FrameStart => ref *(float*)(Ptr + EngineLayout.EmFrameStart);
+    /// <inheritdoc cref="EngineLayout.EmGravity"/>
+    public ref float Gravity => ref *(float*)(Ptr + EngineLayout.EmGravity);
     /// <inheritdoc cref="EngineLayout.EmLife"/>
     public ref float Life => ref *(float*)(Ptr + EngineLayout.EmLife);
     /// <inheritdoc cref="EngineLayout.EmLifeInterp"/>
     public ref short LifeInterp => ref *(short*)(Ptr + EngineLayout.EmLifeInterp);
     /// <inheritdoc cref="EngineLayout.EmMaterial"/>
     public Material Material { get => new(*(IntPtr*)(Ptr + EngineLayout.EmMaterial)); set => *(IntPtr*)(Ptr + EngineLayout.EmMaterial) = value.Ptr; }
+    /// <inheritdoc cref="EngineLayout.EmModeClock"/>
+    public ref float ModeClock => ref *(float*)(Ptr + EngineLayout.EmModeClock);
     /// <inheritdoc cref="EngineLayout.EmOrient"/>
     public ref Quat Orient => ref *(Quat*)(Ptr + EngineLayout.EmOrient);
+    /// <inheritdoc cref="EngineLayout.EmP2PDrag"/>
+    public ref float P2pDrag => ref *(float*)(Ptr + EngineLayout.EmP2PDrag);
+    /// <inheritdoc cref="EngineLayout.EmP2PGrav"/>
+    public ref float P2pGrav => ref *(float*)(Ptr + EngineLayout.EmP2PGrav);
+    /// <inheritdoc cref="EngineLayout.EmP2PLeftover"/>
+    public ref System.Numerics.Vector3 P2pLeftover => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.EmP2PLeftover);
+    /// <inheritdoc cref="EngineLayout.EmP2PTarget"/>
+    public Gob P2pTarget { get => new(*(IntPtr*)(Ptr + EngineLayout.EmP2PTarget)); set => *(IntPtr*)(Ptr + EngineLayout.EmP2PTarget) = value.Ptr; }
     /// <inheritdoc cref="SymbolMap.PartEmitterDtor"/>
     public void PartEmitterDtor() => EngineFn.PartEmitterDtor(Ptr);
     /// <inheritdoc cref="EngineLayout.EmParts"/>
     public ref IntPtr Parts => ref *(IntPtr*)(Ptr + EngineLayout.EmParts);
     /// <inheritdoc cref="EngineLayout.EmPos"/>
     public ref System.Numerics.Vector3 Pos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.EmPos);
+    /// <inheritdoc cref="EngineLayout.EmPrevPos"/>
+    public ref System.Numerics.Vector3 PrevPos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.EmPrevPos);
+    /// <inheritdoc cref="EngineLayout.EmPrevRot"/>
+    public ref Quat PrevRot => ref *(Quat*)(Ptr + EngineLayout.EmPrevRot);
+    /// <inheritdoc cref="EngineLayout.EmPrevWorldPos"/>
+    public ref System.Numerics.Vector3 PrevWorldPos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.EmPrevWorldPos);
+    /// <inheritdoc cref="EngineLayout.EmPrevWorldRot"/>
+    public ref Quat PrevWorldRot => ref *(Quat*)(Ptr + EngineLayout.EmPrevWorldRot);
+    /// <inheritdoc cref="EngineLayout.EmRandVel"/>
+    public ref float RandVel => ref *(float*)(Ptr + EngineLayout.EmRandVel);
     /// <inheritdoc cref="SymbolMap.RenderEmitter"/>
     public void RenderEmitter() => EngineFn.RenderEmitter(Ptr);
+    /// <inheritdoc cref="SymbolMap.RenderNothing"/>
+    public void RenderNothing() => EngineFn.RenderNothing(Ptr);
+    /// <inheritdoc cref="EngineLayout.EmSeeded"/>
+    public ref byte Seeded => ref *(byte*)(Ptr + EngineLayout.EmSeeded);
     /// <inheritdoc cref="EngineLayout.EmSizeEndX"/>
     public ref float SizeEndX => ref *(float*)(Ptr + EngineLayout.EmSizeEndX);
     /// <inheritdoc cref="EngineLayout.EmSizeEndY"/>
@@ -2600,10 +2717,24 @@ public readonly unsafe ref partial struct PartEmitter(IntPtr ptr)
     public ref float SizeStartX => ref *(float*)(Ptr + EngineLayout.EmSizeStartX);
     /// <inheritdoc cref="EngineLayout.EmSizeStartY"/>
     public ref float SizeStartY => ref *(float*)(Ptr + EngineLayout.EmSizeStartY);
+    /// <inheritdoc cref="EngineLayout.EmSpawnAcc"/>
+    public ref float SpawnAcc => ref *(float*)(Ptr + EngineLayout.EmSpawnAcc);
+    /// <inheritdoc cref="EngineLayout.EmSpawnX"/>
+    public ref float SpawnX => ref *(float*)(Ptr + EngineLayout.EmSpawnX);
+    /// <inheritdoc cref="EngineLayout.EmSpawnY"/>
+    public ref float SpawnY => ref *(float*)(Ptr + EngineLayout.EmSpawnY);
+    /// <inheritdoc cref="EngineLayout.EmSpin"/>
+    public ref float Spin => ref *(float*)(Ptr + EngineLayout.EmSpin);
+    /// <inheritdoc cref="EngineLayout.EmSpread"/>
+    public ref float Spread => ref *(float*)(Ptr + EngineLayout.EmSpread);
     /// <inheritdoc cref="EngineLayout.EmTileOwner"/>
     public ref TileData TileOwner => ref *(TileData*)(Ptr + EngineLayout.EmTileOwner);
     /// <inheritdoc cref="EngineLayout.EmType"/>
     public ref int Type => ref *(int*)(Ptr + EngineLayout.EmType);
+    /// <inheritdoc cref="EngineLayout.EmVelocity"/>
+    public ref float Velocity => ref *(float*)(Ptr + EngineLayout.EmVelocity);
+    /// <inheritdoc cref="EngineLayout.EmZigZag"/>
+    public ref float ZigZag => ref *(float*)(Ptr + EngineLayout.EmZigZag);
 }
 
 /// <summary>Typed view of an engine <c>PartLight*</c>.</summary>
@@ -2664,6 +2795,27 @@ public readonly unsafe ref partial struct PartTriMesh(IntPtr ptr)
     public VertexPrimitive VertexPrimitive { get => new(*(IntPtr*)(Ptr + EngineLayout.PartNode)); set => *(IntPtr*)(Ptr + EngineLayout.PartNode) = value.Ptr; }
 }
 
+/// <summary>Typed view of an engine <c>PartTrigger*</c>.</summary>
+public readonly unsafe ref partial struct PartTrigger(IntPtr ptr)
+{
+    /// <summary>The engine object.</summary>
+    public readonly IntPtr Ptr = ptr;
+    /// <summary>No object.</summary>
+    public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.TriggerHalf"/>
+    public ref byte Half => ref *(byte*)(Ptr + EngineLayout.TriggerHalf);
+    /// <inheritdoc cref="EngineLayout.TriggerHeight"/>
+    public ref float Height => ref *(float*)(Ptr + EngineLayout.TriggerHeight);
+    /// <inheritdoc cref="EngineLayout.TriggerColour"/>
+    public Span<float> HighlightColour { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.TriggerColour), 4); }
+    /// <inheritdoc cref="EngineLayout.TriggerHighlighted"/>
+    public ref byte Highlighted => ref *(byte*)(Ptr + EngineLayout.TriggerHighlighted);
+    /// <inheritdoc cref="EngineLayout.TriggerPointCount"/>
+    public ref int PointCount => ref *(int*)(Ptr + EngineLayout.TriggerPointCount);
+    /// <inheritdoc cref="EngineLayout.TriggerPoints"/>
+    public ref IntPtr Points => ref *(IntPtr*)(Ptr + EngineLayout.TriggerPoints);
+}
+
 /// <summary>Typed view of an engine <c>Particle*</c>.</summary>
 public readonly unsafe ref partial struct Particle(IntPtr ptr)
 {
@@ -2677,6 +2829,10 @@ public readonly unsafe ref partial struct Particle(IntPtr ptr)
     public ref int Frame => ref *(int*)(Ptr + EngineLayout.ParticleFrame);
     /// <inheritdoc cref="EngineLayout.ParticleFrameTime"/>
     public ref float FrameTime => ref *(float*)(Ptr + EngineLayout.ParticleFrameTime);
+    /// <inheritdoc cref="EngineLayout.ParticleInhDecay"/>
+    public ref float InhDecay => ref *(float*)(Ptr + EngineLayout.ParticleInhDecay);
+    /// <inheritdoc cref="EngineLayout.ParticleInhVel"/>
+    public ref System.Numerics.Vector3 InhVel => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.ParticleInhVel);
     /// <inheritdoc cref="EngineLayout.ParticlePos"/>
     public ref System.Numerics.Vector3 Pos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.ParticlePos);
     /// <inheritdoc cref="EngineLayout.ParticlePrevPos"/>
@@ -2689,6 +2845,10 @@ public readonly unsafe ref partial struct Particle(IntPtr ptr)
     public ref byte Splat => ref *(byte*)(Ptr + EngineLayout.ParticleSplat);
     /// <inheritdoc cref="EngineLayout.ParticleSplatNormal"/>
     public ref System.Numerics.Vector3 SplatNormal => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.ParticleSplatNormal);
+    /// <inheritdoc cref="EngineLayout.ParticleVel"/>
+    public ref System.Numerics.Vector3 Vel => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.ParticleVel);
+    /// <inheritdoc cref="EngineLayout.ParticleStride"/>
+    public Particle this[int i] => new(Ptr + i * EngineLayout.ParticleStride);
 }
 
 /// <summary>Typed view of an engine <c>Scene*</c>.</summary>
@@ -2754,6 +2914,8 @@ public readonly unsafe partial struct Scene(IntPtr ptr)
     public ref int HiliteCount => ref *(int*)(Ptr + EngineLayout.SceneHiliteCount);
     /// <inheritdoc cref="EngineLayout.SceneHiliteGobs"/>
     public ref IntPtr HiliteGobs => ref *(IntPtr*)(Ptr + EngineLayout.SceneHiliteGobs);
+    /// <inheritdoc cref="EngineLayout.SceneHiliteTexture"/>
+    public ref IntPtr HiliteTexture => ref *(IntPtr*)(Ptr + EngineLayout.SceneHiliteTexture);
     /// <inheritdoc cref="EngineLayout.SceneIsAnimatingSlot"/>
     public byte IsAnimating() => ((delegate* unmanaged<IntPtr, byte>)IsAnimatingFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.SceneIsAnimatingSlot"/>
@@ -2806,6 +2968,8 @@ public readonly unsafe partial struct Scene(IntPtr ptr)
     public ref System.Numerics.Vector3 SkyPos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.SceneSkyPos);
     /// <inheritdoc cref="EngineLayout.SceneSkyT"/>
     public ref float SkyT => ref *(float*)(Ptr + EngineLayout.SceneSkyT);
+    /// <inheritdoc cref="EngineLayout.SceneWindManager"/>
+    public ref IntPtr WindManager => ref *(IntPtr*)(Ptr + EngineLayout.SceneWindManager);
 }
 
 /// <summary>Typed view of an engine <c>Sha1*</c>.</summary>
@@ -2830,6 +2994,8 @@ public readonly unsafe partial struct ShaderExposedRuntimeData(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="EngineLayout.RtAreaFlags"/>
     public ref int AreaFlags => ref *(int*)(Ptr + EngineLayout.RtAreaFlags);
+    /// <inheritdoc cref="EngineLayout.RtAreaWeatherDensity"/>
+    public ref float AreaWeatherDensity => ref *(float*)(Ptr + EngineLayout.RtAreaWeatherDensity);
     /// <inheritdoc cref="EngineLayout.RtAreaWind"/>
     public ref System.Numerics.Vector3 AreaWind => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.RtAreaWind);
     /// <inheritdoc cref="EngineLayout.RtCamDist"/>
@@ -2840,14 +3006,20 @@ public readonly unsafe partial struct ShaderExposedRuntimeData(IntPtr ptr)
     public ref float CamPitch => ref *(float*)(Ptr + EngineLayout.RtCamPitch);
     /// <inheritdoc cref="EngineLayout.RtCamPos"/>
     public ref System.Numerics.Vector3 CamPos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.RtCamPos);
+    /// <inheritdoc cref="EngineLayout.RtModuleDawnHour"/>
+    public ref int ModuleDawnHour => ref *(int*)(Ptr + EngineLayout.RtModuleDawnHour);
     /// <inheritdoc cref="EngineLayout.RtModuleDay"/>
     public ref int ModuleDay => ref *(int*)(Ptr + EngineLayout.RtModuleDay);
+    /// <inheritdoc cref="EngineLayout.RtModuleDuskHour"/>
+    public ref int ModuleDuskHour => ref *(int*)(Ptr + EngineLayout.RtModuleDuskHour);
     /// <inheritdoc cref="EngineLayout.RtModuleHour"/>
     public ref int ModuleHour => ref *(int*)(Ptr + EngineLayout.RtModuleHour);
     /// <inheritdoc cref="EngineLayout.RtModuleMonth"/>
     public ref int ModuleMonth => ref *(int*)(Ptr + EngineLayout.RtModuleMonth);
     /// <inheritdoc cref="EngineLayout.RtModuleTimeIntoTransition"/>
     public ref float ModuleTimeIntoTransition => ref *(float*)(Ptr + EngineLayout.RtModuleTimeIntoTransition);
+    /// <inheritdoc cref="EngineLayout.RtModuleYear"/>
+    public ref int ModuleYear => ref *(int*)(Ptr + EngineLayout.RtModuleYear);
     /// <inheritdoc cref="EngineLayout.RtPlayerPos"/>
     public ref System.Numerics.Vector3 PlayerPos => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.RtPlayerPos);
     /// <inheritdoc cref="EngineLayout.RtTimeOfDay"/>
@@ -3714,6 +3886,18 @@ public static unsafe class EngineFn
     private static bool _GobGetAdjustedScaleDone;
     /// <inheritdoc cref="SymbolMap.GobGetAdjustedScale"/>
     public static GobGetAdjustedScaleFn GobGetAdjustedScale => (GobGetAdjustedScaleFn)(_GobGetAdjustedScaleDone ? _GobGetAdjustedScale : Resolve(ref _GobGetAdjustedScale, ref _GobGetAdjustedScaleDone, SymbolMap.GobGetAdjustedScale));
+    private static IntPtr _GobProcessGob;
+    private static bool _GobProcessGobDone;
+    /// <inheritdoc cref="SymbolMap.GobProcessGob"/>
+    public static GobProcessGobFn GobProcessGob => (GobProcessGobFn)(_GobProcessGobDone ? _GobProcessGob : Resolve(ref _GobProcessGob, ref _GobProcessGobDone, SymbolMap.GobProcessGob));
+    private static IntPtr _AnimateParticles;
+    private static bool _AnimateParticlesDone;
+    /// <inheritdoc cref="SymbolMap.AnimateParticles"/>
+    public static AnimateParticlesFn AnimateParticles => (AnimateParticlesFn)(_AnimateParticlesDone ? _AnimateParticles : Resolve(ref _AnimateParticles, ref _AnimateParticlesDone, SymbolMap.AnimateParticles));
+    private static IntPtr _RenderNothing;
+    private static bool _RenderNothingDone;
+    /// <inheritdoc cref="SymbolMap.RenderNothing"/>
+    public static RenderNothingFn RenderNothing => (RenderNothingFn)(_RenderNothingDone ? _RenderNothing : Resolve(ref _RenderNothing, ref _RenderNothingDone, SymbolMap.RenderNothing));
     private static IntPtr _RenderEmitter;
     private static bool _RenderEmitterDone;
     /// <inheritdoc cref="SymbolMap.RenderEmitter"/>
@@ -3922,6 +4106,18 @@ public static unsafe class EngineFn
     private static bool _GetLightAdjustedRadiusDone;
     /// <inheritdoc cref="SymbolMap.GetLightAdjustedRadius"/>
     public static GetLightAdjustedRadiusFn GetLightAdjustedRadius => (GetLightAdjustedRadiusFn)(_GetLightAdjustedRadiusDone ? _GetLightAdjustedRadius : Resolve(ref _GetLightAdjustedRadius, ref _GetLightAdjustedRadiusDone, SymbolMap.GetLightAdjustedRadius));
+    private static IntPtr _GetLightFadeSpeed;
+    private static bool _GetLightFadeSpeedDone;
+    /// <inheritdoc cref="SymbolMap.GetLightFadeSpeed"/>
+    public static GetLightFadeSpeedFn GetLightFadeSpeed => (GetLightFadeSpeedFn)(_GetLightFadeSpeedDone ? _GetLightFadeSpeed : Resolve(ref _GetLightFadeSpeed, ref _GetLightFadeSpeedDone, SymbolMap.GetLightFadeSpeed));
+    private static IntPtr _GetIsLightInViewVolume;
+    private static bool _GetIsLightInViewVolumeDone;
+    /// <inheritdoc cref="SymbolMap.GetIsLightInViewVolume"/>
+    public static GetIsLightInViewVolumeFn GetIsLightInViewVolume => (GetIsLightInViewVolumeFn)(_GetIsLightInViewVolumeDone ? _GetIsLightInViewVolume : Resolve(ref _GetIsLightInViewVolume, ref _GetIsLightInViewVolumeDone, SymbolMap.GetIsLightInViewVolume));
+    private static IntPtr _LightMgrGetMaxLights;
+    private static bool _LightMgrGetMaxLightsDone;
+    /// <inheritdoc cref="SymbolMap.LightMgrGetMaxLights"/>
+    public static LightMgrGetMaxLightsFn LightMgrGetMaxLights => (LightMgrGetMaxLightsFn)(_LightMgrGetMaxLightsDone ? _LightMgrGetMaxLights : Resolve(ref _LightMgrGetMaxLights, ref _LightMgrGetMaxLightsDone, SymbolMap.LightMgrGetMaxLights));
     private static IntPtr _PartGetIsOpaque;
     private static bool _PartGetIsOpaqueDone;
     /// <inheritdoc cref="SymbolMap.PartGetIsOpaque"/>
@@ -5307,6 +5503,24 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.GobGetAdjustedScale"/>; returns the slot holding the next layer, or null.</summary>
     public static GobGetAdjustedScaleFn* ChainGobGetAdjustedScale(this HookService h, GobGetAdjustedScaleFn handler, int priority) =>
         (GobGetAdjustedScaleFn*)h.Chain(SymbolMap.GobGetAdjustedScale, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GobProcessGob"/>; returns the original, or null.</summary>
+    public static GobProcessGobFn InstallGobProcessGob(this HookService h, GobProcessGobFn handler) =>
+        (GobProcessGobFn)h.Install(SymbolMap.GobProcessGob, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GobProcessGob"/>; returns the slot holding the next layer, or null.</summary>
+    public static GobProcessGobFn* ChainGobProcessGob(this HookService h, GobProcessGobFn handler, int priority) =>
+        (GobProcessGobFn*)h.Chain(SymbolMap.GobProcessGob, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AnimateParticles"/>; returns the original, or null.</summary>
+    public static AnimateParticlesFn InstallAnimateParticles(this HookService h, AnimateParticlesFn handler) =>
+        (AnimateParticlesFn)h.Install(SymbolMap.AnimateParticles, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AnimateParticles"/>; returns the slot holding the next layer, or null.</summary>
+    public static AnimateParticlesFn* ChainAnimateParticles(this HookService h, AnimateParticlesFn handler, int priority) =>
+        (AnimateParticlesFn*)h.Chain(SymbolMap.AnimateParticles, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.RenderNothing"/>; returns the original, or null.</summary>
+    public static RenderNothingFn InstallRenderNothing(this HookService h, RenderNothingFn handler) =>
+        (RenderNothingFn)h.Install(SymbolMap.RenderNothing, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.RenderNothing"/>; returns the slot holding the next layer, or null.</summary>
+    public static RenderNothingFn* ChainRenderNothing(this HookService h, RenderNothingFn handler, int priority) =>
+        (RenderNothingFn*)h.Chain(SymbolMap.RenderNothing, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.RenderEmitter"/>; returns the original, or null.</summary>
     public static RenderEmitterFn InstallRenderEmitter(this HookService h, RenderEmitterFn handler) =>
         (RenderEmitterFn)h.Install(SymbolMap.RenderEmitter, (IntPtr)handler);
@@ -5619,6 +5833,24 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.GetLightAdjustedRadius"/>; returns the slot holding the next layer, or null.</summary>
     public static GetLightAdjustedRadiusFn* ChainGetLightAdjustedRadius(this HookService h, GetLightAdjustedRadiusFn handler, int priority) =>
         (GetLightAdjustedRadiusFn*)h.Chain(SymbolMap.GetLightAdjustedRadius, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GetLightFadeSpeed"/>; returns the original, or null.</summary>
+    public static GetLightFadeSpeedFn InstallGetLightFadeSpeed(this HookService h, GetLightFadeSpeedFn handler) =>
+        (GetLightFadeSpeedFn)h.Install(SymbolMap.GetLightFadeSpeed, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GetLightFadeSpeed"/>; returns the slot holding the next layer, or null.</summary>
+    public static GetLightFadeSpeedFn* ChainGetLightFadeSpeed(this HookService h, GetLightFadeSpeedFn handler, int priority) =>
+        (GetLightFadeSpeedFn*)h.Chain(SymbolMap.GetLightFadeSpeed, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GetIsLightInViewVolume"/>; returns the original, or null.</summary>
+    public static GetIsLightInViewVolumeFn InstallGetIsLightInViewVolume(this HookService h, GetIsLightInViewVolumeFn handler) =>
+        (GetIsLightInViewVolumeFn)h.Install(SymbolMap.GetIsLightInViewVolume, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GetIsLightInViewVolume"/>; returns the slot holding the next layer, or null.</summary>
+    public static GetIsLightInViewVolumeFn* ChainGetIsLightInViewVolume(this HookService h, GetIsLightInViewVolumeFn handler, int priority) =>
+        (GetIsLightInViewVolumeFn*)h.Chain(SymbolMap.GetIsLightInViewVolume, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.LightMgrGetMaxLights"/>; returns the original, or null.</summary>
+    public static LightMgrGetMaxLightsFn InstallLightMgrGetMaxLights(this HookService h, LightMgrGetMaxLightsFn handler) =>
+        (LightMgrGetMaxLightsFn)h.Install(SymbolMap.LightMgrGetMaxLights, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.LightMgrGetMaxLights"/>; returns the slot holding the next layer, or null.</summary>
+    public static LightMgrGetMaxLightsFn* ChainLightMgrGetMaxLights(this HookService h, LightMgrGetMaxLightsFn handler, int priority) =>
+        (LightMgrGetMaxLightsFn*)h.Chain(SymbolMap.LightMgrGetMaxLights, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.PartGetIsOpaque"/>; returns the original, or null.</summary>
     public static PartGetIsOpaqueFn InstallPartGetIsOpaque(this HookService h, PartGetIsOpaqueFn handler) =>
         (PartGetIsOpaqueFn)h.Install(SymbolMap.PartGetIsOpaque, (IntPtr)handler);

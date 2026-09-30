@@ -38,7 +38,7 @@ Two binary facts settled the mechanics (Ghidra, this session, addresses are nm):
   light master-list walk
   sun cascades + local light cubes          world casters, same-frame
 
-[frame anchor — Scene::FadeDoors, after-original (#132)]        GL bracket 2
+[frame anchor — AlloyRenderer.FrameAnchor, called from the shim (#132, CX-89)]  GL bracket 2
   1. depth prepass          opaque owned, depth-only, published
   2. opaque + cutout        PBR, IBL, alpha-test / alpha-to-coverage
   3. skybox                 depth-tested against the prepass
@@ -215,6 +215,11 @@ rediscovered as a bug.
 > fact. RSP's first act is `Camera::InitializeFrameBufferResources` (0x4a6fd0), and its **steady
 > state** path — the size compare at +0x240 falling through to +0xed — is
 > `SetRenderSubframeTarget(0)` then `Clear(7)`, every frame, not only on resize. So at literal entry
+> **Amended by CX-89 (2026-09-30).** The anchor is the same STEP but no longer a hook: `RspShim.Run` calls
+> `AlloyRenderer.FrameAnchor` directly, and `Scene::FadeDoors` is neither called nor hooked on an Alloy frame
+> (`CX.Alloy.DoorFade` does its work). The clear the paragraph below turns on has not run since #215 replaced
+> `RenderSinglePass` wholesale; what keeps the step is the bookkeeping order, not the clear.
+>
 > the world FBO is neither bound nor cleared: step 1 frees the owned *draw* from the engine's
 > binding, but the *resolve* still has to land in the engine's attachment after that clear, and
 > deferring it past the clear costs a second colour bracket this ADR does not have.

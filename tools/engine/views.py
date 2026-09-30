@@ -49,6 +49,8 @@ TRANSIENT = {
     'Part', 'PartTriMesh', 'Gob', 'Material', 'SharedMaterial', 'VertexPrimitive',
     'MdlNode', 'MdlNodeTriMesh', 'MdlNodeSkin', 'MdlNodeDanglyMesh', 'Model',
     'PartDanglyMesh', 'VertexPrimitiveDangly',
+    # CX-83: CNWCTrigger::~CNWCTrigger calls AurPartTriggerReleaseMemory, so a trigger dies with its object.
+    'PartTrigger',
     # operator new recycles the 0x68-byte block and no destructor notice exists for VDOs (VdoSig).
     'VertexDataObject',
     # BORROWED: freed on area transitions AND module unload (#33, #138).

@@ -12,9 +12,11 @@ namespace CX.Alloy;
 /// engine try to draw something. Records cover every part in the area rather than the visible slice.
 /// <para><b>Maintained by re-reading, never by inferring.</b> <c>Gob::SetLODModel</c> @0x43e6a0 rotates a
 /// gob's whole active part subtree every frame, per visible gob, with no ctor, no dtor and no epoch bump, and
-/// two more edges have no notice at all, so a notice-fed registry cannot work (#253 §7.2). The three triggers
+/// two more edges have no notice at all, so a notice-fed registry cannot work (#253 §7.2). The four triggers
 /// are (a) <c>Scene::Sequence</c> @0x18aa1b0, the engine's own global membership epoch, (b) a Scene change,
-/// and (c) <c>Part::~Part</c>, which <see cref="DrawFunnelService"/> hooks. Everything else -- transforms,
+/// (c) <c>Part::~Part</c>, which <see cref="DrawFunnelService"/> hooks, and (d) CX-92's own: a subtree the
+/// last walk pruned on <c>part+0x34</c> is showing again, which is read back off the held set rather than
+/// announced because <c>Gob::SetSubtreeEnabled</c> @0x43c670 bumps nothing at all. Everything else -- transforms,
 /// the active LOD root, material bindings -- is a per-record FIELD READ, which is why the LOD rotation is a
 /// non-event: all three roots are enumerated, so whichever one the engine swaps in is already in the table.</para>
 /// <para><b>Every part, means every part CLASS.</b> <c>Scene+0x130</c> and the BSP reach <c>PartLight</c>,
@@ -25,7 +27,7 @@ namespace CX.Alloy;
 /// <para><b>The bucket arrays are a validator, not a source.</b> <c>Scene+0x208</c> holds the finished,
 /// classified, CULLED set; a 90 degree camera turn replaces most of it, so building the delta machinery on it
 /// would mean building it twice (ADR 0018). <see cref="CrossCheck"/> asks them whether this walk has a hole,
-/// and <see cref="_lastSample"/> counts the one class the cutover dropped.</para></summary>
+/// and <see cref="_lastSample"/> counts what is left of the one class the cutover dropped.</para></summary>
 internal static unsafe class SceneWalk
 {
     /// <summary>Bound on one walk's explicit DFS stack. A part tree is wide and shallow (a tileset model is
@@ -113,7 +115,8 @@ internal static unsafe class SceneWalk
     // has not moved since an area load an hour ago.
     private static long _walks, _bumps, _spill, _overflow, _nonMesh;
     /// <summary>#397: subtrees the walk pruned on the engine's <c>part+0x34</c> draw gate (a hidden
-    /// appended item, a hidden body part). Their records lapse as unreachable and re-enrol when shown.</summary>
+    /// appended item, a hidden body part). CX-92: each pruned root is HELD as a <see cref="StHidden"/> entry
+    /// and re-read every tick, because being shown again is an edge nothing announces.</summary>
     private static long _hidden;
     private static long _framesSinceLog, _bumpsSinceLog, _walkTicks, _walksSinceLog, _added, _swept, _bound;
     private static int _lastWalked, _lastRoots, _lastLodAltGobs;
@@ -157,6 +160,10 @@ internal static unsafe class SceneWalk
         bool sceneChanged = scene != _scene;
         _lastSeq = seq; _seqLatched = true;
         if (sceneChanged) { _scene = scene; Reset(); }
+        // CX-92: the one membership edge with no engine notice at all -- a subtree the last walk pruned on
+        // part+0x34 is showing again. Asked only when nothing already forces the walk, so it costs one byte
+        // read per held part on the frames that would otherwise do nothing.
+        if (!bumped && !sceneChanged && !_walkPending && !_staleQueued && HiddenShown()) _walkPending = true;
         // A NEW Scene pays for all of it at once, deliberately. An area load is already a hitch -- the
         // player is on a loading screen -- and dripping the setup through the frames after it is what the
         // first live run showed as tiles arriving in front of you. The budget is for the steady state: a
@@ -177,7 +184,7 @@ internal static unsafe class SceneWalk
         // a different (per-present, not per-world-frame) clock, so once it crossed the threshold the check
         // would run every frame until the two happened to line up.
         if (++_sinceCheck >= AlloyRenderer.LogEvery)
-        { _sinceCheck = 0; _lastMiss = CrossCheck(new Scene(scene).DrawBuckets, out _lastSample); }
+        { _sinceCheck = 0; _lastMiss = CrossCheck(new Scene(scene).DrawBuckets, out _lastSample, out _lastSampleAll); }
     }
 
     private static int _lastMiss, _sinceCheck;
@@ -205,11 +212,14 @@ internal static unsafe class SceneWalk
     /// <summary>Records re-asked this period because their geometry totals moved. The rate that pairs with
     /// <see cref="_waitingGeom"/>: the old eight-attempt window could only ever count down.</summary>
     private static long _reasks;
-    /// <summary>#264: parts the engine classified into the <c>sample_framebuffer</c> bucket at the last
-    /// cross-check. That class is the one thing the walk's deletion dropped outright -- Alloy has no program
-    /// for it, so nothing draws it now -- and this is the number that says whether the hole is three
-    /// distortion effects or half an area. It must be read before anyone argues about how big it is.</summary>
+    /// <summary>#264/CX-90: the HOLE in the engine's draw bucket 5 at the last cross-check -- parts the engine
+    /// classified into it that Alloy does not own, so nothing draws them (the walk's deletion left no engine
+    /// draw behind). Since CX-90 owns <c>sample_framebuffer 1</c> the residue is <c>volumetric</c>, which is
+    /// still refused; <see cref="_lastSampleAll"/> beside it is the class's whole size, so the pair reads as
+    /// "hole / class" rather than as one ambiguous number.</summary>
     private static int _lastSample;
+    /// <summary>...and the class's size, ownership aside. <inheritdoc cref="_lastSample"/></summary>
+    private static int _lastSampleAll;
 
     /// <summary>A new Scene invalidates every record wholesale: the old Scene's parts are being torn down
     /// (<c>Scene::~Scene</c> @0x472e40 walks its gobs out one by one) and their addresses will be recycled.
@@ -226,6 +236,7 @@ internal static unsafe class SceneWalk
         _walks++; _walksSinceLog++;
         _lastWalked = 0; _lastRoots = 0; _lastLodAltGobs = 0;
 
+        _hiddenN = 0;   // CX-92: the held set is this walk's, like the unbound queue
         var sc = new Scene(scene);
         IntPtr* gobs = (IntPtr*)sc.Gobs;
         int nGobs = sc.GobCount;
@@ -295,7 +306,8 @@ internal static unsafe class SceneWalk
             // an equipment swap leaves the old item appended and hidden, not amputated, and a walk that read
             // only the mesh part drew both shields coincident. Tile parts (SceneBSPAddPart @0x47ca10) never
             // consult the byte, so the BSP walk does not either.
-            if (!_walkingBsp && new Part(part).Visible == 0) { _hidden++; continue; }
+            if (!_walkingBsp && new Part(part).Visible == 0) { _hidden++; HoldHidden(part); continue; }
+            ShowHidden(part);
             Visit(part);
             IntPtr* kids = (IntPtr*)new Part(part).Children;
             int n = new Part(part).ChildCount;
@@ -341,6 +353,68 @@ internal static unsafe class SceneWalk
         // The record was created before its geometry was resident, or a Repack moved its items. Either way
         // the fix is the same field read, and this is the frame it is retried on.
         if (_pState[e] == StUnbound || _pState[e] == StStale) TryBind(e);
+    }
+
+    /// <summary>CX-92: entries HELD hidden by the last walk, and the count of them. Sized like the unbound
+    /// queue so it cannot overflow -- an overflow would be a hole with no heal, which is the bug.</summary>
+    private static readonly int[] _hiddenHeld = new int[MaxParts];
+    private static int _hiddenN;
+    /// <summary>Hidden roots held by the last walk, and re-shows it noticed. <c>shown</c> is THE instrument
+    /// for CX-92: a nonzero count is the engine putting a subtree back with no notice, which before this was
+    /// a limb that stayed missing until something unrelated moved the scene epoch.</summary>
+    private static long _shown, _shows;
+
+    /// <summary>CX-92: hold the pruned subtree root as a <see cref="StHidden"/> entry so the tick below can
+    /// see it come back. Held rather than released because <c>Gob::SetSubtreeEnabled</c> @0x43c670 -- the only
+    /// dynamic writer of <c>part+0x34</c>, reached through a name-dispatch table -- bumps
+    /// <c>Scene::Sequence</c> for neither direction, creates no part and destroys none, so a released record
+    /// would wait for an unrelated walk trigger and the part is drawn by nobody meanwhile (#264).
+    /// <para>The gob is cleared: a reclaimed slot carries the previous tenant's, nothing reads a hidden
+    /// entry's, and the all-owned-or-none sweep must not take a creature for a part vanilla also skips.</para></summary>
+    private static void HoldHidden(IntPtr part)
+    {
+        // Keyed on the WALKED pointer, not on AsPartTriMesh's: a hidden root is as often a dummy (a bone, an
+        // appended item's root) as a mesh, and for a mesh the two are the same address anyway. Nothing reads
+        // a held entry's columns, so an entry that names no mesh costs one slot and one byte read.
+        int e = Find(part);
+        if (e < 0)
+        {
+            e = Insert(part);
+            if (e < 0) { _spill++; return; }
+        }
+        // A non-empty state before anything can re-enter Find: Insert leaves a reclaimed slot reading empty,
+        // which would terminate the probe chain of every other key running through it.
+        if (_pState[e] != StHidden) { _pState[e] = StHidden; Dirty = true; NoteChanged(e); }
+        _pGob[e] = IntPtr.Zero;
+        AlloyCensus.OwnFlag[e] = 0;
+        if (_pWalkGen[e] != Gen && _hiddenN < MaxParts) _hiddenHeld[_hiddenN++] = e;
+        _pWalkGen[e] = Gen;
+    }
+
+    /// <summary>CX-92: this part was held hidden and is being walked again. <see cref="Release"/> frees the
+    /// slot, so <see cref="Visit"/>'s <c>Enrol</c> reclaims this very entry and rebuilds every column from the
+    /// live part -- the fresh start a re-shown part has always got, now on a walk this edge asked for.</summary>
+    private static void ShowHidden(IntPtr part)
+    {
+        int e = Find(part);
+        if (e >= 0 && _pState[e] == StHidden) { Release(e, "shown"); _shown++; }
+    }
+
+    /// <summary>Has any held subtree been shown again? One byte load per held entry, on the ticks that would
+    /// otherwise walk nothing. A freed or re-tenanted entry is skipped: <c>Part::~Part</c> marks the first
+    /// (<see cref="PartTable.MarkFreed"/>) and only a freed slot is ever reclaimed, so no pointer read here
+    /// outlives its part.</summary>
+    private static bool HiddenShown()
+    {
+        for (int k = 0; k < _hiddenN; k++)
+        {
+            int e = _hiddenHeld[k];
+            if (_pState[e] != StHidden || _pFreed[e] || _pPart[e] == IntPtr.Zero) continue;
+            if (new Part(_pPart[e]).Visible == 0) continue;
+            _shows++;
+            return true;
+        }
+        return false;
     }
 
     /// <summary>Create a record for a part the walk has never seen. The field-read replacement for
@@ -516,6 +590,19 @@ internal static unsafe class SceneWalk
         Dirty = true; NoteChanged(e);
     }
 
+    /// <summary>CX-91: re-enrol an entry whose identity moved, in the same call that noticed. <see cref="Rebind(int, PartRef)"/>
+    /// alone only queues the entry, so the census refused it for the frame and the part drew nowhere (since
+    /// #264 a refusal is not a hand-back). This re-reads the draw arguments immediately and answers whether
+    /// the record is usable again, so the caller can carry on with the refreshed columns.
+    /// <para>True only for <see cref="PartTable.StActive"/>: a primitive whose totals are still empty stays
+    /// queued and the caller must refuse. Cold -- the census calls it once per drifted candidate per
+    /// enrollment, and <see cref="TryBind"/>'s own <c>_setupLeft</c> budget bounds the SetupArrays calls.</para></summary>
+    internal static bool RebindNow(int e, PartRef live)
+    {
+        Rebind(e, live);
+        return _pState[e] == StUnbound && TryBind(e) && _pState[e] == StActive;
+    }
+
     /// <summary>Per frame, for the records the last walk could not bind. O(unbound), which is zero in a
     /// settled area -- the alternative is waiting for an epoch bump that a purely resident-state change
     /// never produces.
@@ -678,10 +765,17 @@ internal static unsafe class SceneWalk
                  // Waiting is a population and re-asked is a rate: waiting-on-geometry records cost a totals
                  // read and no call, and each moves to re-asked the tick its model becomes resident.
                  + $"waiting-on-geometry={_waitingGeom} re-asked={_reasks} this period "
-                 + $"non-mesh={_nonMesh} hidden={_hidden} table-full={_spill} stack-overflow={_overflow} "
+                 // CX-92: held is the per-tick cost of noticing a re-show, shown is the edge itself. A
+                 // nonzero `shown` is the engine putting a subtree back with no notice of any kind -- the
+                 // mechanism that left one limb of a creature drawn by nobody until something else moved
+                 // the scene epoch. `re-shows` counts the ticks that asked for the walk.
+                 + $"non-mesh={_nonMesh} hidden={_hidden} (held={_hiddenN} shown={_shown} re-shows={_shows}) "
+                 + $"table-full={_spill} stack-overflow={_overflow} "
                  // The two validators. countpart is an UPPER bound, never an equality: it counts every Part
                  // in every scene, GUI 3D panels included. bucket-miss is the sharp one -- it must be 0.
-                 + $"countpart={cp} bucket-miss={_lastMiss} sample-class={_lastSample}";
+                 // CX-90: hole / class size. The left number must be 0 -- it is the part of bucket 5 nothing
+                 // draws -- and the right one is what the late keywords put there at all.
+                 + $"countpart={cp} bucket-miss={_lastMiss} sample-class={_lastSample}/{_lastSampleAll}";
         _bumpsSinceLog = 0; _framesSinceLog = 0;
         _walksSinceLog = 0; _walkTicks = 0; _added = 0; _swept = 0; _bound = 0; _setups = 0; _reasks = 0;
         return s;
@@ -690,10 +784,14 @@ internal static unsafe class SceneWalk
     /// <summary>Bring-up validator (ADR 0018 demotes the bucket arrays to exactly this): every part the
     /// engine classified into <c>Scene+0x208</c> this frame must have a record. A miss means the walk did
     /// not reach something the engine is drawing, which is the failure this ticket has to be able to see.
-    /// Returns the number of misses.</summary>
-    internal static int CrossCheck(DrawBucket buckets, out int sample)
+    /// Returns the number of misses.
+    /// <para>CX-90 makes it carry the late class too: <paramref name="sampleAll"/> is bucket 5's size and
+    /// <paramref name="sample"/> the part of it Alloy does not own, which is the HOLE. Ownership is read off
+    /// the record's own flag rather than inferred from the material, so a part refused by any later gate
+    /// counts in it as well.</para></summary>
+    internal static int CrossCheck(DrawBucket buckets, out int sample, out int sampleAll)
     {
-        int miss = 0; sample = 0;
+        int miss = 0; sample = 0; sampleAll = 0;
         for (int id = 0; id < BucketTypes; id++)
             for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
             {
@@ -706,16 +804,20 @@ internal static unsafe class SceneWalk
                     IntPtr part = items[i];
                     if (part == IntPtr.Zero) continue;
                     IntPtr tri = new Part(part).AsPartTriMesh().Ptr;
-                    if (tri != IntPtr.Zero && Find(tri) < 0) miss++;
-                    if (id == SampleBucket) sample++;
+                    int e = tri == IntPtr.Zero ? -1 : Find(tri);
+                    if (tri != IntPtr.Zero && e < 0) miss++;
+                    if (id != SampleBucket) continue;
+                    sampleAll++;
+                    if (e < 0 || AlloyCensus.OwnFlag[e] == 0) sample++;
                 }
             }
         return miss;
     }
 
-    /// <summary>The <c>sample_framebuffer</c> item type -- the class whose engine draw READS the frame
-    /// buffer copy the #215 cutover removed, and which no Alloy program covers. Counted, not drawn.</summary>
-    private const int SampleBucket = 5;
+    /// <summary>The late item type -- <c>sample_framebuffer 1</c> plus <c>volumetric</c>
+    /// (<c>Scene::AddPartsTreeToDrawBuckets</c> @0x460880). CX-90 owns the first; the second is still refused
+    /// on the material, so what is counted here as unowned is that residue.</summary>
+    internal const int SampleBucket = 5;
 
     /// <summary>16 item types x 3 sub-buckets = the 48 <c>DrawBucket</c> records at <c>Scene+0x208</c>
     /// (<c>GetDrawBucketByItemType</c> @0x47bd60's <c>(type*3 + sub)*0x10</c> stride).</summary>
@@ -761,6 +863,41 @@ internal static unsafe class SceneWalk
             _pGeomSig[ea] = (12L << 32) | 18;
             ok &= !RecordHasNoGeometry(ea);
             _pGeomSig[ea] = savedSig;
+
+            // CX-92: the part+0x34 round trip. A hidden subtree root is HELD rather than released, the tick
+            // notices the byte coming back, and the walk that follows releases the slot so the part re-enrols
+            // from scratch. Before this, the show direction had no notice of any kind -- Gob::SetSubtreeEnabled
+            // @0x43c670 is the only dynamic writer of the byte and it bumps nothing -- so the part stayed
+            // unowned, and since #264 unowned is drawn by nobody. That is a limb missing until something
+            // unrelated moved the scene epoch, which is what these four lines go red on.
+            int savedHiddenN = _hiddenN, savedGen = Gen;
+            int savedInstDead = AlloyCensus._ownInstDead, savedInstHidden = AlloyCensus._ownInstHidden;
+            _hiddenN = 0; Gen++;
+            byte* pb = (byte*)b;
+            pb[EngineLayout.PartVisible] = 0;
+            HoldHidden(b);
+            ok &= _pState[eb] == StHidden && _hiddenN == 1 && _hiddenHeld[0] == eb
+                  && _pGob[eb] == IntPtr.Zero && _pWalkGen[eb] == Gen;
+            ok &= !HiddenShown();                       // still hidden: no walk asked for
+            pb[EngineLayout.PartVisible] = 1;
+            ok &= HiddenShown();                        // the edge nothing else in the client announces
+            // ...and a held entry does not take its creature with it: the exemption runs AHEAD of the
+            // dead-entry branch, which would otherwise read _pGob and refuse the whole gob.
+            _pGob[eb] = (IntPtr)0x1000;
+            var hiddenCand = default(AlloyCandidate);
+            ok &= !AlloyCensus.TryOwnCandidate(eb, ref hiddenCand)
+                  && AlloyCensus._ownInstDead == savedInstDead
+                  && AlloyCensus._ownInstHidden == savedInstHidden + 1;
+            _pGob[eb] = IntPtr.Zero;
+            ShowHidden(b);
+            ok &= _pState[eb] == StDead && _pDeath[eb] == "shown" && _pFreed[eb]
+                  && Find(b) < 0 && Insert(b) == eb && !_pFreed[eb];
+            ok &= !HiddenShown();                       // released: the held list stops asking for it
+            pb[EngineLayout.PartVisible] = 0;
+            _hiddenN = savedHiddenN; Gen = savedGen; _shown = 0; _shows = 0;
+            AlloyCensus._ownInstDead = savedInstDead; AlloyCensus._ownInstHidden = savedInstHidden;
+            _pDeath[eb] = null!;
+
             _pState[ea] = StEmpty; _pState[eb] = StEmpty;
             _pPart[ea] = IntPtr.Zero; _pPart[eb] = IntPtr.Zero;
             _pWalkGen[ea] = 0; _pWalkGen[eb] = 0;

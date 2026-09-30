@@ -30,10 +30,9 @@ namespace CX.Alloy;
 /// <c>glMultiDrawElementsBaseVertex</c> covers a group. The draw block is two phases: build (revalidate every
 /// part, stage its record, cut the batch at each key change) then issue (one bind set + one multidraw per
 /// batch) (#84, #242).</para>
-/// <para>WHERE the Alloy block runs is load-bearing: the anchor is an after-original hook on
-/// <c>Scene::FadeDoors</c>, the last engine call inside <c>Scene::RenderSinglePass</c> before
-/// <c>RenderDrawBucket(0)</c> -- see <see cref="OnFrameAnchor"/> and <see cref="SymbolMap.FadeDoors"/> for why
-/// literal RSP entry is not reachable. The camera is valid from the moment <c>Camera::RenderScene</c> writes
+/// <para>WHERE the Alloy block runs is load-bearing: CX-89 made the anchor a direct call out of
+/// <see cref="RspShim.Run"/> (<see cref="FrameAnchor"/>), at the step <c>Scene::FadeDoors</c> used to hold --
+/// after the scene fog and the door fade, before anything draws. The camera is valid from the moment <c>Camera::RenderScene</c> writes
 /// view/projection into <c>m_aurMtxStack</c> (nm 0x19e2f60; proj +0x18, view +0x70), before the vcall: the
 /// engine never uses the GL matrix stack (#108, #132).</para>
 /// <para>Ownership is a column on the shared part table (<see cref="AlloyCensus.OwnFlag"/>), rebuilt wholesale
@@ -204,8 +203,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal static ExtenderLog? _log;
     private static bool _armed;
     private static RenderSinglePassFn _origRsp;
-    /// <summary>#132: the frame anchor's trampoline (<c>Scene::FadeDoors</c>).</summary>
-    private static FadeDoorsFn _origFade;
     internal static MatGetTextureFn _getTexture;
     private static uint* _primTable;
     private static byte* _mtxStacks;
@@ -746,6 +743,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // outlive a renderer that never armed -- /alloy is the report it drives.
         AlloyGate.Arm(log);
         PresentTarget.Attach(log);
+        HighlightGlow.Attach(log);
+        TriggerHighlight.Attach(log);
         // #263: the config half of the verdict is the FIRST stand-down, ahead of every Attach and every
         // Install. Steps 4-7 replace engine paths rather than watching them -- Alloy performs the pool
         // upload, mints the texture handles, forces PLT compositing to the CPU -- so arming them in a
@@ -775,9 +774,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #215: here rather than at the shim's own install, which a client without the engine symbols never
         // reaches -- the two things it checks are ours and are wrong in the same way on every client.
         RspShim.SelfCheck(log);
+        // CX-85: the ported light-fade integrator, up here for the same reason -- pure arithmetic, wrong in
+        // the same way on every client, and the shim's install is not reached without the engine symbols.
+        LightFade.SelfCheck(log);
         SelfCheckDrip(log);
         ShaderStages.SelfCheck(log);
         ShaderSource.SelfCheck(log);
+        TriggerHighlight.SelfCheck(log);
+        HighlightGlow.SelfCheck(log);
         // #262: Alloy does the bone solve itself now, so its arithmetic is ours to be wrong about. Up here
         // with the other unconditional checks -- a client that never arms still reports whether the maths
         // this build ships is right, and the answer does not depend on any engine symbol.
@@ -800,6 +804,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !MaterialExtSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
             || !Issue.RunsSelfCheck(log) || !StreamRing.SelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
+            || !PartTable.ItemResidentSelfCheck(log)
             || !ShaderContract.SelfCheck(log)
             || !StockConfig.SelfCheck(log)) return;
         // NOT in the chain above: those two guard what reaches the screen, and this one guards a debug dump.
@@ -808,6 +813,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #128: same rule. A wrong gob offset draws a creature at the wrong alpha and a leaky refused-gob set
         // half-owns one -- both misrenders, neither of which errors.
         if (!AlloyCensus.GobSelfCheck(log)) return;
+        // CX-89: same rule, and the failure is worse than a misrender -- a wrong door fade freezes Gob+0x10c and
+        // Gob::HitCheck then refuses the click. A failed check keeps the engine's own FadeDoors by keeping the
+        // whole Alloy path down.
+        if (!DoorFade.SelfCheck(log)) return;
         _getTexture = EngineFn.MatGetTexture;
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         if (CycleTextures.SelfCheck(log)) CycleTextures.Attach(log, hooks);   // #331; a failed check freezes cycles, not Alloy
@@ -841,9 +850,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         { log.Info("AlloyRenderer: engine symbols unresolved -- Alloy world pass unavailable"); return; }
 
         _origRsp = hooks.InstallRenderSinglePass(&OnRenderSinglePass);
-        // #132: the frame anchor. After-original, so the pass runs with the world FBO bound and cleared, the
-        // scene fog and the door/tile fades already written for this frame, and nothing drawn yet.
-        _origFade = hooks.InstallFadeDoors(&OnFadeDoors);
         // #336: the highlight SOURCE. Cold -- it fires on a mouseover edge or a VFX starting, never per
         // frame -- and it is the only place the channel that produced a highlight is visible.
         Highlight._origRefreshHilite = hooks.InstallRefreshHilite(&Highlight.OnRefreshHilite);
@@ -879,13 +885,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #215: last, and after PassRegistry -- the shim calls through hook sites every pass above it owns
         // (the beam window, the emitter suppression, the bucket gate), so they have to be installed first.
         RspShim.Install(log, hooks);
-        _armed = _origRsp != null && _origFade != null;
+        _armed = _origRsp != null;
         if (_armed) log.Info(_skinning
             ? "AlloyRenderer: #262 skinmeshes owned -- posed per frame from engine animation state, no draw re-entry (alloy.ownskin=0 in cx.cfg disables)"
             : "AlloyRenderer: skinmeshes stay engine-drawn (cloaks, robes, tails)");
         log.Info(_armed
-            ? "AlloyRenderer: armed -- Alloy world pass at the #132 frame anchor, Scene::FadeDoors (alloy.enabled=0 in cx.cfg disables)"
-            : $"AlloyRenderer: {(_origRsp == null ? "RenderSinglePass" : "Scene::FadeDoors")} hook failed -- Alloy world pass unavailable");
+            ? "AlloyRenderer: armed -- Alloy world pass at the CX-89 frame anchor, called from the shim (alloy.enabled=0 in cx.cfg disables)"
+            : "AlloyRenderer: the RenderSinglePass hook failed -- Alloy world pass unavailable");
     }
 
     /// <summary>Boot worker count for the stage: six, xtul's call. Live-verified 2026-09-05 on 12 cores: audit
@@ -914,18 +920,17 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// numbers a hosted content stage gates on (snow, wet, rain).</summary>
     internal static void LogScriptables() => _log?.Info("AlloyRenderer: " + DescribeScriptables());
 
-    /// <summary>#132's anchor site. After-original: <c>Scene::FadeDoors</c> is engine bookkeeping the owned
-    /// pass reads, so it has to have run. A failed install leaves <see cref="_origFade"/> null and the pass
-    /// never draws -- reported at arm time rather than as a silently vanilla world.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnFadeDoors(IntPtr scene)
+    /// <summary>CX-89: the frame anchor, called straight out of <see cref="RspShim.Run"/> at the step
+    /// <c>Scene::FadeDoors</c> used to hold -- a point Alloy owns, with no engine function under it. It is
+    /// reached only on an Alloy frame, which is the only frame it ever did work on: <see cref="OnFrameAnchor"/>
+    /// needs <see cref="_inColourPass"/> and the two reads below serve Alloy's own passes, all of which idle
+    /// when the frame is the engine's.</summary>
+    internal static void FrameAnchor(IntPtr scene)
     {
-        if (_origFade != null) _origFade(scene);
         // #257: the frame constants, read here and only here. This is the one point in the frame that is
         // both Alloy's own and correctly ordered -- the engine's EnableLights has advanced the area lights'
         // fade weights, CurrentCamera holds the camera whose scene is rendering (Camera::RenderScene sets it
-        // at @0x4a822c and clears it at @0x4a8324), and nothing has drawn. It runs on BOTH paths, because
-        // the vanilla RenderSinglePass calls FadeDoors at the same step the shim vcalls it.
+        // at @0x4a822c and clears it at @0x4a8324), and nothing has drawn.
         // ...and the re-read here is what makes the AREA terms this frame's: LightManager::EnableLights
         // advanced their fade weights inside RSP, after SceneInputs' own earlier read.
         if (IsWorldScene(scene))
@@ -1094,20 +1099,20 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
          + "else draws the world, so those parts are NOT RENDERED AT ALL, and the spill set re-picks itself "
          + "every enrollment, so which geometry is missing changes as you watch)";
 
-    /// <summary>#132's frame anchor: the Alloy colour block, run from an after-original hook on
-    /// <c>Scene::FadeDoors</c> -- the last engine call inside <c>Scene::RenderSinglePass</c> before
-    /// <c>RenderDrawBucket(0)</c>. Every Alloy part -- #126's transparent, fade, cap and additive classes
-    /// included -- draws here, ahead of every bucket any of them is sighted in (engine order
+    /// <summary>#132's frame anchor: the Alloy colour block, reached from <see cref="FrameAnchor"/> -- a direct
+    /// call out of <see cref="RspShim.Run"/> at the step <c>Scene::FadeDoors</c> used to hold. Every Alloy part
+    /// -- #126's transparent, fade, cap and additive classes included -- draws here, ahead of every bucket any
+    /// of them is sighted in (engine order
     /// 0 -> [sky] -> 1 -> 7 -> 2 -> 3 -> 5 -> 8 -> 6 -> 4). That is what keeps suppression honest, and it is
     /// also why the blending classes composite before the engine's still-vanilla dynamic geometry -- the
     /// approximation named on <see cref="Issue.TransparentPass"/>.
-    /// <para>Spec #114 asks for "RenderSinglePass entry" and that is not reachable: RSP's first act is
-    /// <c>Camera::InitializeFrameBufferResources</c>, whose steady-state path binds the world FBO and then
-    /// <c>Clear(7)</c>s it every frame, so a resolve written at literal entry is wiped -- and deferring the
-    /// resolve past the clear costs a second colour bracket ADR 0011 does not have. See
-    /// <see cref="SymbolMap.FadeDoors"/> for the decompile. The anchor therefore sits after the clear and
-    /// after the two Scene vcalls that follow it (<c>DoFog</c>, <c>FadeDoors</c>), both of which write state
-    /// this pass reads.</para></summary>
+    /// <para><b>Why this step.</b> #132 anchored on <c>FadeDoors</c> because the engine's world FBO was cleared
+    /// by <c>Camera::InitializeFrameBufferResources</c> on every RSP entry, so a resolve written at literal RSP
+    /// entry was wiped. #215 replaced RSP wholesale and that clear no longer runs at all, but the STEP is still
+    /// the right one and for its other reason: it is the last point at which the per-frame bookkeeping the pass
+    /// reads (the camera latch, the light fade weights, and since CX-89 the door fade) is current and nothing
+    /// has drawn. What changed in CX-89 is only who calls it. Fog is read straight off the Scene since #257, and
+    /// CX-84 deleted the <c>Scene::DoFog</c> call that used to precede the anchor.</para></summary>
     private static void OnFrameAnchor(IntPtr scene)
     {
         // #86: one gate covers the whole pass. Suppression needs no second one -- the iterator only skips a
@@ -1311,8 +1316,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
     internal static void ContextLost()
     {
-        Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0; Programs._progSkyDecode = 0;
+        Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0;
         Highlight.HighlightContextLost();
+        HighlightGlow.ContextLost();
+        TriggerHighlight.ContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         MotionContextLost();
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
@@ -1372,11 +1379,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Counters._frames = 0; Counters._draws = 0; Counters._batches = 0; Counters._revokes = 0; Counters._enrolls = 0;
         Counters._twoSidedDraws = 0; Counters._cullCuts = 0; Array.Clear(Counters._cutBy);
         Counters._drawsGob = 0;
-        Counters._skipTexNone = 0; Counters._skipTexNoId = 0; Counters._skipTexNoHandle = 0; Counters._skipTexNotOwned = 0;
+        Counters._noDiffuseDraws = 0; Counters._skipTexNoId = 0; Counters._skipTexNoHandle = 0; Counters._skipTexNotOwned = 0;
         Counters._nullTexDraws = 0;
         Counters._skinDrawn = 0; Counters._skinNoPose = 0; Counters._boneHigh = 0;
         SkinPose.NoBind = 0; SkinPose.Overflow = 0;
         SkyBox.ResetPeriod();
+        SkyTick.ResetPeriod();
         GrassField.ResetPeriod();
         Beams.ResetPeriod();
         Halos.ResetPeriod();
@@ -1486,8 +1494,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"dissolve {(float)Counters._ownDissolve / Counters._frames:F0} owned, fade {(float)Counters._ownFade / Counters._frames:F0} owned " +
                    $"fog-out {(float)Counters._skipFogTile / Counters._frames:F0} tile + {(float)Counters._skipFogGob / Counters._frames:F0} gob " +
                    $"no-mdl {(float)Counters._skipNoMdl / Counters._frames:F0} tex {(float)Counters._skipTex / Counters._frames:F0}" +
-                   (Counters._skipTex == 0 ? " " : $" (no-diffuse {(float)Counters._skipTexNone / Counters._frames:F0}" +
-                       $" no-gl-id {(float)Counters._skipTexNoId / Counters._frames:F0}" +
+                   (Counters._skipTex == 0 ? " " : $" (no-gl-id {(float)Counters._skipTexNoId / Counters._frames:F0}" +
                        $" not-owned {(float)Counters._skipTexNotOwned / Counters._frames:F0}" +
                        $" no-handle {(float)Counters._skipTexNoHandle / Counters._frames:F0}) ") +
                    $"range {(float)Counters._skipRange / Counters._frames:F0} vao {(float)Counters._skipVao / Counters._frames:F0}), " +
@@ -1495,6 +1502,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // purpose -- a part on the white stand-in is on screen exactly as vanilla puts it there.
                    (Counters._nullTexDraws == 0 ? ""
                       : $"null-tex {(float)Counters._nullTexDraws / Counters._frames:F0} drawn white/frame, ") +
+                   (Counters._noDiffuseDraws == 0 ? ""
+                      : $"no-diffuse {(float)Counters._noDiffuseDraws / Counters._frames:F0} drawn untextured/frame, ") +
                    // The one split that answers "are characters Alloy's" without inference. Drawn ~0 with
                    // owned nonzero means every creature and placeable in view is a HOLE (#285): since #264
                    // there is no engine walk behind the skip, so nothing renders them at all.
@@ -1653,12 +1662,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         internal static long _skipUnplaced;
         internal static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
                              _skipRange, _skipVao;
-        /// <summary>...and the three causes behind the <c>tex</c> fallback, which are three different bugs
-        /// wearing one number. "No diffuse" is content; "no GL id" is the copy path; "no owned handle" is the
-        /// BINDLESS layer, which #220 already caught being wrong once and which a part can fail every frame
-        /// forever -- a steady count here, roughly one creature's worth of parts, is a specific model whose
-        /// texture Alloy declined to own, and that model then renders vanilla for the whole session.</summary>
-        internal static long _skipTexNone, _skipTexNoId, _skipTexNoHandle, _skipTexNotOwned;
+        /// <summary>...and the causes behind the <c>tex</c> fallback, which are different bugs wearing one
+        /// number. "No GL id" is the copy path; "no owned handle" is the BINDLESS layer, which #220 already
+        /// caught being wrong once and which a part can fail every frame forever -- a steady count here,
+        /// roughly one creature's worth of parts, is a specific model whose texture Alloy declined to own,
+        /// and that model then renders vanilla for the whole session.</summary>
+        internal static long _skipTexNoId, _skipTexNoHandle, _skipTexNotOwned;
+        /// <summary>CX-91: draws whose material declares NO diffuse slot. Like <see cref="_nullTexDraws"/>
+        /// these are DRAWN, on the white stand-in, because vanilla draws them with texture stage 0 disabled
+        /// (<c>Material::BindAllStandardTextures</c> @0x4c6e30) -- they were a skip until CX-91.</summary>
+        internal static long _noDiffuseDraws;
         /// <summary>Draws that took the white null-texture stand-in because the diffuse resolved to GL id 0.
         /// These are DRAWN, not skipped -- vanilla renders such a part blank white and so does Alloy now -- so
         /// they are counted apart from the tex fallback rather than inside it. A steady count names content
@@ -1807,6 +1820,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// height, which is why content measures a sight range against it and not against the eye. #124 reads
     /// <c>CamPitch</c> (+0x84) and <c>CamDist</c> (+0x8c) of the same struct for the keyhole aperture.</para></summary>
     internal static ShaderExposedRuntimeData Rt => new((IntPtr)_runtime);
+    /// <summary>Is <see cref="Rt"/> readable at all? The null check every reader of it owes, for a caller
+    /// outside this class (CX-88's sky stage uploads eight of the struct's scalars).</summary>
+    internal static bool HasRuntime => _runtime != null;
     /// <summary>#124: the keyhole diameter pair inside
     /// <see cref="SymbolMap.GlGlobalShaderConstantsF"/>. Stored unordered -- SetUniforms uploads min as
     /// <c>keyholeDiameterMin</c> and max as <c>keyholeDiameterMax</c>, so the ordering happens here too.</summary>
@@ -1817,8 +1833,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <c>SetUniforms</c>/<c>ConnectShaderData</c> pairing and confirmed against the setters
     /// (<c>SpellTargeting::UpdateSpellTargetingStaticData</c> @0x958790 writes params 0x1b/0x20/0x28/0x29/
     /// 0x2a/0x10, and <c>CClientExoAppInternal::MainLoop</c> @0x658c13 the object type and world point).
-    /// Only what <c>inc_target.shd</c> actually reads is listed -- the harms/helps/ignores flags and the
-    /// spell and feat ids reach the shader as uniforms nothing in it samples.</summary>
+    /// Only what the shape actually reads is listed (CX-93: <c>cx_target.glsl</c>, Alloy's own) -- the
+    /// harms/helps/ignores flags and the spell and feat ids are part of the engine's declaration and are
+    /// sampled by nothing.</summary>
     internal const int TgtShape = 27, TgtOnSelf = 32, TgtObjType = 35,
                        TgtSizeX = 40, TgtSizeY = 41, TgtRange = 42, TgtColour = 16;
     /// <summary>#347: the rest of the scriptable block the spliced stock includes read, by the same

@@ -129,6 +129,78 @@ Alloy owns everything after that** — upload format, mip policy, VRAM budget an
 and arrays. Container parsing stays with the engine: Alloy does not parse KEY/BIF/HAK/NWSync or
 MDL/MDB/DDS/TGA/PLT/MTR. It owns residency.
 
+### Amendment (CX-86, 2026-09-30): the particle simulation is Alloy's
+
+M3 left particle *movement* on the engine's side of the boundary, and #131/#148/#261 all restated
+that: `Scene::DoEmitterBucket` @0x476f00 stayed a replayed vcall whose only job was to call
+`PartEmitter::AnimateParticles` @0x4ac660, and Alloy's particle pass built its vertices out of the
+`Particle` objects the engine had just stepped. CX-81 tier 1 says no engine draw runs in the world
+frame, and that call is one: `AnimateParticles` walks into `RenderStandard`/`RenderLinked`/
+`RenderMotionBlurred` and the funnels eat the draws. The replay cannot survive the tier, so the
+boundary moves: **from CX-86, Alloy owns particle simulation.**
+
+Alloy owns spawn (birthrate, the accumulator, p2p seeding), the integrator (velocity, gravity,
+inherited-velocity decay, wind), lifetime and death, roll spin, bounce, the splat freeze, the
+motion-blur previous-position lerp, the lightning fractal, the emitter enumeration and the
+camera-distance sort. It holds that state in its own preallocated SoA pool, not in engine
+`Particle` objects: the engine never allocates one on an Alloy frame.
+
+**Bounce brings its own collision query.** Vanilla asks `Scene::HitCheck` @0x462960, which is an engine
+call made for its side effect on a `CHitInfo` — exactly what this tier removes — and whose by-value
+`Vector` arguments give it a different parameter list per OS. So Alloy has its own: `BounceWorld` builds a
+per-tile uniform XY grid of world-space triangles at the tile's first use, from the same node faces and rest
+vertex pool `Scene::AddFacesToBins` @0x460ef0 reads, and sweeps a particle's step against it with
+Möller-Trumbore. The hot query makes no engine call at all; `SceneBSPGetTileData` is a build-time read, and
+the set is dropped at the area edge like every other owned table.
+
+It covers **up-facing tile faces** — ground, ramps, steps — and not walls, placeables or creatures. That is
+a decision: bounce exists in the content for sparks and debris meeting the floor, and up-facing faces are a
+small fraction of a tile's geometry, so the alternative is a per-tile set an order of magnitude larger for
+an effect nobody authored. A particle whose step only crosses a wall passes through it, which is what an
+emitter declaring `bounce 0` already does.
+
+**One exception stands.** A **chunk** emitter's particles are not particles: each one holds a
+`CAurObject` it creates through `NewCAurObject`, the emitter's own draw is `RenderNothing` @0x4ad200 and
+what the player sees is an ordinary gob. Those are scene objects, and scene objects are out of this ADR's
+scope, so Alloy calls `AnimateParticles` and `RenderNothing` on chunk emitters directly — neither of which
+draws.
+
+That exception is also the **carve-out on "the simulation allocates nothing per frame"**, and it is worth
+stating rather than leaving to be discovered. Alloy's own step allocates nothing: the pool and the collision
+arenas are sized at load edges and bump-allocated thereafter. But a chunk emitter's step is still
+`AnimateParticles`, which does `operator new(0x80)` per `ChunkyParticle` on the frames it births — and each
+of those constructors also calls `NewCAurObject`. So on a frame a chunk emitter births, the engine
+allocates. Closing that means owning `CAurObject` lifetime, which is exactly what tiers 3 and 4 are for; the
+`chunk=` counter on the `[emitsim]` line says how many such emitters ran.
+
+The engine keeps everything that decides an emitter *exists* and what it is:
+
+- **emitter lifetime** — `PartEmitter` construction and destruction through the part tree, and
+  `PartEmitter::Initialize` @0x4aaaa0, which parses the MDL node's render type, blend class and
+  mover selection;
+- **the per-frame parameter animation** — `MdlNodeEmitter::InternalControl` @0x4991d0 writes
+  birthrate, colours, sizes, lifespan and the rest from the model's controllers;
+- **VFX construction, attachment and removal** — the `CNWC*` layer, and the detonation events
+  `Gob::DoEvent` raises, which Alloy reads and *consumes* (the byte at `PartEmitter+0x100`) rather
+  than redefining;
+- **the p2p target attachment** — `SetEmitterTarget` through the Gob's behaviour slot;
+- **the wind clock** (`WindManager::updateTimer`) and the collision geometry bounce tests against
+  (`Scene` vtable +0x60 / `CHitInfo`);
+- **the emitter bucket itself** — `ManageSceneBSP` decides which emitters are in view.
+
+One engine field Alloy must keep writing, because game-layer code reads it and nothing else will once
+the engine's walk is gone: the detonate byte at `PartEmitter+0x100`, which has to be cleared or an
+explosion re-fires every frame. The bounding radius `PartOutside` culls on was the other candidate and
+turned out not to be one — `PartEmitter::CalculateRadius` @0x4ac350 derives it from the emitter's declared
+parameters, not from live particles, and its only callers are `MdlNodeEmitter::InternalControl` and
+`WindManager::SetGlobalWind`, both outside the render pass. Culling keeps working untouched.
+
+This is narrower than it sounds. It does **not** reopen ADR 0016's or 0018's exclusion of the scene
+database: Alloy still does not parse MDL, build part trees, animate hierarchies or own `Gob`
+lifetime. A particle is not a scene object — it has no node, no children, no hit test and no
+identity outside its emitter — which is exactly why its simulation detaches cleanly and the part
+tree does not.
+
 ### Builder intent is a standing constraint
 
 > A light reaches what the builder made it reach, and what the builder left dark stays dark.

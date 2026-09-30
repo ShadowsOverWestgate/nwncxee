@@ -22,6 +22,13 @@ namespace CX.Alloy;
 /// uniform, <c>GLRender::ConnectShaderData</c>) and folds bit 0x10 into the option mask that
 /// <c>ConfigureFBEffectPostProcessing</c> @0x66ad40 publishes as int param 2, the preamble's
 /// <c>POSTPROCESSING_TYPES_ENABLED</c>. Read per frame, so the slider moves the Alloy frame live.</para>
+/// <para>CX-93: the SHARPEN and VIBRANCE stages joined it for a different reason -- they used to reach the
+/// frame as stock <c>inc_postpr_shrp</c>/<c>inc_postpr_vibr</c> text compiled inside
+/// <see cref="FbPostStage"/>'s hosted chain, which is the engine GLSL CX-93 removed from Alloy programs. Each
+/// is a stage on its own option bit now, like gamma and toon; the hosted chain compiles with the option mask
+/// at 0. Sharpen also could not LINK in the hosted stage: its stock text reads <c>fogStart</c>/<c>fogEnd</c>
+/// out of <c>inc_fog</c>, which that stage skips, so turning the option on took the whole content chain down
+/// with it.</para>
 /// </summary>
 internal static unsafe class PostStack
 {
@@ -38,6 +45,16 @@ internal static unsafe class PostStack
     /// <summary><c>POSTPROCESSING_TOON 0x0020</c> -- the client's Toon video option; see
     /// <see cref="ToonStage"/> for the engine setter this was read off.</summary>
     internal const int MaskToon = ToonStage.MaskToon;
+    /// <summary>CX-93: <c>POSTPROCESSING_SHARPEN 0x0001</c> and <c>POSTPROCESSING_VIBRANCE 0x0008</c> in
+    /// <c>inc_postpr.shd</c> -- the client's Sharpen and Vibrance video options, each now a stage of this
+    /// stack rather than a stock include compiled inside the hosted chain.</summary>
+    internal const int MaskSharpen = 0x01, MaskVibrance = 0x08;   // not-an-offset: engine FB-effect mask bits
+    /// <summary><c>GetGlobalShaderParamf(7)</c>: the Vibrance amount, uploaded to stock programs as the
+    /// <c>Vibrance</c> uniform. <c>GLRender::SetUniforms</c> @0x4ccbf0 writes
+    /// <c>m_globalShaderConstantsf[7]</c> into the location <c>ConnectShaderData</c> @0x4ce8e0 bound for
+    /// "Vibrance" (PROG_FIXED+0x1db4); the base is the same one <see cref="GammaParam"/> indexes, so the two
+    /// cross-check each other.</summary>
+    private const uint VibranceParam = 7;   // not-an-offset: engine shader-param index
     /// <summary>The engine's own reference gamma: the stage is the identity at exactly this value.</summary>
     internal const float EngineGamma = 2.2f;
 
@@ -90,6 +107,21 @@ internal static unsafe class PostStack
             Name = "toon", Resref = ShdToonFs, Fs = ToonStage.StageFs,
             Active = static () => ToonActive(Mask()),
             Prepare = &ToonStage.Prepare,
+        },
+        // CX-93: the two post effects the hosted chain used to bring in as STOCK engine GLSL (the option
+        // bits are stripped from what the chain compiles, see FbPostStage.MaskStripped), as Alloy's own
+        // stages. Ahead of the chain because that is where inc_postpr ran them -- before its tonemap and
+        // before anything a content fork appends.
+        new()
+        {
+            Name = "sharpen", Resref = ShdSharpenFs, Fs = SharpenStageFs,
+            Active = static () => SharpenActive(Mask()),
+        },
+        new()
+        {
+            Name = "vibrance", Resref = ShdVibranceFs, Fs = VibranceStageFs, Param = "uVibrance",
+            Active = static () => VibranceActive(Mask()),
+            Value = static () => Vibrance(),
         },
         // #352: the content's post chain where vanilla ran it -- after gamma and toon (inc_postpr's own order
         // with those bits stripped) and before the anti-aliaser, which wants the ink and CA in front of it.
@@ -164,16 +196,20 @@ internal static unsafe class PostStack
                          : !Post.Stack.V ? "BYPASSED by /post stack 0"
                          : ToonActive(Mask()) ? "on -- " + ToonStage.Describe()
                          : "off -- " + ToonStage.Describe() + " (/post toonbands, toonink, toonedge)")}");
+        KnobSurface.Note(static () => _gspI == null ? null
+            : "the client's Sharpen and Vibrance video options are Alloy's own post-stack stages (CX-93, no longer "
+            + $"stock GLSL inside the hosted chain): sharpen {(_stages[2].Failed ? "did NOT build" : SharpenActive(Mask()) ? "on" : "off")}, "
+            + $"vibrance {(_stages[3].Failed ? "did NOT build" : VibranceActive(Mask()) ? $"on at {Vibrance():F2}" : "off")}");
         KnobSurface.Note(static () => _fbMask == null ? "the engine's post program (fsfbpostpr, the content's inc_postpr chain) "
             + "is NOT hosted: Camera::m_nFramebufferEffectsEnabled is unresolved (#352)"
             : "the engine's post program (fsfbpostpr: the content's inc_postpr chain -- status overlay, grade, noir, "
-            + "rays, flare; plus the client's Sharpen and Vibrance options) is the Alloy post stack's (#352): "
+            + "rays, flare) is the Alloy post stack's (#352): "
             + $"{(_fbpost.Failed ? "the fbpost stage is DOWN -- inc_postpr is not in this module's chain, or the spliced text did not build; the chain is off under Alloy"
                 : _targetBad ? "the stack's target is incomplete on this device -- the chain is off"
                 : !Post.Stack.V ? "BYPASSED by /post stack 0"
                 : !Post.FbPost.V ? "BYPASSED by /post fbpost 0"
-                : FbPostActive() ? $"hosted after the resolve (mask 0x{FbPostStage.BuildMask:x} of the client's 0x{Mask():x}; "
-                                   + "depth of field and dynamic contrast are NOT hosted -- their stock text has a vertex half)"
+                : FbPostActive() ? "hosted after the resolve (CX-93: every option bit is stripped, so nothing stock "
+                                   + "compiles in it -- only the content's own passes)"
                 : "off -- the engine would not run it either (option mask 0 and run-shader-even-with-no-effects off)")}");
         log.Info($"PostStack: attached -- {Describe()}");
     }
@@ -186,6 +222,13 @@ internal static unsafe class PostStack
     private static bool GammaActive(int mask) => GammaBit(mask) && (_fbEffects == null || *_fbEffects != 0);
     /// <summary>The cel stage's gate, the engine's: the Toon option bit, under the same console gate.</summary>
     private static bool ToonActive(int mask) => (mask & MaskToon) != 0 && (_fbEffects == null || *_fbEffects != 0);
+    /// <summary>CX-93: the sharpen stage's gate, the engine's own option bit under the console gate.</summary>
+    internal static bool SharpenActive(int mask) => (mask & MaskSharpen) != 0 && (_fbEffects == null || *_fbEffects != 0);
+    /// <summary>CX-93: the vibrance stage's, the same shape. A zero amount still runs the stage, which is the
+    /// engine's behaviour too -- and the shader is the identity at zero.</summary>
+    internal static bool VibranceActive(int mask) => (mask & MaskVibrance) != 0 && (_fbEffects == null || *_fbEffects != 0);
+    /// <summary>The client's Vibrance amount.</summary>
+    private static float Vibrance() => _gspF == null ? 0f : _gspF(VibranceParam);
     /// <summary>#352: the hosted chain's gate, the engine's: effect 2's bit, under the console gate.</summary>
     private static bool FbPostActive()
         => Post.FbPost.V && _fbMask != null && (*_fbMask & FbPostStage.EffectPost) != 0 && (_fbEffects == null || *_fbEffects != 0);
@@ -200,7 +243,8 @@ internal static unsafe class PostStack
             s += $"  {st.Name} {(st.Failed ? "FAILED" : st.Active() ? "live" : "idle")}"
                + (st.Name == "gamma" ? $" (g {Gamma():F2})" : st.Name == "aa" ? " " + SmaaStage.Describe()
                   : st.Name == "toon" ? " (" + ToonStage.Describe() + ")"
-                  : st.Name == "fbpost" ? $" ({(FbPostStage.BuildMask < 0 ? "unbuilt" : $"mask 0x{FbPostStage.BuildMask:x}")}{(Post.FbPost.V ? "" : ", /post fbpost 0")})" : "");
+                  : st.Name == "vibrance" ? $" ({Vibrance():F2})"
+                  : st.Name == "fbpost" ? $" ({(FbPostStage.BuildMask < 0 ? "unbuilt" : "hosted")}{(Post.FbPost.V ? "" : ", /post fbpost 0")})" : "");
         return s;
     }
 
@@ -402,6 +446,16 @@ internal static unsafe class PostStack
     internal const string ShdGammaFs = "cx_postgam_fs";
     /// <summary>The cel stage's resref (#92 override point), same rules as every post-chain stage.</summary>
     internal const string ShdToonFs = "cx_toon_fs";
+    /// <summary>CX-93: the sharpen and vibrance stages' resrefs (#92 override points).</summary>
+    internal const string ShdSharpenFs = "cx_sharpen_fs", ShdVibranceFs = "cx_vibrance_fs";
+
+    /// <summary>CX-93: the client's Sharpen video option as Alloy's own stage -- the stock file's asymmetric
+    /// edge darkening and global lift, without its AA (the stack has SMAA/TAA) or its fog falloff (whose
+    /// uniforms could never resolve in a hosted post stage).</summary>
+    internal static string SharpenStageFs => ShaderSource.Get("cx_sharpen_f.glsl");
+    /// <summary>CX-93: the client's Vibrance video option as Alloy's own stage -- the stock maths, which is
+    /// the definition of the effect, on the engine's own amount.</summary>
+    internal static string VibranceStageFs => ShaderSource.Get("cx_vibrance_f.glsl");
     /// <summary>#389: the taa stage's resref (#92 override point, like every stack stage). Only the copy-out of
     /// the history is overridable here; the accumulator (<see cref="TaaStage.TaaFs"/>) is embedded.</summary>
     internal const string ShdTaaFs = "cx_taa_fs";
@@ -450,7 +504,14 @@ internal static unsafe class PostStack
             check.Expect(MaskToon == 0x20, "POSTPROCESSING_TOON is 0x20 (inc_postpr.shd)");
             check.Expect(_stages[1].Name == "toon" && !ToonActive(0) && ToonActive(MaskToon), "the toon stage's gate is the option bit");
             check.Expect(ToonStage.SelfCheck(log), "the toon stage's own checks");
-            check.Expect(_fbpost == _stages[2] && _fbpost.Prepare != null, "the hosted chain is stage 2, after gamma and toon, with its uploads");
+            // CX-93: sharpen and vibrance sit between the cel stage and the chain -- inc_postpr's own order
+            // for them, and ahead of anything a content fork appends to it.
+            check.Expect(_stages[2].Name == "sharpen" && _stages[3].Name == "vibrance", "sharpen then vibrance, after toon");
+            check.Expect(!SharpenActive(0) && SharpenActive(MaskSharpen) && !VibranceActive(0) && VibranceActive(MaskVibrance),
+              "each of the two gates is its own option bit");
+            check.Expect(SharpenStageFs.Contains("CX_SH_AMOUNT = 0.065") && VibranceStageFs.Contains("uniform float uVibrance;"),
+              "the two stages carry inc_postpr_shrp's amount and the engine's own Vibrance value");
+            check.Expect(_fbpost == _stages[4] && _fbpost.Prepare != null, "the hosted chain is stage 4, after the four Alloy-owned effects, with its uploads");
             check.Expect(FbPostStage.SelfCheck(log), "the hosted chain's own checks");
             check.Expect(VanillaShader.Splice(FbPostStage.FbPostFs, null, "x", fromContent: false) == FbPostStage.FbPostFs,
               "a chain with no inc_postpr leaves the text untouched, which is what Build reads as the stand-down");

@@ -475,6 +475,8 @@ def programs(g):
         "post resolve": (g["cx_post_vs"], g["cx_resolve_fs"]),
         "post stack gamma": (g["cx_post_vs"], g["cx_postgam_fs"]),
         "post stack toon": (g["cx_post_vs"], g["cx_toon_fs"]),
+        "post stack sharpen": (g["cx_post_vs"], g["cx_sharpen_fs"]),
+        "post stack vibrance": (g["cx_post_vs"], g["cx_vibrance_fs"]),
         "post stack fbpost (hosted content chain)": (g["cx_post_vs"], g["cx_fbpost_fs"]),
         "post stack aa edges": (g["cx_post_vs"], g["cx_smaaedge_fs"]),
         "post stack aa weights": (g["cx_post_vs"], g["cx_smaawgt_fs"]),
@@ -497,7 +499,9 @@ def programs(g):
         "grass blades": (g["cx_gblade_vs"], g["cx_gblade_fs"]),
         "grass blade depth": (g["cx_gblade_vs"], g["cx_gblade_df"]),
         "clustered light build": (g["cx_cluster_cs"],),
-        "sky decode": (g["cx_fullscreen_v"], g["cx_skydecode_f"]),
+        "highlight glow": (g["cx_hiliteglow_v"], g["cx_hiliteglow_f"]),
+        "trigger highlight": (g["cx_fullscreen_v"], g["cx_hilitetrig_f"]),
+        "halo occlusion probe": (g["cx_haloocc_c"],),
         "oit resolve": (g["cx_fullscreen_v"], g["cx_oitresolve_f"]),
         "oit clear": (g["cx_fullscreen_v"], g["cx_oitclear_f"]),
         "lightmap bake": (g["cx_bake_v"], g["cx_bake_f"]),
@@ -525,7 +529,7 @@ def check_early_z(progs):
             r = subprocess.run(["glslangValidator", "-E", p], capture_output=True, text=True)
             return sorted({m.group(0).split("(")[0].strip() for m in SIDE_EFFECTS.finditer(r.stdout)})
         bad = 0
-        for name, want in (("clustered lit", False), ("clustered lit (OIT lists)", True), ("sky decode", False), ("owned water", False), ("grass blades", False)):
+        for name, want in (("clustered lit", False), ("clustered lit (OIT lists)", True), ("owned water", False), ("grass blades", False)):
             got = effects(name)
             ok = bool(got) == want
             print(f"early-z: {name}: {'ok' if ok else 'FAILED'} ({'side effects: ' + ', '.join(got) if got else 'no side effects'})")

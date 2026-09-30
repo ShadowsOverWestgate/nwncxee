@@ -717,17 +717,17 @@ internal static unsafe class SymbolMap
     [Fn("void(IntPtr scene)")]
     public const string RenderSinglePass = "_ZN5Scene16RenderSinglePassEv";
     /// <summary>Scene::FadeDoors() @0x467990 -- vtable slot 0x260, the LAST engine call inside
-    /// <c>Scene::RenderSinglePass</c> before <c>RenderDrawBucket(0)</c>. #132's frame anchor.
-    /// <para>Why here and not at RenderSinglePass entry, which is what spec #114 asks for: RSP's first act is
-    /// <c>Camera::InitializeFrameBufferResources</c> @0x4a6fd0, and its steady-state path (the size compare at
+    /// <c>Scene::RenderSinglePass</c> before <c>RenderDrawBucket(0)</c>, and #132's original frame anchor.
+    /// <para>CX-89 RETIRED it: the fade is <see cref="CX.Alloy.DoorFade"/>'s (same field, same rule) and the
+    /// anchor is a direct call out of <c>RspShim.Run</c>, so on an Alloy frame this function is neither called
+    /// nor hooked. The symbol stays declared -- it is still what the vanilla path runs, and it names the step
+    /// the anchor holds.</para>
+    /// <para>Why that step and not RenderSinglePass entry, which is what spec #114 asks for: RSP's first act was
+    /// <c>Camera::InitializeFrameBufferResources</c> @0x4a6fd0, whose steady-state path (the size compare at
     /// +0x240 falls through to +0xed) is <c>SetRenderSubframeTarget(0)</c> then <c>Clear(7)</c> -- EVERY frame,
-    /// not only on resize. So at literal entry the world FBO is neither bound nor cleared, and a resolve
-    /// written there is wiped by that clear; deferring the resolve past it costs a second colour bracket,
-    /// which ADR 0011 does not have. Anchoring after the clear makes the problem disappear rather than need
-    /// suppressing. The two Scene vcalls between the clear and bucket 0 are <c>DoFog</c> (slot 0x280) and this
-    /// one, and both write state the owned pass reads -- scene fog (#124) and the per-tile fade factor -- so
-    /// the anchor sits after them rather than before. Unconditional in the decompile, and reached only
-    /// through the vtable, so no other caller exists to gate against.</para></summary>
+    /// not only on resize -- so a resolve written at literal entry was wiped by that clear. #215 replaced RSP
+    /// wholesale and none of that runs any more; what keeps the step is the other reason: it is the last point
+    /// at which every piece of per-frame bookkeeping the pass reads is current and nothing has drawn.</para></summary>
     [Fn("void(IntPtr scene)")]
     public const string FadeDoors = "_ZN5Scene9FadeDoorsEv";
     /// <summary>GLRender's matrix-stack array <c>m_aurMtxStack</c> @0x19e2f60, indexed by AuroraTransStates
@@ -784,9 +784,30 @@ internal static unsafe class SymbolMap
     /// <c>CExoArrayList&lt;Gob*&gt;</c> (items at +0, count at +8). <c>ManageSceneBSP</c> @0x47fa80 refills it from
     /// the Scene's gobs through <c>Gob::IsInViewVolume</c>, and <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0
     /// walks it into <c>AddPartsTreeToDrawBuckets</c> @0x460880 -- the ONLY writer of an instanced part's
-    /// VertexPrimitive matrix. So at the FadeDoors anchor it is exactly the set of gobs whose parts can have
-    /// moved this frame. Data symbol; read only.</summary>
+    /// VertexPrimitive matrix. So at the frame anchor it is exactly the set of gobs whose parts can have
+    /// moved this frame. Data symbol; read only, and the population CX-89's door fade walks.</summary>
     public const string GobBucket = "gobbucket";
+    /// <summary>CX-89: <c>mindooralpha</c> @0x18aa15c (0.25f as shipped) -- the floor a door's fade alpha is
+    /// clamped to, and the value <c>Gob::HitCheck</c> @0x4381d0 compares <c>Gob+0x10c</c> against before it will
+    /// hit-test a door. <see cref="CX.Alloy.DoorFade"/> reads it per frame rather than caching it, exactly as
+    /// <c>Scene::FadeDoors</c> did. Data symbol; read only.</summary>
+    public const string MinDoorAlpha = "mindooralpha";
+    /// <summary>CX-89: <c>DeltaT</c> @0x18aa028 -- the frame's length in SECONDS, written once per frame in
+    /// <c>CClientExoAppInternal::MainLoop</c> @0x658250 as
+    /// <c>CWorldTimer::GetSnapshotTimeDifference(this+0x50) / 1e6</c>. The engine's own time source for every
+    /// per-frame integrator, including the door fade. Data symbol; read only.</summary>
+    public const string DeltaT = "DeltaT";
+    /// <summary>CX-82: the four <c>Scene</c> statics <c>Scene::DoHighlightGob</c> @0x470fc0 shapes the glow
+    /// with: pulse <c>((sin*0.5 + 0.5) * 0.25*amplitude + 1) * size</c> at <c>frequency</c> Hz, quad alpha
+    /// <c>dot(n, eye)^2 * intensity</c>. <c>CNWCArea::LoadArea</c> sets 0.5 / 1 / 2.5 / 0.3 on every area
+    /// load and a console command can change them, so they are read per frame. Data symbols; read only.</summary>
+    public const string GobHighlightAmplitude = "_ZN5Scene24m_fGobHighlightAmplitudeE";
+    /// <inheritdoc cref="GobHighlightAmplitude"/>
+    public const string GobHighlightFrequency = "_ZN5Scene24m_fGobHighlightFrequencyE";
+    /// <inheritdoc cref="GobHighlightAmplitude"/>
+    public const string GobHighlightIntensity = "_ZN5Scene24m_fGobHighlightIntensityE";
+    /// <inheritdoc cref="GobHighlightAmplitude"/>
+    public const string GobHighlightSize = "_ZN5Scene19m_fGobHighlightSizeE";
 
     /// <summary>#336: the seven Tab-highlight colours. <c>HiliteAreaObjects</c> @0x7119f0 picks one of these
     /// by object type and hands it to the object's highlight virtual, which is what ends up in
@@ -828,6 +849,16 @@ internal static unsafe class SymbolMap
     /// ABI: <c>(Gob const* /*rdi*/) -&gt; float</c>.</summary>
     [Fn("float(Gob this)")]
     public const string GobGetAdjustedScale = "_ZNK3Gob16GetAdjustedScaleEv";
+    /// <summary>CX-87: Gob::ProcessGob() @0x43e920 -- the whole of the sky simulation
+    /// <c>Scene::RenderSkyBoxes</c> was kept alive for, and four lines of it: with the dirty byte
+    /// <c>gob+0x1a5</c> set it writes <c>gob+0x1a4 = TreeHasGeometry(gob+0x90)</c>, runs
+    /// <c>TreeSetGeometryFlags</c> over the same tree, and clears the byte. Not a draw and not animation --
+    /// scene bookkeeping the engine keeps (ADR 0016), which is why the owned tick calls it rather than
+    /// reimplementing the two tree walks. <c>Gob::Render</c> @0x452260 is its only caller and does it first,
+    /// before reading the visibility byte it just wrote, so the owned tick does too.
+    /// ABI: <c>(Gob* /*rdi*/)</c>.</summary>
+    [Fn("void(Gob this)")]
+    public const string GobProcessGob = "_ZN3Gob10ProcessGobEv";
 
     // ---- #130/#261: the beam globals. Beams are NOT walked by Scene::RenderDrawBucket -- they live in
     //      DRAW BUCKET 15, which Scene::RenderBeams @0x46aba0 (vt+0x1d8) walks with its own program and its
@@ -840,6 +871,33 @@ internal static unsafe class SymbolMap
     /// <c>Scene::RenderBeams</c> homogenizes onto a white RGB and pushes as <c>globalColor</c>. Read live so
     /// the console variable keeps meaning what it says.</summary>
     public const string ProjectionAlpha = "projectionalpha";
+
+    // ---- CX-86: what the simulation needs once Scene::DoEmitterBucket is no longer called ----
+    /// <summary>CX-86: <c>emitterbucket</c> @0x19abc00 -- the BSP walk's in-view emitter list, a
+    /// <c>List&lt;PartEmitter*&gt;</c> with the items at +0 and the count at +8, exactly like
+    /// <see cref="GobBucket"/>. <c>Scene::DoEmitterBucket</c> @0x476f00 is its only reader and this is the
+    /// list <see cref="EmitterSim"/> walks in its place. Data symbol; read only -- <c>ManageSceneBSP</c>
+    /// refills it before RSP, so it is already this frame's when the shim runs.</summary>
+    public const string EmitterBucket = "emitterbucket";
+    /// <summary>CX-86: <c>WindManager::AddPointSourceWind(Vector, float, float, float)</c> @0x491dc0 -- the
+    /// gust a detonation pushes into the wind field, and the one side effect of
+    /// <c>ExplosionEmitter::Update</c> @0x4b23a0 that leaves the emitter. Dropped, an explosion would stop
+    /// disturbing grass and other emitters around it.
+    /// <para>ABI: the by-value <c>Vector</c> is an ARGUMENT here, so it is xmm0/xmm1 on Linux and a pointer
+    /// on Windows -- again two argument lists, again <see cref="CX.Alloy.AurXform"/>.</para></summary>
+    public const string AddPointSourceWind = "_ZN11WindManager18AddPointSourceWindE6Vectorfff";
+    /// <summary>CX-86: <c>PartEmitter::AnimateParticles(float)</c> @0x4ac660 and
+    /// <c>PartEmitter::RenderNothing()</c> @0x4ad200 -- the engine's own step and the CHUNK emitter's
+    /// "draw". Alloy calls both, for chunk emitters only: a chunk particle holds a real
+    /// <c>CAurObject</c> built by <c>NewCAurObject</c>, so it is a scene object and stays the engine's (ADR
+    /// 0018's CX-86 amendment). Neither issues a draw -- <c>RenderNothing</c> only pushes each particle's
+    /// position and orientation onto its gob, and its one GL call sits behind the
+    /// <c>g_nRenderEmitterSpheres</c> debug global.</summary>
+    [Fn("void(PartEmitter this, float dt)")]
+    public const string AnimateParticles = "_ZN11PartEmitter16AnimateParticlesEf";
+    /// <inheritdoc cref="AnimateParticles"/>
+    [Fn("void(PartEmitter this)")]
+    public const string RenderNothing = "_ZN11PartEmitter13RenderNothingEv";
 
     // ---- #131: the emitter site. Particles are NOT draw-bucket residents either -- Scene::DoEmitterBucket
     //      @0x476f00 (step 28, dead last in Scene::RenderSinglePass) animates each emitter, depth-sorts the
@@ -1052,7 +1110,10 @@ internal static unsafe class SymbolMap
     /// [rdi+0x20],0x0</c> @0x491bf5), and the only writer in the whole binary is the <c>setglobalwind</c>
     /// console command. In normal play the base is (0,0,0) and every bit of felt wind is point sources.</para>
     /// <para>Returns a <c>Vector</c> BY VALUE with no sret -- verified at the call site: <c>rdi</c> is the
-    /// scene and <c>rsi</c> the position (0x49beaf/0x49bea8), so SysV puts x,y in xmm0 and z in xmm1.</para></summary>
+    /// scene and <c>rsi</c> the position (0x49beaf/0x49bea8), so SysV puts x,y in xmm0 and z in xmm1. Win64
+    /// still passes a buffer, so the two argument lists live in <see cref="CX.Alloy.AurXform"/>.</para>
+    /// <para>CX-86's second caller: an <c>affectedByWind</c> emitter's three movers each add this to the
+    /// integrated position, through that same pair rather than a third copy of the ABI.</para></summary>
     public const string SceneGetWindVector = "_ZN5Scene13GetWindVectorERK6Vectorf";
     /// <summary><c>int Scene::HitCheck(Vector from, Vector to, Vector* hit, CHitInfo* info)</c> @0x462960 --
     /// the engine's own segment test, tile BSP parts first then every gob (<c>info+0</c> == 0), nearest hit
@@ -1340,6 +1401,39 @@ internal static unsafe class SymbolMap
     /// Called rather than re-derived. ABI: <c>(PartLight* /*rdi*/) -&gt; float /*xmm0*/</c>.</summary>
     [Fn("float(IntPtr light)")]
     public const string GetLightAdjustedRadius = "_Z22GetLightAdjustedRadiusPK9PartLight";
+    /// <summary>CX-85: <c>GetLightFadeSpeed(PartLight const*)</c> @0x4c0cb0 -- how fast one light's weight
+    /// travels, in weight per second: <c>m = maxChannel(GetLightAdjustedColor) * GetLightAdjustedRadius</c>,
+    /// then <c>m &lt; 1 -&gt; 10</c>, <c>m &gt; 10 -&gt; 1</c>, else <c>10 / m</c> (disassembled at 0x4c0cee;
+    /// the decompiler drops the colour's third channel and the two constants are 1.0f and 10.0f).
+    /// <para>Called rather than transcribed: it is a pure leaf of two other pure leaves, it issues no draw and
+    /// touches no engine state, and re-deriving it would put a second copy of the overbright curve in the
+    /// repo. <see cref="LightFade"/> owns the integrator that uses it.</para>
+    /// ABI: <c>(PartLight* /*rdi*/) -&gt; float /*xmm0*/</c>.</summary>
+    [Fn("float(IntPtr light)")]
+    public const string GetLightFadeSpeed = "_Z17GetLightFadeSpeedPK9PartLight";
+    /// <summary>CX-85: <c>GetIsLightInViewVolume(PartLight const*)</c> @0x4c0d30 -- the frustum test
+    /// <c>ControlLightsFade</c> uses to decide whether an unlit light fades out gracefully or snaps to zero.
+    /// Sphere-vs-plane over <c>CurrentCamera+0x4e8</c>/<c>+0x4f0</c> with a fog-end special case on plane 1,
+    /// and always true for a directional (adjusted radius &gt;= 1000). Called, not transcribed: it reads the
+    /// engine's own plane array, which is the camera Alloy's frame is drawing from anyway. Not pure: it
+    /// memoises the last rejecting plane index in a global, which nothing else reads.
+    /// ABI: <c>(PartLight* /*rdi*/) -&gt; bool /*al*/</c>.</summary>
+    [Fn("byte(IntPtr light)")]
+    public const string GetIsLightInViewVolume = "_Z22GetIsLightInViewVolumePK9PartLight";
+    /// <summary>CX-85: <c>LightManager::GetMaxLights()</c> @0x4c15d0 -- <c>min(m_nMaxLights, 128)</c>, the cap
+    /// on how many lights may be lit at once and so on how far down the per-frame list
+    /// <see cref="LightFade"/> fades IN. Static, no <c>this</c>.</summary>
+    [Fn("int()")]
+    public const string LightMgrGetMaxLights = "_ZN12LightManager12GetMaxLightsEv";
+    /// <summary>CX-85: <c>CAurInternal::m_nHeadLightEnabled</c> @0x18aa03c -- a SHORT (2 bytes on both builds).
+    /// Non-zero costs <see cref="LightFade"/> two light slots and adds the two headlight colours to the focus
+    /// lighting, exactly as <c>ControlLightsFade</c> @0x4c2050 and <c>GetEmitterLighting</c> @0x4c1970 do.</summary>
+    public const string HeadLightEnabled = "_ZN12CAurInternal19m_nHeadLightEnabledE";
+    /// <summary>CX-85: the two headlight colours (<c>Vector</c>, 12 bytes each) <c>GetEmitterLighting</c>
+    /// @0x4c1970 adds to the focus lighting while the headlight is on.</summary>
+    public const string HeadlightAmbient = "headlightambient";
+    /// <inheritdoc cref="HeadlightAmbient"/>
+    public const string HeadlightDiffuse = "headlightdiffuse";
     /// <summary>GLRender::m_nCurrentMatrix @0x19e30d0 -- the selected matrix-stack index; saved/restored around
     /// the pass so we leave the engine's active matrix mode as we found it. Data symbol (read/write int).</summary>
     public const string MCurrentMatrix = "_ZN8GLRender16m_nCurrentMatrixE";
@@ -2544,6 +2638,11 @@ internal static unsafe class SymbolMap
         [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),
         [HitcheckStaticTrimesh] = Nm("?hitcheck_static_trimesh_parts@@3HA"),
         [CycleTidControllerVtbl] = At(),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
+        [DeltaT] = Nm("?DeltaT@@3MA"),
+        [GobHighlightAmplitude] = Nm("?m_fGobHighlightAmplitude@Scene@@0MA"),
+        [GobHighlightFrequency] = Nm("?m_fGobHighlightFrequency@Scene@@0MA"),
+        [GobHighlightIntensity] = Nm("?m_fGobHighlightIntensity@Scene@@0MA"),
+        [GobHighlightSize] = Nm("?m_fGobHighlightSize@Scene@@0MA"),
         [DoBinBucket] = Nm("?DoBinBucket@Scene@@EEAAXXZ"),
         [DoDynamicMeshProjections] = Nm("?DoDynamicMeshProjections@Scene@@EEAAXPEAVPartLight@@@Z"),
         [DoGobShadows] = Nm("?DoGobShadows@Scene@@EEAAXPEAVPartLight@@@Z"),
@@ -2567,6 +2666,8 @@ internal static unsafe class SymbolMap
         [GetEmitterLighting] = Nm("?GetEmitterLighting@LightManager@@QEAA?AVVector@@V2@PEAV?$List@PEAVPartLight@@@@@Z"),
         [GetLensFlareLights] = Nm("?GetLensFlareLights@LightManager@@QEAAAEAV?$List@PEAVPartLight@@@@XZ"),
         [GetLightAdjustedRadius] = Nm("?GetLightAdjustedRadius@@YAMPEBVPartLight@@@Z"),
+        [GetIsLightInViewVolume] = Nm("?GetIsLightInViewVolume@@YAEPEBVPartLight@@@Z"),
+        [GetLightFadeSpeed] = Nm("?GetLightFadeSpeed@@YAMPEBVPartLight@@@Z"),
         [GetPlayerCreature] = LinuxOnly("#14 chat-render probe, no caller"),
         [GetServerNetworkAddress] = Nm("?GetServerNetworkAddress@CNetLayer@@QEAA?AVCExoString@@XZ"),
         [GlActiveTextureStage] = Nm("?m_activeTextureStage@GLRender@@0IA"),
@@ -2593,19 +2694,28 @@ internal static unsafe class SymbolMap
         [GlTotalMemPool] = Nm("?totalmempool@@3HA"),
         [GlUnlockPool] = Nm("?UnlockPool@GLRender@@CAXIII@Z"),
         [GlUseProgramConditionally] = Nm("?GlUseProgramConditionally@GLRender@@CAXI@Z"),
+        [AnimateParticles] = Nm("?AnimateParticles@PartEmitter@@QEAAXM@Z"),
+        [EmitterBucket] = Nm("?emitterbucket@@3V?$List@PEAVPartEmitter@@@@A"),
+        [RenderNothing] = Nm("?RenderNothing@PartEmitter@@QEAAXXZ"),
+        [AddPointSourceWind] = Nm("?AddPointSourceWind@WindManager@@QEAAXVVector@@MMM@Z"),
         [GobBucket] = Nm("?gobbucket@@3V?$List@PEAVGob@@@@A"),
         [GobCollectLights] = Nm("?CollectLights@Gob@@QEAAXAEAV?$List@PEAVPartLight@@@@@Z"),
         [GobGetAdjustedScale] = Nm("?GetAdjustedScale@Gob@@UEBAMXZ"),
+        [GobProcessGob] = Nm("?ProcessGob@Gob@@QEAAXXZ"),
         [GrassEnabled] = Nm("?m_bGrassIsEnabled@Scene@@0_NA"),
         [GrassFarDistance] = Nm("?m_fGrassFarRenderDistance@Scene@@0MA"),
         [GrassInfo] = Nm("?g_GrassInfo@@3V?$List@VCAurGrassInfo@@@@A"),
         [GrassNearRadius] = Nm("?m_fNearRadiusSquared@CAurTriangleBin@@2MA"),
         [GuiUpdateAndRender] = Nm("?UpdateAndRender@CGuiMan@@QEAAXM@Z"),
         [HideCompass] = At(),
+        [HeadLightEnabled] = Nm("?m_nHeadLightEnabled@CAurInternal@@0FA"),
+        [HeadlightAmbient] = Nm("?headlightambient@@3VVector@@A"),
+        [HeadlightDiffuse] = Nm("?headlightdiffuse@@3VVector@@A"),
         [LightAreaAmbient] = Nm("?m_lightAreaAmbient@GLRender@@0VVector@@A"),
         [LightAreaDiffuse] = Nm("?m_lightAreaDiffuse@GLRender@@0VVector@@A"),
         [LightAreaDiffuseDir] = Nm("?m_lightAreaDiffuseDirection@GLRender@@0VVector@@A"),
         [LightManagerOnlyGob] = Nm("?m_pOnlyGob@LightManager@@0PEAVGob@@EA"),
+        [LightMgrGetMaxLights] = Nm("?GetMaxLights@LightManager@@SAHXZ"),
         [LoadMatrixIdentity] = Nm("?LoadMatrixIdentity@RenderInterface@@SAXXZ"),
         [MAurMtxStack] = Nm("?m_aurMtxStack@@3PAVaurMatrixStack@@A"),
         [MCurrentMatrix] = Nm("?m_nCurrentMatrix@GLRender@@0IA"),
@@ -2614,6 +2724,7 @@ internal static unsafe class SymbolMap
         [MatHasBumpyShinyMap] = Nm("?HasBumpyShinyMap@Material@@QEAA_NXZ"),
         [MatHasEnvMap] = Nm("?HasEnvMap@Material@@QEAA_NXZ"),
         [MeshBuckets] = Nm("?meshbuckets@@3V?$List@VBucket@@@@A"),
+        [MinDoorAlpha] = Nm("?mindooralpha@@3MA"),
         [MsaaSamples] = Nm("?g_nMSAA@@3HA"),
         [MultMatrix] = Nm("?MultMatrix@RenderInterface@@SAXPEAM@Z"),
         [NetProcessReceivedFrames] = Nm("?ProcessReceivedFrames@CNetLayer@@QEAAXH@Z"),

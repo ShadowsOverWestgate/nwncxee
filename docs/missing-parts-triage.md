@@ -2,9 +2,58 @@
 
 A creature with an arm, a shin or a head gone; a bench that was there and is not (#317). It is random,
 it heals when the creature moves or is re-created (out of the server's render range and back), and the
-bench version comes and goes while you stand still. Nothing in the period line names it yet, so the
-protocol below is how one incident becomes a log worth reading. Every step is a live chat knob: no
-restart, no `cx.cfg` edit.
+bench version comes and goes while you stand still. The bench half is fixed (a geometry-less part
+poisoned its whole gob, `docs/research/alloy-visibility-structural.md`); the creature half has a named
+mechanism and a fix as of CX-92, below. The protocol is how one incident becomes a log worth reading.
+Every step is a live chat knob: no restart, no `cx.cfg` edit.
+
+## Root cause (CX-92): a re-shown subtree has no notice, and nothing draws an unowned part
+
+`part+0x34` is the engine's own per-subtree draw gate: `Scene::AddPartsTreeToDrawBuckets` @0x460880 and
+`Gob::PartDraw` @0x451d50 both `return` on a zero byte **before** recursing into children, so a part
+with the byte clear -- and its whole subtree -- is drawn from no engine path. `SceneWalk.Tree` has
+pruned on that byte since #397, and `Sweep` released what it pruned.
+
+The byte has four writers in this client. `Part::Part` @0x43c800 sets it once. `Gob::Append`'s tail sets
+the anchor's ancestor chain to 1. `TreeSetGeometryFlags` @0x43e620 (a register store,
+`mov %r14b,0x34(%rbx)` at 0x43e675/0x43e68e) only ever ANDs it with "a child has geometry", so it can hide a
+geometry-less subtree but never show one; it runs from `Gob::ProcessGob` whenever the gob's process flag is
+dirty, and `Scene::AddPartsToDrawBuckets` @0x4751d0 calls that every frame. The dynamic show/hide writer
+is `Gob::SetSubtreeEnabled` @0x43c670 (`43c695: setne 0x34(%rax)`), which has **no call site in the
+text** -- it is reached only through a name-dispatch table (eight data references to 0x43c670) -- and it
+bumps **nothing**: no `Scene::Sequence`, no `SetProcessFlag`, no ctor, no dtor. The fix below does not
+depend on which writer moved the byte: it re-reads it. So:
+
+- hide: the next walk prunes the subtree and Alloy stops drawing it. Correct, and vanilla agrees.
+- **show: nothing in the client announces it.** The record stays released, so enrolment never sees the
+  part, and since #264 an unowned part is drawn by **nobody**. The limb is missing until something
+  unrelated moves `Scene::Sequence` (a gob joining or leaving any scene) or the creature is re-created.
+
+That is random per part, per-part rather than per-gob, hits NPCs, survives `/alloy poll 1` (there is no
+record to invalidate), leaves **no `D` row** in the frame dump, and heals on re-creation -- the whole
+reported symptom. It is the only membership edge left with no notice: `Part::~Part` already calls
+`SceneWalk.RequestWalk()` (`DrawFunnelService.OnPartDtor`, for the in-place armour rebuild) and a repack
+calls `NoteStale()`.
+
+**The fix.** A pruned subtree root is now HELD as a `PartTable.StHidden` entry instead of released
+(`SceneWalk.HoldHidden`), and `SceneWalk.Tick` re-reads `part+0x34` over the held set on the frames that
+would otherwise walk nothing (`HiddenShown`); the first byte that comes back asks for a walk, which
+releases the entry so the part re-enrols from scratch (`ShowHidden`). Holding rather than releasing is
+what makes the re-read lifetime-safe: `Part::~Part` marks a held entry freed through the table's own
+tombstone, and only a freed slot is ever reclaimed. A held entry is exempt from #128's
+all-owned-or-none refusal for the geometry-less case's reason -- vanilla draws nothing for it either,
+so its siblings keep drawing. Instruments: `hidden=N (held=H shown=S re-shows=R)` on the `[enum]` line
+and `H held hidden on part+0x34` in the census `instances:` clause. **`shown` nonzero is the mechanism
+firing.** Live-unverified.
+
+### `/alloy holes` -- the per-instance hole dump
+
+For every gob in the scene with at least one part Alloy is not drawing, one `[holes]` line per part of
+that gob: entry state (including `hidden(part+0x34)`), `OwnFlag`, ownership slot and class, the
+per-slot gates the route walk refuses on (`unplaced`, `inactive-lod`, `record-stale`, `tex-stale`,
+`fading`, `posed`), and `PartForensic` -- node name, the ancestor chain of visible bytes, the gob and
+its append roots. Read it **column-wise**: what differs between the limb that drew and the limb that
+did not is the diagnosis. Capped at 32 gobs and 16 parts each.
 
 ## The incident protocol (~30 s)
 
@@ -30,11 +79,15 @@ whether they still vanish.
 |---|---|
 | part returns on step 3 | a stale record/cache; the audit clause names which (matrix / fade / alpha / box) |
 | no return, its `D` row IS in the dump | GPU-side: hi-Z occlusion or the shader. Next A/B: `/alloy cull 1` (frustum only, no hi-Z); if it stops, hi-Z |
-| no return, its `D` row is NOT in the dump | CPU-side: an enrolment gate or engine state. Next: `alloy.dumptex=<texture>` in `cx.cfg` + restart, read the `[dumpframe] ENROLL ... -> <gate>` line |
+| no return, its `D` row is NOT in the dump | CPU-side: an enrolment gate or engine state. First `/alloy holes` (one line per part of the creature, with the gate); then `alloy.dumptex=<texture>` in `cx.cfg` + restart, read the `[dumpframe] ENROLL ... -> <gate>` line |
+| `/alloy holes` shows the missing part `state=hidden(part+0x34)` | the engine has switched that subtree off. Vanilla draws nothing for it either -- not our hole. If it is missing while the byte reads 1, the re-show notice failed: report `shown=`/`re-shows=` from the `[enum]` line |
 | `NOT DRAWN ... fog-out 0 tile + N gob` with N > 0 | the `TileFade <= 0` route skip took a creature part (`AlloyRenderer.Batches.cs`, `RouteParts`) -- its filed tile is wrong |
 
-## Hypotheses, ranked (2026-09-16)
+## Hypotheses, ranked (2026-09-16; re-ranked 2026-09-30 by CX-92)
 
+0. **The part+0x34 re-show with no notice** -- above. Ranked first because it is a proven code path
+   rather than a prediction, and it is the only one that explains a hole with no `D` row, no `poll`
+   heal and no enrolment-gate counter. Read `shown=` on the `[enum]` line before anything below.
 1. **Stale chase cache on an idle creature.** #330 reads matrices / spheres / alpha on a budget and
    re-reads what moved; a part whose bone matrix stops being re-read keeps a stale sphere and fails the
    CPU route gate or the GPU hi-Z test, or a stale alpha routes it blended at 0. Predicts: step 3 heals,
@@ -49,8 +102,23 @@ whether they still vanish.
    gate was refusing a door leaf's two coincident faces as twins; it compares vertex positions now.
    `tools/mdlcensus/dupsib.py <hak>... --class DOOR` is the offline twin of that gate: exit 1 names every
    part it would still refuse (`--old` shows the pre-#317 rule).
+   CX-91 audited the whole reject list and wrote each verdict down in `docs/alloy-refusals.md`: these two
+   are the correct skips that remain, `item`/`item-range` became one `empty-item`, and the two that WERE
+   holes (`stale-identity`, a material with no diffuse) now re-enrol and draw. So a nonzero
+   `stale-identity=` or `vdo=` on the census line is itself a lead now, not background.
 
 ## What is refuted, so nobody re-chases it
+
+- **A stale ALPHA on a creature limb.** `PartAlphaCached` polls `part+0xa0` live for every part with a
+  gob or a matrix class, so no cadence can leave a creature limb at a stale alpha; the cache serves only
+  still, gobless tile geometry.
+- **An under-bound cull sphere on a creature limb.** `PartTriMesh::PartTriMesh` @0x53cb50 zeroes
+  +0x64..+0x78, and `ComputePartBBox` @0x561370 is reached only from `ProcessStaticParts` @0x570970 --
+  so a gob part has no engine bbox, `_oR` comes from `MeshRadius` (max vertex distance from the node
+  origin) and `WriteSphere` centres it on the node's world translation. That pair bounds the mesh; a
+  failed read leaves `_oR` at 0, which is `NeverCull`, not a tight sphere.
+- **The GPU static freeze.** `StaticAtEnroll` refuses every part with a non-tile gob, so no creature part
+  is ever frozen (`gpu.static`).
 
 - **Texture / the #284 rebuild ledger.** In the 2026-09-16 session the only textures that ever reached
   `[unbuilt]` were `"2"`, `NullTex` and `Standardmaterial` -- junk material names on placeables, the #317

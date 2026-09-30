@@ -629,15 +629,26 @@ internal static class ShaderContract
                   // #134: the dynamic gob pair joins, and joins TOGETHER -- the engine walks 2 then 3, and
                   // owning one without the other splits one instance's geometry across two renderers.
                   && AlloyCensus.OwnableBucket(2) && AlloyCensus.OwnableBucket(3)
-                  // 5 (refraction glass) is nobody's since #264 deleted the engine walk: it reads a
-                  // framebuffer copy taken after the Alloy bracket has already resolved, so Alloy has no
-                  // program for it and there is no engine draw left to fall back to. `sample-class=` on the
-                  // [scenewalk] line is how big that hole is; owning it is the follow-up.
+                  // CX-90: 5, the late class, joins. `sample_framebuffer 1` is a draw-ORDER keyword and
+                  // nothing else, so its parts are classified off their material like any other and the
+                  // residue in the bucket is `volumetric`, refused on the material.
                   // #129: 6 is deliberately NOT asserted here. OwnableBucket evaluates it AS
                   // FrameSnapshot.Usable, so any check of the two against each other is a tautology -- it would
                   // read as cover and catch nothing. What actually governs the water draw is _waterArmed
                   // (Usable && lightingOn && the program), which is structural and not assertable here.
-                  && !AlloyCensus.OwnableBucket(5)
+                  && AlloyCensus.OwnableBucket(SceneWalk.SampleBucket)
+                  // ...and the list still REFUSES: bucket 15 is the beams', drawn by Beams from its own
+                  // capture and never from the part table, so a predicate that said yes to everything would
+                  // be caught here rather than by a doubled draw.
+                  && !AlloyCensus.OwnableBucket(15)
+                  // ...and the keyword precedence behind it, both directions (CX-90).
+                  && !AlloyCensus.RefusedByLateKeywords(AlloyCensus.SampleFbLate, false, false)
+                  && !AlloyCensus.RefusedByLateKeywords(0, false, false)
+                  && !AlloyCensus.RefusedByLateKeywords(AlloyCensus.SampleFbWater, false, true)
+                  && AlloyCensus.RefusedByLateKeywords(0, true, false)
+                  && AlloyCensus.RefusedByLateKeywords(AlloyCensus.SampleFbLate, true, false)
+                  && AlloyCensus.RefusedByLateKeywords(AlloyCensus.SampleFbWater, false, false)
+                  && AlloyCensus.RefusedByLateKeywords(3, false, false)
                   // #92: a resref past the CResRef limit can never name a resource, so an override
                   // dropped under it would go silently unread.
                   && ShdFullbrightVs.Length <= ShaderResource.ResRefBytes
@@ -646,13 +657,15 @@ internal static class ShaderContract
                   && ShdLitFs.Length <= ShaderResource.ResRefBytes
                   && ShdWaterVs.Length <= ShaderResource.ResRefBytes
                   && ShdWaterFs.Length <= ShaderResource.ResRefBytes
-                  // #346, the vanilla bridge: the lit stage calls two functions it does not define -- the
-                  // splice supplies them, or the snapshot between the markers does. Asserted here rather
-                  // than discovered as a compile failure, because that failure stands the LIT program down
-                  // and reverts the world to engine drawing.
-                  && VanillaShader.HasSplice(TargetFs)
-                  && TargetFs.Contains("float GetTargetGroundHighlightStrength()")
-                  && TargetFs.Contains("void ApplyTargetGroundHighlight(inout vec4")
+                  // CX-93: the targeting shape is ALLOY's, not a spliced stock include -- the library declares
+                  // the shape uniforms itself, computes the weight and lays it on. Asserted here rather than
+                  // discovered as a compile failure, because that failure stands the LIT program down and
+                  // reverts the world to engine drawing. The absence of a splice is part of the contract: a
+                  // $VANILLA region back in this file is the engine dependency this ticket removed.
+                  && !VanillaShader.HasSplice(TargetFs)
+                  && TargetFs.Contains("float CxTargetStrength()")
+                  && TargetFs.Contains("void CxTargetApply(inout vec4")
+                  && TargetFs.Contains("uniform int targetShape;")
                   && TargetFs.Contains("CxDisplayOverlays")
                   // #347/#348: the CONTENT hook region, and the two signatures that are its whole contract.
                   // A missing one is not a missing feature -- it is a lit program that does not link, which
@@ -717,7 +730,6 @@ internal static class ShaderContract
                   // ...and the marker surgery itself is lossless: with nothing to substitute, splicing must
                   // give back exactly what it was handed. An unterminated marker or an off-by-one in the
                   // region bounds silently eats GLSL, which is the one failure mode of string surgery.
-                  && VanillaShader.Splice(TargetFs, null, "selfcheck", false) == TargetFs
                   && VanillaShader.Splice(HookFs, null, "selfcheck", false) == HookFs
                   && VanillaShader.Splice(HostFs, null, "selfcheck", false) == HostFs;
         log.Info(ok

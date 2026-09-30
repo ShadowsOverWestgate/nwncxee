@@ -20,7 +20,7 @@ internal static class ShaderStages
         // compiles, so it is current by construction. Drop it in a hak or override as <resref>.shd to
         // replace that stage (a hak reaches every player); the extender falls back to the embedded default if
         // it fails to build. Re-dump and diff after each extender update: that diff is your drift.
-        // $CAP$ / $SORT$ / $GROUP$ / $SRGB$ / $BAND$ / $AA$ are expanded by the extender on load -- leave them as tokens.
+        // $CAP$ / $SORT$ / $GROUP$ / $SRGB$ / $BAND$ / $AA$ / $SKYFS$ are expanded by the extender on load -- leave them as tokens.
         // `//@cx-lib <resref>` .. `//@cx-end <resref>` bracket each library this stage includes; keep them and a
         // <resref>.shd library override still reaches this copy. The contract an override has to keep:
         // docs/shader-overrides.md.
@@ -82,9 +82,9 @@ internal static class ShaderStages
 
         """;
 
-    /// <summary>Every overridable resref with the header its dumped copy carries. All thirty-one: four owned,
-    /// two water, two grass cards and two procedural grass blades (CX-24), the cluster build, two caster, four post-chain stages and the post stack's gamma
-    /// stage (#375), the taa stage (#389), the cel stage, the hosted post chain (#352) and the halo pair. #261 deleted one with SkyComposite and #339 deleted the water tessellation pair with the
+    /// <summary>Every overridable resref with the header its dumped copy carries. All thirty-four: four owned,
+    /// two water, the sky stage Alloy compiles the content's own sky into (CX-88), two grass cards and two procedural grass blades (CX-24), the cluster build, two caster, four post-chain stages and the post stack's gamma
+    /// stage (#375), the taa stage (#389), the cel stage, the sharpen and vibrance stages (CX-93), the hosted post chain (#352) and the halo pair. #261 deleted one with SkyComposite and #339 deleted the water tessellation pair with the
     /// custom sea; <see cref="SelfCheck"/> asserts the count, so this prose and that assert have to move
     /// together.</summary>
     internal static readonly (string Ref, string Header)[] All =
@@ -112,7 +112,10 @@ internal static class ShaderStages
         (SmaaStage.ShdBlendFs,             Banner),
         (PostStack.ShdTaaFs,               Banner),
         (PostStack.ShdToonFs,              Banner),
+        (PostStack.ShdSharpenFs,           Banner),
+        (PostStack.ShdVibranceFs,          Banner),
         (FbPostStage.ShdFs,                Banner),
+        (SkyStage.ShdFs,                   Banner),
         (SsaoPass.ShdSsaoFs,               Banner),
         (SsaoPass.ShdSsaoBlurFs,           Banner),
         (Halos.ShdHaloVs,                  Banner),
@@ -185,7 +188,7 @@ internal static class ShaderStages
     /// that declares it. A missing switch arm is otherwise invisible until a program builds from "".</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = All.Length == 31 && BindlessRef.Length <= ShaderResource.ResRefBytes;
+        bool ok = All.Length == 34 && BindlessRef.Length <= ShaderResource.ResRefBytes;
         foreach ((string r, string header) in All)
         {
             string src = Source(r);

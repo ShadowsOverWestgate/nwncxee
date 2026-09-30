@@ -18,12 +18,18 @@ internal static unsafe class GlProgram
     /// fall backs, which must not re-take the override they refused.</summary>
     internal static uint Graphics(string vs, string fs, ExtenderLog? log, string what, bool host = true, bool content = true)
     {
+        LastStubbed = false;
         string cv = content ? Lib(vs, log, what) : vs, cf = content ? Lib(fs, log, what) : fs;
         uint p = Pair(cv, cf, log, what, host);
         if (p != 0 || (ReferenceEquals(cv, vs) && ReferenceEquals(cf, fs))) return p;
         log?.Info($"{what}: a library override .shd broke the build -- rebuilding from the embedded libraries");
         return Pair(vs, fs, log, what, host);
     }
+
+    /// <summary>Did the last two-stage <see cref="Graphics(string, string, ExtenderLog?, string, bool, bool)"/>
+    /// link only after a vanilla region fell back to its stub? For a caller whose stub is a picture rather
+    /// than a feature switched off (the sky's black dome), which must refuse instead.</summary>
+    internal static bool LastStubbed;
 
     /// <summary><see cref="ShaderSource.Content"/>, refused for the embedded libraries when the swap leaves the
     /// stage reading the pass terms outside the <c>CxPass</c> block (<see cref="ShaderContract.PassSafe"/>).</summary>
@@ -223,6 +229,7 @@ internal static unsafe class GlProgram
             log?.Info($"{what}: WARN the spliced text did not compile -- retrying with every hosted content stage "
                     + "stubbed, so those materials draw the plain lit path and everything else still splices");
             sh = CompileText(type, ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what, host: false)), log, what);
+            LastStubbed = true;
             if (sh != 0) return sh;
         }
         // #346: a content .shd that renamed a function the stage calls would otherwise take the WHOLE
@@ -230,6 +237,7 @@ internal static unsafe class GlProgram
         // edit in a hak. The stub is what that retry is for: the feature off, the world still rendering.
         log?.Info($"{what}: WARN the spliced vanilla text did not compile -- retrying with the fallback stub, "
                 + "so the program links and the feature it carried is off");
+        LastStubbed = true;
         return CompileText(type, ShaderResource.Tokens(VanillaShader.Splice(rawSrc, log, what, false)), log, what);
     }
 

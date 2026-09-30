@@ -23,7 +23,8 @@ first measurement taken after it is a regression:
 Not a flat cost — fine, and then it is 150ms. The instrumented brackets accounted for roughly 13ms
 of that: ~7ms of GPU colour passes and ~6ms reported as "in the shim".
 
-**The 6ms was not the shim.** `DrawOwned` runs inside the `Scene::FadeDoors` anchor, which runs
+**The 6ms was not the shim.** `DrawOwned` runs inside the frame anchor (then an after-original hook on
+`Scene::FadeDoors`; a direct call from the shim since CX-89), which runs
 inside `RspShim.Run`, so the shim's published per-frame figure contained the entire Alloy CPU frame.
 Corrected in #238; the [rspshim] number is exclusive now. What that revision means is that the
 accounted fraction of a 150ms frame was *smaller* than the ticket assumed, not larger.
@@ -152,7 +153,9 @@ three-deep ring, read three frames behind the dispatch that produced it.
 ### Step 4 — stop paying for the engine's traversal.
 
 `RspShim.Run` splits cleanly in two. The scalar bookkeeping is cheap and stays: `ControlLightsFade`,
-`DoFog`, `FadeDoors`, `DoBinBucket`, `FocusLighting`, `DoEmitterBucket`, `RenderLensFlares`. The
+`DoFog`, `FadeDoors`, `DoBinBucket`, `FocusLighting`, `DoEmitterBucket`, `RenderLensFlares` — *later, CX-84
+deleted `DoFog`, CX-89 ported `FadeDoors` to `DoorFade`, and CX-85 ported the first, the fifth and the last out
+of the engine entirely, into `LightFade` and `Halos`*. The
 bucket traversal is expensive and exists *only* for capture — a vtable call and a `Find()` probe per
 part so that Alloy learns a part exists.
 

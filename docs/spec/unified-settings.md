@@ -543,7 +543,7 @@ Renderer itself.
 | alloy.gl46 | gl46 | — | T | on | C | R | | |
 | alloy.drawhooks | drawhooks | — | D | batch / stats · batch | C | R | | stats = DrawStatsService histogram |
 | alloy.ownedtex / pltcpu / bcndrip / texprefetch / texsingle / texdelete / handledrop / ownedgeom / maxelements / spirv / vanillabridge / hostfs / ownskin / enrollbudget / enrolldelta / clustercap / gradedblend / dumptex / skiptex / dumpshaders / gldebug / swapprobe / glsync / skipbuckets / enginezones | same | — | as today | as today | C | R | | capability gates + bisects |
-| alloy.light / prepass / viz / threads / aotest / cull / retest / hldiag / hlchan / hlglow / poll / prepasskey / prepassfeat / idtarget / blenddepth / gpumeter / vislist / washtest / oitviz | /draw … | — | as today | as today | C | L | | |
+| alloy.light / prepass / viz / threads / aotest / cull / retest / hldiag / hlchan / poll / prepasskey / prepassfeat / idtarget / blenddepth / gpumeter / vislist / washtest / oitviz | /draw … | — | as today | as today | C | L | | |
 | alloy.consts, alloy.framedump, alloy.shaderdump | /draw consts, /framedump, /dumpshaders | — | B | | C | — | | |
 
 **Lighting** — group `light`, no master (header: lighting is the lit stage; off is Renderer off).

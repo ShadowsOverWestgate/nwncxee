@@ -11,17 +11,20 @@ namespace CX.Alloy;
 /// RenderSinglePass -- hosted as one stage of the display-space stack. SoW's status overlay
 /// (<c>inc_postpr_stat</c>), grade, noir, sky rays and lens flare all live in the <c>inc_postpr</c> that
 /// chain includes, so this is what puts them back.
-/// <para>Same mechanism as the lit program's <c>inc_target</c>: a <c>// $VANILLA inc_postpr</c> region is
-/// replaced by the resource chain's copy at build, so a hak or NWSync override of the chain is what runs;
-/// the stub between the markers is a pass-through. The environment ahead of the region stands in for
+/// <para>A <c>// $VANILLA inc_postpr</c> region is replaced by the resource chain's copy at build, so a hak or
+/// NWSync override of the chain is what runs; the stub between the markers is a pass-through. The environment
+/// ahead of the region stands in for
 /// <c>inc_common</c>/<c>inc_uniforms</c> the way <see cref="AlloyRenderer.VanillaEnvFs"/> does for the lit
 /// stage, under the ENGINE's names, so stock text drops in unedited; <see cref="Prepare"/> writes those
 /// names from Alloy's own values. Runs where the engine ran it: on the resolved, display-space frame.</para>
-/// <para>The client's option mask reaches the text as <c>POSTPROCESSING_TYPES_ENABLED</c> exactly as the
-/// engine's preamble writes it, minus the bits Alloy serves with stages of its own (gamma, toon) and the two
-/// whose stock text has a vertex half this fullscreen triangle does not run (depth of field, dynamic
-/// contrast). Sharpen and vibrance are hosted. A mask change rebuilds the program, as the engine reloads
-/// its shaders on int param 2.</para>
+/// <para><b>CX-93: this region is the stage's CONTENT HOOK, not an engine dependency.</b> Every option bit is
+/// stripped from <c>POSTPROCESSING_TYPES_ENABLED</c> (<see cref="MaskStripped"/>), so not one stock
+/// <c>inc_postpr_*</c> include compiles inside an Alloy program: sharpen and vibrance joined gamma and toon as
+/// stages of Alloy's own (<see cref="PostStack.SharpenStageFs"/>, <see cref="PostStack.VibranceStageFs"/>), and
+/// depth of field and dynamic contrast have vertex halves this fullscreen triangle does not run. What is left
+/// between the markers is whatever the CONTENT put in its own <c>inc_postpr</c>, which is the only reason the
+/// stage exists. A quality change still rebuilds the program, as the engine reloads its shaders on the
+/// option.</para>
 /// </summary>
 internal static unsafe class FbPostStage
 {
@@ -32,9 +35,14 @@ internal static unsafe class FbPostStage
     /// option mask != 0 OR <c>run-shader-even-with-no-effects</c> (+0x11c) -- so it is the engine's own
     /// answer to "does the post program run this session".</summary>
     internal const uint EffectPost = 1u << 2;
-    /// <summary>The option bits stripped from the hosted text: DOF 0x02 and dynamic contrast 0x04 (vertex
-    /// halves), gamma 0x10 and toon 0x20 (Alloy's own stages).</summary>
-    internal const int MaskStripped = 0x02 | 0x04 | 0x10 | 0x20;   // not-an-offset: inc_postpr.shd option bits
+    /// <summary>The option bits stripped from the hosted text -- CX-93: ALL of them. DOF 0x02 and dynamic
+    /// contrast 0x04 have vertex halves this fullscreen triangle does not run; gamma 0x10, toon 0x20 and now
+    /// sharpen 0x01 and vibrance 0x08 are stages of Alloy's own. With the mask at 0 not one stock
+    /// <c>inc_postpr_*</c> include compiles inside an Alloy program, which is the whole of CX-93's fbpost
+    /// half: what is left between the markers is whatever the CONTENT put in its own <c>inc_postpr</c>.
+    /// <para>A content fork that gates its OWN passes on a mask bit would lose them; none does, and the
+    /// answer if one ever did is <c>CX_ALLOY</c>, the same contract as everywhere else.</para></summary>
+    internal const int MaskStripped = 0x3f;   // not-an-offset: every inc_postpr.shd option bit
     /// <summary><c>GetGlobalShaderParami(7)</c>: the client's shader quality option, the preamble's
     /// <c>SHADER_QUALITY_MODE</c> (the same read <see cref="AlloyLights"/> makes for the subsurface term);
     /// the content's <c>inc_config</c> branches on it.</summary>
@@ -125,7 +133,10 @@ internal static unsafe class FbPostStage
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
-        check.Expect(HostedMask(0x3f) == 0x09, "sharpen (0x01) and vibrance (0x08) are hosted; DOF, dynamic contrast, gamma, toon are stripped");
+        // CX-93: the point of the whole half. Whatever the chain answers with, no option bit reaches it, so
+        // every stock inc_postpr_* include preprocesses away and only the content's own passes are compiled.
+        check.Expect(HostedMask(MaskStripped) == 0 && MaskStripped == 0x3f,
+          "no option bit inc_postpr.shd defines reaches the hosted text: not one stock post include compiles here");
         check.Expect(EffectPost == 4u, "the gate is Camera::GetIsFBEffectEnabled(2)'s bit");
         check.Expect(!FbPostFs.Contains("#define LIGHTING") && !FbPostFs.Contains("#define FOG") && !FbPostFs.Contains("#define POSTPROCESSING 1"),
           "inc_postpr's own defines are left to it");
@@ -133,8 +144,9 @@ internal static unsafe class FbPostStage
         check.Expect(FbPostFs.Contains("$POSTMASK$") && FbPostFs.Contains("$SQM$"), "the option tokens are in the text");
         check.Expect(!ShaderResource.Tokens("$POSTMASK$ $SQM$").Contains('$'), "the tokens expand");
         check.Expect(!Stale(0, 0), "an unbuilt stage is never stale");
-        Arm(0x3f, 2);
-        check.Expect(BuildMask == 0x09 && !Stale(0x3f, 2) && !Stale(0x39, 2) && Stale(0x3e, 2) && Stale(0x3f, 1), "stale = a hosted bit or the quality moved");
+        Arm(MaskStripped, 2);
+        check.Expect(BuildMask == 0 && !Stale(MaskStripped, 2) && !Stale(0, 2) && Stale(MaskStripped, 1),
+          "stale = the quality moved; an option bit no longer rebuilds, because none of them reaches the text");
         BuildMask = -1; BuildQuality = -1;
         return check.Ok;
     }

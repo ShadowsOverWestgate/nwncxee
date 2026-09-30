@@ -34,11 +34,6 @@ internal static unsafe class Programs
     /// edge (outside the bracket), acted on by <see cref="DropSpliced"/> inside it.</summary>
     internal static bool _spliceStale;
 
-    /// <summary>#136: the hosted sky's display-to-linear decode (<see cref="SkyDecodeFs"/>) and its sampler.</summary>
-    internal static uint _progSkyDecode;
-    internal static int _skyDecodeHdr, _skyDecodeSkyFog, _skyDecodeInvVp;
-    /// <summary>The hosted sky's horizon-band fog terms (<see cref="SceneFog.SkyBand"/>).</summary>
-    internal static FeatLoc _skyDecodeFeat;
     internal static int _depthVp = -1, _depthBase = -1;
     /// <summary>#124: the dissolving batches' depth program (<see cref="DepthKeyVs"/>). Zero = it could not
     /// build, and those batches fall back to being excluded from the prepass -- the pre-fix behaviour, which
@@ -177,8 +172,9 @@ internal static unsafe class Programs
         _litFailed = false; _waterFailed = false;
         GrassField.DropProgram();
         PostStack.DropSpliced();
+        SkyStage.DropPrograms();
         SceneWalk.Dirty = true;
-        _log?.Info("AlloyRenderer: module changed -- the spliced programs (lit, hosted lit, water, grass, post) are dropped and rebuild from this module's resource chain");
+        _log?.Info("AlloyRenderer: module changed -- the spliced programs (lit, hosted lit, water, grass, post, sky) are dropped and rebuild from this module's resource chain");
     }
 
     internal static bool EnsureProgram()
@@ -280,12 +276,6 @@ internal static unsafe class Programs
         }
         _progDepth = prog;
         _depthVp = GlProgram.Loc(prog, "uVP"); _depthBase = GlProgram.Loc(prog, "uDrawBase");
-        _progSkyDecode = GlProgram.Graphics(PostChain.FullscreenVs, SkyDecodeFs, _log, "AlloyRenderer sky decode");
-        _skyDecodeHdr = GlProgram.Loc(_progSkyDecode, "uHdr");
-        _skyDecodeSkyFog = GlProgram.Loc(_progSkyDecode, "uSkyFog"); _skyDecodeInvVp = GlProgram.Loc(_progSkyDecode, "uInvVP");
-        _skyDecodeFeat = FeatLocs(_progSkyDecode);
-        if (_progSkyDecode == 0 || Gl.TextureBarrier == null)
-            _log?.Info("AlloyRenderer: sky decode unavailable -- a hosted sky program draws display space into the linear frame and reads bright");
         // #124's second stage. A failure here is NOT fatal to the prepass -- dissolving batches simply go
         // back to being left out of it, which is what they did before the fix.
         uint keyProg = GlProgram.Graphics(DepthKeyVs, DepthKeyFs, _log,

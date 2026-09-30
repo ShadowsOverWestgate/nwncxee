@@ -112,6 +112,14 @@ public sealed unsafe partial class AlloyRenderer
     /// it through this include.</summary>
     internal static string VanillaStandardFs => ShaderSource.Get("cx_vanstd_f.glsl");
 
+    /// <summary>CX-88: what a stage Alloy runs WHOLE gets in place of <c>inc_standard</c>
+    /// (<c>// $VANILLA-MAIN</c>). A whole stage has no Alloy shading around it, so both calls carry their
+    /// stock body rather than deferring to one: setup takes the display-space texel into working space and
+    /// multiplies it in, and the apply call's whole body -- under the <c>LIGHTING 0</c>/<c>FOG 0</c>/
+    /// <c>KEYHOLING 0</c> a sky stage declares -- is the revert back to display space. The chain's own
+    /// <c>inc_noir</c> comes with it, because a stock stage calls <c>ApplyNoirDesat</c> directly.</summary>
+    internal static string VanillaWholeFs => ShaderSource.Get("cx_vanwhole_f.glsl");
+
     /// <summary>The declarations half of the environment, after <see cref="VanillaEnvDefs"/>. The macro
     /// half is separate because a hosted stage re-issues it after scoping out its own defines.</summary>
     internal static string VanillaEnvFs => ShaderSource.Get("cx_vanenv_f.glsl");
@@ -122,8 +130,7 @@ public sealed unsafe partial class AlloyRenderer
     /// custom FS states the surface work already, and <see cref="HostFs"/> runs that file instead of
     /// asking content to restate it.)
     /// <para><b>Why the extender carries none of it.</b> The bridge exists so one copy of a shader runs, and
-    /// the copy that runs should be the one its author edits. A stock file (<c>inc_target.shd</c>) belongs
-    /// to the ENGINE, so splicing it here is faithful; <c>inc_noir</c> and <c>inc_vision</c> are SoW's, and
+    /// the copy that runs should be the one its author edits. <c>inc_noir</c> and <c>inc_vision</c> are SoW's, and
     /// an extender that embedded even their stubs would be asserting what a content repo's shaders are
     /// called. This extender is optional and drop-in: run it against any module and these two hooks are
     /// no-ops, which is exactly the right answer for content that never asked for them.</para>
@@ -149,18 +156,16 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The SPELL-TARGETING SHAPE -- the red circle (or cone, or rectangle) a caster sees on the
     /// ground while picking a target. Vanilla draws it as arithmetic in <c>inc_standard.shd</c>'s tail, not as
-    /// a draw call, so <see cref="RspShim.EngineOverlays"/> is the wrong tool: there is no draw to replay (#346).
-    /// <para><b>The shape's code is not written here.</b> It is the engine's own <c>inc_target.shd</c>, spliced
-    /// in at compile time by <see cref="VanillaShader"/> from whatever the resource chain supplies -- a hak,
-    /// <c>override/</c>, NWSync, or the stock <c>base_shaders.bif</c> -- so <c>sow-topdata</c> customises the
-    /// file and nothing in the extender has to know.</para>
-    /// <para><b>Between the markers is a STUB, not a snapshot.</b> A copy would be a second implementation
-    /// that runs only when the splice failed, so its drift from the content would never be seen. What the
-    /// fallback owes is the world, not the feature -- a lit program that fails to build reverts every Alloy
-    /// part to engine drawing -- so the stub answers "no shape here" and the log says so.</para>
-    /// <para>Everything the file wants from its own includes is in <see cref="VanillaEnvFs"/>. The uniforms it
-    /// declares ITSELF (<c>targetShape</c> and friends) are not repeated there -- <c>UploadTargetShape</c>
-    /// writes them under the engine's own names, which is what lets the stock text drop in unedited.</para></summary>
+    /// a draw call, so replaying an engine draw was never the tool: there is no draw to replay (#346).
+    /// <para>CX-93: the shape is now ALLOY's -- analytic SDFs per shape, an outline at least a fragment and a
+    /// half wide, and the same inputs. It used to splice the engine's <c>inc_target.shd</c> through
+    /// <see cref="VanillaShader"/>, which made every Alloy lit program carry engine GLSL and put the feature
+    /// at the mercy of whatever generation the chain answered with (the 8017-byte <c>ovr.bif</c> copy is the
+    /// stock one). <see cref="TargetShape"/> is the same geometry in C#, where a self-check can state it.</para>
+    /// <para>The uniform NAMES stay the engine's, because the values are: <c>UploadTargetShape</c> writes the
+    /// engine's own global shader constants straight into them. The file is a <c>cx_*</c> library, so a content
+    /// repo restyles the shape by shipping <c>cx_target.shd</c> -- the ADR 0024 override point, in place of
+    /// forking a stock resref.</para></summary>
     internal static string TargetFs => ShaderSource.Get("cx_target.glsl");
 
     /// <summary>The blended class's output stage, shared by every program the class draws through. <c>uOit</c>
@@ -177,7 +182,6 @@ public sealed unsafe partial class AlloyRenderer
     /// test the sky pass already holds: only where nothing wrote depth), reading each texel back through a
     /// texture barrier and decoding it once. The frame stays linear everywhere, which is the contract the
     /// resolve's own guard enforces -- the fix could not live there.</summary>
-    internal static string SkyDecodeFs => ShaderSource.Get("cx_skydecode_f.glsl");
 
     /// <summary>The one clip-space expression EVERY Alloy vertex stage computes, character for character.
     /// #119's prepass writes the depth the colour pass then tests LEQUAL against, and <c>invariant

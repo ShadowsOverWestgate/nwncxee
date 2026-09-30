@@ -1,6 +1,10 @@
 // #352: the engine's post program (fsfbpostpr = inc_postpr + main), hosted. What is ahead of the
 // region is the ENVIRONMENT: the names inc_common/inc_uniforms give a fragment post stage, from
 // Alloy's values. Between the markers is the resource chain's inc_postpr; the stub is a pass-through.
+// CX-93: $POSTMASK$ is 0 by construction (FbPostStage.MaskStripped), so every `#if
+// POSTPROCESSING_TYPES_ENABLED & ...` include in whatever the chain answers with preprocesses away and
+// no stock post shader compiles here. Sharpen and vibrance are Alloy's own stages ahead of this one; what
+// this region is for is the CONTENT's own passes, which is the only reason the stage exists.
 #define CX_ALLOY 1
 #define SHADER_TYPE 2
 #define GAMMA_CORRECTION 1

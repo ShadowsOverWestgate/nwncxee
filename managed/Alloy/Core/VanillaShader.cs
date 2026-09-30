@@ -13,9 +13,13 @@ namespace CX.Alloy;
 /// already customised -- is not re-implemented here (#346).
 /// <para><b>What this is for.</b> Most of what <c>sow-topdata</c> changes about the look is fragment-side
 /// arithmetic that is a pure function of the fragment's colour, its world position and the engine's global
-/// shader constants: the targeting shape, racial vision, the noir desaturation. None of it needs Alloy's SSBO
-/// records, bindless handles or clustered lights -- it needs a <c>vec3</c> and a world position. Those are
-/// the files that drift when the extender carries a second copy, and exactly the ones this can splice.</para>
+/// shader constants: racial vision, the noir desaturation, the content's own post chain. None of it needs
+/// Alloy's SSBO records, bindless handles or clustered lights -- it needs a <c>vec3</c> and a world position.
+/// Those are the files that drift when the extender carries a second copy, and exactly the ones this splices.
+/// <b>CX-93 narrowed it to CONTENT files.</b> A STOCK engine include is no longer spliced anywhere: the
+/// targeting shape used to come from <c>inc_target.shd</c> and is now <c>cx_target.glsl</c>, Alloy's own, and
+/// the only remaining regions name a content resref (<c>cx_lit_hooks</c>, a material's custom FS) or the
+/// content's post chain.</para>
 /// <para><b>What it hosts.</b> A material's own custom FRAGMENT stage, as a function of the lit program: the
 /// body between <c>SetupStandardShaderInputs()</c> and <c>ApplyStandardShader()</c> is the look, and both of
 /// those calls are Alloy's own work already done. The stage is spliced with its includes, <c>inc_standard</c>
@@ -28,7 +32,7 @@ namespace CX.Alloy;
 /// 460-core program on Mesa 26.1 and NVIDIA 610.57 alike, measured offline), but the engine compiles an
 /// include as a standalone unit only with ITS includes dragged in, whose declarations (<c>in</c> varyings with
 /// no matching Alloy output, uniform blocks) collide at link time. Splicing text lets Alloy supply the
-/// environment instead: see <c>TargetFs</c>'s compatibility prelude.</para>
+/// environment instead: see <see cref="AlloyRenderer.VanillaEnvFs"/>.</para>
 /// <para>Cold: a program builds once per session.</para></summary>
 internal static unsafe class VanillaShader
 {
@@ -66,6 +70,22 @@ internal static unsafe class VanillaShader
     /// the wrapper defines, so a missing or broken file is the plain lit path for that feature.</summary>
     private const string Host = "// $VANILLA-HOST ";
 
+    /// <summary>CX-88: the WHOLE-STAGE marker. Where <see cref="Host"/> lifts a body out of a content stage
+    /// and runs it inside Alloy's lit program, this runs the stage ENTIRE: its <c>main()</c> is renamed
+    /// <see cref="MainEntry"/> and the enclosing Alloy stage's own <c>main</c> calls it, having set up
+    /// what <c>inc_standard</c> would have and taking <c>FragmentColor</c> back afterwards. For a part whose
+    /// look IS its fragment shader with no Alloy shading to wrap around -- the sky (#136's engine-program
+    /// replay is what this replaces).
+    /// <para><c>inc_standard</c> is substituted by <see cref="AlloyRenderer.VanillaWholeFs"/> rather than the
+    /// hosted stand-in: a whole stage owes its own texel multiply and its own colour-space revert, which a
+    /// hosted body gets from the lit stage around it.</para></summary>
+    private const string Main = "// $VANILLA-MAIN ";
+
+    /// <summary>The name a <see cref="Main"/> region's <c>main()</c> is renamed to, and the one the enclosing
+    /// stage calls. Fixed rather than per-resref (as <see cref="Host"/>'s is) because a stage hosts exactly
+    /// one whole content stage -- it has one <c>main</c> to stand in for.</summary>
+    internal const string MainEntry = "CxVanMain";
+
     /// <summary>#352: the SKIP marker. <c>// $VANILLA-SKIP a b c</c> names includes the stage's own environment
     /// stands in for, so the resolver never follows them -- per stage, where <see cref="Supplied"/> is every
     /// stage's. The hosted post chain is the customer: <c>inc_postpr</c> pulls <c>inc_lighting</c> and
@@ -92,7 +112,8 @@ internal static unsafe class VanillaShader
         while (at >= 0)
         {
             bool hosted = string.CompareOrdinal(src, at, Host, 0, Host.Length) == 0;
-            if (!hosted && string.CompareOrdinal(src, at, Begin, 0, Begin.Length) != 0)
+            bool whole = !hosted && string.CompareOrdinal(src, at, Main, 0, Main.Length) == 0;
+            if (!hosted && !whole && string.CompareOrdinal(src, at, Begin, 0, Begin.Length) != 0)
             {
                 if (string.CompareOrdinal(src, at, Skip, 0, Skip.Length) == 0)
                 {
@@ -103,7 +124,7 @@ internal static unsafe class VanillaShader
                 at = src.IndexOf(Marker, at + Marker.Length, StringComparison.Ordinal);
                 continue;
             }
-            int nameAt = at + (hosted ? Host.Length : Begin.Length);
+            int nameAt = at + (hosted ? Host.Length : whole ? Main.Length : Begin.Length);
             int eol = src.IndexOf('\n', nameAt);
             int end = src.IndexOf(End, nameAt, StringComparison.Ordinal);
             if (eol < 0 || end < 0) break;
@@ -122,12 +143,13 @@ internal static unsafe class VanillaShader
             string? stock = ask ? EngineText(resref, log) : null;
             string? body = stock == null ? null
                          : hosted ? HostText(stock, resref, log, what, seen)
-                         : Validate(Includes(stock, log, what, seen, 0), stub, resref, log, what);
+                         : whole ? MainText(stock, resref, log, what, seen, src[..at])
+                         : Validate(Includes(stock, log, what, seen, 0, AlloyRenderer.VanillaStandardFs), stub, resref, log, what);
             if (body != null)
             {
                 seen.Add(resref);
                 sb.Append(body);
-                log?.Info($"{what}: {resref}.shd " + (hosted ? "hosted" : "spliced") + $" from the resource chain ({stock!.Length} chars)");
+                log?.Info($"{what}: {resref}.shd " + (hosted ? "hosted" : whole ? "run whole" : "spliced") + $" from the resource chain ({stock!.Length} chars)");
             }
             else
             {
@@ -144,10 +166,10 @@ internal static unsafe class VanillaShader
     }
 
     /// <summary>#350 AC: the SPLICED text is validated, not just the embedded copy. Every function the stub
-    /// defines is one the stage calls, so a chain copy that lacks any of them (an 8017-byte
-    /// <c>inc_target.shd</c> off a stale HAK, which predates <c>GetTargetGroundHighlightStrength</c>) is
-    /// caught here by name and falls back to the stub for THIS region, instead of failing the whole program
-    /// and taking every other region with it.</summary>
+    /// defines is one the stage calls, so a chain copy that lacks any of them -- a fork that predates a
+    /// function the stage has started calling, which is what a stale HAK is -- is caught here by name and
+    /// falls back to the stub for THIS region, instead of failing the whole program and taking every other
+    /// region with it.</summary>
     private static string? Validate(string text, string stub, string resref, ExtenderLog? log, string what)
     {
         foreach (Match m in StubFn.Matches(stub))
@@ -171,9 +193,31 @@ internal static unsafe class VanillaShader
     /// <summary>The names <see cref="AlloyRenderer.VanillaEnvDefs"/> supplies as macros. A hosted stage's own
     /// declaration of one (<c>td_ground_fs</c> declares <c>uniform sampler2D texUnit6;</c> because
     /// <c>inc_common</c> stops at 5) would redeclare what the macro maps it to, so those lines are dropped.</summary>
-    private static readonly Regex EnvDecl = new(
-        @"(?m)^[ \t]*uniform\b[^;\n]*\b(?:" + string.Join("|", OwnDefine.Matches(AlloyRenderer.VanillaEnvDefs).Select(m => m.Groups[1].Value)) + @")[ \t]*;[^\n]*\n?",
-        RegexOptions.Compiled);
+    private static readonly Regex EnvDecl = DeclStrip(AlloyRenderer.VanillaEnvDefs);
+
+    /// <summary>The declaration strip for one environment: every <c>uniform</c> line naming a macro
+    /// <paramref name="defs"/> supplies. Built per environment because CX-88's whole-stage regions sit in a
+    /// stage of their own, whose macros are not the lit stage's -- <c>inc_sunm</c> declares
+    /// <c>moduleTimeIntoTransition</c> for itself, and the sky environment maps that name onto a uniform of
+    /// its own. Cold: one build per program, and the two results are cached.</summary>
+    private static Regex DeclStrip(string defs)
+    {
+        string names = string.Join("|", OwnDefine.Matches(defs).Select(m => m.Groups[1].Value).Distinct());
+        // An empty alternation matches the empty string, i.e. every line -- so a defs block with no macros
+        // strips nothing rather than everything.
+        return names.Length == 0 ? new Regex(@"(?!)", RegexOptions.Compiled)
+             : new Regex(@"(?m)^[ \t]*uniform\b[^;\n]*\b(?:" + names + @")[ \t]*;[^\n]*\n?", RegexOptions.Compiled);
+    }
+
+    private static readonly Dictionary<string, Regex> _strips = new();
+    private static Regex StripFor(string defs)
+    {
+        lock (_strips)
+        {
+            if (!_strips.TryGetValue(defs, out Regex? r)) _strips[defs] = r = DeclStrip(defs);
+            return r;
+        }
+    }
 
     /// <summary>#350: a content fragment stage, rewritten to run as a function of Alloy's lit program. Pure
     /// text-to-text (the resolver is the only outside call), so <c>SelfCheck</c> can exercise it on a
@@ -187,7 +231,7 @@ internal static unsafe class VanillaShader
     /// real preprocessor pass.</para></summary>
     internal static string? HostText(string stock, string resref, ExtenderLog? log, string what, List<string> seen)
     {
-        string text = Includes(stock, log, what, seen, 0);
+        string text = Includes(stock, log, what, seen, 0, AlloyRenderer.VanillaStandardFs);
         if (!MainFn.IsMatch(text))
         {
             log?.Info($"{what}: {resref}.shd from the resource chain has no main() to host -- compiling the stub for this region");
@@ -208,6 +252,35 @@ internal static unsafe class VanillaShader
           .Append("    SpecularColor = MATERIAL_SPECULAR_COLOR_VALUE;\n}\n");
         foreach (var n in own) sb.Append("#undef ").Append(n).Append('\n');
         sb.Append(AlloyRenderer.VanillaEnvDefs);
+        return sb.ToString();
+    }
+
+    /// <summary>CX-88: a content fragment stage rewritten to run WHOLE as a function of an Alloy stage --
+    /// the <see cref="Main"/> marker's body. The rewrite is <see cref="HostText"/>'s, minus the material
+    /// wrapper a whole stage has no use for: includes resolved once, <c>main()</c> renamed
+    /// <see cref="MainEntry"/>, <c>gl_FragColor</c> redirected into <c>FragmentColor</c>, the environment's
+    /// own declarations dropped, and the stage's <c>#define</c>s scoped to it.
+    /// <para><paramref name="env"/> is the enclosing stage's text AHEAD of the region, which is where a whole
+    /// stage's environment comes from -- so the declaration strip drops what THAT stage supplies as a macro,
+    /// not what the lit stage does. Nothing is re-issued afterwards: an Alloy stage's own <c>main</c> reads
+    /// Alloy's names, never the engine-named macros the region was given.</para></summary>
+    internal static string? MainText(string stock, string resref, ExtenderLog? log, string what,
+                                     List<string> seen, string env)
+    {
+        string text = Includes(stock, log, what, seen, 0, AlloyRenderer.VanillaWholeFs);
+        if (!MainFn.IsMatch(text))
+        {
+            log?.Info($"{what}: {resref}.shd from the resource chain has no main() to run -- compiling the stub for this region");
+            return null;
+        }
+        text = MainFn.Replace(text, "void " + MainEntry + "()", 1);
+        text = Regex.Replace(text, @"\bgl_FragColor\b", "FragmentColor");
+        text = StripFor(env).Replace(text, "");
+        var own = OwnDefine.Matches(stock).Select(m => m.Groups[1].Value).Distinct().ToList();
+        var sb = new StringBuilder(text.Length + 512);
+        foreach (var n in own) sb.Append("#undef ").Append(n).Append('\n');
+        sb.Append(text).Append('\n');
+        foreach (var n in own) sb.Append("#undef ").Append(n).Append('\n');
         return sb.ToString();
     }
 
@@ -253,9 +326,16 @@ internal static unsafe class VanillaShader
         return text;
     }
 
+    /// <summary>CX-88: can the resource chain answer for this resref, and is the bridge armed to ask? A
+    /// caller whose fallback stub is not a usable picture asks BEFORE building, and refuses instead of
+    /// linking a program that draws the stub -- the sky, whose stub is a black dome. Cold, and it reads the
+    /// file a second time at the splice; a program builds once per module.</summary>
+    internal static bool InChain(string resref) => _armed && EngineText(resref, null) != null;
+
     /// <summary>Does this source carry a marked region at all? The question a failed compile asks before it
     /// decides whether there is a stub to retry with.</summary>
-    internal static bool HasSplice(string src) => src.Contains(Begin, StringComparison.Ordinal) || HasHost(src);
+    internal static bool HasSplice(string src) => src.Contains(Begin, StringComparison.Ordinal) || HasHost(src)
+                                               || src.Contains(Main, StringComparison.Ordinal);
 
     /// <summary>Does this source host a content stage? The question the middle retry rung asks.</summary>
     internal static bool HasHost(string src) => src.Contains(Host, StringComparison.Ordinal);
@@ -277,16 +357,24 @@ internal static unsafe class VanillaShader
     /// for its stages -- pulling them into an Alloy stage would redeclare hundreds of names against a
     /// different vertex layout. <see cref="AlloyRenderer.VanillaEnvFs"/> is the handful of them that a
     /// spliced file actually reads. Everything else (<c>inc_scriptable</c>, <c>inc_ripple</c>, a content
-    /// repo's own) is followed, because that is what composition means.</summary>
-    private static readonly string[] Supplied = { "inc_common", "inc_uniforms" };
+    /// repo's own) is followed, because that is what composition means.
+    /// <para>CX-93 added <c>inc_target</c>: Alloy draws the targeting shape from its own
+    /// <c>cx_target</c> library and declares the shape uniforms there, so a content file that reaches for the
+    /// stock include (SoW's <c>inc_standard</c> fork does, and that one is substituted rather than followed --
+    /// but nothing says the next one will be) would declare them a second time and kill the whole lit
+    /// program.</para></summary>
+    private static readonly string[] Supplied = { "inc_common", "inc_uniforms", "inc_target" };
 
     /// <summary>#350: the one include the environment SUBSTITUTES rather than drops. A content stage's
     /// <c>inc_standard</c> is the engine's whole forward pipeline; what a hosted stage needs from it is the
     /// two entry points it calls around its own body, as no-ops, and the scriptable block. Followed once
-    /// like any other include.</summary>
+    /// like any other include. CX-88: WHICH stand-in is the caller's, because a stage Alloy runs whole owes
+    /// its own texel multiply and its own colour-space revert where a hosted body gets both from the lit
+    /// stage around it.</summary>
     private const string Substituted = "inc_standard";
 
-    private static string Includes(string text, ExtenderLog? log, string what, List<string> seen, int depth)
+    private static string Includes(string text, ExtenderLog? log, string what, List<string> seen, int depth,
+                                  string standard)
     {
         if (depth >= MaxDepth || !text.Contains("#include", StringComparison.Ordinal)) return text;
         var sb = new StringBuilder(text.Length);
@@ -300,10 +388,10 @@ internal static unsafe class VanillaShader
             if (seen.Count >= MaxIncludes) { log?.Info($"{what}: include cap {MaxIncludes} reached -- {name} dropped"); continue; }
             if (Array.IndexOf(Supplied, name) >= 0) continue;
             seen.Add(name);
-            string? body = name == Substituted ? AlloyRenderer.VanillaStandardFs
+            string? body = name == Substituted ? standard
                          : name.Length <= ShaderResource.ResRefBytes ? EngineText(name, null) : null;
             if (body == null) continue;                       // the environment supplies it, or nothing does
-            sb.Append(Includes(body, log, what, seen, depth + 1)).Append('\n');
+            sb.Append(Includes(body, log, what, seen, depth + 1, standard)).Append('\n');
         }
         return sb.ToString();
     }

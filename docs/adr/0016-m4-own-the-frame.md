@@ -158,16 +158,22 @@ freezes:
    `Gob::HitCheckPart` (0x437e87) compare `mindooralpha` against that field to decide whether a door
    is hit-testable, so a frozen door becomes permanently un-clickable or permanently clickable.
    **This is non-visual breakage, invisible to eyeball verification** — the named blind spot in the
-   ownership-scope method above.
+   ownership-scope method above. *(Amended by CX-89, 2026-09-30: the fade is ported —
+   `CX.Alloy.DoorFade` integrates the same field by the same rule — so `FadeDoors` is no longer called.
+   `HitCheck` is at 0x4381d0; 0x438510 is the comparison site inside it.)*
 2. **All particle simulation.** `Scene::DoEmitterBucket` (0x476f00, vt+0x1e8) is the only call site
    of `PartEmitter::AnimateParticles(DeltaT)`. Skipping it freezes particle *advancement*, not just
-   drawing, so Alloy's particle pass would draw frozen particles.
+   drawing, so Alloy's particle pass would draw frozen particles. **Superseded by CX-86**: Alloy owns
+   the advancement now (ADR 0018's CX-86 amendment) and the vcall is dropped — the frozen-particle
+   trap this item names is why it took a port rather than a deletion.
 3. **Grass wind and bin LOD.** `Scene::DoBinBucket` (0x474c50, vt+0x1c0) calls
    `CAurTriangleBin::UpdateGrassForWind` and `SetDistanceSquared`.
 4. **Lens-flare occlusion fade.** `Scene::RenderLensFlares` (0x471860, vt+0x230) integrates
-   `PartLight+0xa0` by `DeltaT`. Self-contained.
+   `PartLight+0xa0` by `DeltaT`. Self-contained. *(Superseded by CX-85: `Halos` integrates that field from
+   its own depth probe and the shim no longer calls the virtual.)*
 5. **`focuslighting` (0x19ab748).** RSP is its only writer (0x46ec3d, 0x46fe64); it is read by the
-   exported `Scene::GetLightingValueAtFocus` (0x462aa0, vt+0x138).
+   exported `Scene::GetLightingValueAtFocus` (0x462aa0, vt+0x138). *(Superseded by CX-85: `LightFade.Tick`
+   writes it, and the reader turned out to be `CNWCArea::GetIsDark` @0x705930 through that export.)*
 6. **All framebuffer and subframe setup.** `Camera::InitializeFrameBufferResources` (0x4a6fd0) has
    **exactly one caller: RSP**, and is the resolution/MSAA/HDR/bloom-scale change detector.
    `Camera::CopyRenderSubframe` (0x4a6b90) and `Camera::DoFrameBufferEffects` (0x4a8eb0) likewise
@@ -192,7 +198,8 @@ the state enum. **To control tile fade, write `+0x74`** — anything written to 
 at the next frame's commit. Fades advance even on camera-static frames.
 
 The M3 anchor choice was better than it looked: `FadeDoors` is pure mutate with zero GL, which is
-why anchoring there worked at all.
+why anchoring there worked at all. *(CX-89 kept the step and dropped the hook: the anchor is a direct
+call from the shim, so nothing is anchored on an engine function any more.)*
 
 ## What is out of M4, and why
 
@@ -266,7 +273,9 @@ holds the measured post-cutover regression; it is reported here, not gated, exac
 
 ## Unconfirmed, and named rather than assumed
 
-- Callers of `Scene::GetLightingValueAtFocus` (reached via `call *0x138`) were not resolved.
+- Callers of `Scene::GetLightingValueAtFocus` (reached via `call *0x138`) were not resolved. *(CX-85 did:
+  `CNWCArea::GetIsDark` @0x705930, on the player's own creature light, with hysteresis at 0.6062/0.866 —
+  called from `CNWCObject::ActivateHardCodedVisualWithHighestPriority`.)*
 - Whether anything outside RSP reads the `Scene+0x60` / `+0x70` shadow-light lists.
 - Whether the present or GUI path reads `Camera+0x528` after RSP returns.
 - The identity of `CGuiMan+0x48`, the second always-rendered view.

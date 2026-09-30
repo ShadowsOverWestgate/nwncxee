@@ -75,7 +75,7 @@ internal static class Post
                            changed: SsaoPass.DropHistory);
         G.Section("Stock effects");
         Stack = G.Toggle("stack", "Game post-effects", true, Tier.Advanced,
-                         help: "The stock framebuffer effects (gamma, SMAA, toon…) on the Alloy frame.");
+                         help: "The stock framebuffer effects (gamma, sharpen, vibrance, SMAA, toon…) on the Alloy frame.");
         FbPost = G.Toggle("fbpost", "Hosted content post", true, Tier.Advanced);
         ToonBands = G.Slider("toonbands", "Toon bands", 1f, 32f, 1f, 1f, tier: Tier.Advanced,
                              help: "With the game's Toon option; 1 = no posterise.");

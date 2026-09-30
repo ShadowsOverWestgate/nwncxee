@@ -12,9 +12,11 @@ namespace CX.Alloy;
 /// texture pair so the water stage can march them. The engine takes TWO such snapshots per frame
 /// (<c>Camera::CopyRenderSubframe</c> @0x4a6b90, before draw bucket 5 and again before bucket 6 in
 /// <c>Scene::RenderSinglePass</c> @0x46e5f0) because its bucket order is fixed, not because two are needed;
-/// the Alloy frame takes one, and the framebuffer-sampling class (refraction glass) that the bucket-5 copy
-/// served has no Alloy program and is not drawn (<see cref="RspShim"/>). Ours holds LINEAR HDR, taken inside
-/// the Alloy bracket, so it could not have fed a display-space engine draw anyway.
+/// the Alloy frame takes one. The bucket-5 copy the engine takes beside it is for a CONTENT shader to sample
+/// as <c>texFBColor</c>/<c>texFBDepth</c> (units 11/12, <c>Camera::BindRenderSubframeTextures</c> @0x4a6ab0) --
+/// no stock world shader reads it, and no Alloy program does either, so CX-90 draws that class off its
+/// material without a copy of its own. Ours holds LINEAR HDR, taken inside the Alloy bracket, so it could not
+/// have fed a display-space engine draw anyway.
 /// <para><c>water.enabled</c> off stands the whole thing down: no copy, no Alloy water program, and
 /// <see cref="BucketGate"/> leaves bucket 6 to the engine. Every look dial here is a <c>/water</c> key; the
 /// one boot decision is the tessellation segment count, which is geometry rather than look.</para>

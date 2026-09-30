@@ -68,6 +68,9 @@ public static unsafe class EngineLayout
 
     /// <summary>Part::AsPartTriMesh() -- the type filter SkyBox/BucketGate/GrassField run a part through.</summary>
     public static readonly int PartAsTriMeshSlot = Field("Part", "vtbl.AsPartTriMesh", Expect.VtblSlot, sig: "PartTriMesh()");
+    /// <summary>CX-82: <c>Part::AsPartSkin()</c> -- <c>WritePartHighlightVertices</c> @0x45fe40 glows a mesh
+    /// part only when this is null, so a skinned body takes no glow quads.</summary>
+    public static readonly int PartAsSkinSlot = Field("Part", "vtbl.AsPartSkin", Expect.VtblSlot, sig: "IntPtr()");
 
     /// <summary>Part::AsPartBeam() -- same filter for the beam overlays (#130).</summary>
     public static readonly int PartAsPartBeamSlot = Field("Part", "vtbl.AsPartBeam", Expect.VtblSlot, sig: "PartBeam()");
@@ -124,6 +127,12 @@ public static unsafe class EngineLayout
     /// <summary>Scene -&gt; LightManager* (<c>Scene::RenderSinglePass</c> @0x46e5f0 calls
     /// <c>GetShadowLights(*(this + 0x158))</c>).</summary>
     public static readonly int SceneLightManager = Field<CX.Engine.LightManager>("Scene", "lightManager");
+    /// <summary>CX-86: Scene -&gt; its <c>SafePointer&lt;WindManager&gt;</c>, the slot beside
+    /// <see cref="SceneLightManager"/>. <c>Scene::GetWindVector</c> @0x460c60 is one line over it and
+    /// <c>ExplosionEmitter::Update</c> @0x4b23a0 hands it a detonation's point source. MEASURED on both, in
+    /// that one line: Linux @0x460c60 is <c>mov 0x160(%rdi),%rdi</c> and Windows rva 0xc9b90 is
+    /// <c>mov rcx,[rcx+0x160]</c>.</summary>
+    public static readonly int SceneWindManager = Field<IntPtr>("Scene", "windManager");
 
     /// <summary>Scene -&gt; the embedded <c>DrawBucketManager</c> (0x310 bytes, constructed in place by
     /// <c>Scene::Scene</c> @0x4724f0; every <c>AddPartToBucket</c> call passes <c>this+0x208</c>). The
@@ -141,10 +150,10 @@ public static unsafe class EngineLayout
 
     // ---- Gob (identical 0x0..0x4b8: 28 offsets paired over 50 functions, no conflict) ----
 
-    /// <summary>Gob fields that change how a part shades, all read by <c>PartTriMesh::Mat</c> @0x450960
-    /// except the env override, which <c>PartTriMesh::Draw</c> @0x4513d0 reads to reroute the whole draw to
-    /// <c>RenderEnvironmentMapped</c>. The two flags ARM a modulation; the values beside them are the
-    /// modulation, and <c>gob+0xfc</c> is the colour whose 12 bytes end exactly where the alpha begins.</summary>
+    /// <summary><c>gob+0x18</c> is the SKYBOX flag, not a highlight (CX-91): its only writers are
+    /// <c>Gob::Gob</c> (0) and <c>Scene::SetSkyBox</c> @0x45e260, which sets it on all four skybox gobs, and
+    /// <c>PartTriMesh::Mat</c> @0x450960 reads it to keep a skybox part out of the lit branch. The row keeps
+    /// its build-file key; the placeable highlight is Scene's own list.</summary>
     public static readonly int GobHighlight = Field<byte>("Gob", "highlight");
     /// <summary>#222: the gob byte that says a part is painted in the scene's fog colour.
     /// <c>PartTriMesh::Mat</c> @0x450960 takes a branch nothing in the Alloy pass had: with this set and a
@@ -166,17 +175,26 @@ public static unsafe class EngineLayout
     public static readonly int GobLodRoot2 = Field<CX.Engine.Part>("Gob", "lodRoot2");
     /// <summary>Gob -&gt; world position (float x@+0xa8, y@+0xac, z@+0xb0).</summary>
     public static readonly int GobPosition = Field<System.Numerics.Vector3>("Gob", "position");
-    /// <inheritdoc cref="GobHighlight"/>
+    /// <summary>CX-89: Gob -&gt; world orientation, the engine's <c>(w, x, y, z)</c>. <c>Gob::GetOrientation</c>
+    /// is a plain 16-byte read of exactly this on both builds -- Linux @0x4446a0
+    /// (<c>mov 0xb4(%rdi),%rdx; mov 0xbc(%rdi),%rax</c>), Windows rva 0x48520
+    /// (<c>movups xmm0,[rcx+0xb4]</c>) -- and its <c>Gob::GetPosition</c> neighbour reads the paired
+    /// <see cref="GobPosition"/> at +0xa8 on both, which brackets it.</summary>
+    public static readonly int GobRot = Field<CX.Engine.Quat>("Gob", "rot");
+    /// <summary>Gob fields that change how a part shades, all read by <c>PartTriMesh::Mat</c> @0x450960
+    /// except the env override, which <c>PartTriMesh::Draw</c> @0x4513d0 reads to reroute the whole draw to
+    /// <c>RenderEnvironmentMapped</c>. The two flags ARM a modulation; the values beside them are the
+    /// modulation, and <c>gob+0xfc</c> is the colour whose 12 bytes end exactly where the alpha begins.</summary>
     public static readonly int GobColourMul = Field<short>("Gob", "colourMul");
-    /// <inheritdoc cref="GobHighlight"/>
+    /// <inheritdoc cref="GobColourMul"/>
     public static readonly int GobSelfIllum = Field<short>("Gob", "selfIllum");
-    /// <inheritdoc cref="GobHighlight"/>
+    /// <inheritdoc cref="GobColourMul"/>
     public static readonly int GobColour = Field<System.Numerics.Vector3>("Gob", "colour");
-    /// <inheritdoc cref="GobHighlight"/>
+    /// <inheritdoc cref="GobColourMul"/>
     public static readonly int GobAlpha = Field<float>("Gob", "alpha");
-    /// <inheritdoc cref="GobHighlight"/>
+    /// <inheritdoc cref="GobColourMul"/>
     public static readonly int GobFadeAlpha = Field<float>("Gob", "fadeAlpha");
-    /// <inheritdoc cref="GobHighlight"/>
+    /// <inheritdoc cref="GobColourMul"/>
     public static readonly int GobEmissive = Field<System.Numerics.Vector3>("Gob", "emissive");
     /// <summary>#256: Gob -&gt; <c>CExoArrayList&lt;Part*&gt;</c> of the roots this gob APPENDED at runtime
     /// (items +0x130, count +0x138), parallel to the <c>Model*</c> array at +0x120. <c>Gob::Append</c>
@@ -216,6 +234,12 @@ public static unsafe class EngineLayout
     public static readonly int MdlNodeKind = Field<byte>("MdlNode", "kind");
     /// <summary><see cref="MdlNodeKind"/>'s mask AND its expected value -- both bits must be set.</summary>
     public const int MdlNodeKindTriMesh = 0x21;
+    /// <summary>CX-82: the mesh node's local bounding box, min then max -- what
+    /// <c>WritePartHighlightVertices</c> builds its three glow quads from (Linux @0x45fe40, Windows rva
+    /// 0xd4f30: the same six loads, +0xc0..+0xd4).</summary>
+    public static readonly int MdlBboxMin = Field<System.Numerics.Vector3>("MdlNodeTriMesh", "bboxMin");
+    /// <inheritdoc cref="MdlBboxMin"/>
+    public static readonly int MdlBboxMax = Field<System.Numerics.Vector3>("MdlNodeTriMesh", "bboxMax");
     /// <summary>#659: MdlNode -&gt; its <c>NewController</c> array (data +0x78, count +0x80, stride
     /// <see cref="NewControllerStride"/>). <c>MdlNode::InternalControl</c> @0x4990c0 is the loop, byte-for-byte
     /// the same on both builds.</summary>
@@ -421,8 +445,13 @@ public static unsafe class EngineLayout
     public static readonly int LightFlagA = Field<int>("PartLight", "flagA");
     /// <inheritdoc cref="LightFlagA"/>
     public static readonly int LightFlagB = Field<int>("PartLight", "flagB");
-    /// <summary>Engine shadow-fade weight (<c>GetShadowLights</c> decrements it per frame for deprioritized
-    /// lights; <c>LightManager::ControlLightsFade</c> @0x4c2050 scales the area terms by it).</summary>
+    /// <summary>The light's fade weight, 0..1: how much of this light the frame is lighting with.
+    /// <c>LightManager::ControlLightsFade</c> @0x4c2050 was its only writer and CX-85's
+    /// <c>Alloy/Scene/LightFade.cs</c> is now, integrating it toward 1 for a light the frame wants and 0 for
+    /// one it does not; <c>GetEmitterLighting</c> @0x4c1970 and <c>GetNearestLights</c> @0x4c15f0 scale a
+    /// colour by it, and so do Alloy's area terms and its point-light snapshot.
+    /// <para>NOT the shadow fade, which is <c>+0xa8</c>: <c>LightManager::GetShadowLights</c> @0x4c2910 is the
+    /// one that integrates per frame, by <c>2 * DeltaT / 0.3</c>, and it reads nothing here.</para></summary>
     public static readonly int LightFade = Field<float>("PartLight", "fade");
     /// <summary>Intensity; the lit radius is <c>range * intensity</c> (GetLightAdjustedRadius).</summary>
     public static readonly int LightIntensity = Field<float>("PartLight", "intensity");
@@ -437,6 +466,18 @@ public static unsafe class EngineLayout
     public static readonly int LmMasterData = Field<IntPtr>("LightManager", "masterData");
     /// <inheritdoc cref="LmMasterData"/>
     public static readonly int LmMasterCount = Field<int>("LightManager", "masterCount");
+    /// <summary>CX-85: the PER-FRAME light list -- every master light close enough to <c>Scene+0x190</c> to
+    /// matter, in master order. <c>ManageSceneBSP</c> @0x47fa80 clears and refills it once per frame through
+    /// <c>SetupLightsForThisPositionAndRadius</c> @0x4c1df0 (vtable +0x40), and
+    /// <c>LightManager::EnableLights</c> @0x4c2d10 hands exactly this list to the fade integrator as the
+    /// "wanted" set: an entry below <see cref="SymbolMap.LightMgrGetMaxLights"/> fades IN, one past it fades
+    /// out, one absent altogether snaps to zero. <see cref="LightFade"/> reads it for the same decision.
+    /// <para>Measured on both builds, not assumed identical: Windows <c>EnableLights</c> (rva 0x7e890) passes
+    /// <c>this + 0x60</c> and <c>this + 0x40</c> just as Linux does, and the count is the container's
+
+    public static readonly int LmFrameData = Field<IntPtr>("LightManager", "frameData");
+    /// <inheritdoc cref="LmFrameData"/>
+    public static readonly int LmFrameCount = Field<int>("LightManager", "frameCount");
     /// <summary><c>LightManager::ControlLightsFade</c> @0x4c2050: +0xa0 is the area AMBIENT PartLight*,
     /// +0x98 the area DIFFUSE (the sun/moon) -- the two it pushes with index -1.</summary>
     public static readonly int LmAreaDiffuse = Field<CX.Engine.PartLight>("LightManager", "areaDiffuse");
@@ -470,7 +511,7 @@ public static unsafe class EngineLayout
     public static readonly int CamViewH = Field<float>("Camera", "viewH");
     /// <summary>#330: every camera field <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70 reads -- the enable
     /// byte, the aperture plane at +0x4..+0x10 and the height cut at +0x14 -- as one 24-byte span.
-    /// <c>Camera::RenderScene</c> @0x4a7920 is their only writer, every frame, ahead of the FadeDoors anchor,
+    /// <c>Camera::RenderScene</c> @0x4a7920 is their only writer, every frame, ahead of the frame anchor,
     /// so a snapshot compare at the anchor is a camera-dirty bit with no hook. Both ends of the span are
     /// paired (0xe50 and the height cut 0xe64, both +0x8).</summary>
     public static readonly int CamKeyholeState = Field<byte>("Camera", "keyholeState");
@@ -927,6 +968,35 @@ public static unsafe class EngineLayout
     /// <inheritdoc cref="BeamVdo"/>
     public static readonly int BeamItem = Field<int>("PartBeam", "item");
 
+    // ---- PartTrigger (CX-83: the area-transition highlight). Every row pairs at delta 0, read off
+    //      PartTrigger::SetHighlighted (Linux @0x4da090 / Windows rva 0xf0940), SetHighlightColor
+    //      (@0x4d9ff0 / rva 0xf0910) and Scene::DoHighlightTriggers (@0x462310 / rva 0xc8930).
+
+    /// <summary>The trigger's own 2D outline: a <c>CExoArrayList&lt;Vector&gt;</c>, points at +0x90 and the
+    /// count at +0x98. Built once in <c>PartTrigger::PartTrigger</c> @0x4d9dd0 from the MDL node;
+    /// <c>SetHighlighted</c> loops the count over the data to extrude the highlight volume, which is the pair
+    /// both offsets were read on.</summary>
+    public static readonly int TriggerPoints = Field<IntPtr>("PartTrigger", "points");
+    /// <inheritdoc cref="TriggerPoints"/>
+    public static readonly int TriggerPointCount = Field<int>("PartTrigger", "pointCount");
+    /// <summary>"This trigger is highlighted" and the HALF of the bucket it belongs to -- the two bytes
+    /// <c>DoHighlightTriggers</c> filters on (<c>+0xd8 != 0 &amp;&amp; half == +0xe0</c>). Both are written by
+    /// <c>SetHighlighted</c>, and its only caller chain (<c>AurPartTriggerSetHighlight</c> ←
+    /// <c>CNWCTrigger::UpdateTriggerColor</c> @0x80eff0) passes <c>true, true</c> on every branch, DM
+    /// included -- so only the second of RSP's two calls ever matched anything.</summary>
+    public static readonly int TriggerHighlighted = Field<byte>("PartTrigger", "highlighted");
+    /// <inheritdoc cref="TriggerHighlighted"/>
+    public static readonly int TriggerHalf = Field<byte>("PartTrigger", "half");
+    /// <summary>Half the height the outline is extruded by, in world units: <c>SetHighlighted</c> stores
+    /// <c>abs(param)</c> here and builds the volume at <c>z ± this</c>.</summary>
+    public static readonly int TriggerHeight = Field<float>("PartTrigger", "height");
+    /// <summary>The highlight colour, RGB then ALPHA -- four contiguous floats
+    /// <c>PartTrigger::SetHighlightColor</c> writes and <c>DoHighlightTriggers</c> hands to
+    /// <c>SetColorv</c>. The alpha is the whole gate in play: <c>UpdateTriggerColor</c> writes 0.0 for a
+    /// trigger that is not under the cursor and 0.25/0.35 for one that is, so an alpha of zero is how the
+    /// engine draws every other trigger in the bucket invisibly.</summary>
+    public static readonly int TriggerColour = Field<float>("PartTrigger", "highlightColour", count: 4);
+
     // ---- PartLight: one more field in the +0x4 block ----
 
     /// <summary>The lens-flare occlusion fade, and NOT <see cref="LightFade"/>: two distinct floats.
@@ -993,6 +1063,117 @@ public static unsafe class EngineLayout
     /// <summary>Emitter world position, the point the particle tint is sampled at.</summary>
     public static readonly int EmPos = Field<System.Numerics.Vector3>("PartEmitter", "pos");
 
+    // ---- CX-86: the simulation's own fields. Read off the four Update overrides and the three movers
+    //      (FountainEmitter::Update @0x4b1c70, SingleEmitter::Update @0x4b2740, ExplosionEmitter::Update
+    //      @0x4b23a0, LightningEmitter::Update @0x4b29b0, PartEmitter::moveParticle @0x4acaa0,
+    //      moveParticleP2PBezier @0x4b0230, moveParticleP2PGrav @0x4b0d40, the standard mover's body
+    //      @0x4afa90, PartEmitter::Initialize @0x4aaaa0, AnimateParticles @0x4ac660, RecursiveFractal
+    //      @0x4acda0, Particle::initialize @0x4abbf0), each paired against the same function on nwmain.exe
+    //      with tools/ghidra/FieldDump.java. Three rows (randVel, spread, velocity) have no pair of their
+    //      own -- only `Particle::initialize` reads them, and there `this` is the particle, so the emitter
+    //      offset never enters a slice from parameter 0. They are BRACKETED instead: each sits between two
+    //      measured +0x4 pairs on either side inside the class's one +0x4 run, which the run's own witnesses
+    //      pin at 0x64 (blend) below and 0xf0 (zigZag) above.
+
+    /// <summary>Particles born per second. Read as an int by every update mode, so 0.5 births none and the
+    /// whole spawn block is skipped at zero.</summary>
+    public static readonly int EmBirthRate = Field<float>("PartEmitter", "birthRate");
+    /// <summary>Restitution. Zero stops a bouncing particle dead instead of reflecting it.</summary>
+    public static readonly int EmBounce = Field<float>("PartEmitter", "bounce");
+    /// <summary>p2p bezier only: the exponent that blends the ballistic position into the curve
+    /// (<c>pow(t³, combineTime)</c>).</summary>
+    public static readonly int EmCombineTime = Field<float>("PartEmitter", "combineTime");
+    /// <summary>p2p gravity only: per-second velocity retention, applied as <c>pow(drag, dt)</c>, and the
+    /// acceleration toward the target.</summary>
+    public static readonly int EmP2PDrag = Field<float>("PartEmitter", "p2pDrag");
+    /// <inheritdoc cref="EmP2PDrag"/>
+    public static readonly int EmP2PGrav = Field<float>("PartEmitter", "p2pGrav");
+    /// <summary>Mass, as the engine uses it: the only thing it multiplies is <c>-9.81</c>, so it is a gravity
+    /// scale and a zero means weightless.</summary>
+    public static readonly int EmGravity = Field<float>("PartEmitter", "gravity");
+    /// <summary>p2p bezier control-point lengths, along the emitter's own Z axis and the target's.</summary>
+    public static readonly int EmBezier2 = Field<float>("PartEmitter", "bezier2");
+    /// <inheritdoc cref="EmBezier2"/>
+    public static readonly int EmBezier3 = Field<float>("PartEmitter", "bezier3");
+    /// <summary>Roll rate, radians per second, wrapped to ±2π every step.</summary>
+    public static readonly int EmSpin = Field<float>("PartEmitter", "spin");
+    /// <summary>Spawn velocity: the base speed along the particle's own Z axis, and the ± window the birth
+    /// randomises it inside (a hundredth of a unit per <c>rand()</c> tick).</summary>
+    public static readonly int EmVelocity = Field<float>("PartEmitter", "velocity");
+    /// <inheritdoc cref="EmVelocity"/>
+    public static readonly int EmRandVel = Field<float>("PartEmitter", "randVel");
+    /// <summary>Emission cone, in radians. Zero fires every particle straight along the emitter's Z.</summary>
+    public static readonly int EmSpread = Field<float>("PartEmitter", "spread");
+    /// <summary>p2p only: the arrival radius. Inside it the particle is aged out to <see cref="EmLife"/>.
+    /// Compared squared.</summary>
+    public static readonly int EmDeadSpace = Field<float>("PartEmitter", "deadSpace");
+    /// <summary>Spawn-area half-extents in the emitter's local X and Y. Both zero spawns at the origin.
+    /// </summary>
+    public static readonly int EmSpawnX = Field<float>("PartEmitter", "spawnX");
+    /// <inheritdoc cref="EmSpawnX"/>
+    public static readonly int EmSpawnY = Field<float>("PartEmitter", "spawnY");
+    /// <summary>Render type 6's streak length, as the TIME the previous position lags the current one by:
+    /// the lerp rate is <c>min(dt, blurLength) / blurLength</c>.</summary>
+    public static readonly int EmBlurLength = Field<float>("PartEmitter", "blurLength");
+    /// <summary>Lightning: seconds between re-fractals, the midpoint-displacement radius, and the
+    /// per-segment zigzag amplitude.</summary>
+    public static readonly int EmBoltDelay = Field<float>("PartEmitter", "boltDelay");
+    /// <inheritdoc cref="EmBoltDelay"/>
+    public static readonly int EmBoltRadius = Field<float>("PartEmitter", "boltRadius");
+    /// <inheritdoc cref="EmBoltDelay"/>
+    public static readonly int EmZigZag = Field<float>("PartEmitter", "zigZag");
+    /// <summary>The detonation request, set by the <c>Detonate</c> gob callback
+    /// <c>MdlNodeEmitter::InternalCreateInstance</c> @0x4af5c0 registers and cleared by the explosion step.
+    /// Alloy owns the step, so Alloy has to clear it -- left set, an explosion re-fires every frame.</summary>
+    public static readonly int EmDetonate = Field<byte>("PartEmitter", "detonate");
+    /// <summary>The emitter transform as the PREVIOUS step left it -- the origin an <c>inherit_local</c> or
+    /// <c>inherit_part</c> emitter measures its own motion against. Written at the end of every step.</summary>
+    public static readonly int EmPrevWorldPos = Field<System.Numerics.Vector3>("PartEmitter", "prevWorldPos");
+    /// <inheritdoc cref="EmPrevWorldPos"/>
+    public static readonly int EmPrevWorldRot = Field<CX.Engine.Quat>("PartEmitter", "prevWorldRot");
+    /// <summary>The emitter's orientation as a 3x3 basis, nine floats COLUMN-major: X axis, then Y, then Z.
+    /// Rebuilt from <see cref="EmOrient"/> at the top of every step, and it is the frame spawn works in --
+    /// the spawn rectangle lies in XY and the launch direction is Z.</summary>
+    public static readonly int EmBasis = Field<float>("PartEmitter", "basis", count: 9);
+    /// <summary>p2p fountain only: the fraction of a particle's spacing the last spawn did not consume, so a
+    /// chain stays evenly spaced across frames of different length.</summary>
+    public static readonly int EmP2PLeftover = Field<System.Numerics.Vector3>("PartEmitter", "p2pLeftover");
+    /// <summary>The emitter transform the PARTICLES were last expressed against, for
+    /// <c>inherit</c> (world-space particles rebased into the emitter's new frame). Distinct from
+    /// <see cref="EmPrevWorldPos"/>, which tracks the OWNER's motion.</summary>
+    public static readonly int EmPrevRot = Field<CX.Engine.Quat>("PartEmitter", "prevRot");
+    /// <inheritdoc cref="EmPrevRot"/>
+    public static readonly int EmPrevPos = Field<System.Numerics.Vector3>("PartEmitter", "prevPos");
+    /// <summary>Fractional births carried between frames. Without it a 3/s emitter at 60fps never births.
+    /// </summary>
+    public static readonly int EmSpawnAcc = Field<float>("PartEmitter", "spawnAcc");
+    /// <summary>The p2p target, set by <c>SetEmitterTarget</c> @0x4aa7d0 from the model's
+    /// <c>_EmitterTarget</c> attachment. Null means the emitter has no target yet and p2p emits nothing.
+    /// </summary>
+    public static readonly int EmP2PTarget = Field<CX.Engine.Gob>("PartEmitter", "p2pTarget");
+    /// <summary>One float, two meanings by mode: the explosion's already-fired latch (1.0 = fired, reset to
+    /// 0 when the detonate byte clears) and the lightning's seconds-since-last-fractal clock.</summary>
+    public static readonly int EmModeClock = Field<float>("PartEmitter", "modeClock");
+    /// <summary>Has the emitter's inherit basis been seeded yet? Zero on the first step after
+    /// <c>Initialize</c>, which is what makes a freshly spawned inheriting emitter measure no motion.
+    /// </summary>
+    public static readonly int EmSeeded = Field<byte>("PartEmitter", "seeded");
+    /// <summary>Is the emitter currently birthing (birthRate &gt; 0)? The fountain writes it and the p2p
+    /// spawn path reads it to decide whether to keep laying a chain.</summary>
+    public static readonly int EmBirthing = Field<byte>("PartEmitter", "birthing");
+
+    // ---- LightningEmitter: two vectors of its own, past PartEmitter's end ----
+    // Pinned by aligning the two Update functions' access ORDER rather than by set membership: the last
+    // eleven accesses of LightningEmitter::Update @0x4b29b0 line up one for one with nwmain.exe's, and the
+    // pairing they give is -0x4, not PartEmitter's -0x8.
+
+    /// <summary>The emitter-to-target delta and the emitter position the last fractal was built at. The
+    /// in-between frames rigid-transform the existing bolt by the change instead of re-fracturing it.
+    /// </summary>
+    public static readonly int BoltLastDelta = Field<System.Numerics.Vector3>("LightningEmitter", "lastDelta");
+    /// <inheritdoc cref="BoltLastDelta"/>
+    public static readonly int BoltLastPos = Field<System.Numerics.Vector3>("LightningEmitter", "lastPos");
+
     // ---- Particle (identical 0x0..0x77) ----
     // Two anchors, and both are exact: Particle::Particle touches the same thirteen offsets on both builds,
     // and Particle::initialize the same twenty-two -- including every offset below.
@@ -1018,6 +1199,20 @@ public static unsafe class EngineLayout
     public static readonly int ParticleSplat = Field<byte>("Particle", "splat");
     /// <inheritdoc cref="ParticleSplat"/>
     public static readonly int ParticleAge = Field<float>("Particle", "age");
+    /// <summary>CX-86: the three fields only the SIMULATION touches -- velocity, the inherited velocity a
+    /// spawn snapshot of the emitter's own motion leaves, and the scalar that decays it toward zero at
+    /// <c>(1 - dt)</c> per step. All three pair at delta 0 on <c>Particle::initialize</c> @0x4abbf0 and
+    /// <c>Particle::inheritVelocity</c> @0x4ab950, inside the class's identical 0x0..0x77 run.</summary>
+    public static readonly int ParticleVel = Field<System.Numerics.Vector3>("Particle", "vel");
+    /// <inheritdoc cref="ParticleVel"/>
+    public static readonly int ParticleInhVel = Field<System.Numerics.Vector3>("Particle", "inhVel");
+    /// <inheritdoc cref="ParticleVel"/>
+    public static readonly int ParticleInhDecay = Field<float>("Particle", "inhDecay");
+    /// <summary>CX-86: <c>sizeof(Particle)</c>, which is what lets <see cref="CX.Alloy.EmitterSim"/>'s pool
+    /// hand <c>Particles</c> the same <c>Particle*</c> array the engine used to. <c>operator new(0x78)</c> in
+    /// every one of the four spawn sites on Linux, and on Windows <c>ChunkyParticle</c>'s own field lands at
+    /// 0x78, which puts the base class's end there too.</summary>
+    public static readonly int ParticleStride = Field("Particle", "stride");
 
     // ---- MdlNodeEmitter (a +0x4 segment, and a boundary nobody has pinned) ----
 
@@ -1037,6 +1232,51 @@ public static unsafe class EngineLayout
     /// Windows decompiler folded onto 0x160 was the artefact, not the map.</para></summary>
     public static readonly int EmitterNoCull = Field<int>("MdlNodeEmitter", "noCull");
 
+    // ---- CX-86: the node's own simulation declarations. The class diverges by +0x4 from 0x9c up (the
+    //      constructor @0x43b950 pairs 0x9c/0xa0 as one 8-byte store against nwmain.exe's 0xa0/0xa4 and
+    //      0xa4 against 0xa8; every one of its 22 Is*/Enable* accessors pairs the flags word 0x170 -> 0x174),
+    //      and Δ0 at 0x98 and below -- so the divergence STARTS at 0x9c, which is why coneCap is +0x4 and
+    //      the field below it is not.
+
+    /// <summary>The emission-cone cap <c>Particle::randomDirection</c> @0x4ab160 clamps against: while the
+    /// launch direction's dot with the view direction is outside <c>cos(π/2 - coneCap)</c>, it is rotated
+    /// back. Zero skips the clamp.</summary>
+    public static readonly int EmitterConeCap = Field<float>("MdlNodeEmitter", "coneCap");
+    /// <summary>Explosion only: the point-source wind a detonation pushes into <c>WindManager</c>, as its
+    /// strength and its falloff. A zero strength means the detonation moves no air.</summary>
+    public static readonly int EmitterWindStrength = Field<float>("MdlNodeEmitter", "windStrength");
+    /// <inheritdoc cref="EmitterWindStrength"/>
+    public static readonly int EmitterWindFalloff = Field<float>("MdlNodeEmitter", "windFalloff");
+    /// <summary>The <c>update</c> declaration, as the model's own literal string --
+    /// <c>MdlNodeEmitter::InternalCreateInstance</c> @0x4af5c0 string-compares it to pick which
+    /// <c>PartEmitter</c> subclass to build. "Fountain", "Explosion", "Lightning", anything else Single.
+    /// Alloy reads the same string rather than the instance's vtable, because the Windows image does not
+    /// export vftables.</summary>
+    public static readonly int EmitterUpdate = Field<byte>("MdlNodeEmitter", "update", count: 16);
+    /// <summary>The <c>chunk</c> model resref. A non-empty one makes every particle a <c>ChunkyParticle</c>
+    /// holding a real <c>CAurObject</c>, and makes the emitter's own draw <c>RenderNothing</c> @0x4ad200 --
+    /// so it is the flag that says "these particles are scene objects, not Alloy's".</summary>
+    public static readonly int EmitterChunkModel = Field<byte>("MdlNodeEmitter", "chunkModel", count: 16);
+    /// <summary>Single only: non-zero keeps re-seeding the one particle when its life runs out instead of
+    /// freezing it at age zero.</summary>
+    public static readonly int EmitterLoop = Field<int>("MdlNodeEmitter", "loop");
+    /// <summary>The whole emitter flag word. Every <c>MdlNodeEmitter::Is*</c> accessor is one bit of it:
+    /// 0 p2p, 1 p2p_sel, 2 affectedByWind, 3 tinted, 4 bouncing, 5 random, 6 inherit, 7 inherit_vel,
+    /// 8 inherit_local, 9 splat, 10 inherit_part. Read as a word rather than through eleven calls, because
+    /// the simulation wants all of them per emitter per frame.</summary>
+    public static readonly int EmitterFlags = Field<int>("MdlNodeEmitter", "flags");
+    /// <summary>The emitter's declared render order -- a SHORT, and the tiebreak the engine's emitter sort
+    /// uses: <c>FUN_0055f140</c> @0x45f140 sorts ascending on the squared camera distance and, when two
+    /// emitters tie AND share a Gob, ascending on this. Two emitters of one model at one point therefore
+    /// composite in the order the model declared rather than in whatever order the bucket happened to hold.
+    /// <para>MEASURED on two witnesses, and it needs both because the field is the class's only 2-byte
+    /// member: the constructor (Linux @0x43b950 writes <c>16c:2</c>, nwmain.exe @0x1400875a0 writes
+    /// <c>170:2</c> -- the only short store in either) and <c>InternalParseField</c> (nwmain.exe
+    /// @0x14009a030 writes <c>170:2</c>). Bracketed by <see cref="EmitterChunkModel"/> below (0x154 -&gt;
+    /// 0x158) and <see cref="EmitterFlags"/> above (0x170 -&gt; 0x174, direct from all 22 Is*/Enable*
+    /// accessors), so the +0x4 run it sits in is pinned on both sides.</para></summary>
+    public static readonly int EmitterRenderOrder = Field<short>("MdlNodeEmitter", "renderOrder");
+
     // ---- MdlNodeLight: the lens-flare declaration (no validated pair on either build) ----
 
     /// <summary>The light node's flare parameters, all read by <c>Scene::RenderLensFlares</c> @0x471860:
@@ -1055,6 +1295,15 @@ public static unsafe class EngineLayout
     public static readonly int FlareSizes = Field<IntPtr>("MdlNodeLight", "flareSizes");
     /// <inheritdoc cref="FlareRadius"/>
     public static readonly int FlareShifts = Field<IntPtr>("MdlNodeLight", "flareShifts");
+    /// <summary>CX-85: the MDL light node's <c>fadingLight</c> field
+    /// (<c>MdlNodeLight::InternalParseField</c> @0x44baf0 parses the name; the constructor @0x43ba60 defaults
+    /// it to 1). Zero means the light reaches full weight the instant it becomes wanted instead of ramping --
+    /// the one branch in <c>ControlLightsFade</c>'s add path.
+    /// <para>Measured on the Windows <c>LightManager::ControlLightsFade</c> (rva 0x7ddb0), which reads
+    /// <c>*(int *)(*(longlong *)(light + 8) + 0x110)</c> where Linux reads <c>+0x108</c> -- the same +0x8 this
+    /// class's upper segment shows at <see cref="FlareCount"/>, <see cref="FlareSizes"/> and
+    /// <see cref="FlareShifts"/>, so it is read rather than interpolated.</para></summary>
+    public static readonly int LightFadingLight = Field<int>("MdlNodeLight", "fadingLight");
 
     // ---- MdlNodeTriMesh: the faces the grass binner reads ----
 
@@ -1150,6 +1399,27 @@ public static unsafe class EngineLayout
     /// Printed on both sides by <c>tools/abi/vtable-slots.py Gob</c>; -8, like every other slot (#433).</summary>
     public static readonly int GobAdjustedScaleSlot =
         Field("Gob", "vtbl.GetAdjustedScale", Expect.VtblSlot, sig: "float()");
+    /// <summary>CX-86: <c>Gob::GetOrientation()</c> and <c>Gob::GetPosition()</c>, the p2p target's
+    /// transform; CX-82: <c>GetAdjustedPosition()</c> / <c>GetAdjustedOrientation()</c>, the highlight glow's
+    /// root transform (the stored one plus the gob's lerped offsets). Printed on both sides by
+    /// <c>tools/abi/vtable-slots.py Gob</c>, the usual -8 on Windows.
+    /// <para>No signature is declared: SysV returns the 12-byte <c>Vector</c> AND the 16-byte
+    /// <c>Quaternion</c> in xmm0/xmm1 with <c>this</c> in rdi (@0x4446a0 is two <c>movq</c> loads, no buffer),
+    /// while Win64 returns both through a buffer in rdx (rva 0x48520: <c>movups [rdx], xmm0</c>). No single
+    /// signature describes that, so <see cref="CX.Alloy.AurXform"/> carries both argument lists.</para></summary>
+    public static readonly int GobGetOrientationSlot = Field("Gob", "vtbl.GetOrientation", Expect.VtblSlot);
+    /// <inheritdoc cref="GobGetOrientationSlot"/>
+    public static readonly int GobGetPositionSlot =
+        Field("Gob", "vtbl.GetPosition", Expect.VtblSlot);
+    /// <inheritdoc cref="GobGetOrientationSlot"/>
+    public static readonly int GobGetAdjustedPositionSlot = Field("Gob", "vtbl.GetAdjustedPosition", Expect.VtblSlot);
+    /// <inheritdoc cref="GobGetOrientationSlot"/>
+    public static readonly int GobGetAdjustedOrientationSlot = Field("Gob", "vtbl.GetAdjustedOrientation", Expect.VtblSlot);
+    /// <summary>CX-86: <c>Gob::IsForceAnimated()</c> -- the escape hatch <c>Scene::DoEmitterBucket</c>
+    /// @0x476f00 tests before it skips a non-animating scene's emitters, so a forced-animation gob keeps
+    /// simulating while the rest of the scene holds. Printed on both sides: 0x2a8 / 0x2a0.</summary>
+    public static readonly int GobIsForceAnimatedSlot =
+        Field("Gob", "vtbl.IsForceAnimated", Expect.VtblSlot, sig: "byte()");
 
     // ---- TileData: three fields the constructor pairs exactly ----
     // TileData::TileData writes 0x0..0xcb on both builds and agrees store for store outside 0x58..0x7c,
@@ -1431,7 +1701,9 @@ public static unsafe class EngineLayout
     public static readonly int SceneDoEmitterBucketSlot = Field("Scene", "vtbl.DoEmitterBucket", Expect.VtblSlot, sig: "void()");
     /// <summary><c>Scene::RenderLensFlares()</c>.</summary>
     public static readonly int SceneRenderLensFlaresSlot = Field("Scene", "vtbl.RenderLensFlares", Expect.VtblSlot, sig: "void()");
-    /// <summary><c>Scene::FadeDoors()</c> -- #132's frame anchor: the one RSP item that runs every frame.</summary>
+    /// <summary><c>Scene::FadeDoors()</c> -- #132's original frame anchor, RETIRED by CX-89: the shim does not
+    /// vcall it any more (<see cref="CX.Alloy.DoorFade"/> does the fade). The row stays because the shim's own
+    /// SelfCheck still proves no OTHER slot it calls collides with this displacement.</summary>
     public static readonly int SceneFadeDoorsSlot = Field("Scene", "vtbl.FadeDoors", Expect.VtblSlot, sig: "void()");
     /// <summary><c>Scene::DoFog()</c>.</summary>
     public static readonly int SceneDoFogSlot = Field("Scene", "vtbl.DoFog", Expect.VtblSlot, sig: "void()");
@@ -1460,6 +1732,10 @@ public static unsafe class EngineLayout
     public static readonly int SceneHiliteCount = Field<int>("Scene", "hiliteCount");
     /// <inheritdoc cref="SceneHiliteGobs"/>
     public static readonly int SceneHiliteColors = Field<IntPtr>("Scene", "hiliteColors");
+    /// <summary>CX-82: the highlight glow's <c>CAurTexture*</c>, set by <c>Scene::SetHighlightGobTexture</c>
+    /// (Linux @0x461cf0, Windows rva 0xd3420, both <c>this+0xa0</c>); <c>CNWCArea::LoadArea</c> names
+    /// <c>fxpa_dot02</c>. <c>Scene::DoHighlightGob</c> draws nothing while it is null.</summary>
+    public static readonly int SceneHiliteTexture = Field<IntPtr>("Scene", "hiliteTexture");
 
     /// <summary>The gob byte <c>Scene::DoHighlightGob</c> tests before recursing into attached children.
     /// <c>Gob::SetPropagateHighlightEffects</c> is its only writer on either build, which is also what
@@ -1555,6 +1831,25 @@ public static unsafe class EngineLayout
     public static readonly int RtModuleMonth = Field<int>("ShaderExposedRuntimeData", "moduleMonth");
     /// <summary><c>moduleTimeIntoTransition</c> (float), seconds into the current hour transition.</summary>
     public static readonly int RtModuleTimeIntoTransition = Field<float>("ShaderExposedRuntimeData", "moduleTimeIntoTransition");
+
+    // CX-88: four more of the same struct, for the sky stage Alloy now compiles itself. Paired the same way
+    // -- by NAME through ConnectShaderData's slot map, then by the displacement SetUniforms feeds that slot
+    // from: +0xafc is "moduleYear" <- +0x0c, +0xaf0 "moduleDawnHour" <- +0x1c, +0xaf4 "moduleDuskHour" <-
+    // +0x20, +0xb1c "areaWeatherDensity" <- +0x38 (a float; the int at +0x34 beside it is areaWeatherType and
+    // nothing here reads it). Every one of the four appears at the SAME displacement in the Windows
+    // SetUniforms (@0xb8380, m_shaderExposedRuntimeData rva 0x128ea10) -- read off the four rip-relative
+    // loads at 0x1400b8711/8727/8753 and the movss at 0x1400b8827 -- and the pre-existing areaFlags row at
+    // +0x3c, uploaded from the same run, is the cross-check that the pairing did not slip a field.
+    /// <summary><c>moduleYear</c>: the content sky's lunar phase and star seed run off it.</summary>
+    public static readonly int RtModuleYear = Field<int>("ShaderExposedRuntimeData", "moduleYear");
+    /// <summary><c>moduleDawnHour</c> / <c>moduleDuskHour</c>: the module's day boundaries, which is what a
+    /// sky stage turns the calendar hour into a sun elevation with.</summary>
+    public static readonly int RtModuleDawnHour = Field<int>("ShaderExposedRuntimeData", "moduleDawnHour");
+    /// <inheritdoc cref="RtModuleDawnHour"/>
+    public static readonly int RtModuleDuskHour = Field<int>("ShaderExposedRuntimeData", "moduleDuskHour");
+    /// <summary><c>areaWeatherDensity</c> (float), the engine's own cover value.</summary>
+    public static readonly int RtAreaWeatherDensity = Field<float>("ShaderExposedRuntimeData", "areaWeatherDensity");
+
     /// <summary>Time of day, 0..1 -- what the sky and the wind phase run off.</summary>
     public static readonly int RtTimeOfDay = Field<int>("ShaderExposedRuntimeData", "timeOfDay");
     /// <summary>The area wind vector (#123).</summary>

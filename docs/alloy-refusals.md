@@ -54,6 +54,7 @@ a frame that is rendering vanilla anyway. It freezes the moment it stops being t
 | 4a | an `EngineLayout` offset row Alloy reads has no resolution for this platform (#456, `docs/engine-layout.md`) — the only capability term answerable cold, because it is a fact about the binary; asked ahead of everything that needs a warm client | Incapable |
 | 5 | `AlloyRenderer` never armed (hooks did not install) — **after** every opt-out above, because each of them returns from `Initialize` before `_armed` is set, so asking this first reports the mechanism instead of the request | Idle |
 | 5a | the `RenderSinglePass` shim never armed (an engine symbol or draw funnel did not resolve) — same placement, one layer down; since #458 there is no Alloy-inside-the-engine's-frame mode to fall back to | Idle |
+| 5b | a self-check that gates arming failed — since CX-89 that includes `DoorFade.SelfCheck`: the shim stops calling `Scene::FadeDoors`, so a wrong fade would freeze `Gob+0x10c` and `Gob::HitCheck` would refuse the click. Standing the path down hands the fade back to the engine | Idle |
 | 6 | no module loaded | Idle |
 | 7 | no GL 4.6 share-listed context — ADR 0010's macOS/old-driver case; the context creation *is* the check, and it also refuses a context missing the GL 4.5 DSA entry points Alloy creates and edits through (CX-44) | Incapable |
 | 8 | a program did not build, `glMultiDrawElementsBaseVertex`/`glBindBufferBase` missing, or the stream ring's entry points missing or its persistent map refused (CX-45) | Incapable |
@@ -144,10 +145,9 @@ already taken, dead, in a class Alloy does not draw, or in a different `Scene`, 
 as a device capability.
 
 What is left that genuinely *is* a per-part capability refusal — a part Alloy could draw and does not, which
-under #236 is a hole rather than a vanilla draw — is: `stale-identity`, `fb/volumetric`, `vdo`,
-`scene-tint`, `item` and `item-range`. Each is a gap in an earlier strand-1 step rather than work step 8
-can do, and the `[funnels]` period line counts every one of them. **They are named here so the number is not
-lost, not because collapsing them was skipped.**
+under #236 is a hole rather than a vanilla draw — was: `stale-identity`, `volumetric`, `vdo`,
+`scene-tint`, `item` and `item-range`. CX-91 closed or accounted for all of them except `volumetric`
+(the other half of bucket 5, accepted in writing below); see **The census holes, closed (CX-91)**.
 
 
 ## Every decline is a hole now, and each one's disposition (#285)
@@ -162,7 +162,9 @@ vanilla. There is no walk. A decline is geometry that nothing renders, so each b
   "SKIPPED, not revoked; the engine's own walk draws it highlighted, which is vanilla" — stopped being true
   the moment the walk went. Hovering a placeable made it vanish for the length of the hover while
   `Scene::DoHighlightGob` painted a glow over nothing. Alloy draws the part normally now and the engine's
-  overlay composites the glow on top, which *is* vanilla composition. What is given up is only
+  overlay composited the glow on top. CX-82 took that over too: the glow is Alloy's own pass now
+  (`Highlight`'s outline, or `HighlightGlow`'s glow quads for a root it cannot outline), and no engine draw
+  follows the Alloy bracket. What is given up is only
   `PartTriMesh::Mat` @0x450960's highlight branch — `Disable(5)` plus `SetColor4f(1,1,1,alpha)`, the part
   going flat-white-unlit under the cursor.
 - **The per-gob env override** (`gob+0x480`) was already owned by #121 and is *not* a flag:
@@ -183,8 +185,8 @@ vanilla. There is no walk. A decline is geometry that nothing renders, so each b
 - **The enrollment reject tail.** Every gate already had a named total and every post-classification refusal
   a per-class total, and neither said *which gate ate which class* — "87 cutout / 87 water refused after
   classifying" could not be attributed without a Ghidra session. The census line now carries the cross:
-  `[by gate: vdo/Water=87 item/Cutout=87 …]`, printed only where a cell is nonzero, over the five gates that
-  refuse a classified part (`vdo`, `scene-tint`, `item`, `table-full`, `no-vao-slot`).
+  `[by gate: vdo/Water=87 empty-item/Cutout=87 …]`, printed only where a cell is nonzero, over the five gates
+  that refuse a classified part (`vdo`, `scene-tint`, `empty-item`, `table-full`, `no-vao-slot`).
 - **Unbuilt diffuse textures** (`null-tex … drawn white/frame` on the `[alloy]` line). Not a refusal at all
   any more: `AurTextureGetTID` @0x48e080 returns 0 for the engine's shared `m_pNullTexture`, `CAurTexture::Bind`'s
   IsNull branch binds 0 and the draw is still issued, so vanilla renders such a part blank white. Alloy now
@@ -193,27 +195,137 @@ vanilla. There is no walk. A decline is geometry that nothing renders, so each b
   `docs/owned-resource-lifetimes.md`) is unchanged and still the repair. `no-gl-id` survives for the one case
   that is still a hole — the stand-in itself could not be minted.
 
-### Accepted in writing: `sample_framebuffer 1` / draw bucket 5
+## The census holes, closed (CX-91)
+
+Since #264 every census refusal is geometry nothing renders, so each reason is now either an **owned path** or
+a **skip with an engine fact behind it**. Of the seven names the ticket listed, two hid a real hole and got an
+owned path; the other four are correct skips (`item-range` is folded into `empty-item`). Addresses below are
+nm addresses (the read-only dump in `~/nwn-decomp/` prints them + 0x100000).
+
+### Owned paths built
+
+- **`stale-identity` — re-enrolled, not refused.** The record's `MdlNode`/`Material` moved under it, or the
+  cached VDO no longer holds the item (`VertexPrimitiveFlat::SetupArrays` @0x458920 calls
+  `VertexDataObject::RemoveItem` before it re-adds, and a freed VDO block re-minted at the same address carries
+  somebody else's item table — see the `vdo-address-recycling` note). #256 refused and queued the re-read,
+  which was right while an unowned part still drew vanilla; since #264 the frame between the notice and the
+  next `Rebind()` tick is the part *missing*. The census now calls `SceneWalk.RebindNow` in the same call,
+  re-reads the draw arguments and carries on with the refreshed columns. `stale-identity=` counts only records
+  the rebind could not make usable — no geometry yet, no node, no material — which are the `unbound` /
+  `rec-dead` populations under another name, not a refusal of a drawable part. The residency rule is
+  `PartTable.ItemResident`, asserted off-device by `PartTable.ItemResidentSelfCheck`.
+- **`vdo`'s "no diffuse" third — owned, drawn untextured.** The gate rolled three conditions into one name and
+  the live one was "the material has no texture slot 0". **The engine draws such a part.**
+  `Material::BindAllStandardTextures` @0x4c6e30 answers a null slot with `SetActiveTextureAndBind(unit, 4, 0)`,
+  which is `GLRender::SetTextureStageEnabled(unit, 0)` @0x4c93d0 — the stage leaves
+  `m_bEnabledTextureStages`, so it contributes no multiply — and `PartTriMesh::Draw` @0x4513d0 calls
+  `RenderFlat` regardless. That is a white surface, which is exactly the stand-in `OwnedTextures.WhiteTid`
+  already mints for a live diffuse with no GL id. Both ends take it now: `no-diffuse=N owned on the white
+  stand-in` on the census line, `no-diffuse N drawn untextured/frame` on the `[alloy]` line (it used to be
+  `tex (no-diffuse …)` under **NOT DRAWN**). Unlike the tid-0 case the record is *not* left stale: an absent
+  slot is not a pending build, so nothing will ever arrive to re-resolve.
+  The other two conditions (`v == 0`, `Mode != 1`) stay as a guard and are unreachable for a bound record —
+  `SceneWalk.TryBind` releases a non-mode-1 VDO outright, and the drift gate above re-reads a vacated one — so
+  a nonzero `vdo=` is a table bug, not content.
+
+### Correct skips, with the engine fact
+
+- **`scene-tint` (`gob+0x19`).** `PartTriMesh::Mat` @0x450960's branch paints the part in
+  `SetColor4f(scene+0x14c..0x154, 1.0)` under `Disable(5)` — the scene's **fog colour**
+  (`Scene::SetFogColor` @0x45e220 is that field's setter), unlit, the gob alpha discarded. The flag has
+  exactly two writers: `Gob::Gob` (0) and `Scene::SetSkyFade` @0x45e2b0 (1). The only object ever passed to
+  the latter is the `skyfade1` model `CNWCArea::LoadSkyBox` creates, and that gob is never `Gob::SetScene`'d —
+  `Scene::SetSkyFade` just stores it at `Scene+0x38`, so it never reaches `Scene::ChildAdd` @0x461d50 and is
+  not in `Scene+0x130`, the list `SceneWalk` enumerates. The engine draws it from `Scene::RenderSkyBoxes`
+  @0x466910 alone, outside every draw bucket, which is the sky's own path (#125/#136). The world census
+  cannot reach it, and owning it there would be a second sky at world depth. Expect `scene-tint=0`.
+  *Correction on the way past:* `gob+0x18`, which `EngineLayout.GobHighlight` names and which the #285 note
+  above calls "the placeable highlight", is the **skybox** flag — its only writer is `Scene::SetSkyBox`
+  @0x45e260, setting it on all four skybox gobs, and `Mat` reads it to keep a skybox part out of the lit
+  branch. The build-file key is kept; what it means is that. The placeable highlight is `Scene`'s own
+  highlight list (`Scene::AddHighlightGob` / `DoHighlightGob`), not a gob byte.
+- **`empty-item`** (was `item` + `item-range`; the out-of-range half moved to the drift gate above). What is
+  left is an item the VDO holds with **zero indices**. `RenderFlat` @0x450eb0 passes
+  `VertexDataObject::GetItemElementSize` straight to `RenderVertexData` as the index count, so vanilla issues
+  a draw of nothing for it too — and the `item < 0` case is `SetupArrays` @0x458920's own zero-totals exit
+
+- **`unrenderable`.** `PartTriMesh::IsPartRenderable` @0x450e60 is the gate every `Part*::Draw` override runs
+  first, and that both bucket-add functions run before every colour-bucket add —
+  `Scene::AddPartsToDrawBuckets` @0x4751d0 over the texture-ordered mesh lists
+  (`if (part && (IsPartRenderable(part) || g_nRenderPartBBox | g_nRenderPartPivots))`) and
+  `Scene::AddPartsTreeToDrawBuckets` @0x460880 over a gob tree. A part failing it is drawn from **no**
+  engine path. `part+0x96` has two writers — the `PartTriMesh` ctor sets it, `CombineParts`
+  @0x473d30 clears it on every part it merges into a combined mesh — so these are absorbed originals still
+  hanging in the scene tree whose geometry Alloy already draws, as the combined mesh that replaced it (#338).
+- **`dup-sibling`.** Two coincident tri-mesh siblings under one parent with byte-equal transform, equal
+  element/vertex counts and byte-equal vertex positions (`AlloyRenderer.SamePositions`). Vanilla draws both
+  and the depth tie decides which is seen; Alloy's submission order is not the engine's, so drawing both
+  flickered (#397, the stock `ashlw_072.mdl` shield). Refusing the earlier reproduces the tie's outcome from
+  one draw: it is a skip of a **duplicate**, not of a surface — whichever twin vanilla shows, the pixels are
+  the same geometry. The ceiling stands (`tools/mdlcensus/dupsib.py` is the offline twin): a deliberate
+  coincident overlay with equal counts *and* equal positions loses its base. #317 / PR #648 narrowed it from
+  "equal counts" to "equal positions" after it ate a door leaf's near face.
+
+- **`hidden` (CX-92).** A part under a subtree whose `part+0x34` draw gate is clear. `Scene::AddPartsTreeToDrawBuckets`
+  @0x460880 and `Gob::PartDraw` @0x451d50 both return on that byte before recursing, so vanilla draws nothing
+  there either. The entry is HELD (`PartTable.StHidden`) rather than released, so a re-show is noticed by
+  re-reading the byte (`docs/missing-parts-triage.md`). It is exempt from #128's all-owned-or-none, and it is
+  counted as `H held hidden on part+0x34` in the census `instances:` clause rather than under `rejects:`,
+  because it is a hold, not a refusal.
+
+### What to read live
+
+`rejects: stale-identity=… vdo=… scene-tint=… empty-item=… unrenderable=… dup-sibling=… | no-diffuse=…` on the
+census line is the whole ledger, and `[by gate: …]` attributes the post-classification half by class.
+`scene-tint` and `vdo` should read **0**; `stale-identity` should read 0 in a settled area and a small rate
+under churn; `empty-item`, `unrenderable` and `dup-sibling` are the correct skips above and may read nonzero,
+as may the `held hidden` count on the `instances:` clause.
+
+### Accepted in writing: `volumetric` materials (the other half of draw bucket 5)
 
 `sample_framebuffer` has two values and they are different classes, not degrees of one:
-`Scene::AddPartsTreeToDrawBuckets` @0x460880 routes **2** (water) to bucket 6 and **1** (refraction glass) to
-bucket 5. #129 gave water an Alloy program that samples the one framebuffer copy Alloy already takes. Bucket 5
-has none, and #264 removed the engine draw that used to cover it, so it is a hole.
+`Scene::AddPartsTreeToDrawBuckets` @0x460880 routes **2** (water) to bucket 6 and **1** to bucket 5. #129 gave
+water an Alloy program that samples the one framebuffer copy Alloy already takes. **CX-90 owns bucket 5**, and
+what is left in it is the *other* keyword the same function files there: `volumetric`.
 
-**Accepted, not fixed.** The reasoning:
+**What `sample_framebuffer 1` actually buys, measured.** The engine's own changelog
+(`lang/en/docs/patchnotes/87.8193.35.md:263`) states the whole of it — "renders near the end of the frame.
+Allows rendering refractions and similar" — and the code agrees: bucket 5 is drawn right after
+`Camera::CopyRenderSubframe` @0x4a6b90, which binds the copy's colour and depth on texture units 11 and 12
+(`Camera::BindRenderSubframeTextures` @0x4a6ab0). The *refraction* is then the material's own fragment
+shader's business. Three facts settle that there is nothing else to port:
 
-1. It is the *only* remaining class with no Alloy program at all, and the shape of the fix is known — the
-   water pass is the precedent, since bucket 5 needs the same framebuffer copy and a refraction offset rather
-   than a wave model. It is a ticket, not a gap in the frame architecture.
-2. SoW content does not appear to use it: `sample_framebuffer 1` is a `.mtr` keyword
-   (`SharedMaterial::ParseField` @0x4c6760, field `+0x1f4`), and the test area classified zero parts into it.
-3. The hole is **measured, not assumed**. Both ends are instrumented and neither is optional:
-   `fb-sampling/volumetric=` on the census line is how many candidates the material gate refused, and
-   `sample-class=` on the `[scenewalk]` line is how many parts the engine's own classification put in draw
-   bucket 5 this period — i.e. the size of the hole, read off the engine's answer rather than ours.
-   `SceneWalk.CrossCheck` computes it against `Scene+0x208`, which holds the finished classification.
+1. **No stock `.mtr` declares the keyword.** The base game ships seven `.mtr` files in total and none of them
+   use it; a binary scan of every `data/*.bif` finds the string only in the engine binaries and the changelog.
+2. **No stock world shader samples the copy.** `texFBColor`/`texFBDepth` are declared unconditionally in
+   `inc_common.shd`, and the only geometry shaders that read them are `fswater.shd` (refraction + SSR) and
+   `fsparticle.shd` (a depth tap for soft particles). Everything else that reads them is post-process.
+3. **The content that does use it names a stock shader.** The three `sample_framebuffer 1` materials on this
+   machine (`assets/content/item/quarterstaff/081-085_fatherofstaves/stff_mtl_{red,slvr,gold}.mtr`) are
+   `transparency 1` + `customshaderfs fslit_nm` — stock, and `fslit_nm` never touches `texFBColor`. They are
+   using the keyword as a **late-draw hint**, which is all it is.
 
-**Open acceptance box (needs a live run, cannot be ticked here):** find content that uses
-`sample_framebuffer 1` — a refraction-glass window or a magical barrier — stand in front of it and read
-`sample-class=` on the `[scenewalk]` line. It read 0 in the test area, which makes the hole *unmeasured*
-rather than absent; a nonzero reading on such content is what turns this acceptance into a ticket.
+So Alloy draws bucket 5 by classifying each part off its material exactly as it classifies every other part
+(`AlloyClasses.Of`). For the content above that is the blended class — sorted back to front, which is strictly
+better than vanilla's unsorted late slot. Nothing takes a second framebuffer copy, because nothing would read
+it. *If* a content `.mtr` ever pairs `sample_framebuffer 1` with a custom FS that samples `texFBColor`, the
+place that lands is the hosted-content-stage table (`ShaderFeatures.FsNames`, #350) plus two texture units the
+lit bracket does not already spend — `TextureSlots.SnapshotColor`/`SnapshotDepth` are shared with the SSAO
+and OIT pairs, so they are not free inside the lit pass. That is a ticket, and it has no content yet.
+
+**`volumetric` is refused, and this is the writing.** The changelog describes it as two draws: "renders
+back-facing vertices to depth and renders with updated depth buffer sample texture before rendering
+front-facing". `AddPartsTreeToDrawBuckets` matches — a volumetric part is added to bucket 3 **and** to bucket 5
+— so one part is drawn twice per pass, in two states, and Alloy's one-owner invariant cannot express that
+without a second pass built for it. `AlloyCensus.RefusedByLateKeywords` is the whole rule, asserted in both
+directions by `AlloyCensus.SelfCheck`, and `volumetric=` on the census line counts what it eats.
+
+**The instrument.** `sample-class=<hole>/<class>` on the `[scenewalk]` line: the right number is how many parts
+the engine's own classification put in bucket 5 this period, the left one is how many of those Alloy does not
+own — i.e. the size of the hole, read off the engine's answer rather than ours. `SceneWalk.CrossCheck` computes
+both against `Scene+0x208`, which holds the finished classification. The left number must be 0 wherever the
+only late keyword in play is `sample_framebuffer 1`.
+
+**Open box (needs a live run, cannot be ticked here):** stand in front content that uses the keyword — a
+Father of Staves is the known case — and read the pair. `0/n` with the staff visible is the fix working;
+anything else names what is left.

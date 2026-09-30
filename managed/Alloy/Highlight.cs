@@ -4,18 +4,18 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
-using CX.Services.Quickbar;
 
 using static CX.Alloy.AlloyRenderer;
 
 namespace CX.Alloy;
 
-/// <summary>#232's second mode: the OWNED highlight. Instead of replaying the engine's
-/// <c>Scene::DoHighlightGob</c> glow (gob geometry through <c>WritePartHighlightVertices</c>), redraw the
+/// <summary>#232's second mode, CX-82's default: the OWNED highlight. Instead of replaying the engine's
+/// <c>Scene::DoHighlightGob</c> glow (three additive quads per part, cut from its bounding box), redraw the
 /// highlighted object flat: a 50%-alpha fill over its visible surface plus a thick, smooth silhouette
-/// outline. Opt-in via <c>alloy.highlight=outline</c> (Renderer → Selection highlight); when
-/// it draws, <see cref="RspShim.EngineOverlays"/> narrows the engine glow to the gobs this pass could NOT
-/// cover (see <see cref="HandledCount"/>).
+/// outline. <c>alloy.highlight</c> (Renderer → Selection highlight) picks it; <c>glow</c> sends every root to
+/// <see cref="HighlightGlow"/> instead. Whatever the outline cannot cover -- an unclaimed source channel, a
+/// root with no Alloy draw records -- goes to <see cref="HighlightGlow"/> in the same slot, so no engine
+/// draw is left to make up the difference.
 /// <para>Runs right after <see cref="PostChain"/>'s composite: the target framebuffer holds the finished
 /// DISPLAY-space frame and <see cref="PostChain.DepthTex"/> holds the frame's depth. The pass is
 /// SCREEN-SPACE and, whatever the highlight count, exactly two draws deep: (1) ALL highlighted objects'
@@ -31,10 +31,10 @@ internal static unsafe class Highlight
 {
     /// <summary>Bit 0 of the fade owner's flag byte: <c>Scene::DoHighlightGob</c> @0x470fc0 skips an
     /// attached child whose owner has it set.</summary>
-    private const int SkipFlagBit = 1;
+    internal const int SkipFlagBit = 1;
 
     /// <summary>Ceilings: highlighted ROOT gobs per frame, and (roots + attached children) in total.
-    /// Roots beyond the cap stay unhandled and get the engine glow instead of silently vanishing.
+    /// Roots beyond the cap take the glow instead of silently vanishing.
     /// ponytail: the per-draw match below is a linear scan over these targets; if a census ever shows
     /// hundreds of simultaneous highlights mattering, swap it for a fixed-size open-addressed table.</summary>
     private const int MaxHlRoots = 128, MaxHlTargets = 256;
@@ -53,7 +53,7 @@ internal static unsafe class Highlight
     /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
     /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. 4 is the
     /// tab-target lock (CX-636), a Tab highlight in all but source, so it is. Everything unclaimed falls through
-    /// to <see cref="RspShim"/>'s <c>GlowRemainder</c> and gets the engine glow. <c>/alloy hlchan</c>.</summary>
+    /// to <see cref="HighlightGlow"/>'s glow. <c>/alloy hlchan</c>.</summary>
     internal static int HlChannels => Renderer.HlChan.V;
     internal const int DefHlChannels = 0b10111;
 
@@ -101,7 +101,7 @@ internal static unsafe class Highlight
 
     /// <summary>Did the source hook claim this gob? A gob the hook never saw is not ours: the engine can put
     /// a gob in the highlight list by a path that never reaches <c>RefreshHilite</c>, and the safe verdict
-    /// for an unrecognised source is the vanilla glow.</summary>
+    /// for an unrecognised source is the glow, not an outline.</summary>
     private static bool OwnedHighlight(IntPtr gob)
     {
         for (int i = 0; i < _ownedHlN; i++) if (_ownedHl[i] == gob) return true;
@@ -127,19 +127,6 @@ internal static unsafe class Highlight
     private static int _hlW, _hlH;
     private static uint _hlDepthAttached;
     private static bool _hlFailed, _hlLogged;
-
-    /// <summary>The root gobs the pass actually covered this frame (at least one Alloy record drew into the
-    /// mask). Read by <see cref="RspShim.EngineOverlays"/>, which narrows the engine glow to the REST --
-    /// a highlighted object with no drawable records (an invisible usable placeable, a climb/sit indicator)
-    /// has nothing in the mask, and the engine's own glow is the only thing that can mark it. Valid for the
-    /// frame <see cref="TakeHighlightDrawn"/> returns true on; <see cref="HandledCount"/> is reset with it.</summary>
-    internal static readonly IntPtr[] HandledHl = new IntPtr[MaxHlRoots];
-    internal static int HandledCount;
-
-    /// <summary>Set when the pass drew this frame; read-and-cleared by <see cref="RspShim.EngineOverlays"/>
-    /// so the engine glow only stands down on frames the owned highlight actually replaced it.</summary>
-    private static bool _hlDrawn;
-    internal static bool TakeHighlightDrawn() { bool d = _hlDrawn; _hlDrawn = false; return d; }
 
     internal static void HighlightContextLost()
     {
@@ -212,19 +199,23 @@ internal static unsafe class Highlight
 
     /// <summary>The pass. Called from the frame walk immediately after the post-process composite; the
     /// engine target is bound with the finished frame in it.
+    /// <para>CX-82: it covers EVERY highlighted root, because nothing engine-side draws afterwards any more.
+    /// A root whose source channel the outline claims and whose parts Alloy drew gets the mask outline; every
+    /// other root -- an unclaimed VFX channel, or no Alloy records at all -- is staged into
+    /// <see cref="HighlightGlow"/>, which draws the engine's glow quads in the same slot.</para>
     /// <para>#391: the mask is drawn at the RENDER size (<paramref name="viewport"/>) because it depth-tests
     /// against the render-res frame depth; the composite over the finished frame runs at
     /// <paramref name="display"/>, sampling the mask bilinearly. The outline radius is in mask texels, so it
     /// widens by 1/scale on screen -- noted, not corrected.</para></summary>
-    internal static void OutlineHighlightPass(int groups, Matrix4x4* vp, float jx, float jy, int* viewport, int* display)
+    internal static void OutlineHighlightPass(int groups, Matrix4x4* vp, Matrix4x4* view, Matrix4x4* proj,
+                                             float jx, float jy, int* viewport, int* display)
     {
-        HandledCount = 0;
-        if (!Renderer.OutlineHighlight) return;
+        HighlightGlow.Reset();
         IntPtr scene = _enrollScene;
         var sc = new Scene(scene);
         if (scene == IntPtr.Zero || sc.HiliteCount == 0) return;
         if (PostChain.DepthTex == 0) return;
-        if (!EnsureHighlightPrograms()) return;
+        HighlightGlow.Begin(scene, EyePos);
 
         // The target set for EVERY highlighted root at once: the gob plus its visible attached children
         // (weapons, shields -- exactly the set the engine glow covers), each carrying its root's index so
@@ -240,15 +231,15 @@ internal static unsafe class Highlight
         IntPtr* arr = (IntPtr*)sc.HiliteGobs;
         float* cols = (float*)sc.HiliteColors;
         int nT = 0;
+        bool outline = Renderer.OutlineHighlight && EnsureHighlightPrograms();
         for (int i = 0; i < nGobs; i++)
         {
             rootHit[i] = 0;
-            if (nT >= MaxHlTargets) break;
+            if (!outline || nT >= MaxHlTargets) continue;
             IntPtr gob = arr[i];
             // #336: the list is source-agnostic -- a spell's glow sits in it looking exactly like a Tab
             // highlight, and drawn as a crisp outline it reads as one. Only what the source hook claimed is
-            // ours; the rest stays in the engine's hands via GlowRemainder, which already covers the roots
-            // this pass leaves unhit.
+            // ours; the rest goes to HighlightGlow, which also covers the roots this pass leaves unhit.
             if (!OwnedHighlight(gob)) continue;
             targetRoot[nT] = (byte)i;
             targets[nT++] = gob;
@@ -268,32 +259,43 @@ internal static unsafe class Highlight
             }
             if (kids != null) NativeMemory.Free(kids);
         }
-        if (nT == 0) return;
 
         int prevFbo;
         Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &prevFbo);
 
-        // Step 1: ONE visibility mask for the whole set. Biased LEQUAL against the frame's own depth --
-        // visible surface takes its root's colour at full coverage, everything else stays the cleared zero.
-        if (!EnsureHighlightMask(viewport[2], viewport[3]))
-        { Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prevFbo); return; }
-        Gl.Viewport(0, 0, viewport[2], viewport[3]);
-        Gl.ClearColor(0f, 0f, 0f, 0f);
-        Gl.Clear(Gl.COLOR_BUFFER_BIT);
-        Gl.UseProgram(_progHl);
-        Gl.UniformMatrix4fv(_hlVp, 1, 0, (float*)vp);
-        Gl.Enable(Gl.DEPTH_TEST);
-        Gl.DepthFunc(Gl.LEQUAL);
-        Gl.DepthMask(0);
-        Gl.Disable(Gl.BLEND);
-        Gl.PolygonOffset(MaskOffsetFactor, MaskOffsetUnits);
-        DrawTargets(groups, targets, targetRoot, rootHit, nT, cols);
-        Gl.Disable(Gl.POLYGON_OFFSET_FILL);
-        Gl.DepthFunc(Gl.LEQUAL);   // #364: the cutout run leaves EQUAL bound; every later pass assumes LEQUAL
-
-        // Step 2: ONE fullscreen triangle over the finished frame -- fill + dilated outline, blended.
+        if (nT > 0 && EnsureHighlightMask(viewport[2], viewport[3]))
+        {
+            // Step 1: ONE visibility mask for the whole set. Biased LEQUAL against the frame's own depth --
+            // visible surface takes its root's colour at full coverage, everything else stays the cleared zero.
+            Gl.Viewport(0, 0, viewport[2], viewport[3]);
+            Gl.ClearColor(0f, 0f, 0f, 0f);
+            Gl.Clear(Gl.COLOR_BUFFER_BIT);
+            Gl.UseProgram(_progHl);
+            Gl.UniformMatrix4fv(_hlVp, 1, 0, (float*)vp);
+            Gl.Enable(Gl.DEPTH_TEST);
+            Gl.DepthFunc(Gl.LEQUAL);
+            Gl.DepthMask(0);
+            Gl.Disable(Gl.BLEND);
+            Gl.PolygonOffset(MaskOffsetFactor, MaskOffsetUnits);
+            DrawTargets(groups, targets, targetRoot, rootHit, nT, cols);
+            Gl.Disable(Gl.POLYGON_OFFSET_FILL);
+            Gl.DepthFunc(Gl.LEQUAL);   // #364: the cutout run leaves EQUAL bound; every later pass assumes LEQUAL
+        }
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prevFbo);
         Gl.Viewport(display[0], display[1], display[2], display[3]);
+
+        // CX-82: whatever the outline could not cover -- an unclaimed source channel, or a root with no
+        // Alloy draw records at all -- is the owned glow's, in the slot the engine's DoHighlightGob had.
+        int hit = 0;
+        for (int i = 0; i < nGobs; i++)
+        {
+            if (rootHit[i] != 0) { hit++; continue; }
+            HighlightGlow.Stage(arr[i], cols + i * 3);
+        }
+        HighlightGlow.Draw(view, proj, display);
+        if (hit == 0) return;
+
+        // Step 2: ONE fullscreen triangle over the finished frame -- fill + dilated outline, blended.
         Gl.UseProgram(_progHlComp);
         Gl.BindVertexArray(_hlVao);
         Gl.Disable(Gl.DEPTH_TEST);
@@ -314,19 +316,11 @@ internal static unsafe class Highlight
         Gl.Enable(Gl.DEPTH_TEST);
         Gl.DepthMask(1);
 
-        // The verdict, per root: only roots that put at least one record into the mask are HANDLED. The
-        // rest -- no Alloy records, e.g. an invisible usable placeable -- stay the engine glow's to draw.
-        for (int i = 0; i < nGobs; i++)
-            if (rootHit[i] != 0) HandledHl[HandledCount++] = arr[i];
-        if (HandledCount == 0) return;
-        _hlDrawn = true;
-        if (!_hlLogged)
-        {
-            _hlLogged = true;
-            _log?.Info($"AlloyRenderer: outline highlight LIVE -- {HandledCount}/{nGobs} root gob(s) owned " +
-                       "(screen-space mask fill + dilated outline, one pass for the set); the engine's " +
-                       "DoHighlightGob glow keeps any remainder");
-        }
+        if (_hlLogged) return;
+        _hlLogged = true;
+        _log?.Info($"AlloyRenderer: outline highlight LIVE -- {hit}/{nGobs} root gob(s) outlined "
+                 + "(screen-space mask fill + dilated outline, one pass for the set); every other "
+                 + "highlighted root takes the glow");
     }
 
     /// <summary>One walk over the staged batches, issuing a single-draw multidraw for every record whose

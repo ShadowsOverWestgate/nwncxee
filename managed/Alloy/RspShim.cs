@@ -13,27 +13,32 @@ namespace CX.Alloy;
 /// <c>Scene::RenderSinglePass</c> is not called at all -- this runs in its place, calls RSP's per-frame
 /// BOOKKEEPING and issues no engine draw.
 /// <para><b>Why a shim and not a skip.</b> RSP braids drawing with seven pieces of bookkeeping, four with no
-/// other caller in the binary (ADR 0016, "RenderSinglePass is not draw-only"). Skipping it outright freezes
-/// door fades -- and with them door CLICKABILITY, because <c>Gob::HitCheck</c> reads the same field -- all
-/// particle simulation, grass wind, bin LOD, lens-flare occlusion, and the <c>focuslighting</c> global.</para>
+/// other caller in the binary (ADR 0016, "RenderSinglePass is not draw-only"). Skipping it outright freezes all
+/// particle simulation, grass wind and bin LOD. CX-89 took the door fade off that list (<see cref="DoorFade"/>)
+/// and CX-85 the light-side three -- the fade weights, the flare occlusion fade and the <c>focuslighting</c>
+/// global are <see cref="LightFade"/>'s and <see cref="Halos"/>' -- so neither <c>Scene::FadeDoors</c> nor any
+/// engine light code runs on an Alloy frame.</para>
 /// <para><b>It does not walk the buckets.</b> Discovery is <see cref="SceneWalk"/>'s and visibility is
 /// <see cref="CullPass"/>'s, so the frame is built from Alloy's own state end to end (ADR 0018, #264). What
 /// that costs: a part no Alloy program covers is not drawn, since nothing walks that could hand it back;
-/// <c>sample-class=</c> on the <c>[scenewalk]</c> line is the <c>sample_framebuffer</c> class's size, measured
-/// rather than argued.</para>
+/// <c>sample-class=</c> on the <c>[scenewalk]</c> line is the HOLE in the late class (draw bucket 5) over that
+/// class's size, measured rather than argued -- CX-90 took the left number to zero for
+/// <c>sample_framebuffer 1</c>, and <c>volumetric</c> is what can still stand in it.</para>
 /// <para><b>Zero draws is measured, not inspected.</b> nwmain imports exactly <c>glDrawArrays</c> and
 /// <c>glDrawElements</c>; their only call sites are the two funnels below and <c>nk_sdl_render</c> (2D overlay,
 /// outside any Scene pass) -- see <see cref="SymbolMap.GlRenderVertexStreamData"/>. Swallowing both funnels
 /// covers the engine's whole 3D draw surface, and <see cref="_passed"/> is counted at the BOTTOM of the chain
 /// so it reports what actually reached the original. The funnels stay because the shim still calls the
-/// emitter, sky, beam and lens-flare virtuals for their simulation, and every one of those draws for itself.</para>
+/// emitter, sky and beam virtuals for their simulation, and every one of those draws for itself.</para>
 /// <para>Always on: submitting inside the engine's frame was unusably slow, not a fallback (#458).
 /// <c>vanilla=1</c> is the escape hatch, and it takes the whole Alloy path down. A shim that cannot arm is an
 /// <see cref="AlloyGate"/> refusal, so an unarmed shim never has Alloy drawing inside <c>RenderSinglePass</c>.</para>
 /// <para>Dropped on this path, by design (#217's punch list): personal space, paths, drawable squares and
 /// light ranges (all four reachable-but-never-issued), the stencil-shadow block, and
 /// <c>Camera::DoFrameBufferEffects</c>/<c>CopyRenderSubframe</c>. Anything only the engine drew goes with them
-/// -- on SoW that is the dynamic sky (#136). The highlight overlays run through <see cref="EngineOverlays"/>.</para>
+/// -- on SoW that is the dynamic sky (#136). CX-82/CX-83 took the last two engine draws with them: the
+/// object glow is <see cref="Highlight"/> plus <see cref="HighlightGlow"/>, and the area-transition highlight
+/// is <see cref="TriggerHighlight"/>.</para>
 /// <para><b>Also dropped, and it is bookkeeping:</b> RSP's head (@0x46e6b3..0x46e6fb) rebuilds the shadow-light
 /// lists <c>Scene+0x60</c>/<c>+0x70</c> from <c>LightManager::GetShadowLights(1)</c>/<c>(0)</c>. Alloy
 /// self-drives its own light walk from <c>Scene::AddPartsToDrawBuckets</c>, and ADR 0016 found no consumer
@@ -55,20 +60,12 @@ internal static unsafe class RspShim
     // displays has it set. See the punch list for the chain that proves it.
 
     private static ExtenderLog? _log;
-    /// <summary>#456: the LightManager layout probe's one-shot latch.</summary>
-    private static bool _probedLightMgr;
-    private static RenderSkyBoxesFn _skyBoxes;
-    private static GobCollectLightsFn _collectLights;
-    private static IntPtr* _focusObject;
-    private static float* _focusLighting;
     private static GlRenderVertexDataFn* _vdoSlot, _vdoBottomSlot;
     private static int* _fullDynamicLighting;
-    /// <summary>The trigger bucket: a bare <c>CExoArrayList&lt;Part*&gt;</c> head at a global address.</summary>
-    private static EngineList _triggerBucket;
     private static GlRenderVertexStreamDataFn _origStream;
     private static RiEnableFn _riEnable, _riDisable;
     /// <summary><c>GLRender::m_pCurrentCustomProgram</c> -- the latch both draw funnels read. Cleared at the
-    /// shim's exit; see <see cref="EngineOverlays"/>.</summary>
+    /// shim's exit; see <see cref="HandBackEngineState"/>.</summary>
     private static IntPtr* _curCustom;
 
     /// <summary>Chain priority on <c>GLRender::RenderVertexData</c>. Strictly between
@@ -86,11 +83,6 @@ internal static unsafe class RspShim
     /// taken (vanilla, no 4.6 context, a GUI scene) the engine is still drawing, and a carve-out keyed on
     /// the setting would arm Alloy over live engine draws.</summary>
     internal static bool InWindow;
-
-    /// <summary>#232/#233: does this frame have an engine overlay to run after the bracket? Latched at the
-    /// top of <see cref="Run"/>, read by <see cref="PostChain"/> inside it -- the depth hand-back to the
-    /// default framebuffer is only worth its blit on the frames an overlay will use it.</summary>
-    internal static bool WantsEngineOverlays;
 
     /// <summary>Did every ENGINE symbol resolve and both draw funnels hook? Necessary, not sufficient --
     /// <see cref="Run"/> is reachable only through this AND <see cref="Ready"/>. False is an
@@ -121,12 +113,13 @@ internal static unsafe class RspShim
     /// <summary>Last period's refusal totals, so the period line can report the CHANGE. See <see cref="Period"/>.</summary>
     private static int _lastRefBuf, _lastRefTex;
     private static long _swallowed, _passed, _ticks, _frames;
-    /// <summary>Per-vcall tick sums over the period, in the order the shim runs them: emitters, anchor
-    /// (net of the Alloy bracket inside it), sky, bin bucket, beams+flares, engine overlays. What is left
-    /// against <see cref="_ticks"/> is fog/lights/focus and the shim's own bookkeeping. Attribution for the
-    /// period line: the shim's ~6ms is engine simulation, and this says whose.</summary>
+    /// <summary>Per-step tick sums over the period, indexed by <see cref="_stepNames"/>: emitters, anchor (the
+    /// door fade plus the Alloy frame, net of the Alloy bracket inside it), sky, bin bucket, the framebuffer
+    /// hand-back, the engine state hand-back. The shim RUNS the sky before the anchor; the index order is the
+    /// period line's. What is left against <see cref="_ticks"/> is the light tick and the shim's own
+    /// bookkeeping.</summary>
     private static readonly long[] _stepTicks = new long[6];
-    private static readonly string[] _stepNames = { "emit", "anchor", "sky", "bin", "beams", "overlay" };
+    private static readonly string[] _stepNames = { "emit", "anchor", "sky", "bin", "present", "handback" };
 
     /// <summary>The two invariants the shim cannot discover at runtime and would fail silently on.
     /// <para><b>Chain placement.</b> <see cref="SwallowPriority"/> must sit above DrawStatsService's, or the
@@ -136,13 +129,10 @@ internal static unsafe class RspShim
     internal static bool SelfCheck(ExtenderLog log)
     {
         bool ok = SwallowPriority > DrawStatsService.DrawPriority;
-        // #232/#233: the overlay displacements must be distinct from each other AND from the six the shim
-        // already calls. A duplicated displacement is a silent wrong virtual -- FadeDoors run twice, say --
-        // which reads as a rendering oddity rather than as the typo it is.
-        ReadOnlySpan<int> slots = stackalloc int[] { EngineLayout.SceneDoBinBucketSlot, EngineLayout.SceneRenderBeamsSlot,
-                                                     EngineLayout.SceneDoEmitterBucketSlot, EngineLayout.SceneRenderLensFlaresSlot,
-                                                     EngineLayout.SceneFadeDoorsSlot, EngineLayout.SceneDoFogSlot,
-                                                     EngineLayout.SceneDoHighlightGobSlot, EngineLayout.SceneDoHighlightTriggersSlot };
+        // The displacements the shim calls through must be distinct. A duplicated displacement is a silent
+        // wrong virtual -- FadeDoors run twice, say -- which reads as a rendering oddity rather than as the
+        // typo it is. Only the rows the shim still calls are listed; CX-84/85/89 took theirs out with the calls.
+        ReadOnlySpan<int> slots = stackalloc int[] { EngineLayout.SceneDoBinBucketSlot, EngineLayout.SceneDoEmitterBucketSlot };
         for (int i = 0; i < slots.Length && ok; i++)
             for (int j = i + 1; j < slots.Length; j++)
                 if (slots[i] == slots[j]) { ok = false; break; }
@@ -159,28 +149,28 @@ internal static unsafe class RspShim
     {
         _log = log;
         if (!_checkOk) return;   // SelfCheck runs unconditionally, early in AlloyRenderer.Initialize
-        _skyBoxes = EngineFn.RenderSkyBoxes;
-        _collectLights = EngineFn.GobCollectLights;
-        EmitterLighting.Resolve();
-        _focusObject = (IntPtr*)Native.Sym(SymbolMap.SceneFocusObject);
-        _focusLighting = (float*)Native.Sym(SymbolMap.FocusLighting);
+        // CX-85: the light fade, the flare occlusion and the focuslighting write are Alloy's now; the shim
+        // resolves the fade port's symbols here so a gap shows up in the one refusal line below.
+        LightFade.Resolve(log);
+        DoorFade.Resolve(log);   // CX-89: the shim stopped calling Scene::FadeDoors, so this has to be able to run
         _fullDynamicLighting = (int*)Native.Sym(SymbolMap.FullDynamicLighting);
-        _triggerBucket = new EngineList(Native.Sym(SymbolMap.TriggerBucket));
-        // #237: the epilogue's two entry points. Deliberately NOT in the `missing` list below -- a shim that
-        // cannot restore five enable bits is still a shim that draws the frame, and standing the cutover down
-        // over its epilogue would be the worse trade.
+        // #237: the state hand-back's two entry points. Deliberately NOT in the `missing` list below -- a shim
+        // that cannot restore five enable bits is still a shim that draws the frame, and standing the cutover
+        // down over its epilogue would be the worse trade.
         _riEnable = EngineFn.RiEnable;
         _riDisable = EngineFn.RiDisable;
         _curCustom = (IntPtr*)Native.Sym(SymbolMap.GlCurrentCustomProgram);
         // Named, not counted: "an engine symbol did not resolve" is unactionable, and this list is the only
         // place that knows which one. glBindFramebuffer is deliberately NOT here -- see Ready.
-        string? missing = _skyBoxes == null ? SymbolMap.RenderSkyBoxes
-                        : _collectLights == null ? SymbolMap.GobCollectLights
-                        : !EmitterLighting.Ready ? SymbolMap.GetEmitterLighting
-                        : _focusObject == null ? SymbolMap.SceneFocusObject
-                        : _focusLighting == null ? SymbolMap.FocusLighting
-                        : _fullDynamicLighting == null ? SymbolMap.FullDynamicLighting
-                        : _triggerBucket.IsNull ? SymbolMap.TriggerBucket : null;
+        // CX-87 dropped Scene::RenderSkyBoxes from this list with the call: the owned tick needs
+        // Gob::ProcessGob instead, and SkyTick stands ITSELF down when that is missing rather than taking the
+        // whole cutover with it -- stale sky visibility flags are not a reason to give the engine the frame.
+        string? missing = LightFade.Missing
+                        ?? (_fullDynamicLighting == null ? SymbolMap.FullDynamicLighting : DoorFade.Missing)
+                        // CX-86: unlike the sky, the particle simulation CANNOT stand itself down -- the only
+                        // thing behind it is Scene::DoEmitterBucket, whose draws are the engine's, so the
+                        // choice is an owned simulation or a vanilla frame.
+                        ?? EmitterSim.Missing;
         if (missing != null)
         {
             log.Info($"RspShim: {missing} did not resolve -- the shim stands down and with it the whole "
@@ -210,17 +200,23 @@ internal static unsafe class RspShim
     }
 
     /// <summary>The shim. Runs in ENGINE context, in place of <c>Scene::RenderSinglePass</c>.
-    /// <para>Order follows RSP's own. <c>FadeDoors</c> comes first because it is #132's frame anchor: the
-    /// whole Alloy frame draws inside that call, which is exactly where it drew before the cutover. What
-    /// follows it is bookkeeping -- #264 deleted the bucket walk that used to.</para>
+    /// <para>Order follows RSP's own, and the anchor sits where <c>FadeDoors</c> did: the whole Alloy frame
+    /// draws in that slot, which is exactly where it drew before the cutover. What follows it is bookkeeping --
+    /// #264 deleted the bucket walk that used to.</para>
     /// <para>The default framebuffer is bound on entry and left bound on exit, so Alloy resolves straight
-    /// into the backbuffer and the engine's overlay views composite the UI on top of a finished frame. There
+    /// into the backbuffer and the engine's 2D UI composites on top of a finished frame. There
     /// is no engine world FBO under the shim: <c>Camera::InitializeFrameBufferResources</c>,
-    /// <c>CopyRenderSubframe</c> and <c>DoFrameBufferEffects</c> all live inside RSP and go with it.</para></summary>
+    /// <c>CopyRenderSubframe</c> and <c>DoFrameBufferEffects</c> all live inside RSP and go with it.</para>
+    /// <para>CX-84 deleted the two vcalls that existed only to set up the engine's post-bracket overlay draws.
+    /// <c>Scene::DoFog</c> @0x45f1b0 pushed <c>Scene+0x140..0x14c</c> into <c>GLRender::m_fog</c>, which Alloy
+    /// stopped reading at #257 and which no engine draw on an Alloy frame reads now -- the GUI scenes do not
+    /// inherit it either, since <c>Scene::RenderOnlyGobs</c> @0x4682e0 opens with its own
+    /// <c>Disable(1)/Disable(2)</c>. <c>Scene::RenderBeams</c> @0x46aba0 was kept for a state prologue its
+    /// two inheritors no longer need.</para></summary>
     internal static void Run(IntPtr scene)
     {
         long t0 = Stopwatch.GetTimestamp();
-        // #238: the Alloy frame draws INSIDE this call (FadeDoors is #132's anchor), so the shim's own
+        // #238: the Alloy frame draws INSIDE this call (at the anchor step), so the shim's own
         // number has to have it subtracted -- the published "6ms/frame in the shim" was the walk plus the
         // whole Alloy CPU frame, which is what made the ticket's accounting look like 13ms of 150.
         long alloy0 = FrameZones.Ticks(FrameZones.Zone.Alloy);
@@ -229,91 +225,66 @@ internal static unsafe class RspShim
         long shadow0 = FrameZones.Ticks(FrameZones.Zone.Shadow);
         var sc = new Scene(scene);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        // #232/#233: decided BEFORE the anchor, because the answer has to reach PostChain's resolve, which
-        // runs inside it. Both counts are already final here -- Scene::AddPartsToDrawBuckets fills the
-        // trigger bucket and Scene::AddHighlightGob the gob array, both outside RSP and ahead of it.
-        WantsEngineOverlays = sc.HiliteCount != 0
-                              || _triggerBucket.Count != 0;
-        // ...and cleared BEFORE the bracket, not after it: only this frame's blit may arm it. A frame that
-        // bails out of DrawOwned early (nothing enrolled, a PostChain refusal, no 4.6 context) never reaches
-        // the resolve, and an inherited `true` would depth-test the overlays against a stale buffer.
-        PostChain.DefaultDepthOk = false;
-        // #235, item 2 and RSP's very first call (@0x46e6a5). Not a draw: it is
-        // LightManager::ControlLightsFade(+0x60, +0x40, 0), which advances every PartLight's fade weight at
-        // +0x90. That weight is the one FrameRead scales the two area lights at LightManager +0x98/+0xa0
-        // by, so this call is what makes FrameInputs.AreaAmbient/AreaDiffuse current -- which is why the
-        // anchor's read sits after it (#257). Dropped, the weights freeze wherever the last vanilla frame
-        // left them (zero for any light added since), which is wrong-looking lighting, not a missing draw.
-        if (*_fullDynamicLighting != 0)
-        {
-            LightManager lm = sc.LightManager;
-            // #456: the EIGHTH VtblSlot class -- the ticket's list of seven missed it, and a slot Alloy
-            // calls every frame is exactly what the probe vocabulary reaches.
-            AlloyProbe.Once(ref _probedLightMgr, "LightManager", lm.Ptr, _log);
-            if (!lm.IsNull) lm.EnableLights();
-        }
+        // CX-83: snapshotted BEFORE the anchor, because the Alloy frame that draws the highlight runs inside
+        // it. Scene::AddPartsToDrawBuckets fills the trigger bucket outside RSP and ahead of it, so the
+        // bucket is already final here.
+        TriggerHighlight.Enroll();
+        // CX-85: RSP's very first step (@0x46e6a5) was LightManager::EnableLights, i.e.
+        // ControlLightsFade(+0x60, +0x40, 0), the one writer of every PartLight's fade weight at +0x90 --
+        // which FrameRead scales the two area lights at LightManager +0x98/+0xa0 by, which is why it still
+        // runs HERE, ahead of the anchor (#257). LightFade owns that integrator now, and the focuslighting
+        // write with it; g_bFullDynamicLighting gates the fade exactly as it gated the call (#235).
+        LightFade.Tick(scene, *_fullDynamicLighting != 0);
         InWindow = true;
-        // BEFORE the anchor, exactly as RSP orders it (@0x46e736, one instruction group ahead of FadeDoors
-        // @0x46e742). Scene::DoFog @0x45f1b0 pushes Scene+0x140..0x14c into GLRender::m_fog. Alloy no longer
-        // reads that global -- #257 reads the same four Scene fields direct -- but the call stays, because
-        // it is RSP bookkeeping like every other item here: EngineOverlays below runs real engine draws
-        // through GLRender::SetUniforms, which fogs from m_fog. Dropped, those overlays would fog off
-        // whatever RenderDrawBucket's per-item write left there last (0x46d63d writes a SCALED colour).
-        sc.DoFog();                            // scene fog -> GLRender::m_fog, for the engine's own overlay draws
-        // #261, and it is the whole of the particle lag. DoEmitterBucket is the only caller of
-        // PartEmitter::AnimateParticles, and RSP runs it at step 28 -- AFTER the anchor, so an Alloy frame
-        // drew the positions the PREVIOUS frame's simulation left. Under the cutover the order is Alloy's
-        // to pick, so the simulation runs first and the pass draws this frame's particles. Its own draws
-        // are swallowed by the funnels, exactly as they were at step 28, and the walk is where the
-        // population and the engine's back-to-front sort come from.
+        // CX-86: the particle simulation, Alloy's. DoEmitterBucket is the only caller of
+        // PartEmitter::AnimateParticles and that call walks on into the engine's own emitter DRAWS, so the
+        // replay could not survive CX-81 tier 1 -- EmitterSim.Step does the walk, the step and the
+        // back-to-front sort itself, and enrols each emitter with Particles as it goes.
+        // #261's placement is unchanged and still the reason this line is HERE: it runs BEFORE the frame
+        // anchor, so the pass draws this frame's particles rather than last frame's. It is also the one
+        // remaining route back to the engine's own walk -- emitsim.enabled=0 calls DoEmitterBucket from
+        // inside Step, which is the A/B for any effect that looks wrong.
         long s0 = Stopwatch.GetTimestamp();
-        sc.DoEmitterBucket();
+        EmitterSim.Step(sc, scene);
         long s1 = Stopwatch.GetTimestamp(); _stepTicks[0] += s1 - s0;
         // #322 (review): the child brackets netted out of the ANCHOR step are sampled across the anchor
         // vcall alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
         // here goes negative the moment any Alloy/Shadow bracket runs outside the anchor.
-        // #261 took the sky POPULATION off this call -- SkyBox.Enroll walks the Scene's own gobs. It stays
-        // as the sky's SIMULATION tick: ProcessGob, node animation, the cross-fade alpha writes, and the
-        // per-gob SetPosition(Scene+0x190) that parks each dome at the camera. Its draws are swallowed.
-        // #136 moved it AHEAD of the anchor, for the reason #261 moved DoEmitterBucket: Alloy's sky draws
-        // inside the anchor, so a tick that ran after it fed this frame's sky from last frame's simulation
-        // -- and now that the swallow captures the engine's sky PROGRAM and its uniforms, one frame late is
-        // one frame of the wrong camera, visible as jitter the moment the player turns.
-        SkyBox.InTick = true;
-        _skyBoxes(scene);
-        SkyBox.InTick = false;
+        // CX-87: the sky's SIMULATION, ours. #261 took the POPULATION off this step (SkyBox.Enroll walks the
+        // Scene's own gobs) and this takes the remaining three side effects of Scene::RenderSkyBoxes -- the
+        // cross-fade alpha, ProcessGob and the park at Scene+0x190 -- so no engine sky routine is called and
+        // no sky draw is swallowed. Stays AHEAD of the anchor, for the reason #261 moved DoEmitterBucket:
+        // Alloy's sky draws inside the anchor, and Enroll reads what this writes.
+        SkyTick.Run(scene);
         long s2 = Stopwatch.GetTimestamp(); _stepTicks[2] += s2 - s1;
         // #322 (review): the child brackets netted out of the ANCHOR step are sampled across the anchor
-        // vcall alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
+        // call alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
         // here goes negative the moment any Alloy/Shadow bracket runs outside the anchor.
         long ca1 = FrameZones.Ticks(FrameZones.Zone.Alloy), cs1 = FrameZones.Ticks(FrameZones.Zone.Shadow);
-        sc.FadeDoors();                        // door fade + hit-test alpha -- AND #132's anchor: Alloy draws here
+        // CX-89: the anchor is Alloy's own call now, not an after-original hook on Scene::FadeDoors -- which is
+        // not called on an Alloy frame at all. DoorFade.Tick replaces the fade it also did (same field, same
+        // rule), and it goes FIRST because the frame draws the alpha it writes.
+        DoorFade.Tick(scene);
+        AlloyRenderer.FrameAnchor(scene);       // #132's anchor: the whole Alloy frame draws here
         long anchorChild = FrameZones.Ticks(FrameZones.Zone.Alloy) - ca1
                          + FrameZones.Ticks(FrameZones.Zone.Shadow) - cs1;
         long s3 = Stopwatch.GetTimestamp();
-        // #264: the two items the bucket walk used to carry between its draws. Neither reads a thing the
-        // walk leaves behind -- DoBinBucket @0x474c50 iterates the `binbucket` global (wind update, camera
-        // distance, the grass sort) and FocusLighting is Scene field arithmetic of our own -- so with the
-        // walk gone they simply run in RSP's relative order and nothing else moves.
+        // #264: DoBinBucket @0x474c50 reads nothing the bucket walk left behind -- it iterates the
+        // `binbucket` global (wind update, camera distance, the grass sort) -- so with the walk gone it
+        // simply runs at RSP's own position and nothing else moves.
         sc.DoBinBucket();                      // grass wind + per-bin LOD distance
         long s4 = Stopwatch.GetTimestamp(); _stepTicks[3] += s4 - s3;
-        FocusLighting(scene);                  // the focuslighting write, at RSP's step
-        // #261 took the beam POPULATION off this call -- Beams.Enroll reads bucket 15 itself. The vcall
-        // stays as bookkeeping, like DoFog above: its own draws are swallowed by the funnels, and what is
-        // left is the state prologue/epilogue (blend, depth mask, global colour) that RSP's later steps and
-        // EngineOverlays below both inherit.
+        // CX-85 moved the focuslighting write into LightFade.Tick above and the flare occlusion fade into
+        // Halos, which integrates PartLight+0xa0 off Alloy's own depth; CX-84 deleted Scene::RenderBeams.
         long s5 = Stopwatch.GetTimestamp();
-        sc.RenderBeams();
-        sc.RenderLensFlares();                 // flare occlusion fade
         InWindow = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         // #456: HERE and not one line earlier -- the bracket has closed, so this is the ENGINE's context and
-        // its framebuffer 0 is the one about to be presented. Everything the engine draws below (overlays,
-        // the 2D UI) then lands on top of the owned frame instead of beside it.
+        // its framebuffer 0 is the one about to be presented. The engine's 2D UI then lands on top of the
+        // owned frame instead of beside it.
         PresentTarget.HandBack();
         long s6 = Stopwatch.GetTimestamp(); _stepTicks[4] += s6 - s5;
-        EngineOverlays(scene);
-        Epilogue();
+        HandBackEngineState();
         _stepTicks[5] += Stopwatch.GetTimestamp() - s6;
         if (!_barLogged && PostChain.Resolves > 0) Bar();
         long child = FrameZones.Ticks(FrameZones.Zone.Alloy) - alloy0
@@ -321,158 +292,52 @@ internal static unsafe class RspShim
         long spent = Stopwatch.GetTimestamp() - t0;
         FrameZones.Add(FrameZones.Zone.Shim, t0, child);
         _ticks += Math.Max(0, spent - child);
-        // The Alloy bracket runs inside the anchor vcall; net it out so the step reads the ENGINE's share.
+        // The Alloy bracket runs inside the anchor call; net it out so the step reads the door fade's share.
         _stepTicks[1] += Math.Max(0, (s3 - s2) - anchorChild);
         _frames++;
     }
 
-    /// <summary><c>Scene::RenderSinglePass</c>'s trailing state block, replayed verbatim at the shim's own exit
-    /// -- <c>Disable(5) Enable(1) Enable(0xb) Enable(0) Disable(2)</c>, read off the decompilation's tail.
-    /// Routed through <c>RenderInterface</c> so the engine's enable cache learns about it; the enum values are
-    /// not interpreted, because replaying RSP is faithful by construction (#237, punch-list item 38).
-    /// <para><b>Why the exit EDGE matters, not the write set.</b> The frame runs engine 3D (this shim) -&gt;
-    /// the engine's own 2D UI -&gt; <c>UiHostService.OnSwap</c>, whose <c>ResetRenderStates</c> hand-back is
-    /// the LAST thing before the present, so both resyncs land AFTER the 2D UI has drawn and nothing resynced
-    /// at the point RSP's epilogue ran. RSP's opening <c>Enable(5)/Enable(0)/SetBlendFunc(0)</c> (item 6)
-    /// stays dropped: its readers are the engine draws INSIDE the pass, which under the cutover are only the
-    /// shim's own sim vcalls and the overlays above.</para>
+    /// <summary>The engine-state hand-back at the shim's exit: <c>Scene::RenderSinglePass</c>'s own trailing
+    /// block, replayed verbatim -- <c>Disable(5) Enable(1) Enable(0xb) Enable(0) Disable(2)</c>, read off the
+    /// decompilation's tail -- plus the custom-program latch.
+    /// <para><b>CX-84 kept it, and this is why.</b> The ticket expected the epilogue to be an overlay artefact.
+    /// It is not: it is RSP's own exit contract, and its readers are still there. The frame after the shim is
+    /// engine 3D (this) -&gt; the engine's GUI scenes (<c>Scene::RenderOnlyGobs</c> @0x4682e0 and every panel's
+    /// own <c>CAurScene</c>) -&gt; the 2D UI and <c>AurRenderStrings</c> -&gt; <c>UiHostService.OnSwap</c>, whose
+    /// <c>ResetRenderStates</c> lands AFTER all of them. Those engine draws set their state through the
+    /// CACHED <c>RenderInterface</c> wrappers, and Alloy has just driven raw GL for a whole frame without
+    /// writing that cache -- so with no resync here a panel that asks for blending can be told it already has
+    /// it. RSP's opening <c>Enable(5)/Enable(0)/SetBlendFunc(0)</c> stays dropped: its readers were the engine
+    /// draws INSIDE the pass, and there are none.</para>
     /// <para><b>Why two of the five are replayed as a toggle.</b> <c>GLRender::Enable</c> @0x4cae40 opens with
     /// <c>IsEnabled</c> and returns before touching GL when the bit in <c>m_bEnabledStates</c> already agrees;
-    /// <c>Disable</c> @0x4caf80 mirrors it. Alloy drives raw GL for a whole frame and never writes that cache,
-    /// so at the shim's exit the cache holds the last engine vcall's belief while GL holds Alloy's leftovers,
-    /// and a plain replay would short-circuit in exactly the desynced case. Of the five caps only
-    /// <see cref="CapBlend"/> (<c>GL_BLEND</c>) and <see cref="CapDepthTest"/> (<c>GL_DEPTH_TEST</c>) reach GL:
-    /// disabling each first forces the cache to disagree, so the enable that follows always issues the real
-    /// call. Caps 5, 1 and 2 are cache/uniform-sequence writes with no GL call behind them, so for those the
-    /// cache IS the state and they stay a straight replay.</para></summary>
+    /// <c>Disable</c> @0x4caf80 mirrors it. So a plain replay would short-circuit in exactly the desynced
+    /// case. Of the five caps only <see cref="CapBlend"/> (<c>GL_BLEND</c>) and <see cref="CapDepthTest"/>
+    /// (<c>GL_DEPTH_TEST</c>) reach GL: disabling each first forces the cache to disagree, so the enable that
+    /// follows always issues the real call. Caps 5, 1 and 2 are cache/uniform-sequence writes with no GL call
+    /// behind them, so for those the cache IS the state and they stay a straight replay.</para>
+    /// <para><b>The latch.</b> Both draw funnels open with <c>if (m_pCurrentCustomProgram) SetProgram(0xe)</c>
+    /// (<c>RenderVertexData</c> @0x4d05a8, <c>RenderVertexStreamData</c> @0x4d0cd6), and shader type 0xe means
+    /// "use whatever that global points at". Its only clearers are <c>DrawReset</c> @0x4cfa00 and
+    /// <c>ResetRenderStates</c> @0x4d1b29, both on the engine 3D path the swallow eats, and
+    /// <c>SetCustomShaderProgram</c> @0x4ce890 ignores a null argument -- so a program latched inside the
+    /// bracket is still current here and would force the FIRST engine draw after it onto that program with
+    /// that draw's uniforms. The known latcher was the sky's captured program, which CX-88 deleted; the clear
+    /// stays because the latch is a property of the FUNNELS, not of the sky -- <c>SetCustomShaderProgram</c> is
+    /// also called from <c>PartEmitter::RenderEmitter</c> @0x4ad4c0 and <c>SharedMaterial::BindCustomShader</c>
+    /// @0x4c5590, ahead of the funnel the shim swallows. Zeroed rather than <c>DrawReset</c>'d: this is the one
+    /// field of that write set the swallow leaves stale.</para></summary>
     private const int CapBlend = 0, CapDepthTest = 0xb;   // not-an-offset: engine RenderInterface cap enum, an argument to Enable/Disable
 
-    private static void Epilogue()
+    private static void HandBackEngineState()
     {
+        if (_curCustom != null) *_curCustom = IntPtr.Zero;
         if (_riEnable == null || _riDisable == null) return;
         _riDisable(5);
         _riEnable(1);
         _riDisable(CapDepthTest); _riEnable(CapDepthTest);
         _riDisable(CapBlend); _riEnable(CapBlend);
         _riDisable(2);
-    }
-
-    /// <summary>The three dropped highlight overlays, run by the ENGINE at the end of the shim instead of at
-    /// RSP's own position, with the swallow window closed so their draws issue (#232, #233).
-    /// <para><b>Why the engine draws them and Alloy does not.</b> Both build their geometry into the static
-    /// <c>VertexStreamDataObject</c> at 0x1aaba30 through <c>WritePartHighlightVertices</c>, whose arguments
-    /// are a <c>Vector</c> and a <c>Quaternion</c> BY VALUE -- re-implementing that means inventing an ABI for
-    /// a vertex builder the engine already runs correctly. Two vtable calls, faithful by construction.</para>
-    /// <para><b>Why here and not at RSP's slot.</b> Alloy draws inside the FadeDoors anchor, in its own 4.6
-    /// context, and resolves into the default framebuffer; an engine draw cannot be interleaved into that
-    /// bracket. After it the frame is finished and in DISPLAY space, the space these overlays blend in, and
-    /// <see cref="PostChain.DefaultDepthOk"/> says the owned depth reached the same framebuffer. The one visual
-    /// difference from vanilla: an additively-blended highlight composites over water rather than under it.</para>
-    /// <para><c>Scene::DoTriggerBucket</c> stays dropped, classified rather than assumed: it draws exactly the
-    /// complement of this pass -- entries whose <c>PartTrigger+0xd8</c> is clear -- and that flag's only writer
-    /// chain (<c>PartTrigger::SetHighlighted</c> @0x4da090 via <c>AurPartTriggerSetHighlight</c> via
-    /// <c>CNWCTrigger::UpdateTriggerColor</c> @0x80eff0) always sets it, DM branch included. The complement is
-    /// always empty.</para></summary>
-    /// <summary>#462: <c>/alloy hlglow 0</c> skips the engine's <c>DoHighlightGob</c> replay (the trigger
-    /// stencil pass still runs), isolating the glow from the gob's emissive/colour-shift fold.</summary>
-    internal static bool GlowReplay => Renderer.HlGlow.V;
-
-    private static void EngineOverlays(IntPtr scene)
-    {
-        var sc = new Scene(scene);
-        // The custom-program LATCH, cleared before any engine draw issues again. Both funnels open with
-        // `if (m_pCurrentCustomProgram) SetProgram(0xe)` (RenderVertexData @0x4d05a8, RenderVertexStreamData
-        // @0x4d0cd6), and shader type 0xe means "use whatever that global points at". Its only clearers are
-        // DrawReset @0x4cfa00 and ResetRenderStates @0x4d1b29, both on the engine 3D path the swallow eats --
-        // and SetCustomShaderProgram @0x4ce890 ignores a null argument, so it cannot clear it either. So the
-        // sky's PROG_FIXED, latched by SkyBox.NoteEngineDraw at the swallow, is still current here and the
-        // FIRST engine draw after the bracket -- the glow, then the 2D UI -- is forced onto the sky program
-        // with the sky's uniforms. Zeroed rather than DrawReset()'d: this is the one field of its write set
-        // that the swallow left stale, and its Disable() calls go through the cached wrapper (#237).
-        if (_curCustom != null) *_curCustom = IntPtr.Zero;
-        // #232 second mode: on a frame the owned outline+fill highlight drew, the engine glow would double
-        // up on the gobs it covered -- but only on those. Read-and-clear, so a frame where the owned pass
-        // refused (no depth blit, program failure) still gets the full engine glow instead of nothing.
-        bool ownedHighlight = Highlight.TakeHighlightDrawn();
-        if (!WantsEngineOverlays || !PostChain.DefaultDepthOk) return;
-        if (!GlowReplay) { }
-        else if (!ownedHighlight) sc.DoHighlightGob();
-        else GlowRemainder(scene);
-        // The trigger highlight is a STENCIL pass and needs one: SetShadowStencilBuffer @0x460c30 is
-        // ClearStencilValue(0x7f) + SetStencilMask(0xff) + Clear(4), so it clears whatever framebuffer is
-        // bound (no FBO of its own to bind, which is why this replay works at all) -- but the mask it then
-        // builds is the only thing keeping its full-screen quad off the whole screen.
-        if (!PostChain.DefaultStencilOk) return;
-        // RSP calls this twice, with the bool that selects which half of the trigger bucket to draw: 0 at
-        // 0x46ea15 and 1 at 0x46ee97 (read from the disassembly -- the decompiler drops the argument).
-        sc.DoHighlightTriggers(0);
-        sc.DoHighlightTriggers(1);
-    }
-
-    /// <summary>#232 second mode, the remainder: a highlighted gob with no Alloy draw records (an invisible
-    /// usable placeable, a climb/sit indicator) never reaches the owned mask, and the engine glow -- which
-    /// builds its own vertices from the part tree -- is the only thing that can mark it. So on a frame the
-    /// owned pass drew, the engine's <c>DoHighlightGob</c> still runs, NARROWED: Scene's highlight list
-    /// (+0x80 gobs / +0x88 count / +0x90 colours, stride 0xc) is compacted in place to the unhandled gobs,
-    /// the virtual called, and both arrays restored -- entries and count exactly as found. Same thread,
-    /// same frame, no engine code runs in between.
-    /// <para>ponytail: past <see cref="GlowCap"/> roots the compaction buffers stop scaling and the FULL
-    /// glow runs instead -- a doubled highlight on a hundred-object sweep beats losing the invisible ones.</para></summary>
-    private const int GlowCap = 128;
-
-    private static void GlowRemainder(IntPtr scene)
-    {
-        var sc = new Scene(scene);
-        int n = sc.HiliteCount;
-        int handled = Highlight.HandledCount;
-        if (n <= 0 || handled >= n) return;   // everything owned: no glow at all
-        if (n > GlowCap) { sc.DoHighlightGob(); return; }
-        IntPtr* gobs = (IntPtr*)sc.HiliteGobs;
-        float* cols = (float*)sc.HiliteColors;
-        IntPtr* savedGobs = stackalloc IntPtr[GlowCap];
-        float* savedCols = stackalloc float[GlowCap * 3];
-        new Span<IntPtr>(gobs, n).CopyTo(new Span<IntPtr>(savedGobs, n));
-        new Span<float>(cols, n * 3).CopyTo(new Span<float>(savedCols, n * 3));
-        int m = 0;
-        for (int i = 0; i < n; i++)
-        {
-            bool owned = false;
-            for (int k = 0; k < handled; k++)
-                if (Highlight.HandledHl[k] == savedGobs[i]) { owned = true; break; }
-            if (owned) continue;
-            gobs[m] = savedGobs[i];
-            cols[m * 3] = savedCols[i * 3];
-            cols[m * 3 + 1] = savedCols[i * 3 + 1];
-            cols[m * 3 + 2] = savedCols[i * 3 + 2];
-            m++;
-        }
-        sc.HiliteCount = m;
-        if (m > 0) sc.DoHighlightGob();
-        new Span<IntPtr>(savedGobs, n).CopyTo(new Span<IntPtr>(gobs, n));
-        new Span<float>(savedCols, n * 3).CopyTo(new Span<float>(cols, n * 3));
-        sc.HiliteCount = n;
-    }
-
-    /// <summary>Item 5 of ADR 0016's bookkeeping list, replicated from RSP @0x46ebd7..0x46ec46: collect the
-    /// focus object's lights into a stack list, ask the scene's LightManager what that position is lit by,
-    /// and store the three floats. <c>Scene::GetLightingValueAtFocus</c> is the exported reader.
-    /// <para>ponytail: RSP calls <c>Gob::CollectLights</c> unconditionally, so a null focus object never
-    /// happens there. Guarded anyway -- the cost of being wrong is a null <c>this</c> deref in engine code,
-    /// and the cost of the guard is a stale <c>focuslighting</c> on a frame with no focus object.</para></summary>
-    private static void FocusLighting(IntPtr scene)
-    {
-        IntPtr focus = *_focusObject;
-        if (focus == IntPtr.Zero) return;
-        // List<PartLight*> is a two-pointer head/tail block, zeroed before the collect and freed after; the
-        // engine's own frame does exactly this on its stack.
-        IntPtr* list = stackalloc IntPtr[2];
-        list[0] = IntPtr.Zero; list[1] = IntPtr.Zero;
-        _collectLights(focus, (IntPtr)list);
-        var sc = new Scene(scene);
-        EmitterLighting.V3 focusPos = *(EmitterLighting.V3*)Unsafe.AsPointer(ref sc.SkyPos);
-        EmitterLighting.V3 result = EmitterLighting.At(focusPos, sc.LightManager.Ptr, (IntPtr)list);
-        _focusLighting[0] = result.X; _focusLighting[1] = result.Y; _focusLighting[2] = result.Z;
-        if (list[0] != IntPtr.Zero) NativeMemory.Free((void*)list[0]);
     }
 
     /// <summary>The swallow, layer 20 of the <c>RenderVertexData</c> chain. Returning here skips every lower
@@ -484,11 +349,6 @@ internal static unsafe class RspShim
     {
         if (InWindow)
         {
-            // #136: the sky's own draws are the one kind we look at before dropping. SetProgram -- and with
-            // it the whole uniform upload -- lives INSIDE the original we are about to skip, so a custom-
-            // shader sky would reach Alloy's replay with nothing uploaded. SkyBox makes that call here, in
-            // engine context, and records the program.
-            if (SkyBox.InTick) SkyBox.NoteEngineDraw(vdo, item);
             _swallowed++; return;
         }
         // #260's tagging: outside the window the ENGINE is drawing for itself -- the UI, the menu, a GUI 3D
@@ -566,7 +426,10 @@ internal static unsafe class RspShim
                  + $"{OwnedTextures.Borrowed - _lastRefTex} textures this period (must be 0/0)"
                  // #284: lifetime, not a delta -- one attempt per texture makes it a POPULATION (how much of
                  // the world lost its build race) and never a rate. Empty when nothing has ever been unbuilt.
-                 + OwnedTextures.RebuildNote());
+                 + OwnedTextures.RebuildNote()
+                 // CX-85: the ported light tick has no other visible surface. `moved` counting down to a
+                 // handful once an area settles, and `focus` tracking day/night, is what says it is running.
+                 + $"; {LightFade.Describe()}");
         _lastRefBuf = OwnedBuffers.Borrowed; _lastRefTex = OwnedTextures.Borrowed;
         _swallowed = 0; _passed = 0; _ticks = 0; _frames = 0;
         Array.Clear(_stepTicks);

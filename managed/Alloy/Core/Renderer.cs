@@ -25,10 +25,10 @@ internal static class Renderer
                                         NwSyncRead;
     internal static readonly Knob<int> Border, Oit, OitLayers, TexCache, Bindless, BcnDrip, TexPrefetch, TexDelete, MaxElements, RasterRead, TexStream, TexLoad, ModelLoad, MdlCache,
                                        EnrollBudget, ClusterCap, SwapProbe, GlSync, SkipBuckets;
-    internal static readonly Knob<bool> Light, Prepass, AoTest, Retest, HlDiag, HlGlow, Poll, PrepassKey, PrepassFeat, IdTarget,
+    internal static readonly Knob<bool> Light, Prepass, AoTest, Retest, HlDiag, Poll, PrepassKey, PrepassFeat, IdTarget,
                                         BlendDepth, GpuMeter, VisList, WashTest, DepthEqual;
     internal static readonly Knob<int> Viz, Threads, Cull, HlChan, OitViz;
-    internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap;
+    internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap, Holes, Doors;
 
     /// <summary>The highlight mode the pass reads per frame: the stock glow, or the owned outline + fill.</summary>
     internal static bool OutlineHighlight => Highlight.V == "outline";
@@ -71,8 +71,8 @@ internal static class Renderer
                          help: "Size of the 3D frame relative to your screen. Below 1 renders fewer pixels and upscales (faster); "
                              + "above 1 supersamples (sharper, slower). The UI is never scaled.");
         G.Section("Geometry");
-        Highlight = G.Dropdown("highlight", "Selection highlight", new[] { "glow", "outline" }, "glow",
-                               help: "How a selected or hovered object is marked: the stock glow, or an outline with a light fill.");
+        Highlight = G.Dropdown("highlight", "Selection highlight", new[] { "glow", "outline" }, "outline",
+                               help: "How a selected or hovered object is marked: an outline with a light fill, or a soft glow around the object.");
         Weld = G.Slider("weld", "Smooth-shading crease angle", 0f, 180f, 5f, 60f, "°", Tier.Advanced,
                         help: "Faces meeting at a sharper angle than this keep a hard edge. 0 keeps every model's own normals. "
                             + "Applies to models loaded after the change.");
@@ -166,7 +166,6 @@ internal static class Renderer
         Retest = G.Toggle("retest", "retest", CullPass.DefRetest, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         HlDiag = G.Toggle("hldiag", "hldiag", false, Tier.ChatOnly);
         HlChan = G.Slider("hlchan", "hlchan", 0, 31, 1, CX.Alloy.Highlight.DefHlChannels, tier: Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
-        HlGlow = G.Toggle("hlglow", "hlglow", true, Tier.ChatOnly);
         Poll = G.Toggle("poll", "poll", false, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         PrepassKey = G.Toggle("prepasskey", "prepasskey", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         PrepassFeat = G.Toggle("prepassfeat", "prepassfeat", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
@@ -183,5 +182,10 @@ internal static class Renderer
         FrameDumpBtn = G.Button("framedump", "framedump", FrameDump.Arm, Tier.ChatOnly);
         ShaderDump = G.Button("shaderdump", "shaderdump", ShaderStages.DumpToLog, Tier.ChatOnly);
         Snap = G.Button("snap", "snap", FrameTap.Arm, Tier.ChatOnly);
+        // CX-92: the per-instance hole dump -- which part of which creature Alloy is not drawing, and why.
+        Holes = G.Button("holes", "holes", AlloyRenderer.LogHoles, Tier.ChatOnly);
+        // CX-89: every visible door's fade alpha against mindooralpha -- the instrument for "doors still
+        // take a click", which no screenshot shows.
+        Doors = G.Button("doors", "doors", DoorFade.Arm, Tier.ChatOnly);
     }
 }

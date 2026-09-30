@@ -118,6 +118,11 @@ internal static class TextureSlots
     /// sampler. 0..15 is the whole budget this renderer allows itself (GL guarantees only 16 per stage), so
     /// a seventeenth unit is not available to spend here.</summary>
     internal const uint HiZ = Probe;
+    /// <summary>CX-82/CX-83: the frame's own depth texture, read by the two highlight overlays that draw over
+    /// the FINISHED frame -- the glow quads' depth test and the trigger decal's world reconstruction.
+    /// Shares <see cref="SceneDepth"/>'s unit: both are the last programs of the frame, past every pass that
+    /// wants that unit for anything else.</summary>
+    internal const uint HiliteDepth = SceneDepth;
 
     /// <summary>The map samplers, in unit order from <see cref="MapBase"/>. This array IS the bind order the
     /// lit program's link-time <c>glUniform1i</c> loop walks -- there is no second copy of it.</summary>

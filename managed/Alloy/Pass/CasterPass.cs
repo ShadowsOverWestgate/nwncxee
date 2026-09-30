@@ -912,7 +912,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
     }
 
     /// <summary>The world-caster bake, driven ahead of the colour pass that samples it. Since #118 it runs
-    /// at the FadeDoors anchor, BEFORE the colour build -- which is where #302's one-frame record lag comes
+    /// at the frame anchor, BEFORE the colour build -- which is where #302's one-frame record lag comes
     /// from, and why <c>Enroll</c> (the RSP prologue, earlier still) must never move a tenancy stamp for a
     /// slot whose part did not change. Everything below runs inside the #80 bracket.</summary>
     public static void OnPassSlot()

@@ -9,7 +9,8 @@ internal enum Bracket
 {
     /// <summary>World casters: sun cascades + local light cubes. <see cref="CasterPass.OnPassSlot"/>.</summary>
     Shadow,
-    /// <summary>The Alloy colour pass, at #132's frame anchor -- <c>Scene::FadeDoors</c>, after-original.</summary>
+    /// <summary>The Alloy colour pass, at #132's frame anchor -- <c>AlloyRenderer.FrameAnchor</c>, called from
+    /// the shim at the step <c>Scene::FadeDoors</c> used to hold (CX-89).</summary>
     Colour,
 }
 
@@ -73,9 +74,9 @@ internal enum PassId
     /// glow and lose the glow. A second copy taken after the effects is circular.</para>
     /// <para>The engine takes TWO snapshots per frame (<c>Camera::CopyRenderSubframe</c> before bucket 5 and
     /// again before bucket 6, <c>Scene::RenderSinglePass</c> @0x46e5f0) because its bucket order is fixed,
-    /// not because two are needed. The Alloy frame takes one; the engine's water copy disappears with the
-    /// bucket-6 walk it belongs to (<see cref="BucketGate"/>'s <c>HasItemsOfType</c> gate). The
-    /// bucket-5 copy stays the engine's until the framebuffer-sampling class is owned.</para></summary>
+    /// not because two are needed. The Alloy frame takes one; both engine copies went with the bucket walk
+    /// #264 deleted. CX-90 owns bucket 5 without restoring the second: that copy existed for a CONTENT
+    /// shader to sample as <c>texFBColor</c>, and no shader Alloy builds or hosts reads it.</para></summary>
     FbCopy,
     /// <summary>#129: water, drawn from the copy above -- screen-space refraction and reflection with the
     /// #121 probe standing in wherever the march misses. Depth writes ON.</summary>

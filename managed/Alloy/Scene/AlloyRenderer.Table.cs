@@ -533,26 +533,26 @@ public sealed unsafe partial class AlloyRenderer
     // #125: the sky's own draw list, staged after the batch records and issued one draw at a time -- a
     // skybox is a handful of parts and each carries its own captured matrix, so there is nothing to group.
     internal const int MaxSkyDraws = 1024;
-    private static readonly int[] _skVao = new int[MaxSkyDraws], _skTex = new int[MaxSkyDraws];
+    private static readonly int[] _skVao = new int[MaxSkyDraws];
     private static readonly uint[] _skMode = new uint[MaxSkyDraws];
     private static readonly int[] _skSrc = new int[MaxSkyDraws], _skDst = new int[MaxSkyDraws];
     /// <summary>#222: the constant colour <c>PartTriMesh::Mat</c> would have set for this sky part -- white,
     /// or the scene's fog colour where the gob carries the +0x19 tint byte. Three floats per draw.</summary>
     private static readonly float[] _skTint = new float[MaxSkyDraws * 3];
-
-    /// <summary>#136: the sky parts drawn with the ENGINE's own compiled program instead of an Alloy stage
-    /// -- a dynamic sky IS its fragment shader, and there is no port of it. Parallel to the arrays above and
-    /// staged in the same walk; <see cref="MaxEngTex"/> texture units because that is what a stock stage
-    /// declares before the maps an unlit sky cannot use.</summary>
+    /// <summary>The role's alpha, as the engine's <c>SetColor4f</c> fourth component: the plain unlit stage
+    /// reads it off the draw record, a hosted stage from <c>globalColor</c>, so it is carried here once for
+    /// both.</summary>
+    private static readonly float[] _skAlpha = new float[MaxSkyDraws];
+    /// <summary>CX-88: the program this sky draw is issued with -- 0 for the plain unlit stage, else the
+    /// Alloy program <see cref="SkyStage"/> compiled from the material's own custom fragment stage. #136 held
+    /// the ENGINE's compiled program here and needed a second draw list for it; a program of our own is just
+    /// a program, so the two lists are one.</summary>
+    private static readonly uint[] _skProg = new uint[MaxSkyDraws];
+    /// <summary>The material's texture objects on units 0..<see cref="MaxEngTex"/>-1: what a stock fragment
+    /// stage declares before the maps an unlit sky cannot use. Unit 0 always, the rest only for a hosted
+    /// stage -- and the ENGINE's own objects there, never an owned copy (see <see cref="SkyStage"/>).</summary>
     internal const int MaxEngTex = 4;
-    private static readonly uint[] _seProg = new uint[MaxSkyDraws];
-    private static readonly int[] _seVao = new int[MaxSkyDraws];
-    private static readonly uint[] _seMode = new uint[MaxSkyDraws];
-    private static readonly int[] _seCount = new int[MaxSkyDraws], _seBase = new int[MaxSkyDraws];
-    private static readonly nint[] _seOff = new nint[MaxSkyDraws];
-    private static readonly int[] _seSrc = new int[MaxSkyDraws], _seDst = new int[MaxSkyDraws];
-    private static readonly int[] _seTex = new int[MaxSkyDraws * MaxEngTex];
-    private static int _seN;
+    private static readonly int[] _skTex = new int[MaxSkyDraws * MaxEngTex];
     private static int _skyFirst, _skyN;
     internal static uint _drawBuf;
     /// <summary>#153: the per-draw texture-handle SSBO (binding <see cref="BindTexH"/>).</summary>

@@ -9,8 +9,10 @@ using CX.Graphics;
 namespace CX.Alloy;
 
 /// <summary>
-/// Particles (ADR 0011 M3, #131). The engine keeps spawn, movement and life; the owned pass takes the vertex
-/// build, which is the only part of an emitter that was ever a draw. Vanilla builds them in
+/// Particles (ADR 0011 M3, #131). The vertex build, which is the only part of an emitter that was ever a
+/// draw. Since CX-86 the particles it reads are <see cref="EmitterSim"/>'s, whose pool records are laid out
+/// as engine <c>Particle</c>s so this file cannot tell the difference -- which is what makes
+/// <c>emitsim.enabled=0</c> an A/B of the simulation alone. Vanilla builds them in
 /// <c>PartEmitter::RenderEmitter</c> @0x4ad4c0: 0x24 dwords a particle into ONE shared
 /// <c>VertexStreamDataObject</c>, a full-range <c>glBufferSubData</c> and one <c>glDrawArrays</c> per emitter,
 /// so nothing survives the call to bind and this is a REBUILD, not a replay -- every input the build reads is
@@ -24,10 +26,11 @@ namespace CX.Alloy;
 /// issued this pass is marked and the hook declines its original; an emitter we cannot build (custom material
 /// shader, no texture, table full) is not marked and, under the shim's vertex funnels, is NOT DRAWN --
 /// <c>suppressed</c> on the [particles] line counts them. No all-owned-or-none rule (#264, #285).</para>
-/// <para><b>Simulation runs before the anchor.</b> <c>Scene::DoEmitterBucket</c> @0x476f00 is the only
-/// caller of <c>PartEmitter::AnimateParticles</c> @0x4ac660 and RSP runs it at step 28, after the frame
-/// anchor; <see cref="RspShim"/> runs that walk BEFORE the anchor instead, so population, sort and positions
-/// are this frame's. Simulation stays engine-side per ADR 0018's boundary (#261).</para>
+/// <para><b>Simulation runs before the anchor, and it is ours.</b> <c>Scene::DoEmitterBucket</c> @0x476f00
+/// was the only caller of <c>PartEmitter::AnimateParticles</c> @0x4ac660 and RSP ran it at step 28, after
+/// the frame anchor; #261 moved the walk ahead of the anchor and CX-86 replaced it with
+/// <see cref="EmitterSim.Step"/>, which is also where the population, the sort and
+/// <see cref="Enroll"/> now come from. ADR 0018's CX-86 amendment moved that boundary.</para>
 /// <para><b>The feed</b> is a persistent RECORD buffer updated by delta. One 96-byte record a particle
 /// (<see cref="RecFloats"/>) lives in a block owned by its emitter's table slot; the build writes a CPU shadow,
 /// hashes the block, and sends it only when the simulation moved it. The six vertices a particle expand from
@@ -181,6 +184,12 @@ internal static unsafe partial class Particles
         /// frames -- that is what makes the upload a delta rather than a rebuild -- and reassigned only when
         /// the emitter needs more room than it holds.</summary>
         public int RecBase, RecCap;
+        /// <summary>CX-86: this emitter's particle array and its count, as the enroller handed them in. The
+        /// pass is indifferent to who stepped them -- <see cref="EmitterSim"/>'s pool records are laid out as
+        /// engine <c>Particle</c>s, so both sources are a <c>Particle*</c> array -- which is what lets one
+        /// build loop serve the owned simulation and the engine's own walk.</summary>
+        public IntPtr* Parts;
+        public int PartCount;
         /// <summary>FNV-1a over the block as it was last UPLOADED. Equal means the engine's simulation
         /// produced the same records this frame, so the block is not re-sent. Zero means "never uploaded",
         /// which is why the allocator sets it to zero on every reassignment.</summary>
@@ -384,12 +393,27 @@ internal static unsafe partial class Particles
         if (scene != _scene) Forget();
         _scene = scene;
 
-        int slot = Capture(em);
+        var ev = new PartEmitter(em);
+        int slot = Capture(em, (IntPtr*)ev.Parts, ev.Count);
         // #261: the decline is what skips the ENGINE's own vertex build, which is this class's whole cost --
         // the funnels only swallow the draw. The shim runs this walk ahead of the anchor, so the stamp it
         // tests is one pass old: "drawn in the pass just gone".
         if (slot >= 0 && _tab[slot].IssuedGen == AlloyRenderer.PassGen - 1) { _suppressed++; return; }
         _origRender(em);
+    }
+
+    /// <summary>CX-86: enrolment from <see cref="EmitterSim"/>, which walks <c>emitterbucket</c> itself now
+    /// that <c>Scene::DoEmitterBucket</c> is not called. Same two jobs <see cref="OnRenderEmitter"/> had --
+    /// learn the population and its transform -- minus the suppression, because there is no original left to
+    /// decline. The caller walks in its own back-to-front order, so capture order still IS draw order.
+    /// </summary>
+    internal static void Enroll(IntPtr em, IntPtr scene, IntPtr* parts, int count)
+    {
+        if (_off || !Enabled.V || em == IntPtr.Zero || parts == null || count <= 0) return;
+        if (!AlloyRenderer.IsWorldScene(scene)) { _foreign++; return; }
+        if (scene != _scene) Forget();
+        _scene = scene;
+        Capture(em, parts, count);
     }
 
     /// <summary>An emitter is being destroyed. #145's rule, applied here: the Alloy draw reads this
@@ -402,12 +426,14 @@ internal static unsafe partial class Particles
         // place in the depth order for a frame.
         for (int i = 0; i < _tabN; i++)
             if (_tab[i].Ptr == em) { _tab[i].Ptr = IntPtr.Zero; break; }
+        // CX-86: the simulation keys a pool block by the same pointer the engine is about to free and reuse.
+        EmitterSim.Forget(em);
         if (_origDtor != null) _origDtor(em);
     }
 
     /// <summary>Record this emitter and its place in the sort. Returns its table slot, or -1 when the table
     /// is full -- which is not a failure, it just leaves the emitter vanilla.</summary>
-    private static int Capture(IntPtr em)
+    private static int Capture(IntPtr em, IntPtr* parts, int count)
     {
         // The capture window opens on the first emitter of a new pass: DoEmitterBucket walks the sorted list
         // in one go, so "the pass changed" is the same event as "a new walk started" without a second hook.
@@ -443,6 +469,7 @@ internal static unsafe partial class Particles
         ref Emit e = ref _tab[s];
         e.Ptr = em;
         e.CapFrame = _frame;
+        e.Parts = parts; e.PartCount = count;
         // RenderEmitter pushes nothing, so the top of the model stack IS the transform the engine's own
         // draw ran under. Almost always identity -- particles simulate in world space -- but reading it
         // costs nothing and an emitter under a transform would otherwise land at the origin.
@@ -670,7 +697,8 @@ internal static unsafe partial class Particles
             // A dead capture: the emitter stopped being walked (culled, finished, or its Gob went away
             // between the walk and here). Replaying it would read a particle array nobody maintains.
             if (e.Ptr == IntPtr.Zero || e.CapFrame < _frame - 1) continue;
-            if (!Resolve(e.Ptr, out int tex, out IntPtr texObj, out int cls, out int cull, out int count))
+            if (!Resolve(e.Ptr, e.Parts, e.PartCount, out int tex, out IntPtr texObj, out int cls,
+                         out int cull, out int count))
             { _declined++; continue; }
             _sSlot[n] = s; _sTex[n] = tex; _sCls[n] = cls; _sCull[n] = cull; _sCount[n] = count;
             // Emissive means nothing without headroom to put it in: on an 8-bit target everything above 1.0
@@ -687,8 +715,8 @@ internal static unsafe partial class Particles
 
     /// <summary>Everything about an emitter that decides whether -- and how -- the Alloy pass draws it.
     /// False means DECLINE, which costs one vanilla emitter draw and nothing else.</summary>
-    private static bool Resolve(IntPtr em, out int tex, out IntPtr texObj, out int cls, out int cull,
-                                out int count)
+    private static bool Resolve(IntPtr em, IntPtr* parts, int rawCount, out int tex, out IntPtr texObj,
+                                out int cls, out int cull, out int count)
     {
         tex = 0; texObj = IntPtr.Zero; cls = 0; cull = 0; count = 0;
 
@@ -707,9 +735,9 @@ internal static unsafe partial class Particles
         int type = e.Type;
         // Type 3 pairs each particle with the NEXT one, so the last has no partner and the loop runs one
         // short. The engine does the same subtraction.
-        count = e.Count - (type == 3 ? 1 : 0);
+        count = rawCount - (type == 3 ? 1 : 0);
         if (count < 1 || e.Life == 0f) { _decEmpty++; return false; }
-        if (e.Parts == IntPtr.Zero) { _decEmpty++; return false; }
+        if (parts == null) { _decEmpty++; return false; }
         IntPtr node = new CX.Engine.Part(em).Node.Ptr;
         if (node == IntPtr.Zero) { _decEmpty++; return false; }
 
@@ -866,7 +894,7 @@ internal static unsafe partial class Particles
 
         // the interpolation parameter's rate: over the particle's INDEX, or over its age
         bool byAge = emv.LifeInterp != 0;
-        float rate = !byAge ? 1f / emv.Count
+        float rate = !byAge ? 1f / MathF.Max(1, e.PartCount)
                             : life > 0f ? 1f / life : NoLifeRate;
 
         // colour, optionally run through the scene lighting at the emitter's position first
@@ -955,7 +983,7 @@ internal static unsafe partial class Particles
         // nothing when the viz dial is off and it is the difference between "particles are wrong" and
         // "Motion_Blur is wrong", which are questions of very different size.
         float vizType = type;
-        IntPtr* parts = (IntPtr*)emv.Parts;
+        IntPtr* parts = e.Parts;
         float u0 = 0f, u1 = 1f, v0 = 0f, v1 = 1f;
         float* p = dst;
 

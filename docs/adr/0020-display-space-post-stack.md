@@ -60,11 +60,15 @@ in its own frame-graph slot (`PassId.PostStack`), on a ping-pong pair of RGBA16F
 ## Consequences
 
 - #352 (hosting the engine's `fsfbpostpr` chain) is one more stage in this table, with the
-  `inc_framebuffer` inputs it needs already on the two units. SSAO, DOF, sharpen and the SoW status
-  overlay all land there; none of them needs a second mechanism.
-- The client's Sharpen option stays inert until #352; `/knobs` says so and no longer lists gamma among
-  them. SSAO is served too, but not here: it is a lighting input computed before the colour pass
-  (ADR 0021, #379).
+  `inc_framebuffer` inputs it needs already on the two units. The SoW status overlay and the content's
+  own grade, noir, rays and flare land there; none of them needs a second mechanism.
+- **CX-93: sharpen and vibrance are stages of this table, not hosted stock GLSL.** They used to reach
+  the frame as `inc_postpr_shrp`/`inc_postpr_vibr` compiled inside the hosted chain, which made every
+  Alloy build of that chain carry engine shader code — and sharpen could not even link there, because
+  its stock text reads `fogStart`/`fogEnd` from the one include the hosted stage skips. Each is now its
+  own stage on its own option bit, exactly like gamma and toon, and the hosted chain compiles with
+  `POSTPROCESSING_TYPES_ENABLED` at 0. SSAO is served too, but not here: it is a lighting input
+  computed before the colour pass (ADR 0021, #379).
 - The client's Anti-Aliasing option is served the same way as gamma (#377): its sample count picks
   the SMAA preset (2 MEDIUM, 4 HIGH, 8/16 ULTRA) and the stage runs last, so it smooths what the
   frame actually shows. Not MSAA (every owned attachment would multiply; cutouts stay aliased), not

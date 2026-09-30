@@ -13,26 +13,64 @@ namespace CX.Alloy;
 /// <para>Vanilla (Ghidra <c>Scene::RenderLensFlares</c> @0x471860) draws each flare as a screen-space quad on
 /// the near plane -- which is why it reads as glued to the screen -- sized and dimmed by
 /// <c>(flareradius - d) / flareradius</c>, tinted <c>light colour + flarecolorshift</c>, and faded by the
-/// occlusion ray it integrates into <c>PartLight+0xa0</c>. That fade is kept (RspShim still runs the vcall);
-/// the quad becomes a view-aligned billboard of world size, and its occlusion is a depth-disc test against the
-/// scene so it slides behind geometry instead of popping.</para></summary>
+/// occlusion ray it integrates into <c>PartLight+0xa0</c>. The quad becomes a view-aligned billboard of world
+/// size, and its per-pixel occlusion is a depth-disc test against the scene so it slides behind geometry
+/// instead of popping.</para>
+/// <para><b>CX-85: the whole-halo fade is ours too.</b> The shim no longer calls
+/// <c>Scene::RenderLensFlares</c>, so nothing engine-side integrates <c>PartLight+0xa0</c> any more. This pass
+/// does, off Alloy's own depth: <see cref="OccCs"/> samples <see cref="SceneDepth"/> once per halo, the answer
+/// comes back through a three-deep buffer ring TWO frames later (so no read ever waits on the GPU), and
+/// <see cref="Step"/> walks the field toward it at the engine's own 3-per-second rate. The field is still
+/// written, not shadowed, so <c>alloy.enabled=0</c> hands the engine a weight it recognises.</para></summary>
 internal static unsafe class Halos
 {
     internal const string ShdHaloVs = "cx_halo_vs", ShdHaloFs = "cx_halo_fs";
+    /// <summary>CX-85's occlusion probe, one invocation per halo. Not an overridable stage: it produces a
+    /// number the simulation consumes, not a pixel.</summary>
+    private const string OccCs = "cx_haloocc_c";
 
-    private const uint BindHalos = 5, GlTriangleStrip = 0x0005;   // not-an-offset: GL primitive-mode enum
+    /// <summary>SSBO binding points. <see cref="BindVis"/> is 8 because nothing else in the pipeline uses 8 --
+    /// <c>BindBufferBase</c> is global state, and 6 (the lightmap chart buffer) only happens not to collide
+    /// because the lit pass draws first.</summary>
+    private const uint BindHalos = 5, BindVis = 8;
+    private const uint GlTriangleStrip = 0x0005;   // not-an-offset: GL primitive-mode enum
     /// <summary>Two vec4 per halo: (pos.xyz, world radius), (linear rgb with the engine fade folded in, flareradius).</summary>
     private const int Floats = 8;
     private const int InitialHalos = 64;
+    /// <summary><c>Scene::RenderLensFlares</c> @0x471860's own integration terms: the occlusion fade travels at
+    /// 3.0 per second on a delta floored at 0.02s, so a flare takes a third of a second to appear or vanish
+    /// however fast the frame runs.</summary>
+    private const float FlareRate = 3.0f, FlareDtFloor = 0.02f;
+    /// <summary>The probe's fixed-point scale and its "no sample" slot value -- off screen or behind the
+    /// camera, where the fade HOLDS rather than decaying toward an answer nobody measured.</summary>
+    private const int VisScale = 1024, VisNone = 0;
+    /// <summary>Ring depth. Two would do (the read names the buffer the GPU finished with last frame); three
+    /// is what <see cref="CullPass"/>'s readback settled on and there is no reason for this one to differ.</summary>
+    private const int Ring = 3;
+    private const int OccGroup = 64;   // not-an-offset: local_size_x in cx_haloocc_c.glsl
 
     private static GetLensFlareLightsFn _getFlareLights;
     private static ExtenderLog? _log;
     private static float[] _stage = new float[InitialHalos * Floats];
+    /// <summary>The <c>PartLight*</c> behind each staged halo, so a ring sample can be matched back to the
+    /// light it measured. Compared, never dereferenced without finding it in THIS frame's list first -- the
+    /// area edge frees every one of them.</summary>
+    private static IntPtr[] _stageKey = new IntPtr[InitialHalos];
     private static int _count, _ssboCap;
     private static uint _prog, _buf;
     private static int _locView, _locProj, _locDepth, _locGain, _locViz;
     private static bool _failed, _off;
     private static int _drawn;
+
+    private static uint _occProg;
+    private static readonly uint[] _visBuf = new uint[Ring];
+    private static readonly int[] _visN = new int[Ring];
+    private static IntPtr[] _visKey = new IntPtr[Ring * InitialHalos];
+    private static uint[] _vis = new uint[InitialHalos];
+    private static int _visSeq, _visCap;
+    private static int _occLoView, _occLoProj, _occLoDepth, _occLoCount;
+    private static bool _occFailed;
+    private static int _occFaded;
 
     /// <summary>The dials are <see cref="Effects"/>' <c>halos</c> / <c>halosize</c> / <c>halogain</c> /
     /// <c>haloviz</c>: one live knob each, so a chat set is what the next launch reads.</summary>
@@ -44,8 +82,9 @@ internal static unsafe class Halos
         log.Info($"Halos: armed -- flare lights drawn as procedural halos (/effects; size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2})");
     }
 
-    /// <summary>Once per world frame, engine context: snapshot the engine's flare-light list. Allocation-free
-    /// past the first growth.</summary>
+    /// <summary>Once per world frame, engine context: integrate each flare's occlusion fade off the sample the
+    /// probe took two frames ago, then snapshot the engine's flare-light list. Allocation-free past the first
+    /// growth.</summary>
     internal static void Enroll(IntPtr scene)
     {
         _count = 0;
@@ -58,32 +97,101 @@ internal static unsafe class Halos
         int n = *(int*)(list + 8);
         if (items == null || n <= 0) return;
         if (n * Floats > _stage.Length) _stage = new float[n * Floats];
+        if (n > _stageKey.Length) _stageKey = new IntPtr[n];
+
+        // Pass 1: who is a halo this frame. The keys have to exist before the fade is integrated, because a
+        // ring sample may name a light that has since been freed and this list is what proves it has not.
         for (int i = 0; i < n; i++)
         {
             var pl = new PartLight(items[i]);
             if (pl.IsNull) continue;
             var nd = new MdlNodeLight(new Part(pl.Ptr).Node.Ptr);
             if (nd.IsNull || nd.FlareCount <= 0) continue;
-            float fade = pl.FlareFade;
-            if (fade <= 0f) continue;
+            float* sizes = (float*)nd.FlareSizes;
+            if ((sizes != null ? sizes[0] : 1f) <= 0f) continue;
+            _stageKey[_count++] = pl.Ptr;
+        }
+        Occlude();
+
+        // Pass 2: the GPU's view of each, with the fade folded into the colour exactly as vanilla folds it.
+        fixed (float* stage = _stage)
+        for (int i = 0; i < _count; i++)
+        {
+            var pl = new PartLight(_stageKey[i]);
+            var nd = new MdlNodeLight(new Part(pl.Ptr).Node.Ptr);
+            float fade = _occFailed ? 1f : pl.FlareFade;
             float* sizes = (float*)nd.FlareSizes;
             float* shift = (float*)nd.FlareShifts;
-            float sz = sizes != null ? sizes[0] : 1f;
-            if (sz <= 0f) continue;
             Vector3 c = pl.Colour;
-            float r = c.X, g = c.Y, b = c.Z;
-            if (shift != null) { r += shift[0]; g += shift[1]; b += shift[2]; }
-            float* d = (float*)System.Runtime.CompilerServices.Unsafe.AsPointer(ref _stage[_count * Floats]);
+            float* d = stage + i * Floats;
             Vector3 wp = pl.Pos;
             d[0] = wp.X; d[1] = wp.Y; d[2] = wp.Z;
-            d[3] = sz * Effects.HaloSize.V;
-            d[4] = Lin(r) * fade; d[5] = Lin(g) * fade; d[6] = Lin(b) * fade;
+            d[3] = (sizes != null ? sizes[0] : 1f) * Effects.HaloSize.V;
+            d[4] = Channel(c.X, shift != null ? shift[0] : 0f, fade);
+            d[5] = Channel(c.Y, shift != null ? shift[1] : 0f, fade);
+            d[6] = Channel(c.Z, shift != null ? shift[2] : 0f, fade);
             d[7] = nd.FlareRadius;
-            _count++;
         }
     }
 
-    private static float Lin(float c) => MathF.Pow(MathF.Max(c, 0f), AlloyLights.SrgbGamma);
+    /// <summary>Read the probe's answer from the ring slot the GPU finished with two frames ago and walk each
+    /// flare's <c>PartLight+0xa0</c> toward it. A sample whose light is no longer a halo is dropped on the
+    /// floor: matching by pointer against this frame's list is what keeps a freed light out of the write.
+    /// <para>No sample (off screen, or the probe never ran) HOLDS the fade. That is deliberate and it is the
+    /// reason <see cref="_occFailed"/> exists as well: a fade nobody is integrating must not silently read as
+    /// "fully occluded", so a probe that cannot build says so once and every halo goes to full brightness with
+    /// only its per-pixel occlusion left.</para></summary>
+    private static void Occlude()
+    {
+        if (_occFailed || _count == 0) return;
+        int r = (_visSeq + 1) % Ring;
+        int have = _visN[r];
+        if (have <= 0 || _visBuf[r] == 0 || Gl.GetNamedBufferSubData == null) return;
+        if (have > _vis.Length) _vis = new uint[have];
+        fixed (uint* v = _vis)
+            Gl.GetNamedBufferSubData(_visBuf[r], IntPtr.Zero, (IntPtr)((long)have * sizeof(uint)), v);
+        float dt = LightFade.Delta(FlareDtFloor);
+        if (dt <= 0f) return;
+        _occFaded = 0;
+        for (int i = 0; i < have; i++)
+        {
+            uint s = _vis[i];
+            if (s == VisNone) continue;
+            IntPtr key = _visKey[r * _visCap + i];
+            int live = -1;
+            // ponytail: linear match, O(samples x halos) -- tens of flares per view; a key->index map if that grows
+            for (int j = 0; j < _count && live < 0; j++) if (_stageKey[j] == key) live = j;
+            if (live < 0) continue;
+            var pl = new PartLight(key);
+            float target = MathF.Min(1f, (s - 1) / (float)VisScale);
+            float next = Step(pl.FlareFade, target, dt);
+            if (next != pl.FlareFade) _occFaded++;
+            pl.FlareFade = next;
+        }
+    }
+
+    /// <summary>One flare's occlusion fade after one step: it travels toward <paramref name="target"/> at
+    /// <see cref="FlareRate"/> per second and never overshoots it. Vanilla's target was binary -- the
+    /// occlusion ray either hit or did not -- so this reduces to <c>RenderLensFlares</c>' own
+    /// <c>+/- dt * 3</c> for a target of 0 or 1, and interpolates for the partial coverage Alloy can measure
+    /// and a ray cannot.</summary>
+    internal static float Step(float fade, float target, float dt)
+    {
+        float step = FlareRate * dt;
+        return fade < target ? MathF.Min(target, fade + step) : MathF.Max(target, fade - step);
+    }
+
+    /// <summary>One staged halo channel: the light colour plus the node's shift, clamped to [0,1] as
+    /// <c>RenderLensFlares</c> @0x471860 clamps each flare channel, linearised, times the clamped fade. An HDR
+    /// light colour left unclamped overflows the RGBA16F target to Inf, and the halo's own zero-visibility
+    /// pixels turn that into NaN. NaN in either input stages as 0.</summary>
+    internal static float Channel(float colour, float shift, float fade)
+    {
+        float v = colour + shift;
+        v = v > 0f ? MathF.Min(v, 1f) : 0f;
+        float f = fade > 0f ? MathF.Min(fade, 1f) : 0f;
+        return MathF.Pow(v, AlloyLights.SrgbGamma) * f;
+    }
 
     /// <summary>The halo pass: after the particles, where vanilla draws its flares (step 29). Additive
     /// (ONE, ONE), no depth test -- visibility is the shader's own depth-disc read of the scene copy. Hands
@@ -101,6 +209,7 @@ internal static unsafe class Halos
             Gl.NamedBufferSubData(_buf, IntPtr.Zero, (IntPtr)(_count * Floats * sizeof(float)), s);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindHalos, _buf);
         SceneDepth.Bind();
+        Probe(view, proj);
         Gl.UseProgram(_prog);
         Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
         Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
@@ -116,6 +225,56 @@ internal static unsafe class Halos
         Gl.Enable(Gl.DEPTH_TEST);
         Gl.DepthMask(1);
         _drawn += _count;
+    }
+
+    /// <summary>CX-85: dispatch this frame's occlusion probe into the ring slot two frames from being read.
+    /// Runs with the halo SSBO and <see cref="SceneDepth"/> already bound, before the draw, so it shares both.</summary>
+    private static void Probe(Matrix4x4* view, Matrix4x4* proj)
+    {
+        if (!EnsureProbe()) return;
+        int w = _visSeq % Ring;
+        bool grow = _count > _visCap;
+        if (grow)
+        {
+            _visCap = Math.Max(_count, InitialHalos);
+            _visKey = new IntPtr[Ring * _visCap];
+            for (int i = 0; i < Ring; i++) _visN[i] = 0;   // the old keys' indices no longer address this ring
+        }
+        Gl.EnsureStorage(ref _visBuf[w], (long)_visCap * sizeof(uint), grow || _visBuf[w] == 0);
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindVis, _visBuf[w]);
+        Gl.UseProgram(_occProg);
+        Gl.UniformMatrix4fv(_occLoView, 1, 0, (float*)view);
+        Gl.UniformMatrix4fv(_occLoProj, 1, 0, (float*)proj);
+        Gl.Uniform1i(_occLoDepth, (int)SceneDepth.Unit);
+        Gl.Uniform1i(_occLoCount, _count);
+        Gl.DispatchCompute((uint)((_count + OccGroup - 1) / OccGroup), 1, 1);
+        Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT | Gl.BUFFER_UPDATE_BARRIER_BIT);
+        for (int i = 0; i < _count; i++) _visKey[w * _visCap + i] = _stageKey[i];
+        _visN[w] = _count;
+        _visSeq++;
+    }
+
+    private static bool EnsureProbe()
+    {
+        if (_occProg != 0) return true;
+        if (_occFailed) return false;
+        if (Gl.DispatchCompute == null || Gl.MemoryBarrier == null || Gl.GetNamedBufferSubData == null)
+            return Fail("this context has no compute or no buffer readback");
+        _occProg = GlProgram.Compute(OccCs, ShaderSource.Get(OccCs + ".glsl"), _log, "Halos occlusion probe");
+        if (_occProg == 0) return Fail("the probe program did not build");
+        _occLoView = GlProgram.Loc(_occProg, "uView");
+        _occLoProj = GlProgram.Loc(_occProg, "uProj");
+        _occLoDepth = GlProgram.Loc(_occProg, "uSceneDepth");
+        _occLoCount = GlProgram.Loc(_occProg, "uCount");
+        return true;
+    }
+
+    private static bool Fail(string why)
+    {
+        _occFailed = true;
+        _log?.Info($"Halos: the flare occlusion fade is OFF for the session -- {why}. Halos keep their "
+                 + "per-pixel depth occlusion and draw at full strength; PartLight+0xa0 is left alone.");
+        return false;
     }
 
     private static uint _vao;
@@ -141,8 +300,38 @@ internal static unsafe class Halos
         return true;
     }
 
-    internal static void ContextLost() { _prog = 0; _buf = 0; _vao = 0; _ssboCap = 0; }
-    internal static void ResetPeriod() => _drawn = 0;
-    internal static string Stats() => _off ? "halos unavailable" : !Effects.Halos.V ? "halos off" : $"halos {_count} flare lights, {_drawn} drawn";
+    internal static void ContextLost()
+    {
+        _prog = 0; _buf = 0; _vao = 0; _ssboCap = 0;
+        _occProg = 0; _visCap = 0; _visSeq = 0;
+        for (int i = 0; i < Ring; i++) { _visBuf[i] = 0; _visN[i] = 0; }
+    }
+
+    internal static void ResetPeriod() { _drawn = 0; _occFaded = 0; }
+    internal static string Stats() => _off ? "halos unavailable" : !Effects.Halos.V ? "halos off"
+        : $"halos {_count} flare lights, {_drawn} drawn, {(_occFailed ? "occlusion fade OFF" : $"{_occFaded} fading")}";
     internal static string Describe() => $"{(_off ? "UNAVAILABLE" : Effects.Halos.V ? "on" : "off")} size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2} viz {Effects.HaloViz.V}";
+
+    /// <summary>CX-85: the occlusion integrator, headless. It is the whole of what the port owns on the CPU
+    /// side -- the probe itself has no seam -- and it fails invisibly in both directions: too slow and flares
+    /// smear through walls, too fast and they strobe.</summary>
+    internal static void SelfCheck(ExtenderLog log)
+    {
+        var check = new Checker(log);
+        // Vanilla's two cases: a clear ray climbs to 1 and a blocked one falls to 0, both at 3 per second.
+        check.Expect(Math.Abs(Step(0f, 1f, 0.1f) - 0.3f) < 1e-5f, "a visible flare climbs at 3 per second");
+        check.Expect(Math.Abs(Step(1f, 0f, 0.1f) - 0.7f) < 1e-5f, "an occluded one falls at the same rate");
+        check.Expect(Step(0.9f, 1f, 1f) == 1f, "the climb stops at the target, not past it");
+        check.Expect(Step(0.1f, 0f, 1f) == 0f, "and so does the fall");
+        // Partial coverage is the whole point of measuring depth rather than casting one ray.
+        check.Expect(Math.Abs(Step(0.5f, 0.5f, 1f) - 0.5f) < 1e-6f, "a flare already at its coverage holds");
+        check.Expect(Step(0f, 0.4f, 1f) == 0.4f, "a partly covered flare settles at its coverage, not at 1");
+        // RenderLensFlares @0x471860 clamps each flare channel to [0,1]; an HDR light colour must not reach the
+        // RGBA16F target as Inf, where the halo's own zero-visibility pixels turn it into NaN.
+        check.Expect(Channel(255f, 0f, 1f) == 1f, "a light colour past 1 stages at 1, not at 255^2.2");
+        check.Expect(Channel(0.5f, 0.6f, 1f) == 1f && Channel(-2f, 0f, 1f) == 0f, "colour + shift is clamped both ways");
+        check.Expect(Channel(float.NaN, 0f, 1f) == 0f && Channel(1f, 0f, float.NaN) == 0f, "a NaN colour or fade stages as 0");
+        check.Expect(Channel(1f, 0f, 3f) == 1f, "the fade weight is clamped too");
+        log.Info(check.Ok ? "Halos.SelfCheck: passed" : "Halos.SelfCheck: FAILED -- see above");
+    }
 }

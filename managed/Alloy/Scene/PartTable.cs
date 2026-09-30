@@ -110,7 +110,12 @@ internal static unsafe class PartTable
     /// <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 has not run for this part. Not an error and not a
     /// death: enumeration reaches a part before its geometry is resident, so the record waits and the field
     /// is re-read (<c>SceneWalk.Rebind</c>) rather than the triple being invented.</summary>
-    internal const byte StEmpty = 0, StActive = 2, StDead = 3, StStale = 4, StUnbound = 5;
+    /// <summary>CX-92: the part carries <c>part+0x34 == 0</c>, the engine's own subtree draw gate -- it and
+    /// its children are drawn from no engine path, so nothing is owned for it. NOT a death: the byte flips
+    /// back with no ctor, no dtor and no <c>Scene::Sequence</c> bump (<c>Gob::SetSubtreeEnabled</c> @0x43c670
+    /// is its only dynamic writer and bumps nothing), so the entry is HELD -- alive, unfreed, and re-read by
+    /// <see cref="SceneWalk"/> every tick -- because a released one is the limb that never comes back.</summary>
+    internal const byte StEmpty = 0, StActive = 2, StDead = 3, StStale = 4, StUnbound = 5, StHidden = 6;
     internal static readonly IntPtr[] _pPart = new IntPtr[MaxParts];
     internal static readonly IntPtr[] _pNode = new IntPtr[MaxParts];
     internal static readonly IntPtr[] _pMat = new IntPtr[MaxParts];
@@ -303,6 +308,62 @@ internal static unsafe class PartTable
         var n = new MdlNodeTriMesh(new Part(part).Node.Ptr);
         if (n.IsNull || n.RenderGate == 0) return false;
         return n.RenderKind != 0 || n.RenderGeom != IntPtr.Zero;
+    }
+
+    /// <summary>CX-91: does the cached VDO still hold this record's item, as a mode-1 indexed static?
+    /// <para>The four things that can stop being true after a successful bind are all one fault -- the
+    /// VertexDataObject moved under us. <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 calls
+    /// <c>VertexDataObject::RemoveItem</c> before it re-adds, and a VDO block freed and re-minted at the same
+    /// address carries somebody else's item table (see the VdoSig fingerprint). Either way the answer is to
+    /// re-read the draw arguments, not to refuse: a refused part draws nowhere since #264.</para></summary>
+    internal static bool ItemResident(int e)
+    {
+        IntPtr v = _pVdo[e];
+        if (v == IntPtr.Zero) return false;
+        var vd = new VdoRef(v);
+        if (vd.Mode != 1 || vd.ElemItems == 0) return false;
+        int it = _pItem[e];
+        return it >= 0 && it < vd.ElemCount && it < vd.VertCount;
+    }
+
+    /// <summary>Off-device: every branch of <see cref="ItemResident"/> over a fake VDO. Getting this wrong
+    /// either refuses live geometry or lets the census index an item table past its end.</summary>
+    internal static bool ItemResidentSelfCheck(ExtenderLog log)
+    {
+        byte* vdo = stackalloc byte[0x100];
+        byte* items = stackalloc byte[0x40];
+        for (int i = 0; i < 0x100; i++) vdo[i] = 0;
+        for (int i = 0; i < 0x40; i++) items[i] = 0;
+        const int e = MaxParts - 1;
+        IntPtr savedVdo = _pVdo[e]; int savedItem = _pItem[e];
+        var vv = new VertexDataObject((IntPtr)vdo);
+        bool ok;
+        try
+        {
+            _pVdo[e] = IntPtr.Zero; _pItem[e] = 0;
+            ok = !ItemResident(e);                                     // no VDO at all
+            _pVdo[e] = (IntPtr)vdo;
+            ok &= !ItemResident(e);                                    // mode 0: not an indexed static
+            vv.Mode = 1;
+            ok &= !ItemResident(e);                                    // no element item table
+            vv.ElemItems = (IntPtr)items;
+            ok &= !ItemResident(e);                                    // counts 0: the item is not in it
+            vv.ElemCount = 1; vv.VertCount = 1;
+            ok &= ItemResident(e);                                     // item 0 of 1
+            _pItem[e] = 1;
+            vv.ElemCount = 1; vv.VertCount = 2;
+            ok &= !ItemResident(e);                                    // past the ELEMENT count alone
+            vv.ElemCount = 2; vv.VertCount = 1;
+            ok &= !ItemResident(e);                                    // past the VERTEX count alone
+            vv.VertCount = 2;
+            ok &= ItemResident(e);                                     // inside both
+            _pItem[e] = -1;
+            ok &= !ItemResident(e);                                    // SetupArrays' zero-totals verdict
+        }
+        finally { _pVdo[e] = savedVdo; _pItem[e] = savedItem; }
+        log.Info(ok ? "PartTable.ItemResidentSelfCheck: passed"
+                    : "PartTable.ItemResidentSelfCheck: FAILED -- the item-residency rule is wrong");
+        return ok;
     }
 
     /// <summary>Off-device: the four branches of the renderable rule over a fake part + node. A rule that

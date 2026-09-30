@@ -1106,8 +1106,15 @@ public sealed unsafe partial class AlloyRenderer
                 bool cycled = _recCtl[i] != IntPtr.Zero && CycleTextures.IsDirty(_recCtl[i]);
                 bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero || _recTexStale[i] || cycled;
                 var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);
-                if (aur.IsNull) { Inc(ref Counters._skipTex); Inc(ref Counters._skipTexNone); _recEnroll[i] = 0; SetCastOk(i, false, ref c); W(i, "skipped: no diffuse texture"); return Skipped; }
-                texDirty = stale || aur.Ptr != _recAur[i] || _recTexStale[i] || cycled;
+                // CX-91: a material with NO diffuse slot is not a skip -- it is an UNTEXTURED part, and
+                // vanilla draws it. Material::BindAllStandardTextures @0x4c6e30 answers a null slot with
+                // SetActiveTextureAndBind(unit, 4, 0), i.e. GLRender::SetTextureStageEnabled(unit, 0)
+                // @0x4c93d0: the stage leaves m_bEnabledTextureStages and contributes no multiply, and
+                // PartTriMesh::Draw @0x4513d0 calls RenderFlat regardless. So it takes the same white
+                // stand-in the tid-0 branch below takes, which is what that multiply is missing.
+                bool noDiffuse = aur.IsNull;
+                if (noDiffuse) Inc(ref Counters._noDiffuseDraws);
+                texDirty = noDiffuse || stale || aur.Ptr != _recAur[i] || _recTexStale[i] || cycled;
                 // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
                 // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
                 // frame. The DIFFUSE compare above stays per frame; it is the animated one.
@@ -1118,9 +1125,10 @@ public sealed unsafe partial class AlloyRenderer
                 else
                 {
                     int bb = OwnedTextures.Borrowed;
-                    if (main) tid = aur.OwnedTid();
+                    if (noDiffuse) tid = 0;                       // no slot to resolve: straight to the stand-in
+                    else if (main) tid = aur.OwnedTid();
                     else if (!OwnedTextures.TryDraw(AurTex.Tid(aur.Ptr), out tid)) { c = snap; return Deferred; }
-                    if (main && OwnedTextures.Borrowed != bb) OwnedTextures.NoteBorrowedName(aur.Ptr, tid);
+                    if (!noDiffuse && main && OwnedTextures.Borrowed != bb) OwnedTextures.NoteBorrowedName(aur.Ptr, tid);
                     // #317: and NOTE it, because this is the only place that still knows. AlloyCensus does
                     // the same at enrollment on the stated grounds that "enrollment is the Alloy-owned edge
                     // that notices" -- but enrollment is edge-triggered (#256), so a part that enrolls once
@@ -1133,7 +1141,7 @@ public sealed unsafe partial class AlloyRenderer
                     if (tid == 0)
                     {
                         if (!main) { c = snap; return Deferred; }
-                        OwnedTextures.NoteUnbuilt(aur.Ptr);
+                        if (!noDiffuse) OwnedTextures.NoteUnbuilt(aur.Ptr);
                         // ...and DRAW it meanwhile, on the white texel vanilla would draw it on (see
                         // OwnedTextures.WhiteTid). The skip here was the structural analysis's divergence A:
                         // since #264 nothing renders an unowned part, so refusing tid 0 deleted from the
@@ -1144,9 +1152,13 @@ public sealed unsafe partial class AlloyRenderer
                             Inc(ref Counters._skipTex); Inc(ref Counters._skipTexNoId); _recEnroll[i] = 0; SetCastOk(i, false, ref c);
                             W(i, "skipped: diffuse has no GL id and no white stand-in"); return Skipped;
                         }
-                        Inc(ref Counters._nullTexDraws);
-                        nullTex = true;
-                        W(i, "diffuse has no GL id -- drawn on the white stand-in");
+                        if (!noDiffuse) Inc(ref Counters._nullTexDraws);   // the two populations are counted apart
+                        // ...but an ABSENT slot is not a pending build, and the stale mark is what tells
+                        // TexStream a stand-in was REPLACED: left set it would re-enrol the part every frame
+                        // for a diffuse that is never coming.
+                        nullTex = !noDiffuse;
+                        W(i, noDiffuse ? "no diffuse texture -- drawn untextured on the white stand-in"
+                                       : "diffuse has no GL id -- drawn on the white stand-in");
                     }
                     // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
                     // engine texture is a handle on an object the engine may delete or re-upload under us,
@@ -1384,15 +1396,18 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>#125: stage the sky's draws behind the batch records, in the engine's own order -- current
     /// sky, then the one fading in over it, then the cross-fade gob. One record per part, carrying the model
-    /// matrix <see cref="SkyBox"/> captured off the engine's matrix stack and the role's alpha in
-    /// <c>rot.w</c>, which is the per-draw alpha multiplier the fullbright stage already applies. Nothing
-    /// here needs a new shader stage, and so nothing here can drift from the sow-topdata overrides.
-    /// <para>Every term is re-read live: a part whose texture, index range or VAO does not resolve this
-    /// frame is simply not staged, and the engine's own draw (which is still running, colour-masked only
-    /// while we DID draw) is the fallback.</para></summary>
+    /// matrix <see cref="SkyBox"/> composed off the engine's matrix stack and the role's alpha in
+    /// <c>rot.w</c>, which is the per-draw alpha multiplier the fullbright stage applies.
+    /// <para>CX-88: ONE list for both kinds of sky part. A material that names its own custom fragment stage
+    /// is drawn with the Alloy program <see cref="SkyStage"/> compiled from it; everything else takes the
+    /// plain unlit stage. Both carry the same draw record, so the difference is which program the pass binds
+    /// -- where #136 needed a second list because the program it bound was the ENGINE's and brought its own
+    /// matrices with it.</para>
+    /// <para>Every term is re-read live: a part whose texture, index range, VAO or sky program does not
+    /// resolve this frame is not staged, and the role hands the whole sky back.</para></summary>
     private static void StageSky()
     {
-        _skyN = 0; _seN = 0; _skyFirst = _drawN;
+        _skyN = 0; _skyFirst = _drawN;
         IntPtr scene = SkyBox.Scene;
         // #91's rule again: only the enrolled world Scene's sky, never a GUI 3D panel's.
         if (scene == IntPtr.Zero || scene != _enrollScene) return;
@@ -1401,6 +1416,7 @@ public sealed unsafe partial class AlloyRenderer
         SkyBox.NoteRoles(roles, nr);
         fixed (float* data = _dData)
         fixed (float* t3 = _skTint)
+        fixed (int* texAll = _skTex)
         for (int r = 0; r < nr; r++)
         {
             int staged = 0;
@@ -1410,18 +1426,17 @@ public sealed unsafe partial class AlloyRenderer
                 if (p.Gob != roles[r].Gob) continue;
                 if (p.Vao < 0 || !SkyBox.Drawable(i) || _drawN >= MaxOwned || _skyN >= MaxSkyDraws)
                 { staged = -1; break; }
-                // #136: a part whose material names a shader no Alloy stage implements is drawn with the
-                // ENGINE's compiled program, captured at the swallow. It takes no Alloy draw record and no
-                // stage of ours -- everything it needs is already inside that program -- so it is staged to
-                // its own list here and the role counts it as drawn.
-                if (!p.Ported)
-                {
-                    if (!StageEngineSky(ref p, roles[r].Src, roles[r].Dst)) { staged = -1; break; }
-                    staged++;
-                    continue;
-                }
-                // borrowed CAurTexture*, re-fetched per frame like every other Alloy draw
-                int tid = new MaterialRef(p.Mat).Texture(0).OwnedTid();
+                var mat = new MaterialRef(p.Mat);
+                // CX-88: the material's own fragment stage, compiled on first sight and cached for the
+                // module. 0 back means it cannot be built (no stage named, or the compile refused -- logged
+                // there), which refuses the sky rather than drawing a dome whose whole look that stage was.
+                uint prog = p.Ported ? 0u : SkyStage.Program(mat.Shared.FsName);
+                if (!p.Ported && prog == 0) { staged = -1; break; }
+                // borrowed CAurTexture*, re-fetched per frame like every other Alloy draw. A hosted stage
+                // takes the ENGINE's own texture objects: an owned copy shares the texels but not the
+                // filter/anisotropy state the engine sets on its own name, and the dome's polar fan is the
+                // most anisotropic footprint in the frame (#136, live -- it showed as zenith spokes).
+                int tid = prog != 0 ? mat.Texture(0).ResolveTid() : mat.Texture(0).OwnedTid();
                 var vdo = new VdoRef(p.Vdo);
                 long elem = vdo.ElemItems;
                 long vert = vdo.VertItems;
@@ -1436,7 +1451,7 @@ public sealed unsafe partial class AlloyRenderer
                 _dOff[n] = (nint)((long)(uint)*(int*)(elem + p.Item * 8) * 2);
                 _dBase[n] = *(int*)(vert + p.Item * 8);
                 // #242: the sky's records live in the reserved block above the ownership slots and are
-                // restaged every pass -- a captured matrix stack is per pass by construction, so there is
+                // restaged every pass -- a composed matrix stack is per pass by construction, so there is
                 // nothing here for a persistence scheme to save.
                 int srec = _recOwnCap + _skyN;
                 _dSlot[n] = srec;
@@ -1444,7 +1459,7 @@ public sealed unsafe partial class AlloyRenderer
                 float* rec = data + (long)srec * DrawFloats;
                 *(Matrix4x4*)rec = p.Model;
                 // identity texture rotation, no dissolve, the role's alpha; no feature, and the lit block is
-                // never read because the sky takes the fullbright program (the engine draws it Disable(5)).
+                // never read because the sky takes an unlit stage (the engine draws it Disable(5)).
                 // #222: Mat()'s two branches, in full. A fog-tinted gob is drawn in the scene's fog
                 // colour at alpha 1.0 -- the alpha override is part of the same branch, not a separate
                 // decision, and dropping it would tint the fade and then fade the tint away again.
@@ -1454,95 +1469,37 @@ public sealed unsafe partial class AlloyRenderer
                 bool tinted = SkyBox.FogTinted(p.Gob);
                 float* tint = t3 + _skyN * 3;
                 if (tinted) SceneFog.SkyfadeTint(tint);
-                else { tint[0] = 1f; tint[1] = 1f; tint[2] = 1f; SceneFog.NoteSky((uint)tid, roles[r].Alpha); }
+                else
+                {
+                    tint[0] = 1f; tint[1] = 1f; tint[2] = 1f;
+                    // ...and only a stock-shaded dome's texture is a statement about the sky's colour: a
+                    // procedural stage's diffuse is a night moon mask, not the sky (#136's black-sky case).
+                    if (prog == 0) SceneFog.NoteSky((uint)tid, roles[r].Alpha);
+                }
                 rec[16] = 1f; rec[17] = 0f; rec[18] = 0f;
                 rec[19] = tinted ? 1f : roles[r].Alpha;
                 rec[40] = 0f; rec[41] = 0f; rec[42] = 0f; rec[43] = 0f;
-                _skVao[_skyN] = p.Vao; _skTex[_skyN] = tid; _skMode[_skyN] = _primTable[p.Prim];
+                int* tex = texAll + _skyN * MaxEngTex;
+                tex[0] = tid;
+                // Every unit the stage could declare, 0 included: an unbound unit samples black under the
+                // engine, never a neighbour's texture.
+                for (int k = 1; k < MaxEngTex; k++)
+                {
+                    var t = mat.Texture(k);
+                    tex[k] = prog != 0 && !t.IsNull ? t.ResolveTid() : 0;
+                }
+                _skVao[_skyN] = p.Vao; _skMode[_skyN] = _primTable[p.Prim];
                 _skSrc[_skyN] = roles[r].Src; _skDst[_skyN] = roles[r].Dst;
+                _skAlpha[_skyN] = rec[19]; _skProg[_skyN] = prog;
                 _skyN++; _drawN = n + 1; staged++;
             }
             // All-owned-or-none, per #107 and exactly as the blended class is: a role that cannot stage
-            // every one of its parts -- or has captured none of them yet -- would leave a permanent hole in
-            // a sky the engine is being colour-masked out of. Hand the whole sky back for the frame instead,
-            // which costs one visible vanilla sky and no hole at all.
-            if (staged <= 0) { _drawN = _skyFirst; _skyN = 0; _seN = 0; SceneFog.EndSky(); return; }
+            // every one of its parts -- or has enrolled none of them yet -- would leave a permanent hole in
+            // the sky. Refuse the whole sky for the frame instead; since CX-87 nothing else draws it, so that
+            // frame has no dome at all rather than a partial one.
+            if (staged <= 0) { _drawN = _skyFirst; _skyN = 0; SceneFog.EndSky(); return; }
         }
         SceneFog.EndSky();
-    }
-
-    /// <summary>#136: one sky part staged for the engine's own program. Everything the draw needs that is
-    /// not already uniform state on that program: the geometry range, the primitive mode, the role's blend
-    /// pair, and the material's textures -- read the same way every other Alloy draw reads them, because
-    /// the engine binds material texture <i>k</i> to <c>texUnit</c><i>k</i> and a captured GL binding would
-    /// have to come from the engine's context (#237: touching the active unit there desyncs its cache).
-    /// <para>False means this part cannot be drawn this frame, and the caller hands the whole role back --
-    /// the same all-owned-or-none rule the ported path follows, for the same reason.</para></summary>
-    private static bool StageEngineSky(ref SkyBox.Part p, int src, int dst)
-    {
-        if (_seN >= MaxSkyDraws || p.EngProg == 0) return false;
-        var vdo = new VdoRef(p.Vdo);
-        long elem = vdo.ElemItems, vert = vdo.VertItems;
-        if (elem == 0 || vert == 0 || p.Item < 0 || p.Item >= vdo.ElemCount || p.Item >= vdo.VertCount)
-            return false;
-        int idxCount = *(int*)(elem + p.Item * 8 + 4);
-        if (idxCount <= 0) return false;
-        var mat = new MaterialRef(p.Mat);
-        for (int k = 0; k < MaxEngTex; k++)
-        {
-            // The ENGINE's own texture, never the owned copy: this is the engine's program replayed, and
-            // the copy shares its texels but not the object state the engine sets on its own name at bind
-            // time (filter, anisotropy) -- the dome's polar fan is the most anisotropic footprint in the
-            // frame, and the difference showed as radial spokes off the zenith. Every unit is bound, 0
-            // included: a unit the replay leaves untouched keeps whatever Alloy last bound there.
-            var t = mat.Texture(k);
-            _seTex[_seN * MaxEngTex + k] = t.IsNull ? 0 : t.ResolveTid();
-        }
-        // texUnit0 is the one every stock stage samples unconditionally; without it there is nothing to draw.
-        if (_seTex[_seN * MaxEngTex] == 0) return false;
-        _seProg[_seN] = p.EngProg;
-        _seVao[_seN] = p.Vao;
-        _seMode[_seN] = _primTable[p.Prim];
-        _seCount[_seN] = idxCount;
-        _seOff[_seN] = (nint)((long)(uint)*(int*)(elem + p.Item * 8) * 2);
-        _seBase[_seN] = *(int*)(vert + p.Item * 8);
-        _seSrc[_seN] = src; _seDst[_seN] = dst;
-        _seN++;
-        return true;
-    }
-
-    /// <summary>#136: the sky parts nothing in Alloy can shade, drawn with the program the ENGINE compiled
-    /// for them -- sow-topdata's <c>fst_sky</c> chain, ~1900 lines of procedural cloud, star, sun and moon,
-    /// running as itself rather than as a port that would drift from it.
-    /// <para>What makes this legal where it is illegal for world geometry: the sky writes no depth, is not
-    /// in the depth prepass, and carries no per-draw batching -- so #119's <c>gl_Position</c> invariance
-    /// rule and #327's submission model, which forbid a stock stage everywhere else, do not reach it.</para>
-    /// <para>The program's uniforms were uploaded in ENGINE context at the swallow
-    /// (<see cref="SkyBox.NoteEngineDraw"/>) and are program-object state, which the share-listed 4.6
-    /// context (#80) sees. Textures are the exception -- bindings are per-context -- so they are bound here,
-    /// through DSA so the active unit (which the engine caches, #237) is never touched.</para>
-    /// <para>ponytail: it draws under the depth state <see cref="SkyOwnedPass"/> establishes and is called
-    /// from inside it, so the two share one preamble. Splitting them would mean stating that state twice
-    /// and having it drift once.</para></summary>
-    private static void SkyEnginePass()
-    {
-        uint boundSrc = 0xFFFFFFFF, boundDst = 0xFFFFFFFF;
-        fixed (int* counts = _seCount, bases = _seBase)
-        fixed (nint* offs = _seOff)
-        for (int i = 0; i < _seN; i++)
-        {
-            uint src = Issue.BlendGl(_seSrc[i]), dst = Issue.BlendGl(_seDst[i]);
-            if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
-            uint vao = EngineVao(_seVao[i]);
-            if (vao == 0) continue;
-            Gl.UseProgram(_seProg[i]);
-            // every unit, 0 included: an unbound unit samples black under the engine, not a neighbour
-            for (uint k = 0; k < MaxEngTex; k++) Gl.BindTextureUnit(k, (uint)_seTex[i * MaxEngTex + (int)k]);
-            Gl.BindVertexArray(vao);
-            Gl.MultiDrawElementsBaseVertex(_seMode[i], counts + i, GlUnsignedShort,
-                                           (void**)(offs + i), 1, bases + i);
-            Counters._batches++; Counters._draws++;
-        }
     }
 
     /// <summary>The skybox, after the opaque set and before the blended one (ADR 0011 step 3, #125).
@@ -1550,9 +1507,13 @@ public sealed unsafe partial class AlloyRenderer
     /// camera, so its own depth is NEAR and it would pass the test everywhere -- which is why vanilla paints
     /// over bucket 0. Forced to the far plane and tested LEQUAL (the value <see cref="OpaqueOwnedPass"/>
     /// leaves bound), it survives only where nothing has written depth. <c>GL_DEPTH_CLAMP</c> because the
-    /// matrices were captured under the ENGINE's sky projection (far 1000.0, <c>RenderSkyBoxes</c>) and are
-    /// replayed under the world's: clipped, the dome would read as a hole at the horizon with nothing in the
+    /// matrices were composed under the ENGINE's sky projection (far 1000.0, <c>RenderSkyBoxes</c>) and are
+    /// drawn under the world's: clipped, the dome would read as a hole at the horizon with nothing in the
     /// log. Depth range and clamp are 4.6-CONTEXT state the later passes share, so both are restored here.</para>
+    /// <para>CX-88: one loop over one list, switching program where a part's material names its own fragment
+    /// stage. Every draw is an Alloy program reading an Alloy draw record, so the pass renders correctly into
+    /// any view -- including the environment probe's six cube faces, which #136's engine-program replay could
+    /// not (its matrices were the main view's, which is why the probe used to take the owned dome alone).</para>
     /// <para>ponytail: the roles composite in LINEAR (ADR 0018: "there is no strand 3"). The settled sky is
     /// unaffected -- its role is <c>(SRC_ALPHA, ZERO)</c>, which never reads the destination -- but the
     /// cross-fade and the skyfade gob are genuine over-blends, and at partial alpha a linear over composites
@@ -1561,27 +1522,16 @@ public sealed unsafe partial class AlloyRenderer
     /// line (<see cref="SkyBox.NoteRoles"/>); if the horizon band ever reads wrong, the upgrade is a per-role
     /// alpha correction, not a display-space scratch target (#261).</para>
     /// </summary>
-    /// <para><paramref name="hosted"/> false (the probe capture) draws the owned dome alone: a hosted part runs
-    /// the engine's program under the engine's matrices, and its decode reads the frame's HDR target.</para>
     /// <summary>The main view's inverse view-projection, noted at the sky pass for the resolve's horizon band
     /// (<see cref="PostChain"/>): a far-depth pixel below the band is fog, not sky. Default = none this view.</summary>
     internal static Matrix4x4 SkyInvVp;
 
-    private static void SkyOwnedPass(Matrix4x4* vp, int* viewport, bool hosted = true)
+    private static void SkyOwnedPass(Matrix4x4* vp, int* viewport)
     {
-        if ((_skyN == 0 && (_seN == 0 || !hosted)) || Gl.DepthRange == null) return;
-        Gl.UseProgram(Programs._prog46);
-        Gl.Uniform1i(Programs._locTex, 0);
-        Gl.Uniform1i(Programs._locViz, _lightViz);
-        // uOit is program state and the OIT pass left it at 1: the dome would land as a near-zero weighted
-        // accumulation write (gl_FragCoord.z = 1) -- a black sky.
-        Gl.Uniform1i(Programs._locOit, 0);
-        Gl.UniformMatrix4fv(Programs._locVp, 1, 0, (float*)vp);
-        UploadFeatureTerms(Programs._locFeat, viewport);
-        Gl.Uniform1f(Programs._locCut, -1f);          // the engine draws the sky with the discard off
-        Gl.Uniform1f(Programs._locSkyFog, SceneFog.SkyBand);
+        if (_skyN == 0 || Gl.DepthRange == null) return;
+        SkyStage.BeginPass();
         // DEPTH_CLAMP because the composed matrices sit under the ENGINE's sky projection (RenderSkyBoxes
-        // replaces it with its own near/far) and are drawn under the world's: the dome can cross the world
+        // replaced it with its own near/far) and are drawn under the world's: the dome can cross the world
         // far plane, and clipped it reads as a hole at the horizon with nothing in the log.
         Gl.DepthMask(0); Gl.DepthRange(1.0, 1.0);
         Gl.Enable(Gl.DEPTH_CLAMP);
@@ -1592,49 +1542,73 @@ public sealed unsafe partial class AlloyRenderer
         // two-sided only when its last batch was. Vanilla draws the sky BACK-CULLED: SetupOpenGL @0x42b060
         // enables cap 3 at startup, Scene::RenderSkyBoxes @0x466910 touches caps 0/1/2/5 but never 3, and it
         // runs after a Scene::RenderDrawBucket @0x46d060 that exits Enable(3)+SetCullFace(1). The dome is
-        // the engine's own geometry replayed under the engine's own winding, so the state it is drawn
-        // correctly in over there is the state it is drawn correctly in here.
+        // the engine's own geometry drawn under the engine's own winding, so the state it is drawn correctly
+        // in over there is the state it is drawn correctly in here.
         Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK);
         Gl.Enable(Gl.BLEND); _blendOn = true;
-        int boundVao = -1, boundTex = -1;
-        uint boundSrc = 0xFFFFFFFF, boundDst = 0xFFFFFFFF;
+        int boundVao = -1;
+        uint boundProg = 0, boundSrc = 0xFFFFFFFF, boundDst = 0xFFFFFFFF;
+        int* boundTex = stackalloc int[MaxEngTex];
+        for (int k = 0; k < MaxEngTex; k++) boundTex[k] = -1;
+        bool usedPlain = false;
         fixed (int* counts = _dCount, bases = _dBase)
         fixed (nint* offs = _dOff)
         fixed (float* t3 = _skTint)
+        fixed (int* texAll = _skTex)
         for (int i = 0; i < _skyN; i++)
         {
+            uint prog = _skProg[i] != 0 ? _skProg[i] : Programs._prog46;
+            if (prog == 0) continue;
             uint src = Issue.BlendGl(_skSrc[i]), dst = Issue.BlendGl(_skDst[i]);
             if (src != boundSrc || dst != boundDst) { Gl.BlendFunc(src, dst); boundSrc = src; boundDst = dst; }
+            if (prog != boundProg)
+            {
+                if (_skProg[i] != 0) SkyStage.Prepare(prog, vp, viewport);
+                else { PrimeSkyPlain(vp, viewport); usedPlain = true; }
+                boundProg = prog;
+                // sampler units are per PROGRAM state but the bindings are the CONTEXT's, so only the
+                // program-side cache resets here; the texture cache below is still valid.
+            }
             if (_skVao[i] != boundVao) { Gl.BindVertexArray(SkyVao(_skVao[i])); boundVao = _skVao[i]; }
-            if (_skTex[i] != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)_skTex[i]); boundTex = _skTex[i]; }
-            Gl.Uniform3fv(Programs._locTint, 1, t3 + i * 3);
+            int* tex = texAll + i * MaxEngTex;
+            // Unit 0 for either stage; the rest only where a hosted stage could declare them. Units 1 and 2
+            // are the shadow ARRAYS (TextureSlots.SunShadow/LocalShadow) and 3 is the material map block, so a
+            // plain sky draw has no business touching them -- and the next BindPass is what puts a hosted
+            // draw's clobber back, exactly as it did for #136's engine-program pass.
+            int units = _skProg[i] != 0 ? MaxEngTex : 1;
+            for (int k = 0; k < units; k++)
+                if (tex[k] != boundTex[k]) { Gl.BindTextureUnit((uint)k, (uint)tex[k]); boundTex[k] = tex[k]; }
             int s = _skyFirst + i;
-            Gl.Uniform1i(Programs._locBase, s);
+            if (_skProg[i] != 0) SkyStage.Draw(prog, s, t3 + i * 3, _skAlpha[i], SceneFog.SkyBand);
+            else { Gl.Uniform3fv(Programs._locTint, 1, t3 + i * 3); Gl.Uniform1i(Programs._locBase, s); }
             Gl.MultiDrawElementsBaseVertex(_skMode[i], counts + s, GlUnsignedShort, (void**)(offs + s), 1, bases + s);
             Counters._batches++; Counters._draws++;
+            if (_skProg[i] != 0) SkyBox.NoteHosted();
         }
-        Gl.Uniform1f(Programs._locSkyFog, 0f);   // program state outlives the pass: no later unlit draw inherits the band
-        // #136: the hosted-program parts last, inside the same depth/cull/blend preamble.
-        if (hosted) SkyEnginePass();
-        if (hosted && _seN > 0 && Programs._progSkyDecode != 0 && Gl.TextureBarrier != null && PostChain.HdrTex != 0)
+        if (usedPlain)
         {
-            // same depth range and test: exactly the pixels the hosted dome could have written
-            Gl.TextureBarrier();
-            Gl.Disable(Gl.BLEND);
-            Gl.UseProgram(Programs._progSkyDecode);
-            // unit 0, which this pass has already given to engine textures and every later pass rebinds;
-            // 10..11 carry the shadow arrays the blended passes still sample
-            Gl.BindTextureUnit(0, PostChain.HdrTex);
-            Gl.Uniform1i(Programs._skyDecodeHdr, 0);
-            UploadFog(Programs._skyDecodeFeat);
-            Gl.Uniform1f(Programs._skyDecodeSkyFog, Matrix4x4.Invert(*vp, out Matrix4x4 invVp) ? SceneFog.SkyBand : 0f);
-            Gl.UniformMatrix4fv(Programs._skyDecodeInvVp, 1, 0, (float*)&invVp);
-            Gl.BindVertexArray(PostChain.FullscreenVao);
-            Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
-            Gl.Enable(Gl.BLEND);
-            Counters._draws++;
+            // program state outlives the pass: no later unlit draw inherits the horizon band
+            Gl.UseProgram(Programs._prog46);
+            Gl.Uniform1f(Programs._locSkyFog, 0f);
         }
         Gl.Disable(Gl.DEPTH_CLAMP);
         Gl.DepthRange(0.0, 1.0);
+    }
+
+    /// <summary>The plain unlit stage, set up for a sky draw: the pass terms it shares with every other unlit
+    /// draw plus the two the sky alone sets -- the discard off (the engine draws the sky with no alpha test)
+    /// and the horizon band.</summary>
+    private static void PrimeSkyPlain(Matrix4x4* vp, int* viewport)
+    {
+        Gl.UseProgram(Programs._prog46);
+        Gl.Uniform1i(Programs._locTex, 0);
+        Gl.Uniform1i(Programs._locViz, _lightViz);
+        // uOit is program state and the OIT pass left it at 1: the dome would land as a near-zero weighted
+        // accumulation write (gl_FragCoord.z = 1) -- a black sky.
+        Gl.Uniform1i(Programs._locOit, 0);
+        Gl.UniformMatrix4fv(Programs._locVp, 1, 0, (float*)vp);
+        UploadFeatureTerms(Programs._locFeat, viewport);
+        Gl.Uniform1f(Programs._locCut, -1f);
+        Gl.Uniform1f(Programs._locSkyFog, SceneFog.SkyBand);
     }
 }
