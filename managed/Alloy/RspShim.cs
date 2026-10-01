@@ -43,7 +43,12 @@ namespace CX.Alloy;
 /// lists <c>Scene+0x60</c>/<c>+0x70</c> from <c>LightManager::GetShadowLights(1)</c>/<c>(0)</c>. Alloy
 /// self-drives its own light walk from <c>Scene::AddPartsToDrawBuckets</c>, and ADR 0016 found no consumer
 /// outside RSP. Not replicated deliberately: the call returns a <c>CExoArrayList</c> BY VALUE (hidden sret in
-/// rdi), and inventing that ABI to preserve a side effect with no reader is the guess this repo forbids. If
+/// rdi), and inventing that ABI to preserve a side effect with no reader is the guess this repo forbids.
+/// <b>SL5 settled the last claim on it:</b> those two lists have no reader in Alloy either -- the sun shafts
+/// were the one, and they now take the area's own directional (<c>Beams.Direction</c>). MEASURED on both
+/// binaries: this head is their ONLY live-frame writer, the others being <c>Scene::Scene</c> (zeroes) and
+/// <c>~Scene</c> (frees without clearing), so anything reading them on an Alloy frame reads nothing or the
+/// last vanilla frame. The <c>Scene+0x60</c>/<c>+0x68</c> layout rows went with the reader. If
 /// <c>PartLight+0xa8</c>'s frozen shadow-fade weight ever surfaces, close it with RE.</para></summary>
 internal static unsafe class RspShim
 {
@@ -278,6 +283,7 @@ internal static unsafe class RspShim
         AlloyEnvMap.Tick(scene);
         TileFadeRamp.Tick(scene);   // CX-104: the tile fade the frame draws, ahead of the anchor that reads it
         DoorFade.Tick(scene);
+        PlaceableHold.Tick(scene);  // after this frame's deletes and re-adds, before the draw that answers them
         AlloyRenderer.FrameAnchor(scene);       // #132's anchor: the whole Alloy frame draws here
         long anchorChild = FrameZones.Ticks(FrameZones.Zone.Alloy) - ca1
                          + FrameZones.Ticks(FrameZones.Zone.Shadow) - cs1;

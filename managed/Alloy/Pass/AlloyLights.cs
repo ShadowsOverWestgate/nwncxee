@@ -49,9 +49,14 @@ internal static unsafe class AlloyLights
     internal const int SortCap = 32;
     /// <summary>Compute workgroup size; the dispatch is 1D over clusters and decodes (x,y,z) from the id.</summary>
     internal const int GroupSize = 64;
-    /// <summary>Words of header per cluster: the binned/live pair, then R4's reflection-candidate count.
-    /// <c>CxClusterN</c> / <c>CxClusterLive</c> / <c>CxClusterRefl</c> are the only readers.</summary>
-    internal const int ClusterHeadWords = 2;
+    /// <summary>Words of header per cluster: n | live, R4's refl | the live floor candidates, the cold candidates'
+    /// end | the kept prefix (cx_lightbuild's layout). The <c>CxCluster*</c> accessors are the only readers.</summary>
+    internal const int ClusterHeadWords = 3;
+    /// <summary>Stats words: the overflow count, then a sampled build's binned / kept / candidate entry totals.</summary>
+    private const int StatsWords = 4;
+    /// <summary>One build in this many frames adds its entry totals to the stats: the counters stay far from
+    /// wrapping and the atomics off every other frame.</summary>
+    private const int TallyEvery = 16;
     /// <summary>SSBO binding points, shared by the compute and the lit fragment program.</summary>
     private const uint BindLights = 0, BindCounts = 1, BindIndices = 2, BindStats = 3, BindMovers = 25;
     /// <summary>Point-light attenuation, as the ENGINE computes it (#140). Verified against
@@ -228,6 +233,16 @@ internal static unsafe class AlloyLights
     /// goes with it.</para></summary>
     internal static float OverbrightScale => Lighting.Overbright.V;
 
+    /// <summary>The scale an overbright colour (max channel past 1) takes: <c>GetLightAdjustedColor</c> @0x4c0b60
+    /// divides it down to a max of 1 and spends the surplus on reach, and <see cref="OverbrightScale"/> keeps a
+    /// share of that surplus as centre intensity, pre-compensated for the receiver's pow 2.2. 1 for any other.</summary>
+    internal static float OverbrightK(float maxc)
+    {
+        if (!(maxc > 1f)) return 1f;
+        float boost = MathF.Max(1f + (maxc - 1f) * OverbrightScale, 0f);
+        return MathF.Pow(boost, 1f / SrgbGamma) / maxc;
+    }
+
     /// <summary>The atten pair and the shader-quality gate, for the arm-time log.</summary>
     internal static string DescribeAtten() =>
         $"atten(mi {_atten.X:F3} ff {_atten.Y:F3}, peak {(_atten.X > 0f ? 1f / _atten.X : 0f):F2})  sss {_sss:F2}{(SssOn ? "" : " (off: quality<2)")}";
@@ -244,6 +259,18 @@ internal static unsafe class AlloyLights
         if (along < -fr) return false;
         float perp = MathF.Sqrt(MathF.Max(Vector3.Dot(v, v) - along * along, 0f));
         return cs * perp - along * sn <= fr;
+    }
+
+    /// <summary><c>cx_lightfrag</c>'s CxLightImportance at squared distance <paramref name="dd"/> under the engine's
+    /// own curve, transcribed for <see cref="SelfCheck"/>'s sweep of the build's relevance bounds.</summary>
+    private static float BoundImportance(float radius, float luma, float dd, float reach)
+    {
+        float f2 = dd / MathF.Max(radius * radius, 1e-8f);
+        if (f2 >= 1f) return 0f;
+        float fade = 1f - f2, r2 = reach * reach;
+        if (f2 > r2) return 0f;
+        fade *= MathF.Min((r2 - f2) / (r2 * 0.3f), 1f);
+        return fade / (0.41f + 136.33f * f2) * luma;
     }
 
     /// <summary>R5: <c>cx_lightfrag</c>'s sphere-light normalisation (Karis 2013), transcribed for
@@ -358,6 +385,59 @@ internal static unsafe class AlloyLights
             if (!HotConeReaches(l, c, rr, p, 0f)) escaped++;
         }
         check.Expect(near > 100 && escaped == 0, $"every point the lit stage calls near ({near}) is inside the build's cone ({escaped} escaped)");
+
+        // light.relevance's bounds (cx_lightbuild): the build culls under the floor and searches the candidates
+        // alone, which is exact only while both files measure importance with ONE curve that never rises with
+        // distance. The text pins hold the two transcriptions together; the sweep holds the claim.
+        string build = ShaderStages.Source(ShdClusterCs);
+        check.Expect(build.Contains("fade *= min((r2 - f2) / (r2 * 0.3), 1.0);") && FragmentLib.Contains("fade *= min((r2 - f2) / (r2 * 0.3), 1.0);")
+          && build.Contains("return fade / (at.x + at.y * f2) * dot(col, vec3(0.299, 0.587, 0.114));")
+          && FragmentLib.Contains("return fade / (at.x + at.y * f2) * dot(uLights[li * 2u + 1u].rgb, vec3(0.299, 0.587, 0.114));")
+          && build.Contains("if (u <= uRel.x * floorI && (uv < floorV || uv <= 0.0)) entry |= FLAG_CULL;")
+          && FragmentLib.Contains("for (uint k = CxClusterLive(cl), e = CxClusterColdCand(cl); k < e; k++) relMax")
+          && FragmentLib.Contains("if (uBounds > 0.5) return min(uClCount[cl * 3u + 2u] >> 16u, CX_CLUSTER_CAP);"),
+          "the build bounds the lit stage's own importance curve, and a fragment of the built view searches the candidates it names");
+        int missed = 0, overCut = 0, culled = 0;
+        const int n = 24;
+        Span<Vector4> pr = stackalloc Vector4[n]; Span<float> luma = stackalloc float[n];
+        for (int t = 0; t < 400; t++)
+        {
+            var lo = new Vector3(R(), R(), R()); var hi = lo + new Vector3(1f + rng.NextSingle() * 6f, 1f + rng.NextSingle() * 6f, 1f + rng.NextSingle() * 6f);
+            float cut = t % 2 == 0 ? 0.01f : 0.1f;
+            float floorI = 0f;
+            for (int i = 0; i < n; i++)
+            {
+                pr[i] = new Vector4(R() * 2f, R() * 2f, R() * 2f, 2f + rng.NextSingle() * 30f);
+                luma[i] = 0.05f + rng.NextSingle();
+                Vector3 e = new(pr[i].X, pr[i].Y, pr[i].Z);
+                Vector3 far = Vector3.Max(Vector3.Abs(e - lo), Vector3.Abs(e - hi));
+                floorI = MathF.Max(floorI, BoundImportance(pr[i].W, luma[i], far.LengthSquared(), 0.8f));
+            }
+            for (int s = 0; s < 32; s++)
+            {
+                var p = lo + (hi - lo) * new Vector3(rng.NextSingle(), rng.NextSingle(), rng.NextSingle());
+                float full = 0f, cand = 0f;
+                for (int i = 0; i < n; i++)
+                {
+                    Vector3 e = new(pr[i].X, pr[i].Y, pr[i].Z);
+                    float imp = BoundImportance(pr[i].W, luma[i], Vector3.DistanceSquared(e, p), 0.8f);
+                    float u = BoundImportance(pr[i].W, luma[i], Vector3.DistanceSquared(e, Vector3.Clamp(e, lo, hi)), 0.8f);
+                    full = MathF.Max(full, imp);
+                    if (u >= floorI) cand = MathF.Max(cand, imp);
+                }
+                if (cand < full) missed++;
+                for (int i = 0; i < n; i++)
+                {
+                    Vector3 e = new(pr[i].X, pr[i].Y, pr[i].Z);
+                    float u = BoundImportance(pr[i].W, luma[i], Vector3.DistanceSquared(e, Vector3.Clamp(e, lo, hi)), 0.8f);
+                    if (u > cut * floorI) continue;
+                    culled++;
+                    if (BoundImportance(pr[i].W, luma[i], Vector3.DistanceSquared(e, p), 0.8f) > cut * full) overCut++;
+                }
+            }
+        }
+        check.Expect(culled > 100 && missed == 0 && overCut == 0,
+          $"a culled light ({culled} sampled) is under the cut at every point of its froxel ({overCut} not) and the candidates hold the brightest ({missed} missed)");
         log.Info(check.Ok ? "AlloyLights.SelfCheck: passed" : "AlloyLights.SelfCheck: FAILED");
         return check.Ok;
     }
@@ -379,7 +459,23 @@ internal static unsafe class AlloyLights
     private static int _moversGen = -1;
     private static bool _failed;
     private static int _locView = -1, _locProjXY = -1, _locZ = -1, _locCount = -1, _locGrid = -1, _locReach = -1, _locBinCap = -1, _locBinAtten = -1, _locReflK = -1;
-    private static int _locDynPage = -1, _locHot = -1;
+    private static int _locDynPage = -1, _locHot = -1, _locRel = -1, _locPad = -1, _locTally = -1;
+    /// <summary>light.relevance as this frame's <see cref="Upload"/> read it. The build's bounds and the lit
+    /// stage's <c>uRelevance</c> must cut at the SAME value, or the culled tail could hold a light the lit
+    /// stage would have kept.</summary>
+    private static float _rel;
+    private static bool _tallyFrame;
+    /// <summary>The sampled entry totals the last stats copy returned (a period late).</summary>
+    private static uint _tallyBinned, _tallyKept, _tallyCand;
+    /// <summary>The viewport and depth range the cluster table was last built for. A pass that draws through it
+    /// with any other (the planar mirror reuses the screen's table) gets <c>uBounds</c> 0 and walks every entry.
+    /// A pass drawing ANOTHER view through the same viewport and range must <see cref="Build"/> first, as the
+    /// probe faces do.</summary>
+    private static int _builtW, _builtH;
+    /// <summary>Set around a pass that draws ANOTHER camera through the table the screen built (the planar mirror):
+    /// its binds get <c>uBounds</c> 0 whatever their viewport says.</summary>
+    internal static bool BorrowedTable;
+    private static float _builtNear, _builtFar;
     private static readonly uint[] _query = new uint[2];
     private static bool _queryPending0, _queryPending1;
     private static int _queryAt;
@@ -427,6 +523,8 @@ internal static unsafe class AlloyLights
         if (!Ensure()) return;
         if (_uploadFrame == frame) return;
         _uploadFrame = frame;
+        _rel = Lighting.Relevance.V;
+        _tallyFrame = frame % TallyEvery == 0;
         int n = FrameInputs.LightCount;
         if (n * 8 > _stage.Length) _stage = new float[n * 8];
         if (n > _ssboLights) GrowLightBuffer(n);
@@ -498,7 +596,9 @@ internal static unsafe class AlloyLights
     /// slack only absorbs float noise, never a different projection class.</summary>
     private const float WRowEpsilon = 1e-4f;
 
-    internal static bool Build(float* view, float p00, float p11, float near, float far)
+    /// <summary>Bins for a pass drawn into a <paramref name="vpW"/> x <paramref name="vpH"/> viewport; <paramref name="tally"/>
+    /// lets a sampled frame's build add its entry totals to the period line (the screen's build, not a probe face's).</summary>
+    internal static bool Build(float* view, float p00, float p11, float near, float far, int vpW, int vpH, bool tally)
     {
         // NOT gated on the light count: with zero point lights the dispatch still writes an all-zero cluster
         // table, which is exactly right -- the lit parts then shade on area ambient + sun alone instead of
@@ -526,6 +626,12 @@ internal static unsafe class AlloyLights
         Gl.Uniform2f(_locHot, Lightmap.Movers.V ? 1f : 0f, Shadows.CubeDist.V);
         // R4: 0 unless a water film can exist this frame, and then the build is what it always was
         Gl.Uniform1i(_locReflK, Weather.ReflK);
+        // a viewport under one pixel per tile breaks the tile-to-NDC mapping the bounds rest on: no bounds then
+        bool boundsOk = vpW >= GridX && vpH >= GridY;
+        _builtW = vpW; _builtH = vpH; _builtNear = near; _builtFar = far;
+        Gl.Uniform2f(_locRel, boundsOk ? _rel : 0f, ReachUniform);
+        Gl.Uniform2f(_locPad, 2f / Math.Max(vpW, 1), 2f / Math.Max(vpH, 1));
+        Gl.Uniform1i(_locTally, tally && _tallyFrame ? 1 : 0);
         UploadMovers();
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindLights, _bufLights);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, _bufCounts);
@@ -574,7 +680,8 @@ internal static unsafe class AlloyLights
     /// <summary>CX-43: the cluster lookup (grid, tile, depth range) and the light curve into the pass block,
     /// for the viewport and depth range this pass draws with. Each curve term is its own member, so a lane
     /// added here never changes what an older one means.</summary>
-    internal static void FillDraw(byte* b, int* viewport, float near, float far)
+    /// <returns>Whether the pass draws the view the cluster table was built for (<c>uBounds</c> 1).</returns>
+    internal static bool FillDraw(byte* b, int* viewport, float near, float far)
     {
         if (near < MinNear) near = MinNear;
         *(Vector4*)(b + AlloyRenderer.PbTile) = new Vector4(viewport[0], viewport[1],
@@ -591,8 +698,11 @@ internal static unsafe class AlloyLights
         *(Vector2*)(b + AlloyRenderer.PbSss) = new Vector2(_sss, SssOn ? SssK(_sss) : 0f);
         *(float*)(b + AlloyRenderer.PbWrapN) = _wrapN;
         *(float*)(b + AlloyRenderer.PbDayDim) = DayDim;
-        float rel = Lighting.Relevance.V;
-        *(Vector2*)(b + AlloyRenderer.PbRelevance) = new Vector2(rel, rel * 2f);
+        *(Vector2*)(b + AlloyRenderer.PbRelevance) = new Vector2(_rel, _rel * 2f);
+        bool own = !BorrowedTable && viewport[2] == _builtW && viewport[3] == _builtH && near == _builtNear
+                   && (far > near ? far : near * 2f) == _builtFar;
+        *(float*)(b + AlloyRenderer.PbBounds) = own ? 1f : 0f;
+        return own;
     }
 
     /// <summary>#139/#326: the local-cube receiver's three softness terms -- PCF radius in texels, the screen
@@ -650,19 +760,22 @@ internal static unsafe class AlloyLights
         if (slot == 0) _queryPending0 = false; else _queryPending1 = false;
     }
 
-    /// <summary>Copy out + reset the GPU-side cluster-overflow counter, and return the count copied out two calls
-    /// ago (a period late). Once a period; it was a <c>glGetBufferSubData</c>, which waited out the whole frame.</summary>
+    /// <summary>Copy out + reset the GPU-side stats, and return the overflow count copied out two calls ago (a period
+    /// late; the entry totals beside it land in the period line). Once a period; it was a <c>glGetBufferSubData</c>,
+    /// which waited out the whole frame.</summary>
     internal static uint TakeClusterOverflow()
     {
-        if (!Ready || !GpuReadback.EntryPoints || !_statsRead.Ensure(sizeof(uint))) return 0;
+        if (!Ready || !GpuReadback.EntryPoints || !_statsRead.Ensure(StatsWords * sizeof(uint))) return 0;
         int w = _statsSeq % GpuReadback.Slots, r = (_statsSeq + 1) % GpuReadback.Slots;
         _statsSeq++;
-        _statsRead.Copy(_bufStats, 0, w, 0, sizeof(uint));
+        _statsRead.Copy(_bufStats, 0, w, 0, StatsWords * sizeof(uint));
         _statsRead.Fence(w);
-        uint zero = 0;
-        Gl.NamedBufferSubData(_bufStats, IntPtr.Zero, (IntPtr)sizeof(uint), &zero);
+        uint* zero = stackalloc uint[StatsWords] { 0, 0, 0, 0 };
+        Gl.NamedBufferSubData(_bufStats, IntPtr.Zero, (IntPtr)(StatsWords * sizeof(uint)), zero);
         uint* v = (uint*)_statsRead.Ready(r);
-        return v != null ? *v : 0;
+        if (v == null) return 0;
+        _tallyBinned = v[1]; _tallyKept = v[2]; _tallyCand = v[3];
+        return v[0];
     }
     private static GpuReadback _statsRead;
     private static int _statsSeq;
@@ -673,6 +786,10 @@ internal static unsafe class AlloyLights
         $"lights {LastLightCount} ({FrameInputs.LocalLightCount} flagged castShadows, " +
         $"{FrameInputs.LightsWithCube} with a cube; adjusted radius {_radMin:F1}/{_radMean:F1}/{_radMax:F1}u min/mean/max)" +
         $", cluster build {LastBuildMs:F3}ms on {GridX}x{GridY}x{GridZ} (binreach {_binReach:F2}, bincap {_binCap})" +
+        (_tallyBinned > 0
+            ? $", relevance bounds: a fragment walks {100.0 * _tallyKept / _tallyBinned:F0}% of the binned entries at most and its brightest-light search {100.0 * _tallyCand / _tallyBinned:F0}% (sampled builds)"
+            : "") +
+
         (overflow > 0 ? $", CLUSTER OVERFLOW {overflow}/period (cap {ClusterCap})" : "");
 
     private static bool Ensure()
@@ -693,13 +810,13 @@ internal static unsafe class AlloyLights
         _locGrid = GlProgram.Loc(prog, "uGrid");
         _locDynPage = GlProgram.Loc(prog, "uDynPage"); _locHot = GlProgram.Loc(prog, "uHot");
         _locReflK = GlProgram.Loc(prog, "uReflK");
+        _locRel = GlProgram.Loc(prog, "uRel"); _locPad = GlProgram.Loc(prog, "uPad"); _locTally = GlProgram.Loc(prog, "uTally");
 
         uint b;
         Gl.CreateBuffers(1, &b); _bufLights = b;
         Gl.NamedBufferData(_bufLights, (IntPtr)(InitialLights * 8 * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         _ssboLights = InitialLights;
         Gl.CreateBuffers(1, &b); _bufCounts = b;
-        // TWO words per cluster since R4: the binned/live pair, then the reflection-candidate count
         Gl.NamedBufferData(_bufCounts, (IntPtr)(ClusterCount * ClusterHeadWords * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
         Gl.CreateBuffers(1, &b); _bufIndices = b;
         Gl.NamedBufferData(_bufIndices, (IntPtr)((long)ClusterCount * ClusterCap * sizeof(uint)), null, Gl.DYNAMIC_DRAW);
@@ -707,8 +824,8 @@ internal static unsafe class AlloyLights
         Gl.NamedBufferData(_bufMovers, (IntPtr)(CasterPass.CubeDynSphere.Length * sizeof(float)), null, Gl.DYNAMIC_DRAW);
         _moversGen = -1;
         Gl.CreateBuffers(1, &b); _bufStats = b;
-        uint zero = 0;
-        Gl.NamedBufferData(_bufStats, (IntPtr)sizeof(uint), &zero, Gl.DYNAMIC_DRAW);
+        uint* zero = stackalloc uint[StatsWords] { 0, 0, 0, 0 };
+        Gl.NamedBufferData(_bufStats, (IntPtr)(StatsWords * sizeof(uint)), zero, Gl.DYNAMIC_DRAW);
 
         fixed (uint* q = _query) Gl.GenQueries(2, q);
         _prog = prog;

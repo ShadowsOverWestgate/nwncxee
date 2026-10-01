@@ -105,7 +105,7 @@ internal static unsafe partial class AlloyCensus
         // one the StHidden exemption states -- it must veto neither its gob nor its class.
         // The active root must still veto: this is the check that says the exemption is narrow.
         int le = MaxParts - 3;
-        byte savedState = _pState[le]; IntPtr savedGob = _pGob[le], savedRoot = _pRoot[le];
+        byte savedState = _pEnt[le].State; IntPtr savedGob = _pGob[le], savedRoot = _pRoot[le];
         bool savedAlt = _pLodAlt[le];
         int savedNoVetoed = _ownNoVetoed;
         IntPtr active = (IntPtr)owner, alternate = (IntPtr)part;
@@ -136,7 +136,7 @@ internal static unsafe partial class AlloyCensus
         Array.Clear(_refGob); _refGobCount = 0; RefusedGobOverflow = false;
         Array.Clear(OwnRefusedByClass);
         _ownNoVetoed = savedNoVetoed;
-        _pState[le] = savedState; _pGob[le] = savedGob; _pRoot[le] = savedRoot; _pLodAlt[le] = savedAlt;
+        _pEnt[le].State = savedState; _pGob[le] = savedGob; _pRoot[le] = savedRoot; _pLodAlt[le] = savedAlt;
         gv.PartTree = default;
 
         // CX-90: the late keywords' precedence. Off-device because the live signal is a class that renders
@@ -173,20 +173,20 @@ internal static unsafe partial class AlloyCensus
         try
         {
             // a table full of the LIVE is a big area: saturate, never wipe
-            for (int i = 0; i < 64; i++) _pState[i] = StActive;
-            for (int i = 64; i < 96; i++) _pState[i] = StDead;
+            for (int i = 0; i < 64; i++) _pEnt[i].State = StActive;
+            for (int i = 64; i < 96; i++) _pEnt[i].State = StDead;
             _saturated = false; Log = null;
             OnTablePressure();
             check.Expect(_saturated && TableGen == savedGen, "a mostly-LIVE table saturates and is NOT wiped");
             check.Expect(_satLive == 64 && _satDead == 32, "...and the census it reports is the one it measured");
             // ...and a table full of the DEAD is transition debris: wipe, which is what the wipe is for
-            for (int i = 0; i < 64; i++) _pState[i] = StDead;
+            for (int i = 0; i < 64; i++) _pEnt[i].State = StDead;
             OnTablePressure();
             check.Expect(!_saturated && TableGen == savedGen + 1, "a mostly-DEAD table is wiped as transition debris");
         }
         finally
         {
-            Array.Clear(_pState); Array.Clear(_pPart); Array.Clear(OwnFlag);
+            Array.Clear(_pEnt); Array.Clear(OwnFlag);
             _partCount = savedParts; TableGen = savedGen; _saturated = savedSat;
             Log = log;
         }
@@ -201,16 +201,16 @@ internal static unsafe partial class AlloyCensus
             IntPtr p1 = (IntPtr)0x4000;
             int e1 = Insert(p1);
             check.Expect(e1 >= 0 && Find(p1) == e1, "a fresh part inserts and is found");
-            _pState[e1] = StActive;
+            _pEnt[e1].State = StActive;
             check.Expect(MarkFreed(p1) == e1, "Part::~Part finds the entry that held the dying pointer");
             check.Expect(Find(p1) < 0, "...and the address stops resolving to its tombstone");
             int e2 = Insert(p1);
             check.Expect(e2 == e1 && Find(p1) == e2, "a part recycled onto the same address re-records into that slot");
-            check.Expect(_pState[e2] == StEmpty && OwnFlag[e2] == 0 && _partCount == 1,
+            check.Expect(_pEnt[e2].State == StEmpty && OwnFlag[e2] == 0 && _partCount == 1,
               "...as a slot indistinguishable from a fresh one, and without double-counting the part");
             // and the load factor must not gate reuse: _partCount only ever climbs, so a long session
             // otherwise reaches a point where every recycled pointer is refused forever
-            _pState[e2] = StActive; MarkFreed(p1);
+            _pEnt[e2].State = StActive; MarkFreed(p1);
             _partCount = MaxParts;
             check.Expect(Insert(p1) == e1, "a freed slot is reusable even with the table's load factor exhausted");
             check.Expect(Insert((IntPtr)0x8000) < 0, "...while a genuinely new pointer is still refused there");
@@ -218,7 +218,7 @@ internal static unsafe partial class AlloyCensus
         }
         finally
         {
-            Array.Clear(_pState); Array.Clear(_pPart); Array.Clear(_pFreed); Array.Clear(OwnFlag);
+            Array.Clear(_pEnt); Array.Clear(OwnFlag);
             _partCount = savedParts; _reclaims = savedReclaims;
         }
 

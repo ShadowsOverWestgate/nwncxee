@@ -14,10 +14,16 @@ namespace CX.Alloy;
 /// classification. Every reader here runs on the light walk (the shadow bracket) and allocates nothing.</summary>
 internal static unsafe partial class LightmapBake
 {
-    /// <summary>Classification table: open addressing on the PartLight pointer, MeshLod's flicker-table shape.
-    /// 0 = unknown, 1 = static, 2 = dynamic. Voided whole at the world edge, the hook edge and a tile change.</summary>
-    private const int ClsSlots = 2048;
-    private const int ClsProbe = 8;
+    /// <summary>Classification table: open addressing on the PartLight pointer. 0 = unknown, 1 = static,
+    /// 2 = dynamic. Voided whole at the world edge, the hook edge and a tile change.
+    /// <para>Sized from <see cref="LightRegistry.Capacity"/>, because it is keyed on the SAME population: a
+    /// 2048-slot table with an 8-slot probe window was the shape that dropped lights wholesale in
+    /// <c>LightRegistry</c> before it was sized properly (1422 live lights spilling 148502 times in one
+    /// session), and the probe is the whole table here for the same reason -- a key whose window happens to be
+    /// full must not be refused while the table has room. Only the MEMO is lost on a refusal, so the defect was
+    /// re-classifying a light every walk rather than a dark lamp; it is still a bound that can be hit without
+    /// anything saying so, which is what <see cref="_clsFull"/> is for.</para></summary>
+    private const int ClsSlots = LightRegistry.Capacity;
     private static readonly IntPtr[] _clsId = new IntPtr[ClsSlots];
     private static readonly byte[] _cls = new byte[ClsSlots];
     /// <summary>The static set is ONE walk: CX-56 makes it the first walk after <c>CNWCArea::LoadArea</c>
@@ -36,6 +42,10 @@ internal static unsafe partial class LightmapBake
     /// <summary>The first refused lights of an area, by node name, once: what the refused set IS (run 8: xtul's
     /// module marks every one of them Static, so the three-branch rule's premise is wrong somewhere).</summary>
     private static int _whyLeft;
+    /// <summary>Classifications the table had no room for, so the verdict was recomputed instead of memoised.
+    /// With the table sized from <see cref="LightRegistry.Capacity"/> and the probe covering it, this can only
+    /// move when every slot is taken -- i.e. it is a sizing fact, not a hash accident. <see cref="Describe"/>
+    /// prints it.</summary>
     private static int _clsFull;
 
     /// <summary>CX-56: <c>CNWCArea::LoadArea</c> @0x70e010 has RETURNED non-zero, so every light of this area
@@ -210,8 +220,8 @@ internal static unsafe partial class LightmapBake
     /// <summary>Has <see cref="IsStatic"/> already given this light identity a verdict? A probe, never a classify.</summary>
     private static bool Classified(IntPtr light)
     {
-        int h = (int)((ulong)light >> 4) * -1640531527 & (ClsSlots - 1);
-        for (int k = 0; k < ClsProbe; k++)
+        int h = ClsHash(light);
+        for (int k = 0; k < ClsSlots; k++)
         {
             IntPtr id = _clsId[(h + k) & (ClsSlots - 1)];
             if (id == light) return true;
@@ -219,6 +229,15 @@ internal static unsafe partial class LightmapBake
         }
         return false;
     }
+
+    /// <summary>Fibonacci hash of the pointer with the four constant low bits dropped -- malloc hands back
+    /// aligned blocks, so hashing those clusters every key into a sixteenth of the table. The same key shape
+    /// <see cref="LightRegistry"/> uses on the same pointers.</summary>
+    private static int ClsHash(IntPtr p)
+        => (int)(((ulong)(long)p >> 4) * 0x9E3779B97F4A7C15UL >> (64 - ClsBits)) & (ClsSlots - 1);
+
+    /// <summary>not-an-offset: <see cref="ClsSlots"/> as a shift, for <see cref="ClsHash"/>.</summary>
+    private const int ClsBits = 14;
 
     private static void VoidClasses() { Array.Clear(_clsId); Array.Clear(_cls); }
     private static void Reopen() { _closed = false; _walks = 0; }
@@ -232,9 +251,11 @@ internal static unsafe partial class LightmapBake
     internal static bool IsStatic(PartLight light, CNWCArea area, out bool animated, out bool placeable, out bool byRun)
     {
         animated = placeable = byRun = false;
-        int h = (int)((ulong)light.Ptr >> 4) * -1640531527 & (ClsSlots - 1);
+        int h = ClsHash(light.Ptr);
         int free = -1;
-        for (int k = 0; k < ClsProbe; k++)
+        // The whole table, not a window: the chain ends at the first empty slot, so this is O(run length) in
+        // practice and cannot refuse a key while a slot is free anywhere.
+        for (int k = 0; k < ClsSlots; k++)
         {
             int j = (h + k) & (ClsSlots - 1);
             if (_clsId[j] == light.Ptr)
@@ -243,7 +264,7 @@ internal static unsafe partial class LightmapBake
                 animated = (c & 4) != 0; placeable = (c & 8) != 0; byRun = (c & 0x10) != 0;
                 return (c & 3) == 1;
             }
-            if (free < 0 && _clsId[j] == IntPtr.Zero) free = j;
+            if (_clsId[j] == IntPtr.Zero) { if (free < 0) free = j; break; }
         }
         bool st = Classify(light, area, out animated, out placeable, out byRun);
         if (!st && _whyLeft > 0 && _log != null)

@@ -10,7 +10,7 @@ namespace CX.Alloy;
 /// the engine's own <c>LightManager::GetLensFlareLights</c> list (every light node with <c>lensflares 1</c>),
 /// re-read each frame at the enrol slot; the look is a shader pair a hak can override (<c>cx_halo_vs</c>,
 /// <c>cx_halo_fs</c>).
-/// <para>Vanilla (Ghidra <c>Scene::RenderLensFlares</c> @0x471860) draws each flare as a screen-space quad on
+/// <para>Vanilla (<c>Scene::RenderLensFlares</c> @0x471860) draws each flare as a screen-space quad on
 /// the near plane -- which is why it reads as glued to the screen -- sized and dimmed by
 /// <c>(flareradius - d) / flareradius</c>, tinted <c>light colour + flarecolorshift</c>, and faded by the
 /// occlusion ray it integrates into <c>PartLight+0xa0</c>. The quad becomes a view-aligned billboard of world
@@ -140,14 +140,12 @@ internal static unsafe class Halos
             float fade = _occFailed ? 1f : pl.FlareFade;
             float* sizes = (float*)nd.FlareSizes;
             float* shift = (float*)nd.FlareShifts;
-            Vector3 c = pl.Colour;
             float* d = stage + i * Floats;
             Vector3 wp = pl.Pos;
             d[0] = wp.X; d[1] = wp.Y; d[2] = wp.Z;
             d[3] = (sizes != null ? sizes[0] : 1f) * Effects.HaloSize.V;
-            d[4] = Channel(c.X, shift != null ? shift[0] : 0f, fade);
-            d[5] = Channel(c.Y, shift != null ? shift[1] : 0f, fade);
-            d[6] = Channel(c.Z, shift != null ? shift[2] : 0f, fade);
+            Vector3 tint = Tint(pl.Colour, shift != null ? new Vector3(shift[0], shift[1], shift[2]) : Vector3.Zero, fade);
+            d[4] = tint.X; d[5] = tint.Y; d[6] = tint.Z;
             d[7] = nd.FlareRadius;
         }
     }
@@ -209,17 +207,25 @@ internal static unsafe class Halos
         return fade < target ? MathF.Min(target, fade + step) : MathF.Max(target, fade - step);
     }
 
-    /// <summary>One staged halo channel: the light colour plus the node's shift, clamped to [0,1] as
-    /// <c>RenderLensFlares</c> @0x471860 clamps each flare channel, linearised, times the clamped fade. An HDR
-    /// light colour left unclamped overflows the RGBA16F target to Inf, and the halo's own zero-visibility
-    /// pixels turn that into NaN. NaN in either input stages as 0.</summary>
-    internal static float Channel(float colour, float shift, float fade)
+    /// <summary>A staged halo's tint: the RAW light colour plus the node's shift, as <c>RenderLensFlares</c> @0x471860
+    /// sums them, scaled down by its brightest channel when that is past 1, linearised, times the clamped fade.
+    /// Vanilla clamps each channel only after its distance weight, so a flare's hue survives at every distance but
+    /// the closest; a per-channel clamp here, before the shader's weight, turned an overbright torch -- (1.75, 1.50,
+    /// 1.00) -- white everywhere (!786). The cap keeps the RGBA16F target finite, where the halo's own
+    /// zero-visibility pixels would turn an Inf into NaN. NaN in any input stages as 0.</summary>
+    internal static Vector3 Tint(Vector3 colour, Vector3 shift, float fade)
     {
-        float v = colour + shift;
-        v = v > 0f ? MathF.Min(v, 1f) : 0f;
+        Vector3 v = colour + shift;
+        v = new Vector3(Finite(v.X), Finite(v.Y), Finite(v.Z));
+        float m = MathF.Max(v.X, MathF.Max(v.Y, v.Z));
+        if (m > 1f) v /= m;
         float f = fade > 0f ? MathF.Min(fade, 1f) : 0f;
-        return MathF.Pow(v, AlloyLights.SrgbGamma) * f;
+        return new Vector3(MathF.Pow(v.X, AlloyLights.SrgbGamma), MathF.Pow(v.Y, AlloyLights.SrgbGamma), MathF.Pow(v.Z, AlloyLights.SrgbGamma)) * f;
     }
+
+    /// <summary>A channel floored at 0 and capped at a finite bound: NaN reads 0, and an Inf cannot make the divide by
+    /// the brightest channel Inf/Inf.</summary>
+    private static float Finite(float c) => c > 0f ? MathF.Min(c, 1e6f) : 0f;
 
     /// <summary>The halo pass: after the particles, where vanilla draws its flares (step 29). Additive
     /// (ONE, ONE), no depth test -- visibility is the shader's own depth-disc read of the scene copy. Hands
@@ -379,10 +385,22 @@ internal static unsafe class Halos
         check.Expect(Step(0f, 0.4f, 1f) == 0.4f, "a partly covered flare settles at its coverage, not at 1");
         // RenderLensFlares @0x471860 clamps each flare channel to [0,1]; an HDR light colour must not reach the
         // RGBA16F target as Inf, where the halo's own zero-visibility pixels turn it into NaN.
-        check.Expect(Channel(255f, 0f, 1f) == 1f, "a light colour past 1 stages at 1, not at 255^2.2");
-        check.Expect(Channel(0.5f, 0.6f, 1f) == 1f && Channel(-2f, 0f, 1f) == 0f, "colour + shift is clamped both ways");
-        check.Expect(Channel(float.NaN, 0f, 1f) == 0f && Channel(1f, 0f, float.NaN) == 0f, "a NaN colour or fade stages as 0");
-        check.Expect(Channel(1f, 0f, 3f) == 1f, "the fade weight is clamped too");
+        check.Expect(Tint(new Vector3(255f, 0f, 0f), Vector3.Zero, 1f) == new Vector3(1f, 0f, 0f), "a light colour past 1 stages at 1, not at 255^2.2");
+        check.Expect(Tint(new Vector3(0.5f, 0f, -2f), new Vector3(0.6f, 0f, 0f), 1f) == new Vector3(1f, 0f, 0f), "colour + shift is capped above and floored below");
+        check.Expect(Tint(new Vector3(float.NaN, 1f, 1f), Vector3.Zero, 1f).X == 0f && Tint(Vector3.One, Vector3.Zero, float.NaN) == Vector3.Zero,
+                     "a NaN colour or fade stages as 0");
+        check.Expect(Tint(Vector3.One, Vector3.Zero, 3f) == Vector3.One, "the fade weight is clamped too");
+        Vector3 inf = Tint(new Vector3(float.PositiveInfinity, 0.5f, 0f), Vector3.Zero, 1f);
+        check.Expect(float.IsFinite(inf.X) && float.IsFinite(inf.Y) && inf.X == 1f, "an infinite colour stages finite, not NaN");
+        // the shift joins the RAW colour before the cap, as vanilla sums them: a torch shifted toward blue keeps
+        // green and blue level -- normalising first and adding after would put blue above green
+        Vector3 shifted = Tint(new Vector3(1.75f, 1.5f, 1f), new Vector3(0f, 0f, 0.5f), 1f);
+        check.Expect(shifted.X == 1f && MathF.Abs(shifted.Y - shifted.Z) < 1e-5f && shifted.Y < 0.8f,
+                     $"a flare shift is summed into the raw colour before the cap ({shifted.X:F2}, {shifted.Y:F2}, {shifted.Z:F2})");
+        // !786 clamped each channel of the raw overbright colour to 1 before the distance weight: every halo white
+        Vector3 torch = Tint(new Vector3(1.75f, 1.5f, 1f), Vector3.Zero, 1f);
+        check.Expect(torch.X == 1f && torch.Y < 0.8f && torch.Z < 0.4f && torch.Z < torch.Y,
+                     $"an overbright torch's halo keeps the torch's hue ({torch.X:F2}, {torch.Y:F2}, {torch.Z:F2}), not white");
         log.Info(check.Ok ? "Halos.SelfCheck: passed" : "Halos.SelfCheck: FAILED -- see above");
     }
 }

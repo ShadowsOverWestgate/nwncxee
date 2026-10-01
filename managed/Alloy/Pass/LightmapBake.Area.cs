@@ -302,8 +302,7 @@ internal static unsafe partial class LightmapBake
         TakeAnswers();
         if (!_areaWant || !_answerIn || _answerKey != _areaKey) return;
         ulong key = _answerKey; LightmapAreaPlan? plan = _answerPlan;
-        _answerIn = false; _answerPlan = null; _areaWant = false; _areaAsked = false;
-        if (plan == null) return;
+        if (plan == null) { _answerIn = false; _answerPlan = null; _areaWant = false; _areaAsked = false; return; }
         // CX-56 step 2 closes the set on the edge frame's own walk, which runs before this: the same set is the check passed
         bool confirmed = _closed && SetHash == plan.SetHash;
         string? no = (SetHash != 0 || _closed) && !confirmed ? $"the live walk closed on another static set first ({SetHash:x16}, the plan has {plan.SetHash:x16}: {SetDiff(plan.SetPosR, plan.SetCol, plan.SetPosR.Length)})"
@@ -311,10 +310,18 @@ internal static unsafe partial class LightmapBake
                    : plan.Settings != AreaSettingsHash() ? "the bake settings moved between the load and the edge"
                    : plan.Layers > _cap ? $"{plan.Layers} pages, past the {_cap} the page cap allows"
                    : null;
+        // CX-102: the pages are asked for only once nothing else refuses the plan, and while the answer is
+        // still ARMED -- a migration in flight means "ask again next frame", and consuming the answer for that
+        // would lose the plan outright (the bug: Pending read as a refusal killed this path entirely).
+        Grew pages = no != null ? Grew.Resident : Grow(Math.Max(plan.Layers, 1));
+        if (pages == Grew.Pending) return;
+        if (pages == Grew.Refused) no = $"{plan.Layers} pages the card would not give";
+        _answerIn = false; _answerPlan = null; _areaWant = false; _areaAsked = false;
         if (no != null)
         {
             _areaLate++;
             _log?.Always($"LightmapBake: the area bake cache for {key:x16} is REFUSED at the edge -- {no}; the area packs and probes its rects as on a first visit");
+            if (pages == Grew.Refused && !_closed) { SetHash = 0; _setN = 0; }
             return;
         }
         AdoptPlan(plan);
@@ -324,7 +331,8 @@ internal static unsafe partial class LightmapBake
     /// <summary>Install a plan: the static set (which arms Sweep and Enrol at once), the page plan, every rect
     /// as already placed, and the pages to hold them. The unions upload over the next frames
     /// (<see cref="AreaUpload"/>); until one lands its rects sit Probing, exactly as a freshly packed rect
-    /// does, so nothing reads a page that holds no bake.</summary>
+    /// does, so nothing reads a page that holds no bake. The pages are resident before this runs:
+    /// <see cref="InstallAreaCache"/> asks for them while the answer is still armed.</summary>
     private static void AdoptPlan(LightmapAreaPlan plan)
     {
         _setPosR = plan.SetPosR; _setCol = plan.SetCol; _setN = plan.SetPosR.Length;
@@ -333,11 +341,6 @@ internal static unsafe partial class LightmapBake
         Array.Copy(plan.PageClass, _pageClass, MaxPages);
         Array.Copy(plan.ShelfX, _shelfX, MaxPages); Array.Copy(plan.ShelfY, _shelfY, MaxPages); Array.Copy(plan.ShelfH, _shelfH, MaxPages);
         _packPage = plan.PackPage; _finePage = plan.FinePage;
-        if (!Grow(Math.Max(plan.Layers, 1)))
-        {
-            _log?.Always($"LightmapBake: the area bake cache for {_areaKey:x16} names {plan.Layers} pages the card would not give -- the area packs and probes its rects as on a first visit");
-            _areaLate++; if (!_closed) { SetHash = 0; _setN = 0; } return;
-        }
         for (int k = 0; k < plan.Rects.Length; k++)
         {
             ref LightmapAreaPlan.Rec p = ref plan.Rects[k];
@@ -367,6 +370,9 @@ internal static unsafe partial class LightmapBake
     {
         LightmapAreaPlan? plan = _areaPlan;
         if (plan == null || _areaUpDone) return;
+        // CX-102: the unions land on the resident pages, which a migration is retiring; _areaUpNext holds the
+        // cursor across the window, so the plan uploads unchanged the frame the pages are published
+        if (HeldByMigration()) return;
         long uploaded = 0;
         while (_areaUpNext < plan.Unions.Length && uploaded < AreaUploadBytesPerFrame)
         {
@@ -498,11 +504,15 @@ internal static unsafe partial class LightmapBake
         if (_frame - _areaCalmFrom >= AreaCalmFrames) AreaWrite(true);
     }
 
-    /// <summary>One page per fence: the readback in flight finishes (<see cref="CollectReadback"/>) before the
-    /// next is queued, so the snapshot costs one region's read and one host copy a frame at most.</summary>
+    /// <summary>One page per readback: the one in flight finishes (<see cref="CollectReadback"/>) before the
+    /// next is queued, so the snapshot costs one region's read and its sliced host copy at a time.</summary>
     private static void AreaSnapStep()
     {
-        if (_uSnap || _fence != IntPtr.Zero || _bakePage >= 0 || _rekeyPending) return;
+        // CX-102: !ReadbackIdle, not the fence alone -- a copy still draining out of the open map, or a landing
+        // waiting behind it, IS a readback in flight. Stepping the cursor over a page while one is would
+        // consume that page (and every one after it) and count it missed for ever, and the hold's release
+        // arrives one or two frames after the last landing queued its readback, so that was every release.
+        if (!ReadbackIdle || _bakePage >= 0 || _rekeyPending) return;
         while (_areaSnapNext < MaxPages)
         {
             int p = _areaSnapNext++;
@@ -539,6 +549,8 @@ internal static unsafe partial class LightmapBake
     private static bool AreaSnapQueue(int page, out bool empty)
     {
         empty = false;
+        // no transient test here: a busy readback is the STEP's guard, because a refusal at this point has
+        // already consumed the page's turn -- the only refusals left are permanent ones
         if (Gl.FenceSync == null || Gl.MapNamedBufferRange == null || page >= _layers) return false;
         _areaSnapRects.Clear();
         for (int ri = 0; ri < _rectN; ri++) if (_rects[ri].Page == page && _rects[ri].State == RState.Landed) _areaSnapRects.Add(ri);
@@ -557,6 +569,7 @@ internal static unsafe partial class LightmapBake
     private static void AreaSnapAbandon()
     {
         int lost = _uSnap ? 1 : 0;   // the readback in flight is lost too: its fence is deleted with the pages
+        AbortReadback(gl: true);
         _uSnap = false;
         if (_areaPlanOut == null) return;
         for (int p = _areaSnapNext; p < MaxPages; p++) if (_areaSnapWant[p]) lost++;

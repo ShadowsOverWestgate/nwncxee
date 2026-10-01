@@ -17,11 +17,18 @@ namespace CX.Alloy;
 /// <c>SceneBSPAddPart</c> @0x47ca10 tells one. This reaches every GOB light -- and all three LOD roots plus
 /// the append roots, where the engine's own <c>ListSpecialPartsR</c> @0x462d50 walks <c>Gob+0x90</c>
 /// alone.</item>
-/// <item><see cref="WalkDone"/> first runs its OWN <c>BSPTraverse</c> for the TILE lights, which no part-tree
-/// walk can reach: <c>CollapsePartTree</c> @0x462ff0 flattens a tile's tree and CLEARS every child list, so
-/// the only container holding a tile light is the BSP node's <c>CExoArrayList&lt;PartLight*&gt;</c> at
-/// <see cref="EngineLayout.BspDataLight"/>.</item>
+/// <item>...and the same seam again for the TILE lights, which no part-TREE walk can reach --
+/// <c>CollapsePartTree</c> @0x462ff0 flattens a tile's tree and CLEARS every child list. They come from the
+/// tile's own part list (<c>TileData+0x30</c>), where <c>ProcessStaticParts</c> @0x470970 files every part
+/// whose <c>AsPartLight</c> is non-null; <see cref="SceneParts.TileMesh"/> walks it through
+/// <see cref="NonMeshParts"/> during <see cref="SceneWalk"/>'s one BSP traversal.</item>
 /// </list></para>
+/// <para><b>And one read-only confirmation.</b> The BSP node's <c>CExoArrayList&lt;PartLight*&gt;</c> at
+/// <see cref="EngineLayout.BspDataLight"/> holds the same tile lights (<c>SceneBSPAddTileData</c> @0x47cd00
+/// routes every <c>TileData+0x30</c> part through <c>SceneBSPAddPart</c> @0x47ca10) AND every gob light
+/// (<c>Scene::ChildAdd</c> @0x461d50 -&gt; <c>ListSpecialPartsR</c>), and nothing prunes it on part death --
+/// so it is a list of pointers, not of lights. <see cref="NoteBspNode"/> reads it to CONFIRM and never to
+/// admit; see there for why an admission would be a use-after-free.</para>
 /// <para><b>Three lifetime edges, no inference.</b> Arrival is a walk generation; departure is the sweep at
 /// the end of a walk (a part the walk did not reach left the scene -- <c>Scene::ChildRemove</c> @0x462cc0
 /// unlinks without freeing); death is <c>Part::~Part</c> through <see cref="Died"/>, which COMPARES the
@@ -35,12 +42,22 @@ namespace CX.Alloy;
 /// registry itself only changes on walk edges.</para></summary>
 internal static unsafe class LightRegistry
 {
-    /// <summary>Table size. A dense live area runs a few hundred lights; the plaza benchmark reads 253.
-    /// <para>ponytail: fixed, power of two, no growth path. An overflow drops the light from Alloy's set --
-    /// a light that does not light -- and is counted as <c>table-full</c> on the period line. If that number
-    /// is ever non-zero this is a sizing decision after all.</para></summary>
-    private const int Slots = 2048;
-    private const int Probe = 8;
+    /// <summary>Table size, as a power-of-two shift. Sized from the AREA's own bound, not from a busy plaza:
+    /// a 32x32 tile area (the engine's maximum) at the 2,4 lights per tile a lamp-lit city tileset measures
+    /// is ~2500 tile lights before a single gob light, and the first live read of a city exterior held 1422
+    /// lit of 1464 tile lights. 16384 is ~6x that ceiling, and <see cref="Stats"/> prints the occupancy so
+    /// the headroom is a number rather than a hope.
+    /// <para>The probe is the WHOLE table (<see cref="Find"/>, <see cref="Insert"/>), so
+    /// <see cref="_overflow"/> can only mean 16384 lights are live at once -- a real bug, loudly, per CX-45.
+    /// The predecessor of this pair was <c>Slots = 2048, Probe = 8</c>, which spilled every light whose
+    /// 8-slot window was full: at 1422 lights in 2048 slots that was <c>table-full=148502</c> in one session,
+    /// and every one of them a lamp that silently never lit.</para></summary>
+    private const int SlotBits = 14;
+    private const int Slots = 1 << SlotBits;
+    /// <summary>The bound every table keyed on the SAME population has to be sized from -- see
+    /// <c>SceneInputs</c>' animated-light peak table, which was sized for a busy plaza and silently stopped
+    /// stabilising past it.</summary>
+    internal const int Capacity = Slots;
     /// <summary>Guard on the parent walks below. A part tree is wide and shallow.</summary>
     private const int DepthMax = 64;
 
@@ -86,21 +103,59 @@ internal static unsafe class LightRegistry
     private static readonly bool[] _cand = new bool[Slots];
     private static readonly bool[] _want = new bool[Slots];
     /// <summary>Live slots in table order, rebuilt by the sweep. The per-frame pass walks THIS, not the table:
-    /// 2048 slots of which a few hundred are tenanted is a scan nobody needs every frame.</summary>
+    /// a table sized for the area's ceiling, of which a fraction is tenanted, is a scan nobody needs every
+    /// frame. An entry here can have been retired since -- see <see cref="SelectInner"/>'s guard.</summary>
     private static readonly int[] _live = new int[Slots];
     private static int _liveN;
+    /// <summary>Where slot <c>s</c> sits in <see cref="_live"/>, or -1. The list is MAINTAINED -- a claim lists,
+    /// a retirement unlists, both O(1) -- rather than republished by scanning all <see cref="Slots"/> slots.
+    /// It used to be rebuilt on every frame a per-gob delta drained, which is most frames, in the stream whose
+    /// whole purpose was removing an O(table) walk from the frame.
+    /// <para><see cref="Sweep"/> still rebuilds wholesale: it is the pass that retires, it already walks every
+    /// slot to find the stale generations, and the two must agree -- which the self-check pins by driving a
+    /// delta sequence and then a full rebuild and comparing the sets.</para></summary>
+    private static readonly int[] _liveAt = NewLiveAt();
+    private static int[] NewLiveAt() { var a = new int[Slots]; Array.Fill(a, -1); return a; }
+
+    /// <summary>Put a freshly claimed slot in the live list.</summary>
+    private static void ListLive(int s)
+    {
+        if (_liveAt[s] >= 0 || _liveN >= Slots) return;
+        _liveAt[s] = _liveN; _live[_liveN++] = s;
+    }
+
+    /// <summary>...and take a retired one out, by swapping the last member into its place.</summary>
+    private static void UnlistLive(int s)
+    {
+        int k = _liveAt[s];
+        if (k < 0) return;
+        _liveAt[s] = -1;
+        int last = --_liveN;
+        if (k == last) return;
+        int moved = _live[last];
+        _live[k] = moved; _liveAt[moved] = k;
+    }
 
     private static ExtenderLog? _log;
     private static bool _probed;
-    private static BspTraverseFn _bspTraverse;
     private static GetLightAdjustedRadiusFn _adjRadius;
     private static LightMgrGetMaxLightsFn _maxLights;
     private static IntPtr* _onlyGob;
 
     /// <summary>Period-line counters. Arrivals, departures and deaths are RATES (walk edges); the rest are
     /// populations, read at the last <see cref="Select"/>.</summary>
-    private static long _arrived, _left, _died, _spill, _reclaimed;
+    private static long _arrived, _left, _died, _overflow, _reclaimed;
     private static int _candN, _wantN, _hidden, _inactiveLod, _tile;
+    /// <summary>Lights the last walk's own feeds did not reach and the tile BSP's node lists KEPT alive -- gob
+    /// lights on an inactive LOD root, which the engine still lists and <c>Select</c>'s own inactive-LOD filter
+    /// answers for. A per-walk population, reset by <see cref="BspScanBegin"/>, not a rate.</summary>
+    private static int _nodeKept;
+    /// <summary>Slots ever claimed (live plus tombstone) and the tombstone half of that -- the table's
+    /// OCCUPANCY, which is what says how far the fixed size is from binding. <see cref="_overflow"/> can only
+    /// rise once <see cref="_used"/> reads <see cref="Slots"/>.</summary>
+    private static int _used, _tombs;
+    /// <summary>The overflow has been said out loud once this session (CX-45: first failure per site).</summary>
+    private static bool _overflowLogged;
 
     /// <summary>A symbol the registry needs did not resolve. Kept apart from <see cref="Use"/> so the knob's
     /// meaning ("the player asked for the engine's lists") does not double as "this client is broken".</summary>
@@ -158,25 +213,26 @@ internal static unsafe class LightRegistry
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
-        _bspTraverse = EngineFn.BspTraverse;
         _adjRadius = EngineFn.GetLightAdjustedRadius;
         _maxLights = EngineFn.LightMgrGetMaxLights;
         _onlyGob = (IntPtr*)Native.Sym(SymbolMap.LightManagerOnlyGob);
-        // No silent fallback (memory no-silent-fallbacks): without BSPTraverse the registry cannot reach a
-        // tile light at all, and an interior lit only by its gobs is a black room that reads as content.
-        if (_bspTraverse == null || _adjRadius == null || _maxLights == null)
+        // No silent fallback (memory no-silent-fallbacks). BSPTraverse itself is SceneWalk's to resolve now --
+        // the tile cross-check rides its one traversal (NoteBspNode) instead of starting a second -- and it
+        // stands the whole walk down if it is missing, so an interior lit only by its gobs cannot happen
+        // quietly on that account either.
+        if (_adjRadius == null || _maxLights == null)
         {
-            string miss = _bspTraverse == null ? SymbolMap.BspTraverse
-                        : _adjRadius == null ? SymbolMap.GetLightAdjustedRadius
+            string miss = _adjRadius == null ? SymbolMap.GetLightAdjustedRadius
                         : SymbolMap.LightMgrGetMaxLights;
             _unavailable = true;
             log.Always($"LightRegistry: {miss} did not resolve -- Alloy's light registry is OFF for the session; "
                      + "the light walk falls back to the engine's LightManager lists and says so on /alloy");
             return;
         }
-        log.Info("LightRegistry: armed -- Alloy enumerates its own lights from the scene walk plus a BSP light "
-               + $"pass (cap {_maxLights()} from GetMaxLights; light.maxlit overrides, light.registry 0 hands "
-               + "the enumeration back to LightManager)");
+        log.Info("LightRegistry: armed -- Alloy enumerates its own lights from the scene walk (a gob's down its "
+               + "part tree, a tile's from the tile's own part list) and cross-checks the tile BSP's light lists "
+               + $"against them (cap {_maxLights()} from GetMaxLights; light.maxlit overrides, light.registry 0 "
+               + "hands the enumeration back to LightManager)");
     }
 
     // ================= the seam =================
@@ -200,8 +256,25 @@ internal static unsafe class LightRegistry
         if (s < 0)
         {
             s = Insert(light);
-            if (s < 0) { _spill++; return; }
+            if (s < 0)
+            {
+                _overflow++;
+                if (!_overflowLogged)
+                {
+                    _overflowLogged = true;
+                    _log?.Always($"LightRegistry: the light table is FULL -- all {Slots} slots hold a live light, "
+                               + "so this light is not registered and will not light, halo, tint or cast. This is "
+                               + "a sizing bug, not a limit: raise LightRegistry.SlotBits. Counted as overflow "
+                               + "on the [alloy] lightreg clause for the rest of the session");
+                }
+                return;
+            }
             _arrived++;
+            ListLive(s);
+            // The allocator hands addresses back: this pointer may be on the death ledger as the debris of an
+            // older light. Registering it again is the proof that it is not, and leaving the entry would make a
+            // LATER failure to register read as debris rather than as the hole it would be.
+            ForgetDead(light);
             _bsp[s] = bsp;
             _gob[s] = new Part(light).Gob.Ptr;
             _root[s] = RootOf(light);
@@ -209,31 +282,37 @@ internal static unsafe class LightRegistry
         _gen[s] = gen;
     }
 
-    /// <summary>The walk of <paramref name="gen"/> finished. Two steps: the tile lights the part-tree walk
-    /// cannot reach, then the sweep -- an entry not seen on this generation left the scene.</summary>
+    /// <summary>The walk of <paramref name="gen"/> finished: the sweep -- an entry not seen on this
+    /// generation left the scene. A tile's lights arrived during the walk's own BSP traversal, from the tile's
+    /// own part list through the <see cref="NonMeshParts"/> seam; this class no longer starts a second traversal
+    /// of that tree, and what it does with the node light lists is <see cref="NoteBspNode"/>.</summary>
     internal static void WalkDone(int gen)
     {
         if (_unavailable) return;
-        _tile = 0;
-        IntPtr scene = SceneWalk.WorldScene;
-        if (scene != IntPtr.Zero)
-        {
-            IntPtr root = new Scene(scene).BspRoot;
-            _bspGen = gen;
-            if (root != IntPtr.Zero)
-                // OUR callback's address, not an engine symbol -- the cast is the C# way to spell &OnBspNode.
-                _bspTraverse(root, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnBspNode, IntPtr.Zero);
-        }
         Sweep(gen);
     }
 
-    /// <summary>The generation the BSP light pass files under: <see cref="OnBspNode"/> is an unmanaged callback
-    /// and cannot take it as an argument.</summary>
-    private static int _bspGen;
+    /// <summary>The walk's BSP traversal is starting: the node-list gauges are this pass's.</summary>
+    internal static void BspScanBegin() { if (!_unavailable) { _tile = 0; _nodeKept = 0; _residueN = 0; } }
 
-    [UnmanagedCallersOnly]
-    private static void OnBspNode(IntPtr node, IntPtr ctx)
+    /// <summary>One BSP node's light list, on <paramref name="gen"/> -- as a CROSS-CHECK, never as a source.
+    /// <para><b>Admission from this list is forbidden, and that is the whole point of the method.</b> Its
+    /// entries are not pruned on part death: <c>Scene::ChildAdd</c> @0x461d50 routes a gob's whole tree through
+    /// <c>ListSpecialPartsR</c> @0x462d50, which files every <c>AsPartLight</c> into it, and the only unlink is
+    /// <c>ChildRemove</c> -&gt; <c>UnlistSpecialParts</c> over the tree active at that moment -- which an Alloy
+    /// LOD rotation of <c>Gob+0x90</c> outlives, and which never happens at all for a part that merely dies (no
+    /// part destructor reaches <c>SceneBSPRemovePart</c>; <c>Scene::RemoveFromSceneManager</c> @0x462b90 only
+    /// touches the global buckets). <see cref="Find"/> misses a retired or trimmed entry, so an
+    /// <see cref="Admit"/> here would <see cref="Insert"/> a FREED <c>PartLight*</c> and the per-frame
+    /// selection would dereference it every frame after.</para>
+    /// <para>Both real populations arrive elsewhere, from containers that ARE maintained: a gob's lights down
+    /// its part tree (<see cref="Visit"/>, including the lights-only descent into a pruned subtree), and a
+    /// tile's from the tile's own part list, where <c>ProcessStaticParts</c> @0x470970 files every part whose
+    /// <c>AsPartLight</c> is non-null and which dies with its tile. So this list can only confirm, and what it
+    /// names that no feed has is counted: see <see cref="BspScanEnd"/>.</para></summary>
+    internal static void NoteBspNode(IntPtr node, int gen)
     {
+        if (_unavailable) return;
         var bsp = new BSPNode(node);
         IntPtr* items = bsp.Lights;
         if (items == null) return;
@@ -242,21 +321,168 @@ internal static unsafe class LightRegistry
         {
             IntPtr p = items[i];
             if (p == IntPtr.Zero) continue;
-            _tile++;
-            Admit(p, true, _bspGen);
+            int s = Find(p);
+            // LOAD-BEARING, not bookkeeping: a slot this walk's feeds did not reach -- a gob light hanging off
+            // an inactive LOD root, which the walk stops enumerating once GobLod is armed -- survives the
+            // generation sweep only because of this restamp. Counted apart from the tile confirmations for that
+            // reason: the two mean opposite things, one that the feeds agree with the engine and one that only
+            // the engine still lists the light, and lumping them made `tile` read as a tile population it was
+            // not and `walk edges` read 0 for a light the restamp had quietly kept.
+            if (s >= 0)
+            {
+                // EXACT, not "gob vs tile": every gob light sits in some node list, so splitting on _bsp made
+                // this read the whole gob-light population. What the restamp KEEPS is a slot that does not
+                // already carry this generation -- the gob loop runs before this traversal, so a light either
+                // feed reached is stamped by now, and one that is not is exactly the inactive-LOD case.
+                if (_bsp[s]) _tile++;
+                else if (_gen[s] != gen) _nodeKept++;
+                _gen[s] = gen;
+                continue;
+            }
+            // A miss may only be ORDER: the node holding the light can be visited before the node holding its
+            // tile's first mesh part, which is where the tile's own list is read. Resolved after the traversal.
+            if (_residueN < ResidueCap) _residue[_residueN++] = p; else _residueOverflow++;
         }
     }
 
+    /// <summary>The traversal is over: anything the node lists named that STILL has no record is either a
+    /// dangling pointer they were never pruned of -- the expected case, and the reason nothing is admitted from
+    /// them -- or a live light both feeds missed, which would be a hole. The two are indistinguishable from
+    /// here without dereferencing the pointer, which is exactly what must not happen, so the number is reported
+    /// and the first occurrence is said out loud (CX-45).</summary>
+    internal static void BspScanEnd()
+    {
+        if (_unavailable) return;
+        for (int k = 0; k < _residueN; k++)
+        {
+            IntPtr p = _residue[k];
+            if (Find(p) >= 0) continue;                   // a later node's tile had not been read yet: not residue
+            if (KnownDead(p)) { _residueDebris++; continue; }
+            _residueSeen++;
+        }
+        _residueN = 0;
+        // DEBRIS is expected and is a number; a HOLE is the event. Those lists keep every light that ever died
+        // in them, so a city with creature torches accumulates dangling pointers and an Always on the total
+        // would fire every session and mean nothing. What cannot be explained that way is a pointer Alloy was
+        // never told the death of: something is in the engine's own light list that neither feed reached, which
+        // is the shape an under-lit area takes.
+        if (!_residueLogged && _residueSeen > 0 && _deadFull == 0)
+        {
+            _residueLogged = true;
+            _log?.Always($"LightRegistry: {_residueSeen} light(s) in the tile BSP's node lists have no record and "
+                       + "no death notice -- neither the gob walk nor the tiles' own part lists reached them, and "
+                       + "nothing is admitted from those lists because they are never pruned on part death and so "
+                       + "name freed memory. This is not debris: the area may be genuinely under-lit. Counted as "
+                       + "node-residue on the [alloy] lightreg clause, beside the debris it is separated from");
+        }
+    }
+
+    /// <summary>Node-list lights with no record, held only until <see cref="BspScanEnd"/> re-asks. Small on
+    /// purpose: what does not fit is counted, and an overflow of pointers with no record at all is itself the
+    /// finding.</summary>
+    private const int ResidueCap = 256;
+    private static readonly IntPtr[] _residue = new IntPtr[ResidueCap];
+    private static int _residueN;
+    /// <summary><see cref="_residueSeen"/> = node-list pointers with no record and NO death notice, which is the
+    /// number that can mean a hole; <see cref="_residueDebris"/> = the ones Alloy was told died, which those
+    /// lists were simply never pruned of.</summary>
+    private static long _residueSeen, _residueDebris, _residueOverflow;
+    private static bool _residueLogged;
+
+    /// <summary>Every light this area was told the death of, so a node list naming one is KNOWN debris rather
+    /// than a suspected hole. Kept apart from the table's own tombstone because <see cref="Trim"/> retires a
+    /// tombstone as soon as it can -- "nearly every retirement" by its own doc -- which would otherwise leave
+    /// almost all debris indistinguishable from a light nobody reached.
+    /// <para>Linear-probed, cleared with the table (<see cref="Revoke"/>), and sized well past an area's light
+    /// population. A full set cannot classify, so it SUPPRESSES the verdict rather than guessing: while
+    /// <see cref="_deadFull"/> is nonzero the residue is still printed and the Always is not fired.</para></summary>
+    private const int DeadBits = 13;
+    private static readonly IntPtr[] _dead = new IntPtr[1 << DeadBits];
+    private static int _deadUsed;
+    private static long _deadFull;
+
+    private static void NoteDead(IntPtr p)
+    {
+        int mask = (1 << DeadBits) - 1;
+        int free = -1;
+        // BOUNDED, and not by _deadUsed: that counts live entries, while a tombstone still occupies its slot,
+        // so a ledger churned enough times can hold no IntPtr.Zero at all and an unbounded probe would spin.
+        for (int k = 0, h = Hash(p) & mask; k <= mask; k++, h = (h + 1) & mask)
+        {
+            if (_dead[h] == p) return;
+            if (free < 0 && _dead[h] == Tombstone) free = h;
+            if (_dead[h] == IntPtr.Zero) { _dead[free >= 0 ? free : h] = p; _deadUsed++; return; }
+        }
+        if (free >= 0) { _dead[free] = p; _deadUsed++; return; }
+        _deadFull++;   // every slot live: the split stops being decidable and the verdict is suppressed
+    }
+
+    /// <summary>Take <paramref name="p"/> off the ledger. Tombstoned rather than emptied, for the same reason
+    /// the light table's slots are: emptying it would truncate the probe chain of every other pointer that
+    /// hashes before it, and <see cref="KnownDead"/> would then miss real debris. The tombstone is
+    /// <see cref="Tombstone"/>, which no real pointer can be, and <see cref="NoteDead"/> reclaims it.</summary>
+    private static void ForgetDead(IntPtr p)
+    {
+        int mask = (1 << DeadBits) - 1;
+        for (int k = 0, h = Hash(p) & mask; k <= mask; k++, h = (h + 1) & mask)
+        {
+            if (_dead[h] == p) { _dead[h] = Tombstone; _deadUsed--; return; }
+            if (_dead[h] == IntPtr.Zero) return;
+        }
+    }
+
+    /// <summary>not-an-offset: the ledger's tombstone, an address no part can live at.</summary>
+    private static readonly IntPtr Tombstone = (IntPtr)(-1);
+
+    private static bool KnownDead(IntPtr p)
+    {
+        int mask = (1 << DeadBits) - 1;
+        for (int k = 0, h = Hash(p) & mask; k <= mask; k++, h = (h + 1) & mask)
+        {
+            if (_dead[h] == p) return true;
+            if (_dead[h] == IntPtr.Zero) return false;   // a Tombstone is walked over, never a chain end
+        }
+        return false;
+    }
+
+    /// <summary>A per-gob scene delta finished (<see cref="SceneWalk"/> answers a membership change with one
     /// <summary>Mark and sweep, and the rebuild of the live list the per-frame pass walks. Separate from
     /// <see cref="WalkDone"/> so the self-check can drive it with no Scene in sight.</summary>
     private static void Sweep(int gen)
     {
+        // Emptied FIRST, so the UnlistLive inside Drop below has nothing to swap and cannot reorder the list
+        // this loop is rebuilding. Wholesale rather than over the old members: this pass already walks every
+        // slot, so the fill is the same order of work and cannot leave one behind.
+        Array.Fill(_liveAt, -1);
         _liveN = 0;
         for (int s = 0; s < Slots; s++)
         {
             if (_id[s] == IntPtr.Zero || _freed[s]) continue;
             if (_gen[s] != gen) { Drop(s, false); _left++; continue; }
-            _live[_liveN++] = s;
+            _liveAt[s] = _liveN; _live[_liveN++] = s;
+        }
+    }
+
+    /// <summary>Empty a retired slot IF that cannot truncate anyone's probe chain -- which is exactly when the
+    /// slot after it was never claimed, because then no key of any hash was ever stored past this point.
+    /// Emptying it can make its predecessor a chain end in turn, so the trim walks back.
+    /// <para>Why it exists: a tombstone is mandatory (see <see cref="Drop"/>) and is reclaimed only by a later
+    /// key that happens to probe over it, so churn inside one area -- a creature's torch arriving and leaving
+    /// -- would otherwise leave one behind for good and lengthen a chain for good. At the table's real load
+    /// (~1500 lights in 16384 slots) runs are barely longer than one slot, so nearly every retirement trims
+    /// here and the tombstone population stays near zero; <see cref="Stats"/> prints it.</para></summary>
+    private static void Trim(int s)
+    {
+        int mask = Slots - 1;
+        while (_freed[s] && _id[s] != IntPtr.Zero && _id[(s + 1) & mask] == IntPtr.Zero)
+        {
+            _id[s] = IntPtr.Zero; _tenant[s] = 0; _freed[s] = false;
+            // ...and everything derived from the pointer, so a slot this emptied cannot be read as a live
+            // light by anything that reached it before the next sweep rebuilt the live list.
+            _gob[s] = IntPtr.Zero; _root[s] = IntPtr.Zero; _gen[s] = 0;
+            _want[s] = false; _cand[s] = false;
+            _used--; _tombs--;
+            s = (s - 1) & mask;
         }
     }
 
@@ -268,6 +494,10 @@ internal static unsafe class LightRegistry
         if (_unavailable) return;
         int s = Find(part);
         if (s < 0) return;
+        // AFTER the early-out, so the ledger holds registered LIGHTS and not every part that ever died: this
+        // notice arrives for all ~14.5k part deaths a session through NonMeshParts.Died, which would fill the
+        // ledger and permanently suppress the verdict it exists to make possible.
+        NoteDead(part);   // survives Trim, so a node list naming this pointer later reads as debris, not a hole
         Drop(s, true);
         _died++;
     }
@@ -285,8 +515,10 @@ internal static unsafe class LightRegistry
         if (AreaAmbient == _id[s]) AreaAmbient = IntPtr.Zero;
         if (AreaDiffuse == _id[s]) AreaDiffuse = IntPtr.Zero;
         _want[s] = false; _cand[s] = false;
-        _freed[s] = true;
+        if (!_freed[s]) { _freed[s] = true; _tombs++; }
+        UnlistLive(s);
         if (!died) { _gob[s] = IntPtr.Zero; _root[s] = IntPtr.Zero; _gen[s] = 0; }
+        Trim(s);
     }
 
     /// <summary>Area edge, part-table wipe or module unload: every pointer in here named a world that is gone,
@@ -299,8 +531,12 @@ internal static unsafe class LightRegistry
         // entry that named the tenant it held before the wipe. _tenantSeq keeps counting, which is what makes
         // every claim after this compare unequal to every selection taken before it.
         Array.Clear(_tenant);
-        _liveN = 0; _selN = 0; _candN = 0; _wantN = 0;
+        _liveN = 0; Array.Fill(_liveAt, -1);
+        _selN = 0; _candN = 0; _wantN = 0; _used = 0; _tombs = 0;
         AreaAmbient = IntPtr.Zero; AreaDiffuse = IntPtr.Zero;
+        // ...and the death ledger, which names pointers from the area that is gone.
+        Array.Clear(_dead); _deadUsed = 0; _deadFull = 0;
+        _residueN = 0;
     }
 
     // ================= selection =================
@@ -337,8 +573,11 @@ internal static unsafe class LightRegistry
         for (int k = 0; k < _liveN; k++)
         {
             int s = _live[k];
-            // Retired since the sweep built this list -- Part::~Part fires whenever the engine frees a part.
-            if (_freed[s]) continue;
+            // Retired since the sweep built this list -- Part::~Part fires whenever the engine frees a part,
+            // and no walk need follow it. BOTH shapes of a retirement, exactly as Sweep spells them: a
+            // tombstone (freed, pointer kept so the probe chain stands) and a slot Trim gave back (pointer
+            // cleared, NOT freed). Testing the freed mark alone dereferenced the null: Range reads +0x70.
+            if (_id[s] == IntPtr.Zero || _freed[s]) continue;
             _want[s] = false; _cand[s] = false;
             if (!_bsp[s] && Hidden(s)) { _hidden++; continue; }
             if (InactiveLod(s)) { _inactiveLod++; continue; }
@@ -490,10 +729,14 @@ internal static unsafe class LightRegistry
 
     // ================= the table =================
 
+    /// <summary>Open addressing, linear probe over the WHOLE table: the chain ends at the first slot that was
+    /// never claimed, which is what a tombstone (a slot kept non-empty on retirement) preserves. A bounded
+    /// probe window here is what silently dropped lights -- it cannot be reintroduced without reintroducing
+    /// that bug.</summary>
     private static int Find(IntPtr p)
     {
         int h = Hash(p);
-        for (int k = 0; k < Probe; k++)
+        for (int k = 0; k < Slots; k++)
         {
             int s = (h + k) & (Slots - 1);
             if (_id[s] == IntPtr.Zero) return -1;
@@ -502,18 +745,24 @@ internal static unsafe class LightRegistry
         return -1;
     }
 
+    /// <summary>...and the same walk for a claim: the first reclaimable slot in the chain if there is one,
+    /// otherwise the slot that ends it. -1 only when all <see cref="Slots"/> slots hold a LIVE light.</summary>
     private static int Insert(IntPtr p)
     {
         int h = Hash(p);
         int free = -1;
-        for (int k = 0; k < Probe; k++)
+        for (int k = 0; k < Slots; k++)
         {
             int s = (h + k) & (Slots - 1);
             if (_id[s] == p && !_freed[s]) return s;
-            if (free < 0 && (_id[s] == IntPtr.Zero || _freed[s])) free = s;
+            if (free < 0 && _freed[s]) free = s;
+            // The chain ends here: past it no key of this hash was ever recorded, so the search is done and
+            // this slot is the claim if no tombstone before it was reclaimable.
+            if (_id[s] == IntPtr.Zero) { if (free < 0) free = s; break; }
         }
         if (free < 0) return -1;
-        if (_freed[free] && _id[free] != IntPtr.Zero) _reclaimed++;
+        if (_freed[free] && _id[free] != IntPtr.Zero) { _reclaimed++; _tombs--; }
+        else if (_id[free] == IntPtr.Zero) _used++;
         // A CLAIM, so the tenancy moves -- and only here: the early return above is the same tenant asking
         // again, and bumping there would make every selection stale the moment a walk re-visited a light.
         _tenant[free] = ++_tenantSeq;
@@ -529,14 +778,17 @@ internal static unsafe class LightRegistry
     private static int Hash(IntPtr p)
     {
         ulong x = ((ulong)(long)p >> 4) * 0x9E3779B97F4A7C15UL;   // not-an-offset: the 64-bit golden-ratio odd constant
-        return (int)(x >> 53) & (Slots - 1);
+        // The shift takes the TOP SlotBits bits -- the only ones a multiplicative hash has mixed. Spelling it
+        // as a fixed shift plus a mask (it was >> 53, which is exactly right at 2048 slots and nowhere else)
+        // confines every key to the first 2048 slots of a larger table.
+        return (int)(x >> (64 - SlotBits));
     }
 
     // ================= reporting =================
 
     /// <summary>The registry's clause on the <c>[alloy]</c> period line -- the only witness this table has.
     /// The populations (<c>lights</c>, <c>in reach</c>, <c>lit</c>) are the last <see cref="Select"/>'s, the
-    /// walk-edge counts are the period's, and <c>table-full</c> is the one that must read 0.
+    /// walk-edge counts are the period's, and <c>overflow</c> is the one that must read 0.
     /// <para>Also where the rates are zeroed: <c>PassLifecycle</c> has no reset slot and this runs exactly once
     /// per period.</para></summary>
     internal static string Stats(int frames)
@@ -545,16 +797,44 @@ internal static unsafe class LightRegistry
         if (!Use) return "lightreg off (light.registry 0) -- the engine's LightManager lists are the source";
         double ms = _selFrames == 0 ? 0
                   : _selTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency / _selFrames;
-        string s = $"lightreg {_selN} lights ({_tile} tile), {_candN} in reach, {_wantN} lit, select {ms:F3}ms, "
+        string s = $"lightreg {_selN} lights ({_tile} tile-confirmed, {_nodeKept} kept by the node list -- the "
+                 + $"engine still lists them), {_candN} in reach, {_wantN} lit, select {ms:F3}ms, "
                  + $"+{_arrived}/-{_left} walk edges, {_died} died, {_reclaimed} slots reclaimed, "
-                 + $"{_hidden} hidden, {_inactiveLod} inactive-LOD, table-full={_spill} (must be 0), "
+                 + $"{_hidden} hidden, {_inactiveLod} inactive-LOD, "
+                 + $"table {_used}/{Slots} slots ({_tombs} retired), overflow={_overflow} (must be 0), "
+                 + $"node-residue={_residueSeen} unexplained (+{_residueDebris} known dead, "
+                 + $"{_residueOverflow} past the pass cap{(_deadFull > 0 ? ", DEATH LEDGER FULL so the split is unreliable" : "")}), "
                  + $"area ambient={(AreaAmbient != IntPtr.Zero ? "yes" : "NONE")} "
-                 + $"diffuse={(AreaDiffuse != IntPtr.Zero ? "yes" : "NONE")}";
+                 + $"diffuse={(AreaDiffuse != IntPtr.Zero ? "yes" : "NONE")}, "
+                 // The peak table is keyed on THIS population, so its own overflow belongs on this line.
+                 + SceneInputs.FlickerClause();
         _arrived = 0; _left = 0; _died = 0; _selTicks = 0; _selFrames = 0;
         return s;
     }
 
     // ================= self-check =================
+
+    /// <summary><paramref name="n"/> distinct pointers that all hash to the SAME slot -- the adversarial input
+    /// the table has to survive, constructed rather than searched for. <see cref="Hash"/> is the top
+    /// <see cref="SlotBits"/> bits of <c>(p &gt;&gt; 4) * K</c>, so fixing those bits means fixing the product's
+    /// high end: walk the products upward inside one slot's interval and invert each through K (odd, hence
+    /// invertible mod 2^64) to get the pointer. Only products whose pre-image fits the 60 bits a
+    /// <c>&lt;&lt; 4</c> pointer can carry are usable, which is one in sixteen.</summary>
+    private static IntPtr[] ClusterKeys(int n)
+    {
+        const ulong K = 0x9E3779B97F4A7C15UL;   // not-an-offset: LightRegistry.Hash's own constant
+        ulong inv = K;
+        for (int i = 0; i < 5; i++) inv *= 2UL - K * inv;   // Newton: doubles the correct bits each step
+        var keys = new IntPtr[n];
+        int got = 0;
+        for (ulong product = 1UL << (64 - SlotBits); got < n; product++)
+        {
+            ulong x = product * inv;
+            if (x == 0 || x >= 1UL << 60) continue;
+            keys[got++] = (IntPtr)(long)(x << 4);
+        }
+        return keys;
+    }
 
     /// <summary>The registry's contract, headless, over synthetic lights in unmanaged scratch: arrival,
     /// departure, death, slot reclaim, the candidate filter, the score and the cap. None of it has another
@@ -578,7 +858,9 @@ internal static unsafe class LightRegistry
         check.Expect(Find(b) < 0, "...and its slot stops answering");
         // Death marks the slot freed, so the SAME address is re-recorded rather than landing on a tombstone.
         Died(a);
-        check.Expect(_freed[sa] && Find(a) < 0, "a dead light's slot is freed and stops matching");
+        // ...which stops it matching whether it was left a tombstone or trimmed back to empty (see Trim); the
+        // clustered case below is where the trim itself is pinned.
+        check.Expect(Find(a) < 0, "a dead light's slot stops matching");
         check.Expect(Insert(a) == sa && !_freed[sa], "...and the recycled address reclaims that very slot");
         // An area term that dies is dropped; vanilla keeps the dangling pointer.
         AreaDiffuse = a;
@@ -641,6 +923,74 @@ internal static unsafe class LightRegistry
             check.Expect(Light(0).IsNull && !Wanted(0), "...and a new light at an old address is a gap too");
         }
         _selN = 0; Array.Clear(_want);
+        Revoke();
+
+        // W2-LR: the BSP node light lists are a CROSS-CHECK and never a source. They hold GOB lights
+        // (Scene::ChildAdd -> ListSpecialPartsR files every AsPartLight) and are pruned by nothing on part
+        // death, so admitting from one re-registers a FREED PartLight* that the per-frame selection then
+        // dereferences every frame. The node is hand-built in unmanaged scratch -- a light list of one,
+        // naming a pointer that has just died.
+        {
+            IntPtr scratch = (IntPtr)System.Runtime.InteropServices.NativeMemory.AllocZeroed(0x400);
+            try
+            {
+                IntPtr dead = (IntPtr)0x41000;
+                int sd = Insert(dead);
+                _gen[sd] = 11;
+                Died(dead);
+                check.Expect(Find(dead) < 0, "the light died, so the table stops answering for it");
+                IntPtr node = scratch, record = scratch + 0x100, items = scratch + 0x200;
+                *(IntPtr*)(node + EngineLayout.BspNodeData) = record;
+                *(IntPtr*)(record + EngineLayout.BspDataLight) = items;
+                *(int*)(record + EngineLayout.BspDataLightCount) = 1;
+                *(IntPtr*)items = dead;
+                long seenBefore = _residueSeen, debrisBefore = _residueDebris;
+                int usedBefore = _used;
+                BspScanBegin();
+                NoteBspNode(node, 12);
+                BspScanEnd();
+                check.Expect(Find(dead) < 0 && _used == usedBefore,
+                             "a node list naming a freed light does NOT re-admit it");
+                // ...and it is DEBRIS, not a hole: the death ledger outlives the tombstone Trim retires, which
+                // is what keeps the loud line for a pointer nobody was ever told the death of.
+                check.Expect(_residueDebris == debrisBefore + 1 && _residueSeen == seenBefore,
+                             "...a light Alloy was told died counts as known debris");
+                // A pointer with no record and no death notice is the other bucket -- the one worth a line.
+                IntPtr stranger = (IntPtr)0x43000;
+                *(IntPtr*)items = stranger;
+                BspScanBegin();
+                NoteBspNode(node, 12);
+                BspScanEnd();
+                check.Expect(_residueSeen == seenBefore + 1 && _residueDebris == debrisBefore + 1,
+                             "...and one with no death notice counts as unexplained");
+                // ...and the ledger forgets an address the allocator handed back: registering it again is the
+                // proof it is not debris, so a LATER failure to register reads as the hole it would be.
+                check.Expect(KnownDead(dead), "the dead light is on the ledger");
+                int again = Insert(dead);
+                check.Expect(again >= 0, "the recycled address registers again");
+                ForgetDead(dead);   // Admit does this beside _arrived++; Insert alone is the raw table call
+                check.Expect(!KnownDead(dead), "...and comes off the ledger with the claim");
+                // The tombstone must not end a probe chain, or real debris behind it would read as a hole.
+                check.Expect(KnownDead(stranger) == false, "a pointer never noted dead is not on the ledger");
+                NoteDead(stranger);
+                check.Expect(KnownDead(stranger) && KnownDead(dead) == false,
+                             "...and a reclaimed ledger slot answers for its new tenant only");
+                Died(dead);
+                *(IntPtr*)items = dead;
+                // ...and a light the feeds DID admit is confirmed rather than counted.
+                IntPtr live = (IntPtr)0x42000;
+                int sl = Insert(live);
+                *(IntPtr*)items = live;
+                seenBefore = _residueSeen;
+                BspScanBegin();
+                NoteBspNode(node, 13);
+                BspScanEnd();
+                check.Expect(_gen[sl] == 13 && _residueSeen == seenBefore,
+                             "a node list naming a light the feeds have restamps it and counts nothing");
+            }
+            finally { System.Runtime.InteropServices.NativeMemory.Free((void*)scratch); }
+        }
+        _residueSeen = 0; _residueDebris = 0; _residueOverflow = 0; _residueLogged = false; _tile = 0;
         Revoke();
 
         // The hidden rule, on hand-built parts: root -> hidden dummy -> light. On the gob's OWN tree the light
@@ -731,7 +1081,94 @@ internal static unsafe class LightRegistry
         }
         finally { Marshal.FreeHGlobal(blk); }
 
+        // The maintained live list must agree with the wholesale rebuild, or a delta and a walk light the area
+        // differently. Driven as a session does it: admissions, deaths and retirements with NO walk between,
+        // then the walk's own Sweep over the same generation -- the two sets have to be identical.
         Revoke();
+        {
+            var lk = new IntPtr[24];
+            for (int i = 0; i < lk.Length; i++) lk[i] = (IntPtr)(0x60000 + i * 0x30);
+            foreach (IntPtr k in lk) { int t = Insert(k); if (t >= 0) { ListLive(t); _gen[t] = 5; } }
+            check.Expect(_liveN == lk.Length, "every claimed slot is in the live list");
+            // Retirements of both shapes, and one re-claim of a recycled address.
+            Died(lk[3]); Died(lk[11]); Died(lk[12]);
+            int re = Insert(lk[11]); if (re >= 0) { ListLive(re); _gen[re] = 5; }
+            check.Expect(_liveN == lk.Length - 2, "...and a retirement takes its slot straight back out");
+            // No duplicate can survive the round trip: the list is a set, and the same slot listed twice would
+            // select its light twice.
+            var seen = new System.Collections.Generic.HashSet<int>();
+            bool dupe = false;
+            for (int k = 0; k < _liveN; k++) if (!seen.Add(_live[k])) dupe = true;
+            check.Expect(!dupe, "...with no slot listed twice");
+            // Now the wholesale rebuild, on the generation every survivor carries.
+            var before = new System.Collections.Generic.HashSet<int>(seen);
+            Sweep(5);
+            var after = new System.Collections.Generic.HashSet<int>();
+            for (int k = 0; k < _liveN; k++) after.Add(_live[k]);
+            check.Expect(before.SetEquals(after), "the maintained list and the rebuild name the same slots");
+            bool mapped = true;
+            for (int k = 0; k < _liveN; k++) if (_liveAt[_live[k]] != k) mapped = false;
+            check.Expect(mapped, "...and the position map agrees with the list after either route");
+        }
+        Revoke();
+
+        // BUG-LIGHTS, the defect this pins: at Slots 2048 / Probe 8 a light whose 8-slot window was full was
+        // DROPPED -- 1422 live lights spilled 148502 times in one session, each one a lamp that never lit. The
+        // table must take its whole capacity, whatever the keys do, so the adversarial case is the test: every
+        // key on ONE hash, more of them than the old probe window by three orders of magnitude.
+        Revoke();
+        const int Clustered = 2048;   // above the 1422 a live city read, and 256x the probe window that spilled
+        IntPtr[] cluster = ClusterKeys(Clustered);
+        long overflowWas = _overflow;
+        int got = 0;
+        foreach (IntPtr key in cluster) if (Insert(key) >= 0) got++;
+        check.Expect(got == Clustered, $"{Clustered} lights on ONE hash all take a slot (got {got})");
+        check.Expect(_overflow == overflowWas, "...with no overflow, because the probe is the whole table");
+        int found = 0;
+        foreach (IntPtr key in cluster) if (Find(key) >= 0) found++;
+        check.Expect(found == Clustered, $"...and every one is found again by its own pointer (got {found})");
+        // The hash must reach the WHOLE table, or a bigger table is a bigger table in name only (the old
+        // `>> 53` confined every key to the first 2048 slots).
+        int lo = 0, hi = 0;
+        for (long v = 0x40000; v < 0x40000 + 0x20000; v += 0x10)
+        { if (Hash((IntPtr)v) < Slots / 2) lo++; else hi++; }
+        check.Expect(lo > 0 && hi > 0, "the hash reaches both halves of the table");
+        // ...and the table gives its slots back: retiring the chain from the tail empties it rather than
+        // leaving 4096 tombstones behind (a chain-end tombstone cannot truncate anyone).
+        for (int k = Clustered - 1; k >= 0; k--) Died(cluster[k]);
+        check.Expect(_used == 0 && _tombs == 0, $"a retired chain is trimmed back to empty (used {_used}, retired {_tombs})");
+        Revoke();
+
+        // ...and the crash that trim opened: a light dies BETWEEN walks, so the live list still names its slot
+        // when the next frame selects. Part::~Part fires for a light part with no walk behind it (a carried
+        // torch's creature, a destroyed placeable, a BSP tile light), and the trim leaves the slot pointer
+        // NULL with the freed mark clear -- so a guard on the mark alone walked into `new PartLight(0).Range`,
+        // a read at +0x70. The selection has to reject both shapes of a retirement.
+        int d0 = Insert((IntPtr)0x31000), d1 = Insert((IntPtr)0x32000);
+        check.Expect(d0 >= 0 && d1 >= 0, "two lights for the retire-between-sweeps check");
+        _gen[d0] = 11; _gen[d1] = 11;
+        Sweep(11);
+        check.Expect(_liveN == 2, "...both live after their walk");
+        Died((IntPtr)0x31000);
+        Died((IntPtr)0x32000);
+        // The death takes the slot out of the live list at once now (the list is maintained, not republished),
+        // so the selection does not even reach it -- but the guard STAYS, and the check goes on proving it,
+        // because it is what stands between a slot that got back in by any route and a read at +0x70 on a null.
+        check.Expect(_liveN == 0, "a death takes its slot out of the live list without waiting for a walk");
+        _live[0] = d0; _live[1] = d1; _liveN = 2;   // put both retirements back in by hand: the guard's job only
+        // Would SIGSEGV before the fix. The Scene is a zeroed block: the guard sits ahead of every light read,
+        // so the selection reaches nothing but the two retired slots.
+        int sceneBytes = Math.Max(EngineLayout.SceneSkyPos + 12, EngineLayout.SceneFogEnd + 4);
+        IntPtr fakeScene = Marshal.AllocHGlobal(sceneBytes);
+        try
+        {
+            for (int i = 0; i < sceneBytes; i++) ((byte*)fakeScene)[i] = 0;
+            SelectInner(fakeScene);
+        }
+        finally { Marshal.FreeHGlobal(fakeScene); }
+        check.Expect(_selN == 0, "a light retired since the sweep is not selected, trimmed slot or tombstone");
+        Revoke();
+
         _unavailable = wasUnavailable;
         log.Info(check.Ok ? "LightRegistry.SelfCheck: passed" : "LightRegistry.SelfCheck: FAILED -- see above");
     }

@@ -281,12 +281,13 @@ internal static unsafe partial class Weather
           "the rain rings roughen the film and not the bed under it");
         check.Expect(lit.IndexOf("vec3 CxFilmStatics(", StringComparison.Ordinal) < lit.IndexOf("specLight += CxFilmStatics(", StringComparison.Ordinal)
           && lit.Contains("if (wxFilm > 0.0 && baked && cxCoat > 0.0 && uCapture != 2)")
-          && lit.Contains("uint CxClusterRefl(uint cl) { return min(uClCount[cl * 2u + 1u], CX_CLUSTER_CAP); }"),
+          && lit.Contains("uint CxClusterRefl(uint cl) { return min(uClCount[cl * 3u + 1u] & 0xffffu, CX_CLUSTER_CAP); }"),
           "the film's static highlights come off the cluster's short reflection list, gated on the film");
         string build = ShaderStages.Source(AlloyLights.ShdClusterCs);
-        check.Expect(build.Contains("uniform int uReflK;") && build.Contains("if (uReflK > 0 && tail > live)")
-          && build.Contains("uClCount[id * 2u] = n | (live << 16u);") && build.Contains("uClCount[id * 2u + 1u] = refl;"),
-          "the cluster build writes both header words and ranks candidates only when the film asked for them");
+        check.Expect(build.Contains("uniform int uReflK;") && build.Contains("if (uReflK > 0)")
+          && build.Contains("uClCount[id * 3u] = n | (live << 16u);") && build.Contains("uClCount[id * 3u + 1u] = refl | (liveCand << 16u);")
+          && build.Contains("uClCount[id * 3u + 2u] = coldCand | (kept << 16u);"),
+          "the cluster build writes all three header words and ranks candidates only when the film asked for them");
         check.Expect(ShaderSource.Get("cx_wx_int_c.glsl").Contains("if (m.z <= CX_WX_UNVISITED) return;")
           && ShaderSource.Get("cx_wx_scat_c.glsl").Contains("uniform sampler2D uCoverDepth;"),
           "the two map compute stages integrate only latched texels and latch off the cover depth");

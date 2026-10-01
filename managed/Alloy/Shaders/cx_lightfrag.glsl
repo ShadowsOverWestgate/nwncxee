@@ -1,10 +1,11 @@
 #include "cx_pass.glsl"
 layout(std430, binding = 0) readonly buffer CxLightBuf { vec4 uLights[]; };
-// TWO words per cluster. The first: low 16 bits = lights binned, high 16 = how many of them lead the list
-// before the cold statics (cx_lightbuild). The second: R4's reflection-candidate count -- how many entries
-// right after the live prefix are the brightest baked statics a water film may mirror. It is 0 on every
-// frame with no film, and then the build and every walk are what they were. Read through CxClusterN /
-// CxClusterLive / CxClusterRefl, never raw.
+// THREE words per cluster, two 16-bit counts each, over the list cx_lightbuild lays out as
+// [0, liveCand) [.., live) [.., live + refl) [.., coldCand) [.., kept) [.., n): word 0 = n | live, word 1 =
+// refl | liveCand, word 2 = coldCand | kept. live leads the cold statics; refl is R4's water-film picks (0 on
+// every frame with no film); kept ends what light.relevance can leave lit at an on-screen fragment, and the
+// two candidate runs are the only lights that can be a fragment's brightest. Read through the CxCluster*
+// accessors, never raw.
 layout(std430, binding = 1) readonly buffer CxClusterCount { uint uClCount[]; };
 layout(std430, binding = 2) readonly buffer CxClusterIdx { uint uClIdx[]; };
 // CasterPass.CubeDynSphere: CX_DYN_SPHERES spheres (xyz, r; r < 0 unused) per cube slot round the movers
@@ -58,13 +59,27 @@ float CxWrap(float ndl, float w)
 // gl_FragCoord is WINDOW-relative, so the viewport origin comes out first -- the engine's reflection
 // subframes do not all render at (0,0). A VERTEX stage composing this library (#336: particles light
 // per vertex) has no gl_FragCoord and defines CX_CLUSTER_XY itself, in tile units, before the lib.
+// Only a fragment stage is guaranteed to sit inside its froxel, which is what the build's bounds assume.
 #ifndef CX_CLUSTER_XY
 #define CX_CLUSTER_XY ((gl_FragCoord.xy - uTile.xy) / uTile.zw)
+#define CX_CLUSTER_FRAG
 #endif
-uint CxClusterN(uint cl) { return min(uClCount[cl * 2u] & 0xffffu, CX_CLUSTER_CAP); }
-uint CxClusterLive(uint cl) { return min(uClCount[cl * 2u] >> 16u, CX_CLUSTER_CAP); }
+uint CxClusterN(uint cl) { return min(uClCount[cl * 3u] & 0xffffu, CX_CLUSTER_CAP); }
+uint CxClusterLive(uint cl) { return min(uClCount[cl * 3u] >> 16u, CX_CLUSTER_CAP); }
 /// R4: the entries at [live, live + refl) -- the cold statics a water film mirrors. 0 = no film this frame.
-uint CxClusterRefl(uint cl) { return min(uClCount[cl * 2u + 1u], CX_CLUSTER_CAP); }
+uint CxClusterRefl(uint cl) { return min(uClCount[cl * 3u + 1u] & 0xffffu, CX_CLUSTER_CAP); }
+/// light.relevance's floor candidates: [0, CxClusterLiveCand) and [CxClusterLive, CxClusterColdCand).
+uint CxClusterLiveCand(uint cl) { return min(uClCount[cl * 3u + 1u] >> 16u, CX_CLUSTER_CAP); }
+uint CxClusterColdCand(uint cl) { return min(uClCount[cl * 3u + 2u] & 0xffffu, CX_CLUSTER_CAP); }
+/// How far this stage walks the whole list: the kept prefix for a fragment of the view the table was built for,
+/// every entry for a vertex stage or a pass that reuses another view's table (the planar mirror).
+uint CxClusterWalk(uint cl)
+{
+#ifdef CX_CLUSTER_FRAG
+    if (uBounds > 0.5) return min(uClCount[cl * 3u + 2u] >> 16u, CX_CLUSTER_CAP);
+#endif
+    return CxClusterN(cl);
+}
 uint CxCluster(float viewDepth)
 {
     vec2 tile = CX_CLUSTER_XY;
@@ -307,7 +322,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     bool glossy = CxGlossy(rough);
     float glossW = CxGlossW(rough);
     // a baked receiver with no mirror to take skips every cold static outright -- they trail the list
-    uint n = baked > 0.5 && !glossy ? CxClusterLive(cl) : CxClusterN(cl);
+    uint n = baked > 0.5 && !glossy ? CxClusterLive(cl) : CxClusterWalk(cl);
     uint base = cl * CX_CLUSTER_CAP;
     vec3 acc = vec3(0.0);
     // #336: /shadow cap -- the cube taps a fragment may pay, chosen PER FRAGMENT by reach
@@ -333,10 +348,21 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     // get the soft dyn shadow, the rest one tap per map (uncapped, 15 hot lights x 8 taps was the frame)
     float hA = 0.0, hB = 0.0; int hASlot = -1, hBSlot = -1, hACh = 4, hBCh = 4; float hANdl = 0.0, hBNdl = 0.0;
     // light.relevance: the brightest light reaching this fragment, over the WHOLE list -- the live prefix moves
-    // per froxel, the whole list only by lights that contribute exactly nothing here, so this is continuous
+    // per froxel, the whole list only by lights that contribute exactly nothing here, so this is continuous.
+    // A fragment reads the build's floor candidates alone: no other entry can be the brightest here.
     float relMax = 0.0;
     if (uRelevance.x > 0.0)
+    {
+#ifdef CX_CLUSTER_FRAG
+        if (uBounds > 0.5)
+        {
+            for (uint k = 0u, e = CxClusterLiveCand(cl); k < e; k++) relMax = max(relMax, CxLightImportance(uClIdx[base + k], worldPos));
+            for (uint k = CxClusterLive(cl), e = CxClusterColdCand(cl); k < e; k++) relMax = max(relMax, CxLightImportance(uClIdx[base + k], worldPos));
+        }
+        else
+#endif
         for (uint k = 0u, nAll = CxClusterN(cl); k < nAll; k++) relMax = max(relMax, CxLightImportance(uClIdx[base + k], worldPos));
+    }
     for (uint k = 0u; k < n; k++)
     {
         uint li = uClIdx[base + k];
@@ -376,7 +402,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
             for (int q = 0; q < CX_DYN_SPHERES && !near; q++)
             {
                 vec4 ms = uDynMovers[slot * CX_DYN_SPHERES + q];
-                if (ms.w < 0.0) continue;
+                if (ms.w < 0.0) break;   // a slot's spheres run from 0 up, unused ones after
                 vec3 dc = ms.xyz - lp; float t = dot(dc, dp) / dl;
                 float rr = ms.w + 0.3;
                 near = t > -rr && t < dl + rr && dot(dc, dc) - t * t <= rr * rr;

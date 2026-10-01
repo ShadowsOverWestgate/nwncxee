@@ -94,6 +94,7 @@ global using unsafe ItemShowFeedbackBubbleTextFn = delegate* unmanaged<nint, voi
 global using unsafe SetPopUpBubbleTextFn = delegate* unmanaged<nint, nint, int, float, float, void>;
 global using unsafe GuiPanelUnToggleOffFn = delegate* unmanaged<nint, void>;
 global using unsafe HandleServerToPlayerChatFn = delegate* unmanaged<nint, byte, void>;
+global using unsafe PlaceableUpdateDeleteFn = delegate* unmanaged<nint, int>;
 global using unsafe ShowFloatyTextFn = delegate* unmanaged<nint, nint, CX.Engine.VectorArg, nint, int, void>;
 global using unsafe GetViewPortFn = delegate* unmanaged<float*, void>;
 global using unsafe GuiObjectHitCheckFn = delegate* unmanaged<nint, int, int, int, int, nint>;
@@ -198,6 +199,8 @@ global using unsafe AurTextureReleaseFn = delegate* unmanaged<nint, void>;
 global using unsafe PartDtorFn = delegate* unmanaged<nint, void>;
 global using unsafe GobAppendFn = delegate* unmanaged<nint, nint, nint, int>;
 global using unsafe GobAmputateFn = delegate* unmanaged<nint, nint, int>;
+global using unsafe GobSetSceneFn = delegate* unmanaged<nint, nint, void>;
+global using unsafe GobSetSubtreeEnabledFn = delegate* unmanaged<nint, nint, int, byte>;
 global using unsafe VdoRepackFn = delegate* unmanaged<nint, void>;
 global using unsafe GlUnlockPoolFn = delegate* unmanaged<uint, uint, uint, void>;
 global using unsafe GlDeleteBufferFn = delegate* unmanaged<uint, void>;
@@ -1808,6 +1811,14 @@ public readonly unsafe partial struct CNWCObject(IntPtr ptr)
     public ref short Animation => ref *(short*)(Ptr + EngineLayout.ObjAnimation);
     /// <inheritdoc cref="EngineLayout.ObjBubble"/>
     public ref CGuiInGamePopUpBubble Bubble => ref *(CGuiInGamePopUpBubble*)(Ptr + EngineLayout.ObjBubble);
+    /// <inheritdoc cref="EngineLayout.ObjFadeAlpha"/>
+    public ref float FadeAlpha => ref *(float*)(Ptr + EngineLayout.ObjFadeAlpha);
+    /// <inheritdoc cref="EngineLayout.ObjFadeExpire"/>
+    public ref int FadeExpire => ref *(int*)(Ptr + EngineLayout.ObjFadeExpire);
+    /// <inheritdoc cref="EngineLayout.ObjFadeHoldMs"/>
+    public ref uint FadeHoldMs => ref *(uint*)(Ptr + EngineLayout.ObjFadeHoldMs);
+    /// <inheritdoc cref="EngineLayout.ObjFadeTarget"/>
+    public ref byte FadeTarget => ref *(byte*)(Ptr + EngineLayout.ObjFadeTarget);
     /// <inheritdoc cref="EngineLayout.GetPortraitSlot"/>
     public void GetPortrait(void* ret, byte size)
     {
@@ -2334,6 +2345,10 @@ public readonly unsafe ref partial struct Gob(IntPtr ptr)
     public ref System.Numerics.Vector3 BoundsMax => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.GobBoundsMax);
     /// <inheritdoc cref="EngineLayout.GobBoundsMin"/>
     public ref System.Numerics.Vector3 BoundsMin => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.GobBoundsMin);
+    /// <inheritdoc cref="EngineLayout.GobCallbackCount"/>
+    public ref int CallbackCount => ref *(int*)(Ptr + EngineLayout.GobCallbackCount);
+    /// <inheritdoc cref="EngineLayout.GobCallbacks"/>
+    public ref IntPtr Callbacks => ref *(IntPtr*)(Ptr + EngineLayout.GobCallbacks);
     /// <inheritdoc cref="EngineLayout.GobCentre"/>
     public ref System.Numerics.Vector3 Centre => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.GobCentre);
     /// <inheritdoc cref="EngineLayout.GobColour"/>
@@ -2497,6 +2512,10 @@ public readonly unsafe partial struct LerpFloat(IntPtr ptr)
     public bool IsNull => Ptr == IntPtr.Zero;
     /// <inheritdoc cref="SymbolMap.LerpFloatLerped"/>
     public float LerpFloatLerped() => EngineFn.LerpFloatLerped(Ptr);
+    /// <inheritdoc cref="EngineLayout.LerpMode"/>
+    public ref int Mode => ref *(int*)(Ptr + EngineLayout.LerpMode);
+    /// <inheritdoc cref="EngineLayout.LerpValue"/>
+    public ref float Value => ref *(float*)(Ptr + EngineLayout.LerpValue);
 }
 
 /// <summary>Typed view of an engine <c>LightManager*</c>.</summary>
@@ -3389,10 +3408,6 @@ public readonly unsafe partial struct Scene(IntPtr ptr)
     public void SceneRenderOnlyGobs() => EngineFn.SceneRenderOnlyGobs(Ptr);
     /// <inheritdoc cref="SymbolMap.SceneSpawnTile"/>
     public IntPtr SceneSpawnTile(byte* resref, System.Numerics.Vector3* pos, int id, int orientation, IntPtr rot) => EngineFn.SceneSpawnTile(Ptr, resref, pos, id, orientation, rot);
-    /// <inheritdoc cref="EngineLayout.SceneShadowLightCount"/>
-    public ref int ShadowLightCount => ref *(int*)(Ptr + EngineLayout.SceneShadowLightCount);
-    /// <inheritdoc cref="EngineLayout.SceneShadowLights"/>
-    public ref IntPtr ShadowLights => ref *(IntPtr*)(Ptr + EngineLayout.SceneShadowLights);
     /// <inheritdoc cref="EngineLayout.SceneSkyCur"/>
     public ref int SkyCur => ref *(int*)(Ptr + EngineLayout.SceneSkyCur);
     /// <inheritdoc cref="EngineLayout.SceneSkyDesired"/>
@@ -4185,6 +4200,10 @@ public static unsafe class EngineFn
     private static bool _HandleServerToPlayerChatDone;
     /// <inheritdoc cref="SymbolMap.HandleServerToPlayerChat"/>
     public static HandleServerToPlayerChatFn HandleServerToPlayerChat => (HandleServerToPlayerChatFn)(_HandleServerToPlayerChatDone ? _HandleServerToPlayerChat : Resolve(ref _HandleServerToPlayerChat, ref _HandleServerToPlayerChatDone, SymbolMap.HandleServerToPlayerChat));
+    private static IntPtr _PlaceableUpdateDelete;
+    private static bool _PlaceableUpdateDeleteDone;
+    /// <inheritdoc cref="SymbolMap.PlaceableUpdateDelete"/>
+    public static PlaceableUpdateDeleteFn PlaceableUpdateDelete => (PlaceableUpdateDeleteFn)(_PlaceableUpdateDeleteDone ? _PlaceableUpdateDelete : Resolve(ref _PlaceableUpdateDelete, ref _PlaceableUpdateDeleteDone, SymbolMap.PlaceableUpdateDelete));
     private static IntPtr _ShowFloatyText;
     private static bool _ShowFloatyTextDone;
     /// <inheritdoc cref="SymbolMap.ShowFloatyText"/>
@@ -4601,6 +4620,14 @@ public static unsafe class EngineFn
     private static bool _GobAmputateDone;
     /// <inheritdoc cref="SymbolMap.GobAmputate"/>
     public static GobAmputateFn GobAmputate => (GobAmputateFn)(_GobAmputateDone ? _GobAmputate : Resolve(ref _GobAmputate, ref _GobAmputateDone, SymbolMap.GobAmputate));
+    private static IntPtr _GobSetScene;
+    private static bool _GobSetSceneDone;
+    /// <inheritdoc cref="SymbolMap.GobSetScene"/>
+    public static GobSetSceneFn GobSetScene => (GobSetSceneFn)(_GobSetSceneDone ? _GobSetScene : Resolve(ref _GobSetScene, ref _GobSetSceneDone, SymbolMap.GobSetScene));
+    private static IntPtr _GobSetSubtreeEnabled;
+    private static bool _GobSetSubtreeEnabledDone;
+    /// <inheritdoc cref="SymbolMap.GobSetSubtreeEnabled"/>
+    public static GobSetSubtreeEnabledFn GobSetSubtreeEnabled => (GobSetSubtreeEnabledFn)(_GobSetSubtreeEnabledDone ? _GobSetSubtreeEnabled : Resolve(ref _GobSetSubtreeEnabled, ref _GobSetSubtreeEnabledDone, SymbolMap.GobSetSubtreeEnabled));
     private static IntPtr _VdoRepack;
     private static bool _VdoRepackDone;
     /// <inheritdoc cref="SymbolMap.VdoRepack"/>
@@ -5905,6 +5932,12 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.HandleServerToPlayerChat"/>; returns the slot holding the next layer, or null.</summary>
     public static HandleServerToPlayerChatFn* ChainHandleServerToPlayerChat(this HookService h, HandleServerToPlayerChatFn handler, int priority) =>
         (HandleServerToPlayerChatFn*)h.Chain(SymbolMap.HandleServerToPlayerChat, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.PlaceableUpdateDelete"/>; returns the original, or null.</summary>
+    public static PlaceableUpdateDeleteFn InstallPlaceableUpdateDelete(this HookService h, PlaceableUpdateDeleteFn handler) =>
+        (PlaceableUpdateDeleteFn)h.Install(SymbolMap.PlaceableUpdateDelete, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.PlaceableUpdateDelete"/>; returns the slot holding the next layer, or null.</summary>
+    public static PlaceableUpdateDeleteFn* ChainPlaceableUpdateDelete(this HookService h, PlaceableUpdateDeleteFn handler, int priority) =>
+        (PlaceableUpdateDeleteFn*)h.Chain(SymbolMap.PlaceableUpdateDelete, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.ShowFloatyText"/>; returns the original, or null.</summary>
     public static ShowFloatyTextFn InstallShowFloatyText(this HookService h, ShowFloatyTextFn handler) =>
         (ShowFloatyTextFn)h.Install(SymbolMap.ShowFloatyText, (IntPtr)handler);
@@ -6529,6 +6562,18 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.GobAmputate"/>; returns the slot holding the next layer, or null.</summary>
     public static GobAmputateFn* ChainGobAmputate(this HookService h, GobAmputateFn handler, int priority) =>
         (GobAmputateFn*)h.Chain(SymbolMap.GobAmputate, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GobSetScene"/>; returns the original, or null.</summary>
+    public static GobSetSceneFn InstallGobSetScene(this HookService h, GobSetSceneFn handler) =>
+        (GobSetSceneFn)h.Install(SymbolMap.GobSetScene, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GobSetScene"/>; returns the slot holding the next layer, or null.</summary>
+    public static GobSetSceneFn* ChainGobSetScene(this HookService h, GobSetSceneFn handler, int priority) =>
+        (GobSetSceneFn*)h.Chain(SymbolMap.GobSetScene, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.GobSetSubtreeEnabled"/>; returns the original, or null.</summary>
+    public static GobSetSubtreeEnabledFn InstallGobSetSubtreeEnabled(this HookService h, GobSetSubtreeEnabledFn handler) =>
+        (GobSetSubtreeEnabledFn)h.Install(SymbolMap.GobSetSubtreeEnabled, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.GobSetSubtreeEnabled"/>; returns the slot holding the next layer, or null.</summary>
+    public static GobSetSubtreeEnabledFn* ChainGobSetSubtreeEnabled(this HookService h, GobSetSubtreeEnabledFn handler, int priority) =>
+        (GobSetSubtreeEnabledFn*)h.Chain(SymbolMap.GobSetSubtreeEnabled, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.VdoRepack"/>; returns the original, or null.</summary>
     public static VdoRepackFn InstallVdoRepack(this HookService h, VdoRepackFn handler) =>
         (VdoRepackFn)h.Install(SymbolMap.VdoRepack, (IntPtr)handler);

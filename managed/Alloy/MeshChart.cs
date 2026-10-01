@@ -13,7 +13,7 @@ namespace CX.Alloy;
 internal static class Lightmap
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<int> Density, Disk, Pages, Near, Tiers, HoldSeconds;
+    internal static readonly Knob<int> Density, Disk, Pages, Near, Tiers, HoldSeconds, GrowSlice;
     internal static readonly Knob<bool> Movers;
 
     static Lightmap()
@@ -29,6 +29,11 @@ internal static class Lightmap
                            changed: LightmapBake.RekeyAll);
         Pages = G.Slider("pages", "Lightmap pages", 0, LightmapBake.MaxPages, 1, 0, tier: Tier.Advanced,
                          help: "4096x4096 pages the area may hold (128 MiB each), allocated as the area needs them. 0 sizes it from the card's memory: a quarter of it in pages, at most 32. An area that would overflow the cap bakes at a lower density instead.");
+        // CX-102: 192 MiB a layer over three planes, and the pages live in ONE immutable array, so a page more
+        // means allocate-copy-delete. Doing that in the frame that needs it cost 86 / 458 / 573 / 733 ms for
+        // 1 / 2 / 3 / 4 layers copied (2026-09-30), which is the only thing the bake ever froze the client for.
+        GrowSlice = G.Slider("growslice", "Page growth slice", 0, 8, 1, 1, "pages", tier: Tier.Advanced,
+                             help: "Lightmap pages the client may move into a larger page array in one frame when an area needs another page. Each page is 192 MiB, so moving them all at once costs a visible freeze; 0 does exactly that, for comparison.");
         Near = G.Slider("near", "Full-density radius", 10, 200, 5, 40, "m", tier: Tier.Advanced,
                         help: "Metres from the player baked at the full density; each tier out doubles the radius and halves the density. The last tier covers the whole area and bakes first.");
         Tiers = G.Slider("tiers", "Density tiers", 1, LightmapBake.MaxTiers, 1, 3, tier: Tier.Advanced,

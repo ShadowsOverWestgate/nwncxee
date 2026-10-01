@@ -89,6 +89,7 @@ deriving anything — required, or the RVAs point into a different build.
 | `…Chat_Party` | `0x7ba620` | major 9 minor 6 |
 | `…Chat_DungeonMaster` | `0x7ba540` | major 9 minor 0xe |
 | `CNWCMessage::HandleServerToPlayerChat` | `0x77c140` | `case 9` of the mapped HandleServerToPlayerMessage dispatch (`0x7a41a0`); also references the `"HandleServerToPlayerChat"` string directly |
+| `CNWCMessage::HandleServerToPlayerPlaceableUpdate_Delete` | `0x7a8240` | its Tracy `__FUNCSIG__` `"int __cdecl CNWCMessage::HandleServerToPlayerPlaceableUpdate_Delete(void)"`; one call site, `0x7b35b0` (the Update_Delete dispatch); body matches Linux (`45000` hold, `+0x104 = 1`) |
 | `CNWCMessage::HandleServerToPlayerDialog` (not hooked; the anchor for the four below) | `0x7962f0` | `case 0x14` of the same dispatch |
 | `CGuiInGame::CloseDialog` | `0x6f6d80` | the Dialog handler's minor-5 branch: `GetInGameGui` (`0x6abbc0`) + `Initialized` (`0x6f9a90`) guard, then this. Body: panel at `gui+0x70` (same), `ResetGuiState(0x298)` |
 | `CGuiInGame::ShowDialogEntry` | `0x6fb560` | minor-1 branch, `(gui, &str, oid, oid)` after `ReadCExoLocStringClient` |

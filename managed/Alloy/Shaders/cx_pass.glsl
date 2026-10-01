@@ -39,5 +39,6 @@ layout(std140, binding = 0) uniform CxPass
     float uWrapN;             // #143: the distance-INDEPENDENT wrap floor; 0 = off
     float uDayDim;            // 1 / the daylight ratio: every lamp term's scale, 1 at night and indoors
     vec2 uRelevance;          // light.relevance: (cut, full) as shares of the fragment's brightest light; x = 0 keeps all
+    float uBounds;            // 1 = the cluster table was built for this pass's own view: a fragment may stop at its bounds
 };
 #endif

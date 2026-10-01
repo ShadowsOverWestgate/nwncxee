@@ -239,7 +239,8 @@ public sealed unsafe class TabTargetService : IExtenderService
     }
 
     /// <summary>The creature / placeable / door behind <paramref name="id"/>, or Zero: the lock's liveness read
-    /// (a faded or invisible target stays locked; only a gone one clears).</summary>
+    /// (a faded or invisible target stays locked; only a gone one clears). A placeable the server retired counts
+    /// as gone: vanilla deletes it, while Alloy's <c>PlaceableHold</c> keeps it on screen for good.</summary>
     private static CNWCObject Resolve(IntPtr app, uint id, out byte kind)
     {
         kind = 0;
@@ -248,6 +249,7 @@ public sealed unsafe class TabTargetService : IExtenderService
         CNWCObject obj = go.AsNWCObject();
         if (obj.IsNull) return default;
         kind = obj.Type;
+        if (kind == TabTargetCore.TypePlaceable && obj.Retired == 1) return default;
         return kind is TabTargetCore.TypeCreature or TabTargetCore.TypePlaceable or TabTargetCore.TypeDoor ? obj : default;
     }
 

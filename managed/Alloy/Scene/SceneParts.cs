@@ -11,13 +11,12 @@ namespace CX.Alloy;
 /// rule to the small class list here, so nothing downstream inherits whatever somebody else last pushed into
 /// an engine global.
 /// <para><b>Two feeds, one generation.</b> <see cref="NonMeshParts"/> reports every non-mesh part
-/// <see cref="SceneWalk"/> reaches down a gob's part tree, and <see cref="WalkDone"/> adds the tile side:
-/// each BSP node's tile parts name their <c>TileData</c>, and the tile's own part list
+/// <see cref="SceneWalk"/> reaches down a gob's part tree, and <see cref="TileMesh"/> adds the tile side: each
+/// BSP node's tile parts name their <c>TileData</c>, and the tile's own part list
 /// (<see cref="EngineLayout.TileParts"/>) is where <c>ProcessStaticParts</c> @0x470970 files every part it
-/// keeps -- emitter, trigger and beam included. That is the list <c>SceneBSPAddPart</c> @0x47ca10 then splits
-/// into the per-class BSP node lists, so walking it reaches exactly the population the engine's own BSP
-/// visitor (@0x481000) files into the three buckets, and it needs no node sub-offset beyond the tile-part
-/// list Alloy already reads.</para>
+/// keeps -- emitter, trigger and beam included. Both feeds are driven from the ONE BSP traversal
+/// <see cref="SceneWalk"/> makes. (<see cref="TileMesh"/> says why the node's own per-class inventories, which
+/// would be wider, are not read: they hold dangling pointers.)</para>
 /// <para><b>Deaths are O(1) and do not wait for the next walk.</b> <c>Part::~Part</c> punches a zero into the
 /// dense list slot the dying part occupies (<see cref="Died"/>); consumers skip zeros. The same tombstone
 /// rule as <c>PartTable</c>: a pointer match on a freed entry is a MISS and the slot is reused, so a
@@ -65,12 +64,23 @@ internal static unsafe class SceneParts
     private static int _emitterN, _triggerN, _beamN;
 
     private static ExtenderLog? _log;
-    private static BspTraverseFn _traverse;
     private static bool _ready, _cappedLogged;
-    private static int _tileGen;
     private static long _capped, _rebuilds, _deaths, _sweeps;
+    /// <summary>Rebuilds that could not file everything, and the worst one's shortfall. See
+    /// <see cref="CapRebuild"/>: a rate per rebuild would scale with delta frequency, a population does not.</summary>
+    private static long _cappedRebuilds;
+    private static int _cappedPeak;
+    /// <summary>The generation the tile pass files under. <see cref="TileMesh"/> is reached from an unmanaged
+    /// BSP callback, which cannot carry it as an argument.</summary>
+    private static int _tileGen;
     /// <summary>Tiles reached by the last rebuild.</summary>
     private static int _lastTiles;
+    /// <summary>Mesh parts whose tile the fade ramp had no slot for, since boot -- so the tile fades as a
+    /// whole rather than on its own ramp. Registration is unaffected: emitters, beams and triggers come from
+    /// the tile's own part list (<see cref="TileMesh"/>), which no longer rides this table's room. The
+    /// number is here so "the ramp is capped" cannot again be read as, or hide, "a class went
+    /// unregistered".</summary>
+    private static long _tilesNoSlot;
 
     /// <summary>Resolved enough to classify and to walk the area's BSP? False leaves every list empty, which
     /// each consumer reads as "the registry has nothing" and answers for itself.</summary>
@@ -82,16 +92,17 @@ internal static unsafe class SceneParts
     internal static void Resolve(ExtenderLog log)
     {
         _log = log;
-        _traverse = EngineFn.BspTraverse;
         Array.Fill(_slot, -1);
-        Missing = _traverse == null ? SymbolMap.BspTraverse
-                : !EngineLayout.Require(log, "SceneParts", "Part", "TileData", "PartTriMesh") ? "Part/TileData layout"
-                : null;
+        Missing = EngineLayout.Require(log, "SceneParts", "Part", "TileData", "PartTriMesh", "BSPNode")
+                ? null : "Part/TileData/BSPNode layout";
         _ready = Missing == null;
         if (!_ready)
             _log.Always($"SceneParts: {Missing} did not resolve -- Alloy has no emitter, trigger or beam "
                       + "registry this session, so those three classes read the engine buckets instead "
-                      + "(the same route /buckets emitters 0 takes, deliberately)");
+                      + "(the same route /buckets emitters 0 takes, deliberately). It also carries the TILE "
+                      + "LIGHTS: TileMesh returns here, so nothing walks TileData+0x30 and LightRegistry sees a "
+                      + "tile's lights from neither feed -- an interior lit only by its gobs, which is dark "
+                      + "rather than merely unsimulated");
     }
 
     // ---- the feeds -------------------------------------------------------------------------------
@@ -109,17 +120,28 @@ internal static unsafe class SceneParts
         _kind[e] = kind; _gen[e] = gen; _dense[e] = -1;
     }
 
-    /// <summary>The walk of generation <paramref name="gen"/> finished. The tile side is added here -- the
-    /// walk reaches a tile's TRIMESH parts and they name their tile, but a tile's emitter, trigger and beam
-    /// parts are siblings in the tile's own flat list rather than children of a mesh, so nothing above can
-    /// reach them. Then everything not seen on this generation is swept and the dense lists are rebuilt.
-    /// <para>The tile-fade registry is rebuilt from the same traversal -- one BSP walk, not two.</para></summary>
+    /// <summary>The walk of generation <paramref name="gen"/> finished: everything not seen on it is swept and
+    /// the dense lists are rebuilt. The tile side arrived during the walk's own BSP traversal
+    /// (<see cref="TileScanBegin"/> / <see cref="TileMesh"/> / <see cref="TileScanEnd"/>) -- one traversal of
+    /// that tree per walk, not one per registry.</summary>
     internal static void WalkDone(int gen)
     {
         if (!_ready) return;
-        ScanTiles(gen);
         Settle(gen);
         _rebuilds++;
+    }
+
+    /// <summary>A per-gob scene delta finished. The dense class lists are republished so a newly registered
+    /// emitter, trigger or beam is live on THIS frame; nothing is swept, because a delta only ever knows what
+    /// it visited (departures come from <see cref="Died"/> and from the audit walk's sweep).
+    /// <para><see cref="Compact"/> is deliberately NOT called. It exists for the post-sweep renumber -- it
+    /// refills the whole <see cref="HashSize"/> slot table and relinks every entry -- and a delta retires
+    /// nothing, so there is nothing to renumber. This runs on most frames (a part death, an equip, an LOD swap,
+    /// a spawn), which is where an <see cref="HashSize"/>-sized Array.Fill per frame came from.</para></summary>
+    internal static void DeltaDone()
+    {
+        if (!_ready) return;
+        Rebuild();
     }
 
     /// <summary><c>Part::~Part</c> for <paramref name="part"/>, before the engine frees it. Compares the
@@ -193,13 +215,25 @@ internal static unsafe class SceneParts
     private static readonly string[] _kindNames = ["emitter", "trigger", "beam", "grass bin"];
     private static readonly string[] _kindKeys = ["emitters", "triggers", "beams", "grassbins"];
 
+    /// <summary>For <c>/emitsim dump</c>: is <paramref name="part"/> in the intern table, and in the dense
+    /// list the consumers walk?</summary>
+    internal static string Membership(IntPtr part)
+    {
+        if (!_ready) return "stood-down";
+        int e = Find(part);
+        return e < 0 ? "ABSENT" : _dense[e] < 0 ? "interned-not-listed" : "listed";
+    }
+
     /// <summary>The clause the <c>buckets</c> knob group prints.</summary>
     internal static string Note()
         => _ready
             ? $"{_emitterN} emitter(s), {_triggerN} trigger(s), {_beamN} beam(s) over {_lastTiles} tile(s)"
               + $"; {_count} entr(ies) live of {MaxParts}, {_rebuilds} rebuild(s), {_sweeps} swept, "
               + $"{_deaths} death notice(s), {_reused} entr(ies) reused from the pool"
-              + (_capped > 0 ? $", CAPPED {_capped}x" : "")
+              + (_cappedRebuilds > 0
+                 ? $", CAPPED: {_cappedRebuilds} rebuild(s) left out up to {_cappedPeak} part(s)" : "")
+              + (_capped > _cappedRebuilds ? $", {_capped - _cappedRebuilds} intern-table refusal(s)" : "")
+              + (_tilesNoSlot > 0 ? $", {_tilesNoSlot} tile sighting(s) registered with no fade slot" : "")
               + (_emptyHits[0] + _emptyHits[1] + _emptyHits[2] + _emptyHits[3] > 0
                  ? $", EMPTY-WHILE-ENGINE-HAD-ONE {_emptyHits[0]}/{_emptyHits[1]}/{_emptyHits[2]}/{_emptyHits[3]}"
                  : "")
@@ -207,43 +241,77 @@ internal static unsafe class SceneParts
 
     // ---- the tile side ---------------------------------------------------------------------------
 
-    private static void ScanTiles(int gen)
+    /// <summary>The tile pass is starting. Driven by
+    /// <see cref="SceneWalk"/> from inside ITS BSP traversal rather than running one of its own: the tile
+    /// registry, the tile-fade ramp and the part table all want the same nodes, and three traversals of the
+    /// same tree was most of what made the re-walk the frame's worst stutter.</summary>
+    internal static void TileScanBegin(int gen)
     {
-        IntPtr scene = SceneWalk.WorldScene;
-        if (scene == IntPtr.Zero) return;
-        IntPtr root = new CX.Engine.Scene(scene).BspRoot;
-        if (root == IntPtr.Zero) return;
+        if (!_ready) return;
         _tileGen = gen;
         TileFadeRamp.BeginRebuild();
-        _traverse(root, (IntPtr)(delegate* unmanaged<IntPtr, IntPtr, void>)&OnBspNode, IntPtr.Zero);
-        _lastTiles = TileFadeRamp.EndRebuild();
     }
 
-    /// <summary>One BSP node: its tile parts name the tile, grow the tile's box and declare the tile-fade
-    /// class; a tile reached for the first time this rebuild also contributes its non-mesh parts.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnBspNode(IntPtr node, IntPtr ctx)
+    /// <summary>One of a BSP node's tile MESH parts: it names the tile, which grows the tile's box, declares
+    /// its tile-fade class, and -- on the first sighting of that tile this pass -- contributes the tile's own
+    /// part list, where <c>ProcessStaticParts</c> @0x470970 files every non-mesh part it keeps.
+    /// <para><b>Registration does not depend on the fade table.</b> A tile the ramp has no slot for
+    /// (<c>t &lt; 0</c>) used to be skipped outright, so the ramp's ceiling silently became an emitter,
+    /// trigger and beam ceiling. Refused means no ramp slot and therefore no <c>fresh</c> edge either, so its
+    /// parts are offered on every node that names it; <see cref="Visit"/> is idempotent (a <c>Find</c> hit
+    /// only restamps the generation) and this runs on the walk edge, so the duplicate offers cost a hash probe
+    /// each and nothing else.</para>
+    /// <para><b>Why not the BSP node's own per-class inventories</b> (<c>SceneBSPAddPart</c> @0x47ca10's lists
+    /// at <c>*(node+0x70)+0x30/+0x50/+0x70</c>), which would be wider and cheaper: they hold DANGLING
+    /// pointers. <c>Scene::ChildAdd</c> @0x461d50 routes a gob's whole tree through
+    /// <c>ListSpecialPartsR</c> @0x462d50, which files every <c>AsPartLight</c> and <c>AsPartEmitter</c> into
+    /// them, and NOTHING prunes one on death -- no part destructor calls <c>SceneBSPRemovePart</c>, and
+    /// <c>Scene::RemoveFromSceneManager</c> @0x462b90 only touches the global <c>emitterbucket</c> and
+    /// <c>triggerbucket</c>. The single unlink is <c>ChildRemove</c> -&gt; <c>UnlistSpecialParts</c> over the
+    /// tree active at that moment, which an Alloy LOD rotation of <c>Gob+0x90</c> can outlive. A tile's part
+    /// list holds tile parts only, and they die with their tile.</para></summary>
+    internal static void TileMesh(IntPtr tri)
     {
-        var bsp = new BSPNode(node);
-        IntPtr* items = bsp.TileParts;
-        if (items == null) return;
-        int n = bsp.TilePartCount;
-        for (int i = 0; i < n; i++)
+        if (!_ready || tri == IntPtr.Zero) return;
+        IntPtr tile = new PartTriMesh(tri).Tile.Ptr;
+        if (tile == IntPtr.Zero) return;
+        int t = TileFadeRamp.NoteTile(tile, out bool fresh);
+        if (t >= 0)
         {
-            IntPtr tri = items[i];
-            if (tri == IntPtr.Zero) continue;
-            IntPtr tile = new PartTriMesh(tri).Tile.Ptr;
-            if (tile == IntPtr.Zero) continue;
-            int t = TileFadeRamp.NoteTile(tile, out bool fresh);
-            if (t < 0) continue;
             TileFadeRamp.NoteTilePart(t, tri);
-            if (!fresh) continue;
-            var td = new TileData(tile);
-            IntPtr* parts = (IntPtr*)td.Parts;
-            int m = td.PartCount;
-            if (parts == null) continue;
-            for (int j = 0; j < m; j++) Visit(parts[j], true, _tileGen);
+            if (!fresh) return;
         }
+        else NoFadeSlot();
+        var td = new TileData(tile);
+        IntPtr* parts = (IntPtr*)td.Parts;
+        int m = td.PartCount;
+        if (parts == null) return;
+        // Through the SEAM, not this class's own Visit: the tile's list holds its LIGHTS too
+        // (ProcessStaticParts @0x470970 keeps a part whose AsPartLight is non-null, vtbl+0x50), and this is the
+        // only container that holds them and is maintained -- the BSP node light list is not pruned on part
+        // death, so LightRegistry cross-checks that one rather than reading it.
+        for (int j = 0; j < m; j++) NonMeshParts.Visit(parts[j], true, _tileGen);
+    }
+
+    /// <summary>CX-45: the ramp refused a tile a slot. Said out loud once, because the two ways that could
+    /// matter -- the tile fading as a unit, and (before this) its whole non-mesh population going
+    /// unregistered -- both used to look like nothing at all.</summary>
+    private static void NoFadeSlot()
+    {
+        _tilesNoSlot++;
+        if (_noSlotLogged) return;
+        _noSlotLogged = true;
+        _log?.Always("SceneParts: the tile-fade ramp has no slot for every tile in this area -- those tiles "
+                   + "fade as a unit rather than on their own ramp. Their emitters, triggers and beams DO "
+                   + "register (they no longer ride the ramp's table); the count is on the /buckets note");
+    }
+    private static bool _noSlotLogged;
+
+    /// <summary>The tile pass finished: tiles the pass did not reach are gone from the fade ramp.</summary>
+    internal static void TileScanEnd()
+    {
+        if (!_ready) return;
+        _lastTiles = TileFadeRamp.EndRebuild();
     }
 
     // ---- the table -------------------------------------------------------------------------------
@@ -398,25 +466,39 @@ internal static unsafe class SceneParts
     private static void Rebuild()
     {
         _emitterN = 0; _triggerN = 0; _beamN = 0;
+        int over = 0;
         for (int e = 0; e < _count; e++)
         {
             if (_freed[e]) continue;
             switch (_kind[e])
             {
                 case KindEmitter:
-                    if (_emitterN >= MaxEmitters) { Cap("emitters"); break; }
+                    if (_emitterN >= MaxEmitters) { over++; break; }
                     _dense[e] = _emitterN; _emitters[_emitterN++] = _ptr[e];
                     break;
                 case KindTrigger:
-                    if (_triggerN >= MaxTriggers) { Cap("triggers"); break; }
+                    if (_triggerN >= MaxTriggers) { over++; break; }
                     _dense[e] = _triggerN; _triggers[_triggerN++] = _ptr[e];
                     break;
                 case KindBeam:
-                    if (_beamN >= MaxBeams) { Cap("beams"); break; }
+                    if (_beamN >= MaxBeams) { over++; break; }
                     _dense[e] = _beamN; _beams[_beamN++] = _ptr[e];
                     break;
             }
         }
+        // ONE report per rebuild, and what it reports is a POPULATION: this runs per delta now -- most frames --
+        // so counting each over-capacity entry every time would have made the number a function of how often a
+        // gob moved rather than of how much does not fit.
+        if (over > 0) CapRebuild(over);
+    }
+
+    /// <summary>A rebuild could not file <paramref name="over"/> parts. Counted as the number of REBUILDS that
+    /// overflowed and the WORST one's size, both of which mean the same thing however often a delta runs.</summary>
+    private static void CapRebuild(int over)
+    {
+        _cappedRebuilds++;
+        if (over > _cappedPeak) _cappedPeak = over;
+        Cap("class lists");
     }
 
     private static void Cap(string what)
@@ -431,6 +513,41 @@ internal static unsafe class SceneParts
 
     // ---- the check -------------------------------------------------------------------------------
 
+    /// <summary>A hidden root with one emitter child, under two fake vtables, through the walk's own
+    /// hidden-subtree descent. Leaves the table as it found it.</summary>
+    private static bool HiddenEmitterKept()
+    {
+        IntPtr blk = Marshal.AllocHGlobal(0x500);
+        try
+        {
+            new Span<byte>((void*)blk, 0x500).Clear();
+            IntPtr root = blk, em = blk + 0x100, vtRoot = blk + 0x200, vtEm = blk + 0x300;
+            IntPtr* kids = (IntPtr*)(blk + 0x400);
+            IntPtr none = (IntPtr)(delegate* unmanaged<IntPtr, IntPtr>)&NoPart;
+            IntPtr self = (IntPtr)(delegate* unmanaged<IntPtr, IntPtr>)&SelfPart;
+            foreach (IntPtr vt in stackalloc[] { vtRoot, vtEm })
+                *(IntPtr*)(vt + EngineLayout.PartAsLightSlot) = none;
+            *(IntPtr*)(vtRoot + EngineLayout.PartAsEmitterSlot) = none;
+            *(IntPtr*)(vtEm + EngineLayout.PartAsEmitterSlot) = self;
+            *(IntPtr*)root = vtRoot;
+            *(IntPtr*)em = vtEm;
+            kids[0] = em;
+            var r = new CX.Engine.Part(root);
+            r.Visible = 0; r.Children = (IntPtr)kids; r.ChildCount = 1;
+            new CX.Engine.Part(em).Visible = 1;
+            SceneWalk.HiddenSpecials(root);
+            Rebuild();
+            bool kept = Membership(em) == "listed" && Membership(root) == "ABSENT";
+            Died(em);
+            Rebuild();
+            return kept && Membership(em) == "ABSENT";
+        }
+        finally { Marshal.FreeHGlobal(blk); }
+    }
+
+    [UnmanagedCallersOnly] private static IntPtr NoPart(IntPtr self) => IntPtr.Zero;
+    [UnmanagedCallersOnly] private static IntPtr SelfPart(IntPtr self) => self;
+
     /// <summary>Off-device: the intern table's invariants, over synthetic pointers. No engine object is
     /// touched (classification needs a vtable), so the check drives <see cref="Insert"/> directly -- which is
     /// where the tombstone rules that have been wrong twice before actually live.</summary>
@@ -438,7 +555,8 @@ internal static unsafe class SceneParts
     {
         var check = new Checker(log, "SceneParts.SelfCheck");
         bool savedReady = _ready, savedLogged = _cappedLogged;
-        long savedCapped = _capped;
+        long savedCapped = _capped, savedCappedRebuilds = _cappedRebuilds;
+        int savedCappedPeak = _cappedPeak;
         _ready = true;
         Clear();
 
@@ -451,6 +569,8 @@ internal static unsafe class SceneParts
         Rebuild();
         check.Expect(_emitterN == 1 && _triggerN == 1 && _beamN == 0, "the rebuild files each entry in its class list");
         check.Expect(_emitters[0] == a && _triggers[0] == b, "...in that class's own list");
+        check.Expect(HiddenEmitterKept(), "an emitter under a part+0x34-hidden node is registered, as "
+                                        + "ListSpecialPartsR files it -- the torch flame the walk used to prune");
 
         Died(a);
         check.Expect(_emitters[0] == IntPtr.Zero, "a death notice zeroes the dense slot without waiting for a walk");
@@ -525,8 +645,49 @@ internal static unsafe class SceneParts
         check.Expect(Find(after) >= 0 && _triggerN == 1 && _triggers[0] == after,
                      "...and the compaction leaves it findable and filed in its class");
 
+        // A DELTA's republish must name the same set as the walk-end one, or an emitter simulates on one frame
+        // and not the next. The delta route is Rebuild alone -- Compact is the post-SWEEP renumber and a delta
+        // retires nothing, so calling it per delta was an HashSize-sized Array.Fill on most frames.
+        Clear();
+        {
+            var live = new System.Collections.Generic.HashSet<IntPtr>();
+            for (int i = 0; i < 40; i++)
+            {
+                IntPtr q = (IntPtr)(0xB00000 + (long)i * 0x40);
+                int e = Insert(q);
+                if (e < 0) continue;
+                _kind[e] = (byte)(i % 3 == 0 ? KindEmitter : i % 3 == 1 ? KindTrigger : KindBeam);
+                _gen[e] = 4;
+                live.Add(q);
+            }
+            DeltaDone();
+            var delta = new System.Collections.Generic.HashSet<IntPtr>();
+            foreach (IntPtr q in Emitters) delta.Add(q);
+            foreach (IntPtr q in Triggers) delta.Add(q);
+            foreach (IntPtr q in Beams) delta.Add(q);
+            check.Expect(delta.SetEquals(live), "a delta's republish names every registered part");
+            // ...and the walk-end route, over the same generation so nothing is swept, agrees with it.
+            Settle(4);
+            var full = new System.Collections.Generic.HashSet<IntPtr>();
+            foreach (IntPtr q in Emitters) full.Add(q);
+            foreach (IntPtr q in Triggers) full.Add(q);
+            foreach (IntPtr q in Beams) full.Add(q);
+            check.Expect(full.SetEquals(delta), "...and the walk-end republish names the same set");
+            // The dense slots have to be right after either route: Died reads _dense to zero the list entry.
+            bool dense = true;
+            for (int e = 0; e < _count; e++)
+            {
+                if (_freed[e] || _kind[e] == KindNone) continue;
+                int d = _dense[e];
+                IntPtr[] list = _kind[e] == KindEmitter ? _emitters : _kind[e] == KindTrigger ? _triggers : _beams;
+                if (d < 0 || list[d] != _ptr[e]) dense = false;
+            }
+            check.Expect(dense, "...with every entry's dense slot pointing back at it");
+        }
+
         Clear();
         _ready = savedReady; _capped = savedCapped; _cappedLogged = savedLogged;
+        _cappedRebuilds = savedCappedRebuilds; _cappedPeak = savedCappedPeak;
         log.Info(check.Ok ? "SceneParts.SelfCheck: passed" : "SceneParts.SelfCheck: FAILED");
         return check.Ok;
     }

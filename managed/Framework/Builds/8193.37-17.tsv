@@ -348,8 +348,6 @@ offset	Scene	skyDesired	0x48	0x48	# SceneSkyDesired
 offset	Scene	skyOff	0x4c	0x4c	# SceneSkyOff
 offset	Scene	skyPos	0x190	0x190	# SceneSkyPos
 offset	Scene	currentLight	0x50	0x50	# SceneCurrentLight
-offset	Scene	shadowLights	0x60	0x60	# SceneShadowLights
-offset	Scene	shadowLightCount	0x68	0x68	# SceneShadowLightCount
 offset	Scene	envMap	0x1e8	0x1e8	# SceneEnvMap
 offset	Gob	boundsMin	0x160	0x160	# GobBoundsMin
 offset	Gob	boundsMax	0x16c	0x16c	# GobBoundsMax
@@ -667,6 +665,10 @@ offset	CGameObject	type	0xc	0xc	# GameObjType
 offset	CGameObject	vtbl.AsNWCItem	0x70	0x68	# GameObjAsNWCItemSlot
 offset	CNWCObject	bubble	0xb8	0xb8	# ObjBubble
 offset	CNWCObject	retired	0x104	0x104	# ObjRetired
+offset	CNWCObject	fadeTarget	0xa9	0xa9	# ObjFadeTarget
+offset	CNWCObject	fadeExpire	0xac	0xac	# ObjFadeExpire
+offset	CNWCObject	fadeHoldMs	0xa4	0xa4	# ObjFadeHoldMs
+offset	CNWCObject	fadeAlpha	0xb0	0xb0	# ObjFadeAlpha
 offset	CNWCObject	overrideMode	0x124	0x124	# ObjOverrideMode
 offset	CNWCObject	overrideText	0x128	0x128	# ObjOverrideText
 offset	CNWCObject	overrideLen	0x130	0x130	# ObjOverrideLen
@@ -881,6 +883,10 @@ offset	Gob	animOffScreen	0xf0	0xf0	# GobAnimOffScreen
 offset	Gob	sphereTick	0x188	0x188	# GobSphereTick
 offset	Gob	safePointers	0x8	0x8	# GobSafePointers
 offset	Gob	safePointerCount	0x10	0x10	# GobSafePointerCount
+offset	Gob	callbacks	0x460	0x460	# GobCallbacks
+offset	Gob	callbackCount	0x468	0x468	# GobCallbackCount
+offset	LerpFloat	mode	0xc	0xc	# LerpMode
+offset	LerpFloat	value	0x4	0x4	# LerpValue
 offset	AnimRun	prevTime	0x10	0x10	# AnimRunPrevTime
 offset	AnimRun	posScale	0x20	0x20	# AnimRunPosScale
 offset	AnimRun	done	0x24	0x24	# AnimRunDone
@@ -978,6 +984,7 @@ rva	_ZN13CNWCPlaceable22ShowFeedbackBubbleTextEv	0x871b60	# PlaceableShowFeedbac
 rva	_ZN8CNWCItem22ShowFeedbackBubbleTextEv	0x83f230	# ItemShowFeedbackBubbleText
 rva	_ZN10CNWCObject18SetPopUpBubbleTextE10CExoStringiff	0x766450	# SetPopUpBubbleText
 rva	_ZN11CNWCMessage24HandleServerToPlayerChatEh	0x77c140	# HandleServerToPlayerChat
+rva	_ZN11CNWCMessage42HandleServerToPlayerPlaceableUpdate_DeleteEv	0x7a8240	# PlaceableUpdateDelete
 rva	_ZN10CNWCObject14ShowFloatyTextE10CExoString6VectorS0_i	0x766a70	# ShowFloatyText
 rva	_ZN12CNWCAnimBase13RefreshHiliteEv	0x966170	# RefreshHilite
 rva	_ZN8CNWCArea10LoadBorderEP18CGuiAreaLoadscreenf	0x7dea10	# AreaLoadBorder

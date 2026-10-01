@@ -280,31 +280,51 @@ internal static unsafe class Beams
     /// <summary>The VAO this slot draws from.</summary>
     private static uint Vao(int v) => _vVao[v];
 
-    /// <summary>The direction <c>RenderBeams</c> extrudes along: the first scene light with range >= 1000
-    /// that is live and of kind 0, negated. Returns false when no such light exists, which is every interior
-    /// -- and the engine's own routine draws nothing then either.</summary>
+    /// <summary>The direction <c>RenderBeams</c> extrudes along: the area's DIRECTIONAL light, negated --
+    /// which is what makes these sun shafts rather than per-lamp volumes. False when there is none, which is
+    /// every interior, and the engine's own routine draws nothing there either.
+    /// <para><b>SL5: this used to read the engine's <c>Scene+0x60</c> shadow-light list, and that list is
+    /// not maintained on an Alloy frame.</b> MEASURED on both binaries (objdump; Linux
+    /// <c>Scene::RenderSinglePass</c> @0x46e5f0+0xb5, Windows rva 0xd0f10+0x213): its sole writer on a live
+    /// frame is that function's head, which deep-copies <c>LightManager::GetShadowLights(1)</c> into the
+    /// embedded list at <c>+0x60</c> (ptr) / <c>+0x68</c> (count) / <c>+0x6c</c> (capacity). Alloy REPLACES
+    /// that head. The only other writers in the client are <c>Scene::Scene</c>, which zeroes the three, and
+    /// <c>~Scene</c>, which frees the buffer without clearing the pointer. So the list read 0 on every Scene
+    /// vanilla had never drawn -- every area Alloy loads -- and otherwise the last vanilla frame's copy; and
+    /// vanilla itself skips the copy while the <c>enableshadows</c> global is 0. Shafts extruded along
+    /// whatever that left.</para>
+    /// <para>The replacement is the SAME light by the same tests, from a source Alloy does maintain.
+    /// <c>GetShadowLights(1)</c>'s own filter admits a light at <c>range &gt;= 1000</c> only as the area
+    /// diffuse that casts shadows, so the loop below could never pick anything else -- and that light is
+    /// exactly <see cref="LightRegistry.AreaDiffuse"/>, the registry's port of
+    /// <c>LightManager::UpdateLights</c>' own pick. Every test the engine's list had already applied is kept
+    /// here explicitly rather than assumed.</para></summary>
     internal static bool Direction(IntPtr scene, out Vector3 dir)
+        => DirectionOf(AreaDirectional(scene), out dir);
+
+    /// <summary>The area's directional light: Alloy's registry, or -- with <c>light.registry 0</c> -- the
+    /// engine's own <c>LightManager+0x98</c>, which <c>UpdateLights</c> still rewrites every frame. The same
+    /// pair <c>FrameRead.ReadAreaTerms</c> takes the area terms from, so the shafts and the sun cannot
+    /// disagree about which light the sun is.</summary>
+    private static PartLight AreaDirectional(IntPtr scene)
+    {
+        if (LightRegistry.Live) return new PartLight(LightRegistry.AreaDiffuse);
+        if (scene == IntPtr.Zero) return new PartLight(IntPtr.Zero);
+        LightManager lm = new CX.Engine.Scene(scene).LightManager;
+        return lm.IsNull ? new PartLight(IntPtr.Zero) : lm.AreaDiffuse;
+    }
+
+    /// <summary>The filter and the negation, apart from where the light came from: what the self-check pins.</summary>
+    internal static bool DirectionOf(PartLight l, out Vector3 dir)
     {
         dir = default;
-        if (scene == IntPtr.Zero) return false;
-        var sc = new CX.Engine.Scene(scene);
-        IntPtr* lights = (IntPtr*)sc.ShadowLights;
-        int n = sc.ShadowLightCount;
-        if (lights == null || n <= 0) return false;
-        for (int i = 0; i < n; i++)
-        {
-            var l = new PartLight(lights[i]);
-            if (l.IsNull) continue;
-            // Beams are extruded from the FIRST scene light that clears the directional range, which is
-            // what makes them sun shafts rather than per-lamp volumes.
-            if (l.Range < EngineLayout.DirectionalRange) continue;
-            if (l.CastShadows == 0 || l.Kind != 0) continue;
-            Vector3 d = l.Pos;
-            if (d.LengthSquared() <= 0f) return false;
-            dir = -Vector3.Normalize(d);
-            return true;
-        }
-        return false;
+        if (l.IsNull) return false;
+        if (l.Range < EngineLayout.DirectionalRange) return false;
+        if (l.CastShadows == 0 || l.Kind != 0) return false;
+        Vector3 d = l.Pos;
+        if (d.LengthSquared() <= 0f) return false;
+        dir = -Vector3.Normalize(d);
+        return true;
     }
 
     /// <summary>ADR 0011 (#130): the Alloy beam pass, right after the additive class and before the probe
@@ -455,19 +475,19 @@ internal static unsafe class Beams
     {
         var check = new Checker(log);
 
-        const int SceneBytes = 0x80;   // not-an-offset: the fake Scene this self-check stack-allocates
-        int LightBytes = EngineLayout.LightDir + 12;   // a SIZE: the fake light must hold its position
+        int SceneBytes = EngineLayout.SceneLightManager + 8;   // a SIZE: the fake Scene must hold its manager slot
+        int MgrBytes = EngineLayout.LmAreaDiffuse + 8;          // ...and the manager its area-diffuse slot
+        int LightBytes = EngineLayout.LightDir + 12;            // ...and the light its position
         byte* scene = stackalloc byte[SceneBytes];
         for (int i = 0; i < SceneBytes; i++) scene[i] = 0;
-        byte* a = stackalloc byte[LightBytes];
+        byte* mgr = stackalloc byte[MgrBytes];
+        for (int i = 0; i < MgrBytes; i++) mgr[i] = 0;
         byte* b = stackalloc byte[LightBytes];
-        for (int i = 0; i < LightBytes; i++) { a[i] = 0; b[i] = 0; }
-        IntPtr* list = stackalloc IntPtr[2];
-        list[0] = (IntPtr)a; list[1] = (IntPtr)b;
+        for (int i = 0; i < LightBytes; i++) b[i] = 0;
         IntPtr s = (IntPtr)scene;
         var sc = new CX.Engine.Scene(s);
-        sc.ShadowLights = (IntPtr)list;
-        sc.ShadowLightCount = 2;
+        sc.LightManager = new LightManager((IntPtr)mgr);
+        new LightManager((IntPtr)mgr).AreaDiffuse = new PartLight((IntPtr)b);
 
         void Light(byte* l, float range, int live, int kind, float x, float y, float z)
         {
@@ -476,19 +496,33 @@ internal static unsafe class Beams
             lv.Pos = new Vector3(x, y, z);
         }
 
-        Light(a, 10f, 1, 0, 0f, 0f, 1f);      // a point light: too short a range
-        Light(b, 100000f, 1, 0, 0f, 0f, 2f);  // the sun
-        check.Expect(Direction(s, out Vector3 d) && d == new Vector3(0f, 0f, -1f),
-          "the first light past 1000 range wins, normalised and NEGATED");
-
+        // SL5: the filter, over a light handed in directly -- the engine's own GetShadowLights(1) rule, which
+        // is the whole of what the deleted Scene+0x60 walk applied.
+        Light(b, 10f, 1, 0, 0f, 0f, 1f);
+        check.Expect(!DirectionOf(new PartLight((IntPtr)b), out _), "a point light's range is too short to be the sun");
+        Light(b, 100000f, 1, 0, 0f, 0f, 2f);
+        check.Expect(DirectionOf(new PartLight((IntPtr)b), out Vector3 d) && d == new Vector3(0f, 0f, -1f),
+          "the area directional past 1000 range wins, normalised and NEGATED");
+        // ...and through the Scene, which is what pins the offset chain the shafts now read
+        // (Scene+0x158 -> LightManager+0x98) in place of the stale Scene+0x60 list. Taken with the registry
+        // dialled off, so the path under test is the one that does not need a live registry to have run.
+        bool regWas = Lighting.Registry.V;
+        // try/finally, not a plain restore: run-demo reads the user's real cx.cfg, so a throw between the two
+        // would leave their light.registry switched off.
+        try
+        {
+            Lighting.Registry.V = false;
+            check.Expect(Direction(s, out Vector3 ds) && ds == new Vector3(0f, 0f, -1f),
+              "...and the same answer comes off the area's own light, not the engine's shadow-light list");
+        }
+        finally { Lighting.Registry.V = regWas; }
         Light(b, 100000f, 0, 0, 0f, 0f, 2f);
-        check.Expect(!Direction(s, out _), "a light with the +0x74 flag clear is skipped");
+        check.Expect(!DirectionOf(new PartLight((IntPtr)b), out _), "a light with the +0x74 flag clear is skipped");
         Light(b, 100000f, 1, 1, 0f, 0f, 2f);
-        check.Expect(!Direction(s, out _), "...and so is one whose +0x80 discriminant is non-zero");
+        check.Expect(!DirectionOf(new PartLight((IntPtr)b), out _), "...and so is one whose +0x80 discriminant is non-zero");
         Light(b, 100000f, 1, 0, 0f, 0f, 0f);
-        check.Expect(!Direction(s, out _), "a zero direction is refused rather than normalised into a NaN");
-        sc.ShadowLightCount = 0;
-        check.Expect(!Direction(s, out _), "an empty light list draws no beams -- which is every interior");
+        check.Expect(!DirectionOf(new PartLight((IntPtr)b), out _), "a zero direction is refused rather than normalised into a NaN");
+        check.Expect(!DirectionOf(new PartLight(IntPtr.Zero), out _), "no area directional draws no beams -- which is every interior");
 
         // The vertex stage's extrusion, mirrored: a frontal vertex sits at the minimum offset, a back-facing
         // one extrudes until world z reaches the clip plane, and the minimum always wins as a floor. Getting

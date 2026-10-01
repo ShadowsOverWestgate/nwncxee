@@ -110,7 +110,9 @@ internal static unsafe class PartTable
     //
     // #194: the layout is struct-of-arrays. #258 deleted the per-part column reader that made the question
     // interesting (and /batchtime, which measured it); what is left touches a handful of columns per part
-    // per frame. Convert to PartEntry[] only against a measurement, never against the argument.
+    // per frame. Convert to PartEntry[] only against a measurement, never against the argument -- and BW7's
+    // second half IS that measurement, for the four columns the route gate asks together (see PartEntry).
+    // The rest stay columns: nothing reads them at one index in the same breath.
     /// <summary>#256: recorded by the scene walk, but its <c>VertexPrimitive</c> has no VDO yet --
     /// <c>VertexPrimitiveFlat::SetupArrays</c> @0x458920 has not run for this part. Not an error and not a
     /// death: enumeration reaches a part before its geometry is resident, so the record waits and the field
@@ -121,7 +123,6 @@ internal static unsafe class PartTable
     /// is its only dynamic writer and bumps nothing), so the entry is HELD -- alive, unfreed, and re-read by
     /// <see cref="SceneWalk"/> every tick -- because a released one is the limb that never comes back.</summary>
     internal const byte StEmpty = 0, StActive = 2, StDead = 3, StStale = 4, StUnbound = 5, StHidden = 6;
-    internal static readonly IntPtr[] _pPart = new IntPtr[MaxParts];
     internal static readonly IntPtr[] _pNode = new IntPtr[MaxParts];
     internal static readonly IntPtr[] _pMat = new IntPtr[MaxParts];
     internal static readonly IntPtr[] _pVdo = new IntPtr[MaxParts];
@@ -130,7 +131,6 @@ internal static unsafe class PartTable
     internal static readonly int[] _pRot = new int[MaxParts];          // texture-rotation bits at record
     internal static readonly bool[] _pMx = new bool[MaxParts];         // matrix-path part (phase 2)
     internal static readonly int[] _pItem = new int[MaxParts];
-    internal static readonly byte[] _pState = new byte[MaxParts];
     /// <summary>#256: the <see cref="SceneWalk.Gen"/> that last REACHED this entry from the scene. Not a
     /// sighting and not a visibility stamp -- it is the mark half of the walk's mark-and-sweep, and it is
     /// what reclaims a part that stopped being in the scene without being destroyed
@@ -145,14 +145,72 @@ internal static unsafe class PartTable
     /// <summary>#134: which gate killed this entry, for the census. There are ten ways to reach StDead and
     /// the aggregate counters name three of them, which is how 5319 gob draws a frame went unexplained.</summary>
     internal static readonly string[] _pDeath = new string[MaxParts];
-    /// <summary>#221: the part this entry recorded has been destroyed (<c>Part::~Part</c>). The entry keeps
-    /// its slot -- returning one to <see cref="StEmpty"/> would cut the probe chains that run through it --
-    /// but its ADDRESS no longer means anything, so the next part the allocator hands back at it must
-    /// re-record instead of landing on the tombstone. Without this a recycled pointer was unownable for the
-    /// life of the table: <see cref="Find"/> matched it, the draw took the not-active branch, and the part
-    /// drew vanilla forever (the character losing Alloy ownership after a few area transitions, which only
-    /// an area transition healed).</summary>
-    internal static readonly bool[] _pFreed = new bool[MaxParts];
+    /// <summary>BW7: the four entry columns that are asked TOGETHER, at one hashed index, in one row. The
+    /// route gate asks all of them per visited candidate -- <see cref="EntryLive"/> reads
+    /// <see cref="State"/> and <see cref="Part"/>, <see cref="AlphaDirty"/> follows, and
+    /// <see cref="Find"/>'s probe reads <see cref="Part"/> then <see cref="Freed"/> -- which was three or
+    /// four cache lines per visit at an index that is a HASH of a pointer, so every one of them is a true
+    /// miss rather than something a prefetcher sees coming. The row is 11 bytes of fields in a 16-byte stride,
+    /// which the pointer's own alignment would impose on any struct holding it: 4,00 MiB over
+    /// <see cref="MaxParts"/> against the 2,75 the four columns took, so the packing BUYS that 1,25 MiB of
+    /// padding -- the three byte columns paid none of it.
+    /// <para>This is the measurement the #194 note above asks for, and it stops here: the remaining columns
+    /// are read one at a time by different walks, and folding them would widen the row every one of those
+    /// walks streams.</para></summary>
+    [StructLayout(LayoutKind.Sequential, Size = EntrySize)]
+    internal struct PartEntry
+    {
+        /// <summary>The <c>PartTriMesh*</c> this entry recorded. Pointer identity is the hash key and half of
+        /// <see cref="EntryLive"/>.</summary>
+        public IntPtr Part;
+        /// <summary>One of <see cref="StEmpty"/>..<see cref="StHidden"/>.</summary>
+        public byte State;
+        /// <summary>#221: the part this entry recorded has been destroyed (<c>Part::~Part</c>). The entry keeps
+        /// its slot -- returning one to <see cref="StEmpty"/> would cut the probe chains that run through it --
+        /// but its ADDRESS no longer means anything, so the next part the allocator hands back at it must
+        /// re-record instead of landing on the tombstone. Without this a recycled pointer was unownable for the
+        /// life of the table: <see cref="Find"/> matched it, the draw took the not-active branch, and the part
+        /// drew vanilla forever (the character losing Alloy ownership after a few area transitions, which only
+        /// an area transition healed).</summary>
+        public bool Freed;
+        /// <summary>BW3: Alloy's own animation runtime wrote this part's ALPHA
+        /// (<see cref="EngineLayout.PartAlpha"/>) and the value changed, so a cached alpha describing it is
+        /// stale. With <c>anim.owned</c> the controller runtime is the only writer of that field --
+        /// <c>NewController::Control</c>'s store is the whole population, since the other writer
+        /// (<c>RenderDrawBucket</c>'s tile-fade fold) does not run at <c>alloy.skipbuckets=3</c> -- which is
+        /// what makes a dirty MARK exact rather than a heuristic.
+        /// <para>ALPHA only. Self-illum is the record's other part-local colour term, but it is not a ROUTE
+        /// term (it cannot change a part's class, alpha or dissolve), and it already rides the colour cadence
+        /// that <c>RouteMemo</c>'s own cadence frame keeps firing -- a mark on it would have had no
+        /// consumer.</para>
+        /// <para>Set cold (only where a write moves the value), cleared wherever the live alpha is re-read. A
+        /// stale mark on a recycled entry costs one extra read of one float and nothing else, so neither
+        /// <see cref="Insert"/> nor the death notice has to clear it.</para></summary>
+        public bool AlphaDirty;
+    }
+    /// <summary>The entry rows.</summary>
+    internal static readonly PartEntry[] _pEnt = new PartEntry[MaxParts];
+    /// <summary>What <see cref="PartEntry"/> must still cost: four rows to a cache line, declared as the
+    /// struct's <c>Size</c> so a field appended past it cannot load at all -- which is the loudest a stride
+    /// drift gets, and it happens on the next <c>run-demo.sh</c> rather than in somebody's session. Raise this
+    /// with the field and <see cref="RenderableSelfCheck"/> says so on the log instead, loudly but without
+    /// standing Alloy down for what is a cost rather than a misrender.
+    /// not-an-offset: a size, not an engine layout.</summary>
+    internal const int EntrySize = 16;
+
+    /// <summary>BW3: <c>NewController::Control</c> moved <paramref name="part"/>'s alpha. One hash probe, on a
+    /// change only; nothing here allocates or logs (the animation walk is the caller).</summary>
+    internal static void NoteAlphaWrite(IntPtr part)
+    {
+        int e = Find(part);
+        if (e >= 0) _pEnt[e].AlphaDirty = true;
+    }
+
+    /// <summary>Has this entry's alpha been written since it was last read? An entry outside the table reads
+    /// dirty, which is the safe answer for a caller deciding whether it may skip the read.</summary>
+    internal static bool AlphaDirty(int e) => (uint)e >= MaxParts || _pEnt[e].AlphaDirty;
+    /// <summary>The live alpha was just read: the mark is spent.</summary>
+    internal static void ClearAlphaDirty(int e) { if ((uint)e < MaxParts) _pEnt[e].AlphaDirty = false; }
 
     /// <summary>The geometry totals (<see cref="SceneWalk.GeomSig"/>) this record's VertexPrimitive carried
     /// the last time <see cref="SceneWalk"/> asked it to set its arrays up, or <see cref="GeomSigNever"/>
@@ -256,9 +314,15 @@ internal static unsafe class PartTable
     /// <summary>#145: is this entry still a live recording of <paramref name="part"/>? Pointer identity is
     /// not enough on its own (a recycled allocation lands at the same address), and neither is the state on
     /// its own (an entry keeps its slot when it dies) -- the pair is what the Alloy pass tests before it
-    /// dereferences a part it did not just receive from the engine's own iterator.</summary>
+    /// dereferences a part it did not just receive from the engine's own iterator.
+    /// <para>BW7: both halves come off one <see cref="PartEntry"/> row, so this and the
+    /// <see cref="AlphaDirty"/> that follows it in <c>RouteMemo</c> are one cache line between them.</para></summary>
     internal static bool EntryLive(int e, IntPtr part)
-        => (uint)e < MaxParts && _pState[e] == StActive && _pPart[e] == part;
+    {
+        if ((uint)e >= MaxParts) return false;
+        ref PartEntry en = ref _pEnt[e];
+        return en.State == StActive && en.Part == part;
+    }
 
     /// <summary>#137: was this entry recorded through <c>PartSkin::Draw</c>?</summary>
     internal static bool Skinned(int e) => (uint)e < MaxParts && _pSkin[e];
@@ -268,7 +332,7 @@ internal static unsafe class PartTable
     internal static byte Die(int e, string why)
     {
         _pDeath[e] = why;
-        return _pState[e] = StDead;
+        return _pEnt[e].State = StDead;
     }
 
     /// <summary>#221: record that <paramref name="part"/> has been destroyed, and return the entry that held
@@ -277,7 +341,7 @@ internal static unsafe class PartTable
     internal static int MarkFreed(IntPtr part)
     {
         int e = Find(part);
-        if (e >= 0) _pFreed[e] = true;
+        if (e >= 0) _pEnt[e].Freed = true;
         return e;
     }
 
@@ -394,6 +458,13 @@ internal static unsafe class PartTable
         nv.RenderGeom = IntPtr.Zero;
         nv.RenderKind = 1;
         ok &= IsRenderable(p);                                             // kind set: geometry not asked
+        // BW7: the entry row's stride is the whole point of packing it, so drift is SAID rather than assumed.
+        // Loud, not gating: this function sits in the chain that stands Alloy down (AlloyRenderer.cs), and a
+        // row that grew a field costs cache lines, not correctness -- taking every user back to vanilla over
+        // it would be the wrong trade.
+        if (sizeof(PartEntry) != EntrySize)
+            log.Always($"PartTable: the entry row is {sizeof(PartEntry)} bytes, not {EntrySize} -- the route "
+                     + "gate is back to a cache line per column (BW7)");
         if (!ok) log.Info("PartTable.RenderableSelfCheck: FAILED -- the IsPartRenderable rule disagrees with the decompile");
         return ok;
     }
@@ -451,8 +522,9 @@ internal static unsafe class PartTable
             // #221: a pointer match on a FREED slot is a miss -- the address was recycled, so the caller
             // must re-record. Stopping here cannot skip a live entry for the same pointer: Insert claims the
             // first reusable slot in the chain, so a live one can never sit behind this pointer's tombstone.
-            if (_pPart[s] == part) return _pFreed[s] ? -1 : s;
-            if (_pState[s] == StEmpty) return -1;
+            ref PartEntry en = ref _pEnt[s];   // BW7: pointer, tombstone and state are one line
+            if (en.Part == part) return en.Freed ? -1 : s;
+            if (en.State == StEmpty) return -1;
         }
         return -1;
     }
@@ -467,17 +539,18 @@ internal static unsafe class PartTable
             // chain, and _partCount only ever climbs (nothing returns an entry to StEmpty), so gating reuse
             // on it is what made a long session's recycled pointers unownable once the table crossed 75%.
             // The slot is left indistinguishable from a fresh one; Record/Complete fill the rest.
-            if (_pFreed[s])
+            ref PartEntry en = ref _pEnt[s];
+            if (en.Freed)
             {
                 // StEmpty here terminates the probe chain of every OTHER key that runs through this slot,
                 // and live entries can sit beyond it -- so Record must write a non-empty state before
                 // anything that can re-enter Find (a nested Vanilla draw, a diagnostic).
-                _pFreed[s] = false; _pState[s] = StEmpty; AlloyCensus.OwnFlag[s] = 0;
+                en.Freed = false; en.State = StEmpty; AlloyCensus.OwnFlag[s] = 0;
                 _pGeomSig[s] = GeomSigNever; _pPoseTried[s] = false;
-                _pPart[s] = part; _reclaims++; return s;
+                en.Part = part; _reclaims++; return s;
             }
-            if (_pState[s] == StEmpty)
-            { if (!room) return -1; _pPart[s] = part; _pGeomSig[s] = GeomSigNever; _pPoseTried[s] = false; _partCount++; return s; }
+            if (en.State == StEmpty)
+            { if (!room) return -1; en.Part = part; _pGeomSig[s] = GeomSigNever; _pPoseTried[s] = false; _partCount++; return s; }
         }
         return -1;
     }
@@ -506,7 +579,7 @@ internal static unsafe class PartTable
         int live = 0, dead = 0;
         for (int i = 0; i < MaxParts; i++)
         {
-            byte st = _pState[i];
+            byte st = _pEnt[i].State;
             if (st == StEmpty) continue;
             if (st == StDead) dead++; else live++;
         }
@@ -532,12 +605,18 @@ internal static unsafe class PartTable
     internal static void WipeTables(string why)
     {
         _wipeFrame = _frame;
-        Array.Clear(_pPart); Array.Clear(_pState); Array.Clear(_pFreed);
+        // The whole row: pointer, state, tombstone -- and, newly, the BW3 alpha mark, which the three
+        // separate clears here did not touch. Harmless: every identity is gone, so the entry a mark belonged
+        // to re-records, and a re-tenanted route slot re-reads its alpha anyway (UnstampChase).
+        Array.Clear(_pEnt);
         Array.Fill(_pGeomSig, GeomSigNever); Array.Clear(_pPoseTried);
         SkinPose.Forget();
         Array.Clear(AlloyCensus.OwnFlag);
         _partCount = 0; TableGen++;
         _saturated = false;
+        // ...and the held-hidden list with it: every state byte above is now zero, so every index it holds
+        // names an entry that holds nothing, and nothing else would ever take them out (CX-92).
+        SceneWalk.ForgetHidden();
         // #256: the table is empty and only the walk can refill it. The pressure wipe changes no scene
         // membership, so the epoch will not move on its own -- ask for a walk explicitly.
         SceneWalk.RequestWalk();

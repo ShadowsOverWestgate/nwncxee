@@ -462,14 +462,25 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
 
     private static double GpuMs(GpuTerm t) => _qTerm[(int)t].Avg / 1e6;
 
-    /// <summary>The colour-bracket loop's CPU ticks per <see cref="PassId"/> this period, children included: the
-    /// pass the untimed half of the Passes zone lives in.</summary>
+    /// <summary>The colour-bracket loop's SELF CPU ticks per <see cref="PassId"/> this period -- the five child
+    /// zones <see cref="FrameZones.Zone.Passes"/> subtracts are subtracted from each row too, so the rows
+    /// partition that zone rather than double-counting Issue, Cull, Post, Probe and Lightmap inside it.
+    /// <para>The rows plus <see cref="_passTail"/> account for the zone bar the <c>foreach</c>'s own advance
+    /// over the passes it skips, which is not bracketed.</para></summary>
     private static readonly long[] _passCpu = new long[(int)PassId.PostStack + 1];
+    /// <summary>The colour loop's tail (<c>PaintStreamFailures</c> + the GPU span close): inside the Passes
+    /// bracket and inside no pass, so it is reported rather than left as an unexplained remainder.</summary>
+    private static long _passTail;
+    /// <summary>Rows that measured NEGATIVE self time, which can only mean a child zone was credited to a pass
+    /// it did not run inside. Must read 0.</summary>
+    private static int _passSelfNeg;
 
-    /// <summary>The five passes with the most CPU per frame this period, clearing the tally. Cold (period line).</summary>
+    /// <summary>The five passes with the most SELF CPU per frame this period, clearing the tally. These five
+    /// are a partition of <see cref="FrameZones.Zone.Passes"/>, not a parent-and-child mix. Cold (period
+    /// line).</summary>
     private static string PassCpuNote(int frames)
     {
-        var sb = new System.Text.StringBuilder(", pass cpu ms/frame:");
+        var sb = new System.Text.StringBuilder(", pass cpu self ms/frame:");
         double k = 1000.0 / System.Diagnostics.Stopwatch.Frequency / Math.Max(1, frames);
         for (int n = 0; n < 5; n++)
         {
@@ -480,6 +491,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             _passCpu[best] = 0;
         }
         Array.Clear(_passCpu);
+        if (_passTail > 0) sb.Append(" tail ").Append((_passTail * k).ToString("F2"));
+        if (_passSelfNeg > 0) sb.Append(" (").Append(_passSelfNeg).Append(" NEGATIVE SELF ROWS -- the partition is broken)");
+        _passTail = 0; _passSelfNeg = 0;
         return sb.ToString();
     }
 
@@ -830,7 +844,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #571: the stock-settings reader forges a std::string for the engine; a header packed wrong is a
         // crash on the first world frame, not a misrender, so it joins the gating chain.
         StockConfig.Attach(log);
-        if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !MaterialExtSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
+        if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !CasterBoundSelfCheck(log) || !MaterialExtSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
             || !AreaGrid.SelfCheck(log) || !GobLod.SelfCheck(log) || !GobXform.SelfCheck(log)
             || !Issue.RunsSelfCheck(log) || !StreamRing.SelfCheck(log)
             || !PartTable.RenderableSelfCheck(log)
@@ -847,6 +861,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // Gob::HitCheck then refuses the click. A failed check keeps the engine's own FadeDoors by keeping the
         // whole Alloy path down.
         if (!DoorFade.SelfCheck(log)) return;
+        if (PlaceableHold.SelfCheck(log)) PlaceableHold.Install(log, hooks);   // failed: placeables fade as vanilla
         _getTexture = EngineFn.MatGetTexture;
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         if (CycleTextures.SelfCheck(log)) CycleTextures.Attach(log, hooks);   // #331; a failed check freezes cycles, not Alloy
@@ -1448,7 +1463,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0;
         ResetChasePeriod();
         Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
-        Counters._recWritten = 0; Counters._recStable = 0; PassBinds = 0; PassUploads = 0; Issue.WholeUploads = 0; Issue.WholeBytes = 0;
+        Counters._recWritten = 0; Counters._recStable = 0; PassBinds = 0; PassUploads = 0; PassBindsBorrowed = 0; Issue.WholeUploads = 0; Issue.WholeBytes = 0;
         ResetStaticPeriod();
         Counters._nrmDeclared = Counters._nrmBound = 0;
         Array.Clear(Counters._drawsByClass);
@@ -1594,7 +1609,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    $"records {(float)Counters._recWritten / Counters._frames:F0}/frame written, " +
                    $"{(float)Counters._recStable / Counters._frames:F0} stable ({_recOwnCap} slots), " +
                    // CX-43: program switches that took the pass terms, and how many of them had to send the block
-                   $"pass block {(float)PassBinds / Counters._frames:F1} binds/frame, {(float)PassUploads / Counters._frames:F1} sends/frame, " +
+                   $"pass block {(float)PassBinds / Counters._frames:F1} binds/frame ({(float)PassBindsBorrowed / Counters._frames:F1} through another view's cluster table), {(float)PassUploads / Counters._frames:F1} sends/frame, " +
                    $"record table {Issue.WholeUploads} whole upload(s) ({Issue.WholeBytes >> 20} MiB) over {Counters._frames} frames, " +
                    StaticNote() + ", " +
                    // #330: how much of the engine chase the view bounded away, and the poll audit.

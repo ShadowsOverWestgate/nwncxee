@@ -58,7 +58,7 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         { log.Info("DrawFunnels: engine symbols unresolved -- Alloy unavailable (headless/Windows?)"); return; }
         // #256: enumeration is the SOURCE of every record now, so it resolves before the tables arm. Without
         // it there is no discovery at all -- nothing below may pretend otherwise by falling back to capture.
-        if (!SceneWalk.Resolve(log)) return;
+        if (!SceneWalk.Resolve(log, hooks)) return;
         // CX-103: the transform owner. It stands DOWN rather than compose a scale it cannot read,
         // so a missing symbol costs the ownership, not the frame.
         GobXform.Resolve(log);
@@ -95,6 +95,9 @@ public sealed unsafe class DrawFunnelService : IExtenderService
     private static int OnGobAppend(IntPtr gob, IntPtr model, IntPtr node)
     {
         int r = _origAppend != null ? _origAppend(gob, model, node) : 0;
+        // The arrival edge for an appended subtree: Gob::Append grafts parts and bumps no epoch, so before
+        // this the new item waited for an unrelated walk trigger. Named, so it costs one gob's tree.
+        if (r != 0) SceneWalk.NoteGobDirty(gob);
         if (_gobWatchLeft > 0) { _gobWatchLeft--; _log?.Info($"[gobwatch] Append gob=0x{gob:x} model={Marshal.PtrToStringAnsi(model)} node={Marshal.PtrToStringAnsi(node)} -> {r} (roots now {new Gob(gob).AppendCount})"); }
         return r;
     }
@@ -122,12 +125,17 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         if (next != null) next(vdo);
         OwnedBuffers.NoteRepack();   // #260: the arena argument's other rate -- see OwnedBuffers.NoteRepack
 
-        int stale = 0;
         for (int i = 0; i < MaxParts; i++)
-            if (_pState[i] == StActive && _pVdo[i] == vdo) { _pState[i] = StStale; SceneWalk.NoteChanged(i); stale++; }
-        // #256: a repack changes no scene membership, so nothing else would ever look at these again --
-        // the epoch will not move for a layout change. Ask for a walk, whose sweep re-queues them.
-        if (stale > 0) SceneWalk.NoteStale();
+            if (_pEnt[i].State == StActive && _pVdo[i] == vdo)
+            {
+                _pEnt[i].State = StStale;
+                SceneWalk.NoteChanged(i);
+                // #256: a repack changes no scene membership, so nothing else would look at these again --
+                // the epoch will not move for a layout change. They are named INTO the rebind queue rather
+                // than left for a re-walk's sweep to rediscover: the walk was 9-15ms and the enrolment behind
+                // it was a full census, for a set of entries this loop already has in hand.
+                SceneWalk.NoteStale(i);
+            }
     }
 
     private static PartDtorFn _origPartDtor;
@@ -149,22 +157,32 @@ public sealed unsafe class DrawFunnelService : IExtenderService
         // #221: the freed mark goes on unconditionally -- including an entry some other gate already killed,
         // whose tombstone would otherwise outlive the allocation and block the address for good.
         int e = MarkFreed(part);
-        if (e >= 0 && _pState[e] != StEmpty && _pState[e] != StDead)
+        if (e >= 0 && _pEnt[e].State != StEmpty && _pEnt[e].State != StDead)
         {
             OwnFlag[e] = 0;
+            IntPtr gob = _pGob[e];
             // ...and the gob with it: the dead-entry branch of TryOwnCandidateInner reads _pGob[e] and then
-            // dereferences _pPart[e] to confirm it, which on a destroyed part is the same stale chase.
+            // dereferences _pEnt[e].Part to confirm it, which on a destroyed part is the same stale chase.
             _pGob[e] = IntPtr.Zero;
             Die(e, "destroyed");
             DtorRevokes++;
-            // An in-place model rebuild (armour off) never hits Gob::SetScene, the only Scene::Sequence bump: re-walk for its new parts.
-            SceneWalk.RequestWalk();
+            // CX-92: Die leaves the slot, so the held-hidden list is not told by Release here. Without this the
+            // list keeps a dead index for every hidden part that ever died.
+            SceneWalk.NotePartDied(e);
+            // An in-place model rebuild (armour off) never hits Gob::SetScene, the only Scene::Sequence bump,
+            // so this is the notice for its NEW parts -- and it names the gob, so it costs that one tree
+            // rather than the whole area (a tile part names no gob and still asks for the walk). The pointer
+            // is not dereferenced here: inside Gob::~Gob it is alive now and freed by the drain, which is why
+            // the drain validates it against Scene+0x130.
+            SceneWalk.NoteGobDirty(gob);
         }
         // ...and the OWNERSHIP slot with it: #308's persistent slots outlive the enrollment gap, so the
         // notice must reach them directly or the shadow bracket keeps chasing the freed part until the
         // next scan (the busy-area transition crash). Unconditional -- an enrolled tenant can outlive its
         // part-table entry's state.
         AlloyRenderer.NotePartDeath(part);
+        // AN2: ...and the dangly solve queue, whose entries name buffers this part owns.
+        DanglyPhysics.NotePartDeath(part);
         NonMeshParts.Died(part);
         _origPartDtor(part);
     }

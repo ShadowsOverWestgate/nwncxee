@@ -25,14 +25,18 @@ internal static unsafe partial class GrassField
     private static readonly Vector3[] _ramp = new Vector3[MaxGrassMaterials * 12];
 
     /// <summary>Every live material's BLADE cell bits this frame: none under the texture style, or without
-    /// the blade program.</summary>
-    private static void ClassifyAll(int* tids, bool* live, int* bits)
+    /// the blade program. <paramref name="cards"/> takes the complement -- does the material draw any CARD --
+    /// off the same walk, because it is a property of the material and the visible-patch loop was re-deriving
+    /// it (an engine deref per patch) for an answer that cannot differ between two patches of one
+    /// material.</summary>
+    private static void ClassifyAll(int* tids, bool* live, int* bits, bool* cards)
     {
         bool blades = Grass.Style.V == Grass.StyleBlades && _progBlade != 0;
         for (int m = 0; m < MaxGrassMaterials; m++)
         {
             CAurGrassInfo info = live[m] ? GrassInfo(m) : default;
             bits[m] = blades && !info.IsNull ? Classified(m, tids[m], info) : 0;
+            cards[m] = !info.IsNull && CardCells(info, bits[m]);
         }
     }
 

@@ -226,7 +226,7 @@ internal static class RenderPasses
             SelfCheck = Particles.SelfCheck,
             ContextLost = Particles.ContextLost,
             Revoke = Particles.Forget,
-            Stats = _ => Particles.Stats(),
+            Stats = f => Particles.Stats(f),
         }, log);
         r.Register(new PassLifecycle
         {

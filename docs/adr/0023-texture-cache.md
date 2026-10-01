@@ -83,7 +83,8 @@ Built:
   after enrolment, as a bounded per-frame tax; read `Prefetch` on `[zones]` and `prefetch:` on `[alloy]`.
 - **Swap in place.** A `Replace` that retires a name (transcode swap, re-upload) no longer re-stages
   every record on it (Restage 3,3-4,9 vs 1,1 in hitch rows); records take the new tid and
-  `ApplySwaps` rewrites their handle block in the next bracket. `_recTexStale` is now the EVICTION path only.
+  `ApplySwaps` rewrites their handle block in the next bracket. `RouteGate.TexStale` (BW7; it was the
+  `_recTexStale` column) is now the EVICTION path only.
 - `Bcn` split into `BcnRead`/`BcnMap`/`BcnUp` to name which stage of the pipeline costs main-thread time.
 
 Not built, and why:

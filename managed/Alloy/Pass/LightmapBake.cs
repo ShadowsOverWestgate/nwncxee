@@ -186,6 +186,9 @@ internal static unsafe partial class LightmapBake
     private const int ReadBufs = 4;
     private static readonly byte[][] _readBufs = new byte[ReadBufs][];
     private static long _pageT0;
+    /// <summary>Wall clock the page in flight spent standing still for a page migration: "ms wall per page" is
+    /// the bake's own pacing, not a window it was held for.</summary>
+    private static long _pageSkew;
     private static GpuQuery _qBake;
 
     /// <summary>Period counters.</summary>
@@ -332,11 +335,12 @@ internal static unsafe partial class LightmapBake
         if (_rects[ri].Slot == i) _rects[ri].Slot = o != null && o.Count > 0 ? o[0] : -1;
     }
 
-    /// <summary>A rect entry: the last freed one, unless its readback is still in flight (the cache file would
-    /// take the newcomer's key over the old bits) -- then the table grows and the entry waits its turn.</summary>
+    /// <summary>A rect entry: the last freed one, unless a readback still names it -- the cache file would take
+    /// the newcomer's key over the old bits -- then the table grows and the entry waits its turn. BOTH lists:
+    /// <c>_pendingRead</c> is the region queued or draining, <c>_defRects</c> a landing stashed behind it.</summary>
     private static int NewRect()
     {
-        if (_free.Count > 0 && !_pendingRead.Contains(_free.Peek())) return _free.Pop();
+        if (_free.Count > 0 && !_pendingRead.Contains(_free.Peek()) && !_defRects.Contains(_free.Peek())) return _free.Pop();
         if (_rectN == _rects.Length) { Array.Resize(ref _rects, _rectN * 2); Array.Resize(ref _owners, _rectN * 2); }
         return _rectN++;
     }
@@ -411,6 +415,9 @@ internal static unsafe partial class LightmapBake
             }
             Kill(ri); _evicted++; n++;
         }
+        // CX-102: the page's shelves re-open, so its texels are the next rect's -- a landing stashed off this
+        // page would read someone else's pixels into its own keys' blob
+        if (_defW > 0 && _defPage == best) { _uncached += _defRects.Count; _defW = 0; _defRects.Clear(); }
         _shelfY[best] = _shelfH[best] = _shelfX[best] = 0; _pageClass[best] = 0;
         _finePage = best; _packPage = Math.Min(_packPage, best);   // either cursor must reach the re-opened page
         if (_logLeft > 0) _log?.Info($"LightmapBake: page {best} evicted -- {n} rects, {bs:F1}x past their tier");
@@ -455,6 +462,7 @@ internal static unsafe partial class LightmapBake
         AbortBake();
         AreaSnapAbandon();   // the pages go here: a plan waiting on one more readback is written as it stands
         if (Gl.DeleteTextures != null) DropPages();
+        AbortReadback(gl: true);
         if (_fence != IntPtr.Zero) { _uncached += _pendingRead.Count; if (Gl.DeleteSync != null) Gl.DeleteSync(_fence); _fence = IntPtr.Zero; }
         _pendingRead.Clear();
         _cache.Drain();
@@ -574,12 +582,21 @@ internal static unsafe partial class LightmapBake
     /// per frame's trickle packed an area's 3.7 pages of rects into 8.</summary>
     private static void Pack()
     {
+        // CX-102: a page array is migrating, so the layer a rect would land on is not resident yet. The
+        // newcomers keep their places in _toPack and are packed the frame the migration finishes.
+        if (Migrating) return;
+        // CX-102: a union uploads as ONE rectangle -- the bbox of the plan's rects on that page -- and Place
+        // continues the plan's own shelves, so a newcomer can land inside a bbox that has not gone up yet and
+        // be blanked by it (and, with a stash, read back blank under its key). A plan can hold 1152 MiB of
+        // unions at 256 MiB a frame, which is five frames against a settle window of four. Nothing is placed
+        // until every union is in; adopting needs _rectN == 0, so no OTHER rect can be inside one.
+        if (!AreaUploadsIn) return;
         if (_toPack.Count == 0 || _frame - _newAt < (Hold ? HoldSettleFrames : SettleFrames)) return;
         if (!FitDensity(out long demand)) return;
         // one allocation for the pages this pack needs, not one per page: growing a layer at a time copied
         // 1+2+..+12 layers of pages (10 GB of GPU copy, a transient double of the pages on the card)
         int need = (int)Math.Min(_cap, (_placedArea + demand + PagePackTexels - 1) / PagePackTexels);
-        if (need > _layers && !Grow(need)) return;
+        if (need > _layers && Grow(need) != Grew.Resident) return;
         _toPack.Sort((a, b) => _rects[b].H.CompareTo(_rects[a].H));
         int placedN = 0;
         for (int k = 0; k < _toPack.Count; k++)
@@ -588,6 +605,9 @@ internal static unsafe partial class LightmapBake
             ref Rect r = ref _rects[ri];
             if (!Place(ref r))
             {
+                // CX-102: the rect asked for a layer the migration has yet to publish -- early, not past the
+                // cap. The ones already placed leave _toPack; this one and the rest wait for the pages.
+                if (_growBusy) { StampPack(placedN); _toPack.RemoveRange(0, k); return; }
                 if (EvictFine(r.Tier < Baseline ? 1f : 0f) >= 0 && Place(ref r)) goto placed;
                 if (r.Tier < Baseline) { Drop(ri, queued: false); _refineAt = _frame + RefuseBackoffFrames; continue; }
                 // the pages are full of re-key orphans (a shelf cannot free): repack everything from nothing
@@ -692,7 +712,10 @@ internal static unsafe partial class LightmapBake
     private static long _allocRun;
     internal static void Run(bool capturing, int frame)
     {
-        if (!Enabled || capturing) return;
+        // a parked migration holds two page arrays; the master going off (or a stand-down) must not keep them.
+        // A capture frame only pauses it: the probe's frame is one frame, and the window is already paused work.
+        if (!Enabled) { if (Migrating) GrowAbort(gl: true); AbortReadback(gl: true); return; }
+        if (capturing) return;
         long a0 = GC.GetAllocatedBytesForCurrentThread();
         try { RunInner(frame); }
         finally { _allocRun += GC.GetAllocatedBytesForCurrentThread() - a0; }
@@ -703,18 +726,39 @@ internal static unsafe partial class LightmapBake
         if (!Ensure()) return;
         _frame = frame;
         _cap = PageCap();
+        long t = Stopwatch.GetTimestamp();
         InstallAreaCache();   // CX-56: before the sweep -- the plan's set is what arms Enrol at all
+        t = Phase(Ph.Area, t);
         if (_rekeyPending) Rekey();
+        t = Phase(Ph.Rekey, t);
         Sweep();
+        t = Phase(Ph.Sweep, t);
         RefineSweep();
+        t = Phase(Ph.Refine, t);
         Adopt();
+        t = Phase(Ph.Adopt, t);
         AreaUpload();
+        t = Phase(Ph.Upload, t);
+        // CX-102: a page array growing is a 192-MiB-a-layer migration. It runs in slices BEFORE the pack that
+        // asked for it, so the frame that needs a new page is not the frame that pays for every old one.
+        GrowStep();
+        t = Phase(Ph.Grow, t);
         Pack();
+        t = Phase(Ph.Pack, t);
         CollectReadback();
+        IssueStashed();
+        t = Phase(Ph.Collect, t);
         AreaSnap();
-        int steps = Hold ? HoldLightsPerFrame : BackgroundLightsPerFrame;
+        t = Phase(Ph.Snap, t);
+        // CX-102: FinishPage converts the scratch into a RESIDENT layer, and a layer the migration has
+        // already copied would take those texels into the retiring array. The page in flight keeps its scratch
+        // and its light cursor across the window exactly as it does across the pacing.
+        int steps = HeldByMigration() ? 0 : Hold ? HoldLightsPerFrame : BackgroundLightsPerFrame;
         for (int k = 0; k < steps; k++) if (!Step()) break;
+        t = Phase(Ph.Steps, t);
         UploadRecords();
+        Phase(Ph.Records, t);
+        PhaseFrameEnd();
     }
 
     /// <summary>Every owned slot the bake has not seen is offered from the frame, in view or not: the bake is
@@ -726,6 +770,12 @@ internal static unsafe partial class LightmapBake
     {
         if (SetHash == 0 || AreaAwaited) return;
         int per = Hold ? HoldSweepPerFrame : SweepPerFrame;
+        // CX-102 measured this walk and left it alone: an enrolled slot costs one int read (the _slotRect test
+        // short-circuits ahead of SlotPlacement) and an empty one two (_slotRect then _oTri), so a steady-state
+        // pass over 1024 of them is ~3 us -- a matrix is only copied for a slot that actually enrols. A
+        // dirty gate over it could not close either -- a mesh MeshChart permanently refuses leaves its slot
+        // at -1 for ever (168 "no rect" charted draws a frame, live), which is indistinguishable from a chart
+        // that has not landed yet, so every pass would count as having found something.
         for (int k = 0; k < per; k++)
         {
             int i = _sweepAt; if (++_sweepAt >= _slotRect.Length) _sweepAt = 0;
@@ -792,7 +842,7 @@ internal static unsafe partial class LightmapBake
                 if (Touches(l, r.C, r.R)) { _bakeLights.Add(l); break; }
             }
         _bakePage = page; _bakeLight = 0;
-        _pageT0 = Stopwatch.GetTimestamp();
+        _pageT0 = Stopwatch.GetTimestamp(); _pageSkew = 0;
         // the scratch planes: A' = sum rgb + coverage alpha, B' = sum luminance * direction, C' = per channel the mover's luminance
         BindScratch();
         float* zero = stackalloc float[4] { 0f, 0f, 0f, 0f };
@@ -984,12 +1034,18 @@ internal static unsafe partial class LightmapBake
         // the readback: the union's raw bits into one PBO, fenced; CollectReadback writes the files. A previous
         // page's fence still open is polled, never waited on: the render thread does not stall for a cache
         // file, and a page landing that close behind another goes uncached (a miss next session, nothing else).
-        if (_fence != IntPtr.Zero) CollectReadback();
-        if (_fence == IntPtr.Zero && Gl.FenceSync != null && Gl.MapNamedBufferRange != null) QueueReadback(page, x0, y0, x1 - x0, y1 - y0, _bakeRects);
-        else _uncached += _bakeRects.Count;
+        if (!ReadbackIdle) { CollectReadback(); IssueStashed(); }
+        if (Gl.FenceSync == null || Gl.MapNamedBufferRange == null) _uncached += _bakeRects.Count;
+        // AttachPair again: IssueStashed above attached ITS page and unbound, and a stash it could not queue
+        // leaves ReadbackIdle true -- reading with no FBO bound would file the backbuffer under these rect keys
+        else if (ReadbackIdle) { AttachPair(page); QueueReadback(page, x0, y0, x1 - x0, y1 - y0, _bakeRects); }
+        // CX-102: a copy still draining must not turn this landing into a cache miss -- its region waits and is
+        // queued the moment the PBO is free. A landed rect keeps its page and place until a Repack.
+        else StashReadback(page, x0, y0, x1 - x0, y1 - y0, _bakeRects);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         for (int k = 0; k < _bakeRects.Count; k++) { Land(_bakeRects[k], false); _pending--; }
-        double ms = (Stopwatch.GetTimestamp() - _pageT0) * 1000.0 / Stopwatch.Frequency;
+        double ms = (Stopwatch.GetTimestamp() - _pageT0 - _pageSkew) * 1000.0 / Stopwatch.Frequency;
+        _pageSkew = 0;
         _pageMs += ms; _pageMsN++;
         if (_logLeft-- > 0) _log?.Info($"LightmapBake: page {page} landed -- {_bakeRects.Count} rects over {_bakeLights.Count} lights in {ms:F0} ms wall" + (_qBake.Measured ? $", {_qBake.Avg / 1e6:F2} ms GPU per light step" : ""));
         AbortBake();
@@ -1017,37 +1073,131 @@ internal static unsafe partial class LightmapBake
         _fence = Gl.FenceSync(Gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     }
 
-    /// <summary>A fenced readback that has completed is mapped once, sliced per rect and handed to the cache
-    /// thread. Polled, never waited on.</summary>
+    /// <summary>CX-102: bytes copied out of the mapped PBO per frame. CX-56's whole-page snapshot is
+    /// 4096x4096x12 = 192 MiB of host-visible memory read through the map, which as one memcpy was a frame of
+    /// its own; the map stays open across frames instead and the copy takes slices. Under the hold the
+    /// backdrop hides it, as with <see cref="Adopt"/>.</summary>
+    /// <summary>CX-102: a host read out of the mapped PBO is uncached/write-combined memory at an order of
+    /// 1-3 GB/s, so this is deliberately small -- 4 MiB is ~2-4 ms, which is the <c>worst frame</c> clause's own
+    /// floor. A whole-page snapshot then takes tens of frames, which costs nothing: a landing that arrives
+    /// behind the drain is stashed rather than dropped, and the snapshot is once per area. If <c>collect</c> ever
+    /// names the worst frame, this is the number.</summary>
+    private const long ReadCopyPerFrame = 4L << 20, HoldReadCopyPerFrame = 48L << 20;
+    /// <summary>The PBO's mapping while a copy is in flight, the ring slot it feeds and how far it has got.
+    /// Non-null = the PBO is mapped, so nothing may queue another readback into it.</summary>
+    private static byte* _uMap;
+    private static long _uDone;
+    private static int _uBuf;
+    /// <summary>No readback is in flight at all: no fence pending, no copy still draining the map, and no
+    /// landing stashed behind one.</summary>
+    private static bool ReadbackIdle => _fence == IntPtr.Zero && _uMap == null && _defW == 0;
+
+    /// <summary>A page landed while a readback was still draining: its region waits here and is queued the
+    /// moment the PBO is free, so the slicing never turns a landing into a cache miss. One slot -- a second
+    /// landing inside one window drops the older stash, counted uncached as it would have been before.</summary>
+    private static int _defPage, _defX0, _defY0, _defW, _defH;
+    private static readonly List<int> _defRects = new();
+
+    private static void StashReadback(int page, int x0, int y0, int w, int h, List<int> rects)
+    {
+        if (_defW > 0) _uncached += _defRects.Count;
+        _defPage = page; _defX0 = x0; _defY0 = y0; _defW = w; _defH = h;
+        _defRects.Clear(); _defRects.AddRange(rects);
+    }
+
+    /// <summary>Drop the stashed rects that no longer describe the pixels the stash would read -- one the pack
+    /// has killed, re-landed or moved to another page -- and count them uncached. Returns what is left.
+    /// <para>Without this a blob carries the NEW tenant's key over the OLD tenant's pixels, which the next
+    /// session adopts as a bake: a permanently wrong-lit surface. <see cref="EvictFine"/> is the live path (it
+    /// Kills every rect of the page it re-opens, landed ones included, and re-opens its shelves), and it drops
+    /// the stash outright when the page IS the stash's; this is the invariant behind that, checked at the one
+    /// place that matters rather than at every future <see cref="Kill"/> site.</para></summary>
+    private static int StashValid()
+    {
+        for (int k = _defRects.Count - 1; k >= 0; k--)
+        {
+            int ri = _defRects[k];
+            if ((uint)ri < (uint)_rectN && _rects[ri].Page == _defPage && _rects[ri].State == RState.Landed) continue;
+            _defRects.RemoveAt(k); _uncached++;
+        }
+        return _defRects.Count;
+    }
+
+    /// <summary>Queue the stashed landing now the PBO is free, of the rects that still hold their place on the
+    /// page (<see cref="StashValid"/>).</summary>
+    private static void IssueStashed()
+    {
+        if (_defW == 0 || _fence != IntPtr.Zero || _uMap != null) return;
+        if (StashValid() == 0) { _defW = 0; return; }
+        AttachPair(_defPage);
+        QueueReadback(_defPage, _defX0, _defY0, _defW, _defH, _defRects);
+        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
+        if (_fence == IntPtr.Zero) _uncached += _defRects.Count;
+        _defW = 0; _defRects.Clear();
+    }
+
+    /// <summary>A fenced readback that has completed is mapped once and copied out over as many frames as its
+    /// slice budget takes, then sliced per rect and handed to the cache thread. Polled, never waited on.</summary>
     private static void CollectReadback()
     {
+        if (_uMap != null) { CopySlice(); return; }
         if (_fence == IntPtr.Zero) return;
         uint st = Gl.ClientWaitSync(_fence, 0, 0);
         if (st != Gl.ALREADY_SIGNALED && st != Gl.CONDITION_SATISFIED) return;
         Gl.DeleteSync(_fence); _fence = IntPtr.Zero;
         long total = (long)_uw * _uh * TexelBytes;
+        int b = -1;
+        for (int i = 0; i < ReadBufs && b < 0; i++) if (_cache.Busy[i] == 0) b = i;
+        if (b < 0) { _uncached += _pendingRead.Count; _pendingRead.Clear(); _uSnap = false; return; }
         byte* p = (byte*)Gl.MapNamedBufferRange(_pbo, IntPtr.Zero, (IntPtr)total, Gl.MAP_READ_BIT);
-        if (p != null)
+        if (p == null) { _uncached += _pendingRead.Count; _pendingRead.Clear(); _uSnap = false; return; }
+        // uninitialized and pinned: the zeroing of a 192 MiB array is pure cost when every byte is about to be
+        // overwritten, and a buffer this size handed to the cache thread has no business being relocatable
+        // uninitialized: zeroing an array whose every byte is about to be overwritten is pure cost. NOT pinned
+        // -- these grow to 192 MiB and the pinned heap is never compacted, so four of them growing in place
+        // would leave holes there for the session.
+        if (_readBufs[b] == null || _readBufs[b]!.Length < total)
+            _readBufs[b] = GC.AllocateUninitializedArray<byte>((int)Math.Max(total, 1 << 20));
+        _uMap = p; _uDone = 0; _uBuf = b;
+        CopySlice();
+    }
+
+    /// <summary>Pure: how far a sliced copy stands after one slice -- never past the total.</summary>
+    private static long SliceEnd(long done, long total, long per) => Math.Min(done + per, total);
+
+    /// <summary>One frame's share of a copy: the budget, whatever the union's size. Under the hold the backdrop
+    /// hides a far bigger one.</summary>
+    private static long CopyPer(bool hold) => hold ? HoldReadCopyPerFrame : ReadCopyPerFrame;
+
+    /// <summary>One frame's slice of the open map's copy; the last one unmaps and files the blob.</summary>
+    private static void CopySlice()
+    {
+        long total = (long)_uw * _uh * TexelBytes;
+        long end = SliceEnd(_uDone, total, CopyPer(Hold));
+        fixed (byte* d = _readBufs[_uBuf]) Buffer.MemoryCopy(_uMap + _uDone, d + _uDone, total - _uDone, end - _uDone);
+        _uDone = end;
+        if (_uDone < total) return;
+        if (Gl.UnmapNamedBuffer != null) Gl.UnmapNamedBuffer(_pbo);
+        _uMap = null;
+        var table = new BakeCache.Entry[_pendingRead.Count];   // cold: one per page bake
+        for (int k = 0; k < _pendingRead.Count; k++)
         {
-            int b = -1;
-            for (int i = 0; i < ReadBufs && b < 0; i++) if (_cache.Busy[i] == 0) b = i;
-            if (b < 0) { _uncached += _pendingRead.Count; Gl.UnmapNamedBuffer(_pbo); }
-            else
-            {
-                if (_readBufs[b] == null || _readBufs[b]!.Length < total) _readBufs[b] = new byte[Math.Max(total, 1 << 20)];
-                fixed (byte* d = _readBufs[b]) Buffer.MemoryCopy(p, d, total, total);
-                Gl.UnmapNamedBuffer(_pbo);
-                var table = new BakeCache.Entry[_pendingRead.Count];   // cold: one per page bake
-                for (int k = 0; k < _pendingRead.Count; k++)
-                {
-                    ref Rect r = ref _rects[_pendingRead[k]];
-                    table[k] = new BakeCache.Entry { Key = r.Key, X = r.X - _ux0, Y = r.Y - _uy0, W = r.W, H = r.H };
-                    r.Unioned = true;
-                }
-                AreaUnionBaked(_cache.Save(_readBufs[b]!, b, _uPage, _ux0, _uy0, _uw, _uh, table), _uPage, _ux0, _uy0, _uw, _uh);
-            }
+            ref Rect r = ref _rects[_pendingRead[k]];
+            table[k] = new BakeCache.Entry { Key = r.Key, X = r.X - _ux0, Y = r.Y - _uy0, W = r.W, H = r.H };
+            r.Unioned = true;
         }
+        AreaUnionBaked(_cache.Save(_readBufs[_uBuf]!, _uBuf, _uPage, _ux0, _uy0, _uw, _uh, table), _uPage, _ux0, _uy0, _uw, _uh);
         _pendingRead.Clear(); _uSnap = false;
+    }
+
+    /// <summary>The map and the stash go with the pages: a copy in flight and a landing waiting behind it are
+    /// both abandoned, and their rects go uncached.</summary>
+    private static void AbortReadback(bool gl)
+    {
+        if (_defW > 0) { _uncached += _defRects.Count; _defW = 0; _defRects.Clear(); }
+        if (_uMap == null) return;
+        if (gl && Gl.UnmapNamedBuffer != null) Gl.UnmapNamedBuffer(_pbo);
+        _uMap = null; _uDone = 0; _uncached += _pendingRead.Count;
     }
 
     /// <summary>Once per area: every term of the key, so two sessions' logs say which one moved when the
@@ -1097,6 +1247,9 @@ internal static unsafe partial class LightmapBake
     private const long AdoptBytesPerFrame = 8L << 20, HoldAdoptBytesPerFrame = 32L << 20;
     private static void Adopt()
     {
+        // CX-102: a hit uploads into the resident pages, which a migration is retiring -- the answers stay on
+        // the cache queue for the window (TryTake is not called, so nothing is consumed)
+        if (HeldByMigration()) return;
         long uploaded = 0, budget = Hold ? HoldAdoptBytesPerFrame : AdoptBytesPerFrame;
         long t0 = Held ? Stopwatch.GetTimestamp() : 0;
         int adopted = 0;
@@ -1121,62 +1274,6 @@ internal static unsafe partial class LightmapBake
         }
         if (strided) Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, 0);
         if (t0 != 0) StampAdopt(Stopwatch.GetTimestamp() - t0, adopted, uploaded, uploaded >= budget);
-    }
-
-    /// <summary>Grow the resident planes by one layer: a new array, the old layers copied across, the old
-    /// names deleted. Cold: at most <see cref="MaxPages"/> times a session.</summary>
-    private static bool AddLayer() => Grow(_layers + 1);
-
-    private static bool Grow(int n)
-    {
-        uint a = PageArray(Gl.R11F_G11F_B10F, n), b = PageArray(Gl.RGBA8, n), c = PageArray(Gl.RGBA8, n);
-        if (a == 0 || b == 0 || c == 0)
-        {
-            if (a != 0) Gl.DeleteTextures(1, &a);
-            if (b != 0) Gl.DeleteTextures(1, &b);
-            if (c != 0) Gl.DeleteTextures(1, &c);
-            return _down.Refuse(_log, $"page {n} could not be allocated (out of video memory?)", "the rest of the area stays unbaked");
-        }
-        if (_layers > 0 && Gl.CopyImageSubData != null)
-        {
-            Gl.CopyImageSubData(_texA, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, a, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, PageSize, PageSize, _layers);
-            Gl.CopyImageSubData(_texB, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, b, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, PageSize, PageSize, _layers);
-            Gl.CopyImageSubData(_texC, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, c, Gl.TEXTURE_2D_ARRAY, 0, 0, 0, 0, PageSize, PageSize, _layers);
-        }
-        if (_texA != 0) { uint t = _texA; Gl.DeleteTextures(1, &t); }
-        if (_texB != 0) { uint t = _texB; Gl.DeleteTextures(1, &t); }
-        if (_texC != 0) { uint t = _texC; Gl.DeleteTextures(1, &t); }
-        int from = _layers;
-        _texA = a; _texB = b; _texC = c; _layers = n;
-        // a fresh layer is black + straight-up + no mover share: an unbaked texel that somehow gets sampled reads as no light
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        uint* bufs = stackalloc uint[3] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1, Gl.COLOR_ATTACHMENT2 };
-        Gl.DrawBuffers(3, bufs);
-        float* none = stackalloc float[4] { 0f, 0f, 0f, 0f };
-        float* black = stackalloc float[4] { 0f, 0f, 0f, 1f };
-        float* up = stackalloc float[4] { 0.5f, 0.5f, 1f, 1f };
-        for (int l = from; l < n; l++)
-        {
-            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT0, _texA, 0, l);
-            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT1, _texB, 0, l);
-            Gl.FramebufferTextureLayer(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, _texC, 0, l);
-            Gl.ClearBufferfv(Gl.COLOR, 0, black); Gl.ClearBufferfv(Gl.COLOR, 1, up); Gl.ClearBufferfv(Gl.COLOR, 2, none);
-        }
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        _log?.Info($"LightmapBake: pages {from} -> {n}/{_cap} resident ({n * PageMiB} MiB)");
-        return true;
-    }
-
-    /// <summary>Free the pages: after a <see cref="Repack"/> every texel on them is dead (each rect lands again),
-    /// so keeping them only cost the card the memory and <see cref="Grow"/> the copy of that dead content.
-    /// The next Pack allocates what the area needs in one go.</summary>
-    private static void DropPages()
-    {
-        if (_texA != 0) { uint t = _texA; Gl.DeleteTextures(1, &t); }
-        if (_texB != 0) { uint t = _texB; Gl.DeleteTextures(1, &t); }
-        if (_texC != 0) { uint t = _texC; Gl.DeleteTextures(1, &t); }
-        if (_layers > 0) _log?.Info($"LightmapBake: {_layers} pages freed ({_layers * PageMiB} MiB)");
-        _texA = _texB = _texC = 0; _layers = 0;
     }
 
     private static uint PageArray(uint format, int layers)
@@ -1234,7 +1331,9 @@ internal static unsafe partial class LightmapBake
         if (_down.Failed) return false;
         if (_built) return true;
         _built = true;
-        if (Gl.DrawElementsBaseVertex == null || Gl.DrawBuffers == null
+        // CopyImageSubData is what a page migration moves the live layers with (GL 4.3 core). Without it a
+        // second page used to land the first one's texels black, silently -- CX-45: refuse instead.
+        if (Gl.DrawElementsBaseVertex == null || Gl.DrawBuffers == null || Gl.CopyImageSubData == null
             || Gl.ClearBufferfv == null || Gl.FramebufferTextureLayer == null || Gl.GenFramebuffers == null || Gl.ReadPixels == null)
             return _down.Fail(_log, "a GL entry point the bake needs is missing", "every surface keeps the real-time loop");
         int units = 0; Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &units);
@@ -1287,7 +1386,9 @@ internal static unsafe partial class LightmapBake
     /// <summary>The context is gone: forget every name; the next frame rebuilds and re-packs.</summary>
     internal static void ContextLost()
     {
+        GrowAbort(gl: false);   // the migration's own names are void too
         _texA = _texB = _texC = _scrA = _scrB = _scrC = _scrZ = _fbo = _cube = _pbo = _progBake = _progFinish = _bufChart = 0;
+        AbortReadback(gl: false);   // the PBO's name is void, so the mapping is too -- but its rects still count
         _layers = 0; _pboBytes = 0; _built = false; _bufFilled = false; _fence = IntPtr.Zero; _qBake = default;
         _down.Forget();
         Revoke();
@@ -1303,7 +1404,7 @@ internal static unsafe partial class LightmapBake
     /// <summary>One clause of the Alloy period line.</summary>
     internal static string Stats(int frames)
     {
-        if (!Enabled || (_rectN == 0 && CensusStatic == 0)) return "";
+        if (!Enabled || (_rectN == 0 && CensusStatic == 0)) { PhaseReset(); return ""; }
         frames = Math.Max(frames, 1);
         string s = $"lightmap pages {_layers}/{_cap}, bakes {_landed} landed ({_landedHits} cached) / {_pending} pending / {_refused + _pastCap} refused"
                    + (_pastCap > 0 ? $" ({_pastCap} past the cap)" : "") + $", static {CensusStatic} of {CensusStatic + CensusDynamic} lights skipped on baked surfaces"
@@ -1320,6 +1421,7 @@ internal static unsafe partial class LightmapBake
                    + (_areaKey != 0 ? $", area cache {(_areaAdopted ? "hit" : "miss")} ({_areaAdoptedRects} adopted, {_areaNew} new)" : "")
                    + (_areaKeyless + _areaLate + _areaDrift > 0 ? $", area cache refused {_areaKeyless} keyless / {_areaLate} late / {_areaDrift} drifted" : "")
                    + (_areaSnapped + _areaSnapLost + _areaSnapCapped > 0 ? $", area plan pages read back whole {_areaSnapped} ({_areaSnapLost} lost to the edge, {_areaSnapCapped} plan(s) past the union cap)" : "")
+                   + PhaseStats()
                    + (_clsFull > 0 ? $", {_clsFull} lights past the class table" : "")
                    + (_cslEdges > 0 ? $", {_cslEdges} ComputeStaticLighting edges" : "");
         _drewBaked = _drewNoRect = _drewRefused = _drewPending = _drewLandedUnbaked = 0;
@@ -1417,6 +1519,64 @@ internal static unsafe partial class LightmapBake
         Pick tieRev = PickOf(Vector3.Zero, 0.1f);
         check.Expect(tie.L0 == 1 && tieRev.L0 == 0, "an equal-weight tie breaks on position, not on the set's order");
         _setPosR = savedP; _setCol = savedC; _setN = savedN;
+        // CX-102: the frame accounting. Every phase has a name, and the worst-frame clause names the phase
+        // that dominated -- a mis-sized table would name the wrong one, or throw inside the period line.
+        check.Expect(PhName.Length == (int)Ph.Count, "the phase names drifted from the Ph enum, so the worst-frame clause names the wrong phase");
+        check.Expect(Dominant([1L, 5L, 3L]) == 1 && Dominant([5L, 1L, 3L]) == 0 && Dominant([0L, 0L, 0L]) == 0,
+          "the worst frame's phase is not its largest slice");
+        check.Expect(Lightmap.GrowSlice.Default == 1,
+          "lightmap.growslice no longer defaults to a sliced migration -- a page more would freeze the frame again");
+        // CX-102: Pending is NOT Refused (reading it as one killed the area-plan adopt), and a migration holds
+        // every writer of the resident pages -- a write to a layer already copied is lost at the publish.
+        int gLayers = _layers, gTo = _growTo, gAt = _growHeldAt; bool gBusy = _growBusy;
+        _layers = 4; _growTo = 0;
+        check.Expect(Grow(3) == Grew.Resident && Grow(4) == Grew.Resident, "a growth to pages already resident is a no-op, not a refusal");
+        _growTo = 7; _growHeldAt = -1;
+        check.Expect(Grow(9) == Grew.Pending, "a migration in flight answers Pending, which no caller may read as a refusal");
+        check.Expect(Migrating && HeldByMigration() && HeldByMigration() && _growHeld == 1, "a migration holds the page writers, counted once a frame");
+        _layers = gLayers; _growTo = gTo; _growBusy = gBusy; _growHeldAt = gAt; PhaseReset();
+        check.Expect(!Migrating && !HeldByMigration(), "with no migration in flight nothing is held");
+        // CX-102: the whole-page readback copies out of the open map in slices and stops at the total
+        check.Expect(SliceEnd(0, 100, 30) == 30 && SliceEnd(90, 100, 30) == 100 && SliceEnd(100, 100, 30) == 100 && SliceEnd(0, 10, 30) == 10,
+          "a readback slice runs past the bytes it has");
+        // a host read of write-combined memory runs at an order of 1 MiB/ms, so the slice in MiB is its
+        // milliseconds: keep it inside the floor the worst-frame clause counts against (the hold's is exempt --
+        // the loading backdrop is what hides it)
+        check.Expect(CopyPer(false) <= (long)WorstFloorMs << 20, "the readback's slice is big enough to BE the frame it is sliced to avoid");
+        // CX-102: a stash and an open map both count as a readback in flight -- AreaSnapStep's cursor consumes a
+        // page the moment it thinks one is idle, and consuming it drops that page's union for good
+        int dw = _defW, dh = _defH, dx = _defX0, dy = _defY0, dp = _defPage, un = _uncached;
+        var defWas = _defRects.ToArray();
+        _defW = 0; _defRects.Clear();
+        check.Expect(_uMap == null && _fence == IntPtr.Zero && ReadbackIdle, "nothing in flight is idle");
+        var two = new List<int> { 0, 1 };
+        StashReadback(3, 0, 0, 8, 8, two);
+        check.Expect(!ReadbackIdle, "a landing stashed behind a draining copy still counts as a readback in flight");
+        StashReadback(4, 0, 0, 8, 8, two);
+        check.Expect(_uncached == un + 2 && _defPage == 4, "a stash replaced inside one window counts the rects it dropped and keeps the newer landing");
+        AbortReadback(gl: false);
+        check.Expect(ReadbackIdle && _uncached == un + 4, "abandoning a readback drops the stash and counts its rects");
+        // CX-102: and the pack may reuse a stashed rect's entry or its page space between the stash and the
+        // issue (EvictFine Kills landed rects and re-opens the page), which would put the new tenant's key over
+        // the old tenant's pixels in the blob the NEXT session adopts
+        if (_rectN == 0)
+        {
+            int un2 = _uncached;
+            int r0 = NewRect(), r1 = NewRect();
+            _rects[r0] = new Rect { Page = 2, State = RState.Landed };
+            _rects[r1] = new Rect { Page = 2, State = RState.Landed };
+            _defPage = 2; _defW = 8; _defH = 8; _defRects.Clear(); _defRects.Add(r0); _defRects.Add(r1);
+            check.Expect(StashValid() == 2 && _uncached == un2, "a stash whose rects all still hold their page is issued whole");
+            _free.Clear(); _free.Push(r1);
+            check.Expect(NewRect() != r1, "a rect entry a stashed landing still names was recycled under it");
+            _rects[r1].State = RState.PastCap;
+            check.Expect(StashValid() == 1 && _uncached == un2 + 1, "a stashed rect the pack killed stays in the blob");
+            _rects[r0].Page = 3;
+            check.Expect(StashValid() == 0 && _uncached == un2 + 2, "a stashed rect that moved page stays in the blob");
+            _rectN = 0; _free.Clear();
+        }
+        _defW = dw; _defH = dh; _defX0 = dx; _defY0 = dy; _defPage = dp; _defRects.Clear(); _defRects.AddRange(defWas); _uncached = un;
+        check.Expect(AreaUploadsIn, "with no area plan adopted the pack must not be gated on one");
         log.Info(check.Ok ? "LightmapBake.SelfCheck: passed" : "LightmapBake.SelfCheck: FAILED -- see above");
         return check.Ok;
     }

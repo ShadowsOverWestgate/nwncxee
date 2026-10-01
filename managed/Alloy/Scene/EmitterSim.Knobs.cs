@@ -21,6 +21,9 @@ internal static unsafe partial class EmitterSim
         Bouncing = G.Toggle("bounce", "Bouncing particles", true, Tier.Advanced,
                             help: "Sparks and debris bounce off the ground instead of falling through it. "
                                 + "Off, they pass through -- which is the A/B for CX's own collision set.");
+        G.Button("dump", "Dump nearby emitters", () => _dump = true, Tier.ChatOnly,
+                 help: "Logs every emitter within 30 m of the camera on the next frame: why it is empty, its "
+                     + "birthrate, and the birthrate its gob's running animations key for it.");
     }
 
     /// <summary>What the panel row and <c>/knobs</c> say about this group's live state -- including the two

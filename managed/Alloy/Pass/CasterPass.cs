@@ -203,8 +203,11 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// page bakes.</summary>
     internal static readonly float[] CubeDynPage = new float[MaxCubes];
     /// <summary>Spheres per slot in <see cref="CubeDynSphere"/>. One union sphere round every mover in a
-    /// 36u reach covered the whole plaza, so the hot path's ray test rejected nothing.</summary>
-    internal const int DynSpheres = 4;
+    /// 36u reach covered the whole plaza, so the hot path's ray test rejected nothing -- and so did four, once a
+    /// busy plaza put twenty-odd movers under every lamp: a folded box spans the square between them, and every
+    /// baked fragment under the lamp paid a live mover tap (`/lightmap movers 0` read 2,2 ms of the opaque pass).
+    /// A miss is a few ALU ops on a broadcast read; a false hit is the point-light body and a cube tap.</summary>
+    internal const int DynSpheres = 16;
     /// <summary>Per slot: <see cref="DynSpheres"/> spheres (xyz, r; r &lt; 0 = unused) round the dynamic movers
     /// in the light's reach -- the only thing its page can shadow. The lit stage skips the hot path wherever the
     /// light-to-fragment ray misses all of them. Sphere 0 = the light's reach while it roams (the page then
@@ -529,6 +532,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
     private static float _mvMatrixR, _mvMatrixRMax;
     private static int _mvMatrixRMaxSlot = -1;
     private static long _degenSum;
+    /// <summary>Mover samples this period with a non-finite sphere, refused before the fold (one would poison the box
+    /// it joined and drop that light's hot answer with it).</summary>
+    private static long _nanMovers;
     /// <summary>#302: casters REFUSED this frame because no record has been built for the current tenant of
     /// their slot. They cast nothing this frame and re-appear the next; the vanish sweep covers the views
     /// they were standing in. High and steady after an area settles means the colour build is skipping slots
@@ -776,6 +782,23 @@ public sealed unsafe partial class CasterPass : IExtenderService
     private static int _tableGen = -1;
     private static int _frames;
     private static long _mdiCalls;
+    /// <summary>S3-4(c): CPU ticks the bake's own 4.6 context bracket costs -- both switches, each a fence +
+    /// <c>glFlush</c> + <c>MakeCurrent</c> + a server-side wait. Printed on the period line as
+    /// <c>own 4.6 bracket N.NNN ms/frame</c>.
+    /// <para><b>Why the bake has a bracket of its own, and not the colour pass's.</b> The windows on BOTH
+    /// sides of it are the ENGINE's context by requirement. Before: <c>RspShim</c>'s
+    /// <see cref="AlloyEnvMap.Tick"/> may BUILD an engine texture, and building one inside Alloy's 4.6
+    /// bracket uploads it into the wrong context. After: <c>AlloyRenderer.OnFrameAnchor</c> harvests each sky
+    /// part's VAO through <c>VdoSlot</c> -- a read of the engine's own vertex-array state -- and then runs
+    /// <c>SampleEngineSets</c>, both commented engine-context-only. So the bake cannot simply extend into the
+    /// colour bracket; folding the two means MOVING the bake past that preamble to just inside the colour
+    /// <c>Enter</c>, which is the <see cref="CasterPass"/> refactor ADR 0017 / the portability audit's A1
+    /// names and leaves unmeasured -- and which also reshuffles <c>ShadowPose</c>/<c>PosedByShadow</c>,
+    /// <c>DropDeadHandles</c> against the colour drain, the GPU query and the zone nesting.</para>
+    /// <para>This counter is the gate on that refactor, so the decision is a number rather than an argument:
+    /// under ~0,05 ms/frame the frame's shape is not worth changing, above it the ticket writes itself.
+    /// <c>[gl46] N brackets</c> remains the count of them.</para></summary>
+    private static long _ctxTicks, _ctxFrames;
     private static long _cubeLightsSum;
 
     /// <summary>Views rendered on the last frame -- since #241 that is the views the re-bake predicate found
@@ -981,7 +1004,11 @@ public sealed unsafe partial class CasterPass : IExtenderService
 
         // An Enter failure must not leave the flag promising an upload that never happened -- the colour
         // build would then skip BOTH the solve and the upload and skin against last frame's GPU block.
-        if (!GlContextService.Enter()) { AlloyRenderer.PosedByShadow = false; return; }
+        // own bracket: engine-context work on both sides (EnvMap build before, sky VAO harvest after) -- see _ctxTicks
+        long tCtx = System.Diagnostics.Stopwatch.GetTimestamp();
+        bool entered = GlContextService.Enter();
+        _ctxTicks += System.Diagnostics.Stopwatch.GetTimestamp() - tCtx;
+        if (!entered) { AlloyRenderer.PosedByShadow = false; return; }
         AlloyRenderer.ShadowPoseUpload();   // the GL half of ShadowPose above: this frame's bones, uploaded
         OwnedTextures.DropDeadHandles();        // the colour drain is AFTER this bracket; textures die on area load before both
         Issue.UploadHandlesForBake();   // a handle dropped since the last colour upload must not be sampled below
@@ -1057,7 +1084,10 @@ public sealed unsafe partial class CasterPass : IExtenderService
         LastShadowMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000f / System.Diagnostics.Stopwatch.Frequency;
         _viewSum += LastViews;
         Gl.Disable(Gl.DEPTH_CLAMP);
+        tCtx = System.Diagnostics.Stopwatch.GetTimestamp();
         GlContextService.Leave();
+        _ctxTicks += System.Diagnostics.Stopwatch.GetTimestamp() - tCtx;
+        _ctxFrames++;
     }
 
     /// <summary>The sun cascades: one concentric fit per layer around the shadow focus, every one of them
@@ -1404,6 +1434,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 for (int q = 0; q < _dMoverCount; q++)
                 {
                     int m = _dMoverIdx[q];
+                    if (!float.IsFinite(_liveCx[m] + _liveCy[m] + _liveCz[m] + _liveR[m])) { _nanMovers++; continue; }
                     // a still scene's 20 matrix movers a frame were flames and swaying lanterns (run 9): each
                     // claimed a page under its light and turned that light HOT on every baked fragment in reach
                     if (!_liveCreature[m] && _liveR[m] < Shadows.DynMin.V) continue;
@@ -1689,7 +1720,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
                    $"vertex-dirty {(float)_mvVertex / _frames:F1}, appeared {(float)_mvAppear / _frames:F1}, " +
                    $"{(float)_ghostSum / _frames:F1} vanished, " +
                    $"{(float)_noRecordSum / _frames:F1} refused for want of a record" +
-                   (_degenSum > 0 ? $", {(float)_degenSum / _frames:F1} DEGENERATE-admitted movers defeating the predicate" : "") + ")" +
+                   (_degenSum > 0 ? $", {(float)_degenSum / _frames:F1} DEGENERATE-admitted movers defeating the predicate" : "") +
+                   (_nanMovers > 0 ? $", {_nanMovers} NON-FINITE mover sphere(s) kept out of the hot path (must be 0)" : "") + ")" +
                    // ...of how many live casters. Movers are a SUBSET of the live list, never the whole of
                    // it: a still caster still casts. The two numbers meeting is the #241 regression.
                    $" out of {(float)_liveSum / _frames:F1} live " +
@@ -1710,7 +1742,16 @@ public sealed unsafe partial class CasterPass : IExtenderService
                     ? $" -- {(float)CasterGather.Views / _frames:F1} dispatches/frame over " +
                       $"{_gDrawN} staged draws in {_gGroups} batches ({MaskedBatches()} masked) " +
                       $"({CasterGather.UploadsSkipped}/{CasterGather.UploadsSkipped + CasterGather.Uploads} " +
-                      "frame stagings matched the persistent source, nothing uploaded)"
+                      "frame stagings matched the persistent source, nothing uploaded)" +
+                      // S8: what a dynamic view's dispatch actually covered, against the staging it used to walk.
+                      (_dSrcFrames > 0
+                       ? $", dynamic source {(float)_dSrcDraws / _dSrcFrames:F0} of {_gDrawN} draws on " +
+                         $"{CasterGather.DynDispatches} of {CasterGather.Views + CasterGather.LayerDispatches} dispatches" +
+                         (_dSrcOver > 0 ? $", {_dSrcOver} frames over the {MaxDynSrc} cap (full source)" : "") +
+                         (_dSrcHalf > 0 ? $", {_dSrcHalf} frames the movers were over half the staging" : "") +
+                         $", audit {_dSrcAudits} frames {_dSrcMiss} miss (must be 0)" +
+                         (_dSrcExtra > 0 ? $", {_dSrcExtra} still casters copied into the moving set" : "")
+                       : Shadows.DynSrc.V ? ", dynamic source unused this period" : ", dynamic source OFF (/shadow dynsrc 1)")
                     : "") +
                    // #303: the culled-vs-drawn figure -- one view per frame, latently copied and read back
                    // frames later, so it costs no stall on the draw path.
@@ -1720,10 +1761,26 @@ public sealed unsafe partial class CasterPass : IExtenderService
                       $"{(float)CasterGather.SampledRx / CasterGather.Samples:F0} receiver-culled " +
                       $"(latent sample; {_rxEpochs} camera epochs forced the dyn views)"
                     : "") +
+                   // S8: the dynamic source's samples on their own -- averaging ~438 staged draws with ~37k
+                   // would describe neither population.
+                   (CasterGather.SamplesDyn > 0
+                    ? $", on the dynamic source kept {(float)CasterGather.SampledKeptDyn / CasterGather.SamplesDyn:F0}/" +
+                      $"{(float)CasterGather.SampledStagedDyn / CasterGather.SamplesDyn:F0} staged draws, " +
+                      $"{(float)CasterGather.SampledRxDyn / CasterGather.SamplesDyn:F0} receiver-culled"
+                    : "") +
+                   // S3-4(c): the bake's own 4.6 bracket, both switches, inside the ms-cpu figure beside it.
+                   (_ctxFrames > 0
+                    ? $", own 4.6 bracket {(double)_ctxTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency / _ctxFrames:F3} ms/frame " +
+                      "(2 x fence+flush+MakeCurrent; it is separate because the sky VAO harvest either side of it is engine-context)"
+                    : "") +
                    $", {(float)_viewSum / _frames:F1} views baked per frame ({LastShadowMs:F2} ms cpu last" +
                    (_qShadow.Measured ? $", {_qShadow.Avg / 1e6:F3} ms GPU avg" : "") + ")" +
-                   $", {(float)_mdiCalls / _frames:F1} multidraw-indirect calls/frame, " +
-                   $"{_liveCreatures} posed casters live" +
+                   $", {(float)_mdiCalls / _frames:F1} multidraw-indirect calls/frame " +
+                   $"({(float)_mdiSkipped / _frames:F1} skipped: the batch holds nothing the view's set admits)" +
+                   // SL1: the per-frame staged-word rewrite walks the refresh's visited set, and one frame in
+                   // StageAuditEvery re-reads every staged draw to prove it missed nothing.
+                   $", staged-word audit {_gAudits} of {_frames} frames, {_gStaleWords} stale (must be 0)" +
+                   $", {_liveCreatures} posed casters live" +
                    // The cutout casters: env-mapped materials the engine calls opaque without ever reading
                    // their diffuse alpha, so their depth draw runs the same 0.2 discard the colour pass does.
                    // Zero here with foliage on screen means they are all falling out at one of the three
@@ -1735,7 +1792,10 @@ public sealed unsafe partial class CasterPass : IExtenderService
                    (_maskNoTex + _maskNoProg == 0 ? ""
                     : $" ({_maskNoTex} masked casters have no diffuse this frame, " +
                       $"{_maskNoProg} no cutout program -- each casts nothing)"));
-        _frames = 0; _mdiCalls = 0;
+        _frames = 0; _mdiCalls = 0; _mdiSkipped = 0; _gAudits = 0; _gStaleWords = 0;
+        _dSrcFrames = 0; _dSrcDraws = 0; _dSrcOver = 0; _dSrcAudits = 0; _dSrcMiss = 0; _dSrcHalf = 0; _dSrcExtra = 0;
+        _ctxTicks = 0; _ctxFrames = 0;
+        CasterGather.DynDispatches = 0;
         _cubeLightsSum = 0; _viewSum = 0;
         _liveSum = 0; _visitSum = 0; _touchedSum = 0; _qShadow.Reset();
         _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _cubeOffSlots = 0; _cubeHeldSlots = 0; _cubeRoamSlots = 0; _cubeTurnovers = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0; _cubeDynBakedFaces = 0;
@@ -1743,9 +1803,11 @@ public sealed unsafe partial class CasterPass : IExtenderService
         Array.Clear(_sunStaticL); _sunDynBakedViews = 0; _sunDynSkipped = 0; _cubeDynSkipped = 0;
         CasterGather.LayerDispatches = 0; CasterGather.LayerViews = 0;
         Array.Clear(_bakeWhy);
-        _mvMatrix = 0; _mvMatrixR = 0; _mvMatrixRMax = 0; _mvMatrixRMaxSlot = -1; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _noRecordSum = 0;
+        _mvMatrix = 0; _mvMatrixR = 0; _mvMatrixRMax = 0; _mvMatrixRMaxSlot = -1; _mvDangly = 0; _mvVertex = 0; _mvBone = 0; _mvAppear = 0; _degenSum = 0; _nanMovers = 0; _noRecordSum = 0;
         _submitMasked = 0; _maskNoTex = 0; _maskNoProg = 0; _collects = 0;
         CasterGather.Views = 0; CasterGather.Batches = 0;
+        CasterGather.SampledKeptDyn = 0; CasterGather.SampledStagedDyn = 0;
+        CasterGather.SamplesDyn = 0; CasterGather.SampledRxDyn = 0;
         CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0; CasterGather.SampledRx = 0; _rxEpochs = 0;
         CasterGather.UploadsSkipped = 0; CasterGather.Uploads = 0;
     }
@@ -1776,18 +1838,22 @@ public sealed unsafe partial class CasterPass : IExtenderService
     }
 
     /// <summary>Fold one mover's box into at most <see cref="DynSpheres"/> AABBs (min xyz, max xyz): a new box
-    /// while there is room, else the one whose centre is nearest. Returns the box count.</summary>
+    /// while there is room, else the one whose squared extent grows least (which favours small boxes).
+    /// Returns the box count.</summary>
     private static int AddMoverBox(float* b, int n, float x, float y, float z, float r)
     {
         int at = n;
         if (n == DynSpheres)
         {
+            at = 0;   // a NaN mover compares false everywhere: without this it would write one box past the array
             float best = float.MaxValue;
             for (int i = 0; i < n; i++)
             {
                 float* e = b + i * 6;
-                float dx = (e[0] + e[3]) * 0.5f - x, dy = (e[1] + e[4]) * 0.5f - y, dz = (e[2] + e[5]) * 0.5f - z;
-                float d = dx * dx + dy * dy + dz * dz;
+                float ux = MathF.Max(e[3], x + r) - MathF.Min(e[0], x - r), uy = MathF.Max(e[4], y + r) - MathF.Min(e[1], y - r),
+                      uz = MathF.Max(e[5], z + r) - MathF.Min(e[2], z - r);
+                float ex = e[3] - e[0], ey = e[4] - e[1], ez = e[5] - e[2];
+                float d = ux * ux + uy * uy + uz * uz - (ex * ex + ey * ey + ez * ez);
                 if (d < best) { best = d; at = i; }
             }
             float* t = b + at * 6;
@@ -2094,15 +2160,16 @@ public sealed unsafe partial class CasterPass : IExtenderService
         int k2 = 0;
         while (true)
         {
-            int vn = 0;
+            int vn = 0, sets = 0;
             fixed (float* vs = _viewStage)
                 while (k2 < n && vn < chunk)
-                { if (_qTex[k2] == tex) StageView(vs, vn++, k2); k2++; }
+                { if (_qTex[k2] == tex) { sets |= 1 << _qSet[k2]; StageView(vs, vn++, k2); } k2++; }
             if (vn == 0) break;
             bool ok;
-            fixed (float* vs = _viewStage) ok = CasterGather.DispatchLayer(vs, vn);
+            fixed (float* vs = _viewStage)
+                ok = CasterGather.DispatchLayer(vs, vn, sets == 1 << CasterGather.SetDynamic);
             if (!ok) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0); return false; }
-            DrawLayered(vn);
+            DrawLayered(vn, sets);
             CasterGather.End();
         }
         Gl.BindVertexArray(0);
@@ -2126,13 +2193,16 @@ public sealed unsafe partial class CasterPass : IExtenderService
 
     /// <summary>The layered pass's batch loop: <see cref="GatherSubmit"/>'s state walk minus the per-view
     /// uniforms, one indirect-count draw per batch for ALL the chunk's views.</summary>
-    private static void DrawLayered(int vn)
+    /// <param name="sets">The union of the chunk's view SETS, a bit per <c>CasterGather.Set*</c>: a batch none
+    /// of them can admit a caster from is not issued at all (SL2).</param>
+    private static void DrawLayered(int vn, int sets)
     {
         Gl.ActiveTexture(Gl.TEXTURE0);
         int boundVao = -1, boundMode = -1, boundTex = -1;
         float boundCut = -1f;
         for (int g = 0; g < _gGroups; g++)
         {
+            if (BatchIdle(g, sets)) { _mdiSkipped++; continue; }
             int cut0 = _gTex[g], mode = _gH[g] ? 2 : cut0 != 0 ? 1 : 0;
             if (mode != boundMode)
             {
@@ -2150,8 +2220,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
             if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
             CasterGather.DrawLayer(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g], vn);
+            _mdiCalls++;
         }
-        _mdiCalls += _gGroups;
     }
 
     /// <summary>A depth array sampled with hardware PCF: LINEAR + depth-compare IS the filter, one bilinear
@@ -2416,6 +2486,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
         for (int k = 0; k < _visitN; k++)
         {
             int i = _visitIdx[k], slot = _liveSlot[i];
+            // SL1: the visited set IS the set whose staged words can move -- both of them are written below
+            // and nowhere else on a standing list.
+            NoteStagedWord(i);
             if (!AlloyRenderer.CastOk(slot) || _liveGenOf[i] != AlloyRenderer.SlotEnrollGen(slot))
             {   // turned off since the collect: a ghost at its last sphere, and the entry stays, drawing nothing
                 if (!_liveOff[i]) { _liveOff[i] = true; Ghost(_liveCx[i], _liveCy[i], _liveCz[i], _liveR[i]); }
@@ -2624,6 +2697,150 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// carries one value -- the same shape the colour path's <c>uAlphaCut</c> has.</summary>
     private static readonly float[] _gCut = new float[MaxCasters];
     private static int _gDrawN, _gGroups, _gCreatures;
+    /// <summary>SL1: per LIVE entry, its slot in the standing staging, or -1 when the staging does not hold it
+    /// (no VAO, a blended caster the mask stage cannot take, <c>/shadow mask -1</c>). The reverse of
+    /// <see cref="_gLive"/>, which is what lets the per-frame word rewrite visit the CHANGED entries instead of
+    /// all 37k staged ones.</summary>
+    private static readonly int[] _gAt = new int[MaxCasters];
+    /// <summary>SL1: live entries whose two per-frame staged words may differ from the staging. Fed by the
+    /// refresh's visited set -- the only walk that can move them -- and ACCUMULATED, because a frame with no
+    /// light to bake for refreshes without re-staging. Deduped by <see cref="_gDirtyMark"/>, so it cannot
+    /// exceed the live count and has no overflow case.</summary>
+    private static readonly int[] _gDirty = new int[MaxCasters];
+    private static readonly bool[] _gDirtyMark = new bool[MaxCasters];
+    private static int _gDirtyN;
+    /// <summary>SL1's audit: 1 frame in <see cref="StageAuditEvery"/> re-reads every staged entry and counts
+    /// the ones the changed-set walk left out of date (and fixes them). MUST read 0 -- a miss is a caster
+    /// baking at another frame's index count, or in the wrong half of the static/dynamic split.
+    /// <c>/shadow refreshall 1</c> marks every entry, which is the whole-list A/B over the same machinery.</summary>
+    private static long _gStaleWords, _gAudits;
+    private const int StageAuditEvery = 64;
+
+    /// <summary>SL1: note that this live entry's staged words may have moved. Hot (per visited caster per
+    /// frame), allocates nothing.</summary>
+    private static void NoteStagedWord(int i)
+    {
+        if (_gDirtyMark[i]) return;
+        _gDirtyMark[i] = true;
+        _gDirty[_gDirtyN++] = i;
+    }
+
+    /// <summary>SL1: the two staged words that can move without a re-staging -- the index count (an entry
+    /// turned off draws nothing) and the #305 set flag. True = they differed, i.e. the source buffer needs
+    /// re-uploading. One function so the changed-set walk and its audit cannot diverge.</summary>
+    private static bool WriteStagedWords(uint* src, int d, int i)
+    {
+        uint* r = src + (long)d * CasterGather.SrcUints;
+        uint cnt = _liveOff[i] ? 0u : (uint)_liveIdxCount[i], set = _liveDyn[i] ? 1u : 0u;
+        if (r[0] == cnt && r[CasterGather.SetFlagWord] == set) return false;
+        // The batch's dynamic population follows the set flag, and the batch is the word the staging wrote
+        // beside it -- no second lookup.
+        if (r[CasterGather.SetFlagWord] != set) _gDynN[(int)r[4]] += set != 0 ? 1 : -1;
+        r[0] = cnt; r[CasterGather.SetFlagWord] = set;
+        return true;
+    }
+
+    /// <summary>S8: the DYNAMIC source -- a verbatim copy of the staged records whose set flag is 1. Each
+    /// record carries its own batch id and output base, so a survivor out of this source lands in exactly the
+    /// region and the batch it would have landed in from the full one; the command buffer, the count buffer,
+    /// the batch table and the draw loop are all untouched. What changes is the thread count: a dynamic view
+    /// dispatched ~37k threads to find ~438 casters, and dynamic faces are most of the frame's views.</summary>
+    private const int MaxDynSrc = 8192;
+    private static readonly uint[] _dSrc = new uint[MaxDynSrc * CasterGather.SrcUints];
+    /// <summary>Frames the dynamic source stood, the draws it covered, frames past <see cref="MaxDynSrc"/>
+    /// (which fall back to the full source -- the same set by a longer road), and the audit's misses.</summary>
+    private static long _dSrcFrames, _dSrcDraws, _dSrcOver, _dSrcAudits, _dSrcMiss;
+    /// <summary>Frames the movers were more than half the staging, so the short source would have saved
+    /// nothing. Its own number: a steady value here means the split has stopped being worth having.</summary>
+    private static long _dSrcHalf;
+    /// <summary>Records the copy took that are NOT in the dynamic set -- a still caster in the moving layer.
+    /// The half of the audit that <c>want != dyn</c> cannot see, so it carries its own number.</summary>
+    private static long _dSrcExtra;
+
+    /// <summary>Build and publish this frame's dynamic source. Inside the bracket, after the staging stands:
+    /// the membership is <c>_dMoverIdx</c>, which Collect and Refresh rebuild whole every frame.</summary>
+    private static void StageDynamicSource()
+    {
+        if (!Shadows.DynSrc.V || _gN <= 0 || _dMoverCount <= 0) { CasterGather.StandDynamic(); return; }
+        fixed (uint* src = _gSrc)
+        fixed (uint* dst = _dSrc)
+        {
+            int m = CopyDynamicSource(src, dst);
+            if (m < 0) { _dSrcOver++; CasterGather.StandDynamic(); return; }
+            // Past half the staging there is nothing left to save, and the upload would cost more than the
+            // threads: the full source IS the dynamic source at that point.
+            if (m == 0 || m * 2 > _gN) { if (m > 0) _dSrcHalf++; CasterGather.StandDynamic(); return; }
+            if ((_frameSeq & (StageAuditEvery - 1)) == 0) AuditDynamicSource(src, dst, m);
+            if (CasterGather.DynamicSource(m, dst)) { _dSrcFrames++; _dSrcDraws += m; }
+        }
+    }
+
+    /// <summary>The copy itself, apart from the GL upload so the self-check can drive it: every staged mover's
+    /// record, verbatim. -1 = more movers than <see cref="MaxDynSrc"/> holds.</summary>
+    private static int CopyDynamicSource(uint* src, uint* dst)
+    {
+        const long RecBytes = CasterGather.SrcUints * sizeof(uint);
+        int m = 0;
+        for (int q = 0; q < _dMoverCount; q++)
+        {
+            int d = _gAt[_dMoverIdx[q]];
+            if (d < 0) continue;   // this mover is not in the staging at all (no VAO, blended, mask -1)
+            if (m >= MaxDynSrc) return -1;
+            Buffer.MemoryCopy(src + (long)d * CasterGather.SrcUints,
+                              dst + (long)m * CasterGather.SrcUints, RecBytes, RecBytes);
+            m++;
+        }
+        return m;
+    }
+
+    /// <summary>1 frame in <see cref="StageAuditEvery"/>: the dynamic source has to be EXACTLY the staged
+    /// draws that a dynamic view would DRAW -- a missing one is a mover with no shadow in its own page, an
+    /// extra one is a still caster baked into the moving layer. Counted, must read 0.
+    /// <para>"Would draw" and not "has the set flag": an entry that turns off keeps its flag. The refresh's
+    /// off branch continues before <c>Admit</c>, so a dynamic caster that stops casting (a tile mid-fade, a
+    /// re-tenanted slot) leaves <c>_dMoverIdx</c> -- and <c>_dPrevIdx</c> with it, so it is not revisited --
+    /// while its staged word 6 still reads 1. Its index count is 0 by then, so it draws nothing from either
+    /// source and the two sets agree on everything that matters; counting the flag alone made this benign
+    /// state read as a miss for as long as the entry stayed off.</para>
+    /// <para>Both directions are counted, and they are not the same test. <c>want != dyn</c> is the MISSING
+    /// one -- a mover the short source left out, which is a shadow absent from its own page. <c>extra</c> is
+    /// the other -- a copied record whose flag is 0, i.e. a still caster in the moving layer, which the
+    /// shader's own set filter would still reject but which means the copy walked the wrong set. Counting
+    /// "would draw" on both sides made the second unreachable, so it is asked for separately.</para></summary>
+    private static void AuditDynamicSource(uint* src, uint* dst, int m)
+    {
+        _dSrcAudits++;
+        int want = 0;
+        for (int d = 0; d < _gN; d++)
+        {
+            uint* r = src + (long)d * CasterGather.SrcUints;
+            if (r[CasterGather.SetFlagWord] != 0u && r[0] != 0u) want++;
+        }
+        int dyn = 0, extra = 0;
+        for (int k = 0; k < m; k++)
+        {
+            uint* r = dst + (long)k * CasterGather.SrcUints;
+            if (r[CasterGather.SetFlagWord] == 0u) { extra++; continue; }
+            if (r[0] != 0u) dyn++;
+        }
+        if (want != dyn) _dSrcMiss++;
+        if (extra > 0) { _dSrcExtra += extra; _dSrcMiss++; }
+    }
+
+    /// <summary>SL2/SL6: dynamic casters per batch. A view baking the DYNAMIC set can skip a batch holding
+    /// none of them, and one baking the STATIC set can skip a batch holding nothing else -- exactly, from the
+    /// CPU, with no readback: the set flag is the CPU's own word. At 438 movers over 37k staged draws most
+    /// batches hold no mover at all, and the dynamic pool's faces are most of the frame's views.</summary>
+    private static readonly int[] _gDynN = new int[MaxCasters];
+    /// <summary>Indirect calls the set-occupancy skip did not issue -- the period line's witness for it.</summary>
+    private static long _mdiSkipped;
+    /// <summary>Per batch: the chunk's view sets, as a bit per <c>CasterGather.Set*</c>. A batch may be
+    /// skipped only when NO view in the chunk could admit one of its casters.</summary>
+    private static bool BatchIdle(int g, int sets)
+        => sets == 1 << CasterGather.SetDynamic ? _gDynN[g] == 0
+         : sets == 1 << CasterGather.SetStatic ? _gDynN[g] >= _gLen[g]
+         : false;
+
     /// <summary>Per batch: the mask is sampled through the record's handle (no texture in the key).</summary>
     private static readonly bool[] _gH = new bool[MaxCasters];
     /// <summary>Batches that bind a mask texture (one indirect call per flush each) and batches that sample
@@ -2672,21 +2889,40 @@ public sealed unsafe partial class CasterPass : IExtenderService
             fixed (uint* src = _gSrc)
             {
                 bool changed = false;
-                for (int d = 0; d < _gN; d++)
+                // SL1: the CHANGED entries, not all of them. r[0] follows _liveOff and _liveIdxCount and
+                // r[SetFlagWord] follows _liveDyn; all three move only for an entry the refresh visited (a
+                // collect or an append bumps the list version and re-stages instead), and the visited set is
+                // ~1100 of 37k. The pre-SL1 walk read four scattered arrays per staged draw every frame.
+                for (int q = 0; q < _gDirtyN; q++)
                 {
-                    int i = _gLive[d];
-                    uint* r = src + (long)d * CasterGather.SrcUints;
-                    uint cnt = _liveOff[i] ? 0u : (uint)_liveIdxCount[i], set = _liveDyn[i] ? 1u : 0u;
-                    if (r[0] != cnt || r[CasterGather.SetFlagWord] != set) { r[0] = cnt; r[CasterGather.SetFlagWord] = set; changed = true; }
+                    int i = _gDirty[q];
+                    _gDirtyMark[i] = false;
+                    int d = _gAt[i];
+                    if (d < 0) continue;   // this entry is not in the staging at all
+                    if (WriteStagedWords(src, d, i)) changed = true;
+                }
+                _gDirtyN = 0;
+                if (_refreshAll || (_frameSeq & (StageAuditEvery - 1)) == 0)
+                {   // ...and the audit: a missed word bakes a caster at another frame's index count or in the
+                    // wrong half of the split, so the full walk still runs -- one frame in 64.
+                    _gAudits++;
+                    for (int d = 0; d < _gN; d++)
+                        if (WriteStagedWords(src, d, _gLive[d])) { _gStaleWords++; changed = true; }
                 }
                 bool stood = _gN == 0 || CasterGather.Begin(_gN, _gGroups, src, changed);
                 _gDrawN = stood ? _gN : 0;
-                if (stood) _submitMasked += _gMasked;
+                if (stood) { _submitMasked += _gMasked; StageDynamicSource(); }
+                else CasterGather.StandDynamic();
                 return stood;
             }
         }
         int n = 0, creatures = 0, maskedN = 0;
         _gCollectSeq = _collectSeq; _gListVer = _listVer; _gN = 0; _gMasked = 0;
+        // SL1: the staging is being rebuilt, so every entry's words are about to be correct and the standing
+        // changed set is spent. Live indices mean something different after a collect, so the marks go too.
+        for (int q = 0; q < _gDirtyN; q++) _gDirtyMark[_gDirty[q]] = false;
+        _gDirtyN = 0;
+        Array.Fill(_gAt, -1, 0, _liveCount);
         for (int i = 0; i < _liveCount; i++)
         {
             if (AlloyRenderer.CasterVao(_liveVao[i]) == 0) continue;
@@ -2737,15 +2973,19 @@ public sealed unsafe partial class CasterPass : IExtenderService
                     _gTex[g] = (int)(_gKey[d] & 0xffffffffL);
                     _gH[g] = (_gKey[d] & (1L << 60)) != 0;
                     _gCut[g] = _liveCut[i];
+                    _gDynN[g] = 0;
                 }
                 _gLen[g] = d - _gStart[g] + 1;
+                _gAt[i] = d;
+                if (_liveDyn[i]) _gDynN[g]++;
                 StageOne(src, d, i, g, _gStart[g]);
             }
         _gGroups = g + 1; _gCreatures = creatures; _gN = n; _gMasked = maskedN;
         bool ok;
         fixed (uint* src = _gSrc)
             ok = CasterGather.Begin(n, _gGroups, src, true);
-        if (ok) { _gDrawN = n; _submitMasked += maskedN; }
+        if (ok) { _gDrawN = n; _submitMasked += maskedN; StageDynamicSource(); }
+        else CasterGather.StandDynamic();
         return ok;
     }
 
@@ -2760,16 +3000,21 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // to not do -- the latent sample on the period line is what reports them.
         _submitCreatures = _gCreatures;
         if (!BeginTarget(tex, size, layer)) return false;
-        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, point, set, receiver);
+        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, point, set, receiver,
+                              dynSrc: set == CasterGather.SetDynamic);
         // unit 0 is where the cutout stage samples; nothing else in this bracket moves the active unit
         Gl.ActiveTexture(Gl.TEXTURE0);
         int boundVao = -1, boundMode = -1, boundTex = -1;
         float boundCut = -1f;
-        // ponytail: every view issues one indirect-count draw per GLOBAL batch, including the batches whose
-        // count the dispatch left at zero; the CPU cannot skip an empty one without the readback this pass
-        // exists to not do. Fewer batches (the staging key) is the lever.
+        // ponytail: every view issues one indirect-count draw per GLOBAL batch. SL2 removes the batches the
+        // view's SET provably empties -- the set flag is the CPU's own word, so that much needs no readback --
+        // and what is left is the batches whose count the CULL may have left at zero, which the CPU cannot
+        // know without the readback this pass exists to not do. Fewer batches (the staging key) is the lever
+        // for those.
+        int sets = 1 << set;
         for (int g = 0; g < _gGroups; g++)
         {
+            if (BatchIdle(g, sets)) { _mdiSkipped++; continue; }
             int cut0 = _gTex[g], mode = _gH[g] ? 2 : cut0 != 0 ? 1 : 0;
             if (mode != boundMode)
             {
@@ -2788,8 +3033,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
             if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
             CasterGather.Draw(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g]);
+            _mdiCalls++;
         }
-        _mdiCalls += _gGroups;
         CasterGather.End();
         Gl.BindVertexArray(0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
@@ -2826,7 +3071,17 @@ public sealed unsafe partial class CasterPass : IExtenderService
     }
 
     /// <summary>#336: the faces of this light's cube that hold an EVENT this frame -- a mover, a static-set
-    /// flip, a ghost. What a dynamic page's content can differ by from last frame.</summary>
+    /// flip, a ghost. What a dynamic page's content can differ by from last frame.
+    /// <para><b>SL6: this IS the per-page "is anything in it moving" gate</b> S1(b) asks for, one step finer
+    /// (per FACE, not per page), and it saturates because the movers really are everywhere: the 388 dangly
+    /// movers of a city's 438 are a MEASUREMENT, not a declaration -- <c>DanglyPhysics</c> reports the largest
+    /// per-vertex displacement and <c>AlloyRenderer.Accumulate</c> integrates it against <c>dangly.still</c>
+    /// (1 cm of path), which the breeze and the turbulence clear every frame for every banner in the wind.
+    /// Raising that threshold would freeze a swinging banner's shadow, which ADR 0019 calls the wrong
+    /// direction. What SL6 cut instead is the COST of a saturated mask: a dynamic view no longer issues an
+    /// indirect draw for a batch holding no mover (<see cref="BatchIdle"/>). The structural step left is S8 --
+    /// staging the ~438 dynamic casters separately, so a dynamic view's dispatch covers 438 draws and not
+    /// 37k.</para></summary>
     private static int EventFaceMask(Vector3 pos, float far)
     {
         int mask = 0;

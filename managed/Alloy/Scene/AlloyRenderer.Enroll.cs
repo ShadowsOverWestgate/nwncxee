@@ -152,6 +152,32 @@ public sealed unsafe partial class AlloyRenderer
                   && _freeCount == 1 && _freeSlots[0] == 9 && _freeAvail == 0;
         log.Info(ok ? "AlloyRenderer.EnrollSelfCheck: passed" : "AlloyRenderer.EnrollSelfCheck: FAILED -- a mid-walk vacated slot was re-offered inside the walk");
         _freeCount = 0; _freeAvail = 0; _ownCount = 0;
+
+        // ...and the STALE LINK a table wipe used to leave behind. An entry index carried the previous area's
+        // slot number (nothing clears the map across that edge, and the wipe branch consumes the TableGen edge
+        // so RevokeAll never runs), and the next delta enrolment for that index vacated whoever now held the
+        // slot -- an invisible part until the next full census. Driven over the raw tables: no engine memory,
+        // and the victim is what the check watches.
+        const int Victim = 3, Thief = 4, StaleSlot = 5;
+        // not-an-offset: synthetic tenant identities, only ever compared
+        IntPtr victimTri = (IntPtr)0x51000;
+        _ownCount = StaleSlot + 1;
+        _oTri[StaleSlot] = victimTri; _oEntry[StaleSlot] = Victim;
+        _entrySlot[Victim] = StaleSlot;
+        _entrySlot[Thief] = StaleSlot;            // the stale index a wiped area left on another entry
+        // The production predicate, not a copy: the thief's link is stale, the victim's is not.
+        bool ok2 = StaleLink(Thief, _entrySlot[Thief]) && !StaleLink(Victim, _entrySlot[Victim])
+                   && _oTri[StaleSlot] == victimTri && _entrySlot[Victim] == StaleSlot;
+        // ...and an index past the live slot space, which a wipe's reset high-water mark can leave behind.
+        _ownCount = StaleSlot;
+        ok2 &= StaleLink(Victim, StaleSlot);
+        _ownCount = StaleSlot + 1;
+        // ...and the wipe branch clears the map, so the stale index cannot arise in the first place.
+        Array.Fill(_entrySlot, -1);
+        ok2 &= _entrySlot[Victim] < 0 && _entrySlot[Thief] < 0;
+        log.Info(ok2 ? "AlloyRenderer.EnrollSelfCheck: entry->slot link verified"
+                     : "AlloyRenderer.EnrollSelfCheck: FAILED -- a stale entry->slot link would vacate another part's slot");
+        _oTri[StaleSlot] = IntPtr.Zero; _oEntry[StaleSlot] = 0; _ownCount = 0;
     }
 
     private static void RevokeAll(string why)
@@ -227,10 +253,22 @@ public sealed unsafe partial class AlloyRenderer
         bool newScene = scene != _enrollScene;
         bool tableWiped = _tableGen != PartTable.TableGen;
         int n = SceneWalk.TakeChanges(_deltaBuf, out bool overflow);
-        // n == 0 is a request for a walk that names no entries (a deferred VDO's re-ask, a repack's stale
-        // marks, a RequestWalk); only the full walk answers those.
+        // n == 0 is an enrolment asked for by something that named no entries, and only the full census can
+        // answer it. Every caller that COULD name them now does -- a repack queues its stale entries by index,
+        // a scene-membership move and an LOD swap name their gob -- so the counters are split by reason: what
+        // is left on `no names` is a table wipe, a program/texture/VAO edge (Programs, TexStream,
+        // OwnedTextures, the VAO retire) or a tile part with no gob to name, each a genuine whole-census
+        // question rather than a walk that forgot to say what it found.
         if (!_enrollDelta || newScene || tableWiped || overflow || n == 0 || _orderCount == 0 || _enrollBudget == 0)
-        { _deltaFull++; return false; }
+        {
+            _deltaFull++;
+            if (newScene) _fullScene++;
+            else if (tableWiped) _fullWiped++;
+            else if (overflow) _fullOverflow++;
+            else if (n == 0) _fullNoNames++;
+            else if (_orderCount == 0) _fullNoOrder++;
+            return false;
+        }
         SceneWalk.Dirty = false; _sinceEnroll = 0; Counters._enrolls++; _deltaEnrolls++; _deltaChanges += n;
         _enrollGen++;
         // The tri->slot hash is keyed on _enrollGen: the death notice (NotePartDeath) looks tenants up
@@ -247,7 +285,15 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = 0; k < n; k++)
         {
             int e = _deltaBuf[k];
+            // The LINK is verified, not assumed. _entrySlot is only ever cleared by FreeSlot, which clears it
+            // when the two already agree -- so the wipe branch of EnrollBegin, which resets the whole slot space
+            // without a per-slot FreeSlot and consumes the TableGen edge (so the present's RevokeAll never
+            // fires), used to leave an entry index carrying a slot number from the previous area. When a new
+            // part reclaimed that index and bound, this line vacated whoever now held slot 42: _oTri zeroed,
+            // the caster flag off, the bake record dropped, out of _order -- an invisible part until the next
+            // full census. Pre-existing, and the per-gob deltas made it the common path.
             int old = _entrySlot[e];
+            if (StaleLink(e, old)) { _entrySlot[e] = -1; old = -1; _deltaStaleLink++; }
             if (old >= 0) { AlloyCensus.OwnFlag[e] = 0; FreeSlot(old); _freeAvail = _freeCount; }
             if (!AlloyCensus.TryOwnCandidate(e, ref c)) continue;
             int seat = EnrollOne(e, ref c, -1, canLight, keep);
@@ -267,8 +313,26 @@ public sealed unsafe partial class AlloyRenderer
     private static int[] NewEntrySlot() { var a = new int[PartTable.EntryCount]; Array.Fill(a, -1); return a; }
     private static bool _enrollDelta = true;
     private static long _deltaEnrolls, _deltaChanges, _deltaFull, _deltaRefused;
+    /// <summary>Delta entries whose <c>_entrySlot</c> link did not check out -- a stale index the wipe branch
+    /// left behind. It must read 0 now that the wipe clears the map; a nonzero count is another writer.</summary>
+    private static long _deltaStaleLink;
+
+    /// <summary>Does <c>_entrySlot[e] == old</c> name a slot this entry actually holds? Both directions and the
+    /// bound, because the map is cleared only inside <see cref="FreeSlot"/> (where the two already agree) and by
+    /// the wipe branch of <see cref="EnrollBegin"/> -- so anything else that leaves an index behind must be
+    /// caught here rather than acted on. <c>old</c> below <see cref="_ownCount"/> as well: a wipe resets the
+    /// high-water mark, so an index from the old space can point past the live one.
+    /// <para>The self-check drives THIS, not a copy of it.</para></summary>
+    private static bool StaleLink(int e, int old)
+        => old >= 0 && (old >= _ownCount || _oTri[old] == IntPtr.Zero || _oEntry[old] != e);
+    /// <summary>Why a full census ran, split. <c>no names</c> is the one worth watching: every edge that can
+    /// name its entries does, so what is left there is a wipe, a program/texture edge or a tile part.</summary>
+    private static long _fullScene, _fullWiped, _fullOverflow, _fullNoNames, _fullNoOrder;
     internal static string EnrollNote()
-        => $"enrol: {_deltaEnrolls} incremental ({_deltaChanges} changed entries), {_deltaFull} full, {_deltaRefused} fell back on a refusal; the parts total is the last full walk's";
+        => $"enrol: {_deltaEnrolls} incremental ({_deltaChanges} changed entries), {_deltaFull} full "
+         + $"(scene={_fullScene} wiped={_fullWiped} overflow={_fullOverflow} no-names={_fullNoNames} no-order={_fullNoOrder}), "
+         + $"{_deltaRefused} fell back on a refusal, {_deltaStaleLink} stale slot link(s) refused (must be 0); "
+         + "the parts total is the last full walk's";
 
     private static void EnrollBegin(IntPtr scene)
     {
@@ -303,7 +367,14 @@ public sealed unsafe partial class AlloyRenderer
         // the old high-water mark would ratchet the slot space by an area's population per transition. The
         // whole space resets and the scan below repacks densely; the shadow side gets the blanket at the
         // bottom of this pass.
-        if (tableWiped) { _ownCount = 0; _freeCount = 0; _freeAvail = 0; _ownLive = 0; _skinCount = 0; }
+        // ...and the entry -> slot map with them. Nothing else clears it across this edge (FreeSlot is the only
+        // other writer and no slot is freed here), so an entry index the new area reclaims would otherwise carry
+        // the old area's slot number into the next delta enrolment.
+        if (tableWiped)
+        {
+            _ownCount = 0; _freeCount = 0; _freeAvail = 0; _ownLive = 0; _skinCount = 0;
+            Array.Fill(_entrySlot, -1);
+        }
         Counters._litUnownable = 0; Counters._skinUnownable = 0; Counters._gobOwned = 0;
         // #308: bumped per SCAN as before, but a slot now only ADOPTS the new generation when its tenant
         // changes -- the same-frame shadow bracket runs before the record rebuild, and must not refuse a
@@ -430,7 +501,7 @@ public sealed unsafe partial class AlloyRenderer
         // PartTriMesh recycled at the same address inside one frame window would otherwise inherit the
         // dead part's record with no vanish, appear, or move ever reaching the shadow side. Drift is
         // rare (a rebind, a walk re-seat) so the cost of suspicion is one honest one-frame flap.
-        if (!kept) _oEnrollGen[i] = _enrollGen;
+        if (!kept) _gate[i].EnrollGen = _enrollGen;
         if (!kept) _ownLive++;
         // A NEWCOMER joins the tri->slot hash now, not at the next scan's HashLiveSlots: the death
         // notice (NotePartDeath) looks tenants up through this hash BETWEEN scans, and a part that
@@ -484,7 +555,10 @@ public sealed unsafe partial class AlloyRenderer
         _oCx[i] = (lo[0] + hi[0]) * 0.5f; _oCy[i] = (lo[1] + hi[1]) * 0.5f; _oCz[i] = (lo[2] + hi[2]) * 0.5f;
         float ex = hi[0] - lo[0], ey = hi[1] - lo[1], ez = hi[2] - lo[2];
         _oR[i] = 0.5f * MathF.Sqrt(ex * ex + ey * ey + ez * ez);
-        if (!(_oR[i] > 0f) && c.Gob != IntPtr.Zero) _oR[i] = MeshRadius(c.Vdo, c.Item, v);
+        // the own-space box serves a matrix-class caster only; a static tile part's filled bbox needs no vertex walk
+        float originR = 0f;
+        if (c.Mx || !(_oR[i] > 0f)) originR = MeshBound(c.Vdo, c.Item, v, i); else _oBr[i] = 0f;
+        if (!(_oR[i] > 0f) && c.Gob != IntPtr.Zero) _oR[i] = originR;
         // #330: spawn-time fields the chase keys on without touching the part again.
         _oFadeTile[i] = tri.Tile != IntPtr.Zero && TileFadeRamp.Fades(c.Tri) ? tri.Tile : IntPtr.Zero;
         _oTile[i] = tri.Tile != IntPtr.Zero ? tri.Tile : _oTileGob[i] ? new Gob(c.Gob).TileData.Ptr : IntPtr.Zero;
@@ -1049,9 +1123,12 @@ public sealed unsafe partial class AlloyRenderer
     /// own face array is load-time temporary data the engine frees (run 11 read it as infinity). Local
     /// space about the node origin (the sphere's centre is the model translation), UNSCALED: the model
     /// matrix carries every scale on the way to the world, the gob's visual transform included, and the
-    /// sphere writers take it from there; 0 keeps the old fallback.</summary>
-    private static float MeshRadius(IntPtr vdoPtr, int item, int s)
+    /// sphere writers take it from there; 0 keeps the old fallback.
+    /// <para>The same pass writes <paramref name="slot"/>'s own-space vertex box into <c>_oB*</c>, the caster
+    /// sphere's source.</para></summary>
+    private static float MeshBound(IntPtr vdoPtr, int item, int s, int slot)
     {
+        _oBr[slot] = 0f;
         if (vdoPtr == IntPtr.Zero || item < 0 || !_vPos[s].Present || _vPos[s].Type != 0x1406 || _vPos[s].Size != 3) return 0f;   // 0x1406 = GL_FLOAT, the constant alone (Scene/ is GL-free, #206)
         var vdo = new VdoRef(vdoPtr);
         long elem = vdo.ElemItems, vert = vdo.VertItems;
@@ -1064,12 +1141,24 @@ public sealed unsafe partial class AlloyRenderer
         if (elemHost == null || posHost == null || count <= 0) return 0f;
         ushort* src = (ushort*)(elemHost + first * 2);
         float r2 = 0f;
+        var lo = new Vector3(float.MaxValue); var hi = new Vector3(float.MinValue);
         for (int i = 0; i < count; i++)
         {
             float* pv = (float*)(posHost + _vPos[s].Off + (long)(baseVertex + src[i]) * _vPos[s].Stride);
-            float d = pv[0] * pv[0] + pv[1] * pv[1] + pv[2] * pv[2];
+            var p = new Vector3(pv[0], pv[1], pv[2]);
+            lo = Vector3.Min(lo, p); hi = Vector3.Max(hi, p);
+            float d = p.LengthSquared();
             if (d > r2) r2 = d;
         }
-        return float.IsFinite(r2) ? MathF.Sqrt(r2) : 0f;
+        if (!float.IsFinite(r2)) return 0f;
+        float half = 0.5f * Vector3.Distance(lo, hi);
+        // positions in the dynamic pool are rewritten under the part (an animmesh's keys, a dangly's solve)
+        bool rewritten = OwnedBuffers.PoolHostByName(_vPos[s].Buf, vdo.DynToken, vdo.DynToken) != null;
+        if (half > 0f && float.IsFinite(half) && !rewritten)
+        {
+            Vector3 c = 0.5f * (lo + hi);
+            _oBx[slot] = c.X; _oBy[slot] = c.Y; _oBz[slot] = c.Z; _oBr[slot] = half;
+        }
+        return MathF.Sqrt(r2);
     }
 }

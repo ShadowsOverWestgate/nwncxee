@@ -30,4 +30,37 @@ internal static class NonMeshParts
         LightRegistry.Died(part);
         SceneParts.Died(part);
     }
+
+    /// <summary>This part is ALIVE but no longer enumerated. <paramref name="gone"/> says WHY, and the two
+    /// registries answer it differently:
+    /// <list type="bullet">
+    /// <item><paramref name="gone"/> -- its gob left the scene through <c>Gob::SetScene</c>, which unlinks
+    /// without freeing. Nothing about the part is in the world any more, so both registries retire it.</item>
+    /// <item>otherwise -- an LOD rotation moved its root out of the walk. The part is still in the scene and the
+    /// engine's own lists still name it, so what happens next has to match what a FULL walk does, class by
+    /// class. <see cref="SceneParts"/>' sweep drops it (nothing restamps an alternate's emitter, and its
+    /// consumers have no inactive-LOD filter -- two roots' emitters simulating at once is #397's doubled
+    /// shield in another shape), so a delta must drop it too. <see cref="LightRegistry"/>'s survives, because
+    /// the tile BSP's node lists restamp it and <c>Select</c>'s own inactive-LOD filter is where that
+    /// camera-dependent answer belongs -- so a delta must keep it.</item>
+    /// </list>
+    /// <para>Retirement IS <see cref="Died"/> in both cases, deliberately and with no difference in effect: the
+    /// death notice is the registries' one path that does not wait for a walk generation, it compares pointers
+    /// and never dereferences one, and a part that comes back re-registers through <see cref="Visit"/>. The
+    /// separate name exists so a reader at the CALL SITE is not told a live part died; it is not a second
+    /// mechanism, and the registries' death counters include these.</para></summary>
+    internal static void Left(IntPtr part, bool gone)
+    {
+        if (gone) LightRegistry.Died(part);
+        SceneParts.Died(part);
+    }
+
+    /// <summary>A per-gob delta finished. No sweep -- a delta knows nothing about what it did not visit -- but
+    /// the dense per-class lists the consumers walk are republished, because a spawned emitter that is only in
+    /// the intern table is one nothing draws.
+    /// <para><see cref="LightRegistry"/> is not called: it maintains its live list on the claim and the
+    /// retirement instead, so a delta costs it nothing. This runs on most frames -- a part death, an equip, an
+    /// LOD swap or a spawn is all it takes -- so anything O(table) here is the per-frame cost this whole stream
+    /// exists to remove.</para></summary>
+    internal static void DeltaDone() => SceneParts.DeltaDone();
 }

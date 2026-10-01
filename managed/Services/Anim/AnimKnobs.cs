@@ -37,6 +37,18 @@ internal static class AnimKnobs
     /// wrong in an animation. NOT gated on <see cref="Enabled"/> -- the runtime is what plays the
     /// animations, not a correction on top of them.</summary>
     internal static readonly Knob<bool> Owned;
+    /// <summary>AN6: announce <c>AnimateStaticLight</c> only where something can hear it. Off, every animated
+    /// static light part re-announces every frame, as the engine does -- the A/B for a static light that stops
+    /// responding to an animated colour.</summary>
+    internal static readonly Knob<bool> StaticLight;
+    /// <summary>AN5: distance animation LOD -- a far, unpinned gob advances its queue every
+    /// <see cref="LodRate"/>th frame, by the summed frame times of the frames it held, so its animation keeps
+    /// its pace under a variable frame rate and every keyed event it crosses still fires in order.</summary>
+    internal static readonly Knob<bool> Lod;
+    /// <inheritdoc cref="Lod"/>
+    internal static readonly Knob<float> LodDist;
+    /// <inheritdoc cref="Lod"/>
+    internal static readonly Knob<int> LodRate;
 
     static AnimKnobs()
     {
@@ -95,6 +107,20 @@ internal static class AnimKnobs
                 + "vertex morphs and the animation events -- instead of the engine. Off, the engine does it, "
                 + "which is the A/B for anything that looks or sounds wrong in an animation: a missing "
                 + "footstep, a pose that jumps, a crossfade that snaps. Only with the CX renderer.");
+        StaticLight = G.Toggle("staticlight", "staticlight", true, tier: Tier.ChatOnly,
+            help: "An animated static light tells its gob so every frame, whether or not anything is "
+                + "listening; each announcement walks the tile BSP and allocates. On, CX announces only to a "
+                + "gob that has a handler which would receive it and a consumer that would act on it. Off, "
+                + "every announcement is made, which is the engine's own behaviour.");
+        Lod = G.Toggle("lod", "lod", true, tier: Tier.ChatOnly,
+            help: "Characters and props far from the camera take their animation in fewer, larger steps -- the "
+                + "same pace, the same footsteps and hit sounds, fewer poses computed. Cloaks and hair move "
+                + "every frame whatever this says; anything attached, anything carrying a light, and whatever "
+                + "the camera is following keep every frame of their own animation too.");
+        LodDist = G.Slider("loddist", "loddist", 20f, 120f, 5f, 45f, "m", tier: Tier.ChatOnly,
+            help: "How far from the camera the larger steps begin.");
+        LodRate = G.Slider("lodrate", "lodrate", 1, 4, 1, 2, tier: Tier.ChatOnly,
+            help: "How many frames one step covers out there. 1 is off.");
         G.Status = PoseService.Report;
     }
 

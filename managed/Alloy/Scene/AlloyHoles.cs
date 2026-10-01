@@ -23,7 +23,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>The state column, spelled. <see cref="StHidden"/> is the one a reader must not confuse with a
     /// death: the engine is not drawing that subtree either.</summary>
-    private static string HoleState(int e) => _pState[e] switch
+    private static string HoleState(int e) => _pEnt[e].State switch
     {
         StEmpty => "empty",
         StActive => "active",
@@ -39,8 +39,8 @@ public sealed unsafe partial class AlloyRenderer
     /// no readable part.</summary>
     private static IntPtr HoleGobOf(int e)
     {
-        IntPtr part = _pPart[e];
-        if (part == IntPtr.Zero || _pFreed[e] || _pState[e] == StEmpty || _pState[e] == StDead) return _pGob[e];
+        IntPtr part = _pEnt[e].Part;
+        if (part == IntPtr.Zero || _pEnt[e].Freed || _pEnt[e].State == StEmpty || _pEnt[e].State == StDead) return _pGob[e];
         return new PartRef(part).Gob.Ptr;
     }
 
@@ -52,8 +52,8 @@ public sealed unsafe partial class AlloyRenderer
         if (_oTri[i] == IntPtr.Zero) return "slot vacated";
         if (_oLodRoot[i] != IntPtr.Zero && _oGob[i] != IntPtr.Zero
             && new Gob(_oGob[i]).PartTree.Ptr != _oLodRoot[i]) s += " inactive-lod";
-        if (_recGen[i] != _recEpoch) s += " record-stale";
-        if (_recTexStale[i]) s += " tex-stale";
+        if (_gate[i].RecGen != _recEpoch) s += " record-stale";
+        if (_gate[i].TexStale) s += " tex-stale";
         if (_oFading[i]) s += " fading";
         if (_oBone[i] >= 0) s += " posed";
         return s.Length == 0 ? "" : s.Trim();
@@ -67,7 +67,7 @@ public sealed unsafe partial class AlloyRenderer
         int gen = SceneWalk.Gen, gobs = 0, holes = 0, scanned = 0;
         for (int e = 0; e < MaxParts && gobs < HoleGobs; e++)
         {
-            if (_pWalkGen[e] != gen || _pState[e] == StEmpty) continue;
+            if (_pWalkGen[e] != gen || _pEnt[e].State == StEmpty) continue;
             scanned++;
             if (AlloyCensus.OwnFlag[e] != 0) continue;
             IntPtr gob = HoleGobOf(e);
@@ -89,7 +89,7 @@ public sealed unsafe partial class AlloyRenderer
             int printed = 0;
             for (int e = 0; e < MaxParts && printed < HolePartsPerGob; e++)
             {
-                if (_pWalkGen[e] != gen || _pState[e] == StEmpty || HoleGobOf(e) != gob) continue;
+                if (_pWalkGen[e] != gen || _pEnt[e].State == StEmpty || HoleGobOf(e) != gob) continue;
                 printed++;
                 int i = (uint)e < (uint)_entrySlot.Length ? _entrySlot[e] : -1;
                 string slot = i < 0 ? "no slot"

@@ -32,20 +32,22 @@ internal static unsafe partial class EmitterSim
 
         // AnimateParticles' own opening exit: a fading Gob or tile does not step at all. Keeping it matters
         // for more than parity -- a tile mid-fade is being unloaded, and its emitter's Gob is about to go.
+        // The factor is TileFadeRamp's: the engine's TileData+0xc8 has no writer once the BSP visitor stands
+        // down, so a tile fogged at load would keep its flames dark after it was explored.
         if (!gob.IsNull)
         {
             TileData gt = gob.TileData;
-            if (!gt.IsNull && gt.GeomFade < 1f) return;
+            if (!gt.IsNull && TileFadeRamp.Explored(gt.Ptr) < 1f) { _fadeExit++; return; }
         }
         TileData ot = e.TileOwner;
-        if (!ot.IsNull && ot.GeomFade < 1f) return;
+        if (!ot.IsNull && TileFadeRamp.Explored(ot.Ptr) < 1f) { _fadeExit++; return; }
 
         Rebase(ref e, gob, flags);
         Basis(ref e);
 
         // Room for what the parameters now ask for: a controller animates birthrate and lifespan, so an
         // emitter's population ceiling moves while it lives.
-        if (!Grow(ref slot, em)) return;
+        if (!Grow(ref slot, em, dt)) return;
 
         // ORDER, and it is the engine's: every Update ages and spins what is already alive, runs the MOVER,
         // and births only then. Spawning first would integrate a newborn over the step it was born in -- an
@@ -148,7 +150,7 @@ internal static unsafe partial class EmitterSim
     {
         float rate = e.BirthRate;
         int n = (int)rate;
-        if (n <= 0) return;
+        if (n <= 0) { _rate0++; return; }
 
         if ((flags & FP2P) == 0)
         {
@@ -158,8 +160,10 @@ internal static unsafe partial class EmitterSim
             float acc = e.SpawnAcc + dt;
             float spacing = 1f / rate;
             if (acc < spacing) { e.SpawnAcc = acc; return; }
-            int births = (int)(acc * rate);
-            if (births > slot.Cap) births = slot.Cap;
+            // Room, not Cap: the block already holds this emitter's standing population, and clamping the
+            // BURST against the whole block let a full emitter ask for more than it had room for and lose the
+            // difference with nothing said. Want sizes the block for this burst, so a loss here is real.
+            int births = Room(ref slot, (int)(acc * rate));
             for (int i = 0; i < births; i++) Spawn(ref slot, em, ref e, node, flags, dt, 1f);
             e.SpawnAcc = 0f;
             return;
@@ -172,8 +176,9 @@ internal static unsafe partial class EmitterSim
         Vector3 lead = e.Pos - e.PrevPos + e.P2pLeftover;
         float len = lead.Length();
         Vector3 dir = len > 0f ? lead / len : Vector3.Zero;
-        int count = (int)(rate * len);
-        if (count > slot.Cap) count = slot.Cap;
+        // The one burst no sizing can cover: a chain is (int)(rate x distance travelled) long and a teleport
+        // makes that unbounded. Clamped, and the particles it costs are counted like any other loss.
+        int count = Room(ref slot, (int)(rate * len));
         float step = 1f / rate;
         for (int i = 0; i < count; i++)
         {
@@ -247,7 +252,7 @@ internal static unsafe partial class EmitterSim
                         AurXform.Gust(wm, new AurXform.V3 { X = at.X, Y = at.Y, Z = at.Z },
                                       gust, node.WindFalloff);
                 }
-                if (n > slot.Cap) n = slot.Cap;
+                n = Room(ref slot, n);
                 for (int i = 0; i < n; i++) Spawn(ref slot, em, ref e, node, flags, dt, 1f);
             }
         }
@@ -268,7 +273,7 @@ internal static unsafe partial class EmitterSim
             while (slot.Live > 0) Kill(ref slot, slot.Live - 1);
             return;
         }
-        if (want > slot.Cap) want = slot.Cap;
+        if (want > slot.Cap) { CapLost(want - slot.Cap); want = slot.Cap; }
         e.ModeClock += dt;
 
         while (slot.Live < want) Seed(ref slot, em, ref e, node);
@@ -444,11 +449,19 @@ internal static unsafe partial class EmitterSim
         _died++;
     }
 
-    /// <summary>Take the next free record. Null when the emitter is at its cap, which the caller treats as
-    /// "no birth this frame" -- the engine would have allocated; ours is bounded on purpose.</summary>
+    /// <summary>Take the next free record, or null when the block is full -- which the caller treats as "no
+    /// birth this frame" and which is ALWAYS a particle vanilla would have drawn. The engine births from its
+    /// recycle list and, when that is empty, from <c>operator new</c> with nothing to stop it
+    /// (<c>FountainEmitter::Update</c> @0x4b1c70), so there is no such thing as a refusal here that is parity
+    /// with it: a full block is either a burst <see cref="Want"/> failed to size for or our own
+    /// <see cref="MaxPerEmitter"/> ceiling, and both cost a particle. Counted and named once (CX-45).</summary>
     private static Particle Take(ref Slot slot)
     {
-        if (slot.Live >= slot.Cap) return new Particle(IntPtr.Zero);
+        if (slot.Live >= slot.Cap)
+        {
+            CapLost(1);
+            return new Particle(IntPtr.Zero);
+        }
         Particle p = new(_ptrs[slot.Base + slot.Live]);
         slot.Live++;
         _spawned++;

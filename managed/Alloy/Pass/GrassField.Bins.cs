@@ -39,6 +39,8 @@ internal static unsafe partial class GrassField
     /// <summary>Did the last refresh in <see cref="_ownedBinGen"/> produce an owned list?</summary>
     private static bool _ownedBinOk;
     private static long _binGridFrames, _binGridCulled, _binGridCapped, _binNoOwn;
+    /// <summary>Has the ceiling been named once? Per (site, reason) per session, CX-45.</summary>
+    private static bool _binGridCappedSaid;
     private static readonly StandDown _binGridDown = new("GrassField.BinGrid");
 
     /// <summary>This frame's bins, from the scene's own grid. Empty and <c>false</c> = no owned set for this
@@ -106,9 +108,16 @@ internal static unsafe partial class GrassField
                     if (_ownedBinN >= MaxOwnedBins)
                     {
                         _binGridCapped++;
-                        _log?.Always("GrassField: the owned bin ceiling is full -- the rest of this area's "
-                                   + "grass is not drawn. A real bound, not a transient: census the area and "
-                                   + "raise MaxOwnedBins");
+                        // Once per session: the cap is a per-FRAME verdict, so an area that trips it trips it
+                        // on every frame it is standing in, and an unguarded Always writes the log at frame
+                        // rate. The count on the period line is the rest of the story.
+                        if (!_binGridCappedSaid)
+                        {
+                            _binGridCappedSaid = true;
+                            _log?.Always($"GrassField: the owned bin ceiling ({MaxOwnedBins}) is full -- the rest of "
+                                       + "this area's grass is not drawn. A real bound, not a transient: census the "
+                                       + "area and raise MaxOwnedBins. Counted, not repeated, from here on");
+                        }
                         return true;
                     }
                     _ownedBins[_ownedBinN++] = bin;

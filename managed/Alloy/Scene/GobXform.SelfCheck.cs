@@ -112,6 +112,62 @@ internal static unsafe partial class GobXform
             _markSeq++;                                 // what Tick does once it has consumed them
             check.Expect(_markAt[mh] != _markSeq, "...and is retired once consumed");
             _markSeq = savedSeq;
+
+            // GS2: the leave notice. Two rules, and both fail in a way only a long session shows. A released
+            // row must be REUSABLE, or the notice buys nothing and the registry still fills to Cap/2 and
+            // latches `_all` for the rest of the area; and a gob that hashed BEHIND the released one must
+            // still be found, or its matrix silently stops being recomposed. `x` and `y` collide on one bucket
+            // by construction -- the key is `ptr >> 4` masked to Bits.
+            AreaEdge();
+            _all = false;
+            _frame = 200;
+            IntPtr x = (IntPtr)0x70000, y = x + (Cap << 4);
+            int hx = Index(x, true), hy = Index(y, true);
+            check.Expect(hx >= 0 && hy == ((hx + 1) & Mask), "two gobs colliding on one bucket take adjacent rows");
+            int wasCount = _count;
+            Forget(x);
+            check.Expect(Index(x, false) < 0 && _count == wasCount - 1,
+                         "a gob that left the scene has no row, and the registry counts one fewer");
+            check.Expect(Index(y, false) == hy, "...and the gob that hashed BEHIND it is still found");
+            int tombsWas = _tombs, countWas = _count;
+            check.Expect(Index(x, true) == hx && _movedAt[hx] == _frame && float.IsNaN(_raw[hx * 8]),
+                         "a released row is reused, and its new tenant is seeded MOVED with no cached placement");
+            // The counter rule, spelled: a reused tombstone is live AND no longer a tombstone. Taking the two as
+            // alternatives (which GobLod's first cut did) drifts the stamped total down without bound, and a
+            // stamped total that can go negative is a load factor that never fires again.
+            check.Expect(_tombs == tombsWas - 1 && _count == countWas + 1,
+                         "reusing a tombstone counts the row as live and drops the tombstone");
+
+            // Review: the load factor counts the TOMBSTONES. Counting only live rows would let a registry
+            // Forget kept supplying rows to read `730/8192` with every row stamped -- Index probing all of
+            // them and the occupancy gate bounding nothing, which is the failure this notice exists to close,
+            // invisibly. Past the factor the registry recycles, which costs TWO frames of recomposing
+            // everything -- `_all` on the frame it happens, and every row re-Seeded MOVED on the next -- and
+            // then O(1) probes again.
+            // Tested as the RULE on the stamped total, and with the tombstones carrying it, rather than by
+            // filling 8192 rows and releasing them again at every boot for the same assertion.
+            AreaEdge();
+            _all = false;
+            _frame = 300;
+            const int load = Cap / 2;
+            _count = load - 1; _tombs = 0;
+            int genWas = _gen;
+            check.Expect(Index((IntPtr)0x400000, true) >= 0 && _gen == genWas && _count == load,
+                         "an insert that lands ON the load factor is seated, not recycled");
+            _count = load - 1; _tombs = 1;         // the same total, one of it a released row
+            genWas = _gen;
+            _all = false;
+            check.Expect(Index((IntPtr)0x500000, true) >= 0 && _gen == genWas + 1 && _tombs == 0 && _count == 1,
+                         "a registry at the factor is RECYCLED on the next insert rather than refusing it, and "
+                         + "a tombstone counts towards it exactly as a live row does");
+            check.Expect(_all, "...at the cost of recomposing everything on this frame, and again on the next "
+                             + "as each row is re-Seeded MOVED");
+            // ...and the backstop: no free row at all, which Index reports as -1 and Seed answers the same way.
+            genWas = _gen;
+            check.Expect(Seed(-1, (IntPtr)0x510000) >= 0 && _gen == genWas + 1 && _count == 1 && _tombs == 0,
+                         "a registry with no free row is recycled on that alone");
+            _forgotten = 0; _recycles = 0;
+
             AreaEdge();
             _frame = savedFrame; _all = savedAll;
         }

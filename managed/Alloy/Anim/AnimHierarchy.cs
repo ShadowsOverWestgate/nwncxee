@@ -1,6 +1,7 @@
 using System;
 using CX.Engine;
 using CX.Framework;
+using CX.Services.Anim;
 
 namespace CX.Alloy;
 
@@ -39,13 +40,23 @@ internal static unsafe class AnimHierarchy
     private static VdoGetItemDynamicDataFn _getItemDyn;
     private static VdoCommitItemDynamicDataFn _commitItemDyn;
     private static IntPtr* _pTraceRun;
+    private static IntPtr _fnStaticLight;
     private static int _depth;
 
     internal static int Parts, Controllers, Morphs, HandedBack, Traced;
+    /// <summary>AN0: <c>AnimateStaticLight</c> announcements fired this period. The survey had no number for
+    /// it and it is one <c>Gob::DoEvent</c> -- a <c>CExoArrayList::Add</c> plus a <c>strcasecmp</c> per
+    /// registered handler -- per controlled light part per RUN.</summary>
+    internal static int StaticLights, StaticLightsSkipped;
+    /// <summary>AN1: how many times the part-to-node pairing had to probe PAST its first candidate. The port's
+    /// claim that "models and their animations are authored in the same node order, so the first probe almost
+    /// always hits" was a belief; this is the reading that settles it, and a resolved-node column per animation
+    /// is worth building only if it is large.</summary>
+    internal static int PairProbes;
 
     /// <summary>Resolve the seven class thunks and the three engine leaves. False = the runtime must not arm
     /// (an unresolved thunk would make every node of that class read as "unknown").</summary>
-    internal static bool Attach()
+    internal static bool Attach(ExtenderLog log)
     {
         _fnBase = Native.Sym(SymbolMap.MdlNodeControlFn);
         _fnAnimMesh = Native.Sym(SymbolMap.MdlNodeAnimMeshControlFn);
@@ -59,6 +70,12 @@ internal static unsafe class AnimHierarchy
         _getItemDyn = EngineFn.VdoGetItemDynamicData;
         _commitItemDyn = EngineFn.VdoCommitItemDynamicData;
         _pTraceRun = (IntPtr*)Native.Sym(SymbolMap.AnimTraceRun);
+        // NOT an arming condition: this identity only decides whether an announcement can be SKIPPED, and a
+        // build that stops exporting it should cost the skip, not the whole owned runtime.
+        _fnStaticLight = Native.Sym(SymbolMap.AnimateStaticLight);
+        if (_fnStaticLight == IntPtr.Zero)
+            log.Always("AnimHierarchy: AnimateStaticLight did not resolve -- every animated static light "
+                     + "announces itself every frame, as the engine does; /anim staticlight has nothing to skip");
         return _fnBase != IntPtr.Zero && _fnAnimMesh != IntPtr.Zero && _fnCamera != IntPtr.Zero
             && _fnEmitter != IntPtr.Zero && _fnLight != IntPtr.Zero && _fnReference != IntPtr.Zero
             && _fnTriMesh != IntPtr.Zero && _calcRadius != null && _reportKeys != null
@@ -68,8 +85,9 @@ internal static unsafe class AnimHierarchy
     /// <summary>
     /// <c>AnimateHierarchy(part, node, tPrev, tCur, weight)</c>: control this part from this animation node,
     /// then pair each child part with the animation child that carries the same node id and recurse. The
-    /// sibling scan starts at <c>i % n</c> and wraps once, exactly as the engine's -- models and their
-    /// animations are authored in the same node order, so the first probe almost always hits.
+    /// sibling scan starts at <c>i % n</c> and wraps once, exactly as the engine's. Whether the first probe
+    /// almost always hits -- the belief a resolved-node column per animation would be built against -- is not
+    /// asserted here: <see cref="PairProbes"/> counts the probes past it and the period line prints them.
     /// </summary>
     internal static void Walk(IntPtr part, IntPtr node, float tPrev, float tCur, float w)
     {
@@ -80,11 +98,25 @@ internal static unsafe class AnimHierarchy
             Parts++;
             Node(node, part, tPrev, tCur, w);
             IntPtr light = p.AsPartLight().Ptr;
+            if (light != IntPtr.Zero)
+            {
+                // Whatever its static flag says, a light part in this tree pins the gob to full animation rate:
+                // its controllers are the flicker, and half-rate flicker is visible (AnimRuntime.LightHostBit).
+                IntPtr host = p.Gob.Ptr;
+                if (host != IntPtr.Zero) AnimRuntime.NoteLightHost(host);
+            }
             if (light != IntPtr.Zero && new PartLight(light).StaticLit == 0)
             {
                 IntPtr gob = p.Gob.Ptr;
                 if (gob != IntPtr.Zero)
-                    fixed (byte* name = StaticLightEvent) new Gob(gob).DoEvent(name, light);
+                {
+                    if (!Heard(gob)) StaticLightsSkipped++;
+                    else
+                    {
+                        StaticLights++;
+                        fixed (byte* name = StaticLightEvent) new Gob(gob).DoEvent(name, light);
+                    }
+                }
             }
         }
         if (_depth < MaxDepth && p.ChildCount > 0)
@@ -106,6 +138,7 @@ internal static unsafe class AnimHierarchy
                 IntPtr cn = nodes[i % nc];
                 while (new MdlNode(cn).NodeId != want)
                 {
+                    PairProbes++;
                     if (++j == i + nc) { cn = IntPtr.Zero; break; }
                     cn = nodes[j % nc];
                 }
@@ -114,6 +147,71 @@ internal static unsafe class AnimHierarchy
         }
         _depth--;
     }
+
+    /// <summary>
+    /// AN6: would this gob's <c>AnimateStaticLight</c> announcement reach anything that acts on it?
+    /// <para><b>Who hears it.</b> <c>Gob::DoEvent</c> @0x49d760 walks the gob's own <c>CallBack</c> array
+    /// (<see cref="EngineLayout.GobCallbacks"/>) in reverse and fires an entry whose inline name is empty or
+    /// begins with <c>*</c> -- a wildcard, which <c>CAurBehaviorAttach</c>'s constructor registers as
+    /// <c>UpdateScenesAttach</c> -- or matches the event name case-insensitively. A gob with NO entries runs
+    /// no handler at all: the call is one <c>CExoArrayList::Add</c> of a self <c>SafePointer</c> and its
+    /// removal, and nothing else. Most animated gobs are in exactly that state; the only registrar of this
+    /// event's name is <c>ProcessStaticObject</c> @0x4619e0, on tile static objects.</para>
+    /// <para><b>Who acts on it.</b> The stock handler <c>AnimateStaticLight</c> @0x47d820 is
+    /// <c>UpdateStaticLighting</c> @0x47d6a0: a <c>BSPSphereCheck</c> of the tile BSP into a malloc'd list,
+    /// whose hits it appends (deduplicated) to the global <c>staticlightbucket</c>. That bucket has ONE
+    /// consumer, <c>DoStaticLightBuckets</c> @0x47e0b0, and one caller for it, <c>ManageSceneBSP</c>
+    /// @0x47fa80 -- which <c>alloy.skipbuckets 3</c> stands down. So on an Alloy frame the announcement walks
+    /// a BSP and allocates to fill a list nothing ever drains.</para>
+    /// <para>Note that the engine's two other callers of <c>UpdateStaticLighting</c> --
+    /// <c>Scene::SetTileLights</c> @0x45edf0 and <c>Scene::SetSingleTileFlame</c> @0x45ef30 -- both compare
+    /// the new colour against the light's own before they call. This announcement is the outlier that fires
+    /// unconditionally, not the rule.</para>
+    /// </summary>
+    private static bool Heard(IntPtr gob)
+    {
+        // No identity, no skip: the announcement is made, which is the engine's own behaviour.
+        if (!AnimKnobs.StaticLight.V || _fnStaticLight == IntPtr.Zero) return true;
+        var g = new Gob(gob);
+        int n = g.CallbackCount;
+        IntPtr* list = (IntPtr*)g.Callbacks;
+        if (n <= 0 || list == null) return false;
+        // ...and with the bucket path live, the stock handler still has something to fill.
+        bool drains = Renderer.SkipBuckets.Boot != SkipAll;
+        for (int i = 0; i < n; i++)
+        {
+            byte* cb = (byte*)list[i];
+            if (cb == null) continue;
+            // A wildcard or an empty name hears every event whatever it is named, so it always pins.
+            if (*cb == 0 || *cb == (byte)'*') return true;
+            // Otherwise an entry only fires if its NAME matches -- and only the stock handler is the one whose
+            // work the bucket path can throw away. The test is therefore the handler POINTER, so a third party
+            // that registered its own function under this event's name pins exactly rather than by assumption.
+            if (*(IntPtr*)(cb + EngineLayout.CallBackFn) == _fnStaticLight) { if (drains) return true; continue; }
+            if (Named(cb)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Does this entry's name match the event, as <c>Gob::DoEvent</c>'s <c>strcasecmp</c> would? Only
+    /// reached for an entry that is NOT the stock handler, where a match means something unknown to us is
+    /// listening and the announcement must be made.</summary>
+    private static bool Named(byte* name)
+    {
+        ReadOnlySpan<byte> want = StaticLightEvent;
+        for (int i = 0; i < want.Length; i++)
+        {
+            byte a = name[i], b = want[i];
+            if (a >= (byte)'A' && a <= (byte)'Z') a += 32;
+            if (b >= (byte)'A' && b <= (byte)'Z') b += 32;
+            if (a != b) return false;
+            if (a == 0) return true;
+        }
+        return true;
+    }
+
+    /// <summary>The <c>alloy.skipbuckets</c> value that stands <c>ManageSceneBSP</c> down whole.</summary>
+    private const int SkipAll = 3;
 
     /// <summary>The node's own controller pass, dispatched on its class (its
     /// <see cref="EngineLayout.MdlNodeControl"/> thunk).

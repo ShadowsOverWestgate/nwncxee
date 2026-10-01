@@ -91,6 +91,14 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#152: the part's bbox RADIUS (half the diagonal), the colour LOD's size input. 0 = bbox
     /// degenerate or unread -- such a part is never LOD-culled, unknown bounds are not "small".</summary>
     private static readonly float[] _oR = new float[MaxOwned];
+    /// <summary>The caster's bound in the part's OWN space -- the box of the vertices its model matrix draws, as
+    /// centre and half-diagonal, read off the VDO at enrollment. The engine's part bbox cannot be it: only a static
+    /// tile part's is filled (<c>ComputePartBBox</c> @0x461370, called from <c>ProcessStaticParts</c> alone, in parent
+    /// space), so a part on a node fell back to the farthest vertex from its origin -- true, but it swallowed offset
+    /// geometry's surroundings: a harbour ship's mast read 12.2 m about its waterline origin where its own box is
+    /// 4.9 m. 0 radius = unread.</summary>
+    private static readonly float[] _oBx = new float[MaxOwned], _oBy = new float[MaxOwned],
+                                    _oBz = new float[MaxOwned], _oBr = new float[MaxOwned];
     private static readonly int[] _order = new int[MaxOwned];
     private static readonly int[] _orderTmp = new int[MaxOwned];    // #84: LSD radix intermediate
     /// <summary>CX-9: every live skinned slot, rebuilt with <see cref="_order"/> -- skin-ness is
@@ -264,11 +272,7 @@ public sealed unsafe partial class AlloyRenderer
     /// </summary>
     internal static readonly int[] _recDirty = new int[MaxRecords];
     internal static int _recDirtyN;
-    /// <summary>#242: the epoch each slot's record was built under, and the frame it was last verified on.
-    /// A slot whose epoch is stale rebuilds unconditionally; one already verified this frame is free for
-    /// every pass after the first. Epoch 0 is "never built", so the arrays need no initialisation.</summary>
-    private static readonly int[] _recGen = new int[MaxOwned];
-    private static readonly int[] _recFrame = new int[MaxOwned];
+    // BW7: the per-slot record stamps (epoch, verified frame, tenancy, texture staleness) are RouteGate's rows.
     /// <summary>#242: the blanket invalidation counter. Bumped by anything that can make every persistent
     /// record wrong at once -- an enrollment (the slots reshuffle), a bindless handle wipe, a lost context,
     /// a debug toggle, an armed frame dump. See ADR 0017's "Step 2, as built".</summary>
@@ -286,16 +290,9 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _recTid = new int[MaxOwned];
     /// <summary>#331: the CycleTID controller behind the diffuse, or zero. A step marks the record texture-stale.</summary>
     private static readonly IntPtr[] _recCtl = new IntPtr[MaxOwned];
-    /// <summary>The record's owned texture name RETIRED under it (the transcode drip swapping a raw upload for
-    /// its compressed copy): the engine pointer is unchanged, so the pointer compare alone would keep the
-    /// record sampling a handle the drain has since dropped. Routed and re-resolved regardless of the
-    /// frustum, then cleared. Set by <see cref="NoteOwnedNameRetired"/> from a walk over the record tids --
-    /// per slot on purpose: a global generation re-staged the whole world on every drip frame (Restage
-    /// 5,7ms in hitch frames against 0,8 mean, measured).</summary>
-    private static readonly bool[] _recTexStale = new bool[MaxOwned];
     /// <summary>This slot has a map slot whose texture had no GL id at its last resolve. NOT stale: the
     /// texture is re-asked on the slot's colour cadence and the record rewritten only once it has an id. It
-    /// used to ride <see cref="_recTexStale"/>, and a map the engine never queues (nothing binds it under
+    /// used to ride <see cref="RouteGate.TexStale"/>, and a map the engine never queues (nothing binds it under
     /// Alloy, so nothing builds it) then rewrote, re-minted and force-routed its record EVERY frame -- 7,000
     /// records a frame in an area with .mtr normal maps.</summary>
     private static readonly bool[] _recSlotQueued = new bool[MaxOwned];
@@ -310,18 +307,20 @@ public sealed unsafe partial class AlloyRenderer
         int sv = _ownCount; _ownCount = 4;
         var svTid = new int[4]; Array.Copy(_recTid, svTid, 4);
         var svS = new int[4 * MapSlots]; Array.Copy(_recTidS, svS, 4 * MapSlots);
-        var svStale = new bool[4]; Array.Copy(_recTexStale, svStale, 4);
-        Array.Clear(_recTid, 0, 4); Array.Clear(_recTidS, 0, 4 * MapSlots); Array.Clear(_recTexStale, 0, 4);
+        var svStale = new bool[4];
+        for (int i = 0; i < 4; i++) { svStale[i] = _gate[i].TexStale; _gate[i].TexStale = false; }
+        Array.Clear(_recTid, 0, 4); Array.Clear(_recTidS, 0, 4 * MapSlots);
         _recTid[1] = 77; _recTidS[3 * MapSlots + 2] = 77; _recTid[2] = 78;
         NoteOwnedNameRetired(77);
-        bool ok = !_recTexStale[0] && _recTexStale[1] && !_recTexStale[2] && _recTexStale[3];
+        bool ok = !_gate[0].TexStale && _gate[1].TexStale && !_gate[2].TexStale && _gate[3].TexStale;
         // #386: a swap renames in place and queues the two records, once each
         int svSwapN = _swapN; _swapN = 0;
         NoteOwnedNameSwapped(77, 79); NoteOwnedNameSwapped(79, 80);
         ok &= _recTid[1] == 80 && _recTidS[3 * MapSlots + 2] == 80 && _recTid[2] == 78 && _swapN == 2
               && _recSwapped[1] && _recSwapped[3] && !_recSwapped[0];
         _recSwapped[1] = _recSwapped[3] = false; _swapN = svSwapN;
-        Array.Copy(svTid, _recTid, 4); Array.Copy(svS, _recTidS, 4 * MapSlots); Array.Copy(svStale, _recTexStale, 4); _ownCount = sv;
+        Array.Copy(svTid, _recTid, 4); Array.Copy(svS, _recTidS, 4 * MapSlots); _ownCount = sv;
+        for (int i = 0; i < 4; i++) _gate[i].TexStale = svStale[i];
         log.Info(ok ? "AlloyRenderer.SelfCheckNameRetired: passed" : "AlloyRenderer.SelfCheckNameRetired: FAILED -- a retired name did not mark exactly its records");
     }
 
@@ -371,7 +370,7 @@ public sealed unsafe partial class AlloyRenderer
         _swapN = 0; _swapOverflow = false;
     }
 
-    /// <summary>CX-104 (review): a slot marked <see cref="_recTexStale"/> by a COLD path -- a retired or
+    /// <summary>CX-104 (review): a slot marked <see cref="RouteGate.TexStale"/> by a COLD path -- a retired or
     /// swapped owned texture name, a dropped cycle controller, a zeroed bindless handle -- is re-resolved by
     /// <c>RouteWanted</c>, which only ever sees the slots the visible set VISITED. The index-driven set holds
     /// the gob slots and the grid's frustum hits, so an off-frustum static slot would keep a zeroed handle
@@ -392,9 +391,9 @@ public sealed unsafe partial class AlloyRenderer
         int n = (int)name;
         for (int i = 0; i < _ownCount; i++)
         {
-            if (_recTid[i] == n) { _recTexStale[i] = true; continue; }
+            if (_recTid[i] == n) { _gate[i].TexStale = true; continue; }
             for (int s = 0; s < MapSlots; s++)
-                if (_recTidS[i * MapSlots + s] == n) { _recTexStale[i] = true; break; }
+                if (_recTidS[i * MapSlots + s] == n) { _gate[i].TexStale = true; break; }
         }
     }
     /// <summary>The Drain-time form: every name about to lose its handle, marked in one scan. Replaces the
@@ -413,11 +412,11 @@ public sealed unsafe partial class AlloyRenderer
         for (int i = 0; i < _ownCount; i++)
             {
                 int t = _recTid[i];
-                if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { _recTexStale[i] = true; continue; }
+                if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { _gate[i].TexStale = true; continue; }
                 for (int k = 0; k < MapSlots; k++)
                 {
                     t = _recTidS[i * MapSlots + k];
-                    if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { _recTexStale[i] = true; break; }
+                    if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { _gate[i].TexStale = true; break; }
                 }
             }
         foreach (uint n in names) _nameMark[n] = 0;
@@ -439,7 +438,7 @@ public sealed unsafe partial class AlloyRenderer
             if (_dTexH[j] != v) continue;
             _dTexH[j] = 0;
             // the full re-resolve, not ApplySwaps: that one skips a block whose slot 0 reads 0 as "unlit"
-            _recTexStale[j >> 3] = true;
+            _gate[j >> 3].TexStale = true;
             MarkRecordDirty(j >> 3);
             _texHDirty = true;
             HandlesZeroed++;

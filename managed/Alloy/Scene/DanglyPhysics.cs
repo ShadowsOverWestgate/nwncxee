@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 
@@ -31,7 +32,8 @@ namespace CX.Alloy;
 /// rather than deleted: it is the only reason NWN cloaks never pass through the wearer's legs. Widening it
 /// is the whole knob -- <c>/dangly cage</c> trades freedom of movement for clipping, and there is no third
 /// option short of posing the creature's skinmesh into capsules.</para>
-/// <para><b>Allocates nothing.</b> This runs once per dangly part per frame on the main thread. Every
+/// <para><b>Allocates nothing.</b> This runs once per dangly part per frame -- the gates, the engine reads and
+/// the upload on the main thread, the integration itself on a <see cref="StagePool"/> worker (AN2). Every
 /// buffer it touches already exists and is owned by the engine: the deformed positions are the VDO dynamic
 /// item's host shadow (which is also where last frame's state is read from), and the velocities are the
 /// engine's own <c>+0xa0</c> array. Nothing new is created, so nothing new has a lifetime.</para>
@@ -88,8 +90,31 @@ internal static unsafe class DanglyPhysics
 
     private static int _parts, _verts, _moved;
     /// <summary>#492's measurement: solve ticks per period and the single worst call. Excludes the early
-    /// hand-backs and the engine's child animate, so it is the term a compute solve would remove.</summary>
-    private static long _ticks, _peakTicks;
+    /// hand-backs and the engine's child animate, so it is the term a compute solve would remove.
+    /// <para>AN0: <see cref="_commitTicks"/> is subtracted out of it, so <c>solve</c> is the arithmetic and
+    /// <c>commit</c> is the GL upload funnel -- the two have different fixes and were one number.</para></summary>
+    private static long _ticks, _peakTicks, _commitTicks, _peakCommit;
+    /// <summary>AN7: the vertex count and the commit share of the period's WORST call. The survey could not
+    /// tell a 0,9 ms peak from a 0,9 ms stall: a peak whose vertex count is ordinary and whose commit is
+    /// small did no work worth that time, so it is a pause (a GC on this thread, a fault, a first-touch buffer
+    /// mint inside the driver) rather than arithmetic, and the fix is not in this file.</summary>
+    private static int _peakVerts;
+    private static long _peakOwnCommit;
+    private static int _commits;
+    /// <summary>AN3: solves that displaced nothing, so the upload was skipped.</summary>
+    private static int _commitSkipped;
+
+    /// <summary>The VDO dynamic-item upload -- <c>UnlockPool</c> and so Alloy's <c>NamedBufferSubData</c> --
+    /// timed apart from the arithmetic. Main thread only: it is the one call in the solve that ends in GL.</summary>
+    private static void Commit(IntPtr vdo, int item)
+    {
+        long t = Stopwatch.GetTimestamp();
+        _commitItemDyn(vdo, (uint)item, 0xffffffffu);
+        long d = Stopwatch.GetTimestamp() - t;
+        _commitTicks += d;
+        if (d > _peakCommit) _peakCommit = d;
+        _commits++;
+    }
 
     internal static void Install(ExtenderLog log, HookService hooks)
     {
@@ -130,19 +155,44 @@ internal static unsafe class DanglyPhysics
     /// exactly once per period and nothing else reads them.</summary>
     internal static string Stats(int frames)
     {
-        if (frames <= 0 || _parts == 0) { _parts = 0; _verts = 0; _moved = 0; _ticks = 0; _peakTicks = 0; return ""; }
+        if (frames <= 0 || _parts == 0)
+        {
+            // A period with no solves can still have had a refused drain, and that is the one line in here
+            // nobody may lose.
+            string only = _drainFailed == 0 ? ""
+                        : $"dangly {_drainFailed} DRAIN(S) REFUSED by the stage pool (nothing published)";
+            ResetStats();
+            return only;
+        }
         double toMs = 1000.0 / Stopwatch.Frequency;
+        // AN0: the arithmetic and the GL upload funnel, accumulated apart. `_ticks` never includes a commit --
+        // the teleport branch commits and returns without adding to it, so a subtraction here could go negative.
         string s = $"dangly {(float)_parts / frames:F1} parts/f, {(float)_verts / frames:F0} verts/f, " +
-                   $"{(float)_moved / frames:F1} moved/f, solve {_ticks * toMs / frames:F3} ms/f (peak call {_peakTicks * toMs:F3} ms)";
-        _parts = 0; _verts = 0; _moved = 0; _ticks = 0; _peakTicks = 0;
+                   $"{(float)_moved / frames:F1} moved/f, solve {_ticks * toMs / frames:F3} ms/f cpu " +
+                   $"(peak call {_peakTicks * toMs:F3} ms over {_peakVerts} verts, {_peakOwnCommit * toMs:F3} of it commit), " +
+                   $"commit {_commitTicks * toMs / frames:F3} ms/f " +
+                   $"({(float)_commits / frames:F0} calls/f, {(float)_commitSkipped / frames:F1} skipped/f, peak {_peakCommit * toMs:F3} ms)" +
+                   $", drain {_drainTicks * toMs / frames:F3} ms/f wall over {_drainChunks} chunk(s)";
+        if (_qDead != 0) s += $", {_qDead} queued part(s) died before the drain";
+        if (_qFull != 0) s += $", {_qFull} SOLVES OFF THE QUEUE (it filled)";
+        if (_drainFailed != 0) s += $", {_drainFailed} DRAIN(S) REFUSED by the stage pool (nothing published)";
+        ResetStats();
         return s;
+    }
+
+    private static void ResetStats()
+    {
+        _parts = 0; _verts = 0; _moved = 0; _commits = 0; _commitSkipped = 0;
+        _ticks = 0; _peakTicks = 0; _commitTicks = 0; _peakCommit = 0; _peakVerts = 0; _peakOwnCommit = 0;
+        _drainTicks = 0; _drainChunks = 0; _qDead = 0; _qFull = 0; _drainFailed = 0;
     }
 
     /// <summary>The <c>/dangly</c> status line; the dials are <see cref="Dangly"/>'s.</summary>
     internal static string Describe()
         => $"dangly {(Dangly.Enabled.V && _armed ? "on" : _armed ? "off (vanilla solve)" : "unarmed")} "
          + $"gravity {Dangly.Gravity.V:F2} wind {Dangly.Wind.V:F2} turb {Dangly.Turb.V:F2} turbfreq {Dangly.TurbFreq.V:F2} "
-         + $"turbspeed {Dangly.TurbSpeed.V:F2} vary {Dangly.Vary.V:F2} breeze {Dangly.Breeze.V:F2} body {(Dangly.Body.V > 0f ? Dangly.Body.V.ToString("F2") : "off")} cage {Dangly.Cage.V:F2} hz {Dangly.Hz.V:F0} steps {Dangly.Steps.V} still {Dangly.Still.V:F3}";
+         + $"turbspeed {Dangly.TurbSpeed.V:F2} vary {Dangly.Vary.V:F2} breeze {Dangly.Breeze.V:F2} body {(Dangly.Body.V > 0f ? Dangly.Body.V.ToString("F2") : "off")} cage {Dangly.Cage.V:F2} hz {Dangly.Hz.V:F0} steps {Dangly.Steps.V} still {Dangly.Still.V:F3} "
+         + $"solve {(Dangly.Parallel.V && Renderer.Threads.V > 0 && !StagePool.Faulted ? $"on {Renderer.Threads.V + 1} chunks" : "serial")}";
 
     /// <summary>The replacement solve. Every gate below hands the frame back to the engine rather than
     /// reproducing what it does in that case -- vanilla returns WITHOUT animating the part's children on
@@ -197,7 +247,7 @@ internal static unsafe class DanglyPhysics
         {
             Buffer.MemoryCopy(rest, dst, (long)n * 12, (long)n * 12);
             new Span<float>(vel, n * 3).Clear();
-            _commitItemDyn(vdo, (uint)item, 0xffffffff);
+            Commit(vdo, item);
             StorePose(part, wpos, wrot);
             AlloyRenderer.NoteDanglyMoved(part, float.PositiveInfinity, Dangly.Still.V);
             Down_TailOnly(part, dt);
@@ -207,7 +257,8 @@ internal static unsafe class DanglyPhysics
         // Not a teleport, but possibly the first frame: an all-zero xyz at +0xc4..+0xcc means the previous
         // pose was never written, and a zero quaternion would collapse every vertex onto the part. Seeding
         // makes this frame's deltas identity instead. Vanilla's own guard.
-        if (prevRot[1] == 0f && prevRot[2] == 0f && prevRot[3] == 0f)
+        bool seeded = prevRot[1] == 0f && prevRot[2] == 0f && prevRot[3] == 0f;
+        if (seeded)
         {
             StorePose(part, wpos, wrot);
             ppos = wpos;
@@ -258,8 +309,159 @@ internal static unsafe class DanglyPhysics
         float disp = dn.Displacement;
         float stiff = StiffnessGain * dn.Tightness;
         float damp = DampingGain * dn.Period;
-        float maxSq = 0f;
         AlloyRenderer.NoteDanglyPrev(part, dst, n);
+
+        Item it = default;
+        it.Part = part; it.Vdo = vdo; it.VItem = item; it.N = n; it.Steps = steps;
+        it.Cons = (IntPtr)cons; it.Rest = (IntPtr)rest; it.Dst = (IntPtr)dst; it.Vel = (IntPtr)vel;
+        it.Wpos = wpos; it.Rw = wrot[0]; it.Rx = wrot[1]; it.Ry = wrot[2]; it.Rz = wrot[3];
+        it.Dw = dw; it.Dx = dx; it.Dy = dy; it.Dz = dz;
+        it.TLocal = tLocal; it.WindL = windL; it.Gust = gust; it.GravL = gravL;
+        it.T = t; it.PhaseOff = phaseOff; it.RateVar = rateVar; it.H = h;
+        it.Disp = disp; it.Stiff = stiff; it.Damp = damp;
+        it.Turb = turb; it.TurbFreq = turbFreq; it.TurbSpeed = turbSpeed; it.Cage = cage; it.Body = body;
+        it.Seeded = seeded;
+        it.SetupTicks = Stopwatch.GetTimestamp() - t0;
+
+        // AN2: with a drain guaranteed, the arithmetic is handed to the pool and the part's children are
+        // animated now, in the engine's own order. Without one -- the engine owns Scene::Animate
+        // (anim.owned 0), or this is CAurObject::AnimateExternal outside any walk -- it is solved inline.
+        if (Batching && _qn < MaxQueue) { _q[_qn++] = it; Down_TailOnly(part, dt); return; }
+        if (Batching) NoteQueueFull();
+        Solve(ref it);
+        Publish(ref it);
+        Down_TailOnly(part, dt);
+    }
+
+    // ================= AN2: collect, solve, publish =================
+
+    /// <summary>One queued solve. Everything the arithmetic reads is here by value or as a pointer into a
+    /// buffer only this part owns, which is what lets a worker run it: the engine calls, the knob reads, the
+    /// wind sample, the world transform and the motion-vector snapshot are all done at collect time on the
+    /// main thread, and the GL upload and the mover report are done at publish time on the main thread.</summary>
+    private struct Item
+    {
+        public IntPtr Part, Vdo, Cons, Rest, Dst, Vel;
+        public int VItem, N, Steps;
+        public Vector3 Wpos, TLocal, WindL, Gust, GravL;
+        public float Rw, Rx, Ry, Rz, Dw, Dx, Dy, Dz;
+        public float T, PhaseOff, RateVar, H, Disp, Stiff, Damp;
+        public float Turb, TurbFreq, TurbSpeed, Cage, Body;
+        public bool Seeded;
+        /// <summary>The largest per-vertex displacement this solve produced -- the mover verdict's input.</summary>
+        public float MaxD;
+        public long SetupTicks, SolveTicks;
+    }
+
+    /// <summary>Dangly parts one scene walk may queue. NOT a derived bound -- a scene's dangly part count is
+    /// content, and nothing in the engine caps it -- so it is a budget with a counter, which is what CX-45 asks
+    /// of a ceiling that cannot be proved: the parts past it are solved INLINE on the main thread, which is
+    /// correct and merely not parallel, and the overflow is logged once and counted every period. The live
+    /// reading it is set against is 410 parts per frame over every scene.</summary>
+    private const int MaxQueue = 1024;
+    private static readonly Item[] _q = new Item[MaxQueue];
+    private static int _qn, _qFull, _drainFailed;
+    private static bool _qFullLogged, _drainFailedLogged;
+    private static long _drainTicks;
+    private static int _drainChunks;
+
+    /// <summary>True while a scene walk that will drain the queue is in progress. Set by
+    /// <see cref="AnimRuntime"/> around its own walk, which is the only thing that calls <see cref="Drain"/>.</summary>
+    internal static bool Batching;
+
+    private static void NoteQueueFull()
+    {
+        _qFull++;
+        if (_qFullLogged) return;
+        _qFullLogged = true;
+        _log?.Always($"DanglyPhysics: the solve queue filled at {MaxQueue} parts in one scene walk -- the rest "
+                   + "are solved inline on the main thread, which is correct but not parallel; counted on the "
+                   + "dangly clause from here");
+    }
+
+    /// <summary>AN2: solve everything this walk collected, then commit it serially.
+    /// <para>Every part's arithmetic touches its own four buffers and nothing else -- no engine call, no GL, no
+    /// shared counter -- so the chunks are independent and the answer does not depend on how they are cut;
+    /// <see cref="SelfCheck"/> asserts that bit for bit. <c>/alloy threads 0</c> and <c>/dangly parallel 0</c>
+    /// both take the serial path, and a StagePool fault does too.</para>
+    /// <para>Called with the <c>currentscene</c> latch still held, which <c>PartDanglyMesh::Animate</c>'s own
+    /// gate reads.</para>
+    /// <para><b>No behaviour changes.</b> Every input the arithmetic uses is taken at collect time, at the same
+    /// moment the inline solve took it: the world transform, the wind sample, the clock sample, the delta
+    /// rotation and all six dials. The only late read is <c>dangly.still</c>, at the mover verdict. Moving the
+    /// upload and the stored pose to the end of the walk is unobservable -- nothing reads the committed buffer
+    /// during the walk, and the pose written is the one captured before it.</para></summary>
+    internal static void Drain()
+    {
+        int n = _qn;
+        _qn = 0;
+        if (n == 0) return;
+        long t0 = Stopwatch.GetTimestamp();
+        // A pool the BUILD side already faulted answers every Run with an early false, which would cost this
+        // frame's solves for nothing -- so the serial path is taken directly, and the knob is left alone: the
+        // fault and its re-arm are the stage's, not ours.
+        int chunks = Dangly.Parallel.V && !StagePool.Faulted
+                   ? Math.Min(Renderer.Threads.V, StagePool.MaxChunks - 1) + 1 : 1;
+        if (chunks > 1 && n > 1)
+        {
+            _drainN = n;
+            if (!StagePool.Run(chunks, _log, SolveRange))
+            {
+                // NOT re-run serially. A false return can be the 500 ms join deadline with a worker still
+                // inside its chunk (StagePool.cs's join, and Rearm's own comment), and the integration is not
+                // idempotent -- a second pass over the same dst/vel double-steps it or tears a vertex. Nothing
+                // is read either, so no torn buffer reaches the GPU: the drawn pose stays the one last committed.
+                // The live dst/vel are another matter -- a wedged straggler goes on writing them -- which is
+                // why the knob goes down here and nothing hands the pool these buffers again.
+                _drainFailed++;
+                if (!_drainFailedLogged)
+                {
+                    _drainFailedLogged = true;
+                    _log?.Always("DanglyPhysics: the stage pool refused a dangly drain -- this frame's solves are "
+                               + "neither published nor redone (a straggler may still be inside one), and the "
+                               + "solve is serial from here; /dangly parallel 1 after /alloy threads re-arms it");
+                }
+                // A plain field write, not a Set: no Changed, no cfg write -- the stand-down is this session's,
+                // and it is what keeps the next frame from handing the same buffers to the pool again.
+                Dangly.Parallel.V = false;
+                _drainChunks = chunks;
+                _drainTicks += Stopwatch.GetTimestamp() - t0;
+                // The queue is deliberately NOT cleared. A straggler is holding `ref _q[i]` and reading its
+                // pointers and count as it goes, so zeroing the entry hands it a null and the fault lands on a
+                // worker. Nothing needs the clear: _qn is already 0, the death notice only walks to _qn, and
+                // the next collect overwrites each entry it uses.
+                return;
+            }
+        }
+        else { SolveRange(0, 1); chunks = 1; }
+        _drainChunks = chunks;
+        _drainTicks += Stopwatch.GetTimestamp() - t0;
+        for (int i = 0; i < n; i++) Publish(ref _q[i]);
+    }
+
+    private static int _drainN;
+    private static readonly Action<int, int> SolveRange = (w, chunks) =>
+    {
+        int n = _drainN, from = (int)((long)n * w / chunks), to = (int)((long)n * (w + 1) / chunks);
+        // A part that died between collect and drain named buffers the freed object owned; nothing may read
+        // them. Deaths can only have happened during the walk -- a worker runs arithmetic and nothing else.
+        for (int i = from; i < to; i++) if (_q[i].Part != IntPtr.Zero) Solve(ref _q[i]);
+    };
+
+    /// <summary>The per-vertex integration. Pure: its inputs are the item's own fields and the four buffers it
+    /// names, its outputs are two of those buffers and <see cref="Item.MaxD"/>. No engine call, no GL, no
+    /// static state -- which is the whole reason it can run on a worker.</summary>
+    private static void Solve(ref Item it)
+    {
+        long t0 = Stopwatch.GetTimestamp();
+        int n = it.N, steps = it.Steps;
+        float* cons = (float*)it.Cons, rest = (float*)it.Rest, dst = (float*)it.Dst, vel = (float*)it.Vel;
+        float dw = it.Dw, dx = it.Dx, dy = it.Dy, dz = it.Dz;
+        Vector3 tLocal = it.TLocal, windL = it.WindL, gust = it.Gust, gravL = it.GravL;
+        float t = it.T, phaseOff = it.PhaseOff, rateVar = it.RateVar, h = it.H;
+        float disp = it.Disp, stiff = it.Stiff, damp = it.Damp;
+        float turb = it.Turb, turbFreq = it.TurbFreq, turbSpeed = it.TurbSpeed, cage = it.Cage, body = it.Body;
+        float maxSq = 0f;
 
         for (int i = 0; i < n; i++)
         {
@@ -326,14 +528,49 @@ internal static unsafe class DanglyPhysics
             vel[o] = v.X; vel[o + 1] = v.Y; vel[o + 2] = v.Z;
         }
 
-        _commitItemDyn(vdo, (uint)item, 0xffffffff);
-        StorePose(part, wpos, wrot);
-        long dtTicks = Stopwatch.GetTimestamp() - t0;
-        _ticks += dtTicks; if (dtTicks > _peakTicks) _peakTicks = dtTicks;
-        _parts++; _verts += n;
-        if (AlloyRenderer.NoteDanglyMoved(part, MathF.Sqrt(maxSq), Dangly.Still.V)) _moved++;
-        Down_TailOnly(part, dt);
+        it.MaxD = maxSq;
+        it.SolveTicks = Stopwatch.GetTimestamp() - t0;
     }
+
+    /// <summary>The main-thread half: the upload, the stored pose, the mover verdict and the counters.</summary>
+    private static void Publish(ref Item it)
+    {
+        if (it.Part == IntPtr.Zero) return;                 // a part that died between collect and drain
+        float maxSq = it.MaxD;
+        long commitWas = _commitTicks;
+        // AN3: the upload is the whole point of the commit, and with no displacement there is nothing to
+        // upload -- so it is skipped, the morph path's precedent (AnimHierarchy.Morph's `dirty`). What the
+        // funnel does besides the write is what makes that safe: CommitItemDynamicData @0x45c7d0 is an offset
+        // computation and RenderInterface::UnlockPool @0x45d3a0 -> GLRender::UnlockPool @0x4cfc80, whose every
+        // branch ends in glBufferData/glBufferSubData (plus a bind and the pool's "has a buffer"/"uploaded"
+        // bytes); on an Alloy frame it is #260's residency funnel. It carries no bookkeeping a skipped frame
+        // owes anyone, and the #241 caster-dirty signal it raises would be a FALSE mover here -- the measured
+        // verdict below is the one that speaks for a dangly slot (SlotIsDangly).
+        // The GPU copy still matches the host shadow by induction: every frame that changes a vertex commits,
+        // so a frame that changes none finds the buffer already holding what it would have sent. The base case
+        // is the part's first solve, which either took the teleport branch above (and committed) or seeded --
+        // and a seeded frame commits for exactly that reason.
+        if (maxSq > 0f || it.Seeded) Commit(it.Vdo, it.VItem); else _commitSkipped++;
+        float* rot = stackalloc float[4];
+        rot[0] = it.Rw; rot[1] = it.Rx; rot[2] = it.Ry; rot[3] = it.Rz;
+        StorePose(it.Part, it.Wpos, rot);
+        long commitNow = _commitTicks - commitWas;
+        _ticks += it.SetupTicks + it.SolveTicks;
+        long dtTicks = it.SetupTicks + it.SolveTicks + commitNow;
+        if (dtTicks > _peakTicks) { _peakTicks = dtTicks; _peakVerts = it.N; _peakOwnCommit = commitNow; }
+        _parts++; _verts += it.N;
+        if (AlloyRenderer.NoteDanglyMoved(it.Part, MathF.Sqrt(maxSq), Dangly.Still.V)) _moved++;
+    }
+
+    /// <summary>The <c>Part::~Part</c> death notice. A part queued for solving that dies before the drain must
+    /// not be solved or published: the buffers it named belong to the freed object. Free when nothing is
+    /// queued, which is every moment outside a scene walk.</summary>
+    internal static void NotePartDeath(IntPtr part)
+    {
+        for (int i = 0; i < _qn; i++)
+            if (_q[i].Part == part) { _q[i].Part = IntPtr.Zero; _qDead++; }
+    }
+    private static int _qDead;
 
     private static void StorePose(IntPtr part, Vector3 pos, float* rot)
     {
@@ -407,6 +644,92 @@ internal static unsafe class DanglyPhysics
                && MoverVerdictOk();
         log.Info(ok ? "DanglyPhysics.SelfCheck: passed"
                     : $"DanglyPhysics.SelfCheck: FAILED -- quaternion convention wrong (x->{a}, back->{b}, id->{c})");
+        bool par = ParallelOk(log);
+        log.Info(par ? "DanglyPhysics.SelfCheck: passed (the pooled solve of 17 parts is bit-for-bit the serial one)"
+                     : "DanglyPhysics.SelfCheck: FAILED -- the pooled solve does not match the serial one bit for bit");
+    }
+
+
+    /// <summary>AN2's proof: a synthetic set of dangly parts solved on the pool comes out bit for bit the way
+    /// it does solved one after another. Seventeen parts over four chunks, so the cuts are uneven and no chunk
+    /// boundary lines up with a part boundary the maths could be reading across; the buffers are restored
+    /// between the two runs, so the second starts from exactly the state the first did.
+    /// <para>What it actually asserts is that <see cref="Solve"/> is a pure function of one
+    /// <see cref="Item"/>: shared state or a stale pointer would show up here as a difference, since the only
+    /// thing that changes between the runs is which thread ran which part.</para></summary>
+    private static bool ParallelOk(ExtenderLog log)
+    {
+        const int Parts = 17, MaxVerts = 41;
+        int floats = Parts * MaxVerts * 3;
+        float* cons = (float*)NativeMemory.AllocZeroed((nuint)(Parts * MaxVerts) * sizeof(float));
+        float* rest = (float*)NativeMemory.AllocZeroed((nuint)floats * sizeof(float));
+        float* dst = (float*)NativeMemory.AllocZeroed((nuint)floats * sizeof(float));
+        float* vel = (float*)NativeMemory.AllocZeroed((nuint)floats * sizeof(float));
+        float* dst0 = (float*)NativeMemory.AllocZeroed((nuint)floats * sizeof(float));
+        float* vel0 = (float*)NativeMemory.AllocZeroed((nuint)floats * sizeof(float));
+        float* dstS = (float*)NativeMemory.AllocZeroed((nuint)floats * sizeof(float));
+        float* velS = (float*)NativeMemory.AllocZeroed((nuint)floats * sizeof(float));
+        float* maxS = (float*)NativeMemory.AllocZeroed((nuint)Parts * sizeof(float));
+        int savedQn = _qn;
+        try
+        {
+            ulong seed = 0x9e3779b97f4a7c15UL;
+            float Next() { seed = Mix(seed + 0x9e3779b97f4a7c15UL); return (seed >> 40) * (1f / 16777216f); }
+            for (int i = 0; i < Parts * MaxVerts; i++) cons[i] = Next() * 300f - 20f;   // some <= 0, some > 255
+            for (int i = 0; i < floats; i++) { rest[i] = Next() * 4f - 2f; dst0[i] = Next() * 4f - 2f; vel0[i] = Next() * 2f - 1f; }
+            for (int k = 0; k < Parts; k++)
+            {
+                int n = 1 + k * 2;
+                ref Item it = ref _q[k];
+                it = default;
+                it.Part = (IntPtr)(0x1000 + k);
+                it.N = n;
+                it.Steps = 1 + (k & 3);
+                it.Cons = (IntPtr)(cons + k * MaxVerts);
+                it.Rest = (IntPtr)(rest + k * MaxVerts * 3);
+                it.Dst = (IntPtr)(dst + k * MaxVerts * 3);
+                it.Vel = (IntPtr)(vel + k * MaxVerts * 3);
+                float s2 = MathF.Sqrt(0.5f);
+                it.Dw = s2; it.Dx = 0f; it.Dy = 0f; it.Dz = s2;
+                it.TLocal = new Vector3(Next(), Next(), Next());
+                it.WindL = new Vector3(Next() * 8f, Next() * 8f, 0f);
+                it.Gust = new Vector3(Next(), Next(), Next());
+                it.GravL = new Vector3(0f, 0f, -3f);
+                it.T = 12.5f + k; it.PhaseOff = Next() * 6f; it.RateVar = 0.9f + Next() * 0.2f;
+                it.H = 1f / 120f; it.Disp = 0.2f + Next(); it.Stiff = 0.5f * (0.1f + Next()); it.Damp = 1.5f * Next();
+                it.Turb = 0.7f; it.TurbFreq = 0.9f; it.TurbSpeed = 2.6f; it.Cage = 3.5f;
+                it.Body = (k & 1) == 0 ? 0.95f : 0f;
+            }
+            _drainN = Parts;
+
+            Buffer.MemoryCopy(dst0, dst, (long)floats * 4, (long)floats * 4);
+            Buffer.MemoryCopy(vel0, vel, (long)floats * 4, (long)floats * 4);
+            SolveRange(0, 1);
+            Buffer.MemoryCopy(dst, dstS, (long)floats * 4, (long)floats * 4);
+            Buffer.MemoryCopy(vel, velS, (long)floats * 4, (long)floats * 4);
+            for (int k = 0; k < Parts; k++) maxS[k] = _q[k].MaxD;
+
+            Buffer.MemoryCopy(dst0, dst, (long)floats * 4, (long)floats * 4);
+            Buffer.MemoryCopy(vel0, vel, (long)floats * 4, (long)floats * 4);
+            if (!StagePool.Run(4, log, SolveRange)) return false;
+            for (int i = 0; i < floats; i++)
+                if (BitConverter.SingleToInt32Bits(dst[i]) != BitConverter.SingleToInt32Bits(dstS[i])
+                 || BitConverter.SingleToInt32Bits(vel[i]) != BitConverter.SingleToInt32Bits(velS[i])) return false;
+            for (int k = 0; k < Parts; k++)
+                if (BitConverter.SingleToInt32Bits(_q[k].MaxD) != BitConverter.SingleToInt32Bits(maxS[k])) return false;
+            return true;
+        }
+        finally
+        {
+            // Safe here where it is not on the drain's refusal path: this check's only failure is a pool that
+            // refused to start, never a worker wedged inside a chunk still holding one of these entries.
+            for (int k = 0; k < Parts; k++) _q[k] = default;
+            _qn = savedQn;
+            _drainN = 0;
+            NativeMemory.Free(cons); NativeMemory.Free(rest); NativeMemory.Free(dst); NativeMemory.Free(vel);
+            NativeMemory.Free(dst0); NativeMemory.Free(vel0); NativeMemory.Free(dstS); NativeMemory.Free(velS);
+            NativeMemory.Free(maxS);
+        }
     }
 
     /// <summary>The mover verdict: two sub-threshold twitches add up to a report, a report resets the path,

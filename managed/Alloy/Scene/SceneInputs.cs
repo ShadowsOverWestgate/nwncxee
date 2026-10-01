@@ -169,9 +169,13 @@ public sealed unsafe class SceneInputs : IExtenderService
         }
         // #118: the world-caster bake, so the cascades and cubes are baked before the colour pass that
         // samples them.
-        long tBake = FrameZones.Now;
+        long tBake = FrameZones.Now, pose0 = FrameZones.Ticks(FrameZones.Zone.Pose);
         if (_stage >= 4) CasterPass.OnPassSlot();
-        FrameZones.Add(FrameZones.Zone.Bake, tBake);
+        // SL3: net of Pose. The bake poses every owned skinmesh first (#308 moved the solve to the front of
+        // the frame so the bake and the colour pass skin with the same bones), and Pose is reported on its own
+        // row -- so counting it here too made Bake read ~0,3ms high and double-counted the one zone the two
+        // brackets share.
+        FrameZones.Add(FrameZones.Zone.Bake, tBake, FrameZones.Ticks(FrameZones.Zone.Pose) - pose0);
         // AFTER the bake, so a light and the cube it points at come from the SAME bake. Binding before it
         // would map this frame's lights onto last frame's slot assignment, and the nearest-first cube sort
         // reshuffles slots -- a light would sample another light's cube for a frame.
@@ -329,7 +333,13 @@ public sealed unsafe class SceneInputs : IExtenderService
     /// <summary>Pointer-keyed table of every light's running peak. Open-addressed, fixed, alloc-free; an entry
     /// the walk did not refresh last frame is dead (the engine frees PartLight* at area edges and malloc hands
     /// the address back), so a lookup that finds a stale entry starts over.</summary>
-    private const int FlkSlots = 512;   // ponytail: master lists run to a few hundred; past this the tail keeps the stock pulse
+    /// <summary>Sized from the SAME bound as the population it is keyed on (<see cref="LightRegistry"/>'s
+    /// table), not from a busy plaza: at 512 slots and 1422 live lights the table was oversubscribed 2,8x and
+    /// the refusal below was silent -- a torch that kept the engine's raw pulse, and with it the cube re-bake
+    /// the steady reach exists to stop, with nothing in the log. CX-45: it is now said once and counted.</summary>
+    private const int FlkSlots = LightRegistry.Capacity;
+    /// <summary>Probe window. At the registry's capacity the load is under a tenth, so a window this wide
+    /// fills only if the hash has collapsed -- which is what <see cref="_flkFull"/> would then say.</summary>
     private const int FlkProbe = 8;
     /// <summary>Frames the latch outlives the last decrease, so a key plateau does not flip a torch back to raw.</summary>
     private const int FlkHold = 180;
@@ -340,6 +350,18 @@ public sealed unsafe class SceneInputs : IExtenderService
     private static readonly int[] _flkSeen = new int[FlkSlots], _flkUntil = new int[FlkSlots];
     private static int _flkSeq;
     private static IntPtr _flkArea;
+    /// <summary>Lights the peak table could not take, and whether that was said out loud yet. Must read 0.</summary>
+    private static long _flkFull;
+    private static bool _flkFullLogged;
+
+    /// <summary>The peak table's clause, printed on the registry's period line because it is keyed on the
+    /// registry's own population.</summary>
+    internal static string FlickerClause()
+    {
+        string s = $"flicker table {FlkSlots} slots, flicker-full={_flkFull} (must be 0)";
+        _flkFull = 0;
+        return s;
+    }
     private static readonly long _flkT0 = Stopwatch.GetTimestamp();
 
     /// <summary>Replace an animated light's pulse: <paramref name="adjR"/> becomes the engine's own value at the
@@ -359,7 +381,19 @@ public sealed unsafe class SceneInputs : IExtenderService
         }
         if (slot < 0)
         {
-            if (free < 0) return 1f;   // every probe live: this light keeps the stock pulse
+            if (free < 0)
+            {   // Every probe live: this light keeps the engine's raw pulse, and its cube re-keys with it.
+                // Loud once, counted after (CX-45) -- the table is sized so this cannot happen quietly.
+                _flkFull++;
+                if (!_flkFullLogged)
+                {
+                    _flkFullLogged = true;
+                    _log?.Always($"SceneInputs: the animated-light peak table has no free slot in {FlkProbe} probes "
+                               + $"of {FlkSlots} -- this light keeps the engine's raw pulse and its shadow cube "
+                               + "re-bakes with it. Counted as flicker-full on the [alloy] lightreg clause");
+                }
+                return 1f;
+            }
             slot = free;
             _flkId[slot] = id; _flkPeak[slot] = cur; _flkPeakAdj[slot] = adjR; _flkUntil[slot] = 0;
         }
@@ -546,9 +580,7 @@ public sealed unsafe class SceneInputs : IExtenderService
                 //
                 // The ^(1/SrgbGamma) pre-compensates the receiver's own pow(c, 2.2), so this lands there as a
                 // clean linear-space multiply and the hue comes through exactly.
-                float boost = 1f + (maxc - 1f) * CX.Alloy.AlloyLights.OverbrightScale;
-                if (boost < 0f) boost = 0f;
-                float k = MathF.Pow(boost, 1f / CX.Alloy.AlloyLights.SrgbGamma) / maxc;
+                float k = CX.Alloy.AlloyLights.OverbrightK(maxc);
                 r *= k; g *= k; b *= k;
             }
             float upW = adjR;

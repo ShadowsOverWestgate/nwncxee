@@ -232,6 +232,44 @@ internal static unsafe partial class EmitterSim
         slot.Cap = 4;
         Floor(check, ref slot, 0.5f);
 
+        // ---- the block's edge. The engine has NO per-emitter ceiling -- it births from the recycle list and,
+        // when that is empty, from operator new with nothing to stop it (FountainEmitter::Update @0x4b1c70) --
+        // so every refusal here costs a particle vanilla would have drawn, whatever sized the block. One that
+        // counts nothing is the silent fallback CX-45 forbids, and it is invisible in a frame.
+        Slot edge = default;
+        int lost0 = _capLost;
+        bool said0 = _capSaid;
+        _capSaid = true;                                   // the one-shot line is not this check's business
+        edge.Cap = 4; edge.Live = 4;
+        check.Expect(Take(ref edge).IsNull && _capLost == lost0 + 1,
+          "a birth refused by a full block is counted, whatever sized the block");
+        check.Expect(Room(ref edge, 3) == 0 && _capLost == lost0 + 4,
+          "...and a burst clamped ahead of the loop counts every birth it clamped away");
+        edge.Live = 1;
+        check.Expect(Room(ref edge, 3) == 3 && _capLost == lost0 + 4, "a burst that fits costs nothing");
+        check.Expect(Room(ref edge, 5) == 3 && _capLost == lost0 + 6, "...and one that half fits counts the rest");
+        _capLost = lost0; _capSaid = said0;
+
+        // ---- and the sizing that keeps those refusals from arising. Each term comes off a birth loop: an
+        // explosion's whole population lands in ONE step, so sizing it by rate x life alone -- which is what
+        // it used to do -- lost most of every bang from an emitter with a lifespan under a second.
+        check.Expect(Want(ModeSingle, 100f, 10f, 1f) == 1, "a single emitter is one particle whatever it declares");
+        check.Expect(Want(ModeLightning, 12f, 3f, 0.1f) == 12, "a bolt is its fixed chain of birthRate links");
+        check.Expect(Want(ModeExplosion, 50f, 0.5f, 0.016f) >= 50,
+          "an explosion has room for its whole burst even when rate x life is a fraction of it");
+        check.Expect(Want(ModeFountain, 10f, 4f, 0.1f) >= 42,
+          "a fountain holds its standing population plus the burst one step can meter");
+        check.Expect(Want(ModeFountain, 10f, 4f, 1f) > Want(ModeFountain, 10f, 4f, 0.016f),
+          "...and a longer step meters a bigger burst, so the block grows with it");
+        check.Expect(Want(ModeFountain, 0f, 0f, 0f) >= 1 && Want(ModeLightning, 0f, 0f, 0f) == 1,
+          "nothing ever asks for a block of zero");
+        // A grow ABANDONS the old block (the arena is a bump allocator), so an emitter whose controller ramps
+        // birthrate would burn ~N^2/2 of the arena growing by ones and take every other emitter down with it
+        // at the reset.
+        check.Expect(Block(1) == 1 && Block(32) == 32 && Block(33) == 64 && Block(MaxPerEmitter) == MaxPerEmitter,
+          "a block is a power of two, so a ramping emitter grows O(log N) times, not N");
+        check.Expect(Block(0) == 1 && Block(-5) == 1, "...and is never zero or negative, whatever Want returned");
+
         Reset();
         NativeMemory.Free(em.ToPointer());
         log.Info(check.Ok ? "EmitterSim.SelfCheck: passed" : "EmitterSim.SelfCheck: FAILED");

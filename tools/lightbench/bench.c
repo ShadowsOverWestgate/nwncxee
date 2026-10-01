@@ -17,7 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { W = 2544, H = 1379, GX = 32, GY = 18, GZ = 24, CAP = 128, NL = 32, CUBES = 21, DYNPAGES = 32, SPH = 4 };
+enum { W = 2544, H = 1379, GX = 32, GY = 18, GZ = 24, CAP = 128, NL = 32, CUBES = 21, DYNPAGES = 32, SPH = 16 };
 static const char* VS = "#version 460 core\nvoid main(){ vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0); }";
 // --full: the lit stage's own varyings over the same ground plane (uv 0..1 across the screen)
 static const char* VS_FULL = "#version 460 core\n"
@@ -86,7 +86,8 @@ int main(int argc, char** argv)
     for (int s = 0; s < 64; s++)
     {
         fade[s] = 1.0f;
-        for (int k = 0; k < SPH; k++) memcpy(movers + (s * SPH + k) * 4, mv[k], sizeof mv[k]);
+        for (int k = 0; k < SPH; k++)   // four movers per slot, the rest unused (r < 0), as CasterPass writes them
+            if (k < 4) memcpy(movers + (s * SPH + k) * 4, mv[k], sizeof mv[k]); else movers[(s * SPH + k) * 4 + 3] = -1.0f;
         union_[s * 4] = 1; union_[s * 4 + 1] = 1; union_[s * 4 + 2] = 20; union_[s * 4 + 3] = 22;   // the pre-split union sphere
     }
     uint32_t* counts = malloc(GX * GY * GZ * 4); uint32_t* idx = malloc((size_t)GX * GY * GZ * CAP * 4);

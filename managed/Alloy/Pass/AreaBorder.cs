@@ -37,8 +37,13 @@ internal static unsafe class AreaBorder
     private static AreaLoadBorderFn _origLoad;
     private static AreaReloadBorderFn _origReload;
     private static SceneInitBspFn _origInitBsp;
-    private static SceneSpawnTileFn _origSpawn;
-    private static SceneDeleteTileFn _origDelete;
+    /// <summary>CHAINED, not installed (#88): <see cref="CX.Alloy.SceneWalk"/> watches the same two symbols for
+    /// the scene-membership notice a tile gives no other way, and funchook silently orphans the first of two
+    /// Installs on one target. This layer sits BELOW that one, so the border replays below reach the engine
+    /// directly instead of re-entering it.</summary>
+    private const int TilePriority = 50;
+    private static SceneSpawnTileFn* _origSpawn;
+    private static SceneDeleteTileFn* _origDelete;
     private static SceneBspGetTileDataFn _tileData;
 
     internal static int Ring => _ring;
@@ -53,8 +58,8 @@ internal static unsafe class AreaBorder
         _origLoad = hooks.InstallAreaLoadBorder(&OnLoadBorder);
         _origReload = hooks.InstallAreaReloadBorder(&OnReloadBorder);
         _origInitBsp = hooks.InstallSceneInitBsp(&OnInitBsp);
-        _origSpawn = hooks.InstallSceneSpawnTile(&OnSpawnTile);
-        _origDelete = hooks.InstallSceneDeleteTile(&OnDeleteTile);
+        _origSpawn = hooks.ChainSceneSpawnTile(&OnSpawnTile, TilePriority);
+        _origDelete = hooks.ChainSceneDeleteTile(&OnDeleteTile, TilePriority);
         if (_tileData == null || _origLoad == null || _origReload == null || _origInitBsp == null
             || _origSpawn == null || _origDelete == null)
         {
@@ -96,7 +101,7 @@ internal static unsafe class AreaBorder
     [UnmanagedCallersOnly]
     private static IntPtr OnSpawnTile(IntPtr scene, byte* model, Vector3* pos, int orient, int border, IntPtr quat)
     {
-        IntPtr gob = _origSpawn(scene, model, pos, orient, border, quat);
+        IntPtr gob = (*_origSpawn)(scene, model, pos, orient, border, quat);
         if (_area == IntPtr.Zero || border == 0) return gob;
         _spawned++;
         Vector3 p = *pos;
@@ -108,7 +113,7 @@ internal static unsafe class AreaBorder
             {
                 if (i == 0 && j == 0) continue;
                 Vector3 q = new(p.X + sx * i * TileSize, p.Y + sy * j * TileSize, p.Z);
-                _origSpawn(scene, model, &q, orient, border, quat);
+                (*_origSpawn)(scene, model, &q, orient, border, quat);
                 GrassField.BorderSpawn(scene, q);
                 _replayed++;
             }
@@ -131,11 +136,11 @@ internal static unsafe class AreaBorder
                     Vector3 q = new(p.X + sx * i * TileSize, p.Y + sy * j * TileSize, p.Z);
                     GrassField.BorderDrop(q);
                     if (_tileData(scene, &q) == IntPtr.Zero) continue;
-                    _origDelete(scene, &q);
+                    (*_origDelete)(scene, &q);
                     _deleted++;
                 }
         }
-        _origDelete(scene, pos);
+        (*_origDelete)(scene, pos);
     }
 
     /// <summary>The outward axes a ring tile replays along: -1/+1 on x when it sits on the engine ring's

@@ -26,6 +26,7 @@ CClientExoApp::GetPlayerByCreatureName	1406ac080
 CClientExoApp::GetModule	1406abea0
 CNWCMessage::SendPlayerToServerChat_Talk	1407ba7e0
 CNWCMessage::HandleServerToPlayerChat	14077c140
+CNWCMessage::HandleServerToPlayerPlaceableUpdate_Delete	1407a8240
 CGuiInGame::CloseDialog	1406f6d80
 CGuiInGame::ShowDialogEntry	1406fb560
 CGuiInGame::ShowDialogReplies	1406fb8e0

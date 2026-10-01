@@ -12,6 +12,10 @@ internal static class Dangly
     internal static readonly Knob<bool> Enabled;
     internal static readonly Knob<float> Gravity, Wind, Breeze, Turb, TurbFreq, TurbSpeed, Vary, Body, Cage, Hz, Still;
     internal static readonly Knob<int> Steps;
+    /// <summary>AN2: solve the queued dangly parts on the StagePool workers. Off (and with
+    /// <c>/alloy threads 0</c>) the solve is serial on the main thread, which is the A/B for anything that
+    /// looks wrong in a cloak -- the two paths are asserted bit-for-bit identical off-device.</summary>
+    internal static readonly Knob<bool> Parallel;
 
     static Dangly()
     {
@@ -39,5 +43,8 @@ internal static class Dangly
         Hz = G.Slider("hz", "hz", 30f, 480f, 10f, 120f, tier: Tier.ChatOnly);
         Steps = G.Slider("steps", "steps", 1, 16, 1, 4, tier: Tier.ChatOnly);
         Still = G.Slider("still", "still", 0f, 1f, 0.001f, 0.01f, tier: Tier.ChatOnly);
+        Parallel = G.Toggle("parallel", "parallel", true, tier: Tier.ChatOnly,
+            help: "Solve the frame's swaying parts on CX's worker threads instead of one after another on the "
+                + "main thread. The answer is the same either way; off is the A/B.");
     }
 }

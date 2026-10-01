@@ -24,8 +24,10 @@ namespace CX.Alloy;
 /// an attach parent, and <c>CAurObject::AnimateExternal</c>, reach the owned runtime for free.</item>
 /// <item><c>Gob::DoEvent</c> is the engine's, called through its vtable. That IS the seam into game code, and
 /// re-implementing the callback registry would buy nothing and break footsteps.</item>
-/// <item>the behaviour solvers, <c>Part::Animate</c> (and so the dangly solve) and
-/// <c>NewController::ReportKeys</c> are dispatched exactly where the engine dispatches them.</item>
+/// <item>the behaviour solvers and <c>NewController::ReportKeys</c> are dispatched exactly where the engine
+/// dispatches them. <c>Part::Animate</c> is NOT, any more: <see cref="PartWalk"/> owns that recursion and
+/// calls out only at a part whose Animate slot overrides it -- which is how the dangly solve is still
+/// reached, and the only way it is.</item>
 /// </list>
 /// <para><b>Gate.</b> Boot-time renderer choice (<c>alloy.enabled</c>: this whole pass is only registered
 /// when Alloy is not opted out) plus the live <c>anim.owned</c> knob. It is NOT gated on the per-frame draw
@@ -44,6 +46,22 @@ internal static unsafe partial class AnimRuntime
     private const int NameMax = 0x40;   // not-an-offset: the engine sprintf buffer size
     /// <summary>The bounding sphere is refreshed every Nth animate.</summary>
     private const int SphereEvery = 5;
+    /// <summary>AN4: one refusal in this many is taken anyway and its answer compared. A power of two.</summary>
+    private const int SphereAudit = 64;
+    /// <summary>Two sticky bits Alloy keeps in the spare high end of <see cref="EngineLayout.GobSphereTick"/>,
+    /// whose own counter only ever holds 0..4. <see cref="SphereMovedBit"/> is "something moved since the last
+    /// refresh", which is the predicate the refresh cadence actually needs; <see cref="LightHostBit"/> is "the
+    /// pose walk has seen a light part in this tree".
+    /// <para>Alloy is the field's only writer on an owned frame -- the engine's <c>Gob::Animate</c> is the sole
+    /// other one and this runtime replaces it. With <c>anim.owned 0</c> the engine writes the counter plainly
+    /// and clears both bits, which costs one cadence step and one re-latch, never correctness.</para></summary>
+    // ponytail: 0x8000 is the ceiling for spare bits here. BOTH builds read Gob+0x188 SIGNED (movsx, then the
+    // imul 0x66666667 magic divide), so a bit in the sign position would make the engine's own (x+1)%5 negative
+    // and never zero -- with anim.owned 0 the sphere would then never refresh at all. A third flag is fine;
+    // the upgrade past 0x4000 is a side table keyed on the gob, not another bit.
+    private const int SphereMovedBit = 0x100, LightHostBit = 0x200;   // not-an-offset: spare bits of Gob+0x188
+    /// <summary>The counter's own range inside that field.</summary>
+    private const int SphereTickMask = 0xff;   // not-an-offset: the counter's own range below those bits
     /// <summary>The wind gust's radius: the engine hard-codes 1.0 at the call site.</summary>
     private const float GustRadius = 1.0f;
 
@@ -68,6 +86,12 @@ internal static unsafe partial class AnimRuntime
     private static bool _armed;
 
     private static int _scenes, _gobs, _skipped, _runs, _crossfades, _dropped, _gusts, _lookAts, _marked, _rootless;
+    /// <summary>The two per-gob tree costs the survey could not attribute: how many gobs had their part tree
+    /// animated at all, and how many of those refreshed the bounding sphere on this frame's cadence.</summary>
+    private static int _trees, _spheres;
+    /// <summary>AN4: refreshes refused because the gob advanced nothing, and the audit's verdict on them --
+    /// a sphere that came back DIFFERENT from a refused refresh, which must be 0.</summary>
+    private static int _sphereSkipped, _sphereMiss, _sphereTick;
     /// <summary>Events fired per kind, which is what a side-by-side against the engine's own run compares:
     /// a missing footstep is a missing KEYED event, a pose that never starts is a missing <c>start</c>.</summary>
     private static int _starts, _loops, _dones;
@@ -119,7 +143,8 @@ internal static unsafe partial class AnimRuntime
                           || _free == null || _gobAnimateSym == IntPtr.Zero || _gobEntry == null ? "a runtime symbol"
                         : !AurXform.Ready ? AurXform.Missing
                         : !AnimKeys.Attach() ? "the key readers"
-                        : !AnimHierarchy.Attach() ? "the node Control table"
+                        : !AnimHierarchy.Attach(log) ? "the node Control table"
+                        : !PartWalk.Attach(log) ? "the Part::Animate identities"
                         : null;
         if (missing != null)
         {
@@ -155,7 +180,15 @@ internal static unsafe partial class AnimRuntime
                  + $"events/f {AnimEvents.Fired / (float)frames:F1} keyed + {(float)_starts / frames:F2} start "
                  + $"+ {(float)_loops / frames:F2} loop + {(float)_dones / frames:F2} done, "
                  + $"{(float)_marked / frames:F0} marked/f, "
-                 + $"solve {_ticks * toMs / frames:F3} ms/f (peak gob {_peakTicks * toMs:F3} ms)";
+                 + $"{(float)_lodFar / frames:F0} far/f ({(float)_lodHeld / frames:F0} held), "
+                 + $"{(float)_trees / frames:F0} trees/f ({PartWalk.Visits / (float)frames:F0} parts, "
+                 + $"{PartWalk.Dispatches / (float)frames:F0} dispatched), "
+                 + $"{(float)_spheres / frames:F0} spheres/f "
+                 + $"({(float)_sphereSkipped / frames:F0} still), "
+                 + $"{AnimHierarchy.PairProbes / (float)frames:F1} pair probes/f, "
+                 + $"{AnimHierarchy.StaticLights / (float)frames:F0} staticlight/f "
+                 + $"({AnimHierarchy.StaticLightsSkipped / (float)frames:F0} unheard), "
+                 + $"solve {_ticks * toMs / frames:F3} ms/f incl. the dangly drain (peak gob {_peakTicks * toMs:F3} ms)";
         if (AnimHierarchy.Morphs != 0) s += $", {AnimHierarchy.Morphs / (float)frames:F1} morphs/f";
         if (AnimHierarchy.Traced != 0) s += $", {AnimHierarchy.Traced / (float)frames:F1} traced/f";
         if (_lookAts != 0) s += $", {_lookAts} look-at teardowns";
@@ -164,6 +197,9 @@ internal static unsafe partial class AnimRuntime
         if (bez != 0) s += $", {bez / (float)frames:F1} bezier/f (engine getter)";
         if (AnimHierarchy.HandedBack != 0) s += $", {AnimHierarchy.HandedBack} UNKNOWN node classes handed back";
         if (_rootless != 0) s += $", {_rootless} runs REFUSED (no part tree or no animation root node)";
+        if (_sphereMiss != 0) { s += $", {_sphereMiss} SPHERE AUDIT misses (must be 0)"; _sphereMiss = 0; }
+        if (PartWalk.Unknown != 0) s += $", {PartWalk.Unknown / (float)frames:F1} UNKNOWN Animate overrides/f";
+        if (PartWalk.Overflow != 0) s += $", {PartWalk.Overflow / (float)frames:F1} subtree(s)/f DEEPER than the walk descends";
         Reset();
         return s;
     }
@@ -172,8 +208,12 @@ internal static unsafe partial class AnimRuntime
     {
         _scenes = _gobs = _skipped = _runs = _crossfades = _dropped = _gusts = _lookAts = _marked = _rootless = 0;
         _starts = _loops = _dones = 0;
+        _trees = _spheres = _sphereSkipped = 0;
+        _lodFar = _lodHeld = 0;
         _ticks = _peakTicks = 0;
         AnimHierarchy.Parts = AnimHierarchy.Controllers = AnimHierarchy.Morphs = 0;
+        AnimHierarchy.StaticLights = AnimHierarchy.StaticLightsSkipped = AnimHierarchy.PairProbes = 0;
+        PartWalk.Visits = PartWalk.Dispatches = PartWalk.Unknown = PartWalk.Overflow = 0;
         AnimHierarchy.HandedBack = AnimHierarchy.Traced = 0;
         AnimEvents.Fired = 0;
         AnimKeys.TakeBezier();
@@ -210,6 +250,11 @@ internal static unsafe partial class AnimRuntime
         _scenes++;
         IntPtr was = *_pCurrentScene;
         *_pCurrentScene = scene;
+        // AN2: the dangly solves of this walk are collected rather than run, and drained below -- inside the
+        // latch, which PartDanglyMesh::Animate's own gate reads, and after every gob's pose is final.
+        bool wasBatching = DanglyPhysics.Batching;
+        DanglyPhysics.Batching = true;
+        LodBegin(scene, dt);
         var s = new Scene(scene);
         for (int i = s.GobCount - 1; i >= 0; i--)
         {
@@ -222,6 +267,15 @@ internal static unsafe partial class AnimRuntime
             if (fn == _gobAnimateSym) _gobEntry(gob, dt);
             else ((GobAnimateFn)fn)(gob, dt);
         }
+        // Billed to `animrt solve` exactly as the inline solves were: the drain moved the dangly arithmetic out
+        // of the per-gob step, and leaving it out of this total would read as a 1 ms win that is a relocation.
+        long tDrain = Stopwatch.GetTimestamp();
+        DanglyPhysics.Drain();
+        _ticks += Stopwatch.GetTimestamp() - tDrain;
+        DanglyPhysics.Batching = wasBatching;
+        // The camera answer belongs to this walk only: a Gob::Animate from outside one (AnimateExternal) must
+        // not be rate-limited against where the camera was some frames ago.
+        _haveCam = false;
         *_pCurrentScene = was;
     }
 
@@ -244,6 +298,9 @@ internal static unsafe partial class AnimRuntime
     {
         var g = new Gob(gob);
         IntPtr scene = g.Scene;
+        // The double-step guard, and the ONLY reader of the scene's own counter: it is a render count, not an
+        // animate count (see _lodClock), so nothing else may use it as a clock. Read before any game code runs,
+        // because the behaviour solve below can replace or free this scene (see the re-read at Gates).
         if (scene != IntPtr.Zero)
         {
             int tick = new Scene(scene).AnimFrame;
@@ -284,6 +341,15 @@ internal static unsafe partial class AnimRuntime
         if (!LookAt(g, gob, ref sp, ref moved)) return;
         if (!Visible(g)) { Done(gob, ref sp, moved); return; }
 
+        // AN5: how many frames of animation this step covers. 1 is every frame, which is every gob when the
+        // knob is off, everything near the camera, and everything pinned.
+        int rate = LodRate(g, gob);
+        if (rate > 1)
+        {
+            _lodFar++;
+            if (!LodDue(gob, rate)) { _lodHeld++; Tree(g, dt, moved); Done(gob, ref sp, moved); return; }
+        }
+
         int n = g.RunCount;
         if (n != 0)
         {
@@ -297,18 +363,284 @@ internal static unsafe partial class AnimRuntime
             }
         }
 
-        if (!Advance(g, gob, dt, n, ref sp, ref moved)) return;
-
-        IntPtr root = g.PartTree.Ptr;
-        if (root != IntPtr.Zero)
-        {
-            // Virtual: this is how PartDanglyMesh::Animate (and so DanglyPhysics) is reached.
-            new Part(root).Animate(dt);
-            short c = (short)((g.SphereTick + 1) % SphereEvery);
-            g.SphereTick = c;
-            if (c == 0) g.GetMinimumSphere();
-        }
+        // The queue advances by the time that has actually elapsed since it last did -- the SUM of the frame
+        // times of the frames held, never dt scaled by the rate, which would only be the same number while the
+        // frame time held still.
+        if (!Advance(g, gob, rate == 1 ? dt : Elapsed(rate), n, ref sp, ref moved)) return;
+        Tree(g, dt, moved);
         Done(gob, ref sp, moved);
+    }
+
+    /// <summary>The part tree and the bounding sphere. Always the REAL frame time: the dangly solve hangs off
+    /// this walk (<c>PartDanglyMesh::Animate</c> is how <see cref="DanglyPhysics"/> is reached), and a cloak
+    /// sampled every other frame stutters where a limb pose does not.</summary>
+    private static void Tree(Gob g, float dt, bool moved)
+    {
+        IntPtr root = g.PartTree.Ptr;
+        if (root == IntPtr.Zero) return;
+        _trees++;
+        // AN1: the owned walk, not `new Part(root).Animate(dt)`. Part::Animate does nothing but recurse,
+        // so the engine's version was one indirect call per part to find the few that override it.
+        PartWalk.Walk(root, dt);
+        int raw = g.SphereTick;
+        Step(raw, moved, out int tick, out bool movedSince, out short next);
+        g.SphereTick = next;
+        if (tick == 0) Sphere(g, movedSince);
+    }
+
+    /// <summary>
+    /// One step of the refresh cadence. Pure, so <see cref="SelfCheck"/> can drive it.
+    /// <para><b>Why the sticky bit exists.</b> The refusal predicate has to be "nothing moved SINCE THE LAST
+    /// REFRESH", not "nothing moved on this step": the cadence only reaches a refresh every fifth step, so a
+    /// gob that advanced on step 3 and stood still on step 5 would refuse with a pose two steps old. With
+    /// <c>anim.lod</c> on it is worse -- a far gob's held frames make <c>moved</c> false on frames whose pose
+    /// did advance, so roughly half of its refresh opportunities would refuse against a pose up to ten frames
+    /// stale, and the sphere feeds the far-plane visible test and the LOD distance. The bit is ORed on every
+    /// moving step and cleared at the refresh.</para>
+    /// </summary>
+    internal static void Step(int raw, bool moved, out int tick, out bool movedSince, out short next)
+    {
+        tick = ((raw & SphereTickMask) + 1) % SphereEvery;
+        movedSince = moved || (raw & SphereMovedBit) != 0;
+        // The light-host latch is independent of the cadence and survives it.
+        int keep = raw & LightHostBit;
+        next = (short)(tick == 0 ? tick | keep : tick | keep | (movedSince ? SphereMovedBit : 0));
+    }
+
+    /// <summary>The pose walk's note that this tree holds a light part, latched for
+    /// <see cref="LodRate"/>. Called from <see cref="AnimHierarchy"/> with the owning gob.</summary>
+    internal static void NoteLightHost(IntPtr gob)
+    {
+        var g = new Gob(gob);
+        int raw = g.SphereTick;
+        if ((raw & LightHostBit) == 0) g.SphereTick = (short)(raw | LightHostBit);
+    }
+
+    // ================= AN5: distance animation LOD =================
+
+    /// <summary>The callback names that PIN a gob to full rate.
+    /// <para><c>CAurBehaviorAttach</c>'s constructor registers all six of its callbacks on the DEPENDENCY --
+    /// the parent it is attached to (<c>src/CAurBehaviorAttach.c:49-70</c>, on <c>this+0x20</c>) -- and the
+    /// attached child gets none of them; the child only has events FIRED at it. So what these names pin is the
+    /// PARENT: <c>"*"</c> (<c>UpdateScenesAttach</c>, a wildcard <c>Gob::DoEvent</c> fires for every event) and
+    /// <c>UpdateDependentPosition</c> both name a gob something hangs off.</para>
+    /// <para>The child needs no pin of its own, and that is not luck: an attached gob's transform comes from
+    /// <c>CAurBehavior::Control</c>, which <see cref="One"/> runs BEFORE this gate and on every frame whatever
+    /// the rate. Only the child's own animation queue is sampled coarsely, which is the intent.</para>
+    /// <para><c>AnimateStaticLight</c> names a tile static object. That is NOT how light hosts are pinned --
+    /// it would miss every light that is not a tile prop's, a carried torch above all -- it is kept only
+    /// because such a gob is a prop whose animation is worth nothing to sample coarsely. The light pin is
+    /// <see cref="LightHostBit"/>, latched by the pose walk from the part class itself.</para></summary>
+    private static ReadOnlySpan<byte> PinDependent => "UpdateDependentPosition\0"u8;
+    /// <inheritdoc cref="PinDependent"/>
+    private static ReadOnlySpan<byte> PinStaticLight => "AnimateStaticLight\0"u8;
+
+    private static Vector3 _camPos;
+    private static bool _haveCam;
+    private static IntPtr _focusGob;
+    private static int _lodFar, _lodHeld;
+    /// <summary>The last <see cref="DtRing"/> frame times of the world scene, indexed by its animate tick. A
+    /// gob due at tick <c>t</c> with rate <c>r</c> advances by the sum of the <c>r</c> most recent entries,
+    /// which IS the time elapsed since its last due frame -- exact under a variable frame time, where
+    /// <c>dt * rate</c> is only right while the frame time holds still. One ring for the whole scene rather
+    /// than an accumulator per gob: every gob in a scene is handed the same <c>dt</c>, so the per-gob answer is
+    /// a window over this.</summary>
+    private static readonly float[] _dtRing = new float[DtRing];
+    /// <summary>Entries. A power of two, at least <c>anim.lodrate</c>'s ceiling.</summary>
+    private const int DtRing = 8;
+    private static IntPtr _dtScene;
+    /// <summary>
+    /// Alloy's own LOD clock: one tick per world-scene animate, incremented here and nowhere else.
+    /// <para><b>Why not the scene's own tick.</b> <c>Scene+0x1b8</c> is incremented only by
+    /// <c>Scene::Render</c> @0x4762d0, so it counts RENDERS of the scene, not animates. Nothing makes those
+    /// one-to-one: two viewports (#391), a reflection or mirror pass, or any second <c>Scene::Render</c> in a
+    /// frame advances it by two while this runtime animated once. At <c>lodrate 2</c> that makes
+    /// <c>(tick + phase) % 2</c> constant per gob -- half the far gobs would FREEZE outright and half would
+    /// advance every frame -- and the ring's <c>tick-1</c> slot would hold a different frame's time. The
+    /// scene's counter is left to the double-step guard, which is the one thing it is right for.</para>
+    /// </summary>
+    private static int _lodClock;
+    /// <summary>The clock value the ring was last written at, so a gap -- the knob toggled off and back on
+    /// inside one area -- reseeds it instead of summing frame times from before the gap.</summary>
+    private static int _dtClockAt = int.MinValue;
+
+    /// <summary>Once per scene walk: where the camera is and what it is following. Both are read here rather
+    /// than per gob -- they cannot move inside one walk.
+    /// <para><b>World scenes only.</b> A GUI 3D scene -- the character sheet's figure, an inventory item
+    /// spinning, a portrait -- is a Scene of its own reached through the same symbol, and its gobs sit wherever
+    /// that scene's own camera put them, hundreds of units from the in-game one. Measuring them against the
+    /// world camera reads every one of them as far away while the player is looking at it from a foot off, so
+    /// the whole feature stands down for them (the discriminator <see cref="GobLod"/> and the route walk use:
+    /// the tile BSP root).</para></summary>
+    private static void LodBegin(IntPtr scene, float dt)
+    {
+        _haveCam = false;
+        _focusGob = IntPtr.Zero;
+        if (!AlloyRenderer.IsWorldScene(scene)) return;
+        // Advanced for every world-scene animate, knob or no knob, so that a toggle shows up below as a GAP in
+        // the clock rather than as a seamless continuation over frames whose time was never filed.
+        _lodClock++;
+        if (!AnimKnobs.Lod.V || AnimKnobs.LodRate.V <= 1) return;
+        // This frame's time, filed under the clock value a due gob will read it by. A scene the ring has never
+        // seen (the first frame, an area load) or a gap in the clock is seeded whole, so the first few windows
+        // are this dt rather than zeros or another session's -- which would mis-advance a far gob.
+        if (_dtScene != scene || _dtClockAt + 1 != _lodClock)
+        { _dtScene = scene; for (int i = 0; i < DtRing; i++) _dtRing[i] = dt; }
+        _dtRing[_lodClock & (DtRing - 1)] = dt;
+        _dtClockAt = _lodClock;
+        var cam = new Camera(AlloyCamera.World);
+        if (cam.IsNull) return;
+        _camPos = cam.Pos;
+        _haveCam = true;
+        // The camera's follow target IS the player's own gob under every ordinary mode; the same chain
+        // ManageSceneBSP walks (AlloyRenderer.Occlude's OccludeTargetGob).
+        CAurBehavior hv = cam.BehaviorHost;
+        if (hv.IsNull) return;
+        var follow = hv.AsBehaviorCameraFollowFn == IntPtr.Zero ? default : hv.AsBehaviorCameraFollow();
+        if (!follow.IsNull) _focusGob = follow.Target;
+    }
+
+    /// <summary>
+    /// How many frames of animation one step of this gob's queue should cover.
+    /// <para>1 -- every frame -- for the knob off, for a scene with no camera, for the gob the camera follows,
+    /// for anything within <c>anim.loddist</c> of the camera, for a tree the pose walk has seen a light part in
+    /// (<see cref="LightHostBit"/>), and for anything the callback list PINS: either end of an attachment, or a
+    /// tile static object. Dangly parts need no exemption of their own -- <see cref="Tree"/> runs at the real
+    /// frame time either way.</para>
+    /// <para><b>Conservative by construction.</b> The default is 45 m and one frame in two. At 45 m a
+    /// human figure is a few dozen pixels tall at the measured 2544x1378, which is below the size at which a
+    /// limb's per-frame position is legible, and 30 Hz of pose on a 60 Hz frame is above the rate at which a
+    /// walk cycle reads as stepped. It is also well inside the visible range (camera far 215, fog end 125), so
+    /// this is a sampling decision and not a culling one -- nothing disappears and nothing changes pace.</para>
+    /// </summary>
+    private static int LodRate(Gob g, IntPtr gob)
+    {
+        if (!_haveCam || gob == _focusGob) return 1;
+        int rate = AnimKnobs.LodRate.V;
+        if (rate <= 1) return 1;
+        float d = AnimKnobs.LodDist.V;
+        if (Vector3.DistanceSquared(g.Position, _camPos) <= d * d) return 1;
+        // A tree with a light part in it: its controllers ARE the flicker, and a torch pulsing at half rate is
+        // visible where a limb pose is not. Latched by the pose walk (NoteLightHost), so a gob that is already
+        // far on the frame it first poses takes one reduced step before the pin bites.
+        if ((g.SphereTick & LightHostBit) != 0) return 1;
+        return Pinned(g) ? 1 : rate;
+    }
+
+    /// <summary>Does this gob carry a callback that pins it to full rate?</summary>
+    private static bool Pinned(Gob g)
+    {
+        int n = g.CallbackCount;
+        IntPtr* list = (IntPtr*)g.Callbacks;
+        if (n <= 0 || list == null) return false;
+        for (int i = 0; i < n; i++)
+        {
+            byte* name = (byte*)list[i];
+            if (name == null) continue;
+            if (*name == 0 || *name == (byte)'*') return true;
+            if (NameIs(name, PinDependent) || NameIs(name, PinStaticLight)) return true;
+        }
+        return false;
+    }
+
+    /// <summary><c>strcasecmp</c> against a NUL-terminated literal, the compare <c>Gob::DoEvent</c> makes.</summary>
+    private static bool NameIs(byte* name, ReadOnlySpan<byte> want)
+    {
+        for (int i = 0; i < want.Length; i++)
+        {
+            byte a = name[i], b = want[i];
+            if (a >= (byte)'A' && a <= (byte)'Z') a += 32;
+            if (b >= (byte)'A' && b <= (byte)'Z') b += 32;
+            if (a != b) return false;
+            if (a == 0) return true;
+        }
+        return true;
+    }
+
+    /// <summary>Is this the frame this gob's reduced-rate step falls on? The phase comes from the gob POINTER,
+    /// so a crowd does not advance in lockstep and spike one frame in <paramref name="rate"/>; the clock is
+    /// <see cref="_lodClock"/>, which counts animates and not renders.</summary>
+    /// <summary>
+    /// The time elapsed over the <paramref name="rate"/> frames ending at this one, out of the scene's ring.
+    /// <para><b>Exact while the gob's rate holds.</b> A gob whose rate just CHANGED is off by at most
+    /// <c>rate-1</c> frame times, once: crossing <c>anim.loddist</c> outward its first held window counts frames
+    /// it had already advanced through, and crossing inward the frames it held are not counted at all -- about
+    /// 17 ms at the default rate, absorbed by the run's own clock within that step. A gob's first due step after
+    /// it spawns is the same case. The alternative, a latched per-gob clock value, buys exactness in a term
+    /// smaller than one frame of animation; it is named here rather than claimed away. Keyed events are
+    /// unaffected either way: <see cref="AnimEvents.Fire"/> covers whatever window it is handed.</para></summary>
+    private static float Elapsed(int rate)
+    {
+        float sum = 0f;
+        for (int k = 0; k < rate && k < DtRing; k++) sum += _dtRing[(_lodClock - k) & (DtRing - 1)];
+        return sum;
+    }
+
+    private static bool LodDue(IntPtr gob, int rate)
+    {
+        uint phase = (uint)(Mix((ulong)gob) >> 40);
+        return ((uint)_lodClock + phase) % (uint)rate == 0;
+    }
+
+    /// <summary>splitmix64's finalizer: the gob's address spread into well-mixed bits.</summary>
+    private static ulong Mix(ulong z)
+    {
+        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9UL;
+        z = (z ^ (z >> 27)) * 0x94d049bb133111ebUL;
+        return z ^ (z >> 31);
+    }
+
+    /// <summary>
+    /// AN4: the every-fifth-animate bounding-sphere refresh, on the frames it can change anything.
+    /// <para><b>What the sphere is and who reads it</b> (nm addresses; the decompile's are these plus
+    /// 0x100000). <c>Gob::GetMinimumSphere</c> @0x4370a0 writes
+    /// <see cref="EngineLayout.GobRadius"/> and <see cref="EngineLayout.GobCentre"/> from
+    /// <c>Part::GetMinimumSphere</c> over the part tree plus the root part's local offset, scaled by the
+    /// adjusted scale. It is a pure function of the tree's POSE and SHAPE. The raw readers are
+    /// <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0 and the engine's BSP visitor @0x481000 (both on the
+    /// engine's bucket path), and on an Alloy frame <see cref="GobLod"/>'s LOD distance and
+    /// <c>SampleVisibleGobs</c>' far-plane test. <c>Gob::GetMinimumBoundingSphere</c> @0x437050 refreshes
+    /// through the vtable before it reads, so every caller of the accessor is exact whatever this does.</para>
+    /// <para><b>The survey's premise was wrong on one point, recorded here:</b> the sphere does NOT feed
+    /// <c>Gob+0x1b</c>. <c>Gob::IsInViewVolume</c> @0x444780 returns that byte and its only writers are
+    /// <c>Gob::EnableInViewVolume</c> @0x436f10, <c>Gob::DisableInViewVolume</c> @0x436f30 and the
+    /// constructor -- no sphere is involved.</para>
+    /// <para><b>The gate.</b> A gob that advanced nothing this step (no behaviour, no look-at, no run) has the
+    /// same pose it had, and <see cref="EngineLayout.GobGeomDirty"/> is the engine's own note that the active
+    /// tree changed under an LOD swap, so the shape term is covered too. The third term is the SCALE, which the
+    /// sphere is also a function of -- see <see cref="UnitScale"/>. One refusal in <see cref="SphereAudit"/> is
+    /// taken anyway and the answer compared, which is what makes the skip a claim rather than a hope.</para>
+    /// </summary>
+    private static void Sphere(Gob g, bool moved)
+    {
+        if (moved || g.GeomDirty != 0 || !UnitScale(g)) { _spheres++; g.GetMinimumSphere(); return; }
+        _sphereSkipped++;
+        if ((++_sphereTick & (SphereAudit - 1)) != 0) return;
+        float r = g.Radius;
+        Vector3 c = g.Centre;
+        _spheres++;
+        g.GetMinimumSphere();
+        if (g.Radius != r || g.Centre != c) _sphereMiss++;
+    }
+
+    /// <summary>
+    /// Is this gob's adjusted scale exactly 1 and unable to move on its own? Only then is the bounding sphere a
+    /// function of the pose and the shape alone, which is what lets <see cref="Sphere"/> refuse a refresh.
+    /// <para><c>Gob::GetAdjustedScale</c> @0x437cf0 is <c>LerpFloat::Lerped(gob+0x1c0) * *(float*)(gob+0x49c)</c>
+    /// and <c>Gob::GetMinimumSphere</c> multiplies both the radius and the centre by it. A lerp in flight
+    /// changes that number every frame with no run advancing and no dirty byte set, and
+    /// <c>Gob::CalculateFinalScale</c> @0x43eef0 writes <c>+0x49c</c> without marking anything -- so neither
+    /// <c>moved</c> nor the LOD-swap byte covers a scaling gob.</para>
+    /// <para>Rather than remember a scale per gob, the test is the strongest thing that needs no memory: a
+    /// settled lerp (<see cref="EngineLayout.LerpMode"/> 0, so <c>Lerped</c> returns
+    /// <see cref="EngineLayout.LerpValue"/> verbatim) whose value and base are both exactly 1. Anything else
+    /// keeps the engine's every-fifth-frame cadence, which in a city is the handful of gobs that are scaled at
+    /// all. Provably complete: a gob that passes cannot have a scale other than 1.0f, this frame or the next.</para>
+    /// </summary>
+    private static bool UnitScale(Gob g)
+    {
+        var lerp = g.ScaleLerp;
+        return lerp.Mode == 0 && lerp.Value == 1f && g.ScaleBase == 1f;
     }
 
     /// <summary>A moving gob is a wind point source. LIVE: <c>Gob::SetWind</c> @0x436f40 has no direct caller,

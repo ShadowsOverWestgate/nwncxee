@@ -528,6 +528,8 @@ internal static unsafe partial class Particles
             if (wrote == 0) continue;
             // The delta. An emitter whose particles did not move -- a frozen splat field, an emitter the
             // simulation skipped -- costs a hash of its own memory and no bus traffic at all.
+            // ponytail: a camera-derived basis in record slots 8..14 can never match across a rotation.
+            // Upgrade: build the basis in cx_particle_v instead. See Fnv for the measurement that parks it.
             ulong h = Fnv(_recs + (long)e.RecBase * RecFloats, (long)wrote * RecFloats);
             if (h != e.Hash)
             {
@@ -722,10 +724,10 @@ internal static unsafe partial class Particles
         if (!g.IsNull)
         {
             TileData owner = g.TileData;
-            if (!owner.IsNull && owner.GeomFade < 1f) { _decFade++; return false; }
+            if (!owner.IsNull && TileFadeRamp.Explored(owner.Ptr) < 1f) { _decFade++; return false; }
         }
         TileData tile = e.TileOwner;
-        if (!tile.IsNull && tile.GeomFade < 1f) { _decFade++; return false; }
+        if (!tile.IsNull && TileFadeRamp.Explored(tile.Ptr) < 1f) { _decFade++; return false; }
 
         int type = e.Type;
         // Type 3 pairs each particle with the NEXT one, so the last has no partner and the loop runs one
@@ -917,7 +919,7 @@ internal static unsafe partial class Particles
         bool lerpColor = cStart != cEnd;
 
         // alpha: the emitter's own pair, folded with the tile's and the Gob's
-        float aScene = _tileAlpha(em) * _gobAlpha(em);
+        float aScene = _tileAlpha(em) * (PlaceableHold.Held(new Part(em).Gob.Ptr) ? 1f : _gobAlpha(em));
         float aStart = Sat(emv.AlphaStart * aScene) * ByteScale;
         float aEnd = Sat(emv.AlphaEnd * aScene) * ByteScale;
         bool lerpAlpha = emv.AlphaStart != emv.AlphaEnd;
@@ -1126,7 +1128,13 @@ internal static unsafe partial class Particles
 
     /// <summary>FNV-1a over a record block, eight bytes at a time. The delta's whole change detector: the
     /// engine simulates particles and tells nobody, so "did this emitter move" is a question about its own
-    /// bytes and nothing else.</summary>
+    /// bytes and nothing else.
+    /// <para>It cannot match for an emitter whose billboard basis is the CAMERA's: slots 8..14 carry `right`
+    /// and `up`, and render types 0, 3, 4 and 6 derive them from the camera's axes, so a rotation dirties even
+    /// an emitter whose particles did not move. Left that way deliberately -- measured at 2,1 blocks and about
+    /// 8KB a frame, and the case it would win does not exist, since a settled emitter here is a landed SPLAT
+    /// whose right and up come from the particle's own contact normal and quaternion and already match, while
+    /// the emitters that do re-send are live effects whose particles are moving anyway.</para></summary>
     private static ulong Fnv(float* f, long floats)
     {
         ulong h = 14695981039346656037UL;
@@ -1516,7 +1524,7 @@ internal static unsafe partial class Particles
     /// <summary>AC 4's number: emitters owned against draws issued. Vanilla's ratio is 1:1 by construction --
     /// it depth-sorts emitters individually and cannot merge two -- so anything above 1.0 here is a
     /// draw-call reduction the engine could not have made.</summary>
-    internal static string Stats() => _off ? "particles vanilla (Alloy pass unavailable)"
+    internal static string Stats(int frames) => _off ? "particles vanilla (Alloy pass unavailable)"
         : !Enabled.V ? "particles vanilla (/particles enabled 0)"
         : $"particles {_tabN} emitters, {_emitters} owned in {_groups} draws"
           + (_emitters == 0 ? "" : $" ({(float)_emitters / MathF.Max(1, _groups):F1}x batched)")
@@ -1528,7 +1536,9 @@ internal static unsafe partial class Particles
           + (!Lit.V ? ", unlit" : $", {_litGroups} lit draws")
           + (_emissive == 0 ? "" : $", {_emissive} emissive")
           + (_reclaimed == 0 ? "" : $", {_reclaimed} table slots reclaimed from unwalked emitters")
-          + $", {_blockUploads}/{_blockUploads + _blockSkips} record blocks re-sent"
+          // Per FRAME, like everything around it: as a period total this read "1927/1927 record blocks
+          // re-sent" for what is two blocks and 8KB a frame, which is an alarm where there is no bus traffic.
+          + $", {(float)_blockUploads / MathF.Max(1, frames):F1} of {(float)(_blockUploads + _blockSkips) / MathF.Max(1, frames):F1} record blocks re-sent per frame"
           + (!Sort.V ? ", index built on the CPU, unsorted (/particles sort 0)"
              : _csFailed ? ", index built on the CPU, unsorted (NO COMPUTE)"
              : $", {_sorted} groups depth-sorted in compute"

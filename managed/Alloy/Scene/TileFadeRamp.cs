@@ -65,41 +65,59 @@ internal static unsafe class TileFadeRamp
     /// <summary><c>Scene::geomFadeEnabled</c>'s three values: the plane test, no fade, and every roof out.</summary>
     private const int ModeAuto = 1, ModeNever = 2, ModeAlways = 4;
 
-    /// <summary>An NWN area is at most 32x32 tiles; this is double that, with room for a tileset that spawns
-    /// more than one <c>TileData</c> per cell.</summary>
-    private const int MaxTiles = 2048;
+    /// <summary>The table's starting size, and the floor it is never sized below: enough for a 32x32 area
+    /// inside the engine's own five-tile ring before an area is known.
+    /// <para>It used to be the whole capacity, as a const, on the claim that 2048 is "double 32x32". It is
+    /// not: <see cref="AreaBorder"/> replays the border out to <c>alloy.border</c> tiles (default 15), so a
+    /// 32x32 area carries (32+30)^2 = 3844 tiles and a modest 20x20 one carries 2500. The live table sat at
+    /// exactly 2048 and refused the rest, which is CX-45's silent degradation: those tiles never fade, and
+    /// (until the scene walk's own fix) never registered an emitter either. The capacity is now DERIVED --
+    /// see <see cref="AreaBound"/> -- and overflow past it is a loud bug rather than a ceiling.</para></summary>
+    private const int MinTiles = 2048;
+    /// <summary>The absolute ceiling, from the engine's own maxima: a 64-tile area side (double the largest
+    /// shipped 32) inside <see cref="AreaBorder.MaxRing"/>, squared and rounded up to a power of two. Past
+    /// this a tile is REFUSED, which is the only remaining path that drops one.</summary>
+    private const int MaxTilesCeiling = 1 << 15;
     /// <summary>Per-tile slab of <c>tilefade 1</c> part boxes. Stock roofs are one to three pieces; past this
     /// the tile falls back to its own union box, which fades MORE readily rather than less.</summary>
     private const int FadePartsPerTile = 8;
-    private const int HashSize = 1 << 12;
-    private const int HashMask = HashSize - 1;
     private const int PlaneFloats = 24;
 
-    private static readonly IntPtr[] _tile = new IntPtr[MaxTiles];
-    private static readonly int[] _slot = new int[HashSize];
-    private static readonly bool[] _freed = new bool[MaxTiles];
-    private static readonly int[] _gen = new int[MaxTiles];
-    private static readonly Vector3[] _boxMin = new Vector3[MaxTiles];
-    private static readonly Vector3[] _boxMax = new Vector3[MaxTiles];
+    /// <summary>Live capacity of every per-tile column, and the mask of the hash over them (always at least
+    /// twice the capacity, so a table holding <see cref="_cap"/> live tiles still has an empty bucket on every
+    /// probe chain).</summary>
+    private static int _cap, _hashMask;
+
+    private static IntPtr[] _tile = Array.Empty<IntPtr>();
+    private static int[] _slot = Array.Empty<int>();
+    private static bool[] _freed = Array.Empty<bool>();
+    private static int[] _gen = Array.Empty<int>();
+    private static Vector3[] _boxMin = Array.Empty<Vector3>();
+    private static Vector3[] _boxMax = Array.Empty<Vector3>();
     /// <summary>XY boxes of this tile's <c>tilefade 1</c> parts: (minX, minY, maxX, maxY).</summary>
-    private static readonly Vector4[] _fadeBox = new Vector4[MaxTiles * FadePartsPerTile];
-    private static readonly int[] _fadeBoxN = new int[MaxTiles];
+    private static Vector4[] _fadeBox = Array.Empty<Vector4>();
+    private static int[] _fadeBoxN = Array.Empty<int>();
     /// <summary>This tile had more <c>tilefade 1</c> parts than the slab holds, so the occlusion test also
     /// uses its union box -- conservative on purpose (see <see cref="FadePartsPerTile"/>).</summary>
-    private static readonly bool[] _fadeBoxOver = new bool[MaxTiles];
+    private static bool[] _fadeBoxOver = Array.Empty<bool>();
     /// <summary>The two factors, and the intent counter behind the first of them.</summary>
-    private static readonly float[] _fade = new float[MaxTiles];
-    private static readonly float[] _acc = new float[MaxTiles];
-    private static readonly float[] _explored = new float[MaxTiles];
+    private static float[] _fade = Array.Empty<float>();
+    private static float[] _acc = Array.Empty<float>();
+    private static float[] _explored = Array.Empty<float>();
     /// <summary>Tile slots back in the pool. Same reason <see cref="SceneParts"/> keeps one: without it
     /// <see cref="_count"/> is a high-water mark, not a capacity -- <see cref="Insert"/> reclaims a freed slot
     /// only when it lands on the new tile's probe chain, so a session that keeps replacing tiles would walk
-    /// the array to <see cref="MaxTiles"/> and then stop registering any tile whose chain reaches an empty
+    /// the array to <see cref="_cap"/> and then stop registering any tile whose chain reaches an empty
     /// hash bucket. Lower churn than the part table, identical shape.</summary>
-    private static readonly int[] _freeTile = new int[MaxTiles];
+    private static int[] _freeTile = Array.Empty<int>();
     private static int _freeN;
     private static int _count;
     private static long _reused, _compactions;
+    /// <summary>Times the table had to grow past <see cref="AreaBound"/>, and the census of the area the
+    /// bound was derived from when that first happened. A nonzero count is a BUG in the bound, not a tuning
+    /// knob: the table grows anyway so the area still fades, and says so once.</summary>
+    private static long _grewPastBound;
+    private static bool _grewLogged;
 
     /// <summary>Six inward-facing camera planes (xyz = unit normal, w = offset), rebuilt each tick.</summary>
     private static readonly float[] _planes = new float[PlaneFloats];
@@ -107,6 +125,16 @@ internal static unsafe class TileFadeRamp
     private static ExtenderLog? _log;
     private static float* _deltaT;
     private static int* _geomFadeMode;
+    /// <summary>The engine's own chain to the current area, for <see cref="AreaBound"/>: the area's tile grid
+    /// is what sizes the table. Read at the rebuild edge, never dereferenced beyond the two ints, and asked
+    /// directly rather than off <see cref="FrameInputs.AreaExtent"/> -- that copy is refreshed once per
+    /// presented frame, so the FIRST rebuild of a new area would still read the previous area's grid and a
+    /// bigger new area would look like a bound bug.</summary>
+    private static IntPtr _appMgr;
+    private static GetModuleFn _getModule;
+    /// <summary>Did the two layout groups <see cref="AreaBound"/> reads resolve? Without them the bound is not
+    /// derived at all rather than derived from a garbage offset.</summary>
+    private static bool _areaCensus;
     /// <summary>This frame's verdict of <see cref="FadeLive"/>: the factors are applied at all.</summary>
     private static bool _fadeLive;
     private static int _mode = ModeAuto;
@@ -124,15 +152,25 @@ internal static unsafe class TileFadeRamp
     /// <para>One witness and not a list: a tile dying takes all its parts with it, so one is enough to see it.
     /// The other direction -- a single part destroyed on its own -- frees a LIVE tile, which costs it its fade
     /// state until the next rebuild and can never be a wrong dereference.</para></summary>
-    private static readonly IntPtr[] _witness = new IntPtr[MaxTiles];
-    private static readonly int[] _witnessSlot = new int[HashSize];
-    private static readonly int[] _witnessStamp = new int[HashSize];
+    private static IntPtr[] _witness = Array.Empty<IntPtr>();
+    private static int[] _witnessSlot = Array.Empty<int>();
+    private static int[] _witnessStamp = Array.Empty<int>();
     private static long _witnessDeaths;
 
-    /// <summary>One-entry memo for <see cref="Slot"/>: a route walks a tile's parts together, so the same tile
-    /// is asked for many times in a row.</summary>
-    private static IntPtr _memoTile;
-    private static int _memoSlot = -1;
+    /// <summary>BW4: the generation a resolved tile SLOT and the factors behind it are good for. Bumped by
+    /// every edge that can move either -- a registry rebuild or sweep (which renumbers slots), a witness death
+    /// (which frees one), a new Scene, and any tick that actually moved a factor or flipped
+    /// <see cref="FadeLive"/>. A caller that resolved <see cref="SlotOf"/> under this generation may keep the
+    /// index and the values it read; a caller that only wants the values (the route memo) may skip reading them
+    /// at all.
+    /// <para>It replaces a one-entry memo on <see cref="Slot"/> whose doc claimed "a route walks one tile's
+    /// parts together". It does not: the route walks BATCH-KEY order, and the two questions per part are asked
+    /// of two different tiles (the fog owner and the occluding tile), so the memo thrashed and the hash probe
+    /// ran about twice per accepted slot per frame.</para></summary>
+    internal static int Gen => _valueGen;
+    private static int _valueGen = 1;
+    /// <summary>Any resolved slot index or factor just became suspect.</summary>
+    private static void Moved() => _valueGen++;
 
     /// <summary>The first symbol or layout that did not resolve, or null.</summary>
     internal static string? Missing { get; private set; }
@@ -142,7 +180,19 @@ internal static unsafe class TileFadeRamp
         _log = log;
         _deltaT = (float*)Native.Sym(SymbolMap.DeltaT);
         _geomFadeMode = (int*)Native.Sym(SymbolMap.GeomFadeEnabled);
-        Array.Fill(_slot, -1);
+        _appMgr = Native.Sym(SymbolMap.AppManager);
+        _getModule = EngineFn.GetModule;
+        Ensure(MinTiles);
+        // AreaBound reads the module's current area and its tile grid. An unresolved row is a ZERO offset
+        // (EngineLayout.Field returns `mine ?? 0`), and none of these three fields lives at 0, so that is the
+        // test -- reading them anyway would clamp a bound derived from whatever sits at the top of the object.
+        // Not part of Missing: the fade does not need the census, it only starts smaller without it.
+        _areaCensus = EngineLayout.ModuleCurrentArea != 0 && EngineLayout.AreaTileWidth != 0
+                      && EngineLayout.AreaTileHeight != 0;
+        if (!_areaCensus)
+            log.Always("TileFadeRamp: the area census rows (CNWCModule.currentArea, CNWCArea.tileWidth/"
+                     + $"tileHeight) have no value for this OS -- the tile table starts at {MinTiles} and grows "
+                     + "on demand, so its growth line means that rather than a wrong bound");
         Missing = _deltaT == null ? SymbolMap.DeltaT
                 : _geomFadeMode == null ? SymbolMap.GeomFadeEnabled
                 : !EngineLayout.Require(log, "TileFadeRamp", "TileData", "PartTriMesh", "MdlNodeTriMesh", "Camera")
@@ -164,6 +214,87 @@ internal static unsafe class TileFadeRamp
     {
         _rebuildGen++;
         _rebuiltTiles = 0;
+        Ensure(AreaBound());
+    }
+
+    /// <summary>How many tiles this area can present: its ARE tile grid grown by the border ring
+    /// <see cref="AreaBorder"/> actually spawns, with a tile of slack on each side (the BSP's leaves CLAMP, so
+    /// a spawn at the outer edge lands on the last cell rather than past it). One <c>TileData</c> per grid
+    /// cell -- <c>Scene::SpawnTile</c> makes one per position and <c>SceneBSPGetTileData</c> answers by
+    /// position -- so this is the real bound, not a guess with headroom. <see cref="MinTiles"/> while no area
+    /// is known.</summary>
+    private static int AreaBound()
+    {
+        CNWCArea a = _areaCensus ? Area() : default;
+        if (a.IsNull) return MinTiles;
+        int ring = Math.Max(AreaBorder.Ring, AreaBorder.EngineRing);
+        long w = a.TileWidth + 2L * ring + 2, h = a.TileHeight + 2L * ring + 2;
+        if (w <= 2 || h <= 2) return MinTiles;
+        return (int)Math.Clamp(w * h, MinTiles, MaxTilesCeiling);
+    }
+
+    /// <summary>The current CNWCArea, through the engine's own chain (g_pAppManager needs two derefs -- the
+    /// CAppManager first, whose first field is the CClientExoApp*). Every deref guarded; the null view while
+    /// the chain is unavailable.</summary>
+    private static CNWCArea Area()
+    {
+        if (_appMgr == IntPtr.Zero || _getModule == null) return default;
+        IntPtr mgr = *(IntPtr*)_appMgr;
+        if (mgr == IntPtr.Zero) return default;
+        IntPtr app = *(IntPtr*)mgr;
+        if (app == IntPtr.Zero) return default;
+        var module = new CNWCModule(_getModule(app));
+        return module.IsNull ? default : module.CurrentArea;
+    }
+
+    /// <summary>Grow every per-tile column to hold <paramref name="need"/> tiles (and the hash to twice that).
+    /// Only ever called from the rebuild edge and from the overflow path, never per frame, and never shrinks:
+    /// an area load is where an NWN client allocates.</summary>
+    private static void Ensure(int need)
+    {
+        if (need <= _cap) return;
+        int cap = Math.Max(MinTiles, _cap);
+        while (cap < need && cap < MaxTilesCeiling) cap *= 2;
+        cap = Math.Min(cap, MaxTilesCeiling);
+        if (cap <= _cap) return;
+        int hash = 1;
+        while (hash < cap * 2) hash <<= 1;
+        Grow(ref _tile, cap); Grow(ref _freed, cap); Grow(ref _gen, cap);
+        Grow(ref _boxMin, cap); Grow(ref _boxMax, cap);
+        Grow(ref _fadeBox, cap * FadePartsPerTile); Grow(ref _fadeBoxN, cap); Grow(ref _fadeBoxOver, cap);
+        Grow(ref _fade, cap); Grow(ref _acc, cap); Grow(ref _explored, cap);
+        Grow(ref _freeTile, cap); Grow(ref _witness, cap);
+        _cap = cap;
+        _slot = new int[hash]; _witnessSlot = new int[hash]; _witnessStamp = new int[hash];
+        _hashMask = hash - 1;
+        Rehash();
+        _log?.Info($"TileFadeRamp: table sized for {cap} tile(s) ({_count} live)");
+    }
+
+    private static void Grow<T>(ref T[] a, int n)
+    {
+        var next = new T[n];
+        Array.Copy(a, next, a.Length);
+        a = next;
+    }
+
+    /// <summary>Rebuild both hash maps over the live tiles. The slab moved, so nothing in the old buckets
+    /// means anything; the tile indices themselves are unchanged.
+    /// <para>Called mid-rebuild (from <see cref="Ensure"/>) this re-stamps witnesses interned by the PREVIOUS
+    /// rebuild with the current <see cref="_rebuildGen"/>, which makes them findable again. That is sound and
+    /// slightly better than the alternative: a witness is still the part whose death frees its tile, so a death
+    /// notice arriving mid-rebuild now frees the right tile instead of finding nothing, and
+    /// <see cref="WitnessTile"/> confirms the pointer before it answers.</para></summary>
+    private static void Rehash()
+    {
+        Array.Fill(_slot, -1);
+        Array.Clear(_witnessStamp);
+        for (int t = 0; t < _count; t++)
+        {
+            if (_freed[t] || _tile[t] == IntPtr.Zero) continue;
+            Link(t);
+            if (_witness[t] != IntPtr.Zero) InternWitness(_witness[t], t);
+        }
     }
 
     /// <summary>Intern <paramref name="tile"/> for this rebuild; <paramref name="fresh"/> = first sighting on
@@ -182,7 +313,8 @@ internal static unsafe class TileFadeRamp
             return t;
         }
         t = Insert(tile);
-        if (t < 0) { Cap("tiles"); return -1; }
+        if (t < 0 && GrowPastBound()) t = Insert(tile);
+        if (t < 0) { Cap(); return -1; }
         Restart(t);
         _fade[t] = 1f; _acc[t] = 0f;
         // A tile the area has never fogged is explored. The reveal ramp exists for a tile coming OUT of the
@@ -216,7 +348,7 @@ internal static unsafe class TileFadeRamp
     /// authored <c>tilefade 1</c> record its XY box as an occlusion test surface.</summary>
     internal static void NoteTilePart(int t, IntPtr tri)
     {
-        if (!_ready || (uint)t >= MaxTiles || tri == IntPtr.Zero) return;
+        if (!_ready || (uint)t >= (uint)_cap || tri == IntPtr.Zero) return;
         var p = new PartTriMesh(tri);
         Vector3 lo = p.BboxMin, hi = p.BboxMax;
         // A part whose world box was never computed reads as six zeros (the PartTriMesh constructor zeroes
@@ -239,7 +371,7 @@ internal static unsafe class TileFadeRamp
         for (int t = 0; t < _count; t++)
             if (!_freed[t] && _gen[t] != _rebuildGen) Release(t);
         Compact();
-        _memoTile = IntPtr.Zero; _memoSlot = -1;
+        Moved();
         return _rebuiltTiles;
     }
 
@@ -253,13 +385,13 @@ internal static unsafe class TileFadeRamp
         if (t < 0) return;
         _witnessDeaths++;
         Release(t);
-        if (_memoSlot == t) { _memoTile = IntPtr.Zero; _memoSlot = -1; }
+        Moved();
     }
 
     private static void InternWitness(IntPtr part, int t)
     {
         int h = Bucket(part);
-        for (int probe = 0; probe <= HashMask; probe++, h = (h + 1) & HashMask)
+        for (int probe = 0; probe <= _hashMask; probe++, h = (h + 1) & _hashMask)
         {
             if (_witnessStamp[h] == _rebuildGen && _witnessSlot[h] >= 0
                 && _witness[_witnessSlot[h]] == part) return;
@@ -272,11 +404,11 @@ internal static unsafe class TileFadeRamp
     private static int WitnessTile(IntPtr part)
     {
         int h = Bucket(part);
-        for (int probe = 0; probe <= HashMask; probe++, h = (h + 1) & HashMask)
+        for (int probe = 0; probe <= _hashMask; probe++, h = (h + 1) & _hashMask)
         {
             if (_witnessStamp[h] != _rebuildGen) return -1;
             int t = _witnessSlot[h];
-            if ((uint)t < MaxTiles && _witness[t] == part) return t;
+            if ((uint)t < (uint)_cap && _witness[t] == part) return t;
         }
         return -1;
     }
@@ -288,7 +420,7 @@ internal static unsafe class TileFadeRamp
         Array.Fill(_slot, -1);
         Array.Clear(_tile); Array.Clear(_freed); Array.Clear(_gen); Array.Clear(_fadeBoxN);
         Array.Clear(_fadeBoxOver); Array.Clear(_witness); Array.Clear(_witnessStamp);
-        _memoTile = IntPtr.Zero; _memoSlot = -1;
+        Moved();
     }
 
     // ---- the per-frame step ----------------------------------------------------------------------
@@ -313,23 +445,33 @@ internal static unsafe class TileFadeRamp
                                       cam.Near, cam.Far, 0f, new Span<float>(planes, PlaneFloats));
             _mode = *_geomFadeMode;
             _planeOk = OcclusionPlane(cam, camPos, out float nx, out float ny, out float pd);
+            bool liveWas = _fadeLive;
             _fadeLive = FadeLive(_mode, _planeOk);
+            // BW4/BW1: whether any factor this frame's readers see actually moved. A city with the
+            // second-story option off steps nothing for minutes at a time, and that is what lets the route
+            // reuse a verdict rather than re-deriving it per slot.
+            bool moved = _fadeLive != liveWas;
             for (int t = 0; t < _count; t++)
             {
                 if (_freed[t]) continue;
                 bool inView = BoxVisible(_boxMin[t], _boxMax[t], planes);
+                float was = _explored[t];
                 if (new TileData(_tile[t]).FoggedByWar != 0) _explored[t] = 0f;
                 else if (inView && _explored[t] < 1f)
                 {
                     _explored[t] = MathF.Min(1f, _explored[t] + dt * Rate);
                     _revealing++;
                 }
+                if (_explored[t] != was) moved = true;
                 if (!_fadeLive || !inView || _fadeBoxN[t] == 0) continue;
                 _stepped++;
                 bool occluding = _mode == ModeAlways || Occludes(t, nx, ny, pd);
                 if (occluding) _fadingOut++;
+                float fadeWas = _fade[t];
                 Step(ref _fade[t], ref _acc[t], occluding, dt);
+                if (_fade[t] != fadeWas) moved = true;
             }
+            if (moved) Moved();
         }
         if (Buckets.Validate.V) BucketValidator.CheckTiles(_tile, _freed, _fade, _explored, _count);
     }
@@ -433,11 +575,28 @@ internal static unsafe class TileFadeRamp
     internal static float Fade(IntPtr tile)
     {
         if (tile == IntPtr.Zero) return 1f;
-        if (!_ready || !Buckets.TileFade.V) return Clamp01(new TileData(tile).Fade);
-        if (!_fadeLive) return 1f;
-        int t = Slot(tile);
-        return t < 0 ? 1f : _fade[t];
+        if (!Owned) return Clamp01(new TileData(tile).Fade);
+        return FadeAt(Find(tile));
     }
+
+    /// <summary>BW4: the same factor from an already-resolved slot (see <see cref="Gen"/>). -1 = a tile the
+    /// registry does not know, which is opaque.</summary>
+    internal static float FadeAt(int t)
+        => !_fadeLive || (uint)t >= (uint)_cap ? 1f : _fade[t];
+
+    /// <summary>...and the exploration factor. Not gated on <see cref="FadeLive"/>: the fog-of-war ramp is not
+    /// the second-story option's.</summary>
+    internal static float ExploredAt(int t) => (uint)t >= (uint)_cap ? 1f : _explored[t];
+
+    /// <summary>Is the registry the factors' source this session? False stands the whole by-slot path down --
+    /// the caller reads the engine's own <c>TileData</c> fields by pointer, as <c>/buckets tilefade 0</c>
+    /// does.</summary>
+    internal static bool Owned => _ready && Buckets.TileFade.V;
+
+    /// <summary>BW4: the registry slot of a tile, to be kept only as long as <see cref="Gen"/> holds. -1 for a
+    /// tile the registry has not reached (or a null one), which every by-slot reader answers as opaque and
+    /// explored.</summary>
+    internal static int SlotOf(IntPtr tile) => tile == IntPtr.Zero ? -1 : Find(tile);
 
     /// <summary><c>ProcessTriMeshParts</c> @0x480d40's gate: does a <c>tilefade 1</c> part take its tile's factor
     /// this frame? Never under "never"; always under "always"; under "automatic" only while the occlusion plane
@@ -449,30 +608,21 @@ internal static unsafe class TileFadeRamp
     internal static float Explored(IntPtr tile)
     {
         if (tile == IntPtr.Zero) return 1f;
-        if (!_ready || !Buckets.TileFade.V) return Clamp01(new TileData(tile).GeomFade);
-        int t = Slot(tile);
-        return t < 0 ? 1f : _explored[t];
+        if (!Owned) return Clamp01(new TileData(tile).GeomFade);
+        return ExploredAt(Find(tile));
     }
 
     private static float Clamp01(float f) => f >= 1f ? 1f : f > 0f ? f : 0f;
-
-    /// <summary>The registry slot of a tile, memoised on the last answer: a route walks one tile's parts
-    /// together, so the memo covers nearly every call and the hash probe is the exception.</summary>
-    private static int Slot(IntPtr tile)
-    {
-        if (tile == _memoTile) return _memoSlot;
-        int t = Find(tile);
-        _memoTile = tile; _memoSlot = t;
-        return t;
-    }
 
     /// <summary>The clause the <c>buckets</c> knob group prints.</summary>
     internal static string Note()
         => !_ready ? $"tile fade stood down ({Missing} unresolved)"
          : _count == 0 ? "no tiles registered"
-         : $"{_count} tile(s), {(_ticks == 0 ? 0 : _stepped / _ticks)} classified and "
+         : $"{_count} tile(s) of {_cap}, {(_ticks == 0 ? 0 : _stepped / _ticks)} classified and "
            + $"{(_ticks == 0 ? 0 : _fadingOut / _ticks)} fading out per frame, {_revealing} reveal step(s)"
-           + (_capped > 0 ? $", CAPPED {_capped}x" : "")
+           + (_grewPastBound > 0 ? $", GREW PAST THE DERIVED BOUND {_grewPastBound}x (a bug -- see the log)" : "")
+           + (_capped > 0 ? $", REFUSED {_capped} registration(s) at the {MaxTilesCeiling} ceiling -- those "
+                          + "tiles never fade" : "")
            + (_reused > 0 ? $", {_reused} slot(s) reused from the pool" : "")
            + (_witnessDeaths > 0 ? $", {_witnessDeaths} tile(s) dropped on a part death" : "")
            + (_mode == ModeNever ? ", second-story tiles never hidden (the game option)"
@@ -481,12 +631,12 @@ internal static unsafe class TileFadeRamp
 
     // ---- table plumbing --------------------------------------------------------------------------
 
-    private static int Bucket(IntPtr tile) => (int)((ulong)tile >> 4) & HashMask;
+    private static int Bucket(IntPtr tile) => (int)((ulong)tile >> 4) & _hashMask;
 
     private static int Find(IntPtr tile)
     {
         int h = Bucket(tile);
-        for (int probe = 0; probe <= HashMask; probe++, h = (h + 1) & HashMask)
+        for (int probe = 0; probe <= _hashMask; probe++, h = (h + 1) & _hashMask)
         {
             int t = _slot[h];
             if (t < 0) return -1;
@@ -502,7 +652,7 @@ internal static unsafe class TileFadeRamp
     private static int Insert(IntPtr tile)
     {
         int h = Bucket(tile);
-        for (int probe = 0; probe <= HashMask; probe++, h = (h + 1) & HashMask)
+        for (int probe = 0; probe <= _hashMask; probe++, h = (h + 1) & _hashMask)
         {
             int t = _slot[h];
             if (t >= 0)
@@ -511,7 +661,7 @@ internal static unsafe class TileFadeRamp
                 _tile[t] = tile; _freed[t] = false;
                 return t;
             }
-            if (_count < MaxTiles) t = _count++;
+            if (_count < _cap) t = _count++;
             else if (_freeN > 0) { t = _freeTile[--_freeN]; _reused++; }
             else return -1;
             _slot[h] = t;
@@ -527,7 +677,7 @@ internal static unsafe class TileFadeRamp
     {
         _freed[t] = true;
         _witness[t] = IntPtr.Zero;
-        if (_freeN < MaxTiles) _freeTile[_freeN++] = t;
+        if (_freeN < _cap) _freeTile[_freeN++] = t;
     }
 
     /// <summary>Renumber the live tiles densely and rebuild both maps over them, at the end of every rebuild.
@@ -563,13 +713,7 @@ internal static unsafe class TileFadeRamp
         }
         _count = live;
         _freeN = 0;
-        Array.Fill(_slot, -1);
-        Array.Clear(_witnessStamp);
-        for (int t = 0; t < live; t++)
-        {
-            Link(t);
-            if (_witness[t] != IntPtr.Zero) InternWitness(_witness[t], t);
-        }
+        Rehash();
     }
 
     /// <summary>Point the first free hash slot on this tile's probe chain at it. Only ever called on a table
@@ -577,18 +721,46 @@ internal static unsafe class TileFadeRamp
     private static void Link(int t)
     {
         int h = Bucket(_tile[t]);
-        for (int probe = 0; probe <= HashMask; probe++, h = (h + 1) & HashMask)
+        for (int probe = 0; probe <= _hashMask; probe++, h = (h + 1) & _hashMask)
             if (_slot[h] < 0) { _slot[h] = t; return; }
     }
 
-    private static void Cap(string what)
+    /// <summary>The table is full at a capacity <see cref="AreaBound"/> said would hold the area: the bound is
+    /// WRONG. Grow anyway -- a refused tile is a roof that never fades and (before the scene walk's own fix) a
+    /// tile whose emitters never register -- and say so once, with the census that derived the bound.
+    /// Returns whether there is now room.</summary>
+    private static bool GrowPastBound()
+    {
+        int was = _cap;
+        Ensure(_cap + 1);
+        // At the ceiling there is nothing to report but the refusal: counting the attempt here would print
+        // GREW PAST and REFUSED for the same tile and name two bugs where there is one.
+        if (_cap == was) return false;
+        _grewPastBound++;
+        if (!_grewLogged)
+        {
+            _grewLogged = true;
+            CNWCArea a = Area();
+            _log?.Always($"TileFadeRamp: {_count} tile(s) registered past the {was} the area's own census "
+                       + $"derived ({(a.IsNull ? "no area, or its layout rows did not resolve"
+                                              : $"{a.TileWidth}x{a.TileHeight} grid")}, border ring "
+                       + $"{AreaBorder.Ring}) -- the derived bound is wrong. The table grows so the area still "
+                       + "fades; the bound in TileFadeRamp.AreaBound wants fixing against this area");
+        }
+        return _count < _cap || _freeN > 0;
+    }
+
+    /// <summary>Past <see cref="MaxTilesCeiling"/> there is nowhere left to grow: the tile is REFUSED, it
+    /// never fades, and <see cref="NoteTile"/> hands back -1.</summary>
+    private static void Cap()
     {
         _capped++;
         if (_cappedLogged) return;
         _cappedLogged = true;
-        _log?.Always($"TileFadeRamp: the {what} ceiling ({MaxTiles}) is full -- the rest of this area's tiles "
-                   + "draw at full opacity and never fade. That is a real bound being hit, not a transient: "
-                   + "raise the cap against a census of the area");
+        _log?.Always($"TileFadeRamp: the absolute tile ceiling ({MaxTilesCeiling}) is full -- the rest of this "
+                   + "area's tiles draw at full opacity and never fade. That is a real bound being hit, not a "
+                   + "transient: no shipped area and border ring can reach it, so something is registering "
+                   + "tiles that are not tiles");
     }
 
     // ---- the check -------------------------------------------------------------------------------
@@ -681,11 +853,12 @@ internal static unsafe class TileFadeRamp
         bool savedReady = _ready;
         int savedCount = _count, savedGen = _rebuildGen;
         _ready = true;
+        Ensure(MinTiles);
         _count = 0;
         Array.Fill(_slot, -1);
         Array.Clear(_tile); Array.Clear(_freed); Array.Clear(_gen); Array.Clear(_fadeBoxN);
         Array.Clear(_fadeBoxOver); Array.Clear(_witness); Array.Clear(_witnessStamp);
-        _memoTile = IntPtr.Zero; _memoSlot = -1;
+        Moved();
 
         BeginRebuild();
         int a = NoteTile((IntPtr)tileA, out bool freshA);
@@ -727,8 +900,8 @@ internal static unsafe class TileFadeRamp
         int a2 = NoteTile((IntPtr)tileA, out _);
         NoteTilePart(a2, (IntPtr)fadePart);
         EndRebuild();
-        a2 = Slot((IntPtr)tileA);
-        check.Expect(a2 >= 0 && Slot((IntPtr)tileB) < 0, "the sweep drops a tile the rebuild did not reach");
+        a2 = SlotOf((IntPtr)tileA);
+        check.Expect(a2 >= 0 && SlotOf((IntPtr)tileB) < 0, "the sweep drops a tile the rebuild did not reach");
         check.Expect(_count == 1, "...and the compaction gives its slot back rather than keeping the high mark");
         check.Expect(_fade[a2] == held, "a tile that survives a rebuild keeps its fade");
         check.Expect(Fade((IntPtr)tileB) == 1f, "a swept tile answers as unknown, which is opaque");
@@ -747,7 +920,7 @@ internal static unsafe class TileFadeRamp
         BeginRebuild();
         NoteTile((IntPtr)tileB, out _);
         EndRebuild();
-        int c = Slot((IntPtr)tileB);
+        int c = SlotOf((IntPtr)tileB);
         check.Expect(c >= 0 && _explored[c] == 0f, "a fogged tile is seeded unexplored");
 
         // The leak the review found: churn far past the cap and every new tile must still register. Without
@@ -756,7 +929,7 @@ internal static unsafe class TileFadeRamp
         // buffer, 16 bytes apart so each hashes to its own bucket -- NoteTile seeds the reveal factor off the
         // tile's fog byte, so a synthetic address that cannot be read is not a usable stand-in.
         const int ChurnStride = 16;
-        int churn = MaxTiles * 3, refused = 0;
+        int churn = MinTiles * 3, refused = 0;
         byte[] churnMem = new byte[(long)churn * ChurnStride + tileBytes];
         fixed (byte* pool = churnMem)
         {
@@ -767,7 +940,7 @@ internal static unsafe class TileFadeRamp
                 EndRebuild();   // reaches nothing else, so every earlier tile is swept and its slot returned
             }
             check.Expect(refused == 0,
-                         $"{churn} tiles of sweep churn register without exhausting the {MaxTiles} slots");
+                         $"{churn} tiles of sweep churn register without exhausting the {_cap} slots");
             check.Expect(_count <= 1, "...and the live count tracks what is live, not what was ever inserted");
 
             // ...and the same churn with no sweep in between, which is the pool's own path.
@@ -784,6 +957,38 @@ internal static unsafe class TileFadeRamp
                 PartDied(fake);
             }
             check.Expect(refused == 0, "insert-and-die churn past the cap is served from the pool");
+
+            // BUG-TILES: the area the table used to refuse. An area of 20x20 tiles inside the default border
+            // ring is 2500 live tiles, which the old 2048-slot const could not hold -- it registered 2048 and
+            // dropped the rest for the life of the area (live: `2048 tile(s), CAPPED 40128840x`). All of them
+            // must register in ONE rebuild, the table growing rather than refusing, and the ceiling refusal
+            // must stay reachable so nothing quietly stops being a bound.
+            const int Side = 20;
+            int live = (Side + 2 * AreaBorder.DefaultRing) * (Side + 2 * AreaBorder.DefaultRing);
+            check.Expect(live > MinTiles, "a 20x20 area inside the default border ring outgrows the starting table");
+            _count = 0; _freeN = 0; Array.Fill(_slot, -1);
+            Array.Clear(_tile); Array.Clear(_freed); Array.Clear(_witness); Array.Clear(_witnessStamp);
+            long grewWas = _grewPastBound, cappedWas = _capped;
+            bool logWas = _grewLogged;
+            _grewLogged = true;   // the stub host has no area to derive a bound from: its growth is not a bug report
+            BeginRebuild();
+            Ensure(live);         // what a real area's BeginRebuild does, from AreaBound
+            refused = 0;
+            for (int i = 0; i < live && i < churn; i++)
+                if (NoteTile((IntPtr)(pool + (long)i * ChurnStride), out _) < 0) refused++;
+            check.Expect(refused == 0 && _count == Math.Min(live, churn),
+                         $"all {live} tiles of a 20x20 area with a {AreaBorder.DefaultRing}-tile border ring register");
+            check.Expect(_cap >= live && _grewPastBound == grewWas && _capped == cappedWas,
+                         "...in a table sized for them, with nothing refused and no overflow reported");
+            // ...and one more tile than the table holds GROWS rather than being dropped: a refusal is only ever
+            // the absolute ceiling, and the bound being wrong is a reported bug, not a silent cap.
+            int capWas = _cap;
+            _count = _cap;        // a full table, without minting another _cap synthetic tiles to fill it
+            check.Expect(NoteTile((IntPtr)(pool + (long)churn * ChurnStride), out _) >= 0 && _cap > capWas
+                         && _grewPastBound > grewWas && _capped == cappedWas,
+                         "a tile past the derived bound grows the table and is reported, never dropped");
+            EndRebuild();
+            _grewPastBound = grewWas; _grewLogged = logWas; _capped = cappedWas;
         }
 
         _count = savedCount; _ready = savedReady; _rebuildGen = savedGen;
@@ -791,6 +996,6 @@ internal static unsafe class TileFadeRamp
         Array.Clear(_tile); Array.Clear(_freed); Array.Clear(_gen); Array.Clear(_fadeBoxN);
         Array.Clear(_fadeBoxOver); Array.Clear(_witness); Array.Clear(_witnessStamp);
         _count = 0; _witnessDeaths = 0;
-        _memoTile = IntPtr.Zero; _memoSlot = -1;
+        Moved();
     }
 }

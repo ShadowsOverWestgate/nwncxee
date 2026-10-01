@@ -185,7 +185,17 @@ internal static unsafe class AlloyWind
     /// <summary>The engine's own clock site: <c>Scene::Render</c> @0x476520, once per WORLD frame, ahead of
     /// <c>AddPartsToDrawBuckets</c> and so ahead of everything that samples the wind -- the particle step, the
     /// dangly solve, the grass. Cold, and the original always runs so the engine's own list keeps ageing for
-    /// the <c>view.wind 0</c> A/B.</summary>
+    /// the <c>view.wind 0</c> A/B.
+    /// <para><b>SL4: the original is not optional, and "no reader on an Alloy frame" is the wrong question.</b>
+    /// MEASURED (objdump @0x49131e..0x491361): <c>updateTimer</c> is the ONLY code in the client that expires
+    /// a <c>PointSourceWind</c> -- it decrements each entry's remaining life at <c>+0x14</c>, drops the count
+    /// at <c>+0x18</c> and compacts the tail. <c>Gob::Animate</c> @0x49dc91 ADDS one per moved wind-enabled
+    /// creature per frame, so skipping the original would grow that <c>CExoArrayList</c> without bound for as
+    /// long as anything walks. Its one provably dead product is the <c>windSpeed * dt</c> triple at
+    /// <c>+0x2c..0x34</c>, which nothing in the binary reads; the interpolated field pair and the source list
+    /// are live. Skipping it would also shift libc <c>rand()</c> by the 341 draws <c>fillNoiseField</c>
+    /// @0x490e20 takes per elapsed period (~682/s at the default 0.5 s), which is a change to every other
+    /// consumer of the engine's global PRNG.</para></summary>
     [UnmanagedCallersOnly]
     private static void OnUpdateTimer(IntPtr windManager, float dt)
     {

@@ -11,9 +11,13 @@ namespace CX.Alloy;
 /// every visible part is re-chased off the engine and its record re-compared every frame. This group freezes
 /// that walk for the STATIC set, which is the bulk of an NWN area.
 /// <para>Touched from <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main
-/// thread. Default OFF: the freeze is a claim about which engine terms can move behind Alloy's back, and the
-/// claim has not been held against a live area yet -- see <c>AlloyRenderer.StaticSelfCheck</c> for what is
-/// asserted headless and the ticket for what is not.</para></summary>
+/// thread. The freeze is a claim about which engine terms can move behind Alloy's back:
+/// <c>AlloyRenderer.StaticSelfCheck</c> is what is asserted headless, and <c>/alloy poll 1</c> (which stands
+/// this whole group down) is the live A/B. The master defaults ON -- the doc here said OFF, which stopped being
+/// true when <c>masterDefault</c> did.</para>
+/// <para>BW1: the freeze is also what lets the ROUTE walk skip a slot's verdict rather than re-deriving it
+/// (<c>AlloyRenderer.RouteMemo</c>), which is where most of its saving now is -- the freeze on its own is
+/// applied after the route has already paid.</para></summary>
 internal static unsafe class GpuStatic
 {
     internal static readonly KnobGroup G;
@@ -65,8 +69,8 @@ public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>Consecutive frames this slot has been staged as a member of the static set with a record that
     /// did not change. Derived state over the ownership table, with no world edge of its own: it is only
-    /// believed beside <c>_recGen[i] == _recEpoch</c>, <c>_recEnroll[i] == _oEnrollGen[i]</c> and
-    /// <c>_recFrame[i] == _frameSeq - 1</c>, so a revoke, a re-tenant, an epoch bump or a frame the slot sat
+    /// believed beside <c>_gate[i].RecGen == _recEpoch</c>, <c>_gate[i].RecEnroll == _gate[i].EnrollGen</c> and
+    /// <c>_gate[i].RecFrame == _frameSeq - 1</c>, so a revoke, a re-tenant, an epoch bump or a frame the slot sat
     /// out thaws it without this array being touched (<c>docs/owned-resource-lifetimes.md</c>: a table that
     /// needs no <c>Revoke</c> is one whose every read is already behind one that has one).</summary>
     private static readonly int[] _stSettle = new int[MaxOwned];
@@ -110,7 +114,7 @@ public sealed unsafe partial class AlloyRenderer
         if (why != 0) why--;
         else if (_oBone[i] >= 0) why = 3;
         else if (_oFading[i] || dis || dissolve != 0f || alpha != 1f) why = 5;
-        else if (_recCtl[i] != IntPtr.Zero || _recTexStale[i]) why = 6;
+        else if (_recCtl[i] != IntPtr.Zero || _gate[i].TexStale) why = 6;
         else if (_cGen[i] != _recEpoch) why = 7;
         else return true;
         _stWhy[why]++;
@@ -154,9 +158,12 @@ public sealed unsafe partial class AlloyRenderer
     /// epoch, THIS tenant and the IMMEDIATELY previous frame (the same frame-continuity rule every other
     /// Alloy cache keeps); the stagger re-stages one frozen slot in <see cref="GpuStatic.Recheck"/> in full.</summary>
     private static bool StaticFrozen(int i, bool member)
-        => member && _stSettle[i] >= GpuStatic.Settle.V
-           && _recEnroll[i] == _oEnrollGen[i] && _recFrame[i] == _frameSeq - 1
-           && ((i + _frameSeq) & (GpuStatic.Recheck - 1)) != 0;
+    {
+        if (!member || _stSettle[i] < GpuStatic.Settle.V) return false;
+        ref RouteGate g = ref _gate[i];   // BW7: the three stamps are one row
+        return g.RecEnroll == g.EnrollGen && g.RecFrame == _frameSeq - 1
+               && ((i + _frameSeq) & (GpuStatic.Recheck - 1)) != 0;
+    }
 
     /// <summary>The <c>[alloy]</c> line's static clause: how much of the owned population left the per-frame
     /// walk, and how much of it came back. "thawed" is the instrument -- a steady nonzero means the membership
@@ -193,10 +200,10 @@ public sealed unsafe partial class AlloyRenderer
         // The decision table, on a scratch slot restored afterwards. Each row is one term of StaticShape, and
         // the row exists because the term names a way the part can move behind a frozen record.
         const int i = MaxOwned - 1;
-        IntPtr gob = _oGob[i]; bool mx = _oMx[i], dangly = _oDangly[i], fading = _oFading[i], texStale = _recTexStale[i];
+        IntPtr gob = _oGob[i]; bool mx = _oMx[i], dangly = _oDangly[i], fading = _oFading[i], texStale = _gate[i].TexStale;
         int bone = _oBone[i], vao = _oVao[i], item = _oItem[i], cgen = _cGen[i];
         IntPtr ctl = _recCtl[i]; float feat = _oFeat[i * 4];
-        _oGob[i] = IntPtr.Zero; _oMx[i] = false; _oDangly[i] = false; _oFading[i] = false; _recTexStale[i] = false;
+        _oGob[i] = IntPtr.Zero; _oMx[i] = false; _oDangly[i] = false; _oFading[i] = false; _gate[i].TexStale = false;
         _oBone[i] = -1; _oVao[i] = 0; _oItem[i] = 0; _cGen[i] = _recEpoch; _recCtl[i] = IntPtr.Zero;
         _oFeat[i * 4] = 0f;
         bool baseline = StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f);
@@ -224,25 +231,25 @@ public sealed unsafe partial class AlloyRenderer
         check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a fading tile is in the static set");
         _oFading[i] = false; _recCtl[i] = (IntPtr)1;
         check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a cycling texture is in the static set");
-        _recCtl[i] = IntPtr.Zero; _recTexStale[i] = true;
+        _recCtl[i] = IntPtr.Zero; _gate[i].TexStale = true;
         check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a slot with a stale texture is in the static set");
-        _recTexStale[i] = false; _cGen[i] = _recEpoch - 1;
+        _gate[i].TexStale = false; _cGen[i] = _recEpoch - 1;
         check.Expect(!StaticShape(i, (int)AlloyClass.Opaque, false, 0f, 1f), "a slot whose index range is unstamped is in the static set");
         _cGen[i] = _recEpoch;
 
         // The freeze itself refuses a slot that sat a frame out (the frame-continuity rule) or whose tenant changed.
-        int settle = _stSettle[i], recFrame = _recFrame[i], recEnroll = _recEnroll[i], enrollGen = _oEnrollGen[i];
-        _stSettle[i] = GpuStatic.Settle.V; _recEnroll[i] = _oEnrollGen[i] = 1;
-        _recFrame[i] = _frameSeq - 2;
+        int settle = _stSettle[i], recFrame = _gate[i].RecFrame, recEnroll = _gate[i].RecEnroll, enrollGen = _gate[i].EnrollGen;
+        _stSettle[i] = GpuStatic.Settle.V; _gate[i].RecEnroll = _gate[i].EnrollGen = 1;
+        _gate[i].RecFrame = _frameSeq - 2;
         check.Expect(!StaticFrozen(i, true), "a slot that sat a frame out is frozen");
-        _recFrame[i] = _frameSeq - 1; _recEnroll[i] = 2;
+        _gate[i].RecFrame = _frameSeq - 1; _gate[i].RecEnroll = 2;
         check.Expect(!StaticFrozen(i, true), "a re-tenanted slot is frozen");
-        _recEnroll[i] = _oEnrollGen[i];
+        _gate[i].RecEnroll = _gate[i].EnrollGen;
         _stSettle[i] = 0;
         check.Expect(!StaticFrozen(i, true), "an unsettled slot is frozen");
-        _stSettle[i] = settle; _recFrame[i] = recFrame; _recEnroll[i] = recEnroll; _oEnrollGen[i] = enrollGen;
+        _stSettle[i] = settle; _gate[i].RecFrame = recFrame; _gate[i].RecEnroll = recEnroll; _gate[i].EnrollGen = enrollGen;
 
-        _oGob[i] = gob; _oMx[i] = mx; _oDangly[i] = dangly; _oFading[i] = fading; _recTexStale[i] = texStale;
+        _oGob[i] = gob; _oMx[i] = mx; _oDangly[i] = dangly; _oFading[i] = fading; _gate[i].TexStale = texStale;
         _oBone[i] = bone; _oVao[i] = vao; _oItem[i] = item; _cGen[i] = cgen; _recCtl[i] = ctl;
         _oFeat[i * 4] = feat;
         log.Info(check.Ok ? "AlloyRenderer.StaticSelfCheck: passed" : "AlloyRenderer.StaticSelfCheck: FAILED");

@@ -6,7 +6,7 @@ The lit stage's register pressure is what sets the loop's cost in game, so --ful
 import re, sys
 d, out = sys.argv[1], sys.argv[2]
 full = "--full" in sys.argv
-tok = {"$CAP$": "128", "$SORT$": "32", "$DYNSPH$": "4", "$SRGB$": "2.2", "$GROUP$": "8", "$AA$": "3",
+tok = {"$CAP$": "128", "$SORT$": "32", "$DYNSPH$": "16", "$SRGB$": "2.2", "$GROUP$": "8", "$AA$": "3",
        "$POSTMASK$": "0", "$SQM$": "2", "$BAND$": "45.0, 0.0667"}
 
 def expand(f, seen):

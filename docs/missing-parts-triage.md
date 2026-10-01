@@ -21,30 +21,43 @@ geometry-less subtree but never show one; it runs from `Gob::ProcessGob` wheneve
 dirty, and `Scene::AddPartsToDrawBuckets` @0x4751d0 calls that every frame. The dynamic show/hide writer
 is `Gob::SetSubtreeEnabled` @0x43c670 (`43c695: setne 0x34(%rax)`), which has **no call site in the
 text** -- it is reached only through a name-dispatch table (eight data references to 0x43c670) -- and it
-bumps **nothing**: no `Scene::Sequence`, no `SetProcessFlag`, no ctor, no dtor. The fix below does not
-depend on which writer moved the byte: it re-reads it. So:
+bumps nothing of the engine's own: no `Scene::Sequence`, no `SetProcessFlag`, no ctor, no dtor. The fix
+below does not depend on which writer moved the byte: it re-reads it. So:
 
-- hide: the next walk prunes the subtree and Alloy stops drawing it. Correct, and vanilla agrees.
-- **show: nothing in the client announces it.** The record stays released, so enrolment never sees the
-  part, and since #264 an unowned part is drawn by **nobody**. The limb is missing until something
-  unrelated moves `Scene::Sequence` (a gob joining or leaving any scene) or the creature is re-created.
+- hide: the walk prunes the subtree and Alloy stops drawing it. Correct, and vanilla agrees.
+- show: the engine announces nothing, so Alloy hooks the writer. **`Gob::SetSubtreeEnabled` is hooked**
+  (`SceneWalk.OnGobSetSubtreeEnabled`): a non-zero return means the byte moved on a part of that gob's
+  active tree, and the gob is queued for a per-gob re-walk at the next frame anchor. The engine-side
+  silence is unchanged; what is gone is Alloy's dependence on it.
 
-That is random per part, per-part rather than per-gob, hits NPCs, survives `/alloy poll 1` (there is no
-record to invalidate), leaves **no `D` row** in the frame dump, and heals on re-creation -- the whole
-reported symptom. It is the only membership edge left with no notice: `Part::~Part` already calls
-`SceneWalk.RequestWalk()` (`DrawFunnelService.OnPartDtor`, for the in-place armour rebuild) and a repack
-calls `NoteStale()`.
+**Before the hook** this was the one membership edge with no notice at all, and it read as: the record stays
+released, enrolment never sees the part, and since #264 an unowned part is drawn by **nobody** -- random per
+part, per-part rather than per-gob, hits NPCs, survives `/alloy poll 1` (there is no record to invalidate),
+leaves **no `D` row** in the frame dump, and heals on re-creation. It was masked by the engine's global epoch
+moving every 11-20 frames and forcing a full walk; the per-gob deltas removed that accident, which is why the
+edge had to be hooked rather than left to it. The other edges that used to ask for a whole-area walk name their
+gob now too: `Part::~Part` calls `SceneWalk.NoteGobDirty` (`DrawFunnelService.OnPartDtor`, for the in-place
+armour rebuild) and a repack queues its stale entries by index.
 
-**The fix.** A pruned subtree root is now HELD as a `PartTable.StHidden` entry instead of released
-(`SceneWalk.HoldHidden`), and `SceneWalk.Tick` re-reads `part+0x34` over the held set on the frames that
-would otherwise walk nothing (`HiddenShown`); the first byte that comes back asks for a walk, which
-releases the entry so the part re-enrols from scratch (`ShowHidden`). Holding rather than releasing is
-what makes the re-read lifetime-safe: `Part::~Part` marks a held entry freed through the table's own
-tombstone, and only a freed slot is ever reclaimed. A held entry is exempt from #128's
-all-owned-or-none refusal for the geometry-less case's reason -- vanilla draws nothing for it either,
-so its siblings keep drawing. Instruments: `hidden=N (held=H shown=S re-shows=R)` on the `[enum]` line
-and `H held hidden on part+0x34` in the census `instances:` clause. **`shown` nonzero is the mechanism
-firing.** Live-unverified.
+**The fix, in two halves.** A pruned subtree root is HELD as a `PartTable.StHidden` entry instead of released
+(`SceneWalk.HoldHidden`), remembering whose tree held it; and the show edge is told. `SceneWalk.Tick` still
+re-reads `part+0x34` over the held set on the frames that would otherwise walk nothing (`HiddenShown`) as the
+backstop, and a byte that came back asks for that gob's delta, which releases the entry so the part re-enrols
+from scratch (`ShowHidden`). Holding rather than releasing is what makes the re-read lifetime-safe:
+`Part::~Part` marks a held entry freed through the table's own tombstone, only a freed slot is ever reclaimed,
+and the held list is maintained on every exit from `StHidden` (`UnHold`, from `Release`, the death notice and
+the table wipe). A held entry is exempt from #128's all-owned-or-none refusal for the geometry-less case's
+reason -- vanilla draws nothing for it either, so its siblings keep drawing.
+
+**What an operator reads.** On the `[enum]` line: `subtree=N` is the hook firing (hides and shows together);
+`hidden=N (held=H shown=S re-shows=R)` is the held population and the re-shows the backstop caught, and
+`hold-refused=` must never appear; `epoch delta=/full=` says how many membership moves were answered per gob
+rather than by the whole-area walk; `audit misses=M (added=A swept gob=G tile=T)` is the full walk, run every
+`alloy.walkaudit` frames (300), finding what the deltas missed, and **it must read 0** -- a nonzero `added` is
+a part no edge announced, which is this defect's shape. `H held hidden on part+0x34` is in the census
+`instances:` clause as before. The bisect is `/alloy walkdelta 0`: it puts every epoch bump back on the full
+walk, so a limb that comes back with it off is a missed delta edge and one that does not is something else.
+Live-unverified.
 
 ### `/alloy holes` -- the per-instance hole dump
 

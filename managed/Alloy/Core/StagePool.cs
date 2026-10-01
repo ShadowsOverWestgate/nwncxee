@@ -40,8 +40,13 @@ internal static class StagePool
     /// the other and no worker blocks past a published job.</summary>
     private static readonly int[] _spinning = new int[MaxChunks];
     private static int _pending, _chunks, _gen;
+    /// <summary>The generation <see cref="_pending"/> is counting down for, so a straggler from an abandoned run
+    /// can tell that its completion is no longer wanted.</summary>
+    private static int _pendingGen;
     private static Exception? _fault;
-    private static bool _faultLogged;
+    /// <summary>The first log handed to a run, kept for the paths that have no caller to borrow one from.</summary>
+    private static ExtenderLog? _log;
+    private static bool _faultLogged, _rearmRefused;
     private static Action<int, int> _job = AlloyRenderer.StageRange;
     // the instrument: per-frame max wake (release -> job start) and max job time, summed for the period
     private static long _tRelease;
@@ -57,9 +62,41 @@ internal static class StagePool
     internal static void Rearm()
     {
         if (_fault == null) return;
-        _fault = null; _faultLogged = false;
+        // ...but never while a worker is still inside a job body. Clearing the fault lets the next run publish,
+        // and zeroing the count lets its join finish early -- both while that thread goes on writing the
+        // previous job's arrays. A pool in this state stays down, loudly, because that is the honest answer:
+        // the worker is wedged, not slow.
+        if (Busy())
+        {
+            if (!_rearmRefused)
+            {
+                _rearmRefused = true;
+                _log?.Always("StagePool: refusing to re-arm -- a worker is still inside a job body from the run "
+                           + "that timed out, and letting a new one publish would race it. Threading stays down "
+                           + "for this session.");
+            }
+            return;
+        }
+        _fault = null; _faultLogged = false; _rearmRefused = false;
+        // The stage job again: a fault may have left the field on Idle so a straggler could not run the wrong
+        // one (see the job overload). Nothing has published a generation since, so no worker is inside a call.
+        _job = AlloyRenderer.StageRange;
         Volatile.Write(ref _pending, 0);
     }
+
+    /// <summary>Is any worker still inside a job body? A chunk stamps <see cref="_tStart"/> before the call and
+    /// <see cref="_tEnd"/> after it, so an end older than its start is a worker that has not come back. Both
+    /// are zero until a worker's first chunk, which reads as not busy.</summary>
+    private static bool Busy()
+    {
+        for (int w = 1; w < MaxChunks; w++)
+            if (Volatile.Read(ref _tEnd[w]) < Volatile.Read(ref _tStart[w])) return true;
+        return false;
+    }
+
+    /// <summary>Is the pool down? A caller with a serial path of its own should take it rather than call
+    /// <see cref="Run"/> for the early false, which costs it whatever it had queued.</summary>
+    internal static bool Faulted => _fault != null;
 
     /// <summary>Wake the workers ahead of the job so the routing walk hides their wake latency. Cheap when
     /// they are already spinning: the semaphore is capped at one and never over-released.</summary>
@@ -76,7 +113,15 @@ internal static class StagePool
     /// <summary>Run the job over <paramref name="chunks"/> chunks, chunk 0 on the caller. False after a
     /// worker fault: the caller must redo the work serially, and the pool stays down.</summary>
     internal static bool Run(int chunks, ExtenderLog? log, int testGapMs = 0)
+        => Run(chunks, log, testGapMs, instrument: true);
+
+    /// <summary><paramref name="instrument"/>: whether this run feeds <see cref="Stats"/>. Only the STAGE job
+    /// does. Blending a second job's wake and job times into one average hid a regression in either behind the
+    /// other, and a caller that brings its own job reports its own time (the dangly drain does, on the dangly
+    /// clause), so the line stays one job's.</summary>
+    private static bool Run(int chunks, ExtenderLog? log, int testGapMs, bool instrument)
     {
+        _log ??= log;
         if (_fault != null) return false;
         // never more chunks than cores: on a one-core box (CI) the spinners would only starve each other
         chunks = Math.Clamp(chunks, 1, Math.Max(1, Environment.ProcessorCount));
@@ -85,6 +130,10 @@ internal static class StagePool
         if (testGapMs > 0) Thread.Sleep(testGapMs);   // self-check only: outlive the workers' spin window
         _chunks = chunks;
         _tRelease = Stopwatch.GetTimestamp();
+        // Both BEFORE the publish. A spinning worker can see the new generation, run a tiny chunk and reach its
+        // decrement in less time than a store takes to land, so the generation the count belongs to has to be
+        // there already or that worker would decline to report and the join would sit out its whole deadline.
+        Volatile.Write(ref _pendingGen, Volatile.Read(ref _gen) + 1);
         Volatile.Write(ref _pending, chunks - 1);
         Interlocked.Increment(ref _gen);   // the job is published; spinning workers see it now
         // ...and a worker whose spin window ran out before this (a slow box, a long routing walk) is blocked
@@ -108,11 +157,37 @@ internal static class StagePool
             wake = Math.Max(wake, Ms(_tStart[w] - _tRelease));
             job = Math.Max(job, Ms(_tEnd[w] - _tStart[w]));
         }
-        _runMsSum += Ms(end - _tRelease); _wakeMsSum += wake; _jobMsSum += job; _runs++;
+        if (instrument) { _runMsSum += Ms(end - _tRelease); _wakeMsSum += wake; _jobMsSum += job; _runs++; }
         if (_fault == null) return true;
         if (!_faultLogged) { _faultLogged = true; log?.Info($"StagePool: worker fault, threading stood down -- {_fault}"); }
         return false;
     }
+
+    /// <summary>
+    /// Run a job other than the stage over the same workers. The pool holds ONE job at a time, so this swaps it
+    /// in; a caller must therefore not nest one inside <see cref="AlloyRenderer.StageRange"/> (nothing does --
+    /// the animation runtime runs in the engine's own animate, before the build).
+    /// <para><b>The field is only restored when the pool is known idle.</b> A worker reads <see cref="_job"/>
+    /// AFTER it has observed the generation, so writing the field back while one is still inside its chunk
+    /// would hand it the other caller's job. A true return means every worker decremented <c>_pending</c>,
+    /// which it does after the call returns, so the swap back is safe exactly then. A false return may be the
+    /// join deadline with a straggler still running: the field is left pointing at a no-op instead, which is
+    /// the only value a late worker can run harmlessly. <see cref="Rearm"/> puts the stage job back, and until
+    /// it is called <see cref="_fault"/> keeps every other <c>Run</c> from publishing anything at all.</para></summary>
+    internal static bool Run(int chunks, ExtenderLog? log, Action<int, int> job)
+    {
+        var saved = _job;
+        _job = job;
+        bool ok;
+        try { ok = Run(chunks, log, 0, instrument: false); }
+        catch { _job = Idle; throw; }
+        _job = ok ? saved : Idle;
+        return ok;
+    }
+
+    /// <summary>What a faulted pool is left holding: the one job a straggler can run without touching
+    /// anything.</summary>
+    private static readonly Action<int, int> Idle = (w, chunks) => { };
 
     private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
@@ -154,11 +229,14 @@ internal static class StagePool
                     seen = g;
                     if (w < _chunks)
                     {
-                        _tStart[w] = Stopwatch.GetTimestamp();
+                        Volatile.Write(ref _tStart[w], Stopwatch.GetTimestamp());
                         try { _job(w, _chunks); }
                         catch (Exception e) { _fault = e; }   // an unhandled exception on a NativeAOT worker kills the process
-                        _tEnd[w] = Stopwatch.GetTimestamp();
-                        Interlocked.Decrement(ref _pending);
+                        Volatile.Write(ref _tEnd[w], Stopwatch.GetTimestamp());
+                        // Only for the run this chunk was published for. A worker whose join already timed out
+                        // comes back late, and an untagged decrement would land on a LATER run's count and let
+                        // its join finish while this thread was still writing that job's arrays.
+                        if (Volatile.Read(ref _pendingGen) == seen) Interlocked.Decrement(ref _pending);
                     }
                     spinUntil = Stopwatch.GetTimestamp() + SpinAfterJobUs * Stopwatch.Frequency / 1_000_000;
                 }

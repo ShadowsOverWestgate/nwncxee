@@ -17,11 +17,16 @@ public readonly unsafe partial struct BSPNode
     /// (<see cref="EngineLayout.BspDataTriMeshCount"/>); zero without a record.</summary>
     public int TilePartCount => Data == IntPtr.Zero ? 0 : *(int*)(Data + EngineLayout.BspDataTriMeshCount);
 
-    /// <summary>CX-108: the <c>CExoArrayList&lt;PartLight*&gt;</c> of TILE lights filed in this node
-    /// (<see cref="EngineLayout.BspDataLight"/>) -- the only container that holds one, since
-    /// <c>CollapsePartTree</c> @0x462ff0 clears every tile part's child list. Null without a record.</summary>
+    /// <summary>CX-108: the <c>CExoArrayList&lt;PartLight*&gt;</c> of lights filed in this node
+    /// (<see cref="EngineLayout.BspDataLight"/>). Null without a record.
+    /// <para><b>Not a liveness list.</b> It holds GOB lights as well as tile ones -- <c>Scene::ChildAdd</c>
+    /// @0x461d50 routes a gob's whole tree through <c>ListSpecialPartsR</c> @0x462d50, which files every
+    /// <c>AsPartLight</c> here -- and nothing prunes an entry when the part dies, so it can name freed memory.
+    /// <see cref="CX.Alloy.LightRegistry"/> cross-checks against it and never admits from it.</para></summary>
     public IntPtr* Lights => Data == IntPtr.Zero ? null : *(IntPtr**)(Data + EngineLayout.BspDataLight);
 
-    /// <summary>How many of <see cref="Lights"/> are live (<see cref="EngineLayout.BspDataLightCount"/>).</summary>
+    /// <summary>How many entries <see cref="Lights"/> holds (<see cref="EngineLayout.BspDataLightCount"/>) --
+    /// its LENGTH, not a live count: see there for why some of them name freed memory.</summary>
     public int LightCount => Data == IntPtr.Zero ? 0 : *(int*)(Data + EngineLayout.BspDataLightCount);
+
 }

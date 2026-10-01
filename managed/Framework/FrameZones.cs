@@ -89,7 +89,8 @@ public static class FrameZones
         /// <summary>#322: nested in <see cref="Shadow"/>: the LightManager master-list walk.</summary>
         Lwalk,
         /// <summary>#322: nested in <see cref="Shadow"/>: <c>CasterPass.OnPassSlot</c> -- cube ranking,
-        /// mover scans and the view bakes.</summary>
+        /// mover scans and the view bakes. Net of the <see cref="Pose"/> the bake runs inside itself (SL3);
+        /// every other zone nested in it is reported without being subtracted.</summary>
         Bake,
         /// <summary>#322: nested in <see cref="Alloy"/>: the light walk upload + cluster build.</summary>
         Lights,

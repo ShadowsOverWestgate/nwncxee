@@ -15,7 +15,7 @@ namespace CX.Alloy;
 internal static class Shadows
 {
     internal static readonly KnobGroup G;
-    internal static readonly Knob<bool> Enabled, SunDyn, Casters, Gather, Receiver, Rebake, Split, Layered, RefreshAll,
+    internal static readonly Knob<bool> Enabled, SunDyn, Casters, Gather, Receiver, Rebake, Split, Layered, RefreshAll, DynSrc,
                                         DynEvents, ItemDirty, FlipCollect, MaskH, Diag, LightDiag, TorchDiag, Trace;
     internal static readonly Knob<float> Dist, Soft, Floor, DiscPx, Near, CsmBias, MaskHoles, MaskGraded, FocusDist, DynMin, CubeDist;
     internal static readonly Knob<int> Cascades, Size, Cubes, CubeSize, DynSize, DynCount, Cap, Fade, FadeSlots,
@@ -100,6 +100,7 @@ internal static class Shadows
         Split = G.Toggle("split", "split", true, Tier.ChatOnly, changed: CasterPass.ShadowInvalidate);
         Layered = G.Toggle("layered", "layered", true, Tier.ChatOnly);
         RefreshAll = G.Toggle("refreshall", "refreshall", false, Tier.ChatOnly);
+        DynSrc = G.Toggle("dynsrc", "dynsrc", true, Tier.ChatOnly);
         DynEvents = G.Toggle("dynevents", "dynevents", true, Tier.ChatOnly, changed: CasterPass.ShadowInvalidate);
         ItemDirty = G.Toggle("itemdirty", "itemdirty", true, Tier.ChatOnly, changed: CasterPass.ShadowInvalidate);
         FlipCollect = G.Toggle("flipcollect", "flipcollect", false, Tier.ChatOnly);

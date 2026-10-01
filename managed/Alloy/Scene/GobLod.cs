@@ -120,8 +120,8 @@ internal static unsafe class GobLod
             if (_frame - _pCoolAt[h] < _pCoolFor[h]) return;
             _pWant[h] = want; _pAt[h] = _frame; _pending++;
             // The alternates have to enter the part table before they can be owned, and only a walk puts
-            // them there.
-            Swapped = true;
+            // them there -- THIS gob's, named, rather than the area's.
+            Note(gob);
             return;
         }
         if (!Ready(gob)) { _waiting++; return; }
@@ -134,7 +134,7 @@ internal static unsafe class GobLod
         g.LodDist2 = d2;
         if (g.LodLevel == cur) { _refused++; _pCoolAt[h] = _frame; _pCoolFor[h] = PendingCool; return; }
         _swaps++;
-        Swapped = true;                              // the old root leaves the walk
+        Note(gob);                                   // the old root leaves the walk
         // The gob's whole active subtree changed under the part table AND under the transform owner.
         GobXform.Mark(gob);
     }
@@ -194,7 +194,7 @@ internal static unsafe class GobLod
     {
         int e = PartTable.Find(tri);
         if (e < 0) return false;                                   // no record yet: the walk has not reached it
-        byte st = PartTable._pState[e];
+        byte st = PartTable._pEnt[e].State;
         if (st == PartTable.StUnbound || st == PartTable.StStale) return false;
         if (st != PartTable.StActive) return true;                 // hidden or dead: nothing draws it either way
         return AlloyCensus.OwnFlag[e] != 0;                        // active: it must be SEATED, not just bound
@@ -226,6 +226,14 @@ internal static unsafe class GobLod
     private static readonly int[] _pCoolFor = new int[PendCap];
     private static readonly int[] _pSeen = new int[PendCap];
     private static int _pGen = 1, _pCount, _frame;
+    /// <summary>Rows stamped with <see cref="_pGen"/>: <see cref="_pUsed"/> hold a gob, <see cref="_pTombs"/>
+    /// are rows <see cref="Forget"/> released. Their SUM is what bounds a probe, because a stamp is never
+    /// cleared and a tombstone is still a stamp -- see <see cref="Insert"/>.</summary>
+    private static int _pUsed, _pTombs;
+    /// <summary>Stamped rows past which the table is recycled rather than probed further. Three quarters: a
+    /// lookup past that walks a long chain, and <see cref="Slot"/>(insert: false) is
+    /// <see cref="OnSetLod"/>'s common branch -- once per in-view gob per frame.</summary>
+    private const int PendLoad = PendCap * 3 / 4;
     /// <summary>Frames a registered swap may wait for its candidate to become drawable, and how long a gob
     /// whose candidate never did is left alone afterwards. A second and four seconds at 60 fps: long enough
     /// for the <c>SetupArrays</c> drip and an enrolment, short enough that <c>lod-stuck=</c> means something.
@@ -251,6 +259,27 @@ internal static unsafe class GobLod
         return h >= 0 && _pWant[h] != NoWant;
     }
 
+    /// <summary>GS2: the row a gob that LEFT the enumerated scene held. <c>Gob::~Gob</c> calls
+    /// <c>Gob::SetScene(0)</c> before it destroys anything, so <see cref="SceneWalk"/>'s hook on that symbol is
+    /// the notice, and this is what it closes: the allocator recycles a <c>Gob*</c>, and a new gob landing on a
+    /// dead one's address inherited its row -- a <c>_pWant</c> it never asked for, or (the one that shows) a
+    /// <see cref="StuckCool"/> cooldown that refuses its LOD swaps for the next thirty seconds. Releasing the
+    /// row also keeps a long session in a busy area off the full path below, which forgets every cooldown in
+    /// the table at once.
+    /// <para>Nothing is undone: a registration was never a write to the engine.</para></summary>
+    internal static void Forget(IntPtr gob)
+    {
+        int h = Slot(gob, false);
+        if (h < 0) return;
+        _pKey[h] = PendTomb; _pWant[h] = NoWant;
+        _pUsed--; _pTombs++;
+        _forgotten++;
+    }
+
+    /// <summary>A row <see cref="Forget"/> released. Never a real <c>Gob*</c>, and distinct from
+    /// <c>IntPtr.Zero</c>, which <see cref="Slot"/> refuses outright.</summary>
+    private static readonly IntPtr PendTomb = (IntPtr)(-1);
+
     /// <summary>The pending table's slot for <paramref name="gob"/>, or -1 when absent (and
     /// <paramref name="insert"/> is clear) or the table is full. A slot stamped with an older generation reads
     /// empty, so an area edge costs no clear.</summary>
@@ -258,38 +287,73 @@ internal static unsafe class GobLod
     {
         if (gob == IntPtr.Zero) return -1;
         int h = (int)((ulong)gob >> 4) & PendMask;
+        int tomb = -1;
         for (int probe = 0; probe <= PendMask; probe++, h = (h + 1) & PendMask)
         {
-            if (_pSeen[h] != _pGen)
-            {
-                if (!insert) return -1;
-                _pSeen[h] = _pGen; _pKey[h] = gob;
-                _pWant[h] = NoWant; _pAt[h] = 0; _pSeenAt[h] = 0;
-                _pCoolAt[h] = int.MinValue / 2; _pCoolFor[h] = PendingCool;
-                return h;
-            }
+            if (_pSeen[h] != _pGen) return insert ? Insert(tomb >= 0 ? tomb : h, gob) : -1;
+            // A released row is free to take, but the probe has to walk PAST it: an entry that hashed behind
+            // it is reachable only through this chain, and stopping here would lose it.
+            if (_pKey[h] == PendTomb) { if (tomb < 0) tomb = h; continue; }
             if (_pKey[h] == gob) return h;
         }
-        // Full. Entries are never removed -- a cancelled swap keeps its slot for the cooldown -- so over a
-        // long session the table can fill with cooldowns alone. Forgetting the whole table costs the
-        // cooldowns and nothing else (a registration is never a write to the engine), and the re-probe lands
-        // in an empty one.
-        if (insert)
+        // Every row stamped and none of them ours.
+        return insert ? Insert(tomb >= 0 ? tomb : -1, gob) : -1;
+    }
+
+    /// <summary>Take row <paramref name="h"/>, recycling the table first when it is past
+    /// <see cref="PendLoad"/> stamped rows or <paramref name="h"/> is -1 (no row at all).
+    /// <para><b>The load factor is what keeps a LOOKUP O(1)</b> (review). A stamp is never cleared and a
+    /// tombstone is still a stamp, so a table <see cref="Forget"/> kept supplying rows to would never
+    /// re-generation: once every row was stamped, <see cref="Slot"/>(insert: false) -- which is
+    /// <see cref="OnSetLod"/>'s common <c>want == cur</c> branch -- would walk all <see cref="PendCap"/> rows
+    /// once per in-view gob per frame, and the old full path would never be reached to say so.</para>
+    /// <para>Recycling forgets the cooldowns and nothing else (a registration is never a write to the engine),
+    /// and the re-probe lands in a table with no stamps at all. It DOES drop every in-flight registration, and
+    /// an in-flight registration is why <see cref="SceneWalk"/> is enumerating a gob's alternate roots -- so
+    /// the recycle asks for the re-walk that releases those records, exactly as <see cref="Reset"/> does
+    /// (review).</para></summary>
+    private static int Insert(int h, IntPtr gob)
+    {
+        if (h < 0 || _pUsed + _pTombs >= PendLoad)
         {
             _overflow++;
-            _pGen++; _pCount = 0;
+            _pGen++; _pCount = 0; _pUsed = 0; _pTombs = 0;
+            Swapped = true; _resetWalk = true;
             h = (int)((ulong)gob >> 4) & PendMask;
-            _pSeen[h] = _pGen; _pKey[h] = gob;
-            _pWant[h] = NoWant; _pAt[h] = 0; _pSeenAt[h] = 0;
-            _pCoolAt[h] = int.MinValue / 2; _pCoolFor[h] = PendingCool;
-            return h;
         }
-        return -1;
+        return Seat(h, gob);
+    }
+
+    /// <summary>A fresh row for <paramref name="gob"/> in slot <paramref name="h"/>, with no want, no
+    /// liveness stamp and a cooldown long expired.
+    /// <para>The row is counted USED either way and a reused tombstone comes OUT of the tombstone count
+    /// (review): the two are not alternatives, and treating them as such let the stamped total drift down
+    /// without bound -- seat, release, reseat on the tombstone, release again and it reads -1, at which point
+    /// the load factor never fires and the full-probe regression is back with nothing saying so.</para>
+    /// </summary>
+    private static int Seat(int h, IntPtr gob)
+    {
+        if (_pSeen[h] == _pGen && _pKey[h] == PendTomb) _pTombs--;
+        _pUsed++;
+        _pSeen[h] = _pGen; _pKey[h] = gob;
+        _pWant[h] = NoWant; _pAt[h] = 0; _pSeenAt[h] = 0;
+        _pCoolAt[h] = int.MinValue / 2; _pCoolFor[h] = PendingCool;
+        return h;
     }
 
     /// <summary>The area changed, or the knob was flipped: every gob address in the pending table is about to
     /// mean something else. Nothing has to be undone -- a registered swap was never performed.</summary>
-    internal static void Reset() { _pGen++; _pCount = 0; Swapped = true; }
+    internal static void Reset()
+    {
+        _pGen++; _pCount = 0; _pUsed = 0; _pTombs = 0; Swapped = true; _resetWalk = true;
+    }
+
+    /// <summary>An LOD edge on ONE gob: the re-walk it needs is that gob's tree, not the area's. The flag
+    /// stays because <see cref="Tick"/> uses it to count the edge and because <see cref="Reset"/> has no gob
+    /// to name.</summary>
+    private static void Note(IntPtr gob) { Swapped = true; SceneWalk.NoteGobDirty(gob); }
+    /// <summary><see cref="Reset"/> named no gob, so its re-walk is the whole area's.</summary>
+    private static bool _resetWalk;
 
     /// <summary>CX-104's skip experiment (<c>alloy.skipbuckets</c> 1 or 3): drive the two per-gob engine steps
     /// the skipped walks used to make. With <c>Scene::AddPartsToDrawBuckets</c> gone nothing calls
@@ -321,6 +385,16 @@ internal static unsafe class GobLod
             var g = new Gob(gob);
             if (process) g.GobProcessGob();
             if (!haveCam) continue;
+            _asked++;
+            // GS1: only of a gob the frustum let through. The BSP visitor @0x481000 asks in exactly one place --
+
+            // Gob::SetLODModel(this); } else countculledgobs++` -- so asking it of every gob in the AREA both
+            // paid the whole population for a choice nothing was going to read and defeated this class's own
+            // ageing: Tick cancels a registration the hook stopped asking for, and the hook never stopped.
+            // gob+0x1b is that verdict, written earlier THIS frame by ScenePrep's sweep or, when a /buckets
+            // A/B re-arms the engine's own walk, by ManageSceneBSP's step 3. It is a superset by exactly the
+            // attachments Enable propagates onto, which the visitor reached through their own node.
+            if (g.InView == 0) { _unasked++; continue; }
             // The distance the engine's own BSP visitor @0x481000 writes: |camPos - (pos + rot * centre)|^2.
             System.Numerics.Vector3 c = g.Position
                 + System.Numerics.Vector3.Transform(g.Centre, (System.Numerics.Quaternion)g.Rot);
@@ -372,6 +446,21 @@ internal static unsafe class GobLod
     private static float Past(float v) => v + MathF.Max(1e-3f, MathF.Abs(v) * 1e-3f);
 
     private static long _swaps, _held, _refused, _pending, _waiting, _stuck, _cancelled, _left, _overflow;
+    /// <summary>Registration releases one <see cref="Tick"/> may turn into per-gob deltas. A quarter of
+    /// <c>SceneWalk.GobQueueCap</c>, so this source alone can never overflow that queue however many gobs
+    /// leave the view at once -- and an overflow there is a FULL walk.</summary>
+    private const int LeftDrip = 64;
+    /// <summary>Row-ticks the drip put off: one per row per tick it waited, NOT a count of rows (a row deferred
+    /// for three ticks is three). The size of the backlog itself is <c>pending now</c> on the same line. A
+    /// standing figure here means the camera drops want-holding gobs faster than <see cref="LeftDrip"/> retires
+    /// them, which costs enumeration, not correctness.</summary>
+    private static long _leftDeferred;
+    /// <summary>GS1: gobs <see cref="DriveSkipped"/> reached against the ones it asked the LOD choice of. The
+    /// second reading 0 over a whole period means nothing is writing the in-view byte and every gob is frozen
+    /// at the level it holds -- which is why it is printed rather than assumed.</summary>
+    private static long _asked, _unasked;
+    /// <summary>GS2: rows released by the leave notice.</summary>
+    private static long _forgotten;
 
     /// <summary>Once per world frame, from the frame anchor: turn a swap into the re-walk it needs. The walk is
     /// edge-triggered, so this is the LOD edge (#256 §7.2's "no notice of any kind" made good).</summary>
@@ -381,16 +470,32 @@ internal static unsafe class GobLod
         // be false again the moment a registration stops being live -- the gob left the view (the hook is no
         // longer called for it) or its candidate is never going to become drawable.
         int n = 0;
+        // GS1 (review): the "left the view" branch below is LIVE now that the hook is asked only of the gobs
+        // the frustum let through, and every release is a per-gob delta. A camera turn can drop hundreds of
+        // want-holding gobs at once, and past SceneWalk's GobQueueCap those deltas become RequestWalk -- the
+        // 9,7 ms full walk this effort exists to retire. So the releases DRIP: what does not fit this frame
+        // keeps its registration (its alternates stay enumerated, which is only a cost, never a wrong frame)
+        // and goes next tick.
+        int drip = LeftDrip;
         for (int h = 0; h < PendCap; h++)
         {
             if (_pSeen[h] != _pGen || _pWant[h] == NoWant) continue;
-            if (_pSeenAt[h] != _frame) { _pWant[h] = NoWant; _left++; Swapped = true; continue; }
+            if (_pSeenAt[h] != _frame)
+            {
+                if (drip <= 0) { _leftDeferred++; n++; continue; }
+                drip--;
+                _pWant[h] = NoWant; _left++; Note(_pKey[h]); continue;
+            }
             if (_frame - _pAt[h] > PendingMax)
             {
-                // No Swapped here. The alternates stop being enumerated at whatever walk comes next (the
-                // engine bumps Scene::Sequence every 11-20 frames anyway), and asking for one per timeout
-                // would re-walk the area on a cadence for a tree that is not going to become drawable.
+                if (drip <= 0) { _leftDeferred++; n++; continue; }
+                drip--;
+                // The registration is dropped, so the gob stops being enumerated whole and its alternates'
+                // records have to go -- which is ONE gob's delta, not the area's re-walk this used to leave to
+                // whatever edge came along. (The old note said the epoch would move within 11-20 frames anyway;
+                // the per-gob deltas retired that accident.)
                 _pWant[h] = NoWant; _pCoolAt[h] = _frame; _pCoolFor[h] = StuckCool; _stuck++;
+                Note(_pKey[h]);
                 continue;
             }
             n++;
@@ -401,7 +506,7 @@ internal static unsafe class GobLod
         _frame++;
         if (!Swapped) return;
         Swapped = false;
-        SceneWalk.RequestWalk();
+        if (_resetWalk) { _resetWalk = false; SceneWalk.RequestWalk(); }
         _walks++;
     }
     private static long _walks;
@@ -413,11 +518,20 @@ internal static unsafe class GobLod
         string s = Armed
             ? $"lod {(float)_held / frames:F0} held/frame, {_swaps} swaps of {_pending} wanted "
               + $"({_walks} re-walks, {_pCount} pending now / {_pHigh} peak, {_waiting} waits, "
-              + $"lod-stuck={_stuck}, {_cancelled} cancelled by the camera, {_left} left the view, "
-              + $"{_refused} the engine refused for "
-              + $"want of a root{(_overflow == 0 ? "" : $", {_overflow} PENDING TABLE FULL")})"
+              + $"lod-stuck={_stuck}, {_cancelled} cancelled by the camera, {_left} left the view"
+              + (_leftDeferred == 0 ? "" : $" ({_leftDeferred} drip row-tick(s) waiting; the backlog is "
+                                         + "`pending now`)")
+              + $", {_refused} the engine refused for "
+              + $"want of a root{(_overflow == 0 ? "" : $", {_overflow} table recycle(s) ({PendLoad} rows "
+                                                      + "stamped, or no free row at all)")})"
+              // GS1: asked of the gobs the frustum let through, not of the area.
+              + $", asked {(_asked - _unasked) / frames}/frame of {_asked / frames} swept"
+              // GS2/review: rows stamped is what bounds a probe, and a tombstone is still a stamp.
+              + $", table {_pUsed}+{_pTombs} tomb(s) of {PendCap}"
+              + (_forgotten == 0 ? "" : $", {_forgotten} row(s) released by the leave notice")
             : "lod ENGINE'S (alloy.ownlod 0 or unresolved) -- all three roots enumerated";
         _swaps = _held = _refused = _walks = _pending = _waiting = _cancelled = _left = _overflow = 0;
+        _asked = _unasked = 0; _forgotten = 0; _leftDeferred = 0;
         _pHigh = _pCount;
         return s;
     }
@@ -508,27 +622,27 @@ internal static unsafe class GobLod
             check.Expect(!TreeReady(root), "a root whose parts have no record yet is NOT ready");
             int er = PartTable.Insert(root), ec = PartTable.Insert(child);
             if (er < 0 || ec < 0) { log.Info("GobLod.SelfCheck FAIL: the part table refused a synthetic insert"); check.Expect(false, "synthetic insert"); return; }
-            PartTable._pState[er] = PartTable.StActive; AlloyCensus.OwnFlag[er] = 1;
-            PartTable._pState[ec] = PartTable.StUnbound; AlloyCensus.OwnFlag[ec] = 0;
+            PartTable._pEnt[er].State = PartTable.StActive; AlloyCensus.OwnFlag[er] = 1;
+            PartTable._pEnt[ec].State = PartTable.StUnbound; AlloyCensus.OwnFlag[ec] = 0;
             check.Expect(!TreeReady(root), "a part still waiting for SetupArrays (StUnbound) is NOT ready");
-            PartTable._pState[ec] = PartTable.StStale;
+            PartTable._pEnt[ec].State = PartTable.StStale;
             check.Expect(!TreeReady(root), "...nor one whose draw arguments went stale");
-            PartTable._pState[ec] = PartTable.StActive;
+            PartTable._pEnt[ec].State = PartTable.StActive;
             check.Expect(!TreeReady(root), "a BOUND part that enrolment has not seated (OwnFlag 0) is NOT ready");
             AlloyCensus.OwnFlag[ec] = 1;
             check.Expect(TreeReady(root), "bound and seated on every part IS ready");
-            PartTable._pState[ec] = PartTable.StHidden;
+            PartTable._pEnt[ec].State = PartTable.StHidden;
             check.Expect(TreeReady(root), "a part the engine's own part+0x34 gate hides is ready -- nothing draws it");
-            PartTable._pState[ec] = PartTable.StDead;
+            PartTable._pEnt[ec].State = PartTable.StDead;
             check.Expect(TreeReady(root), "...and so is one the part table killed permanently");
             // A pruned subtree is ready even with no record at all: SceneWalk prunes on the same byte, so
             // waiting on what is below it would wait forever.
-            PartTable._pState[ec] = PartTable.StEmpty; PartTable._pPart[ec] = IntPtr.Zero;
+            PartTable._pEnt[ec].State = PartTable.StEmpty; PartTable._pEnt[ec].Part = IntPtr.Zero;
             new Part(child).Visible = 0;
             check.Expect(TreeReady(root), "a subtree the engine gates off is ready however little is recorded");
             check.Expect(TreeReady(IntPtr.Zero), "a gob with no alternate root is trivially ready");
 
-            PartTable._pState[er] = PartTable.StEmpty; PartTable._pPart[er] = IntPtr.Zero;
+            PartTable._pEnt[er].State = PartTable.StEmpty; PartTable._pEnt[er].Part = IntPtr.Zero;
             AlloyCensus.OwnFlag[er] = 0; AlloyCensus.OwnFlag[ec] = 0;
             PartTable._pWalkGen[er] = 0; PartTable._pWalkGen[ec] = 0;
             PartTable._partCount = savedCount;
@@ -547,8 +661,8 @@ internal static unsafe class GobLod
     /// that is not going to bind).</summary>
     private static void PendingSelfCheck(Checker check)
     {
-        int savedGen = _pGen, savedCount = _pCount, savedFrame = _frame;
-        _pGen++; _pCount = 0; _frame = 1000;
+        int savedGen = _pGen, savedFrame = _frame;
+        _pGen++; _pCount = 0; _pUsed = 0; _pTombs = 0; _frame = 1000;
         IntPtr g = (IntPtr)0x51000;
         check.Expect(!Pending(g), "a gob with no registered swap is not enumerated whole");
         int h = Slot(g, true);
@@ -569,7 +683,7 @@ internal static unsafe class GobLod
         // (the gob left the view, so the BSP visitor stopped calling us) is cancelled at once -- otherwise it
         // would enumerate three roots and force an enrolment every frame for a gob nobody is looking at. And
         // one whose candidate never becomes drawable times out.
-        _pGen++; _pCount = 0; _frame = 2000;
+        _pGen++; _pCount = 0; _pUsed = 0; _pTombs = 0; _frame = 2000;
         h = Slot(g, true);
         _pWant[h] = 2; _pAt[h] = _frame; _pSeenAt[h] = _frame;
         Tick();
@@ -581,7 +695,90 @@ internal static unsafe class GobLod
         check.Expect(!Pending(g) && _pCoolAt[h] == _frame - 1 && _pCoolFor[h] == StuckCool,
                      "a candidate that never became drawable times out into the LONG cooldown");
 
-        _pGen = savedGen; _pCount = savedCount; _frame = savedFrame; Swapped = false;
+        // GS2: the leave notice, and the ONE rule a released row has to obey. Two gobs that collide on the
+        // same bucket, the first released: the second must still be found, or every LOD registration that
+        // hashed behind a dead gob is lost -- and the freed row must be the one the next insert takes, or the
+        // notice buys nothing. `a` and `b` are chosen to hash to the same slot (the key is `ptr >> 4`).
+        _pGen++; _pCount = 0; _pUsed = 0; _pTombs = 0; _frame = 3000;
+        IntPtr a = (IntPtr)0x60000, b = a + (PendCap << 4);
+        int ha = Slot(a, true), hb = Slot(b, true);
+        check.Expect(ha >= 0 && hb == ((ha + 1) & PendMask), "two gobs colliding on one bucket probe to adjacent rows");
+        _pCoolAt[ha] = _frame; _pCoolFor[ha] = StuckCool;
+        Forget(a);
+        check.Expect(Slot(a, false) < 0, "a gob that left the scene has no row -- its cooldown cannot be inherited");
+        check.Expect(Slot(b, false) == hb, "...and the gob that hashed BEHIND it is still found");
+        check.Expect(Slot(a, true) == ha && _pCoolFor[ha] == PendingCool,
+                     "a released row is reused, seated fresh, by the next gob that hashes to it");
+
+        // Review: a released row is still a STAMPED row, so the load factor has to count BOTH -- otherwise a
+        // table Forget kept supplying rows to would never re-generation: every row stamped, no row ours, and
+        // Slot(insert: false) -- OnSetLod's common `want == cur` branch -- walking all PendCap rows once per
+        // in-view gob per frame while the table said nothing was wrong. Tested as the RULE rather than by
+        // filling the table, because filling it is ~2M probe iterations at every boot for the same assertion.
+        _pGen++; _pCount = 0; _pUsed = 0; _pTombs = 0; _frame = 4000;
+        long recyclesWas = _overflow;
+        IntPtr c = (IntPtr)0x100000, d = c + (PendCap << 4);   // the same bucket as c
+        int hc = Slot(c, true);
+        check.Expect(_pUsed == 1 && _pTombs == 0, "a seated row counts as a stamped row in use");
+        Forget(c);
+        check.Expect(_pUsed == 0 && _pTombs == 1, "a release moves it to the tombstone count, not out of the table");
+        // THE counter rule the first cut got wrong: a reused tombstone is used AND no longer a tombstone. Taking
+        // the two as alternatives let the stamped total drift below zero over seat/release/reseat/release, and a
+        // negative total means the load factor never fires again.
+        check.Expect(Slot(d, true) == hc && _pUsed == 1 && _pTombs == 0,
+                     "reusing a tombstone counts the row as used and drops the tombstone");
+        Forget(d);
+        check.Expect(_pUsed == 0 && _pTombs == 1, "...and releasing it again leaves exactly one tombstone");
+        // The factor itself, on the stamped total, without filling the table.
+        _pUsed = PendLoad; _pTombs = 0;
+        int genWas = _pGen;
+        Slot((IntPtr)0x200000, true);
+        check.Expect(_pGen == genWas + 1 && _pTombs == 0 && _pUsed == 1 && _overflow == recyclesWas + 1
+                     && _resetWalk,
+                     "a table at its load factor is RECYCLED on the next insert, says so, and asks for the "
+                     + "re-walk that releases the alternate roots its dropped registrations were holding");
+        // ...and the BACKSTOP, driven from the state the counter bug produced: every row occupied by another
+        // gob while the counters read zero. The probe then finds neither its own row nor a free one, and that
+        // alone has to force the recycle -- there is no other way out of an unbounded probe.
+        _pGen++; _pCount = 0; _pUsed = 0; _pTombs = 0; _resetWalk = false;
+        for (int h2 = 0; h2 < PendCap; h2++) { _pSeen[h2] = _pGen; _pKey[h2] = (IntPtr)(0x900000 + h2 * 0x40); }
+        genWas = _pGen;
+        Slot((IntPtr)0x210000, true);
+        check.Expect(_pGen == genWas + 1 && _pUsed == 1 && _pTombs == 0,
+                     "a table with no free row is recycled even when the counters claim it is empty");
+
+        // Review: and the releases DRIP. Every one is a per-gob delta, and a camera turn dropping more than
+        // SceneWalk's queue holds turns the lot into RequestWalk -- the 9,7 ms full walk.
+        _pGen++; _pCount = 0; _pUsed = 0; _pTombs = 0; _frame = 5000;
+        long leftWas = _left;
+        _leftDeferred = 0;
+        for (int k = 0; k <= LeftDrip; k++)
+        {
+            int hk = Slot((IntPtr)(0x300000 + k * 0x40), true);
+            _pWant[hk] = 1; _pAt[hk] = _frame; _pSeenAt[hk] = _frame - 1;   // asked LAST frame, not this one
+        }
+        Tick();
+        check.Expect(_left - leftWas == LeftDrip && _leftDeferred == 1 && _pCount == 1,
+                     "at most LeftDrip registrations are released per tick, and the rest stay registered");
+
+        // The table is WIPED, not generation-restored (review). Restoring `_pGen` to a value BELOW the
+        // generations the checks seated rows in would bring every synthetic row back to life the moment a
+        // handful of area edges bumped the counter past them -- rows with a `_pWant` set, which the ageing loop
+        // would then Note() as per-gob deltas naming freed addresses, and tombstones the counters know nothing
+        // about, which is the invisible full-probe state. Clearing the stamps makes every row read empty at any
+        // generation, so the restore is safe and the live table starts from nothing.
+        Array.Clear(_pSeen);
+        _pGen = savedGen; _frame = savedFrame; Swapped = false; _resetWalk = false;
+        // A wiped table holds nothing, so every occupancy number is 0 -- restoring the saved ones would be the
+        // same lie in the other direction.
+        _pCount = 0; _pUsed = 0; _pTombs = 0; _pHigh = 0;
+        // Every counter the checks above moved: none of them is a session's, and each reads as a fault.
+        _swaps = _held = _refused = _walks = _pending = _waiting = _cancelled = _left = _overflow = 0;
+        _stuck = 0; _forgotten = 0; _leftDeferred = 0; _asked = _unasked = 0;
+        SceneWalk.ForgetGobQueue();   // the edges above named synthetic gobs
+        // ...and the walk request the recycles above asked for, through Tick. The first live frame must enrol
+        // because the WALK found something, not because a headless check left the flag standing.
+        SceneWalk.Dirty = false;
     }
 }
 

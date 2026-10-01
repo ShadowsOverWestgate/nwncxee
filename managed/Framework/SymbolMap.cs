@@ -450,6 +450,12 @@ internal static unsafe class SymbolMap
     /// per-channel bubble styling. ABI: <c>(this /*rdi*/, uchar channel /*esi*/)</c>.</summary>
     [Fn("void(IntPtr msg, byte channel)")]
     public const string HandleServerToPlayerChat = "_ZN11CNWCMessage24HandleServerToPlayerChatEh";
+    /// <summary><c>CNWCMessage::HandleServerToPlayerPlaceableUpdate_Delete()</c> @0x75f960 -- the server took a
+    /// placeable out of this player's view: fades it out, and expires it after 45 s if it is still in the area
+    /// (its BOOL 0) or at once if not. One caller on each build (<c>HandleServerToPlayerUpdate_Delete</c>; Windows
+    /// <c>0x7b35b0</c>). Returns the parse verdict.</summary>
+    [Fn("int(IntPtr msg)")]
+    public const string PlaceableUpdateDelete = "_ZN11CNWCMessage42HandleServerToPlayerPlaceableUpdate_DeleteEv";
     // ---- combat text: damage numbers + floating combat text (docs/re/combat-text.md). RVA on Windows (#420). ----
     /// <summary>CNWCObject::ShowFloatyText(CExoString, Vector, CExoString, int) @0x7e7010 -- the ONE funnel
     /// every damage number and combat-text banner passes through (CC messages, the creature floaty-text
@@ -1278,6 +1284,17 @@ internal static unsafe class SymbolMap
     /// skips the original must call it or the whole subtree freezes.</summary>
     [Fn("void(IntPtr part, float dt)")]
     public const string PartAnimate = "_ZN4Part7AnimateEf";
+    /// <summary><c>PartEmitter::Animate(float)</c> @0x4b3310 -- an IDENTITY, not a call target. It is a pure
+    /// tail-jump into <see cref="PartAnimate"/> (<c>push rbp; mov rbp,rsp; pop rbp; jmp 0x49ad00</c>), so a
+    /// walk that owns the recursion may treat an emitter part exactly as a plain one instead of dispatching
+    /// through it. Resolved so the owned walk can tell it apart from an override it does not know.</summary>
+    public const string PartEmitterAnimate = "_ZN11PartEmitter7AnimateEf";
+    /// <summary><c>AnimateStaticLight(CAurObject*, char const*, void*)</c> @0x47d820 -- an IDENTITY. It is the
+    /// one handler <c>ProcessStaticObject</c> @0x4619e0 registers for that event name, and it is
+    /// <c>UpdateStaticLighting</c> @0x47d6a0, whose whole output is the <c>staticlightbucket</c> that only
+    /// <c>ManageSceneBSP</c> drains. Resolved so "is the registered handler THIS function" is a pointer
+    /// compare rather than a name compare.</summary>
+    public const string AnimateStaticLight = "_Z18AnimateStaticLightP10CAurObjectPKcPv";
     /// <summary><c>VertexPrimitiveDangly::GenerateVelocityArray()</c> @0x45ad70 -- allocates the zeroed
     /// <c>verts*12</c> velocity array at <c>+0xa0</c>, lazily, on the first Animate. A replacement that
     /// never calls the original has to drive this itself or the array is never born.</summary>
@@ -1366,6 +1383,23 @@ internal static unsafe class SymbolMap
     public const string GobAppend = "_ZN3Gob6AppendEPKcS1_";
     [Fn("int(IntPtr gob, IntPtr node)")]
     public const string GobAmputate = "_ZN3Gob8AmputateEPKc";
+    /// <summary><c>Gob::SetScene(Scene*)</c> @0x43e020 -- the SOLE writer of <see cref="SceneSequence"/>, the
+    /// engine's global scene-membership epoch. Verified, not inferred: the whole image holds exactly two
+    /// references to that global, the <c>addl $0x1</c> at 0x43e0aa in this function and
+    /// <c>ManageSceneBSP</c>'s read at 0x47fb68. It bumps only when <c>gob+0x88</c> actually changes, and it
+    /// has the gob and BOTH scenes in hand -- which is what lets <see cref="CX.Alloy.SceneWalk"/> answer a
+    /// membership change with one gob's tree instead of the whole area's.</summary>
+    [Fn("void(IntPtr gob, IntPtr scene)")]
+    public const string GobSetScene = "_ZN3Gob8SetSceneEP5Scene";
+    /// <summary><c>Gob::SetSubtreeEnabled(char const*, int)</c> @0x43c670 -- the sole DYNAMIC writer of
+    /// <c>part+0x34</c>, the engine's own draw gate. Its whole body is
+    /// <c>p = FindPart(gob+0x90, name); if (p) p[0x34] = (v != 0);</c>: no epoch bump, no part created, none
+    /// destroyed, so hiding or showing a subtree announces itself nowhere else. The only other writer is
+    /// <c>Gob::Append</c> @0x4422a0, which sets the byte on the new subtree's ancestors and is hooked already.
+    /// Without this, a part hidden between two full walks keeps drawing until one happens to run (#264/CX-92).
+    /// The search is over <c>Gob+0x90</c>, the ACTIVE tree, so the gob is the right unit to re-walk.</summary>
+    [Fn("byte(IntPtr gob, IntPtr name, int on)")]
+    public const string GobSetSubtreeEnabled = "_ZN3Gob17SetSubtreeEnabledEPKci";
     /// <summary>VertexDataObject::Repack() @0x45c270 -- compacts tombstoned items (RemoveItem only zeroes
     /// sizes), MOVING the surviving items' indices and offsets. Triggered by AddItem on fragmentation, so
     /// streaming fires it mid-play; every batch member of that VDO must recapture its item.</summary>
@@ -3015,6 +3049,7 @@ internal static unsafe class SymbolMap
         [ItemShowFeedbackBubbleText]      = At(),   // `this` = the CNWCObject subobject, flag +0x264
         [SetPopUpBubbleText] = At(),
         [HandleServerToPlayerChat] = At(),   // major 9
+        [PlaceableUpdateDelete] = At(),   // __FUNCSIG__ "int __cdecl CNWCMessage::HandleServerToPlayerPlaceableUpdate_Delete(void)"
         [ShowFloatyText]     = At(),
 
         // --- #446: the three CNWC* anchors Alloy's highlight and border ring hook. No CNWC* class is
@@ -3236,11 +3271,15 @@ internal static unsafe class SymbolMap
         [OnGainFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
         [OnLostFocus] = LinuxOnly("empty stub reached by indirect dispatch; OS focus handling covers it"),
         [PartAnimate] = Nm("?Animate@Part@@UEAAXM@Z"),
+        [PartEmitterAnimate] = Nm("?Animate@PartEmitter@@UEAAXM@Z"),
+        [AnimateStaticLight] = Nm("?AnimateStaticLight@@YAXPEAVCAurObject@@PEBDPEAX@Z"),
         [PartDanglyAnimate] = Nm("?Animate@PartDanglyMesh@@UEAAXM@Z"),
         [PartDanglyMeshVtbl] = At(),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [PartDtor] = Nm("??1Part@@UEAA@XZ"),
         [GobAppend] = LinuxOnly("#397 diagnostic watch; no swap forensics on Windows yet"),
         [GobAmputate] = LinuxOnly("#397 diagnostic watch; no swap forensics on Windows yet"),
+        [GobSetScene] = Nm("?SetScene@Gob@@QEAAXPEAVScene@@@Z"),
+        [GobSetSubtreeEnabled] = Nm("?SetSubtreeEnabled@Gob@@UEAA_NPEBDH@Z"),
         // #275: ParseField and Init are called (not inlined) on Windows -- CreateSharedMaterial/GetSharedMaterial.
         [SharedMaterialParseField] = Nm("?ParseField@SharedMaterial@@QEAAXPEBD@Z"),
         [SharedMaterialInit] = Nm("?Init@SharedMaterial@@QEAAXPEBD@Z"),

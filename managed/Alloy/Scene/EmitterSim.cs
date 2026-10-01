@@ -33,9 +33,15 @@ internal static unsafe partial class EmitterSim
     /// <summary>Emitters tracked at once. Past this an emitter is not stepped and draws nothing, which is
     /// the same cost the draw table's own cap has (<c>Particles</c> MaxEmitters).</summary>
     private const int MaxEmitters = 4096;
-    /// <summary>Particles one emitter may hold. The engine has no such cap -- birthrate x life is its only
-    /// bound -- so this is ours, and an emitter that wants more is clamped rather than refused.</summary>
-    private const int MaxPerEmitter = 1024;
+    /// <summary>Particles one emitter may hold. The engine has NO ceiling at all: every Update births from
+    /// the recycle list at <c>emitter+0x128</c> and, when that is empty, calls <c>operator new</c>
+    /// unconditionally (<c>FountainEmitter::Update</c> @0x4b1c70, and the same shape in
+    /// <c>SingleEmitter</c>/<c>ExplosionEmitter</c>) -- <c>birthRate x life</c> is an emergent steady state
+    /// there, not a bound. So this is purely ours, and every birth it refuses is a particle vanilla would
+    /// have drawn: loud once and counted, never quiet (CX-45).
+    /// <para>Derived rather than picked: it is the share of the arena one emitter may take before it starves
+    /// every other emitter in the area, <see cref="MaxSlots"/>/64 -- 480KB of the arena's 30MB.</para></summary>
+    private const int MaxPerEmitter = MaxSlots / 64;
     /// <summary>Pool growth, in particles: start here, double until the frame fits, stop at the cap (0x78
     /// bytes each, so the cap is 30 MiB) and start the arena over rather than truncating one emitter.</summary>
     private const int MinSlots = 4096, MaxSlots = 1 << 18;
@@ -134,6 +140,36 @@ internal static unsafe partial class EmitterSim
     private static int _frame;
     private static int _emitters, _particles, _spawned, _died, _chunk, _bounced, _p2pNoTarget,
                        _capped, _poolResets, _reclaimed, _full, _foreign;
+    /// <summary>The largest block any emitter's own parameters asked for this period, and births actually
+    /// LOST to a full block -- the pair that says whether our ceiling costs a visible particle.</summary>
+    private static int _capPeak, _capLost;
+    private static bool _capSaid;
+
+    /// <summary>Births a full block refused. EVERY one of them: the engine has no per-emitter ceiling
+    /// (<c>operator new</c> on an empty recycle list, <c>FountainEmitter::Update</c> @0x4b1c70), so a refusal
+    /// here is always a particle vanilla would have drawn, whether the block was sized by the emitter's own
+    /// parameters or clamped by <see cref="MaxPerEmitter"/>. Loud once, counted after (CX-45).</summary>
+    private static void CapLost(int n)
+    {
+        if (n <= 0) return;
+        _capLost += n;
+        if (_capSaid) return;
+        _capSaid = true;
+        _log?.Always($"EmitterSim: an emitter's block is full and it is losing births -- {n} on this step. Its "
+                   + $"parameters asked for {_capPeak} particles against our {MaxPerEmitter} ceiling; vanilla "
+                   + "has no ceiling at all. Raise MaxPerEmitter to the peak the [emitsim] line reports, or "
+                   + "widen Want if the burst is what overran it. Counted, not repeated, from here on");
+    }
+
+    /// <summary>Clamp a birth burst to what the block can still hold, counting what that costs.</summary>
+    private static int Room(ref Slot slot, int births)
+    {
+        int room = slot.Cap - slot.Live;
+        if (room < 0) room = 0;
+        if (births <= room) return births;
+        CapLost(births - room);
+        return room;
+    }
 
     internal static void Install(ExtenderLog log, HookService hooks)
     {
@@ -232,10 +268,14 @@ internal static unsafe partial class EmitterSim
                 if (step) _animate(em, dt);
                 _renderNothing(em);
                 _chunk++;
+                if (new PartEmitter(em).Count > 0) _chunkLive++;
                 continue;
             }
+            int fade0 = _fadeExit, rate0 = _rate0;
             if (step) Advance(ref slot, em, scene, dt);
-            if (slot.Live <= 0) continue;
+            else _held++;
+            // idle is what neither named exit explains: a stepped emitter left empty for another reason
+            if (slot.Live <= 0) { if (step && _fadeExit == fade0 && _rate0 == rate0) _idle++; continue; }
 
             Vector3 at = gob.IsNull ? new CX.Engine.Part(em).Pos : gob.Position;
             slot.Dist = (eye - at).LengthSquared();
@@ -244,6 +284,7 @@ internal static unsafe partial class EmitterSim
             _particles += slot.Live;
         }
 
+        if (_dump) { _dump = false; DumpGobs(sc, eye); }
         SortDrawOrder();
         for (int i = 0; i < _orderN; i++)
         {
@@ -262,6 +303,11 @@ internal static unsafe partial class EmitterSim
     private static readonly IntPtr[] _selected = new IntPtr[MaxEmitters];
     private static int _selN;
     private static int _inView, _outOfView;
+    /// <summary>The silent exits, period totals, disjoint: the tile-fade exit, a fountain whose birth rate truncates
+    /// to 0, and a stepped emitter left empty for neither reason; beside them the emitters held (in view, the scene
+    /// not animating -- drawn, not stepped) and the chunk emitters whose engine-side list holds anything after their
+    /// step. A flame that never shows is one of these.</summary>
+    private static int _held, _idle, _fadeExit, _rate0, _chunkLive;
 
     /// <summary>Six inward-facing camera planes, rebuilt once per <see cref="Step"/>. False = no camera to
     /// build them from, and every registered emitter is stepped -- an instrument that cannot see may not hide
@@ -374,7 +420,9 @@ internal static unsafe partial class EmitterSim
         slot.Mover = (flags & FP2P) == 0 ? MoveStandard
                    : (flags & FP2PSel) != 0 ? MoveBezier : MoveGrav;
         slot.Chunk = node.ChunkModel[0] != 0;
-        if (!slot.Chunk && !Grow(ref slot, em)) { slot.Em = IntPtr.Zero; return -1; }
+        // dt 0: the steady-state size. Advance grows again with the frame's own dt before the first birth,
+        // so the burst headroom is in place before anything can ask for it.
+        if (!slot.Chunk && !Grow(ref slot, em, 0f)) { slot.Em = IntPtr.Zero; return -1; }
         return s;
     }
 
@@ -419,20 +467,60 @@ internal static unsafe partial class EmitterSim
 
     // ---- the pool ------------------------------------------------------------------------------------
 
+    /// <summary>The block one emitter's parameters can fill THIS step: its standing population plus the
+    /// largest burst its mode can add in one step, so a birth is never refused for want of a slot the
+    /// arithmetic could have predicted.
+    /// <list type="bullet">
+    /// <item><b>Single</b>: exactly one. Exact.</item>
+    /// <item><b>Lightning</b>: a fixed chain of <c>(int)rate</c>, seeded up to and killed down to it. Exact.</item>
+    /// <item><b>Explosion</b>: <c>(int)rate</c> at once on the detonate event, plus an ESTIMATE of what a
+    /// previous detonation still has alive (<c>rate x life</c>). Not a bound: the event's period P is the
+    /// model's and we do not read it, so the true live count is <c>(int)rate x ceil(life / P)</c> and a
+    /// re-detonating emitter with <c>life &gt; P</c> overruns this. What it fixes is the old size, which was
+    /// the standing term ALONE, so any emitter with <c>life &lt; 1</c> lost most of its burst on every bang.
+    /// An overrun is counted like any other loss and <c>CAP-LOST</c> is what would say P has to be read.</item>
+    /// <item><b>Fountain</b> (metered): the standing <c>rate x life</c>, plus one for the step a birth and a
+    /// death coincide, plus the metered burst. The burst is read off the loop: the accumulator fires at
+    /// <c>acc &gt;= 1/rate</c> and births <c>(int)(acc x rate)</c> with <c>acc &lt; 1/rate + dt</c>, so at
+    /// most <c>1 + (int)(dt x rate)</c> land in one step.</item>
+    /// </list>
+    /// Two bursts this deliberately does not cover, both counted by <see cref="Room"/> rather than sized for:
+    /// the p2p birth, which is <c>(int)(rate x distance travelled)</c> long and unbounded across a teleport;
+    /// and a birthrate RAMP, where the accumulator was filled at the old rate and is spent at the new one, so
+    /// up to <c>newRate / oldRate</c> more births can land in the step the controller raises it.</summary>
+    /// <summary>Round a wanted population up to a power of two. The arena is a bump allocator and a grow
+    /// ABANDONS the old block, so a controller ramping birthrate one particle at a time would burn ~N^2/2 of
+    /// the arena on its way up and take everything else down with it at the reset. Growing in powers of two
+    /// makes that O(log N) grows and under 2x the block's own size in abandoned space.</summary>
+    private static int Block(int want)
+        => want < 1 ? 1 : (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)want);
+
+    private static int Want(int mode, float rate, float life, float dt)
+    {
+        float l = MathF.Max(life, 0f);
+        int want = mode switch
+        {
+            ModeSingle => 1,
+            ModeLightning => (int)rate,
+            ModeExplosion => (int)rate + (int)(rate * l) + 1,
+            _ => (int)(rate * l) + 1 + 1 + (int)(dt * rate),
+        };
+        return want < 1 ? 1 : want;
+    }
+
     /// <summary>Give this emitter a block big enough for the population its parameters imply, growing the
     /// arena if it must. False means the arena is at its cap and this emitter draws nothing this frame.
     /// </summary>
-    private static bool Grow(ref Slot slot, IntPtr em)
+    private static bool Grow(ref Slot slot, IntPtr em, float dt)
     {
         var e = new PartEmitter(em);
         float rate = e.BirthRate, life = e.Life;
-        // Lightning holds a FIXED chain of birthRate particles; every other mode holds as many as its
-        // birthrate keeps alive over one lifetime, plus one for the frame a birth and a death coincide.
-        int want = slot.Mode == ModeLightning
-                 ? (int)rate
-                 : slot.Mode == ModeSingle ? 1
-                 : (int)(rate * MathF.Max(life, 0f)) + 2;
-        if (want < 1) want = 1;
+        int want = Want(slot.Mode, rate, life, dt);
+        // The peak is the census MaxPerEmitter has to be sized from: nothing else in the client says what an
+        // emitter's own parameters ask for, so a clamp reported without it cannot be acted on. Taken before
+        // the block is rounded up, so it reports the demand and not our own quantisation.
+        if (want > _capPeak) _capPeak = want;
+        want = Block(want);
         if (want > MaxPerEmitter) { want = MaxPerEmitter; _capped++; }
         if (slot.Cap >= want) return true;
 
@@ -537,16 +625,128 @@ internal static unsafe partial class EmitterSim
         BounceWorld.Reset();
     }
 
+    /// <summary><c>/emitsim dump</c>: the next <see cref="Step"/> walks every scene gob within
+    /// <see cref="DumpReach"/> of the camera and logs each emitter in its trees. Driven from the GOBS, not the
+    /// registry, so an emitter the registry never took is listed too. Cold and on demand, so it allocates.</summary>
+    private static bool _dump;
+    private const float DumpReach = 30f;
+    private const int DumpMax = 96;
+
+    private static void DumpGobs(CX.Engine.Scene sc, Vector3 eye)
+    {
+        IntPtr* gobs = (IntPtr*)sc.Gobs;
+        int n = sc.GobCount, lines = 0, near = 0;
+        var stack = new (IntPtr Part, bool Hidden)[256];
+        for (int i = 0; i < n && gobs != null && lines < DumpMax; i++)
+        {
+            if (gobs[i] == IntPtr.Zero) continue;
+            var g = new CX.Engine.Gob(gobs[i]);
+            AurXform.V3 w = AurXform.AdjustedPosition(gobs[i]);
+            float d = (eye - new Vector3(w.X, w.Y, w.Z)).Length();
+            if (d > DumpReach) continue;
+            near++;
+            ReadOnlySpan<IntPtr> roots = [g.PartTree.Ptr, g.LodRoot1.Ptr, g.LodRoot2.Ptr];
+            int nApp = g.AppendCount;
+            IntPtr* app = (IntPtr*)g.AppendRoots;
+            for (int r = 0; r < roots.Length + (app == null ? 0 : nApp); r++)
+            {
+                IntPtr root = r < roots.Length ? roots[r] : app[r - roots.Length];
+                if (root == IntPtr.Zero) continue;
+                int sp = 0;
+                stack[sp++] = (root, false);
+                while (sp > 0 && lines < DumpMax)
+                {
+                    var (pp, hid) = stack[--sp];
+                    var part = new CX.Engine.Part(pp);
+                    hid |= part.Visible == 0;
+                    if (!part.AsPartEmitter().IsNull)
+                    {
+                        lines++;
+                        DumpOne(g, gobs[i], pp, d, r == 0 ? "tree" : r < roots.Length ? "lod-alt" : "append", hid);
+                    }
+                    IntPtr* kids = (IntPtr*)part.Children;
+                    for (int k = 0; kids != null && k < part.ChildCount && sp < stack.Length; k++)
+                        if (kids[k] != IntPtr.Zero) stack[sp++] = (kids[k], hid);
+                }
+            }
+        }
+        _log?.Info($"EmitterSim dump: {near} gob(s) within {DumpReach:F0} m of {n}, {lines} emitter(s) listed"
+                 + (lines >= DumpMax ? " (CAPPED)" : ""));
+    }
+
+    /// <summary>One gob-owned emitter: registry membership, the walk's hidden gate, our slot, the parameters,
+    /// the gob's animate gates, and each queued run's birthrate key at the run's time -- the value
+    /// <see cref="AnimKeys.Control"/> should have written.</summary>
+    private static void DumpOne(CX.Engine.Gob g, IntPtr gob, IntPtr em, float d, string root, bool hidden)
+    {
+        var part = new CX.Engine.Part(em);
+        var e = new PartEmitter(em);
+        int s = -1;
+        for (int i = 0; i < _tabN; i++) if (_tab[i].Em == em) { s = i; break; }
+        string slot = s < 0 ? "no slot"
+                    : $"mode={_tab[s].Mode} live={_tab[s].Live}/{_tab[s].Cap} seen={(_tab[s].Seen == _frame ? "now" : $"{_frame - _tab[s].Seen}f ago")}";
+        IntPtr model = g.Node.Ptr;
+        string line = $"EmitterSim dump: {d:F1}m {NodeName(model)}/{NodeName(part.Node.Ptr)} [{root}{(hidden ? ", HIDDEN" : "")}]"
+                    + $" registry={SceneParts.Membership(em)} {slot} birthrate={e.BirthRate:F2} life={e.Life:F2}"
+                    + $" engine-list={e.Count} | gob animating={g.IsAnimating()} forced={g.IsForceAnimated()}"
+                    + $" inview={g.InView} offscreen={g.AnimOffScreen}"
+                    + $" ownerbit={(model == IntPtr.Zero ? -1 : new Model(model).OwnerFlags & 1)} runs={g.RunCount}:";
+        for (int i = 0; i < g.RunCount; i++)
+        {
+            var r = g.Run(i);
+            if (r.IsNull) continue;
+            float k = Keyed(r.Animation.Node.Ptr, part.NodeId, r.Time);
+            line += $" [{Marshal.PtrToStringAnsi(r.Animation.Ptr + EngineLayout.AnimationName)} t={r.Time:F2}"
+                  + $" w={r.Blend:F2} fl=0x{r.Flags:x} key={(float.IsNaN(k) ? "no node" : k < 0f ? "unkeyed" : k.ToString("F2"))}]";
+        }
+        _log?.Info(line);
+    }
+
+    /// <summary>The birthrate this animation keys for the node with <paramref name="id"/> at <paramref name="t"/>:
+    /// NaN when the animation has no such node, -1 when the node carries no birthrate track.</summary>
+    private static float Keyed(IntPtr anode, int id, float t)
+    {
+        if (anode == IntPtr.Zero) return float.NaN;
+        var n = new MdlNode(anode);
+        if (n.NodeId == id)
+        {
+            IntPtr c = n.Controllers;
+            for (int k = 0; c != IntPtr.Zero && k < n.ControllerCount; k++)
+            {
+                IntPtr ck = c + k * EngineLayout.NewControllerStride;
+                if (new NewController(ck).Id == EngineLayout.EmBirthRate && AnimKeys.Float(ck, anode, t, out float v))
+                    return v;
+            }
+            return -1f;
+        }
+        IntPtr* kids = (IntPtr*)n.Children;
+        for (int k = 0; kids != null && k < n.ChildCount; k++)
+        {
+            float v = Keyed(kids[k], id, t);
+            if (!float.IsNaN(v)) return v;
+        }
+        return float.NaN;
+    }
+
+    private static string NodeName(IntPtr node)
+        => node == IntPtr.Zero ? "-" : Marshal.PtrToStringAnsi(node + EngineLayout.MdlNodeName) ?? "?";
+
     /// <summary>Stats for the period line.</summary>
     internal static string Stats(int frames)
     {
         if (!Armed) return string.Empty;
         int f = frames > 0 ? frames : 1;
         string s = $"[emitsim] em={_emitters / f} parts={_particles / f} born={_spawned} died={_died}";
-        if (_chunk != 0) s += $" chunk={_chunk}";
+        if (_chunk != 0) s += $" chunk={_chunk} (with engine particles {_chunkLive})";
+        s += $" silent exits/frame: fade={(float)_fadeExit / f:F1} rate0={(float)_rate0 / f:F1} other-empty={(float)_idle / f:F1}"
+           + $" (held, drawn but not stepped: {(float)_held / f:F1})";
         if (_bounced != 0) s += $" bounce={_bounced}";
         if (_p2pNoTarget != 0) s += $" p2p-untargeted={_p2pNoTarget}";
-        if (_capped != 0) s += $" capped={_capped}";
+        // Per frame, like em= and parts= beside it: a period total here read as an alarm (523) for what is
+        // half an emitter a frame. The peak is what MaxPerEmitter would have to be raised to; CAP-LOST is
+        // births actually dropped, which is the part that is a bug -- vanilla has no ceiling to drop them at.
+        if (_capped != 0) s += $" capped={(float)_capped / f:F2}/frame (wanted up to {_capPeak}, cap {MaxPerEmitter})";
+        if (_capLost != 0) s += $" CAP-LOST={_capLost} births VANILLA WOULD HAVE DRAWN";
         if (_poolResets != 0) s += $" pool-reset={_poolResets}";
         if (_reclaimed != 0) s += $" reclaimed={_reclaimed}";
         if (_full != 0) s += $" table-full={_full}";
@@ -559,6 +759,8 @@ internal static unsafe partial class EmitterSim
         if (Bouncing.V) s += BounceWorld.Stats(f);
         _emitters = 0; _particles = 0; _spawned = 0; _died = 0; _chunk = 0; _bounced = 0;
         _p2pNoTarget = 0; _capped = 0; _poolResets = 0; _reclaimed = 0; _full = 0; _foreign = 0;
+        _capPeak = 0; _capLost = 0;
+        _held = 0; _idle = 0; _fadeExit = 0; _rate0 = 0; _chunkLive = 0;
         return s;
     }
 }

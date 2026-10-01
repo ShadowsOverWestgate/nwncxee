@@ -312,7 +312,7 @@ internal static unsafe class Issue
             // only that one. SoW's veil (a modulating fog dome around the player) fed through it composites
             // the veil's colour over the whole view instead of darkening by it.
             bool oitOut = hosted || _gSrc[g] != AuroraSrcAlpha || _gDst[g] != AuroraOneMinusSrcAlpha;
-            if (_oitOn && oitOut) continue;
+            if (_oitOn && oitOut) { _oitDeferred++; continue; }
             if (_onlyHosted && !oitOut) continue;
             bool lists = lit && !water && !hosted && _oitOn && OitPass.Linked;   // the append twin, bracket only
             int wantProg = water ? 2 : hosted ? 3 : lists ? 4 : lit ? 1 : 0;
@@ -498,6 +498,11 @@ internal static unsafe class Issue
     internal static bool _oitOn;
     /// <summary>The post-resolve sweep for the batches OIT skipped: hosted programs only.</summary>
     internal static bool _onlyHosted;
+    /// <summary>Batches the accumulation pass stepped over, i.e. exactly what the <see cref="_onlyHosted"/>
+    /// sweep has to draw. Zero means that sweep has no work and the whole walk of the blended range can be
+    /// skipped; written by the accumulation pass, read straight after it.</summary>
+    internal static int OitDeferred => _oitDeferred;
+    private static int _oitDeferred;
     /// <summary>Aurora blend-mode indices (see <see cref="BlendGl"/>) of the one pair OIT accumulates.</summary>
     private const byte AuroraSrcAlpha = 0, AuroraOneMinusSrcAlpha = 1;
 
@@ -519,6 +524,7 @@ internal static unsafe class Issue
                                         bool depthWrite = false)
     {
         if (to <= from) return;
+        if (_oitOn && !_onlyHosted) _oitDeferred = 0;
         _passDepthMask = depthWrite ? (byte)1 : (byte)0;
         Gl.DepthMask(_passDepthMask);
         Gl.Enable(Gl.BLEND); _blendOn = true;

@@ -94,10 +94,12 @@ internal static unsafe partial class GrassField
     /// draws ONE flat card per blade, which reads as a paper cutout from the side; a cross costs one extra
     /// quad per blade and is the cheapest thing that makes grass look like grass from any angle.</summary>
     private const int TemplateVerts = 12;
-    /// <summary>The grass displacement field: a top-down RG8 push map rebuilt on the CPU every frame around
-    /// the player. 128 texels over <see cref="Grass.PushExtent"/> world units is ~0.25u per texel at the default
-    /// 64u window -- fine enough to shape a footfall, small enough (32KB) that the rebuild and the upload are
-    /// both noise. Vanilla's "creature wind" is a CPU rewrite of the affected bins' vertex data; this is one
+    /// <summary>The grass displacement field: a top-down RGBA8 push map maintained on the CPU around the
+    /// player. 256 texels over <see cref="Grass.PushExtent"/> world units is ~0.25u per texel at the default
+    /// 64u window -- fine enough to shape a footfall. At 256KB the rebuild and the upload are NOT noise, which
+    /// is why <see cref="BuildPush"/> is incremental: an unchanged push list skips the clear, the splats and the
+    /// upload, and a changed one touches only the rectangle the two lists cover. Vanilla's "creature wind" is a
+    /// CPU rewrite of the affected bins' vertex data; this is one
     /// vertex-shader texture fetch instead, and it costs the same whether one creature is walking through the
     /// field or forty.</summary>
     private const int PushRes = 256;
@@ -199,7 +201,8 @@ internal static unsafe partial class GrassField
     /// the parameters on the texture would change how the engine's own passes sample it.</summary>
     private static uint _sampMip, _sampFlat;
     private static uint _pushTex;
-    /// <summary>The push field, CPU side, RG8 with 128 as "no push". Allocated once.</summary>
+    /// <summary>The push field, CPU side -- four bytes a texel like the <c>RGBA8</c> texture it uploads to,
+    /// with 128 as "no push". Allocated once.</summary>
     private static byte[]? _push, _pushClear;
     private static float _pushOriginX, _pushOriginY, _pushPerUnit;
     private static int _pushers, _cullers, _reticles;
@@ -214,6 +217,37 @@ internal static unsafe partial class GrassField
     private static float _appliedScaleBias;
     private static bool _samplerDirty = true;
     private static long _pushWalked, _pushWalkedAll;
+
+    /// <summary>Texels one gob contributes to the push field, in the field's OWN space: every term the two
+    /// writers read and nothing else, so two equal lists cannot produce different texels. That is what makes
+    /// "the same list as last frame" a sound reason to leave the field and its upload alone.</summary>
+    private struct Pusher
+    {
+        public float X, Y, R, Hx, Hy;
+        public bool Same(in Pusher o) => X == o.X && Y == o.Y && R == o.R && Hx == o.Hx && Hy == o.Hy;
+    }
+    /// <summary>Pushers one frame's list holds. The population is the gobs whose reach touches a window at most
+    /// <see cref="Grass.PushExtent"/> (128u) across, which is a fraction of any area -- but it is not a bound we
+    /// can prove, so an overflow frame takes the whole-field path (nothing dropped) and says so.</summary>
+    private const int MaxPushers = 2048;
+    private static readonly Pusher[] _pushNow = new Pusher[MaxPushers], _pushWas = new Pusher[MaxPushers];
+    /// <summary>This frame's list, and the one the field currently holds (-1 = none that can be trusted).</summary>
+    private static int _pushNowN, _pushWasN = -1;
+    /// <summary>Does the GL texture hold what <see cref="_push"/> holds? False after a context loss and before
+    /// the first upload, where the texture's storage is undefined rather than neutral.</summary>
+    private static bool _pushSynced;
+    /// <summary>The texels <see cref="_push"/> is NOT neutral over -- what a rebuild has to undo and what the
+    /// upload has to carry. Empty is <c>x1 &lt; x0</c>.</summary>
+    private static int _pushRx0 = PushRes, _pushRy0 = PushRes, _pushRx1 = -1, _pushRy1 = -1;
+    private static long _pushSkips, _pushTexels, _pushOver;
+    /// <summary>One frame's walk, broken down: they sum to <see cref="_pushWalkedNow"/>. Snapshots of the
+    /// last walk rather than period totals, because a breakdown is only readable against the walk it
+    /// describes -- the same way <see cref="_pushers"/> and <see cref="_reticles"/> beside them read.</summary>
+    private static int _pushOut, _pushNoGeom, _pushIdle, _pushWalkedNow;
+    /// <summary>Frames this actually RAN: Prepare counts a frame before it knows whether any grass is
+    /// in sight, and returns without a push field on the ones where none is.</summary>
+    private static long _pushFrames;
+    private static bool _pushOverSaid;
 
     // period counters
     private static int _frames, _draws, _visible, _culled, _baked, _refused, _disabled;
@@ -337,6 +371,9 @@ internal static unsafe partial class GrassField
         _vao = 0; _faceBuf = 0; _patchBuf = 0; _matBuf = 0; _outBuf = 0; _cmdBuf = 0; _statBuf = 0; _stat = null;
         _prog = 0; _progDepth = 0; _progScatter = 0; _progBlade = 0; _progBladeDepth = 0;
         _sampMip = 0; _sampFlat = 0; _pushTex = 0;
+        // A new context's push texture is fresh storage with undefined contents, so the first build there owes
+        // it a whole-field upload rather than the rectangle this one's list happened to touch.
+        _pushSynced = false; _pushWasN = -1;
         _fb0Samples = 0;
         _loc = default;
         _down.Forget();
@@ -571,11 +608,13 @@ internal static unsafe partial class GrassField
         _uploaded = _faceCount;
     }
 
-    /// <summary>Rebuild the displacement field from every visible gob and upload it.
-    /// <para>Source is <c>gobbucket</c> -- the engine's own per-frame in-view gob list, which is exactly the
-    /// creatures, placeables, doors and items standing in the grass. Each becomes a radial push away from its
-    /// centre, summed and clamped, so a creature parts the grass it walks through and anything resting on the
-    /// field flattens a dent in it.</para>
+    /// <summary>Bring the displacement field up to date, and upload what moved in it.
+    /// <para>The population is the gobs standing in the field (see <see cref="WalkPushers"/>) -- creatures,
+    /// placeables, doors and items. Each becomes a radial push away from its centre, summed and clamped, so a
+    /// creature parts the grass it walks through and anything resting on the field flattens a dent in it.</para>
+    /// <para>Incremental, because the field is 256KB and most frames do not change it: the frame's writes are
+    /// collected first, an unchanged list skips the clear, the splats and the upload outright, and a changed one
+    /// clears and uploads only the rectangle the two lists together touch.</para>
     /// <para>ponytail: no persistence, so the field springs back the instant a creature leaves rather than
     /// laying a trail. A trail wants the previous frame's field decayed and REPROJECTED as the window
     /// follows the player, which is a scroll-and-blend the no-history version does not need at all. Add it
@@ -587,10 +626,9 @@ internal static unsafe partial class GrassField
     private static void BuildPush()
     {
         if (_pushTex == 0 || _push == null) return;
+        _pushFrames++;
         _pushers = 0; _cullers = 0; _reticles = 0;
-        // Neutral is 128,128 for the direction and 0 for the flatten -- not one byte value, so it comes from
-        // a template rather than an Array.Fill.
-        Array.Copy(_pushClear!, _push, _push.Length);
+        _pushOut = 0; _pushNoGeom = 0; _pushIdle = 0; _pushWalkedNow = 0;
         float extent = MathF.Max(Grass.PushExtent.V, 1f);
         _pushPerUnit = PushRes / extent;
         Vector3 centre = AlloyRenderer.PlayerPos;
@@ -600,63 +638,201 @@ internal static unsafe partial class GrassField
         _pushOriginX = MathF.Floor(centre.X / texel) * texel - extent * 0.5f;
         _pushOriginY = MathF.Floor(centre.Y / texel) * texel - extent * 0.5f;
 
-        // #282: the AREA's gobs, not the frame's `gobbucket`. That bucket holds what the engine's camera cull
-        // left, and until #282 it ALSO held whatever the shadow feed appended to it -- off-screen movers within
-        // 25u of the player, which is exactly the population that dents grass the camera is not facing. Reading
-        // the bucket made this pass's behaviour a side effect of somebody else's feature; reading Scene+0x130
-        // makes it a fact about the area, and a creature just off-camera bends the grass it is standing in
-        // whether or not anything meant to draw it. Scene+0x130 is the same list SceneWalk enumerates.
+        // The frame's writes, COLLECTED before the field is touched. The list is texel-space and complete, so
+        // a list that repeats cannot produce different texels -- which is the whole gate: a standing player
+        // looking at a field nothing is walking through pays the walk and neither the 256KB clear nor the
+        // 256KB upload. With `push` at 0 the list is empty, and an empty list that repeats is the same skip.
+        bool over = WalkPushers(collect: true);
+        if (!over && _pushSynced && _pushNowN == _pushWasN && SamePushers(_pushNowN))
+        { _pushSkips++; return; }
+
+        // Only what the LAST list wrote needs undoing; the rest of the field is still the neutral template it
+        // was allocated as. An overflow (or a texture whose storage has never been written) takes the whole
+        // field instead -- correct, counted, and never the silent half-measure.
+        bool full = over || !_pushSynced;
+        int cx0 = full ? 0 : _pushRx0, cy0 = full ? 0 : _pushRy0;
+        int cx1 = full ? PushRes - 1 : _pushRx1, cy1 = full ? PushRes - 1 : _pushRy1;
+        ClearPush(_push, cx0, cy0, cx1, cy1);
+        _pushRx0 = PushRes; _pushRy0 = PushRes; _pushRx1 = -1; _pushRy1 = -1;
+        if (over) WalkPushers(collect: false);
+        else for (int i = 0; i < _pushNowN; i++) WritePusher(in _pushNow[i]);
+        // Stale on the GPU = what was cleared plus what was written.
+        UploadPush(Math.Min(cx0, _pushRx0), Math.Min(cy0, _pushRy0),
+                   Math.Max(cx1, _pushRx1), Math.Max(cy1, _pushRy1));
+        _pushSynced = true;
+        if (over) _pushWasN = -1;   // a truncated list must never match next frame
+        else { Array.Copy(_pushNow, _pushWas, _pushNowN); _pushWasN = _pushNowN; }
+    }
+
+    /// <summary>Walk the push population once: in <paramref name="collect"/> mode nothing is written and each
+    /// accepted gob's contribution lands in <see cref="_pushNow"/>; otherwise each is written straight into the
+    /// field. True = the list overflowed <see cref="MaxPushers"/>.
+    /// <para>#282: the AREA's gobs, not the frame's <c>gobbucket</c>. That bucket holds what the engine's camera
+    /// cull left, and until #282 it ALSO held whatever the shadow feed appended to it -- off-screen movers
+    /// within 25u of the player, which is exactly the population that dents grass the camera is not facing.
+    /// Reading the bucket made this pass's behaviour a side effect of somebody else's feature; reading
+    /// Scene+0x130 makes it a fact about the area. It is the same list SceneWalk enumerates.</para></summary>
+    private static bool WalkPushers(bool collect)
+    {
+        if (collect) _pushNowN = 0;
         IntPtr scene = SceneWalk.WorldScene;
-        if (Grass.Push.V > 0f && Grass.PushRadius.V > 0f && scene != IntPtr.Zero)
+        if (!(Grass.Push.V > 0f) || !(Grass.PushRadius.V > 0f) || scene == IntPtr.Zero) return false;
+        // The pushers are the gobs in view: a walk of EVERY gob in the scene (thousands, a part-tree
+        // walk for each inside the extent) read 0,5ms a frame with no grass on screen. The engine's own
+        // visible list is a few hundred; a pusher behind the camera pushes grass nobody sees.
+        IntPtr* gobs; int count;
+        if (!Grass.PushVis.V || !AlloyRenderer.VisibleGobs(out gobs, out count))
         {
-            // The pushers are the gobs in view: a walk of EVERY gob in the scene (thousands, a part-tree
-            // walk for each inside the extent) read 0,5ms a frame with no grass on screen. The engine's own
-            // visible list is a few hundred; a pusher behind the camera pushes grass nobody sees.
-            IntPtr* gobs; int count;
-            if (!Grass.PushVis.V || !AlloyRenderer.VisibleGobs(out gobs, out count))
+            gobs = (IntPtr*)new CX.Engine.Scene(scene).Gobs;
+            count = new CX.Engine.Scene(scene).GobCount;
+            if (collect) _pushWalkedAll++;
+        }
+        if (collect) { _pushWalked += count; _pushWalkedNow = count; }
+        bool over = false;
+        bool cullOn = Grass.Cull.V;
+        float shrink = Grass.CullShrink.V, cap = Grass.CullMax.V;
+        float rTex = Grass.PushRadius.V * _pushPerUnit;
+        // The window is the gate, and it is EXACT: a gob whose reach does not touch the field contributes
+        // nothing to it, wherever the camera is pointing. The frustum is deliberately not the gate -- a
+        // creature just off-camera bends the grass it is standing in, which is the whole reason this walk
+        // reads the area's gobs rather than the engine's visible bucket (#282).
+        // What changed is WHERE the window test sits: the position (+0xa8) and the stored box (+0x160) are
+        // one cache line each and need no pointer chase, and the reach is the larger of the push radius and
+        // the box, so testing on them rejects nothing the old order kept -- it just rejects before the part
+        // tree, the MdlNode character byte and the opaque tree walk are touched.
+        for (int i = 0; gobs != null && i < count; i++)
+        {
+            IntPtr gob = gobs[i];
+            if (gob == IntPtr.Zero) { if (collect) _pushNoGeom++; continue; }
+            var gr = new GobRef(gob);
+            float* pos = gr.Position;
+            float gx = (pos[0] - _pushOriginX) * _pushPerUnit, gy = (pos[1] - _pushOriginY) * _pushPerUnit;
+            float hx = 0f, hy = 0f;
+            bool box = cullOn && Extent(gob, shrink, cap, ref hx, ref hy);
+            float reach = MathF.Max(rTex, MathF.Max(hx, hy) * _pushPerUnit);
+            if (gx < -reach || gy < -reach || gx > PushRes + reach || gy > PushRes + reach)
+            { if (collect) _pushOut++; continue; }
+            // Same guard the shadow feed used: a gob with no part tree has no geometry to stand in the
+            // grass with, so it must not dent it.
+            if (gr.PartTree == IntPtr.Zero) { if (collect) _pushNoGeom++; continue; }
+            // A creature bends grass, it does not erase it -- an erasing creature would drag a bald patch
+            // around with it. Asked only of a gob that reached the window, since it is a second deref.
+            bool cull = box && !IsCharacter(gob);
+            Pusher p = new() { X = gx, Y = gy, R = rTex,
+                               Hx = cull ? hx * _pushPerUnit : 0f, Hy = cull ? hy * _pushPerUnit : 0f };
+            // The window test is sized on the BOX, which is wider than what this gob will actually write --
+            // a creature's box widens the reach although a creature never culls, and any gob in that outer
+            // shell touches no texel at all. Listing one would inflate "N gobs displacing" and, worse, let it
+            // dirty the equality list every frame it moved, defeating the skip for a contribution of nothing.
+            // Ahead of the tree walk, since it costs no read the character test has not already made.
+            if (!SplatBounds(p.X, p.Y, p.R, out _, out _, out _, out _)
+                && !CullBounds(p.X, p.Y, p.Hx, p.Hy, out _, out _, out _, out _))
+            { if (collect) _pushIdle++; continue; }
+            // A gob with no OPAQUE geometry is not standing in the grass, it is drawn over it: target
+            // reticles, spell VFX, the ground-target decal. They neither bend nor cull.
+            if (!HasOpaque(gr.PartTree, 0)) { if (collect) _reticles++; continue; }
+            if (!collect) { WritePusher(in p); continue; }
+            _pushers++;
+            if (cull) _cullers++;
+            if (_pushNowN < MaxPushers) _pushNow[_pushNowN++] = p;
+            else if (!over)
             {
-                gobs = (IntPtr*)new CX.Engine.Scene(scene).Gobs;
-                count = new CX.Engine.Scene(scene).GobCount;
-                _pushWalkedAll++;
-            }
-            _pushWalked += count;
-            float r = Grass.PushRadius.V, rTex = r * _pushPerUnit;
-            // ponytail: no cheap pre-reject before Footprint. `reach` depends on the footprint, and with
-            // `cullmax` at its default 0 (uncapped) there is no sound bound to test against first -- a
-            // guess that is too tight drops a cart-sized hole. So the whole area's gobs pay one bounded
-            // pointer chase each, a few thousand derefs a frame with no allocation. Cap `/grass cullmax`
-            // and hoist the window test above Footprint if that ever shows up in a profile.
-            for (int i = 0; gobs != null && i < count; i++)
-            {
-                IntPtr gob = gobs[i];
-                if (gob == IntPtr.Zero) continue;
-                // Same guard the shadow feed used: a gob with no part tree has no geometry to stand in the
-                // grass with, so it must not dent it.
-                var gr = new GobRef(gob);
-                if (gr.PartTree == IntPtr.Zero) continue;   // no geometry to stand in the grass with
-                float* pos = gr.Position;
-                float gx = (pos[0] - _pushOriginX) * _pushPerUnit, gy = (pos[1] - _pushOriginY) * _pushPerUnit;
-                // The cull footprint can be much larger than the push radius, so the window test uses
-                // whichever of the two actually reaches.
-                float hx = 0f, hy = 0f;
-                bool cull = Grass.Cull.V && Footprint(gob, ref hx, ref hy);
-                float reach = MathF.Max(rTex, MathF.Max(hx, hy) * _pushPerUnit);
-                if (gx < -reach || gy < -reach || gx > PushRes + reach || gy > PushRes + reach) continue;
-                // A gob with no OPAQUE geometry is not standing in the grass, it is drawn over it: target
-                // reticles, spell VFX, the ground-target decal. They neither bend nor cull.
-                if (!HasOpaque(gr.PartTree, 0)) { _reticles++; continue; }
-                _pushers++;
-                Splat(_push, gx, gy, rTex);
-                if (cull)
+                over = true;
+                _pushOver++;
+                if (!_pushOverSaid)
                 {
-                    _cullers++;
-                    CullRect(_push, gx, gy, hx * _pushPerUnit, hy * _pushPerUnit);
+                    _pushOverSaid = true;
+                    _log?.Always($"GrassField: more than {MaxPushers} gobs displace the grass at once -- the push "
+                               + "field is rebuilt whole every such frame (nothing is dropped, it is just not "
+                               + "incremental). Census the area and raise MaxPushers.");
                 }
             }
         }
+        return over;
+    }
 
+    /// <summary>One collected pusher into the field, growing <see cref="_pushRx0"/>..<see cref="_pushRy1"/> by
+    /// exactly what the two writers can touch.</summary>
+    private static void WritePusher(in Pusher p)
+    {
+        if (SplatBounds(p.X, p.Y, p.R, out int x0, out int y0, out int x1, out int y1))
+        {
+            Splat(_push!, p.X, p.Y, p.R);
+            GrowPushRect(x0, y0, x1, y1);
+        }
+        if (CullBounds(p.X, p.Y, p.Hx, p.Hy, out x0, out y0, out x1, out y1))
+        {
+            CullRect(_push!, p.X, p.Y, p.Hx, p.Hy);
+            GrowPushRect(x0, y0, x1, y1);
+        }
+    }
+
+    private static bool SamePushers(int n)
+    {
+        for (int i = 0; i < n; i++) if (!_pushNow[i].Same(in _pushWas[i])) return false;
+        return true;
+    }
+
+    private static void GrowPushRect(int x0, int y0, int x1, int y1)
+    {
+        if (x0 < _pushRx0) _pushRx0 = x0;
+        if (y0 < _pushRy0) _pushRy0 = y0;
+        if (x1 > _pushRx1) _pushRx1 = x1;
+        if (y1 > _pushRy1) _pushRy1 = y1;
+    }
+
+    /// <summary>Put a rectangle of the field back to neutral -- 128,128 for the direction and 0 for the flatten
+    /// and the cull, which is not one byte value, so it comes from a template rather than an
+    /// <c>Array.Fill</c>.</summary>
+    internal static void ClearPush(byte[]? field, int x0, int y0, int x1, int y1)
+    {
+        if (field == null || _pushClear == null || x1 < x0 || y1 < y0) return;
+        int w = (x1 - x0 + 1) * PushChannels;
+        for (int y = y0; y <= y1; y++)
+        {
+            int o = (y * PushRes + x0) * PushChannels;
+            Array.Copy(_pushClear, o, field, o, w);
+        }
+    }
+
+    /// <summary>Push one rectangle of the field to the GPU. A partial row needs the unpack stride, since the
+    /// rows of a sub-rectangle are <see cref="PushRes"/> apart in <see cref="_push"/>, not adjacent.</summary>
+    private static void UploadPush(int x0, int y0, int x1, int y1)
+    {
+        if (_push == null || x1 < x0 || y1 < y0) return;
+        int w = x1 - x0 + 1, h = y1 - y0 + 1;
+        bool strided = w != PushRes;
+        if (strided) Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, PushRes);
         fixed (byte* p = _push)
-            Gl.TextureSubImage2D(_pushTex, 0, 0, 0, PushRes, PushRes, Gl.RGBA, Gl.UNSIGNED_BYTE, p);
+            Gl.TextureSubImage2D(_pushTex, 0, x0, y0, w, h, Gl.RGBA, Gl.UNSIGNED_BYTE,
+                                 p + ((long)y0 * PushRes + x0) * PushChannels);
+        if (strided) Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, 0);
+        _pushTexels += (long)w * h;
+    }
+
+    /// <summary>The texels <see cref="Splat"/> can touch, and false for a splat that touches none. The one
+    /// expression: the writer reads it too, so the rect the clear and the upload trust cannot drift from
+    /// it.</summary>
+    internal static bool SplatBounds(float gx, float gy, float rTex,
+                                     out int x0, out int y0, out int x1, out int y1)
+    {
+        x0 = y0 = 0; x1 = y1 = -1;
+        if (rTex <= 0f) return false;
+        int lo = (int)(rTex + 1f);
+        x0 = Math.Max((int)gx - lo, 0); x1 = Math.Min((int)gx + lo, PushRes - 1);
+        y0 = Math.Max((int)gy - lo, 0); y1 = Math.Min((int)gy + lo, PushRes - 1);
+        return x1 >= x0 && y1 >= y0;
+    }
+
+    /// <summary><see cref="SplatBounds"/>, for <see cref="CullRect"/>.</summary>
+    internal static bool CullBounds(float gx, float gy, float hx, float hy,
+                                    out int x0, out int y0, out int x1, out int y1)
+    {
+        x0 = y0 = 0; x1 = y1 = -1;
+        if (hx <= 0f || hy <= 0f) return false;
+        x0 = Math.Max((int)(gx - hx), 0); x1 = Math.Min((int)(gx + hx) + 1, PushRes - 1);
+        y0 = Math.Max((int)(gy - hy), 0); y1 = Math.Min((int)(gy + hy) + 1, PushRes - 1);
+        return x1 >= x0 && y1 >= y0;
     }
 
     /// <summary>One gob's radial push, summed into the field in texel space. Linear falloff outward from the
@@ -664,10 +840,7 @@ internal static unsafe partial class GrassField
     /// under the middle of a creature is flattened by the Z term, not flung sideways.</summary>
     internal static void Splat(byte[] field, float gx, float gy, float rTex)
     {
-        if (rTex <= 0f) return;
-        int lo = (int)(rTex + 1f);
-        int x0 = Math.Max((int)gx - lo, 0), x1 = Math.Min((int)gx + lo, PushRes - 1);
-        int y0 = Math.Max((int)gy - lo, 0), y1 = Math.Min((int)gy + lo, PushRes - 1);
+        if (!SplatBounds(gx, gy, rTex, out int x0, out int y0, out int x1, out int y1)) return;
         for (int y = y0; y <= y1; y++)
         for (int x = x0; x <= x1; x++)
         {
@@ -692,9 +865,8 @@ internal static unsafe partial class GrassField
 
     /// <summary>Clamp to a byte, ROUNDING rather than truncating: truncation biases every push toward zero
     /// and makes the two sides of a gob differ by a step, which is a visible asymmetry in the parting.</summary>
-    /// <summary>The gob's grass-suppressing footprint as XY half-extents, or false for a gob that must not
-    /// suppress. Creatures are excluded by name: they bend grass, they do not erase it, and an erasing
-    /// creature would drag a bald patch around with it.
+    /// <summary>The gob's grass-suppressing footprint as XY half-extents, or false for a box that says nothing.
+    /// Read before anything else about the gob, because it is half of the window test.
     /// <para>Only the bounding box's EXTENT is used, centred on the gob's world position. The pair at
     /// <c>gob+0x160</c> is a stored field and its space (model or world) is not established -- the extent is
     /// the same in either, and the position is unambiguous.</para>
@@ -702,20 +874,27 @@ internal static unsafe partial class GrassField
     /// a TREE, whose box is its canopy while only its trunk touches the ground -- so a tree erases grass to
     /// its drip line. <c>/grass cullmax</c> caps it; the real fix is a per-PART footprint filtered to the
     /// parts that reach the ground, which is the same bbox data one level down.</para></summary>
-    private static bool Footprint(IntPtr gob, ref float hx, ref float hy)
+    private static bool Extent(IntPtr gob, float shrink, float cap, ref float hx, ref float hy)
     {
-        // A creature is marked by Gob::SetAsCharacter @0x444790, which writes node+0x8e = 4. This is exactly
-        // as strong as the engine's own writer: nothing else found writes that byte.
         var g = new CX.Engine.Gob(gob);
-        if (!g.Node.IsNull
-            && g.Node.OwnerFlags == NodeCharacterValue) return false;
         Vector3 mn = g.BoundsMin, mx = g.BoundsMax;
-        hx = (mx.X - mn.X) * 0.5f * Grass.CullShrink.V;
-        hy = (mx.Y - mn.Y) * 0.5f * Grass.CullShrink.V;
-        // A degenerate or absurd box is a field that was never filled, not a very large object.
-        if (!(hx > 0.01f) || !(hy > 0.01f) || hx > 500f || hy > 500f) return false;
-        if (Grass.CullMax.V > 0f) { hx = MathF.Min(hx, Grass.CullMax.V); hy = MathF.Min(hy, Grass.CullMax.V); }
+        hx = (mx.X - mn.X) * 0.5f * shrink;
+        hy = (mx.Y - mn.Y) * 0.5f * shrink;
+        // A degenerate or absurd box is a field that was never filled, not a very large object. Cleared on
+        // the way out, not just refused: the caller sizes its window test on these, and a rejected 500u box
+        // left behind made the reach enormous and admitted the gob the rejection was there to drop.
+        if (!(hx > 0.01f) || !(hy > 0.01f) || hx > 500f || hy > 500f) { hx = 0f; hy = 0f; return false; }
+        if (cap > 0f) { hx = MathF.Min(hx, cap); hy = MathF.Min(hy, cap); }
         return true;
+    }
+
+    /// <summary>Is this gob a creature? Marked by <c>Gob::SetAsCharacter</c> @0x444790, which writes
+    /// <c>node+0x8e = 4</c>. This is exactly as strong as the engine's own writer: nothing else found writes
+    /// that byte.</summary>
+    private static bool IsCharacter(IntPtr gob)
+    {
+        var g = new CX.Engine.Gob(gob);
+        return !g.Node.IsNull && g.Node.OwnerFlags == NodeCharacterValue;
     }
 
     /// <summary>Does this part tree contain any OPAQUE geometry? The walk is <c>Gob::ContainsNonSolids</c>
@@ -746,9 +925,7 @@ internal static unsafe partial class GrassField
     /// stage turns into thinning rather than a cut, using each blade's own stable jitter as its threshold.</summary>
     internal static void CullRect(byte[] field, float gx, float gy, float hx, float hy)
     {
-        if (hx <= 0f || hy <= 0f) return;
-        int x0 = Math.Max((int)(gx - hx), 0), x1 = Math.Min((int)(gx + hx) + 1, PushRes - 1);
-        int y0 = Math.Max((int)(gy - hy), 0), y1 = Math.Min((int)(gy + hy) + 1, PushRes - 1);
+        if (!CullBounds(gx, gy, hx, hy, out int x0, out int y0, out int x1, out int y1)) return;
         for (int y = y0; y <= y1; y++)
         for (int x = x0; x <= x1; x++)
         {
@@ -818,7 +995,8 @@ internal static unsafe partial class GrassField
         _samples = samples;
         bool msaa = samples > 1;
         int* bits = stackalloc int[MaxGrassMaterials];
-        ClassifyAll(tids, live, bits);
+        bool* cards = stackalloc bool[MaxGrassMaterials];
+        ClassifyAll(tids, live, bits, cards);
 
         // each draw's upper bound this frame: the blades its visible patches can keep at their nearest point.
         // A patch straddling the blade detail radius counts toward both blade draws.
@@ -847,7 +1025,7 @@ internal static unsafe partial class GrassField
                 if (d < bladeLod) nearB += upto;
                 if (BoxFar(q.Min, q.Max, eye) >= bladeLod) farB += upto;
             }
-            if (CardCells(q.Mat, bits[q.Mat])) bound[q.Mat] += upto;
+            if (cards[q.Mat]) bound[q.Mat] += upto;
             _candidates += upto;
             most = Math.Max(most, q.Blades);
             n++;
@@ -946,11 +1124,10 @@ internal static unsafe partial class GrassField
     /// <summary>The procedural blade multiplier the bake applies: 1 under the texture style.</summary>
     private static float BladeMul => Grass.Style.V == Grass.StyleBlades ? Grass.BladeDensity.V : 1f;
 
-    /// <summary>Does material <paramref name="m"/> draw any card? Any drawn cell (cell 0 is the engine's
-    /// fallback) that is not a BLADE cell.</summary>
-    private static bool CardCells(int m, int bits)
+    /// <summary>Does this material draw any card? Any drawn cell (cell 0 is the engine's fallback) that is not
+    /// a BLADE cell. Asked once per material per frame, from <see cref="ClassifyAll"/>.</summary>
+    private static bool CardCells(CAurGrassInfo info, int bits)
     {
-        CAurGrassInfo info = GrassInfo(m);
         if (info.IsNull) return false;
         Span<float> prob = info.Prob;
         int used = 1;
@@ -1532,6 +1709,9 @@ internal static unsafe partial class GrassField
             _pushClear = new byte[_push.Length];
             for (int i = 0; i < _pushClear.Length; i += PushChannels)
             { _pushClear[i] = 128; _pushClear[i + 1] = 128; }
+            // Neutral from the start: the rebuild only undoes the rectangle the last list wrote, so anything
+            // it never wrote has to already be neutral rather than zero (which is a full push toward -x, -y).
+            Array.Copy(_pushClear, _push, _push.Length);
         }
         uint tex;
         Gl.CreateTextures(Gl.TEXTURE_2D, 1, &tex);
@@ -1740,7 +1920,7 @@ internal static unsafe partial class GrassField
     // ---- diagnostics -------------------------------------------------------------------------
 
     internal static void ResetPeriod()
-    { _slotsOver = 0; _clipped = 0; _frames = 0; _draws = 0; _visible = 0; _culled = 0; _baked = 0; _disabled = 0; _candidates = 0; _scatters = 0; _drawnNear = 0; _drawnFar = 0; _drawnCards = 0; _pushWalked = 0; _pushWalkedAll = 0; }
+    { _slotsOver = 0; _clipped = 0; _frames = 0; _draws = 0; _visible = 0; _culled = 0; _baked = 0; _disabled = 0; _candidates = 0; _scatters = 0; _drawnNear = 0; _drawnFar = 0; _drawnCards = 0; _pushWalked = 0; _pushWalkedAll = 0; _pushSkips = 0; _pushTexels = 0; _pushOver = 0; _pushFrames = 0; }
 
     internal static string Stats()
     {
@@ -1775,8 +1955,18 @@ internal static unsafe partial class GrassField
                // A material a server removed is skipped here rather than never baked -- so it shows up as
                // resident blades that never draw, which without this reads as culling gone wrong.
                (_disabled == 0 ? "" : $", {(float)_disabled / _frames:F0} patches/frame on DISABLED materials") +
-               $", {_pushers} gobs displacing, {_cullers} culling (push field walked {(float)_pushWalked / Math.Max(_frames, 1):F0} gobs/frame" +
-               $"{(_pushWalkedAll > 0 ? $", {_pushWalkedAll} frames over the whole scene" : ", visible list")})" +
+               $", {_pushers} gobs displacing, {_cullers} culling (push field walked {(float)_pushWalked / Math.Max(_pushFrames, 1):F0} gobs/frame" +
+               $"{(_pushWalkedAll > 0 ? $", {_pushWalkedAll} frames over the whole scene" : ", visible list")}" +
+               // The last walk, broken down so it ADDS UP: a census with a hole in it cannot say which reject
+               // is doing the work. "touching no texel" is the outer shell the box-sized window test admits
+               // and nothing writes into -- a creature's box widens the reach though a creature never culls.
+               $"; last frame {_pushWalkedNow} = {_pushOut} outside the window + {_pushNoGeom} without geometry" +
+               $" + {_pushIdle} touching no texel + {_reticles} non-solid + {_pushers} displacing)" +
+               // The field's own bus traffic. A high skip share with a low texel count is the gate working:
+               // an unchanged list is neither cleared nor uploaded, and a changed one carries its rectangle.
+               $", push field {(float)_pushSkips / Math.Max(_pushFrames, 1) * 100f:F0}% frames unchanged, " +
+               $"{(float)_pushTexels / Math.Max(_pushFrames, 1):F0} texels uploaded/frame of {PushRes * PushRes}" +
+               (_pushOver == 0 ? "" : $", {_pushOver} frames PAST {MaxPushers} PUSHERS (rebuilt whole)") +
                // Non-solid gobs are the target reticle and the spell VFX. A zero here on a client that is
                // clearly targeting something means PartTriMesh::GetIsOpaque did not resolve and everything
                // counts as solid again.

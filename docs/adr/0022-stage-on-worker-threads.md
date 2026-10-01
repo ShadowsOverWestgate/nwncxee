@@ -58,3 +58,17 @@ exactly this; it must go through the stage's join.
   the number. `deferred/frame` on the `/draw` describe line must stay near 0 steady-state.
 - A deferred part's dissolve counters are counted twice (worker then main). Rare; noted.
 - What is NOT parallel: `RouteParts` (the routing walk, main), the batch walk, the uploads.
+- Re-examined 2026-10-01 (ownership-cleanup BW5) and left serial, for three reasons beyond scope.
+  (1) There is little left in it: the route memo replays 15 of every 16 frozen gobless slots and the
+  visible-set trim cuts the candidates to the boxes in view, so the live median (5,650 routed of
+  23,063 visited; `Scan` p50 1,90 ms on the mean-frame row, 2,3 ms on the hitch row, over 238
+  periods) derives to ~1,3k slots still deriving a verdict — the per-slot
+  GATE over ~7k slots is the cost, and packing it into one row (BW7, `RouteGate`) is what that asks
+  for. (2) **The routing walk is this pool's wake shadow.** `Prewake` fires at the top of the build
+  so the workers are spinning by the time `Run` publishes the stage; making the walk itself the
+  first job either pays that wake unhidden or moves `Prewake` to the frame anchor, which is exactly
+  the case `StagePool` measured as spinning cores for the rest of every frame. (3) Phase A would
+  have to defer `Revoke`, the `[dumpframe]` watch and every shared counter, and phase B would still
+  walk every candidate to rebuild `_pass`/`_blend` in order: a ~0,3 ms ceiling on a 14 ms frame for
+  a second pool run per pass and a new class of nondeterminism. Revisit if a measured `Scan` stays
+  above a millisecond with the memo on and the gate packed.

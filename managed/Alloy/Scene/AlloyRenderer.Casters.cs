@@ -21,12 +21,13 @@ namespace CX.Alloy;
 /// </summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>The frame this slot's record last CHANGED, stamped beside <c>_recFrame</c> (which is stamped
+    /// <summary>The frame this slot's record last CHANGED, stamped beside <see cref="RouteGate.RecFrame"/> (which is stamped
     /// every build, changed or not). The two being equal is the mover signal: the slot's most recent build
     /// was also a build that moved something.</summary>
     private static readonly int[] _recMovedAt = new int[MaxOwned];
-    /// <summary>#302: the caster's world sphere, written on the same edge as <c>_dSph</c> and from the same
-    /// terms -- but GEOMETRIC even where the cull is exempted. A skinmesh, a dangly mesh and a displacing
+    /// <summary>#302: the caster's world sphere, written on the same edge as <c>_dSph</c> -- but GEOMETRIC even where
+    /// the cull is exempted, and for a rigid matrix-class part centred on its own vertex box (<c>_oB*</c>) rather than
+    /// on the node origin <c>_dSph</c> keeps. A skinmesh, a dangly mesh and a displacing
     /// feature all get <see cref="NeverCull"/> in <c>_dSph</c>, which is right for a culler and useless for a
     /// re-bake predicate: "somewhere" cannot name the views it dirties, so every such part would blanket-
     /// invalidate and #241's whole win with it. This carries the bind-pose bbox instead, which is exactly
@@ -46,19 +47,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>Frames a dangly slot stays a mover after its last measured displacement. Two covers either
     /// order of the Animate hook against the frame edge; the caster pass's own 8-frame hold sits on top.</summary>
     private const int DanglyMoveHold = 2;
-    /// <summary>#302: the slot TENANCY generation -- which enrollment owns this slot, and which enrollment
-    /// the record in it was built for. NOT the record epoch, and the distinction is a live-diagnosed flicker:
-    /// the epoch is bumped by every wholesale invalidation -- enrollment, but ALSO an animated texture
-    /// retiring a copy (<c>Drain -&gt; DropHandle</c>, roughly once a second in a torch-lit area) and a
-    /// <c>/alloy</c> dial -- and those non-enrollment bumps land AFTER the frame's record build, so the next
-    /// shadow bracket would see the whole table epoch-stale and refuse it: every shadow gone for one frame,
-    /// once a second. What the bake actually must not trust is a record built for a DIFFERENT PART in the
-    /// same slot, and only an enrollment can change that; so tenancy gets its own generation, bumped in
-    /// Enroll alone and restamped by the same colour pass that rebuilds the records.
-    /// <para><c>_enrollGen</c> starts at 1 so a record never built (stamp 0) disagrees with every real
-    /// enrollment.</para></summary>
-    private static readonly int[] _oEnrollGen = new int[MaxOwned];
-    private static readonly int[] _recEnroll = new int[MaxOwned];
+    /// <summary>#302: the enrolment the table currently holds, which each slot's
+    /// <see cref="RouteGate.EnrollGen"/> is stamped from (that field says why tenancy is not the record epoch).
+    /// Starts at 1 so a record never built (stamp 0) disagrees with every real enrolment.</summary>
     private static int _enrollGen = 1;
     /// <summary>Casters admitted with an unknown (degenerate) sphere this frame -- each is a PERMANENT MOVER
     /// with infinite reach, so a nonzero steady value here means the re-bake predicate is being defeated and
@@ -93,7 +84,7 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>#336: the slots whose record CHANGED in the latest colour build -- the only slots whose mover
     /// level or caster sphere can differ from the frame before (both are written on that same edge; an
-    /// untouched slot's <c>_recFrame</c> stamp reads it still). The shadow side's <c>Refresh</c> walks this
+    /// untouched slot's <c>RecFrame</c> stamp reads it still). The shadow side's <c>Refresh</c> walks this
     /// list plus its own dynamic set instead of every caster. Reset by the first note of a new frame, so the
     /// shadow bracket (which runs BEFORE the build) reads the previous build's list intact; compared, never
     /// consumed. Overflow (a mid-frame epoch bump rebuilding every slot twice) sets the flag and the refresh
@@ -146,14 +137,14 @@ public sealed unsafe partial class AlloyRenderer
     internal static bool CastOk(int slot) => _castOk[slot];
     /// <summary>Off-device only: the caster self-check seeds admission for its synthetic slots.</summary>
     internal static void SelfCheckCastOk(int slot, bool ok) => _castOk[slot] = ok;
-    internal static int SlotEnrollGen(int slot) => _oEnrollGen[slot];
+    internal static int SlotEnrollGen(int slot) => _gate[slot].EnrollGen;
 
     /// <summary>The mover LEVEL for one slot, read the same way <see cref="TryCaster"/> reads it -- the
     /// slot's most recent build was also a build that moved something.</summary>
     /// <para>#336: ...AND that build was last frame's. The route walk no longer stamps the slots it skips
     /// (the visible set never visits them), so a slot that moved on its last build and then left the view
     /// would otherwise read as a mover for as long as it stays out.</para></summary>
-    internal static bool SlotRecMoved(int slot) => _recMovedAt[slot] == _recFrame[slot] && _recFrame[slot] == _frameSeq - 1;
+    internal static bool SlotRecMoved(int slot) => _recMovedAt[slot] == _gate[slot].RecFrame && _gate[slot].RecFrame == _frameSeq - 1;
     /// <summary>A dangly slot whose solve displaced it within <see cref="DanglyMoveHold"/> frames. A LEVEL:
     /// the stamp is re-read, never consumed.</summary>
     internal static bool SlotDangly(int slot) => _oDangly[slot] && _frameSeq - _oDanglyMovedAt[slot] <= DanglyMoveHold;
@@ -234,7 +225,7 @@ public sealed unsafe partial class AlloyRenderer
         // additive part emits light and water is its own pass. Same rule the caster census applied.
         if (_oTri[slot] == IntPtr.Zero || _oCls[slot] > (byte)AlloyClass.Blended) return false;
         // #328: tenancy and tile fade, as the level the record write left -- deliberately NOT the record
-        // epoch, see _oEnrollGen for the once-a-second flicker asking the wider question produced.
+        // epoch, see RouteGate.EnrollGen for the once-a-second flicker asking the wider question produced.
         if (!_castOk[slot]) { CasterNoRecord++; return false; }
         return TryCasterGeom(slot, out f);
     }
@@ -251,7 +242,7 @@ public sealed unsafe partial class AlloyRenderer
         f.Item = _oItem[slot]; f.Prim = _oPrim[slot]; f.Vao = _oVao[slot];
         f.EnvAlpha = (_oSlots[slot] & EnvSlot) != 0;
         f.Skinned = _oBone[slot] >= 0;
-        // Read as a LEVEL, never as an edge: _recFrame is stamped on every build and _recMovedAt only on a
+        // Read as a LEVEL, never as an edge: the gate row's RecFrame is stamped on every build and _recMovedAt only on a
         // build that changed something, so the two agreeing is "the last build moved it" and asking twice
         // gives the same answer. ADR 0017's hazard was a signal the first pass to ask consumed.
         f.Dangly = SlotDangly(slot);
@@ -413,7 +404,7 @@ public sealed unsafe partial class AlloyRenderer
             feat = (int)d[(long)slot * DrawFloats + 40];
         }
         mx = _oMx[slot];
-        known = _recGen[slot] == _recEpoch;
+        known = _gate[slot].RecGen == _recEpoch;
         // CX-103: "live" is what Alloy composes for the slot THIS instant, not what the engine's draw-bucket
         // build left at vp+0x18 -- the record is built from the composition, so that is the pair that has to
         // agree. alloy.xformcheck is where the engine's matrix is compared.

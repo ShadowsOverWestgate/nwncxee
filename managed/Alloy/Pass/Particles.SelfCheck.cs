@@ -233,7 +233,7 @@ internal static unsafe partial class Particles
           "the bisect dials for the open bug are still reachable and reported");
         check.Expect(G.Get("nosuch") == null, "an unknown knob is refused rather than silently taken");
         _off = true; Enabled.V = true;
-        check.Expect(_off && Stats().StartsWith("particles vanilla (Alloy pass unavailable)"), "arming from chat cannot clear the resolution latch");
+        check.Expect(_off && Stats(1).StartsWith("particles vanilla (Alloy pass unavailable)"), "arming from chat cannot clear the resolution latch");
         _off = off0; Enabled.V = on0;
 
         log.Info(check.Ok ? "Particles.SelfCheck: passed" : "Particles.SelfCheck: FAILED");

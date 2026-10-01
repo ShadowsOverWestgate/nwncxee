@@ -85,9 +85,8 @@ internal static unsafe partial class GobXform
     /// done.</summary>
     private static EngineList _gobBucket;
     private static bool _gobBucketTried;
-    /// <summary>Is this gob one whose part locals the engine may rewrite with no placement change -- it is
-    /// animating, attached, looking at something, or its LOD subtree just rotated? Sampled every frame (four
-    /// plain loads), because each of the four is itself a per-frame fact.</summary>
+    /// <summary>The registry's generation (a stamp older than this reads as an empty slot, so an area edge costs
+    /// no clear), its live entry count, and the frame number the per-gob stamps are taken against.</summary>
     private static int _gen = 1, _count, _frame;
     /// <summary>Recompose everything: the registry overflowed, or no registry has been built yet.</summary>
     private static bool _all = true;
@@ -113,7 +112,7 @@ internal static unsafe partial class GobXform
     internal static bool Armed => _ready && Renderer.OwnXform.V;
 
     /// <summary>The area changed: every gob address in the registry is about to be recycled.</summary>
-    internal static void AreaEdge() { _gen++; _count = 0; _all = true; }
+    internal static void AreaEdge() { _gen++; _count = 0; _tombs = 0; _all = true; }
 
     /// <summary>CX-102 seam (<see cref="GobMotion.Mark"/>): a runtime of ours wrote this gob's pose or
     /// placement this frame. Allocation-free, one probe; safe to call before <see cref="Tick"/>, because a
@@ -121,6 +120,8 @@ internal static unsafe partial class GobXform
     internal static void Mark(IntPtr gob)
     {
         int h = Index(gob, true);
+        // Only a null gob now (an insert recycles rather than refuses); kept as the safe answer to a row the
+        // registry could not give out at all.
         if (h < 0) { _all = true; return; }
         _markAt[h] = _markSeq;
         // ...and this frame too, for a mark that lands AFTER Tick has already decided the frame.
@@ -149,9 +150,10 @@ internal static unsafe partial class GobXform
             IntPtr gob = gobs[k];
             if (gob == IntPtr.Zero) continue;
             int h = Index(gob, true);
-            // A full registry is not a reason to abandon the rest of the list: _all already means every gob
-            // recomposes, so the per-gob detection below is moot -- but the loop still has to reach its end so
-            // the mark generation is retired and the remaining gobs are counted (review).
+            // Defensive: an insert now recycles the registry rather than refusing one, and the gob is not null,
+            // so this cannot be reached. It stays because the SAFE answer to a missing row is to recompose
+            // everything, and the loop must still reach its end either way -- the mark generation is retired at
+            // the bottom and the remaining gobs are counted.
             if (h < 0) { _all = true; continue; }
             var g = new Gob(gob);
             bool moved = _markAt[h] == _markSeq || _movedAt[h] == _frame;   // Mark() already named it
@@ -329,6 +331,49 @@ internal static unsafe partial class GobXform
         return s;
     }
 
+    /// <summary>GS2: the gob LEFT the scene the walk enumerates -- which <c>Gob::~Gob</c> announces, because it
+    /// calls <c>Gob::SetScene(0)</c> before it destroys anything, and <see cref="SceneWalk"/>'s hook on that
+    /// symbol is the notice. Release its row.
+    /// <para><b>What this closes.</b> Without it the registry only ever grew: every spawn in a busy area is a
+    /// fresh address, nothing was ever released, and a long session in one area filled it to
+    /// <see cref="Cap"/>/2 -- at which point <see cref="Seed"/> recycles the whole registry (it used to refuse
+    /// the insert and let the caller latch <see cref="_all"/> for the rest of the area, i.e. EVERY gob
+    /// recomposed EVERY frame, reading as a slow frame with no cause). The other half is the recycled address
+    /// itself: a new gob on a dead one's row would be compared against the dead one's cached placement, which
+    /// <see cref="_rawTree"/> catches (a recycled gob's tree is a fresh <c>CreateInstanceTree</c>) and which
+    /// now does not arise -- the row is gone and its replacement is seeded MOVED.</para>
+    /// <para>A TOMBSTONE, not an empty row: the registry is open-addressed with linear probing, so a hole
+    /// would cut the probe chain of every gob that hashed behind it. That is also why <see cref="_tombs"/> is
+    /// inside the load factor -- a tombstone still costs a probe.</para>
+    /// <para><b>Where the notice does NOT reach</b>, deliberately. <c>Gob::SetScene</c> bails on
+    /// <c>old == scene</c>, so a gob destroyed while already out of a scene is silent; and nothing is delivered
+    /// while <c>SceneWalk._scene</c> is Zero (no walk yet) or the walk is not <c>Ready</c>. In all three the
+    /// registry has no ownership to serve, and the recycle above is the backstop. <c>PoseService</c>'s own
+    /// pointer-keyed per-gob slots are out of scope on purpose: its probe window is BOUNDED and a slot untouched
+    /// for 30 s is reclaimed in place (<c>PoseService.Claim</c>), so it can neither degrade into a full-table
+    /// walk nor hold a dead row for longer than that.</para></summary>
+    internal static void Forget(IntPtr gob)
+    {
+        if (gob == IntPtr.Zero) return;
+        int h = Index(gob, false);
+        if (h < 0) return;
+        _key[h] = Tomb;
+        _movedAt[h] = 0; _termAt[h] = 0; _markAt[h] = 0; _engineAt[h] = 0; _rawTree[h] = IntPtr.Zero;
+        // Unconditional, to match the `_tombs++` beside it: the SUM is load-bearing now, so a clamp here would
+        // hide a miscount as a registry that quietly never reaches its factor.
+        _count--;
+        _tombs++;
+        _forgotten++;
+    }
+
+    /// <summary>A row <see cref="Forget"/> released. Never a real <c>Gob*</c>, and distinct from
+    /// <c>IntPtr.Zero</c>, which <see cref="Index"/> refuses outright.</summary>
+    private static readonly IntPtr Tomb = (IntPtr)(-1);
+    /// <summary>Rows <see cref="Forget"/> released. Counted BESIDE <see cref="_count"/> and never instead of
+    /// it: a tombstone is still a stamped row, so it still costs a probe and still has to sit inside the load
+    /// factor <see cref="Seed"/> enforces.</summary>
+    private static int _tombs;
+
     /// <summary>The registry slot for <paramref name="gob"/>, or -1 when absent (and <paramref name="insert"/>
     /// is clear) or the table is full. A slot stamped with an older registry generation reads empty, so an
     /// area edge costs no clear.</summary>
@@ -336,28 +381,57 @@ internal static unsafe partial class GobXform
     {
         if (gob == IntPtr.Zero) return -1;
         int h = (int)((ulong)gob >> 4) & Mask;
+        int tomb = -1;
         for (int probe = 0; probe <= Mask; probe++, h = (h + 1) & Mask)
         {
-            if (_seen[h] != _gen)
-            {
-                if (!insert) return -1;
-                if (_count >= Cap / 2) return -1;
-                _seen[h] = _gen; _key[h] = gob; _movedAt[h] = 0; _termAt[h] = 0; _markAt[h] = 0;
-                _rawTree[h] = IntPtr.Zero;
-                // A fresh tenant has no cached raw placement, and comparing against the previous tenant's
-                // would be the one shape of this bug that reads as a frozen creature: seed it MOVED.
-                _movedAt[h] = _frame;
-                for (int j = 0; j < 8; j++) _raw[h * 8 + j] = float.NaN;
-                _count++;
-                return h;
-            }
+            if (_seen[h] != _gen) return insert ? Seed(tomb >= 0 ? tomb : h, gob) : -1;
+            // A released row is free to take, but the probe has to walk PAST it: a gob that hashed behind it
+            // is reachable only through this chain, and stopping here would lose it.
+            if (_key[h] == Tomb) { if (tomb < 0) tomb = h; continue; }
             if (_key[h] == gob) return h;
         }
-        return -1;
+        // Every row occupied and none of them ours: -1 asks Seed for the recycle, which is the same backstop
+        // GobLod's Insert has (review: the two were asymmetric). Refusing here instead would latch
+        // `_all` for the rest of the area, which is the failure the load factor exists to avoid.
+        return insert ? Seed(tomb >= 0 ? tomb : -1, gob) : -1;
+    }
+
+    /// <summary>A fresh row for <paramref name="gob"/> in slot <paramref name="h"/>, recycling the whole
+    /// registry first when it is past its load factor.
+    /// <para><b>The load factor counts tombstones too</b> (review), because a stamp is never cleared and a
+    /// tombstone is still a stamp. Counting only live rows would let a registry <see cref="Forget"/> kept
+    /// supplying rows to report <c>730/8192</c> with all <see cref="Cap"/> rows stamped, <see cref="Index"/>
+    /// probing every one of them, and the occupancy gate bounding nothing -- the failure GS2 exists to close,
+    /// invisibly.</para>
+    /// <para>Past it -- or at <paramref name="h"/> of -1, meaning the probe found no free row at all -- the
+    /// registry is recycled exactly as <see cref="AreaEdge"/> recycles it. That costs TWO frames of recomposing
+    /// everything, <see cref="_all"/> on this one and every row re-seeded MOVED on the next, and then O(1)
+    /// probes again -- which is still strictly better than the old answer, which was to refuse the insert and
+    /// let the caller latch <see cref="_all"/> for the rest of the area.</para></summary>
+    private static int Seed(int h, IntPtr gob)
+    {
+        if (h < 0 || _count + _tombs >= Cap / 2)
+        {
+            _gen++; _count = 0; _tombs = 0; _all = true; _recycles++;
+            h = (int)((ulong)gob >> 4) & Mask;
+        }
+        if (_seen[h] == _gen && _key[h] == Tomb) _tombs--;
+        _seen[h] = _gen; _key[h] = gob; _termAt[h] = 0; _markAt[h] = 0;
+        _rawTree[h] = IntPtr.Zero; _engineAt[h] = 0;
+        // A fresh tenant has no cached raw placement, and comparing against the previous tenant's
+        // would be the one shape of this bug that reads as a frozen creature: seed it MOVED.
+        _movedAt[h] = _frame;
+        for (int j = 0; j < 8; j++) _raw[h * 8 + j] = float.NaN;
+        _count++;
+        return h;
     }
 
     // ---- instruments ----
     private static long _composed, _terms, _marks, _refreshed;
+    /// <summary>GS2: rows released by the leave notice, and registry recycles the load factor forced. Reported
+    /// so a session can see the registry stop filling up -- the stamped occupancy against <see cref="Cap"/>/2
+    /// is what decides whether <see cref="_all"/> latches.</summary>
+    private static long _forgotten, _recycles;
     private static int _moved, _gobs;
     /// <summary>The validator's tally: routed matrix-class slots checked against <c>vp+0x18</c> and the
     /// disagreements, with the worst translation error seen. Only <c>alloy.xformcheck</c> fills them.</summary>
@@ -449,7 +523,12 @@ internal static unsafe partial class GobXform
     {
         long frames = Math.Max(1, AlloyRenderer.Counters._frames);
         string s = $"xform {_gobs} gobs, {_moved} moved/frame, composed {_composed / frames}/frame "
-                 + $"(root terms {_terms / frames}/frame, marks {_marks}, refresh {_refreshed / frames}/frame)"
+                 + $"(root terms {_terms / frames}/frame, marks {_marks}, refresh {_refreshed / frames}/frame, "
+                 // Review: STAMPED occupancy, live + tombstones, because that is what bounds a probe and what
+                 // the load factor gates on.
+                 + $"registry {_count}+{_tombs} tomb(s) of {Cap / 2}"
+                 + (_forgotten == 0 ? "" : $", {_forgotten} row(s) released on a scene leave")
+                 + (_recycles == 0 ? "" : $", {_recycles} registry recycle(s)") + ")"
                  + (_all ? " REGISTRY STOOD DOWN -- everything recomposed" : "");
         if (CheckedN != 0 || CheckStale != 0)
         {
@@ -457,7 +536,7 @@ internal static unsafe partial class GobXform
                + $"{CheckStale} skipped (a gob the engine did not place this frame)";
             LogFirstMiss();
         }
-        _composed = _terms = _refreshed = 0; _marks = 0;
+        _composed = _terms = _refreshed = 0; _marks = 0; _forgotten = 0; _recycles = 0;
         return s;
     }
 

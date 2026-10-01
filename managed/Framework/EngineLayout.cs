@@ -1387,12 +1387,6 @@ public static unsafe class EngineLayout
     public static readonly int SceneSkyPos = Field<System.Numerics.Vector3>("Scene", "skyPos");
     /// <summary>Scene -&gt; the light a shadow view is currently being baked for.</summary>
     public static readonly int SceneCurrentLight = Field<CX.Engine.PartLight>("Scene", "currentLight");
-    /// <summary>Scene's shadow-light list (<c>PartLight**</c> at +0x60, count at +0x68) -- the one
-    /// <c>Scene::RenderBeams</c> @0x46aba0 scans for the beam direction. NOT the LightManager's master list
-    /// at <see cref="LmMasterData"/>, and not <see cref="SceneLightManager"/>.</summary>
-    public static readonly int SceneShadowLights = Field<IntPtr>("Scene", "shadowLights");
-    /// <inheritdoc cref="SceneShadowLights"/>
-    public static readonly int SceneShadowLightCount = Field<int>("Scene", "shadowLightCount");
     /// <summary><c>Scene+0x1e8</c>: the scene's environment map, a <c>SafePointer&lt;CAurTexture&gt;</c> whose
     /// first word is the borrowed texture. <c>Scene::Render</c> @0x5762d0 fills it once per scene from the
     /// TILESET's own resref (<c>CNWTileSet::GetEnvMapResRef</c>) and falls back to
@@ -2522,6 +2516,23 @@ public static unsafe class EngineLayout
     /// <summary>A <c>SafePointer&lt;CAurObject&gt;</c> is 12 bytes: the object at +0, its index in the owner's
     /// list at +8. Not a field row -- a record size, like <see cref="NewControllerStride"/>.</summary>
     public const int SafePointerStride = 0xc, SafePointerIndex = 0x8;
+    /// <summary>Gob -&gt; its <c>CallBack*</c> array and the number of entries in it (capacity at +0x46c).
+    /// The registry is PER GOB -- there is no global one -- grown by <c>Gob::RegisterCallBack</c> @0x497db0
+    /// and walked in reverse by <c>Gob::DoEvent</c> @0x49d760, which fires an entry whose name matches the
+    /// event case-insensitively, or whose name is empty or begins with <c>*</c> (a wildcard that hears every
+    /// event -- <c>CAurBehaviorAttach</c>'s constructor registers one).
+    /// <para>Windows: identical offsets, read off <c>?DoEvent@Gob@@UEAAXPEBDPEAX@Z</c> (rva 0x50d50):
+    /// <c>mov ebx,[rcx+0x468]</c> then <c>mov rbx,[rsi+0x460]</c>, and the byte tests against 0 and 0x2a are
+    /// the same two. The whole Gob data region pairs unchanged (#448).</para></summary>
+    public static readonly int GobCallbacks = Field<IntPtr>("Gob", "callbacks");
+    /// <inheritdoc cref="GobCallbacks"/>
+    public static readonly int GobCallbackCount = Field<int>("Gob", "callbackCount");
+    /// <summary>A <c>CallBack</c> record's handler. The record opens with its inline name buffer -- which is
+    /// why <c>Gob::DoEvent</c> tests <c>*name</c> for NUL and <c>'*'</c> straight off the record pointer, and
+    /// why reading the name needs no offset of its own -- and the handler sits at +0x20. A constant rather than
+    /// a field row, from the same two disassemblies: Linux <c>mov rax,[rbx+0x20]</c> @0x49d822, Windows the
+    /// same instruction at rva 0x50e22.</summary>
+    public const int CallBackFn = 0x20;
 
     /// <summary>AnimRun -&gt; last frame's <see cref="AnimRunTime"/>. The animation-event window is
     /// <c>(prevTime, time]</c> forward, <c>[time, prevTime)</c> in reverse.</summary>
@@ -2875,6 +2886,21 @@ public static unsafe class EngineLayout
     /// in <c>SetPopUpBubbleText</c> on both builds (<c>*(int*)(this + 0x104) == 1</c>). No probe: its writer set
     /// is known but its semantics are not (docs/re/nameplate.md §8.3b), so 0/1 is not something to assert.</summary>
     public static readonly int ObjRetired = Field<int>("CNWCObject", "retired");
+
+    // CNWCObject's fade machine. Read off CNWCObject::FadeObject (Linux nm @0x7e7720, Windows rva 0x762e40) and
+    // SetDesiredFadeState (Linux nm @0x7e79e0, Windows rva 0x765920): identical offsets on both builds.
+    /// <summary>CNWCObject -&gt; the fade state <see cref="ObjVisible"/> is walking toward (byte: 0 out, 1 in).</summary>
+    public static readonly int ObjFadeTarget = Field<byte>("CNWCObject", "fadeTarget");
+    /// <summary>CNWCObject -&gt; nonzero = expire on fade-out (int). When the fade lands at 0, <c>FadeObject</c> stamps the
+    /// time and detaches the gob (<c>CNWCAnimBase::AttachToScene(null)</c>); once <see cref="ObjFadeHoldMs"/> has
+    /// passed it returns true and <c>AIUpdate</c> deletes the object.</summary>
+    public static readonly int ObjFadeExpire = Field<int>("CNWCObject", "fadeExpire");
+    /// <summary>CNWCObject -&gt; milliseconds a faded-out object is kept before it expires (uint). Read only while
+    /// <see cref="ObjFadeExpire"/> is set; <c>SetDesiredFadeState</c> writes the two together.</summary>
+    public static readonly int ObjFadeHoldMs = Field<uint>("CNWCObject", "fadeHoldMs");
+    /// <summary>CNWCObject -&gt; the alpha the fade has reached (float, 0..1). <c>FadeObject</c> steps it by
+    /// <c>dt_ms / 2000</c> and lands the fade the step it crosses <c>GetFinalFadeAlpha</c>.</summary>
+    public static readonly int ObjFadeAlpha = Field<float>("CNWCObject", "fadeAlpha");
 
     /// <summary><c>ObjectTextBubbleOverride</c> -- the module's own plate text: mode <c>int</c>, then a
     /// <c>CExoString</c> (<c>char*</c> + a dword length). 1 = replace, 2 = prepend, 3 = append, anything else =
@@ -3625,6 +3651,15 @@ public static unsafe class EngineLayout
     /// *(float*)(gob+0x49c)</c>. Read only as a CHANGE-DETECTION input (a plain load, where the getter is six
     /// <c>LerpFloat::Lerped</c> calls); the composed scale still comes from the getter.</summary>
     public static readonly int GobScaleBase = Field<float>("Gob", "scaleBase");
+    /// <summary><c>LerpFloat</c>: the interpolation MODE and the value a settled one holds.
+    /// <c>LerpFloat::Lerped</c> @0x5f8fc0 opens with <c>mov eax,[rdi+0xc]; test eax,eax; jne ...;
+    /// movss xmm1,[rdi+0x4]; ret</c> -- mode 0 is "not interpolating" and returns <see cref="LerpValue"/>
+    /// unchanged, so a zero mode is the one cheap proof that this number cannot move on its own.
+    /// <para>Windows: identical, off <c>?Lerped@LerpFloat@@QEBAMXZ</c> (rva 0x2e9a80):
+    /// <c>cmp DWORD PTR [rcx+0xc],0x0 ... movss xmm0,[rcx+0x4]</c>.</para></summary>
+    public static readonly int LerpMode = Field<int>("LerpFloat", "mode");
+    /// <inheritdoc cref="LerpMode"/>
+    public static readonly int LerpValue = Field<float>("LerpFloat", "value");
     /// <summary>CX-104: the gob's bounding sphere, in the form the engine's own BSP visitor @0x481000 uses --
     /// radius at +0x178, LOCAL centre at +0x17c. That visitor computes the LOD distance as
     /// <c>|camPos - (gob.position + gob.rot * centre)|^2</c>, and <c>Scene::AddPartsToDrawBuckets</c> feeds the

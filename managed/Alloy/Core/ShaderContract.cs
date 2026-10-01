@@ -216,7 +216,8 @@ internal static class ShaderContract
             ("uTile", AlloyRenderer.PbTile), ("uGrid", AlloyRenderer.PbGrid), ("uReach", AlloyRenderer.PbReach),
             ("uFalloff", AlloyRenderer.PbFalloff), ("uWrap", AlloyRenderer.PbWrap), ("uZ", AlloyRenderer.PbZ),
             ("uAtten", AlloyRenderer.PbAtten), ("uHot", AlloyRenderer.PbHot), ("uSss", AlloyRenderer.PbSss),
-            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim), ("uRelevance", AlloyRenderer.PbRelevance) };
+            ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim), ("uRelevance", AlloyRenderer.PbRelevance),
+            ("uBounds", AlloyRenderer.PbBounds) };
         foreach ((string name, int off) in pinned)
         {
             int at = Std140Offset(members, name, out int size);

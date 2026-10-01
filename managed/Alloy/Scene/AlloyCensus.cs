@@ -164,8 +164,8 @@ internal static unsafe partial class AlloyCensus
         // under suspicion, so the guard silenced exactly the line worth reading.
         if (e == _watchEntry && !_ownDry)
             _log?.Info($"[dumpframe] ENROLL entry={e} -> {(got ? "candidate" : _ownGate ?? "?")} " +
-                       $"cls={c.Cls} state={_pState[e]} " +
-                       $"bucket={(_pState[e] == StActive ? _pBucket[e] : -1)} " +
+                       $"cls={c.Cls} state={_pEnt[e].State} " +
+                       $"bucket={(_pEnt[e].State == StActive ? _pBucket[e] : -1)} " +
                        $"vdo=0x{(ulong)_pVdo[e]:x} item={_pItem[e]} ownflagBefore={OwnFlag[e]}");
         return got;
     }
@@ -206,8 +206,8 @@ internal static unsafe partial class AlloyCensus
         // engine's own subtree gate (Scene::AddPartsTreeToDrawBuckets @0x460880 and Gob::PartDraw @0x451d50
         // both return on it before recursing), so vanilla draws nothing for it either and every sibling on
         // the gob still draws -- the same exemption the geometry-less case gets below, for the same reason.
-        if (_pState[e] == StHidden) { if (!_ownDry) _ownInstHidden++; return Gate("hidden"); }
-        if (_pState[e] != StActive)
+        if (_pEnt[e].State == StHidden) { if (!_ownDry) _ownInstHidden++; return Gate("hidden"); }
+        if (_pEnt[e].State != StActive)
         {
             if (!_ownDry && _pGob[e] != IntPtr.Zero) _ownInstDead++;
             // #128: a part that died before enrollment could classify it still belongs to a creature, and a
@@ -232,9 +232,9 @@ internal static unsafe partial class AlloyCensus
             // object missing. Its healing condition is the object being re-created, which is why the symptom
             // reads as permanent.
             if (!_ownDry && _pGob[e] != IntPtr.Zero && _pWalkGen[e] == SceneWalk.Gen
-                && _pPart[e] != IntPtr.Zero && new PartRef(_pPart[e]).Gob.Ptr == _pGob[e])
+                && _pEnt[e].Part != IntPtr.Zero && new PartRef(_pEnt[e].Part).Gob.Ptr == _pGob[e])
             {
-                if (_pState[e] == StUnbound && SceneWalk.RecordHasNoGeometry(e)) _ownInstNoGeom++;
+                if (_pEnt[e].State == StUnbound && SceneWalk.RecordHasNoGeometry(e)) _ownInstNoGeom++;
                 // CX-105: ...and an unbound or dead part of a root the gob is not showing is not its
                 // creature's problem either. The guard above has just proved _pGob[e] is the live part's gob,
                 // which is what makes the dereference safe here.
@@ -262,9 +262,9 @@ internal static unsafe partial class AlloyCensus
         // unowned part still drew vanilla; since #264 the frame between the notice and the next Rebind() tick
         // is the part missing. The re-read happens HERE instead and the candidate carries on with the
         // refreshed columns, so only a record the rebind could not make usable is still counted.
-        if (_pPart[e] != IntPtr.Zero)
+        if (_pEnt[e].Part != IntPtr.Zero)
         {
-            var live = new PartRef(_pPart[e]);
+            var live = new PartRef(_pEnt[e].Part);
             // ...and the VDO's item table is part of that identity: SetupArrays' RemoveItem and a re-minted
             // VDO block both leave the cached item naming a slot the object no longer has.
             if (live.Node.Ptr != _pNode[e] || live.Material.Ptr != _pMat[e] || !PartTable.ItemResident(e))
@@ -286,8 +286,8 @@ internal static unsafe partial class AlloyCensus
         // without it the parts CombineParts @0x473d30 has already merged away enroll and draw their absorbed
         // geometry as solid black over the combined mesh that replaced it. Refusing them costs no caster:
         // the engine never draws them from any path either, and the flag never flips back (see IsRenderable).
-        if (!PartTable.IsRenderable(_pPart[e])) { Bump(ref _ownRejUnrenderable); return Gate("unrenderable"); }
-        IntPtr v = _pVdo[e], mat = _pMat[e], part = _pPart[e];
+        if (!PartTable.IsRenderable(_pEnt[e].Part)) { Bump(ref _ownRejUnrenderable); return Gate("unrenderable"); }
+        IntPtr v = _pVdo[e], mat = _pMat[e], part = _pEnt[e].Part;
         var p = new PartRef(part); var m = new MaterialRef(mat); var vd = new VdoRef(v);
         // Published the moment the part is in hand, and kept through every refusal from here down: creature
         // colour is all-owned-or-none per instance (#107/#128), so a refusal has to be attributable to its
@@ -515,7 +515,7 @@ internal static unsafe partial class AlloyCensus
     {
         GobRef gob = new PartRef(part).Gob;
         if (gob.IsNull) return 1f;
-        float a = gob.ColourMulArmed ? gob.Alpha : 1f;
+        float a = gob.ColourMulArmed && !PlaceableHold.Held(gob.Ptr) ? gob.Alpha : 1f;
         GobRef owner = gob.FadeOwner;
         if (!owner.IsNull && owner.OwnerFades)
             a *= gob.FadeAlpha;
@@ -667,7 +667,7 @@ internal static unsafe partial class AlloyCensus
     private static void NoteInstRefusing(int e)
     {
         _ownInstRefusing++;
-        string why = _pState[e] switch
+        string why = _pEnt[e].State switch
         {
             StDead => _pDeath[e] ?? "dead",
             StUnbound => "unbound",
@@ -949,7 +949,7 @@ internal static unsafe partial class AlloyCensus
     /// naming one attach node is the doubled-shield shape. Cold: dumptex lines only.</summary>
     internal static string PartForensic(int e)
     {
-        IntPtr part = _pPart[e];
+        IntPtr part = _pEnt[e].Part;
         if (part == IntPtr.Zero) return "part=0";
         static string Nm(IntPtr p)
         {

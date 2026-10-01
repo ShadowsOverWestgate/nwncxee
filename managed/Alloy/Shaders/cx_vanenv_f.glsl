@@ -55,7 +55,8 @@ vec3 vViewToSurface_n;
 float CxVisionLight()
 {
     uint cl = CxCluster(vDepth);
-    uint n = CxClusterN(cl);
+    // the culled tail cannot win this max: cx_lightbuild culls only under the brightest light's floor here
+    uint n = CxClusterWalk(cl);
     uint base = cl * CX_CLUSTER_CAP;
     vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
     float lit = 0.0;

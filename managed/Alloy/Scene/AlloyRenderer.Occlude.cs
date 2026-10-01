@@ -43,11 +43,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>This frame's hits: the placeable gob each ray landed on.</summary>
     private static readonly IntPtr[] _occHitGob = new IntPtr[OccMaxHits];
     private static int _occHitN;
-    /// <summary>Per slot: how far toward the floor the part is faded, 0 = not at all. Zero is the array's
-    /// default, so a fresh slot needs no seeding and a re-tenanted one is cleared in UnstampChase.</summary>
-    private static readonly float[] _occFade = new float[MaxOwned];
-    /// <summary>Per slot: seconds of <see cref="OccHold"/> left since the last hit; cleared with the fade.</summary>
-    private static readonly float[] _occHeld = new float[MaxOwned];
+    // BW7: the per-slot fade and its hold are RouteGate's rows -- the route memo reads both per candidate.
     private static long _occFrames, _occCalls, _occTagged;
 
     private static void OccludeInit(ExtenderLog log)
@@ -140,7 +136,8 @@ public sealed unsafe partial class AlloyRenderer
     /// compares per part.</summary>
     private static float OccludeVerdict(int i)
     {
-        float f = _occFade[i];
+        ref RouteGate g = ref _gate[i];
+        float f = g.OccFade;
         bool hit = false;
         if (_occHitN > 0 && _oLit[i])
         {
@@ -148,13 +145,13 @@ public sealed unsafe partial class AlloyRenderer
             if (gob != IntPtr.Zero)
                 for (int n = 0; n < _occHitN && !hit; n++) hit = _occHitGob[n] == gob;
         }
-        if (hit) _occHeld[i] = OccHold;
-        else if (_occHeld[i] > 0f) { _occHeld[i] -= _occDt; hit = true; }
+        if (hit) g.OccHeld = OccHold;
+        else if (g.OccHeld > 0f) { g.OccHeld -= _occDt; hit = true; }
         if (!hit && f == 0f) return 0f;
         float target = hit ? 1f - Walls.Floor.V : 0f;
         f += (target - f) * _occStep;
         if (MathF.Abs(target - f) < 0.005f) f = target;
-        _occFade[i] = f;
+        g.OccFade = f;
         if (f > 0f) _occTagged++;
         return f;
     }

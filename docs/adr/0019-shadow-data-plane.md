@@ -64,7 +64,8 @@ guard is retired with the record it policed: there is no parallel material layou
 ADR 0017 recorded the hazard plainly: `Moved` was stateful and consumed once, the shadow pass runs
 first, so whichever pass asked first took the edge and the other saw nothing.
 
-`_recMovedAt[slot]` is stamped beside `_recFrame[slot]` — the first only on a build that changed
+`_recMovedAt[slot]` is stamped beside the gate row's `RecFrame` (BW7 packed the record stamps into
+`RouteGate`; the columns this ADR named are its fields) — the first only on a build that changed
 something, the second on every build — and the signal is the two being *equal*. Reading it changes
 nothing, asking twice gives the same answer, and the colour path's own `_recDirty` consumption
 (`UploadDraws` resets it) is untouched. The same shape covers the three signals a record compare
@@ -100,14 +101,14 @@ build itself skips — a part nothing draws should cast nothing. The period line
 attempts, so the distinction is spelled out. The hazard is real: an enrollment reshuffles which part
 holds which slot while the bake reads records a frame early, so a recycled slot can hold the
 previous tenant's matrix. The first correction gated on an enrollment-generation pair; the second
-deleted it as redundant with `_recGen != _recEpoch`, since `Enroll` bumps the epoch for exactly this
+deleted it as redundant with `RecGen != _recEpoch`, since `Enroll` bumps the epoch for exactly this
 case. That deletion produced a once-a-second full shadow dropout, because the epoch is bumped by
 **more than enrollment**: an animated texture retiring its old copy (`Drain → DropHandle →
 InvalidateRecords`, roughly once a second in a torch-lit area) and a `/draw` dial both bump it —
 *after* the frame's record build — so the next shadow bracket saw the whole table epoch-stale and
 refused all of it: every view baked empty for one frame, every second. The epoch answers "must this
 record be re-sent"; the bake's question is "was this record built for this part", and only `Enroll`
-changes that answer. So `_oEnrollGen`/`_recEnroll` (bumped in Enroll alone, restamped by the same
+changes that answer. So `EnrollGen`/`RecEnroll` (bumped in Enroll alone, restamped by the same
 colour pass that rebuilds the records) is the gate, and an epoch-stale record with agreeing tenancy
 is trusted — its geometry is still right, and geometry is all the depth stages read.
 

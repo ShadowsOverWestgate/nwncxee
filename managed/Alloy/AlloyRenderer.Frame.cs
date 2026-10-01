@@ -188,7 +188,7 @@ public sealed unsafe partial class AlloyRenderer
             // The cluster buffers are only meaningful once THIS pass's build has run: a skipped build
             // leaves them holding another camera's binning (or, before the first dispatch, undefined
             // BufferData contents), and a lit part would then sample arbitrary light indices.
-            lightingOn = AlloyLights.Build((float*)&view, p00, p11, near, far)
+            lightingOn = AlloyLights.Build((float*)&view, p00, p11, near, far, viewport[2], viewport[3], tally: true)
                          && Programs._progLit46 != 0;
             FrameZones.Add(FrameZones.Zone.Lights, tLights);
         }
@@ -308,6 +308,7 @@ public sealed unsafe partial class AlloyRenderer
         {
             if (bracket != Bracket.Colour) continue;
             long tId = FrameZones.Now;
+            long kid0 = PassChildTicks;
             switch (id)
             {
                 case PassId.DepthPrepass:
@@ -417,11 +418,18 @@ public sealed unsafe partial class AlloyRenderer
                         Issue._oitOn = false;
                         OitPass.End(viewport);
                         _blendOn = true;
+                        // ...then the batches the accumulation stepped over, and only if it stepped over any:
+                        // the pass knows its own count, and with no hosted (or non-SrcAlpha) batch in the
+                        // blended range this was a walk of the whole range to draw nothing. The two state
+                        // calls are the ones that walk would have made, which the water copy and the water
+                        // pass after it both read.
+                        if (Issue.OitDeferred > 0)
                         {
                             Issue._onlyHosted = true;
                             Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
                             Issue._onlyHosted = false;
                         }
+                        else { Gl.DepthMask(0); Gl.Enable(Gl.BLEND); }
                         // ...and then the depth vanilla writes for this class, which the copy below and the
                         // water pass reading it both need. Last, so nothing here occluded the composite.
                         BlendedDepthSweep(_gOpaqueEnd, _gBlendEnd, &vp, viewport);
@@ -531,9 +539,15 @@ public sealed unsafe partial class AlloyRenderer
                     uint into = PostStack.Begin(viewport[2], viewport[3], display[2], display[3]);
                     RebindFrameTarget();
                     PostChain.Composite(display, into, PostStack.Upsampling ? viewport : display);
+                    // Closed HERE and re-opened at PostStack, though the bracket is conceptually one span
+                    // over two graph slots: a zone opened in one loop iteration and added in another credits
+                    // the whole span to the second, which then reports negative self time and is dropped.
+                    // The zone's total is the sum of the two spans either way.
+                    FrameZones.Add(FrameZones.Zone.Post, tPost);
                     break;
                 case PassId.PostStack:
                     if (!postOpen) break;
+                    tPost = FrameZones.Now;
                     // The last live stage rebinds the engine's target itself; a no-op with none.
                     PostStack.Run(display, PostStack.Upsampling ? viewport : display);
                     // #232 second mode: the owned outline+fill highlight, drawn into the finished
@@ -549,10 +563,18 @@ public sealed unsafe partial class AlloyRenderer
                     FrameZones.Add(FrameZones.Zone.Post, tPost);
                     break;
             }
-            _passCpu[(int)id] += FrameZones.Now - tId;
+            // SELF time: the same five child zones Zone.Passes subtracts, subtracted here too, so the rows
+            // and the zone are one partition instead of a parent and its children counted twice.
+            long self = FrameZones.Now - tId - (PassChildTicks - kid0);
+            // Negative = a child bracket credited to this pass that did not run inside it, which is a broken
+            // partition and not something to swallow: clamped here and counted for the period line.
+            if (self < 0) { _passSelfNeg++; self = 0; }
+            _passCpu[(int)id] += self;
         }
+        long tTail = FrameZones.Now;
         PaintStreamFailures(display);
         GpuSpanEnd();
+        _passTail += FrameZones.Now - tTail;
         FrameZones.Add(FrameZones.Zone.Passes, tPasses,
                        FrameZones.Ticks(FrameZones.Zone.Issue) - issue0
                        + FrameZones.Ticks(FrameZones.Zone.Cull) - cull0
@@ -562,6 +584,13 @@ public sealed unsafe partial class AlloyRenderer
         Gl.BindVertexArray(0);
         GlContextService.Leave();
     }
+
+    /// <summary>Ticks the zones <see cref="FrameZones.Zone.Passes"/> subtracts have taken this frame, so a pass
+    /// row can subtract the same ones and mean self time.</summary>
+    private static long PassChildTicks
+        => FrameZones.Ticks(FrameZones.Zone.Issue) + FrameZones.Ticks(FrameZones.Zone.Cull)
+         + FrameZones.Ticks(FrameZones.Zone.Post) + FrameZones.Ticks(FrameZones.Zone.Probe)
+         + FrameZones.Ticks(FrameZones.Zone.Lightmap);
 
     /// <summary>ADR 0011 step 1 (#119): the Alloy opaque set again, depth-only and colour-masked, so early-Z
     /// throws away the fragments the shading pass would otherwise light and then overwrite. Every Alloy part
@@ -1005,7 +1034,7 @@ public sealed unsafe partial class AlloyRenderer
             if (!ok) break;
             Matrix4x4 view = EnvProbe.FaceView(f);
             // A cube face is exactly 90deg, so the projection's p00 and p11 are both cot(45) = 1.
-            AlloyLights.Build((float*)&view, 1f, 1f, fnear, ffar);
+            AlloyLights.Build((float*)&view, 1f, 1f, fnear, ffar, EnvProbe.Size, EnvProbe.Size, tally: false);
             Gl.ColorMask(1, 1, 1, 1);
             Issue.IssueBatches(0, groups, (float*)&vp, faceVp, fnear, ffar);
             Gl.ColorMask(1, 1, 1, 0);   // the dome is infinitely far: the clear's alpha 0 already says so
@@ -1056,9 +1085,11 @@ public sealed unsafe partial class AlloyRenderer
                                                              Lighting.SsrPlanarCull.V * Lighting.SsrPlanarRes.V, z);
         if (indirect) CullPass.BindForDraw(CullPass.PhaseMirror);
         Issue._holdProg = false;
+        AlloyLights.BorrowedTable = true;
         try { Issue.IssueBatches(0, _gOpaqueEnd, (float*)&mVp, pvp, near, far, indirect); }
         finally
         {
+            AlloyLights.BorrowedTable = false;
             if (indirect) { CullPass.UnbindForDraw(); Issue.BindStagedSlots(); }
             Gl.FrontFace(Gl.CCW);
             _capturing = _planar = false;

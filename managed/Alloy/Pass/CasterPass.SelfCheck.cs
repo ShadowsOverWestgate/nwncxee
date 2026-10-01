@@ -257,9 +257,75 @@ public sealed unsafe partial class CasterPass
                         && src[CasterGather.SrcUints + 3] == 4101 && src[CasterGather.SrcUints + 4] == 1
                         && src[CasterGather.SrcUints + 5] == 1 && src[CasterGather.SrcUints + CasterGather.SetFlagWord] == 1
                         && CasterGather.SrcUints == 7 && CasterGather.CmdBytes == 20 && off;
+            // SL1/SL2: the per-frame word rewrite, and the per-batch dynamic population it maintains. The
+            // rewrite is what a frame does INSTEAD of re-reading all 37k staged draws, and the population is
+            // what lets a view's set skip a batch outright -- both silent when wrong (a caster at another
+            // frame's index count, a mover whose batch is never issued into its own page).
+            _liveCreatures = 0; _liveCount = 2;
+            _gLen[0] = 1; _gLen[1] = 1; _gDynN[0] = 0; _gDynN[1] = 1;
+            _liveOff[0] = false; _liveOff[1] = false;
+            _liveDyn[0] = false; _liveDyn[1] = true;
+            src[4] = 0; src[CasterGather.SrcUints + 4] = 1;              // each entry its own batch
+            bool words = !WriteStagedWords(src, 0, 0) && !WriteStagedWords(src, 1, 1);   // already in step
+            _liveDyn[0] = true;                                         // a still caster starts moving
+            words &= WriteStagedWords(src, 0, 0) && src[CasterGather.SetFlagWord] == 1 && _gDynN[0] == 1;
+            _liveOff[0] = true;
+            words &= WriteStagedWords(src, 0, 0) && src[0] == 0 && _gDynN[0] == 1;   // off, still dynamic
+            _liveDyn[0] = false; _liveOff[0] = false;
+            words &= WriteStagedWords(src, 0, 0) && src[0] == 30 && _gDynN[0] == 0;
+            // ...and the skip: a batch with no dynamic caster is nothing to a dynamic view, a batch with
+            // nothing else is nothing to a static view, and a mixed chunk skips neither.
+            // batch 0 holds the still caster, batch 1 the mover.
+            bool idle = BatchIdle(0, 1 << CasterGather.SetDynamic) && !BatchIdle(1, 1 << CasterGather.SetDynamic)
+                        && !BatchIdle(0, 1 << CasterGather.SetStatic) && BatchIdle(1, 1 << CasterGather.SetStatic)
+                        && !BatchIdle(0, 1 << CasterGather.SetAll) && !BatchIdle(1, 1 << CasterGather.SetAll)
+                        && !BatchIdle(1, (1 << CasterGather.SetDynamic) | (1 << CasterGather.SetStatic));
+            _gLen[0] = 0; _gLen[1] = 0; _gDynN[0] = 0; _gDynN[1] = 0;
             _liveCreatures = 0; _liveCount = 0; _liveDyn[0] = false; _liveDyn[1] = false;
             if (!pack)
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: the compute gather's staging drifted from the source the dispatch reads"); }
+            if (!words)
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the per-frame staged-word rewrite does not track the live entry"); }
+            if (!idle)
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: a batch the view's set empties is not the one the skip names"); }
+
+            // S8: the dynamic source is a VERBATIM copy of the staged movers -- same batch id, same output
+            // base, same index range -- because that is the whole argument for dispatching over it: a survivor
+            // lands in the region and the batch it would have landed in from the full source. A word of drift
+            // here is a mover's shadow baked at another caster's geometry, and only its own page shows it.
+            _liveCount = 2; _gN = 2;
+            _liveDyn[0] = false; _liveDyn[1] = true;
+            _liveOff[0] = false; _liveOff[1] = false;
+            src[CasterGather.SetFlagWord] = 0u; src[CasterGather.SrcUints + CasterGather.SetFlagWord] = 1u;
+            _gAt[0] = 0; _gAt[1] = 1;
+            _dMoverIdx[0] = 1; _dMoverCount = 1;
+            uint* dyn = stackalloc uint[2 * CasterGather.SrcUints];
+            for (int i = 0; i < 2 * CasterGather.SrcUints; i++) dyn[i] = 0xdeadu;
+            int dm = CopyDynamicSource(src, dyn);
+            bool copy = dm == 1;
+            for (int w = 0; w < CasterGather.SrcUints; w++)
+                copy &= dyn[w] == src[CasterGather.SrcUints + w];   // the MOVER's record, word for word
+            long missWas = _dSrcMiss;
+            AuditDynamicSource(src, dyn, dm);
+            copy &= _dSrcMiss == missWas;   // one staged mover, one copied: no miss
+            // ...and both directions of the audit actually fire. Missing: the copy drops the mover. Extra: it
+            // takes a still caster, which the shader's set filter would reject but which means the copy walked
+            // the wrong set -- the direction "would draw" on both sides cannot see.
+            AuditDynamicSource(src, dyn, 0);
+            copy &= _dSrcMiss == missWas + 1;
+            dyn[CasterGather.SetFlagWord] = 0u;
+            AuditDynamicSource(src, dyn, dm);
+            copy &= _dSrcMiss == missWas + 3 && _dSrcExtra == 1;   // one for want != dyn, one for the extra
+            dyn[CasterGather.SetFlagWord] = 1u;
+            _dSrcExtra = 0;
+            // ...and a mover the staging does not hold is skipped rather than copied as slot -1.
+            _gAt[1] = -1;
+            copy &= CopyDynamicSource(src, dyn) == 0;
+            _gAt[0] = 0; _gAt[1] = 0; _dMoverCount = 0; _gN = 0; _liveCount = 0;
+            _liveDyn[1] = false;
+            _dSrcMiss = missWas; _dSrcAudits = 0;
+            if (!copy)
+            { ok = false; log.Info("CasterPass.SelfCheck FAIL: the dynamic source is not a verbatim copy of the staged movers"); }
             // The rotation's write-after-read argument holds only above a floor of 2: at 1 no barrier stands
             // between a view's indirect reads and the next view's dispatch rewriting the same pair.
             if (CasterGather.Rotation < 2)
@@ -289,13 +355,20 @@ public sealed unsafe partial class CasterPass
         // mover outside every sphere is a creature shadow missing from the baked ground.
         if (ok)
         {
+            const int movers = DynSpheres + 6;
+            const float big = 12f;   // the one mover the tightness bound below is measured against
             float* box = stackalloc float[DynSpheres * 6];
-            float* mv = stackalloc float[] { 0, 0, 0, 1,  30, 0, 0, 0.5f,  0, 30, 0, 2,  -20, -20, 5, 1,  1, 1, 0, 0.5f,  29, 2, 0, 12 };
+            float* mv = stackalloc float[movers * 4];
+            for (int i = 0; i < movers; i++)
+            {   // a ring of creatures round the light, and a 12 m mover among them
+                mv[i * 4] = 25f * MathF.Cos(i * 0.9f); mv[i * 4 + 1] = 25f * MathF.Sin(i * 0.9f); mv[i * 4 + 2] = i % 3;
+                mv[i * 4 + 3] = i == 5 ? big : 0.5f + (i % 4) * 0.25f;
+            }
             int n = 0;
-            for (int i = 0; i < 6; i++) n = AddMoverBox(box, n, mv[i * 4], mv[i * 4 + 1], mv[i * 4 + 2], mv[i * 4 + 3]);
+            for (int i = 0; i < movers; i++) n = AddMoverBox(box, n, mv[i * 4], mv[i * 4 + 1], mv[i * 4 + 2], mv[i * 4 + 3]);
             WriteDynSpheres(0, n, box, Vector3.Zero, 40f);
-            bool held = n == DynSpheres;
-            for (int i = 0; i < 6 && held; i++)
+            bool held = n == DynSpheres && CubeDynSphere[(DynSpheres - 1) * 4 + 3] >= 0f;
+            for (int i = 0; i < movers && held; i++)
             {
                 bool inOne = false;
                 for (int s = 0; s < DynSpheres && !inOne; s++)
@@ -306,8 +379,11 @@ public sealed unsafe partial class CasterPass
                 }
                 held = inOne;
             }
+            // ...and the fold is a fold, not a union: no sphere outgrows the 12 m mover's own (a fold into one box
+            // reads 41,5 m here, a single sphere per slot 40)
+            for (int s = 0; s < DynSpheres && held; s++) held = CubeDynSphere[s * 4 + 3] <= big * MathF.Sqrt(3f) * 1.001f;
             WriteDynSpheres(0, 0, box, Vector3.Zero, 40f);
-            if (!held) { ok = false; log.Info("CasterPass.SelfCheck FAIL: a mover falls outside every hot-path sphere"); }
+            if (!held) { ok = false; log.Info("CasterPass.SelfCheck FAIL: a mover falls outside every hot-path sphere, or the fold swallows the square"); }
         }
 
         log.Info(ok

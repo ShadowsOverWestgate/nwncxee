@@ -38,6 +38,12 @@ internal static unsafe class SkinPose
     /// <summary>Solves refused for want of prepared bone data, and tree walks that hit
     /// <see cref="MaxGathered"/>. Both mean the caller must hand the part back to the engine.</summary>
     internal static long NoBind, Overflow;
+    /// <summary>The bone gather's size, so the question "is the full-tree walk per skinned part worth an index
+    /// list" can be answered from a reading rather than argued. <c>GatherBones</c> walks the WHOLE creature
+    /// tree once per SKINNED PART, so a creature with several skinmeshes walks it several times -- and the
+    /// gathered transforms are in that part's own space, so they are not shareable between parts without
+    /// re-composing them anyway. Reset with the note.</summary>
+    internal static long Gathers, GatheredNodes;
 
     /// <summary>Solve <paramref name="part"/>'s pose into <paramref name="dst"/>, which must have room for
     /// <see cref="AlloyRenderer.BoneFloats"/> floats (64 mat4). False = no pose; the part has to be handed
@@ -89,6 +95,7 @@ internal static unsafe class SkinPose
 
         _gCount = 0; _gDepth = 0; _gFull = false;
         Gather(root, px, py, pz, aw, ax, ay, az);
+        Gathers++; GatheredNodes += _gCount;
         if (_gFull) { Overflow++; return false; }
 
         // ExecuteSkinGPU's loop. The bone map is indexed by BONE SLOT and holds an index into the gathered
@@ -210,7 +217,20 @@ internal static unsafe class SkinPose
     /// a hole that is still a hole three periods later is the thing worth seeing.
     /// <para>A climbing repair count is creatures arriving, not a leak. A nonzero <c>no data</c> is the
     /// residual hole and is attributable: those nodes lost their temporary arrays before anything asked.</para></summary>
-    internal static string PrepareNote()
+    internal static string PrepareNote() => GatherNote() + PrepNote();
+
+    /// <summary>The gather's own reading, per period: how many tree walks the bone solve paid for and how many
+    /// nodes they visited. Divide by the <c>skinmeshes posed/frame</c> on the same clause to see whether one
+    /// creature is being walked more than once, which is the only case an index list would help.</summary>
+    private static string GatherNote()
+    {
+        if (Gathers == 0) return "";
+        string s = $", bone gather {Gathers} walk(s) over {GatheredNodes} node(s) (avg {(float)GatheredNodes / Gathers:F1})";
+        Gathers = 0; GatheredNodes = 0;
+        return s;
+    }
+
+    private static string PrepNote()
         => _prepCalls == 0 && _prepN == 0 && _prepNoData == 0 && _prepDropped == 0 ? ""
          : $", unprepared skinmeshes: {_prepCalls} repaired ({_prepWon} now pose, {_prepDead} refused as "
          + $"freed, {_prepNoData} PERMANENT -- no bind data left), {_prepN} queued"

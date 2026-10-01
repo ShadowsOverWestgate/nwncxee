@@ -67,6 +67,10 @@ internal static unsafe partial class AnimRuntime
         check.Expect(Ramps(), "queue advance: the fade-in step, the NET fade-out step (dt/fadeTime, not 2x), both zero-fadeTime cases, and the full-weight purge of every older run");
         check.Expect(MorphFrames(), "animmesh morph: the frame index is shared -- the position pool's clamp is what the UV pool then reads");
         check.Expect(EventWindow(), "animation events: the forward window is half-open at the low end, a wrap fires the tail then the head, and reverse walks the events backwards");
+        check.Expect(SphereCadence(), "sphere cadence: a refresh happens exactly when something moved since the last one, across still runs and the held-frame pattern anim.lod produces, and the light-host latch survives it");
+        check.Expect(LodEvents(), "distance animation LOD: a step four frames wide fires exactly the events four frame-sized steps do, in the same order, and a wrapped window splits at the ends either way");
+        check.Expect(PartWalkCheck.Order(), "owned Part::Animate walk: the same parts in the same order as a recursive reference, an override's subtree left to the override, an emitter's walked");
+        check.Expect(PartWalkCheck.Deep(), "owned Part::Animate walk: a tree deeper than the walk descends is refused and counted, not a stack overflow");
         log.Info(check.Ok ? "AnimRuntime.SelfCheck: passed" : "AnimRuntime.SelfCheck: FAILED");
     }
 
@@ -363,6 +367,129 @@ internal static unsafe partial class AnimRuntime
             if (f != r.P || lp != r.Lp || uf != r.U || lu != r.Lu) return false;
         }
         return true;
+    }
+
+    /// <summary>
+    /// The refresh cadence's predicate: a sphere refresh must happen if and only if SOMETHING moved since the
+    /// last one. Driven over 400 steps whose <c>moved</c> pattern includes long still runs, single moves landing
+    /// on every position within the five-step cadence, and the held-frame pattern <c>anim.lod</c> produces
+    /// (every other step false though the pose advanced on the one before).
+    /// <para>The reference is kept independently: a plain bool that is set by any moving step and cleared
+    /// wherever the cadence reaches a refresh. A per-step predicate -- what the code did before -- fails this
+    /// on the very first move that does not land on a fifth step.</para>
+    /// </summary>
+    private static bool SphereCadence()
+    {
+        // Two patterns: a pseudo-random one, and the LOD one (moved only on even steps).
+        for (int pattern = 0; pattern < 2; pattern++)
+        {
+            int raw = 0;
+            bool want = false;                 // the reference "moved since the last refresh"
+            ulong seed = 0x243f6a8885a308d3UL;
+            for (int step = 0; step < 400; step++)
+            {
+                seed = seed * 6364136223846793005UL + 1442695040888963407UL;
+                bool moved = pattern == 0 ? (seed >> 60) > 7 : (step & 1) == 0;
+                want |= moved;
+                Step(raw, moved, out int tick, out bool movedSince, out short next);
+                if (movedSince != want) return false;
+                if (tick == 0) want = false;   // the refresh consumes it
+                raw = next;
+                // The counter still walks 0,1,2,3,4 whatever the bits hold.
+                if (tick != (step + 1) % 5) return false;
+            }
+        }
+        // The latch itself, on a synthetic gob, over a field that already holds a counter mid-cadence AND the
+        // moved bit -- so a latch that clobbered either would show. Then: a light host stays one across a
+        // refresh, the counter keeps walking, and the moved bit does not survive a refresh.
+        IntPtr gob = (IntPtr)NativeMemory.AllocZeroed(1024);
+        try
+        {
+            var g = new Gob(gob);
+            g.SphereTick = (short)(3 | SphereMovedBit);
+            NoteLightHost(gob);
+            int lit = g.SphereTick;
+            if (lit != (3 | SphereMovedBit | LightHostBit)) return false;
+            for (int step = 0; step < 11; step++)
+            {
+                Step(lit, step == 3, out int tick, out bool movedSince, out short next);
+                lit = next;
+                if ((lit & LightHostBit) == 0) return false;
+                if (tick != (step + 4) % 5) return false;
+                if (tick == 0 && (lit & SphereMovedBit) != 0) return false;
+                if (step == 3 && !movedSince) return false;
+            }
+            // ...and a second latch on an already-latched field is a no-op, not a second write.
+            g.SphereTick = (short)lit;
+            NoteLightHost(gob);
+            return g.SphereTick == (short)lit;
+        }
+        finally { NativeMemory.Free((void*)gob); }
+    }
+
+    /// <summary>
+    /// AN5's hard requirement: a reduced-rate step must not drop a keyed event. The same span of animation
+    /// time is walked twice -- once in 120 frame-sized windows, once in 30 windows four times the size -- and
+    /// the two must fire exactly the same events, the same number of times, in the same order.
+    /// <para>Contiguous half-open windows are what makes it true: <c>(t0, t1]</c> then <c>(t1, t2]</c> covers
+    /// <c>(t0, t2]</c> exactly once, so a coarser cut of the same span is the same set. Within one window the
+    /// events fire in AUTHORED order, which for the ascending times content stores is time order -- and which
+    /// is what vanilla does at a low frame rate too, so it is the engine's behaviour and not a new one.</para>
+    /// <para>The wrapped window a looping run produces is checked as well: it splits at the two ends, so the
+    /// tail of the cycle fires before the head at either granularity.</para>
+    /// </summary>
+    private static bool LodEvents()
+    {
+        const int Events = 11, Fine = 120, Rate = 4;
+        IntPtr gob = (IntPtr)NativeMemory.AllocZeroed(256);
+        IntPtr vtbl = (IntPtr)NativeMemory.AllocZeroed(1024);
+        IntPtr anim = (IntPtr)NativeMemory.AllocZeroed(512);
+        byte* events = (byte*)NativeMemory.AllocZeroed((nuint)(Events * EngineLayout.AnimEventStride));
+        string[] fine = new string[64];
+        IntPtr alive = gob;
+        IntPtr* alivep = &alive;
+        try
+        {
+            *(IntPtr*)gob = vtbl;
+            delegate* unmanaged<IntPtr, byte*, IntPtr, void> rec = &CheckDoEvent;
+            *(IntPtr*)(vtbl + EngineLayout.GobDoEventSlot) = (IntPtr)rec;
+            var a = new Animation(anim);
+            a.Events = (IntPtr)events;
+            a.EventCount = Events;
+            a.Length = 2.5f;
+            // Irregular ascending times inside the span the walks cover (2.0 s), including two in one
+            // frame-sized window and one exactly on a coarse boundary.
+            float[] at = { 0.004f, 0.13f, 0.135f, 0.4f, 0.6666667f, 0.9f, 1.0f, 1.2f, 1.6f, 1.9f, 1.99f };
+            for (int i = 0; i < Events; i++)
+            {
+                byte* e = events + i * EngineLayout.AnimEventStride;
+                *(float*)e = at[i];
+                byte* nm = e + EngineLayout.AnimEventName;
+                nm[0] = (byte)('a' + i); nm[1] = 0;
+            }
+
+            const float H = 1f / 60f;
+            _seenCount = 0;
+            for (int k = 0; k < Fine; k++) AnimEvents.Fire(gob, anim, k * H, (k + 1) * H, 0, alivep);
+            int fineN = _seenCount;
+            for (int i = 0; i < fineN && i < fine.Length; i++) fine[i] = _seen[i];
+
+            _seenCount = 0;
+            for (int k = 0; k < Fine / Rate; k++)
+                AnimEvents.Fire(gob, anim, k * Rate * H, (k + 1) * Rate * H, 0, alivep);
+            if (_seenCount != fineN || fineN != Events) return false;
+            for (int i = 0; i < fineN; i++) if (_seen[i] != fine[i]) return false;
+
+            // The wrapped window: from 1.95 round to 0.35, which a looping run hands Fire as from > to.
+            _seenCount = 0;
+            AnimEvents.Fire(gob, anim, 1.95f, 0.35f, 0, alivep);
+            return _seenCount == 4 && _seen[0] == "k" && _seen[1] == "a" && _seen[2] == "b" && _seen[3] == "c";
+        }
+        finally
+        {
+            NativeMemory.Free((void*)gob); NativeMemory.Free((void*)vtbl);
+            NativeMemory.Free((void*)anim); NativeMemory.Free(events);
+        }
     }
 
     /// <summary>The event window, over a synthetic animation with events at 1, 2 and 3 seconds.</summary>

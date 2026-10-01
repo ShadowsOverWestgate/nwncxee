@@ -101,6 +101,29 @@ churning GUI 3D panel bumps it too. If it bumps per-frame, the escalation is
 `Scene::ChildAdd` @0x461d50 / `Scene::ChildRemove` @0x462cc0 for exact deltas — not a hash.
 `countpart` @0x18da6b8 validates either.
 
+> **Amendment (ownership-cleanup).** The measured risk came true and the escalation was taken, by a different
+> route than the one named above. The epoch bumped on 66 of 900 frames — one per 11-20 — from VFX and creature
+> churn, and each bump cost a 9.70 ms whole-area re-walk that the hitch ledger blamed for 47 of 63 hitch frames.
+> So "`Scene::Sequence` triggers a re-walk" no longer holds as written: **`Gob::SetScene` @0x43e020 is hooked**
+> and a membership move costs ONE gob's tree. It is the sole writer of the epoch — objdump finds exactly two
+> references to that global in the whole image, the `addl $0x1` in that function and `ManageSceneBSP`'s read —
+> so every bump arrives with the gob and both scenes in hand, which is strictly more than `ChildAdd`/`ChildRemove`
+> would have given (they see the gob, not the pair, and the teardown path reaches `ChildRemove` through the
+> vtable). Bumps touching neither world scene — the churning GUI 3D panel this section predicted — are answered
+> with nothing.
+>
+> What keeps "re-reading, never inferring" true is the ACCOUNTING, not the hook: the hook counts the bumps it
+> answered, the tick compares that count against the epoch's actual movement, and any shortfall stands the full
+> walk up. Three more edges that announce nothing of their own are hooked on the same principle rather than left
+> to the epoch's accident — `Gob::SetSubtreeEnabled` @0x43c670 (the `part+0x34` hide/show, CX-92),
+> `Gob::Append`, and `Scene::SpawnTile`/`DeleteTile` for a tile, which names no gob and so still asks for the
+> whole area. `Gob::SetLODModel`'s rotation is `GobLod`'s notice, which also names its gob.
+>
+> The whole-area walk survives as the AUDIT, every `alloy.walkaudit` frames (300 by default), and
+> `[enum] audit misses=` counts what it finds that the deltas did not — it must read 0, and its split
+> (`added` / `swept gob` / `swept tile`) names the edge if it ever does not. `alloy.walkdelta 0` restores the
+> behaviour this section describes, which is the A/B the numbers above were measured on.
+
 ### Strand 1's ownership order
 
 The slicing that makes the milestone executable, the way #107 §3 ordered M3's classes:

@@ -117,6 +117,60 @@ internal static unsafe partial class GrassField
         CullRect(f, cx, cy, 0f, 3f);
         check.Expect(A(64, 64) == 0, "a degenerate footprint culls nothing rather than dividing by it");
 
+        // The incremental rebuild: the clear and the upload trust the reported rectangle, so a writer that
+        // touches one texel outside it leaves a push behind for good -- a permanent dent in the meadow that
+        // nothing else in the pass would ever name.
+        byte[] neutral = new byte[f.Length];
+        for (int i = 0; i < neutral.Length; i += PushChannels) { neutral[i] = 128; neutral[i + 1] = 128; }
+        // ClearPush restores from the pass's own template, which off-device is not built yet.
+        byte[]? clear0 = _pushClear;
+        _pushClear = neutral;
+        bool Covers(int bx0, int by0, int bx1, int by1)
+        {
+            for (int y = 0; y < PushRes; y++)
+            for (int x = 0; x < PushRes; x++)
+            {
+                int o = (y * PushRes + x) * PushChannels;
+                bool changed = false;
+                for (int c = 0; c < PushChannels; c++) changed |= f[o + c] != neutral[o + c];
+                if (changed && (x < bx0 || x > bx1 || y < by0 || y > by1)) return false;
+            }
+            return true;
+        }
+        bool AllNeutral() => Covers(0, 0, -1, -1);
+        Array.Copy(neutral, f, f.Length);
+        Splat(f, cx, cy, rad);
+        check.Expect(SplatBounds(cx, cy, rad, out int sx0, out int sy0, out int sx1, out int sy1)
+                     && Covers(sx0, sy0, sx1, sy1), "every texel a splat changes is inside the rect it reports");
+        ClearPush(f, sx0, sy0, sx1, sy1);
+        check.Expect(AllNeutral(), "...and clearing that rect puts the whole field back to neutral");
+        // The same for the cull rectangle, whose extents are the object's, not the push radius'.
+        Array.Copy(neutral, f, f.Length);
+        CullRect(f, cx, cy, 10f, 3f);
+        check.Expect(CullBounds(cx, cy, 10f, 3f, out int kx0, out int ky0, out int kx1, out int ky1)
+                     && Covers(kx0, ky0, kx1, ky1), "every texel a cull footprint changes is inside its rect");
+        ClearPush(f, kx0, ky0, kx1, ky1);
+        check.Expect(AllNeutral(), "...and clearing that one restores the field too");
+        // An edge case the rect arithmetic gets wrong the moment it stops clamping: a pusher STRADDLING the
+        // field's edge must report the part of its rect that is on the field, and never an index off it.
+        check.Expect(SplatBounds(-4f, 20f, 6f, out int ox0, out int oy0, out int ox1, out int oy1)
+                     && ox0 == 0 && ox1 == 3 && oy0 >= 0 && oy1 < PushRes,
+          "a pusher straddling the edge reports the clamped part of its rect");
+        check.Expect(!SplatBounds(-40f, 20f, 6f, out _, out _, out _, out _)
+                     && !SplatBounds(PushRes + 40f, 20f, 6f, out _, out _, out _, out _),
+          "...and one wholly outside the field reports no rect at all");
+        check.Expect(!SplatBounds(cx, cy, 0f, out _, out _, out _, out _), "a zero radius reports no rect at all");
+
+        // A list that repeats must compare equal, or nothing is ever skipped; one that differs by a single
+        // texel must not, or the field goes stale.
+        _pushNow[0] = new Pusher { X = 1f, Y = 2f, R = 3f, Hx = 4f, Hy = 5f };
+        _pushWas[0] = _pushNow[0];
+        check.Expect(SamePushers(1), "an unchanged pusher list compares equal");
+        _pushWas[0].X = 1.01f;
+        check.Expect(!SamePushers(1), "...and one texel of movement does not");
+        _pushNowN = 0; _pushWasN = -1;
+        _pushClear = clear0;
+
         // ---- the toggle (#180). _off is the resolution latch and Grass.Enabled is the player's dial; they are
         // two flags on purpose, because /grass enabled 1 on a client whose grass globals never came up would
         // run the pass over null pointers. Direct field writes, not sets: a set arms the cx.cfg writer, and

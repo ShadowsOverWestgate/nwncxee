@@ -28,8 +28,8 @@ internal static class Renderer
     internal static readonly Knob<bool> Light, Prepass, AoTest, Retest, HlDiag, Poll, PrepassKey, PrepassFeat, IdTarget,
                                         BlendDepth, GpuMeter, VisList, WashTest, DepthEqual;
     // ---- CX-103/104/105: the scene pipeline's dials ----
-    internal static readonly Knob<bool> OwnXform, XformCheck, OwnLod, BucketCheck, CullWatch;
-    internal static readonly Knob<int> XformRefresh;
+    internal static readonly Knob<bool> OwnXform, XformCheck, OwnLod, BucketCheck, CullWatch, WalkDelta;
+    internal static readonly Knob<int> XformRefresh, WalkAudit;
     internal static readonly Knob<float> LodHyst;
     internal static readonly Knob<int> Viz, Threads, Cull, HlChan, OitViz;
     internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap, Holes, Doors;
@@ -211,6 +211,16 @@ internal static class Renderer
         // default now that nothing in the frame reads them -- on, it walks Scene+0x208 once per period and
         // reports the parts the engine classified that Alloy has no record for.
         BucketCheck = G.Toggle("bucketcheck", "bucketcheck", false, Tier.ChatOnly);
+        // A membership change costs ONE gob's tree, not the area's: Gob::SetScene is the sole writer of the
+        // engine's global epoch, so every bump can be answered per gob. 0 is the A/B -- every bump re-walks
+        // the whole scene, which is what the 9,7ms `[enum] walk=` and its hitch blame were measured on.
+        WalkDelta = G.Toggle("walkdelta", "walkdelta", true, Tier.ChatOnly);
+        // ...and the validator for it: every N frames a full walk runs anyway and `[enum] audit misses=` counts
+        // what it found that the deltas had not. It must read 0, and it is the ONLY instrument that would show
+        // an edge nobody has found yet, so the default is short enough to be a net rather than a formality (one
+        // ~5ms walk per 5s). If a long session reads 0, raise it; if it reads nonzero, the edge the split
+        // (added / swept gob / swept tile) names gets its own notice -- the cadence is not the fix. 0 = off.
+        WalkAudit = G.Slider("walkaudit", "walkaudit", 0, 7200, 60, 300, unit: "frames", tier: Tier.ChatOnly);
 
         Consts = G.Button("consts", "consts", AlloyRenderer.LogScriptables, Tier.ChatOnly);
         FrameDumpBtn = G.Button("framedump", "framedump", FrameDump.Arm, Tier.ChatOnly);
