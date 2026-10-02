@@ -160,6 +160,11 @@ def labels_to_carry(labels):
     return [name for name in labels if name not in PRIORITY_BY_LABEL]
 
 
+def split_labels(values):
+    """Every label named by `--label` values, repeated or comma-separated."""
+    return [name.strip() for value in values for name in value.split(",") if name.strip()]
+
+
 def closing_references(text):
     """Every `Closes PROJ-123` in a pull request body, in order, deduplicated."""
     seen = []
@@ -1063,6 +1068,21 @@ class Plane:
     def labels(self, project_id):
         return {label["name"]: label for label in self.paged(f"projects/{project_id}/labels/")}
 
+    def label_ids(self, project_id, names):
+        """Label ids for `names`, all of which must already exist.
+
+        Creating a label is a deliberate act, not a side effect of a typo: a
+        comma list once became one junk label and the command exited 0.
+        """
+        existing = self.labels(project_id)
+        unknown = [name for name in names if name not in existing]
+        if unknown:
+            raise PlaneError(
+                f"unknown label(s) {', '.join(unknown)}; "
+                f"this project has: {', '.join(sorted(existing))}"
+            )
+        return [existing[name]["id"] for name in names]
+
     def ensure_labels(self, project_id, names):
         """Label ids for `names`, creating the ones that do not exist yet."""
         existing = self.labels(project_id)
@@ -1341,7 +1361,10 @@ def main(argv=None):
     body = p.add_mutually_exclusive_group()
     body.add_argument("--body", help="the body, as Markdown")
     body.add_argument("--body-file", help="a file holding the body, as Markdown")
-    p.add_argument("--label", action="append", default=[], dest="labels")
+    p.add_argument(
+        "--label", action="append", default=[], dest="labels",
+        help="an existing label; repeat the flag or separate names with commas",
+    )
     p.add_argument("--priority", default=None, help="override the label-derived priority")
     p.add_argument("--assignee", action="append", default=[], dest="assignees")
     p.add_argument("--parent", default=None, help="parent work item reference")
@@ -1416,6 +1439,7 @@ def main(argv=None):
     client = Plane()
 
     if args.command == "file":
+        args.labels = split_labels(args.labels)
         project = client.project(args.project.upper())
         fields = {
             "name": args.title,
@@ -1423,7 +1447,7 @@ def main(argv=None):
             "priority": args.priority or priority_for_labels(args.labels),
         }
         if args.labels:
-            fields["labels"] = client.ensure_labels(project["id"], labels_to_carry(args.labels))
+            fields["labels"] = client.label_ids(project["id"], labels_to_carry(args.labels))
         if args.assignees:
             fields["assignees"] = args.assignees
         if args.parent:
