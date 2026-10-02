@@ -1,7 +1,7 @@
 ---
-name: sow-threading
+name: server-threading
 description: >-
-  Covers thread safety, offloading work off the main game thread, and async
+  Server-side reference ported from sow-codebase; adapt before applying it to the client (see .claude/skills/README.md). Covers thread safety, offloading work off the main game thread, and async
   patterns for the SoW NWN:EE server codebase. Use this skill whenever writing
   or reviewing any code that involves async/await, Task, NwTask, background
   work, database access, timers, scheduled callbacks, hook context, or any
@@ -232,7 +232,7 @@ If a path conditionally goes off-thread, measure only the synchronous portion.
 This data flows into Prometheus/Grafana — spikes here are player-visible lag.
 
 **There is no `MainThreadMetrics` class.** Earlier revisions of this skill and
-of `nwn-anvil-conventions` told you to call one, with two different APIs. It has
+of `server-native-conventions` told you to call one, with two different APIs. It has
 never existed in this codebase; anything written against it will not compile.
 
 ---

@@ -1,7 +1,7 @@
 ---
-name: sow-hooking
+name: server-hooking
 description: >-
-  Covers everything about hooking NWN engine functions in the SoW codebase via
+  Server-side reference ported from sow-codebase; adapt before applying it to the client (see .claude/skills/README.md). Covers everything about hooking NWN engine functions in the SoW codebase via
   NativeHookRegistry and HookPoint. Use this skill whenever working with
   existing hook points, adding subscribers to NativeHookRegistry, discovering
   what functions are available to hook, finding a function's symbol in the
@@ -62,7 +62,7 @@ public sealed class MyService : IDisposable
 ```
 
 > All hook callbacks run on **hook threads** — native APIs only. Never call
-> Anvil wrappers or NWScript VM methods here. See `sow-threading` skill.
+> Anvil wrappers or NWScript VM methods here. See `server-threading` skill.
 >
 > **This rule is transitive.** Calling another service from a hook counts as
 > calling everything that service touches — a `Lazy<>`, a first-use init, or an

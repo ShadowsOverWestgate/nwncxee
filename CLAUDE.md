@@ -165,7 +165,7 @@ name a known ceiling + its upgrade path.
 ## Hard rules
 
 - **NEVER GUESS.** Always verify with a Ghidra decompilation.
-- **Hook with funchook, NOT NativeHookRegistry.** The ported `sow-hooking` skill
+- **Hook with funchook, NOT NativeHookRegistry.** The ported `server-hooking` skill
   describes the server's registry, which does not exist here. Take its RE mindset
   and Before/After/SkipOriginal semantics, not its C# API.
 - **Hot hooks allocate nothing.** NativeAOT GC runs on whatever thread the hook

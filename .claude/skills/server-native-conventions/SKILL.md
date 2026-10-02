@@ -1,7 +1,7 @@
 ---
-name: nwn-anvil-conventions
+name: server-native-conventions
 description: >-
-  Use when writing, reviewing, or debugging any NWN:EE server code using NWN.Anvil, NWNX:EE, or native CNWSCreature/CNWSItem APIs. Triggers on: service bindings, feat scripts, special attacks, function hooks, NUI windows, native API access, threading/multithreading, memory safety, chat commands, or any mention of NwModule/NwPlayer/NwCreature.
+  Server-side reference ported from sow-codebase; adapt before applying it to the client (see .claude/skills/README.md). Use when writing, reviewing, or debugging any NWN:EE server code using NWN.Anvil, NWNX:EE, or native CNWSCreature/CNWSItem APIs. Triggers on: service bindings, feat scripts, special attacks, function hooks, NUI windows, native API access, threading/multithreading, memory safety, chat commands, or any mention of NwModule/NwPlayer/NwCreature.
 ---
 
 # NWN Anvil Conventions (SoW)
@@ -203,7 +203,7 @@ describes the shape of the code, not a limit of the test suite. Split the
 service into a thin Anvil-bound shell that only touches the engine, and a
 plain-C# core that holds every decision behind seams. Test the core
 exhaustively. See `StateSnapshotService` / `StateSnapshotRebuilder` for a worked
-example, and the "Testing VM-thread code" section of the `sow-threading` skill
+example, and the "Testing VM-thread code" section of the `server-threading` skill
 for the full rule.
 
 Since our code is tracked in Prometheus+Grafana, measure any non-trivial path
@@ -230,7 +230,7 @@ using (ClientLeaveDuration.NewTimer())
 ```
 
 **There is no `MainThreadMetrics` class.** Earlier revisions of this skill and of
-`sow-threading` told you to call one, with two different APIs. It has never
+`server-threading` told you to call one, with two different APIs. It has never
 existed in this codebase; anything written against it will not compile.
 
 ## Function Hooks
