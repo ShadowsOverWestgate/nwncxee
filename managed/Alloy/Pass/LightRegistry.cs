@@ -9,7 +9,7 @@ namespace CX.Alloy;
 /// <summary>CX-108: Alloy's own light registry. Every light the renderer shades, halos, bakes or tints from is
 /// enumerated HERE, out of the engine's own containers, instead of being read off <c>LightManager</c>'s
 /// per-frame lists -- Alloy reads no <c>LightManager</c> field.
-/// <para><b>Two feeds, both authoritative</b> (docs/research/light-registry.md §3):
+/// <para><b>Two feeds, both authoritative</b> (CX-108 §3):
 /// <list type="bullet">
 /// <item><see cref="Visit"/> -- the <see cref="NonMeshParts"/> seam, i.e. every part <see cref="SceneWalk"/>
 /// reaches that is not a <c>PartTriMesh</c>. A light is told by the engine's own cast

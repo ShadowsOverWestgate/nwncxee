@@ -19,7 +19,7 @@ namespace CX.Alloy;
 /// it through <c>Gob::CollectLights</c> @0x43fa90 plus <c>LightManager::GetEmitterLighting</c> @0x4c1970;
 /// both are folded into the walk below.</item>
 /// </list>
-/// <para><b>The weight is written back</b> -- and CX-108 re-checked who reads it (docs/research/light-registry.md
+/// <para><b>The weight is written back</b> -- and CX-108 re-checked who reads it (CX-108
 /// §8). On a stock Alloy frame, NOBODY does: <c>GetEmitterLighting</c> @0x4c1970 is ported
 /// (<see cref="Accumulate"/>) and its other caller <c>PartEmitter::RenderEmitter</c> is only reached through
 /// the <c>DoEmitterBucket</c> that <c>EmitterSim</c> replaced; <c>GetNearestLights</c> @0x4c15f0 went with

@@ -30,7 +30,7 @@ CNWCCreature::WalkUpdateLocation @0x725830 (objdump 0x725e93-0x725ee6 and 0x725f
     animSpeed = f * (rate/1000) / (strideMM / lenMs);                    // 0x725fc4: mulss the factor in
 
 dtMs = CNWCObject+0x58, an INTEGER millisecond delta of world time; the pose clock is a float
-second delta off a microsecond timer (docs/research/procedural-anim-locomotion.md Q2).
+second delta off a microsecond timer (CX-159 Q2).
 """
 import math
 

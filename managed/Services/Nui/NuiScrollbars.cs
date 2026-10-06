@@ -17,7 +17,7 @@ namespace CX.Services.Nui;
 /// <remarks>Hot: once per shown scrollbar per frame. Fixed tables, no allocation.</remarks>
 internal static unsafe class NuiScrollbars
 {
-    // nk_input, the same on both builds (the behavior reads them; docs/research/nui-performance.md, scrollbar facts §1.4).
+    // nk_input, the same on both builds (the behavior reads them; CX-154, scrollbar facts §1.4).
     private const int InLeftDown = 0x10c, InLeftClicked = 0x110, InClickedX = 0x114, InDeltaX = 0x15c, InWheelX = 0x164;  // not-an-offset: nuklear input ABI, not an engine class
     /// <summary><c>nk_widget_state</c> ACTIVED: the behavior's drag arm ran.</summary>
     private const uint StateActived = 0x20;  // not-an-offset: nuklear state bit

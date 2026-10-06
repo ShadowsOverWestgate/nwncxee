@@ -45,7 +45,7 @@ public sealed unsafe class GlContextService : IExtenderService
     /// KHR_debug messages into the extender log. This is the only channel undefined behaviour reaches --
     /// <c>glGetError</c> has no code for it, and a non-debug context "may have zero debug output" (KHR_debug).
     /// Mesa reports a great deal here that NVIDIA never mentions, which is the point: the tester's driver
-    /// gets to say what it objects to (docs/research/opengl-46-portability-audit.md, E1). Synchronous, so the
+    /// gets to say what it objects to (CX-157, E1). Synchronous, so the
     /// callback runs on this thread inside the offending call. ERROR and UNDEFINED_BEHAVIOR messages are
     /// logged every time (Mesa files EVERY API error under one id, so an id is not an identity there), up to
     /// <see cref="DebugLines"/> per session; the other types log their first sighting per id. An allocation

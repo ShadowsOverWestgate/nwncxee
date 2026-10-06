@@ -59,7 +59,7 @@ as a live item on the new instance: a low `CX-<n>` there is a different, newer i
 For the same reason `bin/plane show sow-client-extender#700` finds nothing: that lookup
 works only for issues the org-wide importer carried over, and this repository's were not.
 
-## Wayfinding
+## Wayfinding operations
 
 A **map** is a work item labelled `wayfinder:map`. A **ticket** is a real child of it
 through the native parent field, labelled `wayfinder:research`, `:prototype`,

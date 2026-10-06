@@ -9,7 +9,7 @@ namespace CX.Alloy;
 /// <summary>One view's render state as ALLOY computes it, from the camera object's own fields: the viewport
 /// the view covers, the aspect the projection is built at, the projection and view matrices, and the depth
 /// range the view writes into -- everything <c>Camera::RenderScene</c> @0x4a7920 derives before it calls
-/// <c>Scene::Render</c> (<c>docs/research/camera-loop.md</c> §1).</summary>
+/// <c>Scene::Render</c> (<c>CX-109</c> §1).</summary>
 internal struct AlloyView
 {
     /// <summary>Row-vector (<c>v * M</c>), the convention the rest of Alloy uses, and byte-identical to what
@@ -108,7 +108,7 @@ internal static unsafe class AlloyCamera
     internal static ref readonly AlloyView ActiveView => ref _activeView;
 
     /// <summary>The MODEL matrix every world-frame draw sits on: the IDENTITY.
-    /// <para>Derived, not assumed (<c>docs/research/camera-loop.md</c> §2). Every engine walk brackets its own
+    /// <para>Derived, not assumed (<c>CX-109</c> §2). Every engine walk brackets its own
     /// model writes with <c>Push</c>/<c>PopCurrentMatrix</c>; <c>Camera::ModifyGUIMatrix</c> @0x5a61e0 -- the
     /// only unbalanced-looking writer -- cannot fire for the world view and is popped anyway; and
     /// <c>AurRenderStrings</c> @0x436480 calls <c>LoadMatrixIdentity</c> with no <c>SetMatrixMode</c> once per

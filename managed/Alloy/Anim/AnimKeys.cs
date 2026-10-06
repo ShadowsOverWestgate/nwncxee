@@ -25,7 +25,7 @@ namespace CX.Alloy;
 /// <para><b>Bezier tracks are handed to the engine's own getter.</b> The scalar Bezier path pairs its control
 /// points differently from the vector one (<c>d[k]+d[k+3]</c>, value plus value) and its past-the-end branch
 /// passes the raw time where every other branch passes the segment alpha and reads one key past the array --
-/// both look like upstream bugs (docs/research/anim-runtime.md section 8). Transcribing them into a second
+/// both look like upstream bugs (CX-106 section 8). Transcribing them into a second
 /// implementation buys nothing and can only drift, so a Bezier track costs one call into the engine and is
 /// counted on the period line.</para>
 /// <para>Allocation-free: every sample is stack locals over the engine's own float pool.</para>

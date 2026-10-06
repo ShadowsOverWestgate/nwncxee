@@ -70,7 +70,7 @@ so owning the UI system is that backend's prerequisite. It belongs to ADR 0004's
   3D world, from its own resources, from its own loop. The engine keeps the 2D UI and the present.**
   Alloy stops being a guest inside `Scene::RenderSinglePass`, which is replaced by a mutate-only
   shim; ADR 0010's vanilla mode is preserved as a branch taken at frame start. Each ownership step
-  is chosen so it closes an RHI readiness gate (`docs/research/rhi-abstraction.md` G1–G4) and
+  is chosen so it closes an RHI readiness gate (the research on CX-164 G1–G4) and
   follows its §6 hygiene — never so it adds an abstraction layer.
 
 ### Amendment (2026-08-26): M4 was "2026 features"

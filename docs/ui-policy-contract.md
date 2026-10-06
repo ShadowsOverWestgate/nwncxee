@@ -12,7 +12,7 @@ button, route an action to the server). The player's own values are never overwr
 ## Wire
 
 One message family, the existing CX device major (CLAUDE.md: reuse an opcode; a stock client discards an unknown
-minor with one trace line, `docs/research/native-gui-skinning.md` §6.6).
+minor with one trace line, the research on CX-152 §6.6).
 
 | direction | major | minor | payload (ASCII, at offset 3) |
 |---|---|---|---|

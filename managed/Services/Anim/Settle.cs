@@ -9,7 +9,7 @@ namespace CX.Services.Anim;
 /// Stops and starts through the feet, a <see cref="PoseService"/> module (<c>anim.settle</c>, CX-68 and CX-69).
 /// Both edges are the same hole: the engine crossfades the whole body between the idle stance and a locomotion
 /// cycle (0.20-0.25 s in, 0.70-1.00 s out), blending every bone, so <b>both</b> feet glide and neither plants
-/// (docs/research/locomotion-weight.md §3.1). The foot lock lets go the moment the animation leaves locomotion,
+/// (CX-61 §3.1). The foot lock lets go the moment the animation leaves locomotion,
 /// which is exactly the moment it is needed.
 /// <para><b>The stop.</b> At arrival the lock's held feet are taken over here instead of released: the weighted
 /// foot holds its world point through the crossfade, and the unweighted one takes a <see cref="Arc"/> settle
@@ -334,7 +334,7 @@ internal static unsafe class Settle
     // ---- Self-check ----
 
     /// <summary>The arc, the two-step state machine and the start seed, on the stock numbers measured in
-    /// docs/research/locomotion-content.md (§3.1 male walk, §3.2 male run, §4 the idle stance).</summary>
+    /// CX-147 (§3.1 male walk, §3.2 male run, §4 the idle stance).</summary>
     internal static bool SelfCheck() =>
         // also the first touch of the contact table, so its storage is claimed here and not inside a frame hook
         !Known(1L, out _, out _, out _, out _) && ArcCheck() && StopCheck() && SeedCheck();

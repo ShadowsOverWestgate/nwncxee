@@ -6,7 +6,7 @@ using CX.Framework;
 namespace CX.Services.Anim;
 
 /// <summary>Where a creature's movement comes from, which is what decides how it starts and how it stops
-/// (docs/research/locomotion-engine.md §2.2, §3): <see cref="Driving"/> is bang-bang in the engine -- full speed on
+/// (CX-148 §2.2, §3): <see cref="Driving"/> is bang-bang in the engine -- full speed on
 /// frame 1, a coast and a dead stop -- unless <see cref="DriveEase"/> shapes it, while both path modes ramp and ease,
 /// the server's one twice as hard as the client's prediction. <see cref="None"/> is a creature the engine is not
 /// walking along a path.</summary>

@@ -17,7 +17,7 @@ namespace CX.Alloy;
 /// value, and the two platforms answer that differently -- SysV in xmm0/xmm1 with no buffer anywhere, Win64
 /// through a caller buffer as <c>(this, sret, &amp;arg)</c>. Same shape and same reason as
 /// <see cref="AurXform"/>, which already carries the getters; the measurements are in
-/// <c>docs/research/behaviour-solvers.md</c> §6.2 (Linux @0x437190/@0x4371c0, Windows rva 0x95210/0x94f80).
+/// <c>CX-107</c> §6.2 (Linux @0x437190/@0x4371c0, Windows rva 0x95210/0x94f80).
 /// The Windows deleting destructor is a third case: MSVC's single destructor slot takes a flags argument
 /// (<c>mov edx,1</c> at rva 0x202897) that Itanium's does not.</para>
 /// <para>The setters must go through the virtual: <c>CNWCVisualEffect</c>, <c>CNWCCreature</c>,

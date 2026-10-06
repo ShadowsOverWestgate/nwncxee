@@ -32,7 +32,7 @@ public static unsafe class VertexArrays
     /// The spec allows any byte offset; radeonsi on GFX6/GFX10+ open-codes the vertex fetch for such a
     /// stream and recompiles the vertex shader when a buffer's alignment class changes (si_state.c), so a
     /// non-zero count here is a Mesa-only per-vertex cost the engine's pool layout is paying for
-    /// (docs/research/opengl-46-portability-audit.md, P4).</summary>
+    /// (CX-157, P4).</summary>
     public static int Streams, Unaligned;
 
     /// <summary>Read one attribute slot of the CURRENTLY BOUND VAO. False (and <paramref name="s"/> zeroed)

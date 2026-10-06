@@ -14,7 +14,7 @@ namespace CX.Services.Nui;
 /// <see cref="SymbolMap.NkLoadImg"/> composites the layers on the CPU into a TGA and asks for a synthetic resref, and
 /// the <see cref="SymbolMap.ExoResManGet"/> hook answers that one call with the bytes; the engine does everything else
 /// (the NkImage, decode, upload, its caches, the free). An item this client does not know draws nothing. A stock
-/// client shows its error sprite for the same string. docs/research/nui-plt-icons.md.
+/// client shows its error sprite for the same string. CX-155.
 /// </summary>
 /// <remarks>Cold: behind the per-window image cache and nk_loadimg's own, so it may allocate.</remarks>
 internal static unsafe class NuiItemIcons

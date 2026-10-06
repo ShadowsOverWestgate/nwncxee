@@ -16,7 +16,7 @@ namespace CX.Alloy;
 /// the icons inline in text) lands here as a record of the geometry and of the <c>GLRender</c> state caches it would
 /// have run under, and nothing reaches GL; <see cref="GuiPass"/> issues the records from the 4.6 context.
 /// <para>The engine still walks, animates and lays out its own GUI -- tier 2 moves the pixels, not the scene
-/// (<c>docs/research/total-render-ownership.md</c> §3). GL-free: a VDO's VAO slot is harvested through
+/// (<c>CX-172</c> §3). GL-free: a VDO's VAO slot is harvested through
 /// <see cref="AlloyRenderer.VdoSlot"/>, which lives with the rest of the VAO code.</para>
 /// </summary>
 internal static unsafe class GuiCapture
@@ -497,7 +497,7 @@ internal static class GuiStream
 {
     internal const uint FmtColor = 0x1, FmtNormal = 0x2, FmtPos = 0x4, FmtUv0 = 0x800;   // not-an-offset: stream attribute flag bits
     /// <summary>CX-101: not an engine format -- nuklear's vertex (<c>{vec2 pos, vec2 uv, u8x4 colour}</c>, 20 bytes,
-    /// <c>docs/research/nui-draw-in-alloy.md</c> §3), on a bit the engine's flags never use.</summary>
+    /// <c>CX-97</c> §3), on a bit the engine's flags never use.</summary>
     internal const uint FmtNuklear = 0x80000000 | FmtColor;   // not-an-offset: a CX-private format tag
 
     /// <summary>Byte offsets within a vertex; -1 = absent. <see cref="PosN"/> is the position's component count.</summary>

@@ -10,7 +10,7 @@ namespace CX.Alloy;
 /// <c>CAurBehavior</c> solvers are built out of. Every formula below was read off <c>nwmain-linux</c> --
 /// from the decompiled dump where it was unambiguous, and from <c>objdump</c> where the decompiler dropped
 /// a lane or a float argument. Provenance and the addresses are in
-/// <c>docs/research/behaviour-solvers.md</c> §4.
+/// <c>CX-107</c> §4.
 /// </summary>
 /// <remarks>
 /// <para>The engine's <c>Quaternion</c> is stored <b>(w, x, y, z)</b>, which is what
@@ -64,7 +64,7 @@ internal static partial class BehaviorMath
 
     /// <summary><c>YawPitchRoll(yaw, pitch, roll)</c> @0x5b6690 -- degrees, composed
     /// <c>qZ(yaw) * qX(pitch) * qY(roll)</c>. The three axes live in <c>.bss</c> and a static initialiser
-    /// sets them to Z, X and Y respectively (docs/research/behaviour-solvers.md §4); a term whose angle is
+    /// sets them to Z, X and Y respectively (CX-107 §4); a term whose angle is
     /// exactly 0 is skipped, so the port skips it too.</summary>
     internal static Quat YawPitchRoll(float yaw, float pitch, float roll)
     {

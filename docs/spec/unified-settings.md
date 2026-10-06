@@ -3,13 +3,13 @@
 The contract for the one settings panel, the knob registry behind it, and the one `cx.cfg`.
 Decided on wayfinder map #556 (tickets #557–#568); the decisions are recorded there and in
 [ADR 0025](../adr/0025-unified-settings-model.md). This file assembles them so a build
-session needs nothing else. Glossary: `CONTEXT.md` → *Settings*.
+session needs nothing else. Glossary: `GLOSSARY.md` → *Settings*.
 
-Research it rests on: [`docs/research/feature-disable-census.md`](../research/feature-disable-census.md)
-(live vs restart per feature, with file:line evidence), [`docs/research/main-menu-surface.md`](../research/main-menu-surface.md)
+Research it rests on: the research on CX-142 (CX-142)
+(live vs restart per feature, with file:line evidence), the research on CX-149 (CX-149)
 (present, input and layout at the main menu; the `/settings` seam), and
 `docs/prototypes/settings-panel-560/index.html?variant=B` on branch `prototype/settings-panel-560`
-(the pinned look). Rejected door: `docs/research/settings-panel-ownership.md` §4 (Path A′).
+(the pinned look). Rejected door: the research on CX-166 §4 (Path A′).
 
 Conventions in the tables: kind **T** toggle · **S** slider · **D** dropdown · **B** button
 (action row) · **X** text · **L** list · **Act** action row. Tier **U** User · **A** Advanced · **C**
@@ -464,7 +464,7 @@ Deleted: Quickbar's `/settings`, `/qbar`, `QuickbarSettings`.
 
 Now persists (amends #182).
 
-**NUI windows** — group `nui` (docs/research/nui-performance.md). Fixes to the windows servers build
+**NUI windows** — group `nui` (CX-154). Fixes to the windows servers build
 with NUI; nothing here changes what a window lays out.
 
 | key | today | label | kind | range · default | tier | eff | help |
@@ -483,7 +483,7 @@ with NUI; nothing here changes what a window lays out.
 Bare `/nui` prints how many widget draws the skip saved since the last ask, and how many tableau rows the layout solves visited of how many.
 
 The `@item:` contract: a NUI image whose resref string is `"@item:" + ObjectToString(oItem)` draws that item's own
-inventory icon (docs/research/nui-plt-icons.md, "Built").
+inventory icon (CX-155, "Built").
 
 **Windows & fonts** — group `ui`.
 

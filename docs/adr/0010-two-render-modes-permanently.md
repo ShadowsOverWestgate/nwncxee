@@ -94,7 +94,7 @@ Two consequences of ADR 0016 land back here, neither of which weakens this decis
 - **The suppression machinery survives without a redesign.** `BucketGate` has four call sites outside
   its own file, and a walk that is never entered fires no hooks. "Suppress, never delete" is
   satisfied by the engine path remaining callable, which the shim's config key preserves.
-- **The three-mode reading of a Vulkan future was wrong.** `docs/research/rhi-abstraction.md` failed
+- **The three-mode reading of a Vulkan future was wrong.** the research on CX-164 failed
   G5 permanently on the grounds that this ADR keeps vanilla forever, making "GL-and-Vulkan-and-
   vanilla" the only reachable end state. A Vulkan backend will instead be a separate *configuration*
   with no runtime swapping, so this ADR does not create that trap. Nothing here changes; the

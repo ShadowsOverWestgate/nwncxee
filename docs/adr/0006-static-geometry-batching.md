@@ -45,10 +45,10 @@ No batching, no instancing, no material sort. Bucket order is BSP/type order.
    `VertexDataObject::Repack()` can MOVE item offsets (AddItem triggers it on fragmentation) --
    an invalidation hook point alongside RemoveItem/dtor.
 2. **Static tile parts are pre-transformed to world space.** The `RenderDrawBucket` loop only
-
+   pushes a model matrix for parts with `(node+0x80 & 0x1e)` or a skin; plain
    tile geometry draws with identity model transform (this is why the shadow pipeline's
    world-space bbox cull works on them). Merged world-space batches are trivially correct.
-
+3. **Bucket phases.** `RenderDrawBucket(bucket)` runs three sub-phases (0, 1, 2):
    default cull, `Disable(3)` (two-sided), `SetCullFace(0)` — state resets at phase end.
    Opaque phases are depth-tested and order-independent; merged draws can be submitted at the
    position of their first member.

@@ -51,7 +51,7 @@ internal static unsafe partial class LightmapBake
     /// <summary>CX-56: <c>CNWCArea::LoadArea</c> @0x70e010 has RETURNED non-zero, so every light of this area
     /// is in the master list -- its tile loop, <c>SetSourceLightColor</c>'s gobs and both placeable blocks are
     /// all synchronous, and the AreaLoaded send comes from a later message
-    /// (docs/research/area-light-list.md). Lowered at the call's ENTRY, because a walk that runs inside
+    /// (CX-131). Lowered at the call's ENTRY, because a walk that runs inside
     /// <c>LoadArea</c> (its own <c>UpdateScreen</c> ticks) sees a half-spawned area. It stays raised for the
     /// whole area, so a reopen -- the area edge's <see cref="Revoke"/>, a tile change -- costs the close one
     /// walk instead of the 90 the walk counts used to.</summary>
@@ -71,7 +71,7 @@ internal static unsafe partial class LightmapBake
     private static int _regCountSeen = -1;
     /// <summary>Every gob the area's placeable-light registry has ever named this area. The registry is filled
     /// once from the area message and EMPTIES as each placeable adopts its light gob (CNWCPlaceable::LoadLight
-    /// @0x8eb140 re-parents it and removes the record with bFree 0: docs/research/area-light-list.md), so
+    /// @0x8eb140 re-parents it and removes the record with bFree 0: CX-131), so
     /// the live registry told Classify "placeable" only until the adoption -- the light then re-judged
     /// dynamic, the class table voided on every count change, and the static set churned for as long as
     /// adoptions ran (run 21's three re-keys on a zoom).</summary>

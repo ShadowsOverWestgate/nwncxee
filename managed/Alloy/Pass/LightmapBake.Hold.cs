@@ -9,7 +9,7 @@ namespace CX.Alloy;
 
 /// <summary>#675: the loading-screen hold. The engine's <c>SendPlayerToServerArea_AreaLoaded</c> is what places
 /// the player (the server's <c>MovePlayerToArea</c> runs on nothing else, and no server clock runs while it
-/// waits -- docs/research/area-loaded-hold.md); the hook swallows it, an opaque CX window covers the frames
+/// waits -- CX-132); the hook swallows it, an opaque CX window covers the frames
 /// until the area's baseline bakes are in, then the send goes out from here. Three exits: the bake is in
 /// (<see cref="BaselineIn"/>), the player skips (Escape, offered after <c>lightmap.hold</c> s), or
 /// <see cref="CapSeconds"/>. On a skip or the cap the bake finishes in the background at its own pacing.

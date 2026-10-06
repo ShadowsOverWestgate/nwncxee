@@ -8,13 +8,13 @@ using CX.Ui;
 namespace CX.Services.Inventory;
 
 /// <summary>
-/// The CX inventory screen (docs/research/inventory-screen.md). <c>CPanelInventory::SetInventoryVisible</c> is the one
+/// The CX inventory screen (CX-146). <c>CPanelInventory::SetInventoryVisible</c> is the one
 /// funnel every open and close of the player's own panel goes through -- the key, the quick button, the radial, a server
 /// push -- so it is hooked: with <c>inventory.enabled</c> on, the vanilla panel never activates and the CX window opens
 /// instead; the <c>GuiInventory_Status</c> the panel owes the server is sent from here. Someone else's inventory stays
 /// vanilla. Items arrive through the engine's own repository handler (a chain on <c>CGuiMultiPageMultiInvbox::AddItem</c>
 /// sees every page); a container the player opens stays in the hidden stock panel, which the loot pane mirrors and pages
-/// (docs/research/inventory-screen.md §11). The server streams one page of each and resends a page whole on every switch,
+/// (CX-146 §11). The server streams one page of each and resends a page whole on every switch,
 /// so pages are asked for where the view rests or an action lands, one at a time (§12). Actions are the engine's own
 /// senders, each routed through <see cref="ServerPolicy"/> first (<c>inventory.&lt;action&gt;.route</c>).
 /// </summary>

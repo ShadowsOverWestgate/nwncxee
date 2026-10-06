@@ -20,7 +20,7 @@ namespace CX.Services.Camera;
 /// (<see cref="AlloyRenderer.CameraCut"/>). The in-game GUI is hidden through the engine's own
 /// <c>CGuiInGame::ToggleOff</c> (what the server's HideGui message calls) and restored on exit; the
 /// extender's own windows (chat) stay, since they are the way back.
-/// <para><b>Limits</b> (docs/research/free-camera-cheating.md §5, all client-side, no opcode): a leash of the
+/// <para><b>Limits</b> (all client-side, no opcode): a leash of the
 /// server's <c>SetCameraLimits</c> max distance when set, else <c>free.leash</c> (capped at the engine's 25 m
 /// default) around the player's creature -- the camera stops at it and a chat line says so once per contact;
 /// stand-down (exit, with the reason on screen) on every CameraService gate and while the creature's

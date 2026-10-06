@@ -127,7 +127,7 @@ public sealed unsafe partial class AlloyRenderer
     /// which since #673's decompile of <c>CNWCArea::AddPlaceableObjectStatic</c> is known to INCLUDE every
     /// Static placeable: the engine spawns its model through <c>Scene::SpawnTile</c>, not through the
     /// object's anim base, so the gob is a tile gob and there is no placeable to detect
-    /// (docs/research/static-placeable-rule.md, amendment). Never a skinned, dangly or displacing mesh,
+    /// (CX-170, amendment). Never a skinned, dangly or displacing mesh,
     /// whose vertices move under a record that does not; the feature term is the offer side's alone (see
     /// <see cref="StaticShape"/> for why the freeze passes 0).</summary>
     internal static int StaticAtEnroll(int cls, IntPtr gob, bool tileGob, bool mx, bool skin, bool dangly, int feat)

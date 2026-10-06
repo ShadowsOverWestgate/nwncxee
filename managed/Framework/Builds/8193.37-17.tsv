@@ -708,7 +708,7 @@ offset	CNWCAmbientSound	truncated	0x1b8	0x1b8	# AmbientTruncated
 offset	CExoStreamingSoundSource	internal	0x0	0x0	# StreamInternal
 offset	C2DVoice	source	0x8	0x8	# Voice2DSource
 
-# the CX inventory screen (docs/research/inventory-screen.md §10): every row paired on both programs.
+# the CX inventory screen (CX-146 §10): every row paired on both programs.
 offset	CNWCCreature	equippedItems	0x328	0x308	# CreatureEquippedItems
 offset	CNWCCreature	gold	0x1d8	0x1b8	# CreatureGold
 offset	CNWCCreature	isAssociate	0x294	0x274	# CreatureIsAssociate
@@ -806,7 +806,7 @@ offset	Gob	lodLevel	0x440	0x440	# GobLodLevel
 offset	Gob	lodNear	0x444	0x444	# GobLodNear
 offset	Gob	lodFar	0x448	0x448	# GobLodFar
 # ---- CX-108 lights ----
-# Alloy's own light registry and selection (docs/research/light-registry.md). Measured with objdump on
+# Alloy's own light registry and selection (CX-108). Measured with objdump on
 # both binaries: LightManager is name-exported on Windows, so PrioritizeLights (rva 0x7ff60) reads there
 # exactly as it does at 0x4c0940 here.
 offset	Part	vtbl.AsPartLight	0x50	0x48	# PartAsLightSlot
@@ -825,7 +825,7 @@ offset	Scene	binGridCount	0x1d8	0x1d8	# SceneBinGridCount
 offset	CAurTriangleBin	centre	0x24	0x24	# BinCentre
 offset	CAurTriangleBin	radius	0x30	0x30	# BinRadius
 
-# ---- CX-107 behaviours (docs/research/behaviour-solvers.md) ----
+# ---- CX-107 behaviours (CX-107) ----
 # The field offsets were read off BOTH images: the Linux ones from ~/nwn-decomp/8193.37-17, the Windows
 # ones from nwmain.exe's own disassembly of the exported constructors (??0CAurBehavior*@@) and of
 # ?Control@CAurBehaviorCrossSceneAttach*@@ -- no Ghidra run was needed, and no value here is an inference
@@ -872,7 +872,7 @@ offset	Gob	vtbl.AsCamera	0x280	0x278	# GobAsCameraSlot
 offset	Gob	vtbl.SetPosition	0xb8	0xb0	# GobSetPositionSlot
 offset	Gob	vtbl.SetOrientation	0xc0	0xb8	# GobSetOrientationSlot
 
-# ---- CX-106 anim: the owned animation runtime (docs/research/anim-runtime.md) ----
+# ---- CX-106 anim: the owned animation runtime (CX-106) ----
 offset	Scene	animFrame	0x1b8	0x1b8	# SceneAnimFrame
 offset	Gob	animFrame	0x458	0x458	# GobAnimFrame
 offset	Gob	prevPosition	0xc4	0xc4	# GobPrevPosition
@@ -1037,7 +1037,7 @@ rva	_ZTV10CArmorIcon	0xdaf6c0	# VtCArmorIcon
 rva	_ZN12CNWCCreature15SpawnHitVisualsEhP20CNWCCombatAttackData6Vector10CExoString	0x80bb10	# SpawnHitVisuals
 rva	ZSTD_createDCtx	0x9e8350	# ZstdCreateDCtx (CX-54: the zero-arg DCtx factory called by ?DecompressBuffer@ZstdCompressionProvider@NWCompressedBuffer@@ rva 0x1aa230)
 rva	ZSTD_decompressDCtx	0x9e9670	# ZstdDecompressDCtx (CX-54: the 5-arg decompressor in the same body)
-# the CX inventory screen: RVAs read out of the Windows bodies (docs/research/inventory-screen.md §10).
+# the CX inventory screen: RVAs read out of the Windows bodies (CX-146 §10).
 rva	_ZN15CPanelInventory19SetInventoryVisibleEiij	0x857cd0	# InvSetInventoryVisible
 rva	_ZN15CPanelInventory16SetCharacterDataEj	0x856fa0	# InvSetCharacterData
 rva	_Z18GameCameraHitCheckiiP6VectorP8CHitInfo	0x6d7f50	# GameCameraHitCheck

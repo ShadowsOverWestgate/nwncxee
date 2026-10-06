@@ -10,7 +10,7 @@ namespace CX.Alloy;
 
 /// <summary>
 /// CX-101: NUI's pixels, drawn by Alloy. <c>nk_sdl_render</c> @0xe07bb0 is the stock SDL/GL3 nuklear backend
-/// (<c>docs/research/nui-draw-in-alloy.md</c>), and the engine's only GL draw left above the world frame. This
+/// (<c>CX-97</c>), and the engine's only GL draw left above the world frame. This
 /// replaces its GL half: nuklear still converts its own command queue (<c>nk_convert</c>), but into CX-owned
 /// buffers, and the resulting draw commands are recorded through <see cref="GuiCapture"/> and issued by
 /// <see cref="GuiPass"/> from the 4.6 context. The original is not called on a captured frame.
@@ -104,7 +104,7 @@ internal static unsafe class NuiFlush
     /// contract the engine's overlay views and <c>AurRenderStrings</c> are entitled to: blend and scissor off,
     /// cull and depth on, the current-VDO latch cleared. Cached, so each is a no-op when it already holds. The raw
     /// GL <c>nk_sdl_render</c> leaks -- its program, VAO and three attrib arrays -- are deliberately NOT reproduced
-    /// (docs/research/nui-draw-in-alloy.md §5): nothing downstream reads them, and leaving them is its bug.</summary>
+    /// (CX-97 §5): nothing downstream reads them, and leaving them is its bug.</summary>
     private static void HandBackEngineState()
     {
         const int CapBlend = 0, CapCull = 3, CapDepthTest = 0xb, CapScissor = 0xd;   // not-an-offset: engine cap enum
@@ -232,7 +232,7 @@ internal static unsafe class NuiFlush
     }
 
     /// <summary>A fixed <c>nk_buffer</c> over our own memory -- the four stores <c>nk_buffer_init_fixed</c> makes,
-    /// which is exactly what the Windows client does inlined (docs/research/nui-draw-in-alloy.md §3).</summary>
+    /// which is exactly what the Windows client does inlined (CX-97 §3).</summary>
     private static NkBuffer Fixed(void* memory, int bytes)
     {
         NkBuffer b = default;

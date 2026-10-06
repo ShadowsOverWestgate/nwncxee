@@ -30,7 +30,7 @@ internal enum InvHitKind { None, Title, Close, Search, Tab, Scroll, Cell, Slot, 
 internal readonly record struct InvHit(InvHitKind Kind, int Index = -1, int X = -1, int Y = -1);
 
 /// <summary>
-/// The CX inventory window, GL- and engine-free: the vanilla panel's layout (docs/research/inventory-screen.md §2.5) in
+/// The CX inventory window, GL- and engine-free: the vanilla panel's layout (CX-146 §2.5) in
 /// design px scaled for the screen, the drag-and-drop rules of <c>ProcessItemDrop</c> / <c>CGuiInvbox::HandleDragDropAsDest</c>
 /// (§5.1), and the emit into a chrome batch, a skin and an icon list. Every component carries a policy id: a server may hide
 /// it, move it or relabel it (<c>inventory.&lt;id&gt;.visible|dx|dy|label</c>), limit the pages, or make the window read-only;

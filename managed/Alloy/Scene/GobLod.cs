@@ -386,9 +386,9 @@ internal static unsafe class GobLod
             if (process) g.GobProcessGob();
             if (!haveCam) continue;
             _asked++;
-            // GS1: only of a gob the frustum let through. The BSP visitor @0x481000 asks in exactly one place --
-
-            // Gob::SetLODModel(this); } else countculledgobs++` -- so asking it of every gob in the AREA both
+            // GS1: only of a gob the frustum let through. The BSP visitor @0x481000 asks in exactly one place:
+            // a gob GobOutside passes gets its distance at gob+0x140 and a SetLODModel call, and a culled one is
+            // only counted. So asking it of every gob in the AREA both
             // paid the whole population for a choice nothing was going to read and defeated this class's own
             // ageing: Tick cancels a registration the hook stopped asking for, and the hook never stopped.
             // gob+0x1b is that verdict, written earlier THIS frame by ScenePrep's sweep or, when a /buckets

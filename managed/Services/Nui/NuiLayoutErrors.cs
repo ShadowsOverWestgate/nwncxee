@@ -9,7 +9,7 @@ using CX.Framework;
 namespace CX.Services.Nui;
 
 /// <summary>
-/// Says why a NUI layout could not be solved (docs/research/nui-layout-errors.md). Vanilla replaces the window with
+/// Says why a NUI layout could not be solved (CX-153). Vanilla replaces the window with
 /// "The constraint can not be satisfied." and nothing more. kiwi gives up on a required rule at exactly two points, and
 /// at both the row in hand is its own proof: a weighted sum of the markers earlier rules left in the tableau, plus the
 /// new rule. <see cref="SymbolMap.KiwiCreateRow"/> returning a row of dummies with a nonzero constant is a contradiction
@@ -386,7 +386,7 @@ internal static unsafe class NuiLayoutErrors
 
     /// <summary>Where a rule comes from, when its shape says so for certain: <c>LayoutableJ::Construct</c> builds
     /// <c>"width": W</c> as <c>W * scale == width</c>, <c>"height"</c> likewise, and <c>"aspect": A</c> as
-    /// <c>width / A == height</c>, all at required unless a weight is given (docs/research/nui-layout-errors.md §4.5).</summary>
+    /// <c>width / A == height</c>, all at required unless a weight is given (CX-153 §4.5).</summary>
     private static string Why(Rule rule)
     {
         string strength = Math.Abs(rule.Strength - Required) < 1.0 ? "" : $"strength {Num(rule.Strength)}";

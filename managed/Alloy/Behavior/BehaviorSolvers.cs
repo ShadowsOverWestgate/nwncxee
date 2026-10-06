@@ -16,7 +16,7 @@ internal enum BehaviorKind
 
 /// <summary>
 /// CX-107: Alloy's own <c>CAurBehavior</c> solvers. One method per concrete engine class, ported term for
-/// term from <c>docs/research/behaviour-solvers.md</c> §5; the hooks in
+/// term from <c>CX-107</c> §5; the hooks in
 /// <see cref="BehaviorService"/> run these INSTEAD of the engine's <c>Control</c>, so they hold whoever
 /// dispatches -- the engine's <c>Gob::Animate</c> today, an owned animation runtime tomorrow (CX-105), both
 /// through the same virtual.
@@ -290,7 +290,7 @@ internal static unsafe partial class BehaviorSolvers
     /// <para>The engine's upscale branch is NOT reproduced, because it is the identity in this build: the
     /// caller hands <c>Camera::UpscaleViewport</c> an all-zero "current viewport" rect, which leaves the
     /// shift at 0 and the scale at 1, and the remap <c>(v/0.01 - 0) * 1 * 0.01</c> is <c>v</c>. Working that
-    /// out is docs/research/behaviour-solvers.md §5.9; what survives of the branch is the part that does
+    /// out is CX-107 §5.9; what survives of the branch is the part that does
     /// move something -- with no <c>cameraGUI_pnl_chr_genm1</c> gob in the panel's scene, the rectangle is
     /// pinned to the origin and scaled by the GUI scale.</para>
     /// </summary>

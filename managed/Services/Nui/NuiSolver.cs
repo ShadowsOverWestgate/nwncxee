@@ -6,7 +6,7 @@ using CX.Framework;
 namespace CX.Services.Nui;
 
 /// <summary>
-/// NUI layout solve (docs/research/nui-performance.md §2, §5.2). kiwi's <see cref="SymbolMap.KiwiSubstitute"/> walks the
+/// NUI layout solve (CX-154 §2, §5.2). kiwi's <see cref="SymbolMap.KiwiSubstitute"/> walks the
 /// whole tableau to replace one symbol, so a group that adds its subtree's R constraints one at a time pays R² row
 /// visits: 144 ms of addConstraint for one 267-node list. This hook keeps, per solver, an index from each symbol to the
 /// tableau rows that may hold it, and runs the engine's own substitute over just the rows that do, with the tableau's

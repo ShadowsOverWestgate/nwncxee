@@ -11,3 +11,6 @@ cx-windows-x64.zip
 .scratch/*
 cx-linux-x64.zip
 .claude/settings.local.json
+
+# Agent worktrees are local scratch; a tracked one breaks the CI submodule checkout.
+.claude/worktrees/

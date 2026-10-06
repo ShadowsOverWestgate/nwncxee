@@ -8,7 +8,7 @@ using CX.Services.Nameplate;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Camera-relative WASD (#540; docs/research/custom-camera.md §10). Pre-hooks the engine's per-frame drive
+/// Camera-relative WASD (#540; CX-137 §10). Pre-hooks the engine's per-frame drive
 /// step, <c>CClientExoAppInternal::UpdateDriveMode</c>: while a drive key is down and the mode's <c>drive</c>
 /// knob is on, the player creature's orientation is written to camera yaw + key direction (W = the camera's
 /// forward, A/D and the strafe keys = its right, diagonals at 45°), forward is the only key the engine sees

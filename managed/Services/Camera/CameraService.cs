@@ -9,7 +9,7 @@ using EngCamera = CX.Engine.Camera;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// The camera layer (#536; docs/research/custom-camera.md §8 option A). Chains on the engine's one camera
+/// The camera layer (#536; CX-137 §8 option A). Chains on the engine's one camera
 /// solve, <c>CAurBehaviorCameraFollow::Control</c>, lets it run, then rewrites its answer -- the pose at
 /// Camera+0xb0/+0xbc and the view angle at +0x4c4 -- from the same behavior state plus three feels the engine
 /// lacks: an FOV knob, a critically damped position/rotation/zoom lag (the engine's zoom is a one-frame

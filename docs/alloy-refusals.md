@@ -253,7 +253,7 @@ nm addresses (the read-only dump in `~/nwn-decomp/` prints them + 0x100000).
   left is an item the VDO holds with **zero indices**. `RenderFlat` @0x450eb0 passes
   `VertexDataObject::GetItemElementSize` straight to `RenderVertexData` as the index count, so vanilla issues
   a draw of nothing for it too — and the `item < 0` case is `SetupArrays` @0x458920's own zero-totals exit
-
+  (a part with no vertices or no faces gets no item), the same verdict `SceneWalk.RecordHasNoGeometry` reads.
 - **`unrenderable`.** `PartTriMesh::IsPartRenderable` @0x450e60 is the gate every `Part*::Draw` override runs
   first, and that both bucket-add functions run before every colour-bucket add —
   `Scene::AddPartsToDrawBuckets` @0x4751d0 over the texture-ordered mesh lists

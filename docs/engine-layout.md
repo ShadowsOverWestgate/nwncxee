@@ -120,7 +120,7 @@ failing case by feeding a `Byte01` offset a 2.
 124 rows, 33 of them `Unresolved`. Measured 2026-09-11 by running
 `tools/ghidra/FieldDump.java` over both programs and diffing with
 `tools/ghidra/field-diff.py`; reproduce with the command block at the end of
-`docs/research/windows-divergence-shape.md`, class list
+the research on CX-173, class list
 
     Scene Gob Part PartTriMesh PartDanglyMesh PartSkin PartLight MdlNode MdlNodeTriMesh
     MdlNodeDanglyMesh MdlNodeSkin VertexPrimitive VertexPrimitiveDangly VertexDataObject
@@ -141,7 +141,7 @@ Per-row provenance is the XML doc on the row itself. The verdict per class:
 | `PartTriMesh` | segmented: `+0x4` from `0x64`, `+0x8` from `0x88` | ctor block `0x64..0x93` → `0x68..0x97`; `WithinRange` reads the six bbox floats at `0x68..0x7c`; `0x88`/`0x96`/`0xa0`/`0xb0` paired at `+0x8` |
 | `PartDanglyMesh` | **unresolved** | no validated pair on either build — and a base's delta need not carry into a subclass |
 | `PartLight` | segmented: own block `+0x4` | `0x64`/`0x68`/`0x6c` paired; the Windows-only set `0x70 0x78 0x80 0xa8 0xb0 0xb8` is the Linux set shifted `+0x4` |
-
+| `LightManager` | identical `0x0..0xc0` | 6 paired, plus #430's ten-function hand read; CX-85 added `frameData 0x40` / `frameCount 0x48` to the same range, measured on Windows `EnableLights` (rva `0x7e890`, `this + 0x60` / `this + 0x40` verbatim) and on `ControlLightsFade`'s the int at `+8` of its second argument |
 | `Camera` | base region 0, `0x4c4..0x4e4` `+0x4`, above that `+0x8` | 18 offsets over 16 functions, including `0xe50` and `0xe64` at `+0x8` |
 | `Material` | identical `0x0..0xd0` | `0x0 0x40 0x50 0xd0` paired |
 | `SharedMaterial` | **unresolved** | `0xd8`/`0x1c0`/`0x1c8`/`0x1e8` pair at delta 0, yet Windows touches `0x190 0x1a1 0x1b2` — the resref stride `+0x8` from Linux's `0x188 0x199 0x1aa` — and Linux's `0x1f1` has no Windows counterpart. Unexplained, so nothing is resolved on it |
@@ -361,7 +361,7 @@ Three things worth keeping:
 Eighteen `Same` rows, measured by decompiling both builds directly (no pairer: the
 behavior class is name-exported on both, and `CNWCModule`'s camera functions hang off
 the anchored `HandleServerToPlayerMessage` dispatch). Provenance is
-`docs/research/custom-camera.md` §9.4; the Windows entry points it names are the
+the research on CX-137 §9.4; the Windows entry points it names are the
 anchors.
 
 | Class | Rows | Anchor |
@@ -441,7 +441,7 @@ reads `size@0x10`, `res@0x18`, and the pointer at `+0` when `res > 15`).
 
 Two `Same` rows for the main-menu gate, read off `CClientExoAppInternal::DisplayMainMenu` on both builds
 (Linux nm `0x63c320`, Windows rva `0x6d74f0` -- the caller of the `CMainMenuPanel` ctor, itself the only
-referrer of `"PRE_MAIN"`; `docs/research/main-menu-surface.md`), by objdump of each:
+referrer of `"PRE_MAIN"`; the research on CX-149), by objdump of each:
 
 | Class | Rows | Anchor |
 |---|---|---|
@@ -480,7 +480,7 @@ laid out identically end to end, which is what `Same` is for.
 
 Aim assist, auto-target and the contextual crosshair read fifteen fields, and **four functions carry all of
 them** -- each decompiled on both programs rather than shifted by a class delta
-(`docs/research/action-camera-targeting.md`):
+(the research on CX-125):
 
 | function | Linux | Windows RVA |
 |---|---|---|
@@ -507,7 +507,7 @@ them** -- each decompiled on both programs rather than shifted by a class delta
 
 ### The crosshair-feedback rows
 
-"What is the player doing right now", measured the same way (`docs/research/action-camera-feedback.md`):
+"What is the player doing right now", measured the same way (the research on CX-123):
 
 | Class | Rows | Anchor |
 |---|---|---|
@@ -598,15 +598,15 @@ fog entry, not this ticket's.
 ### The static-placeable rows (#672, research #663)
 
 Three `Same` rows and one rename, all read off decompiled bodies on both builds
-(`docs/research/static-placeable-rule.md` §7.2 has the full table, including the
+(the research on CX-170 §7.2 has the full table, including the
 `Gob` transform fields it chose *not* to declare).
 
 | Row | Linux / Windows | Anchor |
 |---|---|---|
 | `CNWCArea.staticPlaceables` | `0x338` / `0x338` | `AddPlaceableObjectStatic` (Linux `0x7091c0`, Windows rva `0x7d95a0`, the call inside `LoadArea`'s `"Static Placeables"` tracy zone): `CExoArrayList<unsigned int>::Add((… *)(area + 0x338), id)` on both |
 | `CNWCArea.staticPlaceableCount` | `0x340` / `0x340` | the research left this one **inferred** (the Windows `RespawnStaticPlaceablesForTile` was never located). Closed here without a live probe: the Windows `CExoArrayList<unsigned int>::Add` (rva `0x8ae10`, exported `?Add@?$CExoArrayList@I@@QEAAXI@Z`) decompiles as data `+0`, count `+8`, alloc `+0xc` -- the same layout Linux has -- so the count of the list at `+0x338` is at `+0x340` by the list's own class, not by analogy |
-
-
+| `CNWCObject.animBase` | `0x78` / `0x78` | `CNWCObject::SetPosition` (Linux `0x7e9180`, Windows rva `0x766760`): the object's word `0xf` (`+0x78`) then the anim-base vcall |
+| `CNWCAnimBase.gob` (was `hiliteGob`) | `0xc8` / `0xc8` | already `Same` from #446; re-read off `CNWCAnimBase::SetPosition` (Windows rva `0x9680a0`, the pointer at `+200`). Renamed because it is the anim base's one `Gob*`, which the highlight, head tracking and now the static-placeable walk all read |
 
 Not declared: the `Gob` visual-transform block (`+0x1c0`/`+0x280`/`+0x340`/`+0x400`,
 `+0x49c`) and the orientation quaternion at `+0xb4`. The rule the research settles on
@@ -625,8 +625,8 @@ client-side Static flag on a placeable, which is why the list exists.
 
 | Class | Rows | Anchor |
 |---|---|---|
-
-
+| `CNWCCreature` | `desiredPos 0x2e0 / 0x2c0` | the store right after the second `WalkUpdateLocationDistance` on both (the store to word `0x58` on Windows), and the origin `WalkUpdateLocationDistance` steps from |
+| `CNWCCreature` | `driving 0x318 / 0x2f8` | the `!= 0` branch before the animation bookkeeping and the `= 0` at the walk's end, both builds (word `0x5f`). Not probed: no ctor zero found |
 | `CNWCCreature` | `pathfind 0x320 / 0x300` | the pointer whose `+0xcc` ushort indexes `creaturespeed.2da` in every `GetFLOATEntry` call of the function; `WalkPlayerToPoint` reads the same pointer at `creature+0x300` for the line test |
 | `CPathfindInformation` | `spaceArgs 0xe0` (two floats) | `xmm4 = [pf+0xe0]`, `xmm5 = [pf+0xe4]` before Linux `call TestDirectLine` @`0x72043e`; Windows `WalkPlayerToPoint` passes `*(pf+0xe0), *(pf+0xe4)` in the same slots |
 | `CNWCCreature` | `vtbl.SetPosition 0x130 / 0x128` (probed in-image) | `MoveCreatureToPosition` Linux @`0x71cd70` calls `+0x130`, Windows rva `0x804840` calls `+0x128`; the Linux vtable (`_ZTV12CNWCCreature+0x10+0x130`) resolves to `CNWCCreature::SetPosition(Vector)` |
@@ -659,7 +659,7 @@ with the Linux ctor of the same signature.
 | `CRadialMenu` | `menuX/Y 0x85c/0x860 / 0x7dc/0x7e0` | `Activate`: `CGuiMan::GetMousePos(g_pGuiMan, this+0x7dc, this+0x7e0)`; `HandleMenuAction` copies the origin pair (`0x7e8`/`0x7ec`) into the child's |
 | `CRadialMenu` | `autoDelete 0x871 / 0x7f1` (asserted == 1 on the first root, no `Expect`) | the ctor zeroes the byte, `RecursiveAutoDelete` tests it; the creature, placeable and door ctors set it 1 on both builds, `CGuiItemMenu::ActivateRadialMenu` does it for the item root |
 | `CRadialMenu` | `refCount 0x874 / 0x7f4` | `CreateSubMenu` and `SetSubMenu` `++` the child's; `RecursiveAutoDelete` `--` and virtual-deletes at `< 1` |
-
+| `CRadialMenu` | **sizeof** `0x878 / 0x7f8` (not a row) | each build's scalar deleting destructor: Linux `operator_delete(this, 0x878)` @`0x583120`, Windows `FUN_1401f7d40` (the third `vftable` writer beside ctor and dtor) ends in the delete of `0x7f8` bytes |
 | `CRadialMenu` subclasses | `targetId 0x878 / 0x7f8` | `CGuiCreatureMenu` (both ctors: `@0x73f2e0` / rva `0x98e070` store the first `uint` argument; `@0x73f110` / `0x98e140` store `creature+0x8`), `CGuiPlaceableMenu` (`@0x7ecf70` / `0x9b1950`), `CGuiDoorMenu` (`@0x756d00` / `0x9b0060`), `CClientTrapMenu` (`@0x9c7660` / `0x9b11d0`): the `uint` argument's store, first thing after the base ctor. `CGuiItemMenu`'s no-arg ctor (`@0x7d1e70` / `0x9a5940`) seeds `0x7f000000` there and `ActivateRadialMenu` (`@0x7d3720` / `0x9a59d0`) stores the item id. One row because every pair landed on the same offset; each pair is its own measurement |
 | `CClientSpellMenu` | `targetId 0x90c / 0x88c` | the ctor pair (`@0x6f1650` / rva `0x9a10e0`): the `uint` argument's store after the target `Vector` (`+0x900` / `+0x880`, `+0x908` / `+0x888`) and before the `CGuiQuickButton*` (`+0x910` / `+0x890`). Role pinned by `RadialMenuCast` (`@0x6efb10` / `0x9a4540`), which passes it as `PerformCastSpell`'s target on both |
 | `CGuiIcon` | `resref 0x8` (Same) | `Initialize` (`@0x58cc20` / rva `0x1e4430`): `CResRef::operator=(this+8, arg)` then the three size ints at `+0x1c/+0x20/+0x24` on both; `ReplacePrimaryIconTexture` (`@0x58cd30` / `0x1e4690`) copies the string out of `+0x8` |
@@ -684,17 +684,11 @@ int arrays `+0x878.. / +0x7f8..`. Windows sizes off the deleting destructors: `C
 
 The two ABI facts the research note asserted are confirmed by the bodies. The Windows
 callback invoke is a plain two-word call with no adjust word and no virtual-thunk decode --
-`CreateSubMenu`:
-
-
-
-and `HandleMenuAction`:
-
-
-
-where Linux reads `obj + adj`, tests `fn & 1` and indexes the vtable first. Both keep the
+`CreateSubMenu` calls the function pointer at `+0x220` with the object at `+0x218` and the
+entry at `+0x1b8`, and `HandleMenuAction` calls the pointer at `+0x140` (stride `0x10`) with the
+object at `+0x138` and the same `+0x1b8` entry, where Linux reads `obj + adj`, tests `fn & 1` and indexes the vtable first. Both keep the
 `s_pCurrentEventObject` bracket. `GetCountText_FirstLineOnly` shows the sret order in its own
-decompile: Linux writes through `in_RDI` with `this` in `RSI`, Windows writes through `in_RDX`
+decompile: Linux writes through `RDI` with `this` in `RSI`, Windows writes through `RDX`
 with `this` in `RCX`. The creature ctors call `GetPortrait` through vtable `+0x1d8` / `+0x1d0`,
 the same pair `docs/windows-symbols.md` already lists.
 
@@ -719,7 +713,7 @@ research §4) is not a row: CX never calls it.
 
 ### The pose-layer rows (stride, aim, hit reactions)
 
-Read from the decompiles in `docs/research/procedural-anim-locomotion.md` and `procedural-anim-combat.md`.
+Read from the decompiles in the research on CX-159 and `procedural-anim-combat.md`.
 
 | Class | Rows | Anchor |
 |---|---|---|
@@ -777,7 +771,7 @@ shifts by that same pointer.
 
 **No probes.** Pointers, ids, floats, a size and a callback record; `Expect.Byte01` fits none of them.
 `CNWCObject.retired` is the near miss — both builds compare it against 1 — but its semantics beyond its
-writer set are unknown (`docs/re/nameplate.md` §8.3b), so 0/1 is not something these rows may assert.
+writer set are unknown (CX-179 §8.3b), so 0/1 is not something these rows may assert.
 `Gob.inView` is a *byte*: the dword a `Byte01` reads there spans `propagateHilite` at `+0x1c`, so the
 predicate would be judging two fields.
 
@@ -835,7 +829,7 @@ four bytes; from `+0x50` on the two layouts agree.
 ### The NUI cull rows
 
 Read off `Nui::Layout::Layoutable::Render` (Linux nm `0x84c6b0`, Windows rva `0x951260`), the parent's
-per-child loop, on both builds (docs/research/nui-performance.md §9).
+per-child loop, on both builds (CX-154 §9).
 
 | row | Linux / Windows | read off |
 |---|---|---|
@@ -848,7 +842,7 @@ The nuklear `nk_context`/`nk_panel` offsets `NuiService` reads are not rows: nuk
 ### The kiwi solver rows
 
 What `NuiSolver` reads of the vendored kiwi solver every NUI `LayoutGroup` embeds at `+0x5a8`
-(docs/research/nui-performance.md §2, §12). Read off `SolverImpl::substitute` (Linux nm `0x85b890`, Windows rva
+(CX-154 §2, §12). Read off `SolverImpl::substitute` (Linux nm `0x85b890`, Windows rva
 `0x3458e0`), `addWithArtificialVariable` (`0x85daa0` / `0x340410`) and the reset `LayoutGroup::SetChildren` inlines
 (`0x853db0`). Windows sits further out: MSVC keeps each `Loki::AssocVector`'s empty comparator as an 8-byte member, so
 every `SolverImpl` field after `m_cns` moves, and so does `Row`'s constant (`+0x18` / `+0x20`, unread).
@@ -863,7 +857,7 @@ every `SolverImpl` field after `m_cns` moves, and so does `Row`'s constant (`+0x
 | `kiwi::impl::SymbolPair.id` / `.type` / `.value` / `.stride` | `0x0` / `0x8` / `0x10` / `0x18`, same | both maps' `(Symbol, 8-byte value)` pairs: the `/3` (24-byte) walks, `cmpl $0x1,0x8(entry)` for External, the `Row*` at `+0x10` |
 
 `NuiLayoutErrors` reads more of the same solver, and of the NUI tree around it, when a layout fails
-(docs/research/nui-layout-errors.md). Every row was read off both binaries; the evidence is in that document's
+(CX-153). Every row was read off both binaries; the evidence is in that document's
 §0 and §8.
 
 | row | Linux / Windows | read off |

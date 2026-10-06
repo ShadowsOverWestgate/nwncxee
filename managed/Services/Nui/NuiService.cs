@@ -6,7 +6,7 @@ using CX.Ui;
 namespace CX.Services.Nui;
 
 /// <summary>
-/// NUI speed-ups (docs/research/nui-performance.md). The off-screen cull (§9) hooks every leaf widget's per-frame
+/// NUI speed-ups (CX-154). The off-screen cull (§9) hooks every leaf widget's per-frame
 /// <see cref="SymbolMap.NuiWidgetRender"/> and skips a widget whose rect lies wholly outside its panel's clip.
 /// nuklear's own <c>nk_widget</c> would draw nothing for it anyway; the skip saves the NUI layer's work before
 /// that point -- bound-value reads, text encoding, image loads -- which is what makes a long plain scroll list slow.

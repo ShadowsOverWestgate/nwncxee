@@ -9,7 +9,7 @@ using CX.Services.Radial;
 namespace CX.Services.Inventory;
 
 /// <summary>
-/// The inventory window's engine side (docs/research/inventory-screen.md §10 has every address, both builds): the
+/// The inventory window's engine side (CX-146 §10 has every address, both builds): the
 /// <c>SetInventoryVisible</c> hook, the backpack set learned from <c>CGuiMultiPageMultiInvbox::AddItem</c>, the per-frame
 /// copy of items / equip slots / gold / weight into the <see cref="InventoryModel"/>, the vanilla panel's own labels (AC,
 /// name, max weight -- filled by <c>SetCharacterData</c>, which is side-effect free on the player's own panel), and the

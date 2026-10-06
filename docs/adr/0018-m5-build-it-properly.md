@@ -15,7 +15,7 @@ of those shapes was justified against.
 
 Three research tickets surveyed what is left.
 
-**#252, the modernization census** (`docs/research/alloy-modernization-census.md`, 18 entries) found
+**#252, the modernization census** (the research on CX-127, 18 entries) found
 the premise holds but not where it was aimed. The *technique* is already modern — clustered forward+
 with no light ceiling, cascaded shadow maps plus a cube array, persistent per-draw records, GPU
 grass, one framebuffer copy where the engine takes two. What is vanilla-shaped is the **inputs**.
@@ -26,7 +26,7 @@ rebuilt wholesale every 60 frames), E4 (the ADR 0006 batcher disarmed by constru
 state machine still runs per part per frame) and E5 (identity is a borrowed pointer, liveness an
 inference) are all consequences of E1.
 
-**#253, scene state and the part lifecycle** (`docs/research/scene-state-and-part-lifecycle.md`)
+**#253, scene state and the part lifecycle** (the research on CX-165)
 asked whether Alloy could maintain a registry fed by birth/death/rebind notices and answered **no**:
 `Gob::SetLODModel` @0x43e6a0 rotates a gob's whole active part subtree every frame, per visible gob,
 with no construction, no destruction and no epoch bump; three edges have no notice of any kind. Its
@@ -34,7 +34,7 @@ finding is that the authoritative scene state is directly readable — `Scene+0x
 `Scene+0x188` the tile BSP root, `Gob+0x90` the root `Part*` — and that discovery, classification
 and culling all finish *before* `Scene::RenderSinglePass` is dispatched.
 
-**#254, the resource edge** (`docs/research/resource-residency-edge.md`) located the decode window
+**#254, the resource edge** (the research on CX-163) located the decode window
 (`CAurTexture::glImage` @0x48cb60, host pixels freed immediately after upload) and found geometry is
 the larger prize with no window at all: `RequestPool` @0x4d1ec0 keeps a permanent host shadow, so
 world geometry exists in three copies and every dirty pool uploads twice.
@@ -283,7 +283,7 @@ Alloy's and is free to differ. This is a gameplay constraint that happens to liv
 builders leave areas unlit deliberately, and a decor light is not meant to extend a sightline. It
 admits a physically-based falloff with a range-matched cutoff, which the current bit-match to the
 engine's curve does not; it rules out a "more correct" curve that quietly lights what was meant to
-be dark. It outlives M5 and binds every future lighting and visibility change. See CONTEXT.md.
+be dark. It outlives M5 and binds every future lighting and visibility change. See GLOSSARY.md.
 
 This is what "vanilla visual parity was never the goal" does and does not mean. Characters looking
 nothing like the original, because the pipeline targets higher-fidelity models in higher numbers;

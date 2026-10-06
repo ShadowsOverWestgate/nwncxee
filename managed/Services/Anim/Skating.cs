@@ -18,7 +18,7 @@ namespace CX.Services.Anim;
 /// <para><b>Clips the engine mis-paces.</b> The engine's assumed animation speed is <c>appearance.2da</c>'s
 /// WALKDIST/RUNDIST over the clip's length, and the stock content misses it by −16 % on <c>runfl</c>/<c>runfr</c>
 /// for every race, −8 % on the female walk and −11/−16 % on the dwarf walks
-/// (docs/research/locomotion-content.md §3.4). <see cref="Stride.Factor"/>'s range and deadband cover all of
+/// (CX-147 §3.4). <see cref="Stride.Factor"/>'s range and deadband cover all of
 /// them; <see cref="SelfCheck"/> holds it to that.</para>
 /// <para><b>Poses that are not on the ground.</b> <c>animationsets.2da</c> can hide a swim, a crawl or an Arcane
 /// float behind the name <c>walk</c>, so the name decides nothing and <see cref="Bears"/> decides instead: a foot
@@ -133,7 +133,7 @@ internal static unsafe class Skating
         if (Stride.Factor(Speed(0.25f, 512, 0f), 1.011f) != 1f || Stride.Factor(Speed(3.9f, 60, 0f), 1.011f) != 1f)
             return false;
 
-        // the clips of docs/research/locomotion-content.md §3.4, measured speed against the engine's reference
+        // the clips of CX-147 §3.4, measured speed against the engine's reference
         if (!Clip(4.02f, 4.80f, 4.80f / 4.02f)                  // runfl/runfr, human male: -16.2 %
             || !Clip(3.7632f, 4.80f, 4.80f / 3.7632f)           // runfl/runfr, halfling female: -21.6 %, the worst
             || !Clip(1.469f, 1.600f, 1.600f / 1.469f)           // the female walk: -8.2 %

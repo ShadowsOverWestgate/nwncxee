@@ -105,7 +105,7 @@ public sealed unsafe partial class ChatService : IExtenderService
     /// <summary>16-byte CResRef by value. Only r9 is free when it's passed, so SysV puts the whole
     /// struct on the stack (r9 unused) -- declaring it as a struct makes NativeAOT lower it that way.
     /// Passing it as two ulongs instead splits it r9+stack and corrupts the forwarded call.
-
+    /// Win64 (#419): a 17-byte aggregate travels as a POINTER to a caller copy (the sixth argument is a <c>CResRef*</c>,
     /// and the callee copies the 17th byte), so there the slot is an <c>IntPtr</c> forwarded untouched.</summary>
     [StructLayout(LayoutKind.Sequential, Size = 16)]
     private struct CResRef16 { public ulong Lo; public ulong Hi; }

@@ -508,7 +508,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (<c>OwnedTextures.Replace</c>), never an in-place <c>TexSubImage</c> from the engine context. A handle
     /// is not a binding point, so GL 4.6 5.3.3 Rule 4 gives this context no re-attach event through which
     /// another context's update is guaranteed visible -- residency is per context and nothing propagates.
-    /// See docs/research/opengl-46-portability-audit.md, C4.</para></summary>
+    /// See CX-157, C4.</para></summary>
     private static ulong HandleFor(int tid)
     {
         if (tid == 0) return 0;

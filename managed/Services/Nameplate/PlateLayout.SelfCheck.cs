@@ -173,7 +173,7 @@ public static partial class PlateLayout
         check.Expect(Near(PortraitTop(4f, 20f, 36f), 4f),
           "a portrait TALLER than its content pins to the pad -- no negative top, no empty space above it");
 
-        // ---- Measure with the ObjectTextBubbleOverride bands (docs/re/nameplate.md §8.5) ----
+        // ---- Measure with the ObjectTextBubbleOverride bands (CX-179 §8.5) ----
         PlateMetrics ovNone = Measure(80f, 1, 60f, true, true, true, 18f, 1f, 0, 0, 0f);
         check.Expect(Near(ovNone.H, m.H) && Near(ovNone.W, m.W) && Near(ovNone.NameY, m.NameY)
           && Near(ovNone.BandY, m.BandY) && Near(ovNone.PortraitY, m.PortraitY),

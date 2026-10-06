@@ -2,7 +2,7 @@
 
 The engine keeps deciding **what** plays; CX owns what its audio **does**. No audio file is touched:
 stock and module `.wav`/`.bmu`/2DA stay byte-identical, and a player without CX hears what they always did.
-Research behind every engine claim here: `docs/research/client-audio-stack.md`. Packaging and licensing:
+Research behind every engine claim here: the research on CX-135. Packaging and licensing:
 ADR [0027](adr/0027-audio-runtime-ships-beside-the-extender.md).
 
 ## The path

@@ -10,7 +10,7 @@ namespace CX.Services.Anim;
 /// <list type="bullet">
 /// <item>on a path or a drive, <see cref="PoseService.Slot.GaitAccel"/> -- the engine's own factor times its own
 /// rate, exact, where a second difference of the drawn position is ±0.05 m/s² of millisecond-clock noise
-/// (docs/research/pose-layer-audit.md §2). A drive is bang-bang in the engine, so it carries a cue only while
+/// (CX-66 §2). A drive is bang-bang in the engine, so it carries a cue only while
 /// <see cref="DriveEase"/> gives it a real ramp and ease: nothing here pretends one;</item>
 /// <item>with no path at all -- a server correction, a knockback, a combat shuffle -- the measured
 /// <see cref="PoseService.Slot.Accel"/>, which is the only signal there is.</item>

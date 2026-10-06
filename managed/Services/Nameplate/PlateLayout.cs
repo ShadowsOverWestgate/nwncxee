@@ -212,7 +212,7 @@ public static partial class PlateLayout
                                        bool bar, float lineH, float scale) =>
         Measure(nameW, nameLines, bandW, portrait, band, bar, lineH, scale, 0, 0, 0f);
 
-    /// <summary>As above with the <c>ObjectTextBubbleOverride</c> bands (docs/re/nameplate.md §8.5) folded in:
+    /// <summary>As above with the <c>ObjectTextBubbleOverride</c> bands (CX-179 §8.5) folded in:
     /// <paramref name="preLines"/> override lines above the name, <paramref name="postLines"/> below the band
     /// and bar, and <paramref name="extraW"/> the widest of every override line PLUS the spliced line the
     /// override extends (the caller adds the band or name width to the splice itself).
@@ -295,7 +295,7 @@ public static partial class PlateLayout
     }
 
     /// <summary>Runes of the <c>"[speaker]: "</c> prefix the engine glues onto a placeable's or door's chat line
-    /// (object types 7/9/10, <c>HandleServerToPlayerChat</c>'s tail, docs/re/nameplate.md), or 0. A card with a name
+    /// (object types 7/9/10, <c>HandleServerToPlayerChat</c>'s tail, CX-179), or 0. A card with a name
     /// header skips it rather than naming the speaker twice. A prefix with nothing after it is not skipped -- that
     /// would draw an empty line. Pure, cold (once per line, on the drain).</summary>
     public static int SpeakerPrefixLen(System.Collections.Generic.IReadOnlyList<System.Text.Rune> r)
@@ -520,7 +520,7 @@ public static partial class PlateLayout
     /// which become lines of their own. Pure and atlas-free so the whole rule is self-checkable; the caller
     /// does the wrapping and the drawing.
     /// <para>The engine builds ONE string, <c>name\nband</c>, and joins the override to its head or tail
-    /// (docs/re/nameplate.md §8.5) -- so append's FIRST segment continues the plate's last line and prepend's
+    /// (CX-179 §8.5) -- so append's FIRST segment continues the plate's last line and prepend's
     /// LAST segment runs into its first, while replace makes the segments the whole plate.</para>
     /// </summary>
     /// <returns>the line the segment at <paramref name="spliceIdx"/> joins, or <see cref="PlateSplice.None"/>
@@ -692,7 +692,7 @@ public static partial class PlateLayout
 
     /// <summary>The damage band <paramref name="hp"/> of <paramref name="max"/> falls in: <c>CNWSObject::GetDamageLevel</c>
     /// (Linux nm @0xb6dc70) replayed test for test -- float divide, <c>f &lt; t</c> against the same float thresholds,
-    /// so a zero <paramref name="max"/> lands where the engine's NaN/infinity does (docs/re/nameplate.md §4.5).</summary>
+    /// so a zero <paramref name="max"/> lands where the engine's NaN/infinity does (CX-179 §4.5).</summary>
     public static int BandOf(int hp, int max)
     {
         float f = (float)hp / max;

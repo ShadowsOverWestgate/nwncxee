@@ -7,7 +7,7 @@ using CX.Ui;
 
 namespace CX.Services.Radial;
 
-/// <summary>What a <c>CGuiIcon</c> is at runtime, by vptr (docs/research/radial-menu-reimplementation.md §5).
+/// <summary>What a <c>CGuiIcon</c> is at runtime, by vptr (CX-162 §5).
 /// <see cref="Plain"/> is <c>CGuiIcon</c> itself and every subclass not listed (<c>CSpellIcon</c>): one texture
 /// by resref. The other three are what the item root's centre icon can be.</summary>
 public enum IconKind { Plain, Layered, Composite, Armor }
@@ -124,7 +124,7 @@ internal static unsafe class RadialIcons
     /// inventory item into a <paramref name="w"/>×<paramref name="h"/> rect, cropped as the engine's <c>GUI_ICON_%dX%dL</c> model
     /// crops it: the sheet is the cell size (32 px a cell) padded to powers of two, content top-left, so u runs to
     /// <c>W*32/pow2(W*32)</c> and v from <c>1 - H*32/pow2(H*32)</c>. Cell-derived, not pixel-derived, so a 2x override keeps
-    /// its proportions (docs/research/inventory-screen.md §2.6).</summary>
+    /// its proportions (CX-146 §2.6).</summary>
     public static void Draw(IntPtr handle, float x, float y, float w, float h, float alpha, int cellsW, int cellsH,
                             bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
     {

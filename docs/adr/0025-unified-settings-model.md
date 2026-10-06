@@ -16,7 +16,7 @@ enum; look knobs reset every launch because a chat command has no store; camera 
 `*Keys` tables with a `Tune(key, float)` switch per pass, so nothing but the switch knows a
 dial's range, and nothing at all knows its label.
 
-`docs/research/settings-panel-ownership.md` measured the doors. Its recommended door, Path A′
+the research on CX-166 measured the doors. Its recommended door, Path A′
 (chain the stock Options window's Nuklear render and append our rows), was rejected here: it
 puts every CX knob inside a window whose layout solver we do not control, at the engine's font
 and density, with no scroll region of ours, and it earns nothing over a window we already draw

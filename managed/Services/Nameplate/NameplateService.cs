@@ -40,7 +40,7 @@ public sealed unsafe class NameplateService : IExtenderService
 
     /// <summary>Whether the vanilla text-bubble mode-0 suppression is in force. While it is -- and only while
     /// it is -- the engine refreshes every bubble-owning object's projected screen anchor every tick
-    /// (docs/re/nameplate.md §D), which is the anchor <c>CombatTextService</c> reads. It checks this before
+    /// (CX-179 §D), which is the anchor <c>CombatTextService</c> reads. It checks this before
     /// swallowing anything, so a stood-down OR switched-off nameplate feature stands the combat text down with it.</summary>
     public static bool Suppressing => _suppressed;
 
@@ -145,7 +145,7 @@ public sealed unsafe class NameplateService : IExtenderService
     internal static volatile int EngineMode = -1;
 
     /// <summary>The user's mode when none was ever requested through the hook: 2 (Full), the config bind's
-    /// default (docs/re/nameplate.md §D). Not expected on the LD_PRELOAD / proxy-DLL load path, where the hook
+    /// default (CX-179 §D). Not expected on the LD_PRELOAD / proxy-DLL load path, where the hook
     /// is live before the ini bind runs.</summary>
     private const int DefaultEngineMode = 2;
 
@@ -757,7 +757,7 @@ public sealed unsafe class NameplateService : IExtenderService
 
     /// <summary>Where an entry's <c>ObjectTextBubbleOverride</c> lands on the plate, resolved once and used by
     /// both the measure and the emit. The engine composes ONE string, <c>name\nband</c>, and glues the
-    /// override onto its head or tail (docs/re/nameplate.md §8.5) -- so the segment at the joint continues an
+    /// override onto its head or tail (CX-179 §8.5) -- so the segment at the joint continues an
     /// existing line and the rest become lines of their own.</summary>
     private struct OverrideLayout
     {

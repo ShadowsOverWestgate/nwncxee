@@ -9,7 +9,7 @@ M3 closed with Alloy owning the in-world colour and shadow pipeline but not the 
 `Scene::FadeDoors`, inside the engine's own `Scene::RenderSinglePass`, resolving into the engine's
 attachment, sharing the engine's depth buffer. #132 dropped M3's frame-time gate for exactly that
 reason — while the anchor, the clear and the present belong to the engine, a vanilla comparison
-measures the engine. `docs/research/rhi-abstraction.md` reached the same place independently: four
+measures the engine. the research on CX-164 reached the same place independently: four
 of its six readiness gates (G1 no engine GL state reads, G2 own the resources, G3 draw every class,
 G4 own the present) are restatements of frame ownership.
 
@@ -212,7 +212,7 @@ call from the shim, so nothing is anchored on an engine function any more.)*
 - **An RHI layer.** A Vulkan backend rewrites the submission half, which has to be rewritten anyway,
   and rewrites *none* of the RE knowledge in `Alloy/Scene/`. The boundary that preserves that
   knowledge is **extraction-must-not-touch-GL** — step 1 — not `IRhiDevice`. Re-ask at M5, when a
-  second consumer is in sight. `docs/research/rhi-abstraction.md` §6.5 still applies.
+  second consumer is in sight. the research on CX-164 §6.5 still applies.
 - **ADR 0011's filed M4 inheritance**, which moves to M5: planar water reflection, the post stack the
   resolve plugs into, and same-frame creature pose capture. (OIT was already ruled out by #110.) All
   three are technique work on an owned pass — the same category ADR 0009's 2026-08-26 amendment

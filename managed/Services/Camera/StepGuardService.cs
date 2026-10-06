@@ -7,7 +7,7 @@ using CX.Framework;
 namespace CX.Services.Camera;
 
 /// <summary>
-/// Client step guard (CX-682; docs/research/drive-door-clipping.md §4 fix A). Pre-hooks
+/// Client step guard (CX-682; CX-140 §4 fix A). Pre-hooks
 /// <c>CNWCCreature::WalkUpdateLocation</c>, the per-frame walk step, for the player creature alone: the desired
 /// position (<see cref="EngineLayout.CreatureDesiredPos"/>) is snapshotted, the engine steps it, and the step is
 /// re-run through the engine's own door-aware swept test, <c>CNWCArea::TestDirectLine</c> with closed doors solid

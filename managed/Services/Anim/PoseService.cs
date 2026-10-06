@@ -24,7 +24,7 @@ namespace CX.Services.Anim;
 /// <c>neck_g</c>, <c>head_g</c>, <c>pelvis_g</c> (the legs' parent, a sibling of the torso under <c>rootdummy</c>)
 /// and <c>{r,l}bicep_g -&gt; forearm_g -&gt; hand_g</c>, the names FindPart would match (case-insensitive): every stock humanoid (a_ba and its
 /// descendants, 257 of 663 stock a_/c_ models) carries them, and every rest orientation is identity, so a
-/// bone's rest frame is the model's: +X right, +Y forward, +Z up (docs/research/procedural-anim-skeleton.md).
+/// bone's rest frame is the model's: +X right, +Y forward, +Z up (CX-160).
 /// A gob without all six leg parts is skipped whole.</para>
 /// <para><b>The gate is a deny list</b>: every stock stance/move/attack name would have to be listed for an
 /// allow list, and module-added animations mostly arrive as <c>custom*</c>, which is denied.</para>
@@ -332,7 +332,7 @@ public sealed unsafe class PoseService : IExtenderService
     /// <summary>The body gob a creature gob is attached to, or zero when it IS the body (or has no creature).
     /// A cloak, robe, tail or wings carries the creature as external data too (<c>CNWCCreature::LoadModel</c>),
     /// and ~85% of robe models have a full set of leg bones, so "has legs" does not tell a body; the creature's
-    /// own model does (docs/research/cloak-animation.md §6).</summary>
+    /// own model does (CX-136 §6).</summary>
     private static IntPtr Owner(IntPtr gob)
     {
         if (!_creatures) return IntPtr.Zero;

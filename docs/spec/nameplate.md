@@ -5,7 +5,7 @@ Two world-anchored overhead elements sharing one anchor per object, mutually exc
 - **plate** — portrait + name + health band, while the object is hovered or Tab-highlighted
 - **bubble** — what the object just said, when no plate is up
 
-Vanilla is suppressed; we draw both ourselves in the CX UI. Full RE: `docs/re/nameplate.md`.
+Vanilla is suppressed; we draw both ourselves in the CX UI. Full RE: CX-179.
 Managed seam guide: `docs/agents/nameplate-seam.md`. Both are authoritative — read them.
 
 ## Namespace / layout
@@ -108,7 +108,7 @@ Symbols (add to `managed/Framework/SymbolMap.cs`, mangled):
 
 Verify each with `./sym.sh -m <pattern>` before use; correct any that don't match exactly.
 
-Offsets (all verified in `docs/re/nameplate.md`):
+Offsets (all verified in CX-179):
 
 - `CNWCObject + 0x08`  = **uint object id** (verified by disassembly at `0x6a0712`)
 - `CNWCObject + 0x0c`  = object type byte (5 creature, 6 item, 9 placeable, 0xa door)

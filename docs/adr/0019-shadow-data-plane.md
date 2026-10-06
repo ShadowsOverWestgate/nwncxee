@@ -1,7 +1,7 @@
 # 0019 — The shadow pass has no data plane of its own
 
 Status: accepted (#302, 2026-08-30). Decision record for the three-rung rework in
-`docs/research/alloy-shadow-rework.md`; the later rungs cite this rather than re-arguing it.
+the research on CX-129; the later rungs cite this rather than re-arguing it.
 Amends ADR 0017, whose `Moved`-is-consumed hazard this closes. Does not touch ADR 0011's frame
 graph or ADR 0018's bar, which it applies.
 

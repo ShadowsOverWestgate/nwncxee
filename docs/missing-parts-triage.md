@@ -3,7 +3,7 @@
 A creature with an arm, a shin or a head gone; a bench that was there and is not (#317). It is random,
 it heals when the creature moves or is re-created (out of the server's render range and back), and the
 bench version comes and goes while you stand still. The bench half is fixed (a geometry-less part
-poisoned its whole gob, `docs/research/alloy-visibility-structural.md`); the creature half has a named
+poisoned its whole gob, the research on CX-130); the creature half has a named
 mechanism and a fix as of CX-92, below. The protocol is how one incident becomes a log worth reading.
 Every step is a live chat knob: no restart, no `cx.cfg` edit.
 

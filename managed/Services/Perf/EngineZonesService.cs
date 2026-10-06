@@ -75,7 +75,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
         return r;
     }
 
-    /// <summary>EXPERIMENT (docs/research/engine-scene-walk-bypass.md §5 step 1): <c>alloy.skipbuckets=1</c> in
+    /// <summary>EXPERIMENT (CX-141 §5 step 1): <c>alloy.skipbuckets=1</c> in
     /// cx.cfg skips the world scene's draw-bucket build while Alloy draws the frame. Expected to freeze
     /// every gob part's transform (the build is the sole writer of the model matrix Alloy draws with), which
     /// is the measurement: Ai drops by the Buckets figure, and what breaks names the load-bearing half.

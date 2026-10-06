@@ -11,7 +11,7 @@ namespace CX.Services.Radial;
 /// <summary>
 /// The radial seam and the dropdown on it: skip <c>CRadialMenu::ActivateInternal</c>, take the engine-built
 /// tree, and show it as a <see cref="CascadeMenu"/> in one registered <see cref="Window"/> (CX-689..CX-691;
-/// <c>docs/research/radial-menu-reimplementation.md</c>). Every root builds its whole top ring and calls
+/// <c>CX-162</c>). Every root builds its whole top ring and calls
 /// <c>Activate</c> last, so at the hook <c>this</c> is a complete root with its XY and target inside and no GUI
 /// modality engaged. A submenu row materializes its child through the engine's own lazy creator
 /// (<see cref="RadialTree.Materialize"/>) on click, Enter/Right or the hover dwell, never cached across opens;

@@ -51,7 +51,7 @@ internal static unsafe class Follow
     private const float MinLag = 1e-3f;
     /// <summary>Radians of shown lag past which a body counts as trailing in the stats line: half a degree, the
     /// least anyone could see. Counting every lag at all (<see cref="MinLag"/>, 0.057 deg) made the clause read
-    /// "every creature, every frame" whatever was happening (docs/research/pose-layer-audit.md §2).</summary>
+    /// "every creature, every frame" whatever was happening (CX-66 §2).</summary>
     private const float ShownLag = 0.5f * Deg;
     /// <summary>Longest step the springs integrate in one go, and the substeps past which a hitch-sized dt lets them
     /// rest instead (as <see cref="PoseMath.Wobble"/>).</summary>
@@ -60,7 +60,7 @@ internal static unsafe class Follow
     /// <summary><c>torso_g</c>'s index in <see cref="PoseService.BoneIndex"/> order.</summary>
     private const int TorsoBone = 6;
 
-    /// <summary>The pendulums, a_ba's rig in model units off <c>torso_g</c> (docs/research/procedural-anim-skeleton.md):
+    /// <summary>The pendulums, a_ba's rig in model units off <c>torso_g</c> (CX-160):
     /// each shoulder, and the reach from it to the centre of swing, two thirds down an arm. ponytail: every humanoid
     /// swings as a_ba; per-model geometry is the parts' own positions.</summary>
     private static readonly Vector3 ShoulderR = new(0.201f, -0.079f, 0.35f), ShoulderL = new(-0.201f, -0.079f, 0.35f),

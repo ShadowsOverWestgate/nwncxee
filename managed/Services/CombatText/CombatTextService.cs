@@ -24,7 +24,7 @@ namespace CX.Services.CombatText;
 /// too -- with it off we are simply never called.</para>
 /// <para><b>Dependency.</b> The screen anchor is the engine's own projection, read off the object's chat
 /// bubble (<c>bubble+0x154</c>). That is only refreshed every tick for every object while
-/// <see cref="NameplateService"/>'s text-bubble mode-0 suppression is in force (docs/re/nameplate.md §D), so
+/// <see cref="NameplateService"/>'s text-bubble mode-0 suppression is in force (CX-179 §D), so
 /// this feature follows the nameplate feature: with nameplates stood down -- or for an object that owns no
 /// bubble at all, which is every non-creature -- the hook hands the element back to vanilla rather than
 /// swallowing one it could only have drawn at a stale point.</para>
@@ -124,7 +124,7 @@ public sealed unsafe class CombatTextService : IExtenderService
         //   - the master is off
         //   - the nameplate feature is stood down, so nothing keeps the object's screen anchor fresh
         //   - the object owns no chat bubble, so it has no anchor at all (a placeable or door taking damage:
-        //     only creatures get one, via CNWCCreature::SetName -- docs/re/nameplate.md §D)
+        //     only creatures get one, via CNWCCreature::SetName -- CX-179 §D)
         if (!_armed || !CombatTextKnobs.Enabled.V || self == IntPtr.Zero
             || !NameplateService.Suppressing || NameplateNative.Bubble(self).IsNull)
         {
@@ -207,7 +207,7 @@ public sealed unsafe class CombatTextService : IExtenderService
             PlateLayout.ToDrawSpace(ax, ay, rx, ry, rw, rh, gui, vpW, vpH, out float x, out float y);
             if (x < 0f || y < 0f || x > vpW || y > vpH) continue;
             // The engine's projection never checks the sign of its denominator, so an object BEHIND the camera
-            // lands on a MIRRORED anchor that passes the rect test above (docs/re/nameplate.md §5).
+            // lands on a MIRRORED anchor that passes the rect test above (CX-179 §5).
             if (hasCam && hasFwd)
             {
                 NameplateNative.Position(obj, out float ox, out float oy, out float oz);

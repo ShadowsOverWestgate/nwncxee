@@ -11,7 +11,7 @@ namespace CX.Alloy;
 /// every table keyed on an identity the engine recycles (VDO slots and their chart/LOD arenas, the draw-arg
 /// ranges, the #284 texture-rebuild verdicts) survived and bound the next area's parts to the last area's
 /// data. <c>CNWCMessage::SendPlayerToServerArea_AreaLoaded</c> @0x7fa0c0 is the edge the engine does give us.
-/// <para>See docs/research/alloy-visibility-structural.md and docs/owned-resource-lifetimes.md.</para></summary>
+/// <para>See CX-130 and docs/owned-resource-lifetimes.md.</para></summary>
 public sealed unsafe partial class AlloyRenderer
 {
     /// <summary>Outermost on the send: the lightmap hold chains at 0 and may swallow the message, and this

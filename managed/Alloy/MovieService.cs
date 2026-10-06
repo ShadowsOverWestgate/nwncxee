@@ -49,7 +49,7 @@ internal readonly unsafe struct MoviePlate
 }
 
 /// <summary>
-/// CX-99 (map CX-94, <c>docs/research/total-render-ownership.md</c> §3): the movie's pixels are CX's.
+/// CX-99 (map CX-94, <c>CX-172</c> §3): the movie's pixels are CX's.
 /// </summary>
 /// <remarks>
 /// <para><b>What moved, and what deliberately did not.</b> A movie bypasses the whole frame:

@@ -15,7 +15,7 @@ namespace CX.Alloy;
 /// precomputed -- measured at 131-137 ms for one area's 70 tile models and 309 ms for 15 creature models after
 /// it. The binary parse of the same content is two <c>memcpy</c>s plus per-node allocation.
 /// <para><b>Nothing here writes an MDL.</b> The compiler is the engine's own
-/// (<see cref="SymbolMap.CompileModels"/>, <c>docs/research/ascii-mdl-compile.md</c>): reader and writer are a
+/// (<see cref="SymbolMap.CompileModels"/>, <c>CX-55</c>): reader and writer are a
 /// pair in one engine source file, so the round trip is the engine's to guarantee, and the two things an
 /// ASCII-parsed model can be missing -- already binary, an uninitialized skinmesh -- are refusals the engine
 /// implements and this only counts.</para>

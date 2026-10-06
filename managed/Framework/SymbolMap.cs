@@ -120,7 +120,7 @@ internal static unsafe class SymbolMap
     public const string SendPlayerToServerMessage   = "_ZN11CNWCMessage25SendPlayerToServerMessageEhhPhj";
     [Fn("void(IntPtr msg, IntPtr name, int value)")]
     public const string SendDeviceAdvertiseProperty = "_ZN11CNWCMessage41SendPlayerToServerDeviceAdvertisePropertyERK10CExoStringi";
-    // ---- the area-loaded hold (#672, research docs/research/area-loaded-hold.md). Landed for #674/#675;
+    // ---- the area-loaded hold (#672, research CX-132). Landed for #674/#675;
     //      nothing hooks them yet. ----
     /// <summary>CNWCMessage::SendPlayerToServerArea_AreaLoaded() @0x7fa0c0 -- major 4 minor 3, no payload; the
     /// send whose arrival makes the server place the player (<c>MovePlayerToArea</c>). Three call sites: the
@@ -392,7 +392,7 @@ internal static unsafe class SymbolMap
     /// <c>Widget</c> and <c>StatefulWidget</c>) -- every NUI leaf widget's per-frame draw, dispatched from the parent's
     /// child loop in <c>Layoutable::Render</c> right after <c>nk_layout_space_push</c> put this child's rect in
     /// <c>panel-&gt;row.item</c>. Containers, <c>movieplayer</c> and <c>SelectList</c> have their own Render and never
-    /// arrive here. docs/research/nui-performance.md §9.</summary>
+    /// arrive here. CX-154 §9.</summary>
     [Fn("void(IntPtr self, IntPtr ctx)")]
     public const string NuiWidgetRender = "_ZN3Nui6Layout6Widget6RenderEP10nk_context";
     /// <summary><c>Nui::Layout::StatefulWidget</c>'s vtable. Not a hook -- an identity: <c>textedit</c> is built on it
@@ -411,7 +411,7 @@ internal static unsafe class SymbolMap
     /// z at +0xac per sow-codebase CNWSObject notes).</summary>
     public const string GetPlayerCreature = "_ZN13CClientExoApp17GetPlayerCreatureEv";
 
-    // ---- overhead nameplate / chat bubble (docs/re/nameplate.md). Client-side classes: RVA on Windows (#420). ----
+    // ---- overhead nameplate / chat bubble (CX-179). Client-side classes: RVA on Windows (#420). ----
     /// <summary>CGuiInGamePopUpBubble::SetChatBubbleMode(int) @0x6a0be0 -- STATIC (mode in edi, no `this`).
     /// Mode 0 sets every bubble's <c>+0x150</c>, and every path that could activate the panel is guarded on
     /// it: the engine stops drawing both the plate and the bubble while still building the state and
@@ -456,7 +456,7 @@ internal static unsafe class SymbolMap
     /// <c>0x7b35b0</c>). Returns the parse verdict.</summary>
     [Fn("int(IntPtr msg)")]
     public const string PlaceableUpdateDelete = "_ZN11CNWCMessage42HandleServerToPlayerPlaceableUpdate_DeleteEv";
-    // ---- combat text: damage numbers + floating combat text (docs/re/combat-text.md). RVA on Windows (#420). ----
+    // ---- combat text: damage numbers + floating combat text (CX-174). RVA on Windows (#420). ----
     /// <summary>CNWCObject::ShowFloatyText(CExoString, Vector, CExoString, int) @0x7e7010 -- the ONE funnel
     /// every damage number and combat-text banner passes through (CC messages, the creature floaty-text
     /// update, whirlwind, and every <c>AddFeedbackMessage</c> site). Skipping it means the engine never
@@ -499,7 +499,7 @@ internal static unsafe class SymbolMap
     public const string Nuklear    = "g_pNuklear";
     // ---- CX-101: nuklear's flush, drawn by Alloy. All three take pointers and ints only, so ONE declaration
     //      fits both ABIs -- none of native-gui-skinning.md §5.3's by-value nk_rect hazard is on this path.
-    //      docs/research/nui-draw-in-alloy.md §4 records where every address was read.
+    //      CX-97 §4 records where every address was read.
     /// <summary><c>nk_sdl_refresh_config()</c> @0xe066a0 (Windows rva 0xa70d90) -- the skin/font reload edge.
     /// Early-outs on a clear dirty byte at <c>g_pNuklearConfig</c>, so calling it every frame is free.</summary>
     [Fn("void()")]
@@ -787,7 +787,7 @@ internal static unsafe class SymbolMap
     // ---- shadow replacement (#65). Linux-only; no _win entries -> skip-with-log on Windows. ----
     // The three self-contained shadow sub-passes Scene::RenderShadows dispatches. No-op'ing these
     // suppresses stencil shadows while RenderShadows keeps managing all pipeline state itself
-    // (its post-skip net state is runtime-dependent -- see docs/research/shadow-rendering-impl.md).
+    // (its post-skip net state is runtime-dependent -- see CX-167).
     /// <summary>Scene::RenderDynamicShadows() @ 0x4670b0 -- per-frame dynamic shadow-volume sub-pass.</summary>
     [Fn("void(Scene this)")]
     public const string RenderDynamicShadows = "_ZN5Scene20RenderDynamicShadowsEv";
@@ -1095,7 +1095,7 @@ internal static unsafe class SymbolMap
     /// <summary>#131: LightManager::GetEmitterLighting(Vector, List&lt;PartLight*&gt;*) @0x4c1970 -- the tint
     /// lookup, one call per tinted emitter per frame.
     /// <para>ABI, read off the call site at 0x4af130 rather than off the decompiler (Ghidra renders the
-
+    /// by-value Vector as one 8-byte word and drops the third argument): the position arrives in
     /// <c>xmm0</c> (x, y) + <c>xmm1</c> (z), the light list in <c>rdi</c>, a zero int in <c>esi</c>, and the
     /// result comes back the same way it went in -- <c>xmm0</c> (r, g) + <c>xmm1</c> (b). That is exactly
     /// SysV's classification of a 12-byte three-float struct, so a plain sequential struct of three floats
@@ -1802,7 +1802,7 @@ internal static unsafe class SymbolMap
     /// <summary>CX-28: the float <c>GetVectorValue</c> multiplies a position track by (both builds). Data symbol; read only.</summary>
     public const string PositionScaleFactor = "position_scale_factor";
 
-    // ---- CX-106 anim: the owned animation runtime (docs/research/anim-runtime.md) ----
+    // ---- CX-106 anim: the owned animation runtime (CX-106) ----
     // Every symbol in this block is NAME-EXPORTED by nwmain.exe, so the block carries no RVA row.
 
     /// <summary><c>Scene::Animate(float dt)</c> @0x469810 -- the whole per-frame animation walk: latch the
@@ -1818,7 +1818,7 @@ internal static unsafe class SymbolMap
     /// <summary><c>NewController::GetFloatValue(float t, MdlNode*, float&amp;)</c> @0x498480 -- a scalar
     /// track's value. The owned runtime evaluates linear tracks itself and calls this only for a BEZIER one,
     /// whose control-point arithmetic differs from the vector overload's in a way that looks like an engine
-    /// bug (docs/research/anim-runtime.md section 8); reproducing that is pure risk.</summary>
+    /// bug (CX-106 section 8); reproducing that is pure risk.</summary>
     [Fn("int(NewController self, float t, IntPtr node, float* v)")]
     public const string CtrlGetFloat = "_ZN13NewController13GetFloatValueEfP7MdlNodeRf";
     /// <summary><c>NewController::ReportKeys(Part*, MdlNode*, float from, float to)</c> @0x498b20 -- the
@@ -1883,7 +1883,7 @@ internal static unsafe class SymbolMap
     /// both call on the TARGET, flag 1; a parry calls it on the attacker with flag 0. Chained cold by the pose
     /// layer's hit reactions. ABI: <c>(this /*rdi*/, flag /*esi*/, ad /*rdx*/, Vector /*xmm0 = (x,y), xmm1 = z*/,
     /// CExoString* /*rcx, invisible reference*/)</c>; Win64 passes both aggregates as pointers. Returns nothing,
-    /// so no sret order (docs/research/procedural-anim-combat.md §3.1).</summary>
+    /// so no sret order (CX-158 §3.1).</summary>
     [Fn("void(CNWCCreature this, byte flag, IntPtr attackData, VectorArg push, IntPtr text)")]
     public const string SpawnHitVisuals = "_ZN12CNWCCreature15SpawnHitVisualsEhP20CNWCCombatAttackData6Vector10CExoString";
 
@@ -2022,7 +2022,7 @@ internal static unsafe class SymbolMap
     /// function that turns input into a scrollbar's new offset: the thumb drag (and the one <c>nk_input</c> write,
     /// <c>clicked_pos</c>), the page clicks on the two empty rects, the wheel, the scroll keys. Called only by
     /// <c>nk_do_scrollbarv/h</c>, with every rect by pointer, so one signature fits both ABIs. <c>axis</c> 0 =
-    /// vertical. docs/research/nui-performance.md, the scrollbar facts.</summary>
+    /// vertical. CX-154, the scrollbar facts.</summary>
     [Fn("float(IntPtr state, IntPtr input, int hasScrolling, IntPtr track, IntPtr thumb, IntPtr empty0, IntPtr empty1, float offset, float target, float step, int axis)")]
     public const string NkScrollbarBehavior = "nk_scrollbar_behavior";
     /// <summary>nuklear's <c>nk_draw_scrollbar(out, state, style, &amp;track, &amp;thumb)</c> (static: Linux lva 0xddf6b0,
@@ -2034,7 +2034,7 @@ internal static unsafe class SymbolMap
     /// 0xa65d10 / 0xa65700): one whole scrollbar -- its buttons, <see cref="NkScrollbarBehavior"/>, <see cref="NkDrawScrollbar"/> --
     /// returning the new offset. Callers: <c>nk_panel_end</c> (a window or group) and <c>nk_do_edit</c>, which use only
     /// the return. No <c>[Fn]</c>: the track rect is by value on Linux (xmm0/xmm1) and by pointer on Windows (r8), so
-    /// <c>NuiScrollbarHide</c> declares both. docs/research/nui-performance.md, the scrollbar hide facts.</summary>
+    /// <c>NuiScrollbarHide</c> declares both. CX-154, the scrollbar hide facts.</summary>
     public const string NkDoScrollbarV = "nk_do_scrollbarv", NkDoScrollbarH = "nk_do_scrollbarh";
     [Fn("byte*(byte* name, int* w, int* h, int* bpp)")]
     public const string AurGetLayeredRasterWrapper = "_Z26AurGetLayeredRasterWrapperPKcPiS1_S1_";
@@ -2046,7 +2046,7 @@ internal static unsafe class SymbolMap
     /// <summary><c>nk_loadimg(char const*, ushort)</c> @0xe1a820 (Windows rva 0xa95e30) -- the one funnel under every NUI
     /// image kind that turns a resref string into a <c>shared_ptr&lt;NkImage&gt;</c>, returned BY VALUE: a free function, so
     /// the hidden return slot is first on both ABIs. Type 0xFFFF probes six image types; any other type goes straight
-    /// to <see cref="ExoResManGet"/>. Returns the slot, as the ABI has it in rax. docs/research/nui-plt-icons.md.</summary>
+    /// to <see cref="ExoResManGet"/>. Returns the slot, as the ABI has it in rax. CX-155.</summary>
     [Fn("IntPtr(IntPtr ret, byte* resref, ushort type)")]
     public const string NkLoadImg = "_Z10nk_loadimgPKct";
     /// <summary><c>shared_ptr&lt;DataBlock&gt; CExoResMan::Get(CResRef const&amp;, ushort)</c> @0x53e620 (Windows rva 0x18f920):
@@ -2071,7 +2071,7 @@ internal static unsafe class SymbolMap
     public const string IdentityVisualTransform = "_ZN25ObjectVisualTransformData29s_IdentityVisualTransformDataE";
     /// <summary><c>kiwi::impl::SolverImpl::substitute(Symbol const&amp;, Row const&amp;)</c> @0x85b890 (Windows rva 0x3458e0): replaces
     /// a symbol by a row in every tableau row, the objective and the artificial row -- the full row walk that makes a
-    /// NUI layout solve quadratic (docs/research/nui-performance.md §2). Never throws. Its callers are addConstraint,
+    /// NUI layout solve quadratic (CX-154 §2). Never throws. Its callers are addConstraint,
     /// addWithArtificialVariable, optimize (Linux only), dualOptimize and removeConstraint, all by call.</summary>
     [Fn("void(IntPtr self, IntPtr symbol, IntPtr row)")]
     public const string KiwiSubstitute = "_ZN4kiwi4impl10SolverImpl10substituteERKNS0_6SymbolERKNS0_3RowE";
@@ -2091,7 +2091,7 @@ internal static unsafe class SymbolMap
     /// <summary><c>Nui::JSON::JsonWindow::HandleError(char const* tag, char const* message)</c> @0x86d480 (Windows rva
     /// 0x746650): vanilla's only NUI error surface. Retitles the window "Error " + tag and replaces its whole layout with
     /// one text widget holding a copy of message. Called by Initialize and Render inside their catch and by Update after
-    /// it (docs/research/nui-layout-errors.md §1).</summary>
+    /// it (CX-153 §1).</summary>
     [Fn("void(IntPtr self, IntPtr tag, IntPtr message)")]
     public const string NuiHandleError = "_ZN3Nui4JSON10JsonWindow11HandleErrorEPKcS3_";
     /// <summary><c>Nui::Layout::LayoutGroup</c>'s and <c>SingleGroup</c>'s vtables: the only layout classes that embed a kiwi
@@ -2104,7 +2104,7 @@ internal static unsafe class SymbolMap
     /// <summary>The two pre-dispatch calls of the world scene render, inside the AI update: the BSP
     /// management (every gob, three passes, the frustum traverse) and the draw-bucket build (the sole
     /// writer of the gob model matrix Alloy draws with). Timed only; see
-    /// docs/research/engine-scene-walk-bypass.md.</summary>
+    /// CX-141.</summary>
     [Fn("long(Scene scene)")]
     public const string ManageSceneBSP         = "_Z14ManageSceneBSPP5Scene";
     [Fn("long(Scene this)")]
@@ -2235,7 +2235,7 @@ internal static unsafe class SymbolMap
     public const string NwTileSetID = "_ZN7CNWTile5SetIDEi";
 
     // ---- CX-55 step 3: the ASCII -> binary compile. The compiler is the ENGINE's own, reader and writer
-    //      paired in one source file (docs/research/ascii-mdl-compile.md); nothing of ours writes an MDL. ----
+    //      paired in one source file (CX-55); nothing of ours writes an MDL. ----
     /// <summary><c>compilemodelsinternal(bool asciiOnly, const char* name)</c> @0x448410 -- the guarded wrapper
     /// the <c>compilemodel</c> console command uses, and the whole compile in one call: it walks the global
     /// <c>Models</c> for a <c>strncasecmp</c> match on <c>Model+0x10</c>, refuses an already-binary model
@@ -2262,7 +2262,7 @@ internal static unsafe class SymbolMap
     [Fn("IntPtr(CExoAliasList this, IntPtr name, int mode)")]
     public const string AliasGetAliasPath = "_ZNK13CExoAliasList12GetAliasPathERK10CExoStringi";
 
-    // ---- CX-689..CX-693: the radial menu seam (docs/research/radial-menu-reimplementation.md). The whole
+    // ---- CX-689..CX-693: the radial menu seam (CX-162). The whole
     //      CRadialMenu surface is name-exported on Windows; the client roots are identified by vtable compare
     //      (the _ZTV / vftable rows below), never called by name. ----
     /// <summary><c>CRadialMenu::ActivateInternal()</c> @0x585010 -- the GUI-side half of <c>Activate</c>: LoadGraphics,
@@ -2455,7 +2455,7 @@ internal static unsafe class SymbolMap
     [Fn("nuint(IntPtr dctx, void* dst, nuint dstCap, void* src, nuint srcSize)")]
     public const string ZstdDecompressDCtx = "ZSTD_decompressDCtx";
 
-    // ---- CX-57: the exosound seams (docs/audio.md, docs/research/client-audio-stack.md). The whole of exosound is a
+    // ---- CX-57: the exosound seams (docs/audio.md, CX-135). The whole of exosound is a
     //      shared-engine library, so every one of these is name-exported on Windows. ----
     /// <summary><c>CExoSoundInternal::PlaySourceOn3DVoice(CExoSoundSourceInternal*, C3DVoice*)</c> @0x577dc0 -- decodes
     /// the WAV, fills the voice's AL buffer and source, and ends in <c>alSourcePlay</c>. The Steam Audio path
@@ -2515,7 +2515,7 @@ internal static unsafe class SymbolMap
     [Fn("void(CExoStreamingSoundSource this, int loop)")]
     public const string StreamSetLooping = "_ZN24CExoStreamingSoundSource10SetLoopingEi";
 
-    // ---- the CX inventory screen (docs/research/inventory-screen.md; §10 records this pass). Every client
+    // ---- the CX inventory screen (CX-146; §10 records this pass). Every client
     //      GUI / CNWCMessage class here is unexported on Windows -> At() + an `rva` line; only
     //      CNWBaseItemArray (shared engine) is a name export. Each RVA below was read from the Windows body,
     //      not pattern-matched: the addresses in the decompiled bodies cross-check each other. ----
@@ -2708,7 +2708,7 @@ internal static unsafe class SymbolMap
     /// every call is VIRTUAL (the binary has no direct caller), so the hook sits on the function itself and
     /// tells world from GUI by <c>Scene+0x188</c>. <see cref="CX.Alloy.AlloyCamera"/> measures each view here
     /// and then calls the original, whose remaining outputs are the BSP frustum, the model matrix stack and
-    /// the GUI views' own state (docs/research/camera-loop.md §1).</summary>
+    /// the GUI views' own state (CX-109 §1).</summary>
     [Fn("void(Camera this)")]
     public const string CameraRenderScene = "_ZN6Camera11RenderSceneEv";
     /// <summary><c>CNWTileSet::GetEnvMapResRef()</c> @0x5e10a0 -- the tileset's environment-map name, a
@@ -2724,7 +2724,7 @@ internal static unsafe class SymbolMap
     /// <c>|CAurora::GetGUIScale() - 1| &gt;= 0.09</c>, so it answers false for the WORLD view on every client.
     /// <see cref="CX.Alloy.AlloyCamera"/> calls it for a GUI view rather than porting the table: the table is
     /// the engine's layout policy, not render arithmetic, and what Alloy needs from it is the rect its own
-    /// projection and view matrices are built at (docs/research/camera-loop.md §1).</summary>
+    /// projection and view matrices are built at (CX-109 §1).</summary>
     [Fn("byte(Camera this, float* screenViewport, float* cameraRect, float* into)")]
     public const string CameraUpscaleViewport = "_ZN6Camera15UpscaleViewportEPfS0_S0_";
     /// <summary><c>WindManager::updateTimer(float dt)</c> @0x491200 -- the engine's own wind clock: advance the
@@ -2733,7 +2733,7 @@ internal static unsafe class SymbolMap
     /// whatever the renderer is doing. <see cref="CX.Alloy.AlloyWind"/> hooks it because that is what makes
     /// its own clock advance on a vanilla frame too: the gusts it collects come from
     /// <see cref="AddPointSourceWind"/>, which the engine calls whether or not Alloy draws
-    /// (docs/research/camera-loop.md §5).</summary>
+    /// (CX-109 §5).</summary>
     [Fn("void(WindManager this, float dt)")]
     public const string WindUpdateTimer = "_ZN11WindManager11updateTimerEf";
 
@@ -2741,7 +2741,7 @@ internal static unsafe class SymbolMap
     // The 13 CAurBehavior::Control implementations Alloy replaces, plus the four leaf engine calls the
     // ports make. Every one is NAME-EXPORTED on nwmain.exe (`?Control@<Class>@@UEAAHM@Z`), so CX-107
     // needed no RVA anchoring at all; the MSVC mangling also settles the declared signature as
-    // `virtual int Control(float)` for all thirteen. docs/research/behaviour-solvers.md §3, §6.
+    // `virtual int Control(float)` for all thirteen. CX-107 §3, §6.
     // CameraFollowControl is declared above (#536) and is the one of the thirteen that already existed.
 
     /// <summary><c>CAurBehavior::Control(float)</c> @0x4a0510 -- the base solve: walk the dependency list
@@ -2860,7 +2860,7 @@ internal static unsafe class SymbolMap
         [AurPrintString]     = Nm("?AurPrintString@@YAXPEBDHHMMMM0@Z"),   // CX-98: the whole Aurora layer is name-exported
 
         // ---- CX-107 behaviours ----
-        // Read straight off nwmain.exe's export table (tools: docs/research/behaviour-solvers.md §6).
+        // Read straight off nwmain.exe's export table (tools: CX-107 §6).
         // All thirteen Controls are `?Control@<Class>@@UEAAHM@Z`: `H` return, `M` (float) argument, no
         // by-value crossing, so one declared signature covers both platforms.
         [BehaviorControl]               = Nm("?Control@CAurBehavior@@UEAAHM@Z"),
@@ -3257,7 +3257,7 @@ internal static unsafe class SymbolMap
         [NetProcessReceivedFrames] = Nm("?ProcessReceivedFrames@CNetLayer@@QEAAXH@Z"),
         [NkSdlCopyEvent] = Hole("nuklear is not exported by nwmain.exe"),
         // CX-101: nuklear is unexported on Windows, but nk_sdl_render's Tracy SourceLocationData anchors it and
-        // its BODY names the other four call for call (docs/research/nui-draw-in-alloy.md §4).
+        // its BODY names the other four call for call (CX-97 §4).
         [NkSdlRender] = At(),             // Tracy "void __cdecl nk_sdl_render(float)"; body identical to Linux @0xe07bb0
         [NkSdlRefreshConfig] = At(),      // the first call in that body
         [NkConvert] = At(),               // its rcx/rdx are the ctx and the cmds buffer
@@ -3460,7 +3460,7 @@ internal static unsafe class SymbolMap
         [StreamStop]             = Nm("?Stop@CExoStreamingSoundSource@@QEAAXXZ"),
         [StreamGetVolume]        = Nm("?GetVolume@CExoStreamingSoundSource@@QEAAEXZ"),
         [StreamSetLooping]       = Nm("?SetLooping@CExoStreamingSoundSource@@QEAAXH@Z"),
-        // --- the CX inventory screen (docs/research/inventory-screen.md §10). CPanelInventory, CGuiInvbox,
+        // --- the CX inventory screen (CX-146 §10). CPanelInventory, CGuiInvbox,
         //     CGuiMulti*Invbox, CNWCItem and CNWCMessage are all unexported on nwmain.exe, so each row is an
         //     RVA read out of the Windows BODY (not a caller-shape guess): SetInventoryVisible's own body names
         //     SetCharacterData / GetNWCMessage / the Status sender, Update_GuiRepository's names AddItem and

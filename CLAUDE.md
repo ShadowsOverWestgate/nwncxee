@@ -26,7 +26,7 @@ Issues live on the SoW Plane (`https://plane.westgate.pw`, project `CX`) via `bi
 
 ### Domain docs
 
-Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root (created lazily). See `docs/agents/domain.md`.
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root (created lazily). See `docs/agents/domain.md`.
 
 ## Build & run
 
@@ -164,6 +164,12 @@ name a known ceiling + its upgrade path.
 
 ## Hard rules
 
+- **No decompiled code in the repository, ever** (sow-platform ADR-0064). Read the dump on your own
+  machine; write what it shows as prose, symbol names, addresses and constants. A quoted listing,
+  pseudo-C or Ghidra's `param_N`/`iVarN` names in a doc or a comment is the violation, and
+  `tools/no-decompiled.sh` refuses the usual shapes in CI.
+- **Research lives on its work item** (ADR-0064): post the findings as a comment on the `CX` item it
+  answers, or file one titled "Research: ..." and close it. Never a `docs/` note, never a branch.
 - **NEVER GUESS.** Always verify with a Ghidra decompilation.
 - **Hook with funchook, NOT NativeHookRegistry.** The ported `server-hooking` skill
   describes the server's registry, which does not exist here. Take its RE mindset
@@ -230,7 +236,7 @@ The client is already imported and analyzed:
   received/ignored), hooking semantics (Before/After/SkipOriginal), and shared
   engine knowledge -- `CNWSMessage` and friends are the *same classes* on client
   and server, so its struct/field notes transfer. Do NOT copy its hook mechanism;
-  the client uses funchook. Its `AGENTS.md`/`DOCTRINE.md` are server law, not ours.
+  the client uses funchook. Its `AGENTS.md`/`CODING_STANDARDS.md` are server law, not ours.
   Its `topdata/` is shaders (`.shd`), 2DA, TLK as data -- the graphics-via-data
   path: anything shaders can express ships there, no extender. (The standalone
   `sow-topdata` repo is retired; `~/repos/sow-topdata` is a stale checkout.)

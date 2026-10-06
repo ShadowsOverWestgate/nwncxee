@@ -7,7 +7,7 @@ using CX.Ui;
 
 namespace CX.Services.Radial;
 
-/// <summary>Which root built the engine tree, by vptr (docs/research/radial-menu-reimplementation.md §3).
+/// <summary>Which root built the engine tree, by vptr (CX-162 §3).
 /// <see cref="Plain"/> is a bare <c>CRadialMenu</c> -- the tile/ground root and every creator-made child.</summary>
 public enum RootKind { Unknown, Plain, Creature, Spell, RadialSpell, Trap, Item, Placeable, Door, Quickbar, ChatWindow }
 

@@ -13,7 +13,7 @@ namespace CX.Services.Nui;
 /// command the call appended; the bar still runs underneath, so the offset, the glide and the clamp stay the engine's.
 /// </summary>
 /// <remarks>Hot: once per shown scrollbar per frame. Fixed tables, no allocation. The nuklear offsets below are the
-/// same on both builds (docs/research/nui-performance.md, the scrollbar hide facts).</remarks>
+/// same on both builds (CX-154, the scrollbar hide facts).</remarks>
 internal static unsafe class NuiScrollbarHide
 {
     private const int StyleScrollV = 0x3060, StyleScrollH = 0x2bb8, CtxBarSizeX = 0x41ec, CtxBarSizeY = 0x41f0;  // not-an-offset: nk_context ABI, not an engine class

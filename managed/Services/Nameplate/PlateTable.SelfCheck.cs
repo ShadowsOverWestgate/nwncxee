@@ -257,7 +257,7 @@ public sealed partial class PlateTable
         check.Expect(PlateLayout.LineX(20f, 50f, 20f) == 35f,
           "and a shorter one centres in the text column -- on a creature plate as on any other");
 
-        // ---- ObjectTextBubbleOverride: the module's own plate text (docs/re/nameplate.md §8.5) ----
+        // ---- ObjectTextBubbleOverride: the module's own plate text (CX-179 §8.5) ----
         var ov = new Entry();
         string Para(int i)
         {

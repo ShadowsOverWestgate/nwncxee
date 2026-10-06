@@ -29,7 +29,7 @@ public sealed partial class PlateTable
     public const int MaxLines = 4;
 
     /// <summary>Wrapped lines kept per bubble line. The config's <c>BubbleLines</c> clamps to this. 32 is the
-    /// figure the RE notes cite for the engine's own bubble (still unverified, docs/re/nameplate.md); it is far
+    /// figure the RE notes cite for the engine's own bubble (still unverified, CX-179); it is far
     /// enough past a paragraph-length emote that nothing vanilla would have shown is cut by us.</summary>
     public const int MaxWrapped = 32;
 
@@ -141,7 +141,7 @@ public sealed partial class PlateTable
         public int NameWrapEpoch = -1;
         public string PortraitResref = "";
 
-        // ---- the module's ObjectTextBubbleOverride (docs/re/nameplate.md §8.5) --------------------
+        // ---- the module's ObjectTextBubbleOverride (CX-179 §8.5) --------------------
         /// <summary>1 replace, 2 prepend, 3 append, 0 none. Polled every frame in <see cref="Refresh"/>, not
         /// latched on the hook: a player starts sneaking WHILE hovered and the engine re-runs nothing.</summary>
         public int OverrideMode;
@@ -314,7 +314,7 @@ public sealed partial class PlateTable
     /// <para>A re-set of the SAME name is a no-op. Every plate <c>Note</c> and every chat line carries a
     /// freshly resolved name, and <c>ShowFeedbackBubbleText</c> can be re-entered for an object already
     /// hovered -- the Tab path bypasses the <c>creature+0x468</c> guard that stops the hover path repeating
-    /// (docs/re/nameplate.md §6.3) -- so re-invalidating on each would rewrap, and allocate, for nothing.</para></summary>
+    /// (CX-179 §6.3) -- so re-invalidating on each would rewrap, and allocate, for nothing.</para></summary>
     internal static void SetName(Entry e, string name, uint[]? colours = null)
     {
         if (string.Equals(e.Name, name, StringComparison.Ordinal)) { e.NameColours = colours; return; }

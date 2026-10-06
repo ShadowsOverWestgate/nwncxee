@@ -38,7 +38,7 @@ namespace CX.Alloy;
 /// </remarks>
 internal static unsafe partial class AnimRuntime
 {
-    /// <summary>The <c>AnimRun</c> flag bits the queue advance reads (docs/research/anim-runtime.md §4).</summary>
+    /// <summary>The <c>AnimRun</c> flag bits the queue advance reads (CX-106 §4).</summary>
     private const uint FadeOut = 0x1, Loop = 0x4, Sticky = 0x8, Queued = 0x20, Trace = 0x100, FadeNow = 0x200;   // not-an-offset: AnimRun+0xc flag bits
     /// <summary>"No previous transform yet" sentinel in <see cref="EngineLayout.GobPrevPosition"/>.</summary>
     private const float NoPrev = -1e7f;

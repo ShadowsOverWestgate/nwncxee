@@ -38,13 +38,13 @@ public static unsafe class EngineLayout
     public static readonly int ObjType = Field<byte>("CNWCObject", "type");
     /// <summary>CNWCObject -&gt; its object id (uint). Every sender passes <c>obj+8</c> as the OID on both builds
     /// (<c>PerformDefaultActionOnCreature</c>'s Attack / Dialog / UseObject sends, <c>HandleLMouseDown</c>'s
-
+    /// stack-slot <c>+8</c> read).</summary>
     public static readonly int ObjId = Field<uint>("CNWCObject", "id");
 
     /// <summary>CNWCCreature: "the feedback plate is currently shown for me", set at the top of
     /// ShowFeedbackBubbleText (Linux disasm @0x71a81e, Windows @0x80b240).</summary>
     public static readonly int CreaturePlated = Field<int>("CNWCCreature", "plated", Expect.Byte01);
-    /// <summary>CNWCCreature -&gt; CNWCCreatureStats* (docs/re/nameplate.md §7.1; Windows via <c>ShowFeedbackBubbleText</c>
+    /// <summary>CNWCCreature -&gt; CNWCCreatureStats* (CX-179 §7.1; Windows via <c>ShowFeedbackBubbleText</c>
     /// @0x80b240, docs/windows-symbols.md).</summary>
     public static readonly int CreatureStats = Field<CX.Engine.CNWCCreatureStats>("CNWCCreature", "stats");
     /// <summary>CNWCCreatureStats first / last name <c>char*</c> + length pairs: <c>GetFullName</c> (Linux nm 0x74db80, Windows
@@ -474,7 +474,7 @@ public static unsafe class EngineLayout
     /// out, one absent altogether snaps to zero. <see cref="LightFade"/> reads it for the same decision.
     /// <para>Measured on both builds, not assumed identical: Windows <c>EnableLights</c> (rva 0x7e890) passes
     /// <c>this + 0x60</c> and <c>this + 0x40</c> just as Linux does, and the count is the container's
-
+    /// <c>+8</c> in <c>ControlLightsFade</c>'s the int at <c>+8</c> of its second argument on both.</para></summary>
     public static readonly int LmFrameData = Field<IntPtr>("LightManager", "frameData");
     /// <inheritdoc cref="LmFrameData"/>
     public static readonly int LmFrameCount = Field<int>("LightManager", "frameCount");
@@ -1855,7 +1855,7 @@ public static unsafe class EngineLayout
     /// are inside <c>ctx-&gt;draw_list</c>, which starts at +0x5090 (Linux <c>nk__draw_begin</c> @0xde3db0 is
     /// <c>add rdi,0x5090</c>; the Windows body inlines the same walk at ctx+0x5160/+0x5168).
     /// <c>cmd_count</c> sits at draw_list+0xd0 and <c>cmd_offset</c> at +0xd8, both read from
-    /// <c>nk__draw_list_begin</c> @0xde0e60. docs/research/nui-draw-in-alloy.md §3.</summary>
+    /// <c>nk__draw_list_begin</c> @0xde0e60. CX-97 §3.</summary>
     public static readonly int NkCtxDeltaTime = Field<float>("NkContext", "deltaTime");
     /// <inheritdoc cref="NkCtxDeltaTime"/>
     public static readonly int NkCtxDrawCmdCount = Field<int>("NkContext", "drawCmdCount");
@@ -1890,7 +1890,7 @@ public static unsafe class EngineLayout
     /// +0x18, "named" +0x19.
     /// <para>Paired whole. Linux <c>GLRender::UnlockPool</c> @0x4cfc80 indexes
     /// <c>DAT_01ae5480 + i*0x20</c> and tests every one of those fields; the Windows UnlockPool forwards to
-
+    /// a helper @0x140bbaf0 that does the identical walk over its first argument's array at stride <c>0x20</c> -- same stride, same
     /// eight displacements, same bit tests (<c>lockFlags &amp; 0x18</c>, <c>usage &gt;&gt; 8 &amp; 1</c>,
     /// <c>usage &amp; 2</c>).</para>
     /// <para><c>GlPool</c> is the record's own pseudo-class, as <c>MaxFace</c> is for a face: the descriptors
@@ -1915,8 +1915,8 @@ public static unsafe class EngineLayout
     public static readonly int PoolNamed = Field<byte>("GlPool", "named");
 
     /// <summary>The {base, count} pair the descriptor table hangs off -- the same pair on both builds: Linux
-
-
+    /// reads the two adjacent globals <c>DAT_01ae5480</c>/<c>DAT_01ae5488</c>, Windows reads the first two words
+    /// of the struct its helper is handed.</summary>
     public static readonly int PoolTableBase = Field<CX.Engine.GlPool>("GlPoolTable", "base");
     /// <inheritdoc cref="PoolTableBase"/>
     public static readonly int PoolTableCount = Field<uint>("GlPoolTable", "count");
@@ -2058,8 +2058,8 @@ public static unsafe class EngineLayout
     /// <c>Hash::SHA1::SHA1(CExoString const&amp;)</c> @0x534cd0 sets <c>+0x0 = 1</c>, zeroes the 20 raw bytes and
     /// <c>hydro_bin2hex(this + 0x15, 0x29, this + 1, 0x14)</c>, clearing <c>+0x0</c> only once 40 hex digits
     /// parsed. So <c>empty</c> is INVERTED (non-zero = no hash) and <c>hex</c> is 40 lowercase digits plus a NUL.
-
-
+    /// Same offsets on Windows: <c>?AddManifest@CExoResMan@@</c> rva 0x18e7a0 tests its first argument's first word and reads
+    /// <c>+0x15</c>, exactly as Linux @0x53bae0 does.</summary>
     public static readonly int Sha1Empty = Field<byte>("Sha1", "empty");
     /// <inheritdoc cref="Sha1Empty"/>
     public static readonly int Sha1Hex = Field<byte>("Sha1", "hex", count: 41);
@@ -2197,7 +2197,7 @@ public static unsafe class EngineLayout
     /// <summary>CNWCObject -&gt; position Vector, the 12 bytes before <see cref="ObjOrientation"/> (<c>SetPosition</c>
     /// Linux @0x7e9180 writes +0x38..+0x40; the Windows orientation row at the same +0x44 pins it).</summary>
     public static readonly int ObjPosition = Field<System.Numerics.Vector3>("CNWCObject", "position");
-    // ---- action-camera aim assist / auto-target / contextual crosshair (docs/research/action-camera-targeting.md) ----
+    // ---- action-camera aim assist / auto-target / contextual crosshair (CX-125) ----
     // Every row below was read off ONE function pair: CNWCArea::HiliteAreaObjects (Linux @0x7119f0, Windows rva
     // 0x7db2f0), CClientExoAppInternal::UpdateMouseCursorAppearance (Linux @0x6629b0, Windows rva 0x6f2830),
     // CActionTarget::HandleLMouseDown (Linux @0x965840, Windows rva 0x83be00) and
@@ -2319,7 +2319,7 @@ public static unsafe class EngineLayout
     /// it keeps a non-placeable carrying type byte 9 out. The -8 is the usual MSVC one-destructor-slot shift.</summary>
     public static readonly int GameObjAsNWCPlaceableSlot = Field("CGameObject", "vtbl.AsNWCPlaceable", Expect.VtblSlot, sig: "CNWCObject()");
 
-    // ---- what the player is doing right now: the action camera's crosshair feedback (docs/research/action-camera-feedback.md) ----
+    // ---- what the player is doing right now: the action camera's crosshair feedback (CX-123) ----
     // Measured 2026-09-17 by decompiling the same function on both programs, never by extrapolating a class delta.
 
     /// <summary>CGuiInGame -&gt; CPanelActionQueue*, the client's mirror of the player's action queue. Both
@@ -2354,7 +2354,7 @@ public static unsafe class EngineLayout
     /// both builds (Linux @0x7e3f70, Windows rva 0x7630d0, the chase driver's own callee). Locomotion = 2, 3, 4,
     /// 0x4e, 0x4f, 0x54..0x57 (the chase drivers' test).</summary>
     public static readonly int ObjAnimation = Field<short>("CNWCObject", "animation");
-    /// <summary>CNWCCreature -&gt; the server's <c>m_nAIState</c> WORD (docs/research/action-camera-feedback.md §2.1):
+    /// <summary>CNWCCreature -&gt; the server's <c>m_nAIState</c> WORD (CX-123 §2.1):
     /// UpdateDriveMode and DrivePlayer both refuse unless bit 2 is set. <b>0 = inert</b>: the creature update
     /// handler puts a creature whose word is 0 (and has no loot) on the hit-check ignore list and the click
     /// default treats <c>== 0</c> as a corpse to loot, so the tab-target lock reads 0 as "dead" (CX-636).
@@ -2383,7 +2383,7 @@ public static unsafe class EngineLayout
     // ---- CX-67: the gait signals. Every row below is read off ONE function pair, CNWCCreature::WalkUpdateLocation
     // (Linux @0x725830, Windows rva 0x8114d0), which on Windows carries ComputeSpeedFactor inlined -- so the ramp
     // divisor, the path walk and the trapezoid step are all in the one body. The block shift is the CNWCCreature
-    // -0x20 the rows above already carry. docs/research/locomotion-engine.md.
+    // -0x20 the rows above already carry. CX-148.
 
     /// <summary>CNWCCreature -&gt; the speed factor, 0.1..1.0, that <c>ComputeSpeedFactor</c> returns and
     /// <c>WalkUpdateLocation</c> stores: the fraction of the rate the body is travelling at, and the engine's own
@@ -2476,7 +2476,7 @@ public static unsafe class EngineLayout
     /// the object on. Control's own gate: set, the aim block is skipped for the release latch at +0x68.</summary>
     public static readonly int LookAtFinished = Field<byte>("LookAtAnimation", "finished");
 
-    // ---- CX-106 anim: the owned animation runtime (docs/research/anim-runtime.md) ----
+    // ---- CX-106 anim: the owned animation runtime (CX-106) ----
     // Every row below was measured on BOTH builds by disassembling the same function pair on each:
     // Scene::Animate (0x469810 / rva 0xc5210), Gob::Animate (0x49d8c0 / rva 0x4dbd0),
     // AnimateHierarchy (0x499990 / rva 0x4fe90), AnimateEvents (0x497f30 / rva 0x4fce0) and
@@ -2604,7 +2604,7 @@ public static unsafe class EngineLayout
     /// <summary>Virtual slot of <c>Part::AsPartAnimMesh()</c>.</summary>
     public static readonly int PartAsAnimMeshSlot = Field("Part", "vtbl.AsPartAnimMesh", Expect.VtblSlot, sig: "IntPtr()");
     /// <summary>Virtual slot of a <c>CAurBehavior</c>'s <c>Control(float dt)</c> -- dispatched once per gob
-    /// from <c>Gob::Animate</c>, BEFORE the pose and before any event (docs/research/anim-runtime.md
+    /// from <c>Gob::Animate</c>, BEFORE the pose and before any event (CX-106
     /// section 7). The base implementation recurses into each dependency gob's <c>Gob::Animate</c>, so an
     /// attach parent is animated before its child; the BEHAV stream replaces the individual classes'
     /// bodies, and this dispatch reaches its port.</summary>
@@ -2668,14 +2668,14 @@ public static unsafe class EngineLayout
     /// <summary>AnimRun -&gt; its playback rate (float, signed): <c>Gob::Animate</c> advances <c>+0x14</c> by
     /// <c>dt * rate</c>; <c>Gob::PlayAnimation</c> writes it, and <c>CNWCCreature::WalkUpdateLocation</c> re-paces
     /// walk/run through it every AI update. Same offset on both builds
-    /// (docs/research/procedural-anim-locomotion.md, Q1).</summary>
+    /// (CX-159, Q1).</summary>
     public static readonly int AnimRunRate = Field<float>("AnimRun", "rate");
     /// <summary>AnimRun -&gt; its blend weight, 0..1 while fading in, counting down while fading out
     /// (<c>Gob::Animate</c>, both builds; same research, Q1).</summary>
     public static readonly int AnimRunBlend = Field<float>("AnimRun", "blend");
     /// <summary>AnimRun -&gt; flags (bit <c>0x1</c> = fading out), the current time in seconds, and the blend
     /// duration in seconds (<c>Gob::Animate</c> / <c>Gob::PlayAnimation</c>, the same offsets on both builds;
-    /// docs/research/procedural-anim-locomotion.md, Q1).</summary>
+    /// CX-159, Q1).</summary>
     public static readonly int AnimRunFlags = Field<uint>("AnimRun", "flags");
     /// <inheritdoc cref="AnimRunFlags"/>
     public static readonly int AnimRunTime = Field<float>("AnimRun", "time");
@@ -2689,18 +2689,18 @@ public static unsafe class EngineLayout
     public const uint AnimRunQueued = 0x20, AnimRunFadingOut = 0x1;
     /// <summary>Gob -&gt; the <c>CNWCObject*</c> behind <c>SetExternalData</c>, the pointer just before
     /// <see cref="GobExternalType"/>: <c>Gob::GetExternalData</c> reads <c>+0x490</c> on both builds (Linux
-    /// @0x444700, Windows rva 0x58d00; docs/research/procedural-anim-combat.md §4).</summary>
+    /// @0x444700, Windows rva 0x58d00; CX-158 §4).</summary>
     public static readonly int GobExternalData = Field<IntPtr>("Gob", "externalData");
 
     /// <summary>CNWCCreature -&gt; the object id it is locked onto in combat (<c>0x7f000000</c> = none), written by
     /// every creature update and read by <c>SetDesiredOrientationForLock</c> to face the victim. Linux +0x3c8,
-    /// Windows +0x3a8 (docs/research/procedural-anim-combat.md §1.1).</summary>
+    /// Windows +0x3a8 (CX-158 §1.1).</summary>
     public static readonly int CreatureLockTarget = Field<uint>("CNWCCreature", "lockTarget");
 
     /// <summary>CNWCCombatAttackData -&gt; the attacker's object id (<c>0x7f000000</c> on a projectile's synthetic
     /// record), the damage (i16), and the result byte (1 hit, 3 critical on the projectile path). The class is
     /// identical on both builds; the rows rest on the wire order the creature update handler reads it in
-    /// (docs/research/procedural-anim-combat.md §2.1).</summary>
+    /// (CX-158 §2.1).</summary>
     public static readonly int AtkAttacker = Field<uint>("CNWCCombatAttackData", "attacker");
     /// <inheritdoc cref="AtkAttacker"/>
     public static readonly int AtkDamage = Field<short>("CNWCCombatAttackData", "damage");
@@ -2735,7 +2735,7 @@ public static unsafe class EngineLayout
     // managed/Alloy/. A second tested client build gets its own pinned key plus its own values below;
     // today there is exactly one per OS.
 
-    // ================= CX-689: CRadialMenu (docs/research/radial-menu-reimplementation.md §1) =================
+    // ================= CX-689: CRadialMenu (CX-162 §1) =================
     // Linux from the ctor @0x583460 / SetEntryx @0x5837f0 / SetSubMenuCreatorx @0x583f50 / CreateSubMenu @0x584790 /
     // HandleMenuAction @0x585530; Windows from the same exported CRadialMenu bodies in nwmain.exe (ctor rva 0x1f7950,
     // SetEntryx 0x1fa250, SetSubMenuCreatorx 0x1fa9e0, SetSubMenu 0x1fa490, CreateSubMenu 0x1f8960, DisableEntry
@@ -2821,7 +2821,7 @@ public static unsafe class EngineLayout
     /// no thunk exists.</summary>
     public static readonly int StringGobReaderAdjust = Field("StringGob", "readerThisAdjust");
 
-    // ================= CX-693: item icons (docs/research/radial-menu-reimplementation.md §5) =================
+    // ================= CX-693: item icons (CX-162 §5) =================
     // CGuiIcon's three subclasses, each read off its ctor on BOTH builds (Linux @0x58dcb0 / @0x58d9d0 / @0x58d5c0,
     // Windows rva 0x1e3000 / 0x1e2e40 / 0x1e2ca0): every subclass field lands at the same offset on each, because
     // the base is 0x48 on both (a single vptr, no Itanium-only padding). The model builders confirm the reads:
@@ -2884,7 +2884,7 @@ public static unsafe class EngineLayout
 
     /// <summary>CNWCObject: 1 =&gt; the server has retired this object -- no plate and no bubble. The first test
     /// in <c>SetPopUpBubbleText</c> on both builds (<c>*(int*)(this + 0x104) == 1</c>). No probe: its writer set
-    /// is known but its semantics are not (docs/re/nameplate.md §8.3b), so 0/1 is not something to assert.</summary>
+    /// is known but its semantics are not (CX-179 §8.3b), so 0/1 is not something to assert.</summary>
     public static readonly int ObjRetired = Field<int>("CNWCObject", "retired");
 
     // CNWCObject's fade machine. Read off CNWCObject::FadeObject (Linux nm @0x7e7720, Windows rva 0x762e40) and
@@ -3030,7 +3030,7 @@ public static unsafe class EngineLayout
     /// Linux only and <see cref="CX.Engine.CGuiCallback.Adj"/> already knows that.</summary>
     public static readonly int GuiPanelCloseCallback = Field<CX.Engine.CGuiCallback>("CGuiPanel", "closeCallback", embedded: true);
 
-    // ================= the CX inventory screen (docs/research/inventory-screen.md §10) =================
+    // ================= the CX inventory screen (CX-146 §10) =================
     // Every row below was PAIRED: the same function decompiled on both programs of ~/ghidra/nwn-linux.rep,
     // Linux addresses as nm (Ghidra = nm + 0x100000), Windows as RVAs off base 0x140000000. The uniform
     // CNWCItem / CNWCCreature Windows -0x20 held everywhere it was measured here, but no row rests on it:
@@ -3284,7 +3284,7 @@ public static unsafe class EngineLayout
     public static readonly int KiwiPairStride = Field("kiwi::impl::SymbolPair", "stride");
     /// <summary>m_cns, the constraints the solver accepted: a flat vector of (Constraint, Tag) records sorted by
     /// ConstraintData* -- begin, then end. <c>addConstraint</c> inserts here only after the row is in the tableau, so a
-    /// constraint that threw is never in it (docs/research/nui-layout-errors.md §5.3).</summary>
+    /// constraint that threw is never in it (CX-153 §5.3).</summary>
     public static readonly int KiwiCns = Field<CX.Engine.kiwi__impl__CnPair>("kiwi::impl::SolverImpl", "cns");
     /// <inheritdoc cref="KiwiCns"/>
     public static readonly int KiwiCnsEnd = Field<IntPtr>("kiwi::impl::SolverImpl", "cnsEnd");
@@ -3325,7 +3325,7 @@ public static unsafe class EngineLayout
     public static readonly int NuiChildrenEnd = Field<IntPtr>("Nui::Layout::Layoutable", "childrenEnd");
     /// <summary>An element's twelve kiwi variables (VariableData*): x, y, width, height, then padding left, top, right,
     /// bottom, then margin left, top, right, bottom -- read off the ctor's three LayoutExpressions (inner = outer minus
-    /// padding, outer plus margin), docs/research/nui-layout-errors.md §3.1.</summary>
+    /// padding, outer plus margin), CX-153 §3.1.</summary>
     public static readonly int NuiVars = Field<IntPtr>("Nui::Layout::Layoutable", "vars", count: 12);
     /// <summary>A Span's axis, read once by <c>Span::BuildConstraintDependants</c>: 1 = vertical.</summary>
     public static readonly int NuiSpanDirection = Field<int>("Nui::Layout::Span", "direction");
@@ -3348,7 +3348,7 @@ public static unsafe class EngineLayout
     public static readonly int NuiIdNodeElement = Field<IntPtr>("Nui::JSON::IdNode", "element");
 
     // ---- CX-108 lights ----
-    // Alloy's own light registry and selection (docs/research/light-registry.md). Every value below is
+    // Alloy's own light registry and selection (CX-108). Every value below is
     // MEASURED on both binaries with objdump: LightManager is name-exported on Windows, so
     // `PrioritizeLights` (rva 0x7ff60) reads there exactly as it does here and no Ghidra run was needed.
 
@@ -3380,7 +3380,7 @@ public static unsafe class EngineLayout
     /// <inheritdoc cref="BspDataLight"/>
     public static readonly int BspDataLightCount = Field("BSPNode", "lightCount");
 
-    // ================= CX-107 behaviours (docs/research/behaviour-solvers.md §1, §6.1) =================
+    // ================= CX-107 behaviours (CX-107 §1, §6.1) =================
     // The behaviour solvers Alloy ports write engine fields through the same virtuals the engine does, so
     // every slot below was measured on BOTH images: the Windows Gob and Part vtables were located by
     // searching .rdata for the 64-bit VA of a known exported method and walking the table (Gob's is the

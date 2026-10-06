@@ -466,7 +466,7 @@ internal static unsafe partial class Particles
         e.Parts = parts; e.PartCount = count;
         // RenderEmitter pushes nothing and Scene::DoEmitterBucket does no matrix work either, so an emitter
         // draws on whatever base the frame left in the model stack -- which CX-109 established is the identity
-        // (AlloyCamera.ModelBase, docs/research/camera-loop.md §2). Particles simulate in world space, so this
+        // (AlloyCamera.ModelBase, CX-109 §2). Particles simulate in world space, so this
         // is also the only base that would place them correctly.
         e.Model = AlloyCamera.ModelBase;
         e.Ident = e.Model.IsIdentity;

@@ -200,7 +200,7 @@ internal static unsafe class SkyBox
         e.Prog = 0;      // filled at staging, where a GL context exists to build a program in
         e.Vao = -1;
         // CX-109: no model-stack base left to multiply by -- RenderSkyBoxes leaves the model stack alone and
-        // that base is the identity (AlloyCamera.ModelBase, docs/research/camera-loop.md §2).
+        // that base is the identity (AlloyCamera.ModelBase, CX-109 §2).
         e.Model = Matrix4x4.CreateScale(scale) * Matrix4x4.CreateFromQuaternion(rot)
                   * Matrix4x4.CreateTranslation(pos);
         _enrolled++;

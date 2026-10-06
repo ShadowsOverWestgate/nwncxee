@@ -10,7 +10,7 @@ namespace CX.Alloy;
 /// CX-110: Alloy's wind. Its own clock, its own pair of noise fields, its own point-source list and its own
 /// evaluation -- a port of <c>WindManager::updateTimer</c> @0x491200,
 /// <c>WindManager::GetGlobalWind</c> @0x490ab0, <c>pointSourceWindVector</c> @0x4907d0 and
-/// <c>fillNoiseField</c> @0x490e20 (<c>docs/research/camera-loop.md</c> §5). Everything that felt wind used
+/// <c>fillNoiseField</c> @0x490e20 (<c>CX-109</c> §5). Everything that felt wind used
 /// to call <c>Scene::GetWindVector</c> @0x460c60 per particle and per dangly vertex; now the clock advances
 /// once per world frame and the field is Alloy's.
 /// </summary>

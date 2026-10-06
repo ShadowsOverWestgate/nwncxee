@@ -101,7 +101,7 @@ internal static unsafe partial class BehaviorSolvers
     /// The owned solve for class <paramref name="k"/>. A jump table over thirteen cases, one per concrete
     /// engine class; <c>loosefollow</c> is the one that hands the call back (it is unreachable in this build
     /// and its engine body is unfinished debug scaffolding -- see
-    /// <c>docs/research/behaviour-solvers.md</c> §7), and it says so loudly the first time, because if it
+    /// <c>CX-107</c> §7), and it says so loudly the first time, because if it
     /// ever fires the premise was wrong.
     /// </summary>
     internal static int Solve(int k, IntPtr self, float dt)

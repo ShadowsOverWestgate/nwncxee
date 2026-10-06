@@ -11,7 +11,7 @@ namespace CX.Services.Anim;
 /// Weighty keyboard movement (<c>anim.drive</c>), the one pose module that changes how the player moves rather than
 /// how it is drawn. Keyboard driving is bang-bang in the engine: full speed on the first frame, and once the keys
 /// are up a coast at full speed over whatever is left of the path <c>DrivePlayer</c> laid -- it re-lays a 0.4 s lead
-/// only every 250 ms, so 0.15-0.4 s of travel -- then a dead stop (docs/research/locomotion-engine.md §3.3).
+/// only every 250 ms, so 0.15-0.4 s of travel -- then a dead stop (CX-148 §3.3).
 /// Click-to-move already ramps and eases. This gives the drive the same shape through the engine's own lever:
 /// <c>WalkUpdateLocation</c> multiplies a driving body's rate by the special-walk field (<c>CNWCCreature+0x300</c>,
 /// which only the constructor and <c>ClientSideWalkCommand</c> ever write, both to 1), and the cycle's playback

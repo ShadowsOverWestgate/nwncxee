@@ -24,7 +24,7 @@ namespace CX.Services.Anim;
 /// pitches, and a climb pitches into the slope, each clamped and eased. The forward acceleration is the one
 /// <see cref="Weight"/> hands over -- the engine's own on a path, a drawn profile at a driven start or stop --
 /// and the turn and the slope are still measured.</para>
-/// <para><b>Aim</b> (docs/research/procedural-anim-combat.md): while the creature's current animation is an
+/// <para><b>Aim</b> (CX-158): while the creature's current animation is an
 /// attack (<see cref="IsAttack"/>), its upper body pitches by the elevation from its own root part to its lock
 /// target's (<c>CNWCCreature+0x3c8</c>) -- root to root, so equal creatures on equal ground measure 0. Ranged
 /// attacks take all of it, melee <see cref="MeleeAim"/>.</para>

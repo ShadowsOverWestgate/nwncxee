@@ -6,7 +6,7 @@ using static CX.Services.Anim.PoseMath;
 namespace CX.Services.Anim;
 
 /// <summary>
-/// Stride matching and foot locking, a <see cref="PoseService"/> module (docs/research/procedural-anim-locomotion.md).
+/// Stride matching and foot locking, a <see cref="PoseService"/> module (CX-159).
 /// <para><b>Stride.</b> The engine already paces walk and run: <c>CNWCCreature::WalkUpdateLocation</c> sets the
 /// run's rate (<c>AnimRun+0x08</c>) to the ground speed over <c>appearance.2da</c>'s WALKDIST/RUNDIST, a stride
 /// length per appearance that a custom cycle, a slope or the two-clock step does not match. Here the stance
@@ -18,7 +18,7 @@ namespace CX.Services.Anim;
 /// the body is not walking on the ground.</para>
 /// <para><b>Attachments follow.</b> A cloak, robe, tail or wings is a gob of its own (<c>CNWCAnimBaseTW::LoadModel</c>
 /// attaches it to the body's root) playing the body's clip on its own run list, which the engine paces equal to
-/// the body's on every AI update but never re-syncs in time (docs/research/cloak-animation.md). Scaling the body
+/// the body's on every AI update but never re-syncs in time (CX-136). Scaling the body
 /// alone drifts them apart -- and vanilla drifts them too, without any help (a cloak equipped mid-stride starts
 /// at time 0, rate 1). So each attachment is phase-locked to the body in its own <c>Gob::Animate</c>, just
 /// before the body's: <see cref="Sync"/>.</para>

@@ -26,7 +26,7 @@ namespace CX.Alloy;
 /// per-part <c>SetModelMatrix</c> with <c>PushCurrentMatrix</c>/<c>PopCurrentMatrix</c>, and RSP's own
 /// push/identity/pop pair sits AFTER the beam call (@0x471985, against @0x46f13b) -- so a beam draws on
 /// whatever base the frame left in the model stack, and CX-109 established that that base is the identity
-/// (<see cref="AlloyCamera.ModelBase"/>, <c>docs/research/camera-loop.md</c> §2). Beam volumes are baked in
+/// (<see cref="AlloyCamera.ModelBase"/>, <c>CX-109</c> §2). Beam volumes are baked in
 /// world space by <c>BSPCreateStaticProjections</c>, which is why the identity is also the only base that
 /// makes sense for them.</para>
 /// </summary>

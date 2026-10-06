@@ -133,7 +133,7 @@ internal static class Renderer
         // compiler writes each one to <userdir>/cx-models once and every later load of the same bytes is served
         // the compiled binary. Independent of modelload. Off until a live session has eyeballed a compiled area
         // against an uncompiled one: the cache's fidelity is the engine's reader/writer pair, which this cannot
-        // prove offline (docs/research/ascii-mdl-compile.md §3).
+        // prove offline (CX-55 §3).
         MdlCache = G.Slider("mdlcache", "mdlcache", 0, 1, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
         // CX-52 step 2: 0 = the engine decodes TGA/PLT, 1 = the engine's decode stands and Alloy's is checked
         // beside it, 2 = Alloy's decode is what the engine gets (live-clean 2026-09-26: 684 TGA + 830 PLT, 0 errors).

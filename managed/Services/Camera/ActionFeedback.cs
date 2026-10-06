@@ -28,7 +28,7 @@ internal static unsafe class ActionFeedback
     private static bool _ready;
     private static SendPlayerToServerMessageFn* _next;
 
-    // ---- the wire frame (docs/research/action-camera-feedback.md §1) ----
+    // ---- the wire frame (CX-123 §1) ----
 
     /// <summary>Major 0x06 is player input; 0x26 is the shift-click party-group twin of the same payload, same
     /// minor and the same leading object id.</summary>

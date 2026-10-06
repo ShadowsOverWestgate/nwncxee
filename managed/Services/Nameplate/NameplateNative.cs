@@ -8,7 +8,7 @@ namespace CX.Services.Nameplate;
 /// <summary>
 /// Every native read the overhead plate/bubble needs, in one place. No UI types, no GL: a service
 /// or table calls in here and gets managed values back. Every engine field is read through its typed view;
-/// the offsets are <see cref="EngineLayout"/> rows, provenance <c>docs/re/nameplate.md</c> and
+/// the offsets are <see cref="EngineLayout"/> rows, provenance CX-179 and
 /// <c>docs/engine-layout.md</c>.
 /// <para>The standing rule from #33/#138/#145 applies to every pointer below: a <c>CNWCObject*</c> is
 /// BORROWED. Nothing here stores one; callers hold object <b>ids</b> and re-resolve through
@@ -78,7 +78,7 @@ public static unsafe class NameplateNative
     public const byte TypeCreature = 5, TypeItem = 6, TypePlaceable = 9, TypeDoor = 0xa;  // not-an-offset: an object type enum
 
     /// <summary>Object types whose chat lines the engine prefixes with <c>"[speaker]: "</c>: the <c>0x680</c> mask
-    /// (7, 9, 10) tested at <c>HandleServerToPlayerChat</c>'s tail (docs/re/nameplate.md). Creatures get none.</summary>
+    /// (7, 9, 10) tested at <c>HandleServerToPlayerChat</c>'s tail (CX-179). Creatures get none.</summary>
     public static bool SpeakerPrefixed(byte type) => type < 11 && ((1 << type) & SpeakerPrefixMask) != 0;
 
     private const int SpeakerPrefixMask = 0x680;  // not-an-offset: an object-type bitmask
