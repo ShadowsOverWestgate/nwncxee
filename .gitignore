@@ -10,3 +10,4 @@ build-managed-win.log
 cx-windows-x64.zip
 .scratch/*
 cx-linux-x64.zip
+.claude/settings.local.json
