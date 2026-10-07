@@ -53,7 +53,7 @@ that owns it, and the PR body lists those articles by title.
 | Guides | Walkthroughs that help a player do something. |
 | Systems | Player-facing mechanics that no generated page covers. |
 | Lore | The setting's prose. |
-| Credits | Attribution, one subpage per source. Every third-party asset, model, script or pack the change brings in gets its entry here. |
+| Credits | Attribution, one article per category: Code, Tools, Art, Audio, Fonts, Infrastructure, Contributors, Special Thanks, and Assets split by kind under its own subpages. Every third-party asset, model, script, library or pack the change brings in gets a row in the matching article's table. Add a row, and create no article for a single source. |
 | Frequently Asked Questions | One article. Add a question once players ask it repeatedly. |
 
 Root articles: Main Page, Community Charter, Setting Overview, The Team, and
