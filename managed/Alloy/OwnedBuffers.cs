@@ -287,18 +287,6 @@ internal static unsafe class OwnedBuffers
         return table[(int)token];
     }
 
-    /// <summary>#284: does this pool token already name a GL buffer? The VAO drip needs it because
-    /// <c>GLRender::SetVertexDataObject</c>'s create branch reads the name straight out of the descriptor at
-    /// +0x0c and captures it into the VAO it is building -- and that capture is PERMANENT, because the
-    /// already-has-a-VAO branch never re-specifies an attribute. Dripping a VDO whose pools are not resident
-    /// yet would bake buffer 0 into its VAO and turn a healable "no VAO" into an unhealable "no position
-    /// stream".</summary>
-    internal static bool PoolHasName(uint token)
-    {
-        GlPool p = Pool(token);
-        return !p.IsNull && p.Name != 0;
-    }
-
     /// <summary>The host shadow of the pool this token names, or null. #144 retry: the normal weld reads
     /// and rewrites vertex bytes here, the same block <see cref="Upload"/> pushes, so nothing is read back.</summary>
     internal static byte* PoolHost(uint token)
@@ -326,7 +314,6 @@ internal static unsafe class OwnedBuffers
     private static void OnDeleteBuffer(uint name)
     {
         Retire(name);
-        AlloyRenderer.OnEngineBufferDeleted(name);
         if (_origDelete != null) _origDelete(name);
     }
 
@@ -386,12 +373,6 @@ internal static unsafe class OwnedBuffers
         Tag(v.VertToken);
         Tag(v.DynToken);
     }
-
-    /// <summary>The other half of the rate #260 owes. <c>VertexDataObject::Repack</c> @0x45c270 fires when
-    /// AddItem finds the item list fragmented past <c>2*used + 0x4000</c>; it compacts in the host shadow and
-    /// re-uploads, so it need not change the pool's byte count and would otherwise not be counted at all.
-    /// Fed from the repack hook <c>DrawFunnelService</c> already owns rather than a second one.</summary>
-    internal static void NoteRepack() => _repacks++;
 
     private static void Tag(uint token)
     {

@@ -76,10 +76,9 @@ internal static unsafe class Gait
         s.Starting = seen && (PoseService.IsLocomotion(anim) && !PoseService.IsLocomotion(wasAnim)
                               || wasMoving && !driving && factor >= Floor && wasFactor < Floor);
 
-        AnimRun run = Driven(gob);
+        RunRef run = Driven(gob);
         if (run.IsNull) return;
-        Animation a = run.Animation;
-        float len = a.IsNull ? 0f : a.Length;
+        float len = run.Length;
         if (!(len > 0f)) return;
         s.GaitCycle = len;
         s.GaitPhase = Math.Clamp(run.Time / len, 0f, 1f);
@@ -129,12 +128,11 @@ internal static unsafe class Gait
 
     /// <summary>The run the engine is driving: the newest that is neither queued nor fading out.
     /// <c>Gob::Animate</c> appends, so the last live run is the animation being blended to.</summary>
-    internal static AnimRun Driven(IntPtr gob)
+    internal static RunRef Driven(IntPtr gob)
     {
-        var g = new Gob(gob);
-        for (int i = g.RunCount - 1; i >= 0; i--)
+        for (int i = PoseRig.RunCount(gob) - 1; i >= 0; i--)
         {
-            AnimRun r = g.Run(i);
+            RunRef r = PoseRig.Run(gob, i);
             if (r.IsNull || (r.Flags & (EngineLayout.AnimRunQueued | EngineLayout.AnimRunFadingOut)) != 0) continue;
             return r;
         }

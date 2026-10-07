@@ -288,7 +288,10 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <summary><c>/shadow itemdirty 0</c>: the A/B back to the per-pool-buffer vertex-dirty signal. See
     /// <c>AlloyRenderer.ItemDirty</c> for what the item-level one fixes.</summary>
     private static bool _itemDirty => Shadows.ItemDirty.V;
-    private static bool VertexDirty(int vao, int item) => _vDirty[vao] && (!_itemDirty || AlloyRenderer.ItemMoved(vao, item));
+    /// <summary>An arena caster has no VDO buffer to be dirty: the arena republishes a moved range through
+    /// <c>AlloyRenderer.DbRangesMoved</c> instead, so the per-vertex signal does not apply to it.</summary>
+    private static bool VertexDirty(int vao, int item)
+        => !AlloyRenderer.IsArenaVao(vao) && _vDirty[vao] && (!_itemDirty || AlloyRenderer.ItemMoved(vao, item));
     private static long _cubeDynSkipped, _sunDynSkipped;
     private const int AllFaces = (1 << CubeFaces) - 1;
     /// <summary>#336: the sun's dynamic layer holds a bake for the fit matrix beside it, so a frame with
@@ -446,13 +449,13 @@ public sealed unsafe partial class CasterPass : IExtenderService
         if (_collectedAt < 0 || _liveCount == 0 || AlloyRenderer.SlotSkinned(slot)) return false;
         if (_liveCount >= MaxCasters || _appN >= _appended.Length) return false;
         if (!AlloyRenderer.TryCasterGeom(slot, out var f)) return false;
-        if (!TryRange(f.Vdo, f.Item, out int idxCount, out uint first, out uint baseVert)) return false;
+        if (!CasterRange(in f, out int idxCount, out uint first, out uint baseVert)) return false;
         int live = _liveCount++;
         _liveSlot[live] = slot;
         _liveCx[live] = f.Cx; _liveCy[live] = f.Cy; _liveCz[live] = f.Cz; _liveR[live] = f.R;
         _liveIdxCount[live] = idxCount; _liveFirst[live] = first; _liveBaseVert[live] = baseVert;
         _liveVao[live] = f.Vao; _livePrim[live] = f.Prim; _liveItem[live] = f.Item;
-        _liveTex[live] = AlloyRenderer.VdoHasUv(f.Vao) ? MaskTid(f.Mat) : 0;
+        _liveTex[live] = AlloyRenderer.VdoHasUv(f.Vao) ? MaskTid(in f) : 0;
         _liveCut[live] = f.EnvAlpha ? EnvAlphaDiscard : CutoutDiscard; _liveBlend[live] = f.Blended;
         _liveDyn[live] = false; _liveVisit[live] = 0;
         _liveOff[live] = true; _liveGenOf[live] = AlloyRenderer.SlotEnrollGen(slot);
@@ -634,7 +637,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
     private static readonly int[] _liveIdx = new int[MaxCasters], _liveIdxSeq = new int[MaxCasters];
     /// <summary>#336: the live list bucketed by VAO (CSR built at collect), so a dirty VDO names its casters
     /// without a walk over the rest.</summary>
-    private static readonly int[] _vaoStart = new int[MaxVdos + 1], _vaoMembers = new int[MaxCasters];
+    /// <summary>Indexed by the DENSE caster VAO id, so it spans the arena sections past
+    /// <c>AlloyRenderer.DbVaoBase</c> as well as the VDO slots.</summary>
+    private static readonly int[] _vaoStart = new int[AlloyRenderer.CasterVaoIds + 1], _vaoMembers = new int[MaxCasters];
     /// <summary>#336: the frame each live index was visited by the refresh, so the three visit sources
     /// (dirty VDO, touched record, dynamic last frame) admit a caster once.</summary>
     private static readonly int[] _liveVisit = new int[MaxCasters];
@@ -913,6 +918,13 @@ public sealed unsafe partial class CasterPass : IExtenderService
         return px * px + py * py + pz * pz <= (reach + r) * (reach + r) && MathF.Abs(t) <= along + r;
     }
 
+    /// <summary>One caster's index range, from whichever geometry source its slot draws out of: the mesh
+    /// arena in DB mode, the VDO item tables in the engine path.</summary>
+    private static bool CasterRange(in AlloyRenderer.CasterFacts f, out int idxCount, out uint first, out uint baseVert)
+        => AlloyRenderer.DbSlot(f.Slot)
+            ? AlloyRenderer.DbCasterRange(f.Slot, out idxCount, out first, out baseVert)
+            : TryRange(f.Vdo, f.Item, out idxCount, out first, out baseVert);
+
     /// <summary>Resolve a VDO item's index range, live out of the item tables. Every consumer re-reads it
     /// rather than caching it because <c>Repack()</c> MOVES items, and a stale index range does not read as an
     /// empty draw -- it reads as another part's geometry. False = nothing drawable there right now.
@@ -921,6 +933,10 @@ public sealed unsafe partial class CasterPass : IExtenderService
     private static bool TryRange(IntPtr vdo, int item, out int idxCount, out uint first, out uint baseVert)
     {
         idxCount = 0; first = 0; baseVert = 0;
+        // CX-120: a DB slot has no VDO at all -- its geometry is the mesh arena's, and the columns carry
+        // IntPtr.Zero / item -1. Constructing a VdoRef over that read a null pointer and took the client
+        // down on the first DB frame that reached the bake.
+        if (vdo == IntPtr.Zero || item < 0) return false;
         VdoRef v = new(vdo);
         long elem = v.ElemItems;
         long vert = v.VertItems;
@@ -945,6 +961,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // The overlay's view readout describes THIS frame, so it has to be zeroed ahead of every early-out
         // below -- a frozen count left over from the last frame that rendered reads as a pass still baking.
         LastViews = 0;
+        if (_coverStamp == _frameSeq - 1) _coverFreshFrames++;
+        if (_cascadeStamp == _frameSeq - 1 && CascadeCount > 0) _cascFreshFrames++;
         // #241, ahead of EVERY early-out below: a frame that does not collect leaves the memo's stamps a
         // frame behind, so the sweep would miss whatever vanished while it was not looking. Any stretch of
         // non-Alloy frames proves it -- the main menu and back is enough, and the first Alloy frame after
@@ -1230,6 +1248,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 else _sunDynValid[i] = false;
             }
         }
+        TraceFit(focus, dir, latched);
         CascadeTex = _depthTex;
         // CascadeCount is the ONLY thing bounding the receiver's read: a stall at cascade i leaves layers
         // >= i holding last frame's depth and CascadeVp[>= i] holding last frame's matrix, and the
@@ -1238,6 +1257,32 @@ public sealed unsafe partial class CasterPass : IExtenderService
         CascadeCount = done;
         if (done > 0) _cascadeStamp = _frameSeq;
     }
+
+    /// <summary>The cascade fit's inputs, logged only when one of them MOVES (<c>shadow.trace</c>). A still
+    /// scene changes none of them, so a line here per frame names what the shadows are following; the
+    /// <c>still</c> count is the cadence, which is what separates "it alternates every other frame" from "it
+    /// drifts".</summary>
+    private static void TraceFit(Vector3 focus, Vector3 dir, int latched)
+    {
+        if (!Shadows.Trace.V || _traceLines >= TraceCap) return;
+        var c0 = new Vector3(_sunFitC[0], _sunFitC[1], _sunFitC[2]);
+        if ((focus - _traceFocus).LengthSquared() < 1e-10f && (dir - _traceDir).LengthSquared() < 1e-12f
+            && (c0 - _traceC0).LengthSquared() < 1e-10f && _traceMovers == _moverCount + _dMoverCount)
+        { _traceStill++; return; }
+        _traceLines++;
+        _log?.Always($"CasterPass: [fit] f={_frameSeq} still={_traceStill} focus=({focus.X:F3},{focus.Y:F3},{focus.Z:F3}) "
+                   + $"dir=({dir.X:F4},{dir.Y:F4},{dir.Z:F4}) c0=({c0.X:F3},{c0.Y:F3},{c0.Z:F3}) latched={latched} "
+                   + $"cam=({FrameInputs.CameraPos.X:F2},{FrameInputs.CameraPos.Y:F2},{FrameInputs.CameraPos.Z:F2}) "
+                   + $"fwd=({FrameInputs.SceneCamFwd.X:F3},{FrameInputs.SceneCamFwd.Y:F3},{FrameInputs.SceneCamFwd.Z:F3}) "
+                   + $"fovy={FrameInputs.CamFovy:F1} movers={_moverCount}/{_sMoverCount}/{_dMoverCount} ghosts={_ghostCount} "
+                   + $"dyn0={SunDynMask[0]:F0} baked0={_sunBaked[0]} comb0={_sunCombined[0]}");
+        _traceFocus = focus; _traceDir = dir; _traceC0 = c0; _traceMovers = _moverCount + _dMoverCount;
+        _traceStill = 0;
+    }
+
+    private const int TraceCap = 600;
+    private static int _traceLines, _traceStill, _traceMovers;
+    private static Vector3 _traceFocus, _traceDir, _traceC0;
 
     private static float SmoothStep(float a, float b, float x)
     {
@@ -1378,7 +1423,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         // as visible shadow pop-in; with it the churn is paid gradually while hidden, which is what the
         // pre-cull behaviour paid continuously.
         int warmBudget = 1;
-        float* dynBox = stackalloc float[DynSpheres * 6];
+        float* dynBox = stackalloc float[DynSpheres * MoverBoxF];
         CubeDynSphereGen++;
         for (int rank = 0; rank < have; rank++)
         {
@@ -1656,6 +1701,33 @@ public sealed unsafe partial class CasterPass : IExtenderService
                $"half-extent {ShadowMath.CascadeRadius(0, _cascades, _maxDist):F0}u)";
     }
 
+    /// <summary>Cold diagnostic, once per period: the six widest live casters by stored sphere, and how many live
+    /// casters belong to a scene that is not a world scene -- the population a whole-map shadow would come from.</summary>
+    private static void LogLargestCasters()
+    {
+        Span<int> top = stackalloc int[6];
+        top.Fill(-1);
+        int foreign = 0;
+        for (int q = 0; q < _liveCount; q++)
+        {
+            if (AlloyRenderer.CasterNotWorld(_liveSlot[q])) foreign++;
+            float r = _liveR[q];
+            for (int t = 0; t < top.Length; t++)
+            {
+                if (top[t] >= 0 && _liveR[top[t]] >= r) continue;
+                for (int u = top.Length - 1; u > t; u--) top[u] = top[u - 1];
+                top[t] = q;
+                break;
+            }
+        }
+        var sb = new System.Text.StringBuilder($"CasterPass: [largest] {_liveCount} live, {foreign} outside a world scene, cover fresh {_coverFreshFrames}/{_frames} frames, cascades fresh {_cascFreshFrames}/{_frames}");
+        _coverFreshFrames = 0; _cascFreshFrames = 0;
+        foreach (int q in top)
+            if (q >= 0) sb.Append("\n    r=").Append(_liveR[q].ToString("F1")).Append(' ').Append(AlloyRenderer.DescribeCasterSlot(_liveSlot[q]));
+        _log?.Info(sb.ToString());
+    }
+    private static int _coverFreshFrames, _cascFreshFrames;
+
     /// <summary>Module unload, a PartTable wipe and a lost 4.6 context all invalidate every recorded
     /// identity wholesale; the period line is the only evidence the pass runs at all.
     /// <para>#118: this runs from the pass slot, which need not fire outside a module at all, so the InModule
@@ -1667,12 +1739,11 @@ public sealed unsafe partial class CasterPass : IExtenderService
         bool inModule = GameGate.InModule;
         if (_wasInModule && !inModule) Release("module unload");
         _wasInModule = inModule;
-        if (_tableGen != PartTable.TableGen)
-        { Release("part table wiped"); _tableGen = PartTable.TableGen; }
 
         int period = _loggedOnce ? LogEvery : FirstLogAt;
         if (++_frames < period) return;
         _loggedOnce = true;
+        LogLargestCasters();
         _log?.Info($"CasterPass: [casters] {CascadeCount}/{_cascades} sun cascades at {_mapSize}px out to " +
                    $"{_maxDist:F0}u" + FitReadout() +
                    $", {(float)_cubeLightsSum / _frames:F1}/{_cubeLights} local cubes at {_cubeSize}px" +
@@ -1715,7 +1786,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                    $"mover {_bakeWhy[WhySun + 2]}; cube: blanket {_bakeWhy[WhyCube]}, key {_bakeWhy[WhyCube + 1]}, " +
                    $"mover {_bakeWhy[WhyCube + 2]}) " +
                    $"(predicate {(_rebake ? "on" : "OFF -- /shadow rebake 1")}, " +
-                   $"{(float)_moverSum / _frames:F1} movers/frame -- matrix {(float)_mvMatrix / _frames:F1} (r mean {(_mvMatrix > 0 ? _mvMatrixR / _mvMatrix : 0f):F2} max {_mvMatrixRMax:F2} m = '{(_mvMatrixRMaxSlot >= 0 ? AlloyRenderer.SlotTexName(_mvMatrixRMaxSlot) : "")}', dynmin {Shadows.DynMin.V:F1}), " +
+                   $"{(float)_moverSum / _frames:F1} movers/frame -- matrix {(float)_mvMatrix / _frames:F1} (r mean {(_mvMatrix > 0 ? _mvMatrixR / _mvMatrix : 0f):F2} max {_mvMatrixRMax:F2} m = '{(_mvMatrixRMaxSlot >= 0 ? AlloyRenderer.SlotTexNameDb(_mvMatrixRMaxSlot) : "")}', dynmin {Shadows.DynMin.V:F1}), " +
                    $"bones {(float)_mvBone / _frames:F1}, dangly {(float)_mvDangly / _frames:F1}, " +
                    $"vertex-dirty {(float)_mvVertex / _frames:F1}, appeared {(float)_mvAppear / _frames:F1}, " +
                    $"{(float)_ghostSum / _frames:F1} vanished, " +
@@ -1787,11 +1858,13 @@ public sealed unsafe partial class CasterPass : IExtenderService
                    // terms after it.
                    $", {_texWithAlpha}/{_texQueried} caster textures carry alpha -> " +
                    $"{_submitMasked} alpha-tested depth draws this period" +
-                   $", {AlloyRenderer.HandlesZeroed} handle entries zeroed under a dying texture and " +
+                   $", {AlloyRenderer.HandlesZeroed} handle entries zeroed under a dying texture " +
+                   $"({Db.TexRegistry.HandlesDropped} of the handles were the DB registry's own) and " +
                    $"{AlloyRenderer.BakeHandleUploads} bakes uploaded the handle table ahead of the colour bracket (since boot)" +
                    (_maskNoTex + _maskNoProg == 0 ? ""
                     : $" ({_maskNoTex} masked casters have no diffuse this frame, " +
-                      $"{_maskNoProg} no cutout program -- each casts nothing)"));
+                      $"{_maskNoProg} no cutout program -- each casts nothing)") +
+                   SunRxReadout());
         _frames = 0; _mdiCalls = 0; _mdiSkipped = 0; _gAudits = 0; _gStaleWords = 0;
         _dSrcFrames = 0; _dSrcDraws = 0; _dSrcOver = 0; _dSrcAudits = 0; _dSrcMiss = 0; _dSrcHalf = 0; _dSrcExtra = 0;
         _ctxTicks = 0; _ctxFrames = 0;
@@ -1811,6 +1884,23 @@ public sealed unsafe partial class CasterPass : IExtenderService
         CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0; CasterGather.SampledRx = 0; _rxEpochs = 0;
         CasterGather.UploadsSkipped = 0; CasterGather.Uploads = 0;
     }
+
+    /// <summary>CX-120: the sun RECEIVER's side of the publish, cold and once per period. The one clause that
+    /// separates "no cascade was baked" from "the cascades were published and the receiver read none of
+    /// them": <see cref="CascadesFresh"/>'s terms spelled out, cascade 0's fit as published, and the
+    /// <c>uSunCascades</c>/<c>uSunVp[0]</c> the last pass block actually carried. A publication the receiver
+    /// did not take is a gate fault; one it took against an empty map is a bake fault, and nothing else
+    /// tells the two apart.
+    /// <para><c>published</c> rather than <see cref="CascadesFresh"/>: this runs from <see cref="Lifecycle"/>,
+    /// which is past this frame's <c>_frameSeq++</c> and before this frame's bake, so the stamp to compare
+    /// against here is the PREVIOUS frame's.</para></summary>
+    private static string SunRxReadout()
+        => $" | [sunrx] published={_cascadeStamp == _frameSeq - 1} count={CascadeCount} tex={CascadeTex} " +
+           $"stamp={_cascadeStamp} seq={_frameSeq} interior={FrameInputs.Interior} hasSun={FrameInputs.HasSun} " +
+           $"| c0 baked={_sunBaked[0]} fit={_sunFitValid[0]} mover={_sunHadMover[0]} " +
+           $"c=({_sunFitC[0]:F1},{_sunFitC[1]:F1},{_sunFitC[2]:F1}) r={CascadeFitRadius[0]:F1} " +
+           $"vpcol3=({CascadeVp[12]:F3},{CascadeVp[13]:F3},{CascadeVp[14]:F3},{CascadeVp[15]:F3}) " +
+           $"dyn={SunDynMask[0]:F0} | {AlloyRenderer.SunRxNote()}";
 
     /// <summary>#306: the per-layer static re-bake rates, "L0 0,2/L1 0,1/..." -- cold, period line only.</summary>
     private static string SunLayerReadout()
@@ -1840,6 +1930,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <summary>Fold one mover's box into at most <see cref="DynSpheres"/> AABBs (min xyz, max xyz): a new box
     /// while there is room, else the one whose squared extent grows least (which favours small boxes).
     /// Returns the box count.</summary>
+    /// <summary>Floats per mover box: min xyz, max xyz, and the lone mover's own radius (-1 once merged).</summary>
+    internal const int MoverBoxF = 7;
+
     private static int AddMoverBox(float* b, int n, float x, float y, float z, float r)
     {
         int at = n;
@@ -1849,27 +1942,50 @@ public sealed unsafe partial class CasterPass : IExtenderService
             float best = float.MaxValue;
             for (int i = 0; i < n; i++)
             {
-                float* e = b + i * 6;
+                float* e = b + i * MoverBoxF;
                 float ux = MathF.Max(e[3], x + r) - MathF.Min(e[0], x - r), uy = MathF.Max(e[4], y + r) - MathF.Min(e[1], y - r),
                       uz = MathF.Max(e[5], z + r) - MathF.Min(e[2], z - r);
                 float ex = e[3] - e[0], ey = e[4] - e[1], ez = e[5] - e[2];
                 float d = ux * ux + uy * uy + uz * uz - (ex * ex + ey * ey + ez * ez);
                 if (d < best) { best = d; at = i; }
             }
-            float* t = b + at * 6;
+            float* t = b + at * MoverBoxF;
+            t[6] = -1f;
             t[0] = MathF.Min(t[0], x - r); t[1] = MathF.Min(t[1], y - r); t[2] = MathF.Min(t[2], z - r);
             t[3] = MathF.Max(t[3], x + r); t[4] = MathF.Max(t[4], y + r); t[5] = MathF.Max(t[5], z + r);
             return n;
         }
-        float* w = b + at * 6;
-        w[0] = x - r; w[1] = y - r; w[2] = z - r; w[3] = x + r; w[4] = y + r; w[5] = z + r;
+        float* w = b + at * MoverBoxF;
+        w[0] = x - r; w[1] = y - r; w[2] = z - r; w[3] = x + r; w[4] = y + r; w[5] = z + r; w[6] = r;
         return n + 1;
     }
 
-    /// <summary>Publish a slot's mover spheres: the boxes' bounding spheres, or -- with no box (roaming, or no
-    /// mover found) -- the light's whole reach in sphere 0, which is the conservative answer.</summary>
+    /// <summary>Metres the hot-path ray test forgives round every mover sphere, before the angular share below.</summary>
+    private const float HotPadM = 0.05f;
+    /// <summary>How far, in dyn-page texels, the mover-visibility read (cx_localshadow <c>CxMoverVisQ</c>) can
+    /// sample off the fragment's own ray: the soft disc's diagonal (sqrt 2), the hardware tap's bilinear texel
+    /// (1), the normal offset at its slope ceiling (CX_LOCAL_NORMAL_OFFSET 1 + CX_LOCAL_SLOPE_OFFSET 0.75 x
+    /// CX_LOCAL_SLOPE_MAX 2). A texel at major-axis distance m is 2 m / face size, so this is an ANGLE.</summary>
+    internal const float HotPadTexels = 1.4143f + 1f + 1f + 0.75f * 2f;
+
+    /// <summary>The slack a mover sphere <paramref name="d"/> metres from its light is published with: everything
+    /// the shadow read can reach past the sphere's own cone. It was a flat 0.3 m, three times a rat's radius --
+    /// a rat under a torch turned ten times its own shadow's area hot.</summary>
+    internal static float HotPad(float d) => HotPadM + 2f * HotPadTexels / _cubeDynSize * d;
+
+    /// <summary>Hot-path census since boot: slots publishing mover spheres, the spheres, the spheres whose light
+    /// stands inside their own cone's apex reach (every fragment in the light's range is hot), roaming slots.
+    /// Read by the period line and by <c>/alloy bench</c> per step.</summary>
+    internal static long HotSlots, HotSpheres, HotEngulf, HotRoam;
+    /// <summary>Casters admitted as moving, summed since boot (the bench's per-step "what the scene did").</summary>
+    internal static long MoverFrames;
+
+    /// <summary>Publish a slot's mover spheres, each padded by <see cref="HotPad"/> for its distance from the
+    /// light: the boxes' bounding spheres, or -- with no box (roaming, or no mover found) -- the light's whole
+    /// reach in sphere 0, which is the conservative answer.</summary>
     private static void WriteDynSpheres(int slot, int boxes, float* b, Vector3 pos, float far)
     {
+        if (boxes == 0) HotRoam++; else HotSlots++;
         for (int i = 0; i < DynSpheres; i++)
         {
             int k = (slot * DynSpheres + i) * 4;
@@ -1880,10 +1996,17 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 continue;
             }
             if (i >= boxes) { CubeDynSphere[k + 3] = -1f; continue; }
-            float* e = b + i * 6;
+            float* e = b + i * MoverBoxF;
             float hx = (e[3] - e[0]) * 0.5f, hy = (e[4] - e[1]) * 0.5f, hz = (e[5] - e[2]) * 0.5f;
             CubeDynSphere[k] = e[0] + hx; CubeDynSphere[k + 1] = e[1] + hy; CubeDynSphere[k + 2] = e[2] + hz;
-            CubeDynSphere[k + 3] = MathF.Sqrt(hx * hx + hy * hy + hz * hz);
+            // a lone mover's box is its sphere's cube: the corner sphere (r x 1.73) tripled the shadow cone every
+            // fragment under a hot light ray-tests, and with it the fragments that pay the hot path
+            float r = e[6] >= 0f ? e[6] : MathF.Sqrt(hx * hx + hy * hy + hz * hz);
+            float dx = e[0] + hx - pos.X, dy = e[1] + hy - pos.Y, dz = e[2] + hz - pos.Z, dd = dx * dx + dy * dy + dz * dz;
+            r += HotPad(MathF.Sqrt(dd));
+            CubeDynSphere[k + 3] = r;
+            HotSpheres++;
+            if (dd <= 2f * r * r) HotEngulf++;
         }
     }
 
@@ -1974,10 +2097,15 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <summary>This frame's GL texture id for a masked caster's diffuse, 0 if it does not resolve. Cold
     /// relative to the draw (once per masked caster per collect), and never cached -- see
     /// <see cref="_liveTex"/>.</summary>
-    private static int MaskTid(IntPtr mat)
+    /// <summary>The caster's alpha-mask texture id. A DB caster has no engine material at all
+    /// (<c>_oMat</c> is <c>IntPtr.Zero</c>), so its id comes off the draw recipe instead -- calling the
+    /// engine's GetTexture on a null material took the client down the moment arena casters started
+    /// staging.</summary>
+    private static int MaskTid(in AlloyRenderer.CasterFacts f)
     {
-        if (_getTexture == null) return 0;
-        return AurTex.Tid((IntPtr)_getTexture(mat, 0));
+        if (AlloyRenderer.IsArenaVao(f.Vao)) return AlloyRenderer.DbCasterTid(f.Slot);
+        if (_getTexture == null || f.Mat == IntPtr.Zero) return 0;
+        return AurTex.Tid((IntPtr)_getTexture(f.Mat, 0));
     }
 
     /// <summary>One-shot 4.6-side setup shared by both views: the depth program and the FBO every layer is
@@ -2219,7 +2347,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             }
             if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
-            CasterGather.DrawLayer(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g], vn);
+            CasterGather.DrawLayer(BatchMode(g), g, _gStart[g], _gLen[g], vn);
             _mdiCalls++;
         }
     }
@@ -2290,7 +2418,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 if (AlloyRenderer.SlotSkinned(slot) != (pass == 0)) continue;
                 if (!AlloyRenderer.TryCaster(slot, out var f)) continue;
                 // Re-read live: Repack moves the item tables under everyone.
-                if (!TryRange(f.Vdo, f.Item, out int idxCount, out uint first, out uint baseVert)) continue;
+                if (!CasterRange(in f, out int idxCount, out uint first, out uint baseVert)) continue;
                 _liveSlot[live] = slot;
                 _liveCx[live] = f.Cx; _liveCy[live] = f.Cy; _liveCz[live] = f.Cz;
                 _liveR[live] = f.R;
@@ -2301,7 +2429,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 _liveVao[live] = f.Vao; _livePrim[live] = f.Prim; _liveItem[live] = f.Item;
                 // A skinned caster is never alpha-tested: the cutout stage has no skinning branch, so a
                 // masked skinmesh would punch its holes out of a BIND pose. Same set the capture cast solid.
-                _liveTex[live] = !f.Skinned && AlloyRenderer.VdoHasUv(f.Vao) ? MaskTid(f.Mat) : 0;
+                _liveTex[live] = !f.Skinned && AlloyRenderer.VdoHasUv(f.Vao) ? MaskTid(in f) : 0;
                 // Review: the triage counter lost its writer in the rework -- a masked-eligible caster whose
                 // diffuse did not resolve THIS frame casts solid, and this is the number that says how often.
                 if (_liveTex[live] == 0 && !f.Skinned && AlloyRenderer.VdoHasUv(f.Vao)) _maskNoTex++;
@@ -2401,7 +2529,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         else if (dangly) _mvDangly++;
         else if (vDirty) _mvVertex++;
         else mover = false;
-        if (mover) _moverIdx[_moverCount++] = live;
+        if (mover) { _moverIdx[_moverCount++] = live; MoverFrames++; }
         // #336: _dynStamp is the frame the caster last MOVED; it stays dynamic for _dynHold frames after.
         bool moving = skinned || dangly || recMoved || vDirty;
         int last = _dynStamp[slot];
@@ -2427,10 +2555,10 @@ public sealed unsafe partial class CasterPass : IExtenderService
         {
             int m = _moverIdx[q], slot = _liveSlot[m];
             string why = m < _liveCreatures ? "bones" : AlloyRenderer.SlotRecMoved(slot) ? "matrix"
-                         : AlloyRenderer.SlotDangly(slot) ? "dangly" : _vDirty[_liveVao[m]] ? "vertex-dirty" : "appeared";
-            Count($"{why} {AlloyRenderer.SlotTexName(slot)}");
+                         : AlloyRenderer.SlotDangly(slot) ? "dangly" : AlloyRenderer.VdoDirty(_liveVao[m]) ? "vertex-dirty" : "appeared";
+            Count($"{why} {AlloyRenderer.SlotTexNameDb(slot)}");
         }
-        for (int q = 0; q < _sMoverCount; q++) Count($"STATIC-EVENT {AlloyRenderer.SlotTexName(_liveSlot[_sMoverIdx[q]])}");
+        for (int q = 0; q < _sMoverCount; q++) Count($"STATIC-EVENT {AlloyRenderer.SlotTexNameDb(_liveSlot[_sMoverIdx[q]])}");
         var top = new List<KeyValuePair<string, int>>(groups);
         top.Sort((a, b) => b.Value.CompareTo(a.Value));
         var sb = new System.Text.StringBuilder();
@@ -2841,6 +2969,16 @@ public sealed unsafe partial class CasterPass : IExtenderService
          : sets == 1 << CasterGather.SetStatic ? _gDynN[g] >= _gLen[g]
          : false;
 
+    /// <summary>CX-120: the GL primitive one batch draws. An ARENA batch is TRIANGLES by construction -- the
+    /// mesh arena holds one topology, and a DB slot carries no engine primitive enum to translate. Putting it
+    /// through the engine's <c>PrimTypeTranslationTable</c> anyway read index 0 for every draw recipe, which
+    /// that table answers <c>GL_POINTS</c>: every sun cascade was baked out of a few hundred single-pixel
+    /// depth samples, so the bake issued its draws, counted its survivors and left a map with nothing in it
+    /// to shadow with. The colour path already spells this same rule on its batch row.
+    /// <para>A batch cannot straddle the two: the VAO id is part of the staging key.</para></summary>
+    private static uint BatchMode(int g)
+        => AlloyRenderer.IsArenaVao(_gVao[g]) ? Gl.TRIANGLES : _primTable[_gPrim[g]];
+
     /// <summary>Per batch: the mask is sampled through the record's handle (no texture in the key).</summary>
     private static readonly bool[] _gH = new bool[MaxCasters];
     /// <summary>Batches that bind a mask texture (one indirect call per flush each) and batches that sample
@@ -2929,18 +3067,29 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // #265: resolve the OWNED name first and put the coverage question to IT -- the mask and colour
             // passes sample the owned copy, which may be a BCn transcode whose block-quantized alpha sits on
             // the other side of the cutout from the engine's raw original.
-            int drawTex = _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
+            // CX-120: a DB caster's diffuse lives in the scene database's own texture registry -- another id
+            // space and another coverage memo -- so BOTH questions go there instead (DbCasterMask). Asked
+            // through OwnedTextures they came back as the registry slot NUMBER to bind as a GL name and
+            // "never scanned" for every texture, which is how 813 arena casters alpha-tested against
+            // someone else's texture and the sun cascades baked empty.
+            bool db = AlloyRenderer.DbSlot(_liveSlot[i]);
+            int dbTex = 0; float dbHoles = 0f, dbGraded = 0f;
+            if (db) AlloyRenderer.DbCasterMask(_liveSlot[i], out dbTex, out dbHoles, out dbGraded);
+            int drawTex = db ? dbTex : _liveTex[i] != 0 ? OwnedTextures.Draw(_liveTex[i]) : 0;
             // mode 0 never masks, so it never reads a texture back either (the scan is a glGetTexImage of
             // the owned name in the 4.6 context; /shadow mask skip is the A/B for it)
             // #363: a translucent diffuse (glass) has no holes at all; it qualifies on its graded fraction
             // instead and skips the mode-2 hole gate, which would hand it straight back to the solid stage.
-            bool glass = drawTex != 0 && _maskDither > 0 && (_liveBlend[i] || TexGraded(drawTex) >= _maskGraded);
-            int masked = drawTex != 0 && _progMask != 0 && _maskMode != 0 && (glass || TexHasAlpha(drawTex)) ? drawTex : 0;
+            bool glass = drawTex != 0 && _maskDither > 0
+                         && (_liveBlend[i] || (db ? dbGraded : TexGraded(drawTex)) >= _maskGraded);
+            int masked = drawTex != 0 && _progMask != 0 && _maskMode != 0
+                         && (glass || (db ? dbHoles > 0f : TexHasAlpha(drawTex))) ? drawTex : 0;
             if (masked == 0 && _liveTex[i] != 0 && _progMask == 0) _maskNoProg++;
             // The mask MODE is decided here, in the key, not at the draw: a masked texture the mode draws
             // solid merges into its (VAO, prim) batch instead of costing one indirect call per view per
             // texture. The knobs bump _listVer so a change re-stages.
-            if (masked != 0 && (_maskMode == 0 || (_maskMode == 2 && !glass && TexHoles(masked) < _maskHoles))) masked = 0;
+            if (masked != 0 && (_maskMode == 0
+                                || (_maskMode == 2 && !glass && (db ? dbHoles : TexHoles(masked)) < _maskHoles))) masked = 0;
             if (masked != 0 && _maskMode < 0) continue;
             // a blended caster the mask stage cannot take (no diffuse, no UVs, mask off) casts nothing, as before #363
             if (_liveBlend[i] && masked == 0) continue;
@@ -3032,7 +3181,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             }
             if (mode == 1 && cut0 != boundTex) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)cut0); boundTex = cut0; }
             if (_gVao[g] != boundVao) { Gl.BindVertexArray(AlloyRenderer.CasterVao(_gVao[g])); boundVao = _gVao[g]; }
-            CasterGather.Draw(_primTable[_gPrim[g]], g, _gStart[g], _gLen[g]);
+            CasterGather.Draw(BatchMode(g), g, _gStart[g], _gLen[g]);
             _mdiCalls++;
         }
         CasterGather.End();

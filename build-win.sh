@@ -63,11 +63,12 @@ fi
 echo ">> compiling the version.dll proxy half (native/bootstrap_win.c -> .obj)..."
 # Linked INTO cx_managed.dll by the publish below, which is why it is compiled first.
 clang-cl -c -O2 -GS- native/bootstrap_win.c -Fo:build/bootstrap_win.obj
-clang-cl -c -O2 -GS- native/cxthunk.c -Fo:build/cxthunk_win.obj   # the throwing-function wrappers (see build.sh)
+# The C wrappers (see build.sh); the crash stamp uses stdio, so the CRT headers, /MT as NativeAOT's static CRT.
+WINC="/I$WABS/inc/um /I$WABS/inc/shared /I$WABS/inc/ucrt /I$WABS/inc/msvc -Xclang -ivfsoverlay -Xclang $WABS/vfs.yaml -w"
+clang-cl -c -O2 -MT -GS- $WINC native/cxthunk.c -Fo:build/cxthunk_win.obj
 # #673: xatlas for version.dll, the same flags as build.sh's (see there); /MT to match NativeAOT's static CRT.
 if [ ! -f build/cxatlas.lib ] || [ native/xatlas/xatlas.cpp -nt build/cxatlas.lib ] || [ native/cxatlas.cpp -nt build/cxatlas.lib ]; then
   echo ">> building xatlas (cxatlas.lib, clang-cl cross)..."
-  WINC="/I$WABS/inc/um /I$WABS/inc/shared /I$WABS/inc/ucrt /I$WABS/inc/msvc -Xclang -ivfsoverlay -Xclang $WABS/vfs.yaml -w"
   clang-cl -c -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG -DXA_MULTITHREADED=0 $WINC native/xatlas/xatlas.cpp -Fo:build/xatlas_win.obj
   clang-cl -c -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG -DXA_MULTITHREADED=0 $WINC native/cxatlas.cpp -Fo:build/cxatlas_win.obj
   llvm-lib -out:build/cxatlas.lib build/xatlas_win.obj build/cxatlas_win.obj
@@ -81,7 +82,6 @@ python3 tools/deps.py steamaudio build/deps/sa
 OAL=build/deps/openal-soft-1.25.2
 if [ ! -f build/cxaudio.lib ] || [ native/cxaudio.cpp -nt build/cxaudio.lib ]; then
   echo ">> building the audio core (cxaudio.lib, clang-cl cross)..."
-  WINC="/I$WABS/inc/um /I$WABS/inc/shared /I$WABS/inc/ucrt /I$WABS/inc/msvc -Xclang -ivfsoverlay -Xclang $WABS/vfs.yaml -w"
   clang-cl -c -std:c++17 -O2 -MT -GS- -EHs-c- -GR- -DNDEBUG $WINC -Ithird_party/steamaudio -I"$OAL/include" \
     native/cxaudio.cpp -Fo:build/cxaudio_win.obj
   llvm-lib -out:build/cxaudio.lib build/cxaudio_win.obj

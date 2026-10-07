@@ -66,9 +66,6 @@ internal static unsafe class AnimKeys
         return _engineFloat != null && _engineVector != null && scale != null;
     }
 
-    /// <summary>Bezier tracks handed to the engine since the last period, for the period line.</summary>
-    internal static int TakeBezier() { int n = _bezier; _bezier = 0; return n; }
-
     /// <summary>
     /// <c>NewController::GetKeyIndexAndAlpha</c>: <paramref name="idx"/> is 0 at or before the first key,
     /// <paramref name="n"/> past the last, and otherwise the index whose key time first reaches
@@ -228,10 +225,6 @@ internal static unsafe class AnimKeys
                 if (!Float(ctrl, node, t, out float v)) return;
                 float* f = (float*)(part + off);
                 float next = w * v + (1f - w) * *f;
-                // BW3: with anim.owned this store is the ONLY writer of part alpha, so it is where a cached
-                // alpha goes stale (PartTable.NoteAlphaWrite). Marked on a CHANGE only, so a held pose costs
-                // one compare and no probe.
-                if (off == EngineLayout.PartAlpha && next != *f) PartTable.NoteAlphaWrite(part);
                 *f = next;
                 return;
             }

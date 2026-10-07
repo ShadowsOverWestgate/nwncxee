@@ -32,23 +32,10 @@ internal static class AnimKnobs
     internal static readonly Gated<bool> Drive;
     internal static readonly Gated<bool> Aim;
     internal static readonly Gated<float> Hit;
-    /// <summary>CX-106: does Alloy own the animation runtime? On, <c>Scene::Animate</c> and the body of
-    /// <c>Gob::Animate</c> are ours; off, both are the engine's and this is the A/B for anything that looks
-    /// wrong in an animation. NOT gated on <see cref="Enabled"/> -- the runtime is what plays the
-    /// animations, not a correction on top of them.</summary>
-    internal static readonly Knob<bool> Owned;
     /// <summary>AN6: announce <c>AnimateStaticLight</c> only where something can hear it. Off, every animated
     /// static light part re-announces every frame, as the engine does -- the A/B for a static light that stops
     /// responding to an animated colour.</summary>
     internal static readonly Knob<bool> StaticLight;
-    /// <summary>AN5: distance animation LOD -- a far, unpinned gob advances its queue every
-    /// <see cref="LodRate"/>th frame, by the summed frame times of the frames it held, so its animation keeps
-    /// its pace under a variable frame rate and every keyed event it crosses still fires in order.</summary>
-    internal static readonly Knob<bool> Lod;
-    /// <inheritdoc cref="Lod"/>
-    internal static readonly Knob<float> LodDist;
-    /// <inheritdoc cref="Lod"/>
-    internal static readonly Knob<int> LodRate;
 
     static AnimKnobs()
     {
@@ -102,25 +89,11 @@ internal static class AnimKnobs
             help: "During an attack the upper body bends toward the target's height: a bow shot at a creature on a ledge or a swing at a giant tilts up, a strike at a rat tilts down."), false);
         Hit = new(G.Slider("hitreact", "Hit reactions", 0f, 200f, 10f, 100f, "%", tier: Tier.ChatOnly,
             help: "A landed hit knocks the upper body away from the blow, harder for more damage and for a critical hit, on top of the engine's own flinch. 0 turns it off."), 0f);
-        Owned = G.Toggle("owned", "Play animations in CX", true, tier: Tier.ChatOnly,
-            help: "CX advances every animation itself -- the queue, the crossfades, the controllers, the "
-                + "vertex morphs and the animation events -- instead of the engine. Off, the engine does it, "
-                + "which is the A/B for anything that looks or sounds wrong in an animation: a missing "
-                + "footstep, a pose that jumps, a crossfade that snaps. Only with the CX renderer.");
         StaticLight = G.Toggle("staticlight", "staticlight", true, tier: Tier.ChatOnly,
             help: "An animated static light tells its gob so every frame, whether or not anything is "
                 + "listening; each announcement walks the tile BSP and allocates. On, CX announces only to a "
                 + "gob that has a handler which would receive it and a consumer that would act on it. Off, "
                 + "every announcement is made, which is the engine's own behaviour.");
-        Lod = G.Toggle("lod", "lod", true, tier: Tier.ChatOnly,
-            help: "Characters and props far from the camera take their animation in fewer, larger steps -- the "
-                + "same pace, the same footsteps and hit sounds, fewer poses computed. Cloaks and hair move "
-                + "every frame whatever this says; anything attached, anything carrying a light, and whatever "
-                + "the camera is following keep every frame of their own animation too.");
-        LodDist = G.Slider("loddist", "loddist", 20f, 120f, 5f, 45f, "m", tier: Tier.ChatOnly,
-            help: "How far from the camera the larger steps begin.");
-        LodRate = G.Slider("lodrate", "lodrate", 1, 4, 1, 2, tier: Tier.ChatOnly,
-            help: "How many frames one step covers out there. 1 is off.");
         G.Status = PoseService.Report;
     }
 

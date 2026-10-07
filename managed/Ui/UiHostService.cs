@@ -62,6 +62,36 @@ public sealed unsafe class UiHostService : IExtenderService
         log.Info("UiHostService: settings gear registered (main menu + in-game Options; opens the settings panel)");
     }
 
+    // ---- general.resizeat: the engine's re-layout path, pulled on a schedule ----
+
+    private static int _resizeAt = -1, _resizeStep, _resizeWide;
+    private static long _resizeFrom;
+
+    /// <summary>Pull the engine's own resize path twice, at the two times <see cref="General.ResizeAt"/> names:
+    /// halve the window's width, then put it back. Hot and allocation-free; with the knob at its 0 default it is
+    /// one compare a frame and the window is never touched.</summary>
+    private static void ResizeTick(IntPtr window)
+    {
+        if (_resizeAt < 0) _resizeAt = General.ResizeAt.Boot;
+        if (_resizeAt == 0 || window == IntPtr.Zero || _resizeStep > 1) return;
+        if (_resizeFrom == 0) { _resizeFrom = System.Diagnostics.Stopwatch.GetTimestamp(); return; }
+        long due = (long)(_resizeAt * (_resizeStep + 1)) * System.Diagnostics.Stopwatch.Frequency;
+        if (System.Diagnostics.Stopwatch.GetTimestamp() - _resizeFrom < due) return;
+        bool half = _resizeStep++ == 0;
+        if (EngineFn.SdlSetWindowSize == null || EngineFn.SdlGetWindowSize == null)
+        {
+            _resizeAt = 0;
+            _log?.Always("[resizeat] SDL_SetWindowSize/SDL_GetWindowSize did not resolve -- no resize this run");
+            return;
+        }
+        int w, h;
+        EngineFn.SdlGetWindowSize(window, &w, &h);
+        if (half) { _resizeWide = w; w /= 2; }
+        else if (_resizeWide > 0) w = _resizeWide;
+        _log?.Always($"[resizeat] {(half ? "halving" : "restoring")}: window -> {w}x{h} (SDL_SetWindowSize)");
+        EngineFn.SdlSetWindowSize(window, w, h);
+    }
+
     // ---- the main-menu gear (#593) ----
     private static readonly MenuGear _gear = new();
     private static Window? _gearWindow;
@@ -165,12 +195,17 @@ public sealed unsafe class UiHostService : IExtenderService
         {
             _announced = true;
             _log?.Info("UiHostService: first frame presented -- hook is LIVE");
+            CX.Services.CrashReport.Expose();
             _presentProbe = General.PresentProbe.Boot;
             int pin = General.Pin.Boot;
             if (pin >= 0) _log?.Info($"UiHostService: main thread pin={pin} -> {(Affinity.PinThis(pin) ? "pinned" : "REFUSED")} (was on cpu {Affinity.CurrentCpu})");
         }
+        ResizeTick(window);
         FrameRegistry.Global.Run(FramePhase.Start);
-        if (_nkSlot == null) DrawWindows();       // fallback: no nk_sdl_render chain -> draw here, above NUI
+        // CX-120: in DB mode the 2D UI is drawn BY the DB frame, after its view list, because the DB frame
+        // runs at PrePresent -- after this point -- and would otherwise overwrite everything drawn here.
+        // That is exactly what made CX's chat vanish the moment the world started drawing.
+        if (_nkSlot == null && !CX.Alloy.Renderer.On) DrawWindows();
         FrameRegistry.Global.Run(FramePhase.PrePresent);
         // Must be the LAST thing before the present -- after the window roll-call and after every PrePresent
         // participant (GlContextService's 4.6 bracket switches back to this context in there).
@@ -203,9 +238,13 @@ public sealed unsafe class UiHostService : IExtenderService
     [UnmanagedCallersOnly]
     private static void OnNkRender(float aa)
     {
-        DrawWindows();
+        if (!CX.Alloy.Renderer.On) DrawWindows();   // DB mode: the DB frame draws them, see OnSwap
         (*_nkSlot)(aa);
     }
+
+    /// <summary>CX-120: CX's own 2D windows, drawn by the DB frame after its view list. In mode 0 nothing
+    /// calls this -- the two sites above still do, unchanged.</summary>
+    internal static void DrawWindowsForDbFrame() => DrawWindows();
 
     /// <summary>Refresh the session gate, the UI scale and the viewport, run the z-order roll-call, then hand
     /// the GL state back. The hand-back is #210 (G1) one call earlier: our raw GL desyncs GLRender's shadow

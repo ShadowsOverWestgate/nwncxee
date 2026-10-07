@@ -17,7 +17,7 @@ internal static unsafe partial class RadialTree
     [UnmanagedCallersOnly]
     private static void FakeHandler(IntPtr self, long param) { _fakeSelf = self; _fakeParam = param; _fakeCalls++; }
 
-    /// <summary>The count-label gob (one line) beside the two-line label gob.</summary>
+    /// <summary>The count-label string (one line) beside the two-line label string.</summary>
     private static IntPtr _fakeCountGob;
 
     [UnmanagedCallersOnly]
@@ -40,8 +40,8 @@ internal static unsafe partial class RadialTree
     }
 
     /// <summary>A fake root laid out per the resolved <see cref="EngineLayout"/> rows (so the same check runs on either
-    /// platform's offsets), with a planted vptr, a text bubble + StringGob pair behind the exported readers (swapped
-    /// for managed fakes, since the stub host resolves nothing), a CGuiIcon blob with a count label, sentinel and set
+    /// platform's offsets), with a planted vptr, a text bubble + CAurString pair whose vtable carries managed fake
+    /// line readers at the resolved slots, a CGuiIcon blob with a count label, sentinel and set
     /// callbacks, the event-object global redirected at a stack cell so the bracket's restore can be asserted, and a
     /// faked <c>CreateSubMenu</c> so Materialize's parent link and BuildItems' row mapping are covered. Teardown is an
     /// engine call with no fake -- plumbing only, live-unverified.</summary>
@@ -57,6 +57,7 @@ internal static unsafe partial class RadialTree
         byte* bubble = (byte*)NativeMemory.AllocZeroed(0x200);
         byte* gob = (byte*)NativeMemory.AllocZeroed(0x600);
         byte* icon = (byte*)NativeMemory.AllocZeroed(0x48);
+        byte* textVt = (byte*)NativeMemory.AllocZeroed(VtSize);
         byte* line0 = (byte*)NativeMemory.AllocZeroed(32);
         byte* line1 = (byte*)NativeMemory.AllocZeroed(32);
         byte* countGob = (byte*)NativeMemory.AllocZeroed(0x600);
@@ -65,7 +66,7 @@ internal static unsafe partial class RadialTree
         IntPtr eventCell = IntPtr.Zero;
 
         var savedVptr = _vptr[(int)RootKind.Door];
-        var savedCount = _getTextLineCount; var savedLine = _getTextLine; var savedEvent = _eventObject;
+        var savedEvent = _eventObject;
         var savedCreate = _createSubMenu;
         try
         {
@@ -97,12 +98,13 @@ internal static unsafe partial class RadialTree
             "Cast "u8.CopyTo(new Span<byte>(line0, 32));
             "Spell"u8.CopyTo(new Span<byte>(line1, 32));
             _line0 = (IntPtr)line0; _line1 = (IntPtr)line1; _fakeGob = (IntPtr)gob;
-            new CGuiTextBubble((IntPtr)bubble).AurString = new StringGob((IntPtr)gob).AurString;
+            *(IntPtr*)(textVt + EngineLayout.AurStringGetTextLineCountSlot) = (IntPtr)(delegate* unmanaged<IntPtr, int>)&FakeLineCount;
+            *(IntPtr*)(textVt + EngineLayout.AurStringGetTextLineSlot) = (IntPtr)(delegate* unmanaged<IntPtr, int, IntPtr>)&FakeLine;
+            *(IntPtr*)gob = *(IntPtr*)countGob = (IntPtr)textVt;
+            new CGuiTextBubble((IntPtr)bubble).AurString = new CAurString((IntPtr)gob);
             "3"u8.CopyTo(new Span<byte>(countLine, 32));
             _countLine = (IntPtr)countLine; _fakeCountGob = (IntPtr)countGob;
-            new CGuiIcon((IntPtr)icon).CountLabel = new StringGob((IntPtr)countGob).AurString;
-            _getTextLineCount = &FakeLineCount;
-            _getTextLine = &FakeLine;
+            new CGuiIcon((IntPtr)icon).CountLabel = new CAurString((IntPtr)countGob);
             _createSubMenu = &FakeCreate;
             _fakeChild = (IntPtr)child;
 
@@ -183,10 +185,10 @@ internal static unsafe partial class RadialTree
         finally
         {
             _vptr[(int)RootKind.Door] = savedVptr;
-            _getTextLineCount = savedCount; _getTextLine = savedLine; _eventObject = savedEvent; _createSubMenu = savedCreate;
+            _eventObject = savedEvent; _createSubMenu = savedCreate;
             _fakeGob = _fakeCountGob = _fakeChild = IntPtr.Zero; _line0 = _line1 = _countLine = IntPtr.Zero;
             NativeMemory.Free(menu); NativeMemory.Free(fakeVt); NativeMemory.Free(handlerVt); NativeMemory.Free(handlerObj);
-            NativeMemory.Free(bubble); NativeMemory.Free(gob); NativeMemory.Free(icon); NativeMemory.Free(line0); NativeMemory.Free(line1);
+            NativeMemory.Free(bubble); NativeMemory.Free(gob); NativeMemory.Free(icon); NativeMemory.Free(textVt); NativeMemory.Free(line0); NativeMemory.Free(line1);
             NativeMemory.Free(countGob); NativeMemory.Free(countLine); NativeMemory.Free(child);
         }
         log.Info(check.Ok ? "RadialTree.SelfCheck: passed" : "RadialTree.SelfCheck: FAILED");

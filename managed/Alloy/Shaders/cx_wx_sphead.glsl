@@ -11,6 +11,7 @@ uniform int uLit;              // 1 = take the light rig; 0 = flat area terms
 // z = the disc radius in metres, w = pixels per metre at unit view depth (the distance fade's scale)
 uniform vec4 uSplashP;
 uniform vec3 uSplashC;         // xy = the disc centre (the camera's follow target), z = the height the cover ray starts from
+uniform vec2 uSplashV;         // the centre's xy velocity, m/s: a crown is placed off where the centre was when it was born
 uniform sampler2D uCoverDepth; // the cover layer as plain depth (Weather.Esm's texture view)
 uniform mat4 uCoverVp;         // world -> the cover view's clip space; zero matrix = no map, and nothing draws
 uniform mat4 uCoverVpInv;      // ...and back, for the landing point

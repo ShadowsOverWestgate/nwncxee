@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Alloy.Db;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
@@ -30,7 +31,7 @@ namespace CX.Alloy;
 /// world space by <c>BSPCreateStaticProjections</c>, which is why the identity is also the only base that
 /// makes sense for them.</para>
 /// </summary>
-internal static unsafe class Beams
+internal static unsafe partial class Beams
 {
     /// <summary>The Aurora primitive id <c>PartBeam::Draw</c> hard-codes.</summary>
     private const int BeamPrim = 4;
@@ -48,9 +49,14 @@ internal static unsafe class Beams
     /// initialiser (<c>_INIT_14</c> @0x51739a) to {1,1,1} and by nothing else. The alpha is read live off
     /// <c>projectionalpha</c>, which IS a console variable.</summary>
     private const float TintRgb = 1f;
-    /// <summary>Fallback alpha when <c>projectionalpha</c> does not resolve -- the value the engine's own
-    /// initialiser writes.</summary>
-    private const float DefaultAlpha = 0.2f;
+    /// <summary>Fallback alpha when <c>projectionalpha</c> does not resolve.
+    /// <para>MEASURED, and it was wrong: this read 0.2, which is four times what the engine writes. The only
+    /// writers are <c>CNWCArea</c>'s four time-of-day setters -- <c>SetAsDay</c> and <c>SetAsDusk</c> store
+    /// <c>0x3d4ccccd</c> (0.05) and <c>SetAsDawn</c>/<c>SetAsNight</c> store 0 -- so a session whose symbol
+    /// did not resolve drew every shaft four stops proud of vanilla's, and drew them at night as well.
+    /// 0.05 is the daylight value; the dark half of the day is the engine's own and is not a fallback's to
+    /// guess at.</para></summary>
+    private const float DefaultAlpha = 0.05f;
     private const uint GlUnsignedShort = 0x1403;   // not-an-offset: GL enum
     /// <summary>The engine attribute locations a beam VDO carries, from <c>GLRender::ConnectShaderData</c>'s
     /// bind table @0x4ce8e0: <c>vPos</c> at 0 and <c>fProjectionFrontal</c> at 10. That pair is why beams
@@ -71,8 +77,11 @@ internal static unsafe class Beams
     /// entry exists exactly while the engine's own classification holds it.</summary>
     internal struct Beam
     {
-        public IntPtr Part, Vdo;
+        public IntPtr Vdo;
         public int Item, Vao;
+        /// <summary>CX-120 (DB mode): the database part this beam is, and its mesh-arena range. Both -1 on the
+        /// engine path, where the geometry is a baked projection VDO instead.</summary>
+        public int Part, Range;
     }
 
     private static readonly Beam[] _beams = new Beam[MaxBeams];
@@ -85,15 +94,6 @@ internal static unsafe class Beams
 
     // per-VDO VAO cache, ours alone: two attributes, harvested in the ENGINE context at capture and built in
     // the 4.6 one at draw (VAOs do not share across contexts; buffers do -- #70).
-    private static readonly IntPtr[] _vVdo = new IntPtr[MaxVdos];
-    private static readonly uint[] _vVao = new uint[MaxVdos];
-    private static readonly uint[] _vElemBuf = new uint[MaxVdos];
-    private static readonly VertexStream[] _vPos = new VertexStream[MaxVdos], _vFr = new VertexStream[MaxVdos];
-    private static readonly bool[] _vStale = new bool[MaxVdos];
-    private static readonly VdoSig[] _vSig = new VdoSig[MaxVdos];
-    /// <summary>#260: are the pools behind this slot ones Alloy uploaded? Reported, not chosen between.</summary>
-    private static readonly bool[] _vOwned = new bool[MaxVdos];
-    private static int _vdoCount;
 
     private static ExtenderLog? _log;
     /// <summary>The model base, taken once per enrollment. Every beam shares it: the bucket-15 volumes are
@@ -106,12 +106,7 @@ internal static unsafe class Beams
     /// <summary>The player's own switch (<c>effects.beams</c>). Distinct from <see cref="_off"/>, which means
     /// the session cannot own beams at all: the hooks arm either way, so the toggle is live.</summary>
     private static bool Disabled => !Effects.Beams.V;
-    private static uint _prog;
-    private static int _locModel = -1, _locView = -1, _locProj = -1, _locSrc = -1, _locZClip = -1, _locColor = -1;
     private static int _enrolled, _refused, _drawn;
-    /// <summary>The Scene the table was enrolled from, and the one <see cref="Direction"/> is asked about:
-    /// the volumes were baked against this Scene's own light list.</summary>
-    private static IntPtr _scene;
 
     internal static void Install(ExtenderLog log, HookService hooks)
     {
@@ -125,193 +120,19 @@ internal static unsafe class Beams
         log.Info("Beams: armed -- bucket-15 volumes enumerated and drawn by Alloy (/effects beams toggles)");
     }
 
-    /// <summary>The population. Once per world frame, in ENGINE context, before the frame anchor --
-    /// <see cref="Harvest"/> queries engine VAOs and cannot run anywhere else. Allocation-free; a handful of
-    /// items per area.
-    /// <para>CX-104: the source is <see cref="SceneParts.Beams"/>, Alloy's own registry of the AREA's beam
-    /// parts, and not the engine's draw bucket 15. That bucket is filled by <c>AddPartsToDrawBuckets</c>
-    /// @0x4751d0 from <c>staticbeambucket</c>, which the BSP visitor (@0x481000) fills from the nodes the
-    /// frustum reached -- so it is the frame's in-view slice, and reading it made this pass's membership a
-    /// side effect of the engine's traversal. The registry is a MEMBERSHIP list, so every beam in the area is
-    /// enrolled and the GPU clips the ones off screen: a static projection volume is tens of vertices and an
-    /// area holds a handful, so the frustum test the engine did here buys nothing worth an offset nobody has
-    /// measured on Windows. <c>/buckets beams 0</c> is the A/B back to the bucket.</para>
-    /// <para>The table is still rebuilt from scratch each call rather than aged -- the registry has already
-    /// done the aging, and a dead entry is a zero the loop skips.</para></summary>
-    internal static void Enroll(IntPtr scene)
+    /// <summary>CX-120: the same direction out of the database. <see cref="FrameInputs.SunDir"/> is already the
+    /// direction the light TRAVELS (DbLights negates the area diffuse's <c>+0xac</c> for exactly this), and
+    /// <c>HasSun</c> carries the same two tests the engine's <c>GetShadowLights(1)</c> filter applied: the
+    /// light reaches past <see cref="EngineLayout.DirectionalRange"/> and it points downward. An interior has
+    /// no sun and draws no shafts, which is vanilla's behaviour there.</summary>
+    private static bool DirectionDb(out Vector3 dir)
     {
-        if (_off || Disabled || scene == IntPtr.Zero) return;
-        if (scene != _scene) { Forget(); _scene = scene; }
-        _count = 0;
-        _model = AlloyCamera.ModelBase;   // CX-109: the world frame's model base, no longer a stack read
-        DrawBucket buckets = new CX.Engine.Scene(scene).DrawBuckets;
-        if (Buckets.Beams.V && SceneParts.Ready)
-        {
-            ReadOnlySpan<IntPtr> beams = SceneParts.Beams;
-            _owned = beams.Length;
-            if (_owned == 0) SceneParts.WarnEmpty(BucketValidator.KindBeam, 0, BucketCount(buckets));
-            if (Buckets.Validate.V)
-                BucketValidator.CompareDrawBucket(BucketValidator.KindBeam, beams, buckets, BeamBucket,
-                                                  BucketGate.BucketPhases);
-            for (int i = 0; i < beams.Length; i++) if (beams[i] != IntPtr.Zero) Capture(beams[i]);
-            return;
-        }
-        _owned = -1;
-        for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
-        {
-            DrawBucket bucket = buckets[BeamBucket * BucketGate.BucketPhases + phase];
-            IntPtr* items = bucket.Items;
-            int n = bucket.Count;
-            if (items == null) continue;
-            for (int i = 0; i < n; i++)
-            {
-                IntPtr item = items[i];
-                if (item == IntPtr.Zero) continue;
-                PartBeam beam = new CX.Engine.Part(item).AsPartBeam();
-                if (!beam.IsNull) Capture(beam.Ptr);
-            }
-        }
-    }
-
-    /// <summary>Beams the registry offered this frame, or -1 when the enrolment read the engine's bucket.
-    /// </summary>
-    private static int _owned = -1;
-
-    /// <summary>How many parts the engine's own bucket 15 holds across its phases -- for the one-shot
-    /// "registry empty while the engine had some" line only.</summary>
-    private static int BucketCount(DrawBucket buckets)
-    {
-        int n = 0;
-        for (int phase = 0; phase < BucketGate.BucketPhases; phase++)
-        {
-            DrawBucket b = buckets[BeamBucket * BucketGate.BucketPhases + phase];
-            if (b.Items != null && b.Count > 0) n += b.Count;
-        }
-        return n;
-    }
-
-    private static void Capture(IntPtr part)
-    {
-        var pb = new PartBeam(part);
-        IntPtr vdo = pb.Vdo;
-        int item = pb.Item;
-        // Only the indexed-static path, which is what every resident VDO in this renderer is. A refusal now
-        // costs exactly one missing shaft: under the cutover the engine draws nothing, so there is no
-        // whole-class fallback to protect and no reason to stand the pass down for it.
-        if (vdo == IntPtr.Zero || new VdoRef(vdo).Mode != 1) { _refused++; return; }
-        if (_count >= MaxBeams) { _refused++; return; }
-        int v = VdoSlot(vdo);
-        if (v < 0) { _refused++; return; }
-        ref Beam b = ref _beams[_count++];
-        b.Part = part; b.Vdo = vdo; b.Item = item; b.Vao = v;
-        _enrolled++;
-    }
-
-    /// <summary>Find (or harvest) the VAO-cache slot for a VDO. Harvesting reads the ENGINE VAO's attribute
-    /// formats, so it has to run here (inside the engine's own draw) and not at replay time.</summary>
-    private static int VdoSlot(IntPtr vdo)
-    {
-        int s = -1;
-        for (int i = 0; i < _vdoCount; i++)
-        {
-            if (_vVdo[i] != vdo) continue;
-            if (_vSig[i] == VdoSig.Of(vdo)) return i;
-            // The AlloyRenderer.VdoSlot case: a re-minted VDO at a dead one's address. Re-harvest in place.
-            _vVdo[i] = IntPtr.Zero; _vElemBuf[i] = 0; s = i;
-            break;
-        }
-        if (s < 0)
-        {
-            if (_vdoCount >= MaxVdos) return -1;
-            s = _vdoCount++;
-        }
-        if (!Harvest(vdo, s)) return -1;
-        _vVdo[s] = vdo; _vStale[s] = _vVao[s] != 0; _vSig[s] = VdoSig.Of(vdo);
-        return s;
-    }
-
-    private static bool Harvest(IntPtr vdo, int s)
-    {
-        uint vao = new VdoRef(vdo).Vao;
-        // ponytail: the #284 sibling. A beam VDO minted after the shim armed has no engine VAO either, and
-        // this refuses it silently. NOT dripped here: AlloyRenderer's drip runs at the enrollment edge, while
-        // this runs INSIDE the engine's own bucket-15 draw, where re-entering SetVertexDataObject would move
-        // the current-VDO cache under the caller. Upgrade path if `beams 0 drawn` is ever traced to this:
-        // arm the drip at the bucket window's open, not per harvest.
-        if (vao == 0 || Gl.GetVertexAttribiv == null) return false;
-        int eb; Gl.GetVertexArrayiv(vao, Gl.ELEMENT_ARRAY_BUFFER_BINDING, &eb);
-        _vElemBuf[s] = (uint)eb;
-        // The attribute READ still binds: no DSA query answers an attribute's buffer name.
-        int saved;
-        Gl.GetIntegerv(Gl.VERTEX_ARRAY_BINDING, &saved);
-        Gl.BindVertexArray(vao);
-        VertexArrays.Read(EngPos, out _vPos[s]);
-        VertexArrays.Read(EngFrontal, out _vFr[s]);
-        Gl.BindVertexArray((uint)saved);
-        // Both streams or nothing: the extrusion branches on fProjectionFrontal, and a volume drawn as if
-        // every vertex were frontal is a flat sliver at the minimum offset rather than a shaft.
-        return _vElemBuf[s] != 0 && _vPos[s].Present && _vFr[s].Present;
-    }
-
-    /// <summary>#260: one VAO, over the pool buffers Alloy uploads into. The pair this used to build differed
-    /// only in which buffers it pulled from, and there is one set of those now.</summary>
-    private static bool EnsureVao(int v)
-    {
-        if (_vVao[v] != 0 && !_vStale[v]) return true;
-        if (_vVao[v] != 0) { uint old = _vVao[v]; Gl.DeleteVertexArrays(1, &old); }
-        _vVao[v] = BuildVao(v);
-        _vOwned[v] = _vVao[v] != 0 && OwnedBuffers.Owns(_vElemBuf[v]) && OwnedBuffers.Owns(_vPos[v].Buf);
-        _vStale[v] = false;
-        return _vVao[v] != 0;
-    }
-
-    private static uint BuildVao(int v)
-    {
-        uint elem = _vElemBuf[v];
-        if (elem == 0) return 0;
-        var pos = _vPos[v]; var fr = _vFr[v];
-        uint vao; Gl.CreateVertexArrays(1, &vao);
-        VertexArrays.Bind(vao, LocPos, in pos);
-        VertexArrays.Bind(vao, LocFrontal, in fr);
-        Gl.VertexArrayElementBuffer(vao, elem);
-        return vao;
-    }
-
-    /// <summary>The VAO this slot draws from.</summary>
-    private static uint Vao(int v) => _vVao[v];
-
-    /// <summary>The direction <c>RenderBeams</c> extrudes along: the area's DIRECTIONAL light, negated --
-    /// which is what makes these sun shafts rather than per-lamp volumes. False when there is none, which is
-    /// every interior, and the engine's own routine draws nothing there either.
-    /// <para><b>SL5: this used to read the engine's <c>Scene+0x60</c> shadow-light list, and that list is
-    /// not maintained on an Alloy frame.</b> MEASURED on both binaries (objdump; Linux
-    /// <c>Scene::RenderSinglePass</c> @0x46e5f0+0xb5, Windows rva 0xd0f10+0x213): its sole writer on a live
-    /// frame is that function's head, which deep-copies <c>LightManager::GetShadowLights(1)</c> into the
-    /// embedded list at <c>+0x60</c> (ptr) / <c>+0x68</c> (count) / <c>+0x6c</c> (capacity). Alloy REPLACES
-    /// that head. The only other writers in the client are <c>Scene::Scene</c>, which zeroes the three, and
-    /// <c>~Scene</c>, which frees the buffer without clearing the pointer. So the list read 0 on every Scene
-    /// vanilla had never drawn -- every area Alloy loads -- and otherwise the last vanilla frame's copy; and
-    /// vanilla itself skips the copy while the <c>enableshadows</c> global is 0. Shafts extruded along
-    /// whatever that left.</para>
-    /// <para>The replacement is the SAME light by the same tests, from a source Alloy does maintain.
-    /// <c>GetShadowLights(1)</c>'s own filter admits a light at <c>range &gt;= 1000</c> only as the area
-    /// diffuse that casts shadows, so the loop below could never pick anything else -- and that light is
-    /// exactly <see cref="LightRegistry.AreaDiffuse"/>, the registry's port of
-    /// <c>LightManager::UpdateLights</c>' own pick. Every test the engine's list had already applied is kept
-    /// here explicitly rather than assumed.</para></summary>
-    internal static bool Direction(IntPtr scene, out Vector3 dir)
-        => DirectionOf(AreaDirectional(scene), out dir);
-
-    /// <summary>The area's directional light: Alloy's registry, or -- with <c>light.registry 0</c> -- the
-    /// engine's own <c>LightManager+0x98</c>, which <c>UpdateLights</c> still rewrites every frame. The same
-    /// pair <c>FrameRead.ReadAreaTerms</c> takes the area terms from, so the shafts and the sun cannot
-    /// disagree about which light the sun is.</summary>
-    private static PartLight AreaDirectional(IntPtr scene)
-    {
-        if (LightRegistry.Live) return new PartLight(LightRegistry.AreaDiffuse);
-        if (scene == IntPtr.Zero) return new PartLight(IntPtr.Zero);
-        LightManager lm = new CX.Engine.Scene(scene).LightManager;
-        return lm.IsNull ? new PartLight(IntPtr.Zero) : lm.AreaDiffuse;
+        dir = default;
+        if (!FrameInputs.HasSun) return false;
+        Vector3 d = FrameInputs.SunDir;
+        if (d.LengthSquared() <= 0f) return false;
+        dir = Vector3.Normalize(d);
+        return true;
     }
 
     /// <summary>The filter and the negation, apart from where the light came from: what the self-check pins.</summary>
@@ -334,105 +155,23 @@ internal static unsafe class Beams
     /// <see cref="AlloyRenderer"/>'s additive arm hands over and the probe capture after it needs.</para></summary>
     internal static void Draw(Matrix4x4* view, Matrix4x4* proj)
     {
-        if (Disabled || _off || _failed || _count == 0 || Gl.MultiDrawElementsBaseVertex == null) return;
+        if (Disabled || _off || _count == 0 || Gl.DrawElementsBaseVertex == null) return;
         // The player's own switch, honoured the way grass honours "Grass Mode": beams off means the owned
         // pass draws nothing AND suppresses nothing, so the console variable keeps meaning what it says.
         if (_enable != null && *_enable == 0) return;
-        // The Scene the table was enrolled from: the volumes were baked against this Scene's own light
-        // list, and reading another's would extrude them along a direction the geometry was never built for.
-        if (!Direction(_scene, out Vector3 dir)) return;
-        if (!EnsureProgram()) return;
-
-        // #261 retired the all-or-none rule with the colour mask that motivated it: there is no engine copy
-        // of a beam to delete any more, so a beam that cannot be staged is skipped and its neighbours draw.
+        // The frame's own sun (DbLights' area pick) is the only directional the database carries -- and an
+        // interior has none, exactly as vanilla's own routine draws nothing there.
+        if (!DirectionDb(out Vector3 dir) || !EnsureDbProgram()) return;
+        // #261 retired the all-or-none rule: a beam that cannot be staged is skipped and its neighbours draw.
         int staged = 0;
         for (int i = 0; i < _count; i++)
-            if (Stage(i, staged)) _sBeam[staged++] = i;
+            if (StageDb(i, staged)) _sBeam[staged++] = i;
             else _refused++;
         if (staged == 0) return;
-
-        Gl.UseProgram(_prog);
-        Gl.UniformMatrix4fv(_locView, 1, 0, (float*)view);
-        Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
-        float alpha = _alpha != null ? *_alpha : DefaultAlpha;
-        // #132: the Alloy target is LINEAR, so the stock tint -- a display-space grey -- is linearised
-        // here rather than in the stage. Additive over a linear frame is the whole point of the flip.
-        float lin = MathF.Pow(TintRgb, AlloyLights.SrgbGamma);
-        float* c = stackalloc float[4] { lin, lin, lin, alpha };
-        Gl.Uniform4fv(_locColor, 1, c);
-        float* src = stackalloc float[4] { dir.X, dir.Y, dir.Z, -1f };   // w < 0 = the directional branch
-        Gl.Uniform4fv(_locSrc, 1, src);
-        Gl.Uniform1f(_locZClip, WorldZClip);
-        new PassState(depth: true, depthWrite: false, blend: true,
-                      blendSrc: GlSrcAlpha, blendDst: GlOne).Apply();
-
-        fixed (Matrix4x4* m = &_model) Gl.UniformMatrix4fv(_locModel, 1, 0, (float*)m);
-        fixed (int* counts = _sCount, bases = _sBase)
-        fixed (nint* offs = _sOff)
-        for (int k = 0, run; k < staged; k += run)
-        {
-            int vao = _beams[_sBeam[k]].Vao;
-            for (run = 1; k + run < staged && _beams[_sBeam[k + run]].Vao == vao; run++) { }
-            Gl.BindVertexArray(Vao(vao));
-            Gl.MultiDrawElementsBaseVertex(_primTable[BeamPrim], counts + k, GlUnsignedShort,
-                                           (void**)(offs + k), run, bases + k);
-        }
-        Gl.BindVertexArray(0);
+        DrawDb(view, proj, in dir, _alpha != null ? *_alpha : DefaultAlpha, staged);
         Gl.Disable(Gl.BLEND);
         Gl.DepthMask(1);
         _drawn += staged;
-    }
-
-    /// <summary>Resolve one beam's draw arguments off its VDO's own item tables and park them in slot
-    /// <paramref name="k"/>. False means this beam cannot be drawn: #261 retired the all-or-none rule, so it
-    /// is skipped and its neighbours draw.</summary>
-    private static bool Stage(int i, int k)
-    {
-        ref Beam b = ref _beams[i];
-        var v = new VdoRef(b.Vdo);
-        long elem = v.ElemItems, vert = v.VertItems;
-        if (elem == 0 || vert == 0 || b.Item < 0 || b.Item >= v.ElemCount || b.Item >= v.VertCount) return false;
-        int count = *(int*)(elem + b.Item * 8 + 4);
-        if (count <= 0 || !EnsureVao(b.Vao)) return false;
-        _sCount[k] = count;
-        _sOff[k] = (nint)((long)(uint)*(int*)(elem + b.Item * 8) * 2);
-        _sBase[k] = *(int*)(vert + b.Item * 8);
-        return true;
-    }
-
-    private static bool EnsureProgram()
-    {
-        if (_prog != 0) return true;
-        if (_failed) return false;
-        _prog = GlProgram.Graphics(BeamVs, BeamFs, _log, "Beams");
-        if (_prog == 0) { _failed = true; _log?.Info("Beams: program build failed -- light beams stay vanilla"); return false; }
-        _locModel = GlProgram.Loc(_prog, "uModel");
-        _locView = GlProgram.Loc(_prog, "uView");
-        _locProj = GlProgram.Loc(_prog, "uProj");
-        _locSrc = GlProgram.Loc(_prog, "uProjSrc");
-        _locZClip = GlProgram.Loc(_prog, "uZClip");
-        _locColor = GlProgram.Loc(_prog, "uColor");
-        return true;
-    }
-
-    /// <summary>#88's <c>VertexDataObject::Repack</c> reached a VDO. A repack moves item offsets and can
-    /// replace the buffers a harvested VAO points at, and this cache holds both -- so the whole table goes.
-    /// <para>Wholesale rather than per-slot on purpose: beam volumes are baked once per area by
-    /// <c>BSPCreateStaticProjections</c> and should never repack at all, so this is a correctness backstop
-    /// on an event that costs one vanilla beam pass when it does fire. Cheap to be blunt about.</para></summary>
-    internal static void OnRepack(IntPtr vdo)
-    {
-        for (int v = 0; v < _vdoCount; v++) if (_vVdo[v] == vdo) { Forget(); return; }
-    }
-
-    /// <summary>The engine deleted a pool buffer a harvested slot points at: same backstop as
-    /// <see cref="OnRepack"/>, for the same reason -- the VAO would keep the dead name attached (GL 4.6
-    /// 5.1.2) while the next pool inherits it. Wholesale, like the repack.</summary>
-    internal static void OnBufferDeleted(uint name)
-    {
-        if (name == 0) return;
-        for (int v = 0; v < _vdoCount; v++)
-            if (_vElemBuf[v] == name || _vPos[v].Buf == name || _vFr[v].Buf == name) { Forget(); return; }
     }
 
     /// <summary>Every captured identity is void: the parts belong to a Scene whose unload freed them.</summary>
@@ -442,30 +181,28 @@ internal static unsafe class Beams
     /// a dead program and a dead VAO (#175 follow-up).</summary>
     internal static void ContextLost()
     {
-        _prog = 0; _failed = false;
-        _locModel = -1; _locView = -1; _locProj = -1; _locSrc = -1; _locZClip = -1; _locColor = -1;
-        for (int v = 0; v < MaxVdos; v++) { _vVao[v] = 0; _vOwned[v] = false; _vElemBuf[v] = 0; }
+        _progDb = 0; _dbFailed = false;
+        _locDbModel = -1; _locDbView = -1; _locDbProj = -1; _locDbSrc = -1; _locDbZClip = -1; _locDbColor = -1;
         Forget();
     }
-
-    /// <summary>VAO-cache slots the harvest has taken -- the area edge's tally (CX-19).</summary>
-    internal static int VdoSlots => _vdoCount;
 
     internal static void Forget()
     {
         _count = 0;
-        _scene = IntPtr.Zero;
-        for (int v = 0; v < _vdoCount; v++) { _vVdo[v] = IntPtr.Zero; _vStale[v] = true; }
-        _vdoCount = 0;
+        _dbGen = -1; _dbScene = 0;
     }
 
-    internal static void ResetPeriod() { _enrolled = 0; _refused = 0; _drawn = 0; }
+    internal static void ResetPeriod()
+    {
+        _enrolled = 0; _refused = 0; _drawn = 0; _dbSkipped = 0;
+    }
 
     internal static string Stats() => Disabled ? "beams off (/effects beams 0)" : _off ? "beams vanilla (unavailable)"
         : $"beams {_count} captured from "
-          + (_owned < 0 ? "the engine's bucket 15" : $"CX's own registry ({_owned} in the area)")
+          + $"the scene database ({_owned} beaming parts in the scene)"
           + $", {_enrolled} enrolled, {_drawn} drawn"
-          + (_refused == 0 ? "" : $", {_refused} REFUSED (unindexed VDO, no attribute pair, or table full)");
+          + (_refused == 0 ? "" : $", {_refused} REFUSED")
+          + (_dbSkipped == 0 ? "" : $", {_dbSkipped} with NO RESIDENT GEOMETRY in the arena");
 
     /// <summary>Off-device: the two pieces of this file that are decisions rather than replays -- the light
     /// scan's predicate (miss it and the shafts point somewhere the volumes were never baked for) and the
@@ -503,19 +240,6 @@ internal static unsafe class Beams
         Light(b, 100000f, 1, 0, 0f, 0f, 2f);
         check.Expect(DirectionOf(new PartLight((IntPtr)b), out Vector3 d) && d == new Vector3(0f, 0f, -1f),
           "the area directional past 1000 range wins, normalised and NEGATED");
-        // ...and through the Scene, which is what pins the offset chain the shafts now read
-        // (Scene+0x158 -> LightManager+0x98) in place of the stale Scene+0x60 list. Taken with the registry
-        // dialled off, so the path under test is the one that does not need a live registry to have run.
-        bool regWas = Lighting.Registry.V;
-        // try/finally, not a plain restore: run-demo reads the user's real cx.cfg, so a throw between the two
-        // would leave their light.registry switched off.
-        try
-        {
-            Lighting.Registry.V = false;
-            check.Expect(Direction(s, out Vector3 ds) && ds == new Vector3(0f, 0f, -1f),
-              "...and the same answer comes off the area's own light, not the engine's shadow-light list");
-        }
-        finally { Lighting.Registry.V = regWas; }
         Light(b, 100000f, 0, 0, 0f, 0f, 2f);
         check.Expect(!DirectionOf(new PartLight((IntPtr)b), out _), "a light with the +0x74 flag clear is skipped");
         Light(b, 100000f, 1, 1, 0f, 0f, 2f);

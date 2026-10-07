@@ -21,7 +21,7 @@ namespace CX.Alloy;
 /// implements and this only counts.</para>
 /// <para><b>Three edges.</b> (1) The compile, on the main thread at a cold point (<see cref="TexStream.ColdPoint"/>)
 /// under a millisecond budget, NEVER inside <c>LoadArea</c> -- a compile there is paid out of the very load the
-/// cache exists to shorten. (2) The worker serve: <see cref="Worker"/> runs on <c>cx-mdl</c>, so a prefetched
+/// cache exists to shorten. (2) The worker serve: <see cref="Worker"/> runs on a model-read worker (<c>cx-mdl</c> or <c>cx-model</c>), so a prefetched
 /// model's cache hit costs the main thread nothing at all. (3) The main-thread serve: this chains
 /// <c>CAuroraInterface::GetResource</c> ABOVE <see cref="ModelLoad"/>'s link, so it sees whatever bytes are
 /// about to reach the engine whether ModelLoad served them or not, and works with <c>alloy.modelload=0</c>.</para>
@@ -33,8 +33,12 @@ internal static unsafe class MdlCache
     private const uint Magic = 0x444D5843;   // not-an-offset: the file's first four bytes
     /// <summary>Bumped with the header layout or with what a cached payload means. The client build is a
     /// separate header word: the payload is the ENGINE's serialisation, so a new <c>nwmain</c> invalidates
-    /// every file here whatever its key.</summary>
-    private const int Version = 1;
+    /// every file here whatever its key.
+    /// <para>2 (CX-113, parser review A1): every version-1 payload was serialised from a model the engine had
+    /// already INSTANTIATED, so it carries that session's <c>CombineParts</c> radius growth and
+    /// <c>SetPartTextureRotate</c> flag (<see cref="MdlCachePristine"/>). They are not repairable, only
+    /// discarded.</para></summary>
+    private const int Version = 2;
     /// <summary>magic, version, build, source hash, source length, payload length, resref.</summary>
     internal const int HeaderBytes = 4 + 4 + 8 + 8 + 4 + 4 + ResRefChars;
     private const int ResRefChars = 16;
@@ -69,6 +73,7 @@ internal static unsafe class MdlCache
     private static bool _armed;
     private static AuroraGetResourceFn* _getSlot;
     private static AuroraReleaseResourceFn* _relSlot;
+    private static IoReadSyncFn* _readSlot;
     private static IntPtr _exoBaseSym;
     private static string? _dir;
     /// <summary>Resolved on first use, never at <see cref="Install"/>: our loader runs BEFORE the engine's entry
@@ -87,7 +92,7 @@ internal static unsafe class MdlCache
     private static readonly HashSet<IntPtr> _out = new();
 
     /// <summary>A model whose ASCII source was seen with no cached compile, waiting for a cold point. Fed from
-    /// both the main thread and <c>cx-mdl</c>, so every touch is under <see cref="Gate"/>.</summary>
+    /// both the main thread and the model-read workers, so every touch is under <see cref="Gate"/>.</summary>
     private readonly struct Want
     {
         internal Want(ulong hash, int srcLen) { Hash = hash; SrcLen = srcLen; }
@@ -103,7 +108,8 @@ internal static unsafe class MdlCache
     private static readonly HashSet<string> _never = new(StringComparer.Ordinal);
 
     private static long _hitWorker, _hitMain, _mainTicks, _compiled, _compileTicks, _queued, _dropped,
-                        _gone, _skinmesh, _binary, _noOutput, _bad, _errors, _said, _written, _pruned, _diskBytes = -1;
+                        _gone, _skinmesh, _binary, _noOutput, _bad, _errors, _said, _written, _pruned, _unproved,
+                        _diskBytes = -1;
 
     // ---- lifecycle ----
 
@@ -120,12 +126,18 @@ internal static unsafe class MdlCache
                        + " every ASCII model is parsed line by line on the main thread");
             return;
         }
+        if (!MdlCachePristine.Attach(log)) return;
         _getSlot = hooks.ChainAuroraGetResource(&OnGetResource, ServePriority);
         _relSlot = hooks.ChainAuroraReleaseResource(&OnReleaseResource, ServePriority);
-        if (_getSlot == null || _relSlot == null)
+        // CX-113 (review A1): the ONE point a model is provably pristine -- the parse is complete and nothing
+        // has instantiated it, because the caller that will has not been returned to yet. 43 calls on a real
+        // area, against the 1730 FindModel calls behind it.
+        _readSlot = hooks.ChainIoReadSync(&OnReadSync, ServePriority);
+        if (_getSlot == null || _relSlot == null || _readSlot == null)
         {
             log.Always($"MdlCache: REFUSED -- CAuroraInterface::GetResource {(_getSlot != null ? "ok" : "MISSING")},"
-                       + $" ReleaseResource {(_relSlot != null ? "ok" : "MISSING")};"
+                       + $" ReleaseResource {(_relSlot != null ? "ok" : "MISSING")},"
+                       + $" IODispatcher::ReadSync {(_readSlot != null ? "ok" : "MISSING")};"
                        + " every ASCII model is parsed line by line on the main thread");
             return;
         }
@@ -140,8 +152,10 @@ internal static unsafe class MdlCache
                           + $" {_mainTicks / (Stopwatch.Frequency / 1000)} ms main), {_compiled} compiled"
                           + $" ({_compileTicks / (Stopwatch.Frequency / 1000)} ms), {Waiting} waiting of {_queued} offered,"
                           + $" refused: {_skinmesh} skinmesh, {_binary} already binary, {_gone} gone, {_noOutput} no output,"
-                          + $" {_bad} malformed, {_errors} errors, {_dropped} past the cap; {_written} written,"
-                          + $" {_pruned} pruned, {(_diskBytes < 0 ? 0 : _diskBytes) >> 20} MiB";
+                          + $" {_bad} malformed, {_errors} errors, {_dropped} past the cap,"
+                          + $" {_unproved} not provably pristine; {_written} written,"
+                          + $" {_pruned} pruned, {(_diskBytes < 0 ? 0 : _diskBytes) >> 20} MiB"
+                          + (MdlCachePristine.Note() is { Length: > 0 } pn ? "; " + pn : "");
 
     private static int Waiting { get { lock (Gate) return _order.Count; } }
 
@@ -246,7 +260,7 @@ internal static unsafe class MdlCache
 
     // ---- the worker serve (path a): zero main-thread cost ----
 
-    /// <summary>On <c>cx-mdl</c>, with an <c>.mdl</c> just read: the compiled bytes for an ASCII source that is
+    /// <summary>On a model-read worker (<c>cx-mdl</c> or <c>cx-model</c>), with an <c>.mdl</c> just read: the compiled bytes for an ASCII source that is
     /// already cached, else <paramref name="raw"/> unchanged plus an offer to compile it. The returned span is
     /// the caller's to copy before it returns.</summary>
     internal static ReadOnlySpan<byte> Worker(byte[] name, ReadOnlySpan<byte> raw)
@@ -369,7 +383,19 @@ internal static unsafe class MdlCache
         int n = 0;
         for (; n < resref.Length && n < ResRefChars; n++) name[n] = (byte)resref[n];
         name[n] = 0;
-        byte* msg = EngineFn.CompileModels(1, name);   // asciiOnly: an already-binary model is the engine's own refusal
+        // Review A1: nothing is cached from a model this did not see pristine. A model whose snapshot is
+        // missing (queued before the hook armed) or stale (freed and re-read) is left for the next session,
+        // not serialised with another session's render state baked into it.
+        IntPtr live = EngineFn.BinaryFindModel == null ? IntPtr.Zero : EngineFn.BinaryFindModel(name);
+        if (!MdlCachePristine.Begin(resref, live, out float[] saved))
+        {
+            _unproved++;
+            MdlCachePristine.Forget(resref);
+            return;
+        }
+        byte* msg;
+        try { msg = EngineFn.CompileModels(1, name); }   // asciiOnly: an already-binary model is the engine's own refusal
+        finally { MdlCachePristine.End(resref, saved); }
         if (Starts(msg, "Success: Compiled")) { _gone++; return; }   // no model of that name is loaded any more
         if (!Starts(msg, "Successfully compiled"))
         {
@@ -390,6 +416,24 @@ internal static unsafe class MdlCache
             Store(resref, w, payload);
         }
         catch (Exception e) { _errors++; Say($"MdlCache: caching {resref}: {e.Message}"); }
+    }
+
+    /// <summary>A model the engine has just parsed, before anything instantiates it: snapshot the two fields
+    /// instantiation mutates, for whichever cold point compiles it (<see cref="MdlCachePristine"/>). Only for
+    /// a model already queued, so a session that caches nothing pays one dictionary probe per read.</summary>
+    [UnmanagedCallersOnly]
+    private static IntPtr OnReadSync(IntPtr dispatcher, byte* name)
+    {
+        IntPtr tree = (*_readSlot)(dispatcher, name);
+        if (!_armed || tree == IntPtr.Zero || name == null || *name == 0) return tree;
+        // Lower-cased, because that is the spelling Queue files under (ResRef does the same fold): the engine
+        // asks FindModel with whatever case the content wrote, and an Ordinal miss here would refuse the
+        // model's compile for good -- it is only ever queued on a cache MISS, so it would never be retried.
+        string resref = (Marshal.PtrToStringAnsi((IntPtr)name) ?? "").ToLowerInvariant();
+        bool want;
+        lock (Gate) want = _wanted.ContainsKey(resref);
+        if (want) MdlCachePristine.Took(resref, tree);
+        return tree;
     }
 
     /// <summary>The file the engine's writer just produced. <c>IODispatcher::Write</c> names it after

@@ -47,7 +47,7 @@ const float SLACK = 1e-3;
 shared uint sTally[3];
 
 // Could a baked static light in cube slot `slot` go HOT anywhere in this froxel -- could the lit stage's
-// per-fragment ray test (cx_lightfrag: the light-to-fragment segment within r + 0.3 of a mover sphere) pass
+// per-fragment ray test (cx_lightfrag: the light-to-fragment segment within a mover sphere, padded at publish) pass
 // for a point in it? Every such point lies in the cone from the light tangent to the inflated sphere, so a
 // froxel whose bounding sphere (fc, fr) misses every slot's cone cannot hold one. Conservative by design.
 // WORLD space (l the light, fc the froxel centre): the spheres are, and a rigid view keeps every distance.
@@ -59,7 +59,7 @@ bool HotReach(int slot, vec3 l, vec3 fc, float fr)
         vec4 ms = uDynMovers[slot * DYNSPH + q];
         if (ms.w < 0.0) break;   // CasterPass writes a slot's spheres from 0 up, unused ones after
         vec3 ax = ms.xyz - l;
-        float rr = ms.w + 0.3, d = length(ax);
+        float rr = ms.w, d = length(ax);
         // the lit test also passes a centre up to rr BEHIND the light along the ray, reachable only while the
         // light is within sqrt(2) rr of it: every direction, then
         if (d * d <= 2.0 * rr * rr) return true;

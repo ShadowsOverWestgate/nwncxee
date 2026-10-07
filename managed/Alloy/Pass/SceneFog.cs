@@ -102,6 +102,15 @@ internal static unsafe class SceneFog
 
     private static Vector3 _noteCol; private static bool _noteOk;
 
+    /// <summary>DB mode's <see cref="NoteSky"/>: the dome part's texture is a registry slot, whose mean the
+    /// loader took off the decoded image -- the engine funnel <see cref="Average"/> reads never saw it. Without
+    /// this the sky term never armed in DB mode and the fog stood on the author's colour alone (#341 lost).</summary>
+    internal static void NoteSkyDb(Db.TexId id, float alpha)
+    {
+        if (alpha <= 0f || !Db.TexRegistry.TryMean(id, out Vector3 m)) return;
+        _acc += new Vector3(Lin(m.X), Lin(m.Y), Lin(m.Z)) * alpha; _accW += alpha;
+    }
+
     /// <summary>Close the frame's sky accounting. A frame that staged no sky at all (an interior, or a sky
     /// pass standing down) leaves the last known colour in place rather than snapping the fog: the roles are
     /// re-staged every pass and one refused frame is not a new sky.</summary>

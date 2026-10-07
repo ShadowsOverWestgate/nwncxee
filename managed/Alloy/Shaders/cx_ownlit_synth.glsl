@@ -1,5 +1,6 @@
 void main()
 {
+    if (uCapture == 2 && vWorld.z < uMirrorZ) discard;
     vec3 N = normalize(vNrm);
     // /alloy viz: attribute a dim frame to a TERM instead of guessing from the composite.
     // 1 = point-light diffuse alone (torch bright here but the frame dark => the torch is fine and
@@ -182,7 +183,8 @@ void main()
     float sunNdl = CxWrap(dot(N, uAreaDir), uWrapN);
     // the wrapped value, not the raw one -- a fragment the wrap has just lit must still be able to
     // be in shadow, or the band the wrap opens up glows through every caster
-    float sunVis = CxSunShadow(vWorld, N, sunNdl, sunRaw);
+    float sunVis = (slots & CX_SLOT_NOSHADOW) != 0 ? 1.0 : CxSunShadow(vWorld, N, sunNdl, sunRaw);
+    if ((slots & CX_SLOT_NOSHADOW) != 0) cxRecvShadow = 0.0;
     // 3 = sun visibility alone: white lit, black shadowed. A frame that looks unshadowed reads here
     //     as "the cascades are empty" or "nothing selected a cascade", which the composite cannot say.
     if (uViz == 3) { frag = vec4(vec3(sunVis), 1.0); return; }
@@ -194,13 +196,35 @@ void main()
     // CX-52: a diffuse that streamed in over the white stand-in fades in rather than cutting: from the
     // stand-in through its blurred top mips to full detail. Alpha stays sharp -- a cutout's shape does not blur.
     float arrive = d.ext2.z > 0.0 ? clamp((uNow - d.ext2.z) / CX_ARRIVE_SECONDS, 0.0, 1.0) : 1.0;
-    vec4 texel = texture(uTex, uvA, uLodBias + (1.0 - arrive) * (1.0 - arrive) * CX_ARRIVE_MIPS);
+    // CX-117: a PLT part's diffuse is RESOLVED from the pair texture and the master palette here, per
+    // instance, rather than composited per creature. Asked ONCE per fragment: a resolve is up to eight texel
+    // fetches, so the three diffuse reads below take one resolve between them where the sampler path takes
+    // three samples.
+    bool plt = CxPltOn(vDraw);
+    float arriveBias = uLodBias + (1.0 - arrive) * (1.0 - arrive) * CX_ARRIVE_MIPS;
+    vec4 texel = plt ? CxPltResolve(uTex, uvA, arriveBias, vDraw) : texture(uTex, uvA, arriveBias);
     if (arrive < 1.0)
     {
-        texel.a = texture(uTex, uvA, uLodBias).a;
+        // A PLT's alpha comes out of the palette, not out of a mip of the pair texture, so the sharp-alpha
+        // re-read the stand-in fade wants is already in `texel` -- one resolve, not two.
+        if (!plt) texel.a = texture(uTex, uvA, uLodBias).a;
         texel.rgb = mix(vec3(1.0), texel.rgb, smoothstep(0.0, 0.35, arrive));
     }
-    if (flowMix > 0.0) texel = mix(texel, texture(uTex, uvB, uLodBias), flowMix);
+    // A flow map on a PLT part does not occur in any shipped content (flowmaps are .mtr, PLTs are creature
+    // skins), so the second resolve stays behind the same branch rather than being hoisted.
+    if (flowMix > 0.0)
+        texel = mix(texel, plt ? CxPltResolve(uTex, uvB, uLodBias, vDraw) : texture(uTex, uvB, uLodBias), flowMix);
+    // CX-117 PLT forensics: 47 = the resolve forced to level 0 (mips out of the picture), 48 = the pair texel
+    // itself (R intensity, G layer x 25), 49 = this texel's master-palette row over 1792, 50 = the PLT flag.
+    // Not 40..46: those are the vis-ID, SSR and lightmap views, and this early return hid them.
+    if (uViz == 47) { frag = vec4(plt ? CxPltBilinear(uTex, uvA, 0, vDraw, CxPltClamps(vDraw)).rgb : vec3(0.0), 1.0); return; }
+    if (uViz == 48) { vec2 rg = texture(uTex, uvA).rg; frag = vec4(rg.r, rg.g * 25.5, 0.0, 1.0); return; }
+    if (uViz == 49)
+    {
+        float row = plt ? float(CxPltRow(vDraw, min(int(texture(uTex, uvA).g * 255.0 + 0.5), 9))) / 1792.0 : 0.0;
+        frag = vec4(vec3(row), 1.0); return;
+    }
+    if (uViz == 50) { frag = vec4(plt ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), 1.0); return; }
     // #294: what the diffuse alpha MEANS here, asked once and spent once. On an env-mapped material
     // it is REFLECTIVITY, not coverage -- it becomes envLevel four lines down -- and the engine is
     // explicit about not spending it twice: inc_standard.shd:289 multiplies only `.rgb` through on

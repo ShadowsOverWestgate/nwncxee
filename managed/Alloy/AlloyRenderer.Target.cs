@@ -1,4 +1,5 @@
 using System;
+using CX.Alloy.Db;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Framework;
@@ -95,6 +96,23 @@ public sealed unsafe partial class AlloyRenderer
         Gl.GetFloatv(Gl.COLOR_CLEAR_VALUE, c);
         t.Clear0 = c[0]; t.Clear1 = c[1]; t.Clear2 = c[2]; t.Clear3 = c[3];
         float d; Gl.GetFloatv(Gl.DEPTH_CLEAR_VALUE, &d); t.ClearDepth = d;
+        // CX-120: in DB mode there is no engine Clear(7) to have just run, so GL's clear colour is whatever
+        // last touched it -- the GUI's -- and the world's void rendered PALE where vanilla renders it dark.
+        // The value it wants is the engine's OWN: `CNWCArea::SetFog(amount, colour)` @0x802380 hands that
+        // colour to the global SetClearColor, and the day/night palettes call it with the area's fog pair
+        // (`SetAsDay` @0x8064a0 with +0x1e0/+0xc4, `SetAsNight` @0x806640 with +0x17c/+0xa4). So vanilla's
+        // beyond-geometry pixel is the area's fog COLOUR whatever the fog AMOUNT is -- the amount drives the
+        // fog term, never the clear -- and the call is a game-layer one that DB mode still makes.
+        // <see cref="ScreenOwner.ClearRgba"/> is that call's argument, caught at the hook: ground truth,
+        // where reading FrameInputs' fog and gating it on FogOn reconstructed it and cleared an unfogged
+        // area to BLACK, which is the user's "black fog" beyond the world's edge.
+        float[] eng = ScreenOwner.ClearRgba;
+        // Display-space, NOT linearised. Measured both ways: mode 0's void is the lavender the fog colour
+        // reads as on screen, and linearising for the HDR target (the curve UploadFogColour applies to the
+        // fog UNIFORM, #132) makes it darker still.
+        // Alpha 0, which is what the engine's own Clear(7) leaves and what the frame diff measured in mode 0.
+        // A 1 here is not cosmetic: the post stack and the GUI composite read the world target's alpha.
+        t.Clear0 = eng[0]; t.Clear1 = eng[1]; t.Clear2 = eng[2]; t.Clear3 = 0f;
     }
 
     /// <summary>#375: the target block the colour pass was ENTERED with, copied at the top of the pass. A

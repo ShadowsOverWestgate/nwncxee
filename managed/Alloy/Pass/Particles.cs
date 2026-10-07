@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using CX.Alloy.Db;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
@@ -165,6 +166,13 @@ internal static unsafe partial class Particles
     private struct Emit
     {
         public IntPtr Ptr;
+        /// <summary>CX-120: the database part this emitter is, or -1 when it is an engine <c>PartEmitter</c>.
+        /// The discriminant for every read the build makes.</summary>
+        public int Part;
+        /// <summary>CX-120 (DB mode): the GL texture name the simulation resolved for this emitter, which is
+        /// both the batch key and what the draw binds. There is no <c>CAurTexture</c> to bind through here.
+        /// </summary>
+        public uint DbTex;
         public Matrix4x4 Model;
         public bool Ident;
         public int CapFrame;
@@ -210,6 +218,9 @@ internal static unsafe partial class Particles
     /// the engine draws with.</summary>
     private static readonly IntPtr[] _sTexObj = new IntPtr[MaxEmitters];
     private static readonly bool[] _sTaken = new bool[MaxEmitters];
+    /// <summary>CX-120: is this staged emitter's texture a <see cref="TexRegistry"/> GL name rather than a
+    /// <c>CAurTexture*</c>? The batch key is the same word either way; what differs is the bind.</summary>
+    private static readonly bool[] _sDb = new bool[MaxEmitters];
     // _gFirst/_gCount index into _draw (emitters); _gStart/_gParts are the range of the draw-order INDEX
     // list the writer actually produced, in particles. Two pairs on purpose: a particle array can hand back
     // a null slot, so what is written is a result, not the product of the counts read at classify time.
@@ -219,6 +230,7 @@ internal static unsafe partial class Particles
                                   _gCull = new int[MaxGroups];
     private static readonly float[] _gEmis = new float[MaxGroups];
     private static readonly IntPtr[] _gTexObj = new IntPtr[MaxGroups];
+    private static readonly bool[] _gDb = new bool[MaxGroups];
     /// <summary>Vertices each entry of <see cref="_draw"/> actually wrote.</summary>
     private static readonly int[] _wrote = new int[MaxEmitters];
     /// <summary>#288: one span descriptor per entry of <see cref="_draw"/> -- (record base, particles, index
@@ -239,8 +251,6 @@ internal static unsafe partial class Particles
     private static int _drawN;
 
     private static ExtenderLog? _log;
-    private static RenderEmitterFn _origRender;
-    private static PartEmitterDtorFn _origDtor;
     private static MatGetTextureFn _getTexture;
     private static AurTextureBindInUnitFn _bindInUnit;
     /// <summary>#237: the engine's bound-texture cache, snapshot-restored across the draw loop. See
@@ -300,6 +310,9 @@ internal static unsafe partial class Particles
     // it and only the split says which.
     private static int _decFade, _decEmpty, _decShader, _decTex, _decFull, _reclaimed, _softPasses,
                        _emissive, _litGroups;
+    /// <summary>CX-120: tinted emitters drawn WITHOUT the scene tint, because DB mode has no engine light
+    /// list to sample at the emitter's origin. A named difference, on the period line.</summary>
+    private static int _dbNoTint;
     /// <summary>How far inside its own cell a quad's UV range is pulled, as a fraction of the cell.
     /// <para>An atlas cell has no border. Bilinear filtering at its edge reaches into the NEIGHBOURING cell,
     /// and a mip level of an atlas averages cells together outright -- so a frame whose neighbour holds a
@@ -355,45 +368,7 @@ internal static unsafe partial class Particles
             return;
         }
 
-        _origRender = hooks.InstallRenderEmitter(&OnRenderEmitter);
-        _origDtor = hooks.InstallPartEmitterDtor(&OnEmitterDtor);
-        if (_origRender == null || _origDtor == null)
-        {
-            _off = true;
-            log.Info("Particles: PartEmitter::RenderEmitter / ~PartEmitter did not hook -- emitters stay vanilla");
-            return;
-        }
         log.Info($"Particles: armed and {(Enabled.V ? "ON" : "IDLE")} -- {Describe()} (/particles enabled 1 arms it)");
-    }
-
-    /// <summary>The engine's own walk, once per emitter per frame, in its own sorted order. Two jobs: learn
-    /// the population (and its transform), and decline to run the original for an emitter the owned pass
-    /// already drew this pass.
-    /// <para>#261 moved that walk ahead of the frame anchor, so the stamp it tests is one pass old.
-    /// Getting that wrong is not cosmetic: the funnels swallow
-    /// the engine's DRAW, not its build, and the build is what this class costs. Skipping the original is
-    /// safe by precedent, since the pre-#261 order skipped it on every steady-state frame.</para></summary>
-    [UnmanagedCallersOnly]
-    private static void OnRenderEmitter(IntPtr em)
-    {
-        if (_origRender == null) return;
-        if (_off || !Enabled.V || em == IntPtr.Zero) { _origRender(em); return; }
-
-        // A GUI 3D panel drives the same Scene virtuals as the world (#106/#125). Emitters reached from one
-        // belong to that panel's Scene, and replaying them into the world frame would draw an inventory
-        // model's sparks over the map.
-        IntPtr scene = *_currentScene;
-        if (!AlloyRenderer.IsWorldScene(scene)) { _origRender(em); _foreign++; return; }
-        if (scene != _scene) Forget();
-        _scene = scene;
-
-        var ev = new PartEmitter(em);
-        int slot = Capture(em, (IntPtr*)ev.Parts, ev.Count);
-        // #261: the decline is what skips the ENGINE's own vertex build, which is this class's whole cost --
-        // the funnels only swallow the draw. The shim runs this walk ahead of the anchor, so the stamp it
-        // tests is one pass old: "drawn in the pass just gone".
-        if (slot >= 0 && _tab[slot].IssuedGen == AlloyRenderer.PassGen - 1) { _suppressed++; return; }
-        _origRender(em);
     }
 
     /// <summary>CX-86: enrolment from <see cref="EmitterSim"/>, which walks <c>emitterbucket</c> itself now
@@ -401,33 +376,22 @@ internal static unsafe partial class Particles
     /// learn the population and its transform -- minus the suppression, because there is no original left to
     /// decline. The caller walks in its own back-to-front order, so capture order still IS draw order.
     /// </summary>
-    internal static void Enroll(IntPtr em, IntPtr scene, IntPtr* parts, int count)
+    internal static void Enroll(IntPtr em, int part, uint dbTex, IntPtr scene, IntPtr* parts, int count)
     {
-        if (_off || !Enabled.V || em == IntPtr.Zero || parts == null || count <= 0) return;
-        if (!AlloyRenderer.IsWorldScene(scene)) { _foreign++; return; }
-        if (scene != _scene) Forget();
-        _scene = scene;
-        Capture(em, parts, count);
-    }
-
-    /// <summary>An emitter is being destroyed. #145's rule, applied here: the Alloy draw reads this
-    /// emitter's live particle array one frame after the capture, so the table cannot outlive it.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnEmitterDtor(IntPtr em)
-    {
-        // Tombstone rather than swap-remove: the sort order holds table INDICES, so compacting would leave
-        // every entry past the hole naming a different emitter -- which draws a live one at a dead one's
-        // place in the depth order for a frame.
-        for (int i = 0; i < _tabN; i++)
-            if (_tab[i].Ptr == em) { _tab[i].Ptr = IntPtr.Zero; break; }
-        // CX-86: the simulation keys a pool block by the same pointer the engine is about to free and reuse.
-        EmitterSim.Forget(em);
-        if (_origDtor != null) _origDtor(em);
+        if (_off || !Enabled.V || parts == null || count <= 0) return;
+        if (part < 0)
+        {
+            if (em == IntPtr.Zero) return;
+            if (!AlloyRenderer.IsWorldScene(scene)) { _foreign++; return; }
+            if (scene != _scene) Forget();
+            _scene = scene;
+        }
+        Capture(em, part, dbTex, parts, count);
     }
 
     /// <summary>Record this emitter and its place in the sort. Returns its table slot, or -1 when the table
     /// is full -- which is not a failure, it just leaves the emitter vanilla.</summary>
-    private static int Capture(IntPtr em, IntPtr* parts, int count)
+    private static int Capture(IntPtr em, int part, uint dbTex, IntPtr* parts, int count)
     {
         // The capture window opens on the first emitter of a new pass: DoEmitterBucket walks the sorted list
         // in one go, so "the pass changed" is the same event as "a new walk started" without a second hook.
@@ -441,8 +405,8 @@ internal static unsafe partial class Particles
         int s = -1, free = -1, stale = -1;
         for (int i = 0; i < _tabN; i++)
         {
-            if (_tab[i].Ptr == em) { s = i; break; }
-            if (_tab[i].Ptr == IntPtr.Zero) { if (free < 0) free = i; }
+            if (part >= 0 ? _tab[i].Part == part : _tab[i].Ptr == em && _tab[i].Part < 0) { s = i; break; }
+            if (_tab[i].Ptr == IntPtr.Zero && _tab[i].Part < 0) { if (free < 0) free = i; }
             else if (stale < 0 && _tab[i].CapFrame < _frame - 1) stale = i;
         }
         if (s < 0)
@@ -457,11 +421,15 @@ internal static unsafe partial class Particles
             // a new emitter would hand it a slice the allocator has already handed to someone else -- two
             // emitters writing one block, with the hash layer making the wrong one sticky.
             _tab[s].RecBase = 0; _tab[s].RecCap = 0; _tab[s].Hash = 0;
-            _tab[s].Emissive = ReadEmissive(new PartEmitter(em).Material);
+            // CX-120: a DB emitter has no Material, so no .mtr parameter list to walk. fEmissive stays 1.0
+            // there -- named on the period line rather than silently assumed (see Census).
+            _tab[s].Emissive = part >= 0 ? 1f : ReadEmissive(new PartEmitter(em).Material);
             _captured++;
         }
         ref Emit e = ref _tab[s];
         e.Ptr = em;
+        e.Part = part;
+        e.DbTex = dbTex;
         e.CapFrame = _frame;
         e.Parts = parts; e.PartCount = count;
         // RenderEmitter pushes nothing and Scene::DoEmitterBucket does no matrix work either, so an emitter
@@ -486,9 +454,10 @@ internal static unsafe partial class Particles
         if (_off || !Enabled.V || _failed || _orderN == 0 || Gl.DrawArrays == null) return;
         if (!EnsureProgram()) return;
 
-        IntPtr cam = AlloyCamera.World;
-        if (cam == IntPtr.Zero) return;
-        Basis(cam, out Vector3 camFwd, out Vector4 camQ, out Vector3 axisY, out Vector3 axisX);
+        // The camera the billboards face: the frame's own camera block, where the seam published this view's pose.
+        if (!FrameInputs.HasCamera) return;
+        Quaternion camRot = FrameInputs.CameraRot;
+        Basis(camRot, out Vector3 camFwd, out Vector4 camQ, out Vector3 axisY, out Vector3 axisX);
         // The eye, from the view matrix rather than from the camera object: the sphere normal has to bulge
         // TOWARDS the viewer and the engine's quaternion does not say by itself which way its own Z points.
         // Inverting the matrix we are about to upload cannot disagree with the matrix we are about to upload.
@@ -521,7 +490,7 @@ internal static unsafe partial class Particles
             // stale one -- the compute pass walks spans by group membership, not by what was written.
             _span[i * 4] = 0; _span[i * 4 + 1] = 0; _span[i * 4 + 2] = (uint)at; _span[i * 4 + 3] = 0;
             if (!EnsureBlock(ref e, _sCount[k])) { _wrote[i] = 0; continue; }
-            int wrote = BuildEmitter(e.Ptr, ref e, _recs + (long)e.RecBase * RecFloats, _sCount[k],
+            int wrote = BuildEmitter(ref e, _recs + (long)e.RecBase * RecFloats, _sCount[k],
                                      camFwd, camQ, axisY, axisX, eye,
                                      lit && _sCls[k] == ClsBlend);
             _wrote[i] = wrote;
@@ -620,6 +589,7 @@ internal static unsafe partial class Particles
 
         int cls = -1, cull = -1;
         IntPtr texObj = IntPtr.Zero;
+        bool texDb = false;
         float emis = float.NaN;
         for (int gi = 0; gi < groups; gi++)
         {
@@ -645,15 +615,20 @@ internal static unsafe partial class Particles
             }
             if (_gCull[gi] != cull)
             { cull = _gCull[gi]; if (cull != 0) Gl.Enable(Gl.CULL_FACE); else Gl.Disable(Gl.CULL_FACE); }
-            if (_gTexObj[gi] != texObj)
+            if (_gTexObj[gi] != texObj || _gDb[gi] != texDb)
             {
                 texObj = _gTexObj[gi];
+                texDb = _gDb[gi];
+                // CX-120: a DB emitter's texture is Alloy's own -- a GL name from TexRegistry, bound
+                // directly. There is no CAurTexture to resolve, no animation controller to tick and no
+                // engine bind cache to keep honest.
+                if (texDb) Gl.BindTexture(Gl.TEXTURE_2D, (uint)(nint)texObj);
                 // The engine's own bind, on unit 0, frame -1 ("whatever the controller says") -- exactly the
                 // call Material::BindAllStandardTextures makes. It resolves the referenced texture, takes the
                 // id off the RESOLVED object, and ticks the animation controller. A raw glBindTexture of the
                 // Material's own id skips all three, which is how a smoke emitter ended up drawing another
                 // effect's artwork.
-                _bindInUnit(texObj, 0, -1);
+                else _bindInUnit(texObj, 0, -1);
             }
             if (_gEmis[gi] != emis) { emis = _gEmis[gi]; Gl.Uniform1f(_locEmissive, emis); }
             // Six vertices a particle, expanded from gl_VertexID -- there is no vertex buffer any more.
@@ -693,8 +668,8 @@ internal static unsafe partial class Particles
             ref Emit e = ref _tab[s];
             // A dead capture: the emitter stopped being walked (culled, finished, or its Gob went away
             // between the walk and here). Replaying it would read a particle array nobody maintains.
-            if (e.Ptr == IntPtr.Zero || e.CapFrame < _frame - 1) continue;
-            if (!Resolve(e.Ptr, e.Parts, e.PartCount, out int tex, out IntPtr texObj, out int cls,
+            if ((e.Ptr == IntPtr.Zero && e.Part < 0) || e.CapFrame < _frame - 1) continue;
+            if (!Resolve(ref e, out int tex, out IntPtr texObj, out int cls,
                          out int cull, out int count))
             { _declined++; continue; }
             _sSlot[n] = s; _sTex[n] = tex; _sCls[n] = cls; _sCull[n] = cull; _sCount[n] = count;
@@ -702,6 +677,7 @@ internal static unsafe partial class Particles
             // clips to white, so a declared 4.0 would turn a warm flame into a flat disc. #139 off, or
             // refusing to arm, forces the neutral value.
             _sTexObj[n] = texObj;
+            _sDb[n] = e.Part >= 0;
             _sEmis[n] = hdr ? _tab[s].Emissive : 1f;
             if (_sEmis[n] != 1f) _emissive++;
             _sTaken[n] = false;
@@ -712,54 +688,67 @@ internal static unsafe partial class Particles
 
     /// <summary>Everything about an emitter that decides whether -- and how -- the Alloy pass draws it.
     /// False means DECLINE, which costs one vanilla emitter draw and nothing else.</summary>
-    private static bool Resolve(IntPtr em, IntPtr* parts, int rawCount, out int tex, out IntPtr texObj,
+    private static bool Resolve(ref Emit slot, out int tex, out IntPtr texObj,
                                 out int cls, out int cull, out int count)
     {
         tex = 0; texObj = IntPtr.Zero; cls = 0; cull = 0; count = 0;
+        if (!Snapshot(in slot, out Emitter e)) { _decEmpty++; return false; }
 
         // RenderEmitter's own opening early-out: a fading Gob or tile draws NO particles at all. Declining
         // is the cheapest reproduction -- the engine takes the same exit.
-        var e = new PartEmitter(em);
-        var g = new CX.Engine.Part(em).Gob;
-        if (!g.IsNull)
-        {
-            TileData owner = g.TileData;
-            if (!owner.IsNull && TileFadeRamp.Explored(owner.Ptr) < 1f) { _decFade++; return false; }
-        }
-        TileData tile = e.TileOwner;
-        if (!tile.IsNull && TileFadeRamp.Explored(tile.Ptr) < 1f) { _decFade++; return false; }
+        if (e.Faded) { _decFade++; return false; }
 
         int type = e.Type;
         // Type 3 pairs each particle with the NEXT one, so the last has no partner and the loop runs one
         // short. The engine does the same subtraction.
-        count = rawCount - (type == 3 ? 1 : 0);
+        count = slot.PartCount - (type == 3 ? 1 : 0);
         if (count < 1 || e.Life == 0f) { _decEmpty++; return false; }
-        if (parts == null) { _decEmpty++; return false; }
-        IntPtr node = new CX.Engine.Part(em).Node.Ptr;
-        if (node == IntPtr.Zero) { _decEmpty++; return false; }
+        if (slot.Parts == null) { _decEmpty++; return false; }
 
-        IntPtr mat = e.Material.Ptr;
-        if (mat == IntPtr.Zero) { _decEmpty++; return false; }
-        // A material naming its own program is not this shader's to draw -- and unlike world geometry, where
-        // an unported shader costs a small shading difference on one part, a particle effect authored around
-        // a custom fragment stage IS that stage. Per-emitter fallback makes refusing free.
-        if (AlloyCensus.HasUnportedShader(mat)) { _decShader++; return false; }
-        texObj = (IntPtr)_getTexture(mat, 0);
-        // AurTex's vtable check is the LIVENESS gate and nothing more here: the id it hands back belongs to
-        // the object the Material is holding, which is not necessarily the object the engine draws with. It
-        // still answers "is this pointer safe to call into", which is the question that matters before
-        // handing it to BindInUnit.
-        // #211 survivor: the ENGINE id, on purpose. The particle draw binds through the engine's
-        // CAurTexture::BindInUnit with the texture OBJECT (see the bind in Draw), so an owned copy is not
-        // reachable from there -- copying one would be VRAM nothing samples. Particles keep the borrowed
-        // pointer behind AurTex's vtable guard, which is what they had before #211.
-        tex = AurTex.Tid(texObj);
-        if (tex == 0) { _decTex++; return false; }
+        if (e.Db)
+        {
+            // CX-120: the texture is a TexRegistry GL name, resolved by the simulation when it took the
+            // emitter's slot. Zero means the atlas has not landed yet -- the registry marks its dependents
+            // dirty at arrival, so the emitter draws from the frame it does.
+            if (slot.DbTex == 0) { _decTex++; return false; }
+            tex = (int)slot.DbTex;
+            texObj = (IntPtr)slot.DbTex;
+        }
+        else
+        {
+            IntPtr node = new CX.Engine.Part(slot.Ptr).Node.Ptr;
+            if (node == IntPtr.Zero) { _decEmpty++; return false; }
+            IntPtr mat = new PartEmitter(slot.Ptr).Material.Ptr;
+            if (mat == IntPtr.Zero) { _decEmpty++; return false; }
+            // A material naming its own program is not this shader's to draw -- and unlike world geometry,
+            // where an unported shader costs a small shading difference on one part, a particle effect
+            // authored around a custom fragment stage IS that stage. Per-emitter fallback makes refusing free.
+            if (AlloyCensus.HasUnportedShader(mat)) { _decShader++; return false; }
+            texObj = (IntPtr)_getTexture(mat, 0);
+            // AurTex's vtable check is the LIVENESS gate and nothing more here: the id it hands back belongs
+            // to the object the Material is holding, which is not necessarily the object the engine draws
+            // with. It still answers "is this pointer safe to call into", which is the question that matters
+            // before handing it to BindInUnit.
+            // #211 survivor: the ENGINE id, on purpose. The particle draw binds through the engine's
+            // CAurTexture::BindInUnit with the texture OBJECT (see the bind in Draw), so an owned copy is not
+            // reachable from there -- copying one would be VRAM nothing samples. Particles keep the borrowed
+            // pointer behind AurTex's vtable guard, which is what they had before #211.
+            tex = AurTex.Tid(texObj);
+            if (tex == 0) { _decTex++; return false; }
+        }
 
-        int blend = e.Blend;
-        cls = blend == 1 ? ClsPunch : blend == 0 ? ClsBlend : ClsAdd;
-        cull = new MdlNodeEmitter(node).NoCull == 0 ? 1 : 0;
+        cls = e.Blend == 1 ? ClsPunch : e.Blend == 0 ? ClsBlend : ClsAdd;
+        cull = !e.NoCull ? 1 : 0;
         return true;
+    }
+
+    /// <summary>CX-120: this captured emitter's parameters, from whichever source owns it. One call, and every
+    /// read after it is a plain field -- which is what lets one build loop serve the engine's objects and the
+    /// scene database.</summary>
+    private static bool Snapshot(in Emit slot, out Emitter e)
+    {
+        e = default;
+        return slot.Part >= 0 && EmitterSim.FillDb(slot.Part, ref e);
     }
 
     /// <summary>Build the draw order and its groups. Punch-through and additive gather by (texture, cull)
@@ -770,7 +759,8 @@ internal static unsafe partial class Particles
     /// uniform, and a uniform that varies inside a draw is one that has to cut it. Exact float compare is
     /// right here -- both values came out of the same parsed record or are both the literal 1.0.</summary>
     private static bool SameGroup(int a, int b)
-        => _sTexObj[a] == _sTexObj[b] && _sCull[a] == _sCull[b] && _sEmis[a] == _sEmis[b];
+        => _sTexObj[a] == _sTexObj[b] && _sCull[a] == _sCull[b] && _sEmis[a] == _sEmis[b]
+        && _sDb[a] == _sDb[b];
 
     private static int Group(int n)
     {
@@ -790,7 +780,7 @@ internal static unsafe partial class Particles
                 for (int j = i + 1; j < n && !_sTaken[j] && _sCls[j] == _sCls[i] && SameGroup(j, i); j++)
                 { _draw[at++] = j; _sTaken[j] = true; }
                 _gFirst[g] = first0; _gCount[g] = at - first0;
-                _gTex[g] = _sTex[i]; _gTexObj[g] = _sTexObj[i];
+                _gTex[g] = _sTex[i]; _gTexObj[g] = _sTexObj[i]; _gDb[g] = _sDb[i];
                 _gCls[g] = _sCls[i]; _gCull[g] = _sCull[i]; _gEmis[g] = _sEmis[i];
                 g++;
             }
@@ -821,7 +811,7 @@ internal static unsafe partial class Particles
                         { _draw[at++] = j; _sTaken[j] = true; }
                 }
                 _gFirst[g] = first; _gCount[g] = at - first;
-                _gTex[g] = _sTex[i]; _gTexObj[g] = _sTexObj[i];
+                _gTex[g] = _sTex[i]; _gTexObj[g] = _sTexObj[i]; _gDb[g] = _sDb[i];
                 _gCls[g] = cls; _gCull[g] = _sCull[i]; _gEmis[g] = _sEmis[i];
                 g++;
             }
@@ -839,10 +829,11 @@ internal static unsafe partial class Particles
     /// pass because every term in them is the camera's.
     /// <para>The quaternion at <c>CurrentCamera+0xbc</c> is stored (w, x, y, z), which is what makes these
     /// read as the standard rotations of the unit axes: <paramref name="fwd"/> is q(0,0,1),
-    /// <paramref name="axisY"/> is q(0,1,0) and <paramref name="axisX"/> is q(1,0,0).</para></summary>
-    private static void Basis(IntPtr cam, out Vector3 fwd, out Vector4 q, out Vector3 axisY, out Vector3 axisX)
+    /// <paramref name="axisY"/> is q(0,1,0) and <paramref name="axisX"/> is q(1,0,0). The caller hands the
+    /// pose over rather than a camera pointer, because DB mode has no camera object to read it off.</para>
+    /// </summary>
+    private static void Basis(in Quaternion c, out Vector3 fwd, out Vector4 q, out Vector3 axisY, out Vector3 axisX)
     {
-        Quat c = new CX.Engine.Camera(cam).Rot;
         float w = c.W, x = c.X, y = c.Y, z = c.Z;
         q = new Vector4(w, x, y, z);
         fwd = AxisZ(w, x, y, z);
@@ -867,25 +858,25 @@ internal static unsafe partial class Particles
     /// <summary>Port of <c>PartEmitter::RenderEmitter</c>'s build loop: six vertices per particle, written
     /// in the engine's own order and layout. Returns the vertex count written.
     /// <para>Allocation-free by construction -- this runs inside the colour bracket.</para></summary>
-    private static int BuildEmitter(IntPtr em, ref Emit e, float* dst, int count,
+    private static int BuildEmitter(ref Emit e, float* dst, int count,
                                     Vector3 camFwd, Vector4 camQ, Vector3 axisY, Vector3 axisX,
                                     Vector3 eye, bool drawsLit)
     {
-        var emv = new PartEmitter(em);
-        IntPtr node = new CX.Engine.Part(em).Node.Ptr;
+        if (!Snapshot(in e, out Emitter emv)) return 0;
+        IntPtr em = e.Ptr;
         int type = emv.Type;
         float life = emv.Life;
-        bool splat = _isSplat(node) != 0;
+        bool splat = emv.Splat;
         // #148: the CPU tint and the fragment's clustered lighting are the SAME quantity computed two ways --
         // one sample at the emitter's origin against the whole scene's lights, versus a per-fragment walk of
         // the cluster this fragment sits in. Applying both multiplies the scene lighting into itself, which
         // reads as a smoke plume that goes dark the moment it is properly lit. The fragment wins; the tint
         // stays for every path the fragment does not cover.
-        bool tinted = !drawsLit && _isTinted(node) != 0;
+        bool tinted = !drawsLit && emv.Tinted;
 
-        // scale: the Gob's, through the vtable slot RenderEmitter calls. No Gob means 1.
-        var gob = new CX.Engine.Part(em).Gob;
-        float scale = gob.IsNull ? 1f : gob.GetAdjustedScale();
+        // scale: the Gob's, through the vtable slot RenderEmitter calls. No Gob means 1; in DB mode it is the
+        // object's adjusted scale, which is the same quantity through ObjectBridge.
+        float scale = emv.Scale;
 
         // ---- per-emitter terms, all hoisted exactly as the engine hoists them ----
 
@@ -896,9 +887,13 @@ internal static unsafe partial class Particles
 
         // colour, optionally run through the scene lighting at the emitter's position first
         Vector3 cStart = emv.ColorStart, cEnd = emv.ColorEnd;
+        // CX-120: the CPU tint samples the ENGINE's light list at the emitter's origin. DB mode has no such
+        // list to sample (the owned registry's tint is the engine path's), so a `m_isTinted` emitter draws
+        // its declared colour there -- counted, not assumed.
+        if (tinted && emv.Db) { tinted = false; _dbNoTint++; }
         if (tinted)
         {
-            Vector3 p3 = emv.Pos;
+            Vector3 p3 = emv.M.Pos;
             EmitterLighting.V3 wp = new() { X = p3.X, Y = p3.Y, Z = p3.Z };
             IntPtr scene = *_currentScene;
             // CX-108: the registry's tint takes no manager; only the light.registry 0 path reads Scene+0x158.
@@ -918,8 +913,15 @@ internal static unsafe partial class Particles
         cEnd = Vector3.Clamp(cEnd, Vector3.Zero, Vector3.One) * ByteScale;
         bool lerpColor = cStart != cEnd;
 
-        // alpha: the emitter's own pair, folded with the tile's and the Gob's
-        float aScene = _tileAlpha(em) * (PlaceableHold.Held(new Part(em).Gob.Ptr) ? 1f : _gobAlpha(em));
+        // alpha: the emitter's own pair, folded with the tile's and the Gob's.
+        // DB mode reads the two columns that carry those: PartFade is the tile-fade/reveal product the tiles
+        // stream writes (PartEmitter::GetTileAlpha @0x4ac300 reads TileData+0x70), and the object's tint
+        // alpha is what GetGobAlpha @0x4ac2d0 answers (it is Gob+0x108 and nothing else).
+        // The part's OWN alpha controller is deliberately NOT in this product: the engine folds it through
+        // PartTriMesh::Mat, which an emitter part never reaches. Folding it here multiplied every VFX whose
+        // emitter node fades in from `alpha 0` by zero -- a lightning beam drew a perfectly placed bolt of
+        // fully transparent quads.
+        float aScene = SceneDb.PartFade[emv.Part] * SceneDb.ObjTint[emv.Obj.Index].W;
         float aStart = Sat(emv.AlphaStart * aScene) * ByteScale;
         float aEnd = Sat(emv.AlphaEnd * aScene) * ByteScale;
         bool lerpAlpha = emv.AlphaStart != emv.AlphaEnd;
@@ -933,8 +935,7 @@ internal static unsafe partial class Particles
         bool lerpH = !splat && sy0 != sy1 && (sy0 != 0f || sy1 != 0f);
 
         // UV grid
-        var ne = new MdlNodeEmitter(node);
-        int gx = ne.GridX, gy = ne.GridY;
+        int gx = emv.GridX, gy = emv.GridY;
         bool grid = Grid.V && (gx > 1 || gy > 1);
         if (Diag.V)
         {
@@ -968,7 +969,7 @@ internal static unsafe partial class Particles
         Vector3 fwd = camFwd; Vector4 q = camQ;
         if (type == 1)
         {
-            Quat o = emv.Orient;
+            Quat o = emv.M.Orient;
             q = new Vector4(o.W, o.X, o.Y, o.Z);
             fwd = AxisZ(o.W, o.X, o.Y, o.Z);
         }
@@ -1519,6 +1520,7 @@ internal static unsafe partial class Particles
         for (int i = 0; i < ClsCount; i++) _cCls[i] = 0;
         _cSplat = 0; _cTinted = 0; _cGrid = 0;
         _blockUploads = 0; _blockSkips = 0; _recResets = 0; _sorted = 0; _sortSkipped = 0;
+        _dbNoTint = 0;
     }
 
     /// <summary>AC 4's number: emitters owned against draws issued. Vanilla's ratio is 1:1 by construction --
@@ -1526,7 +1528,7 @@ internal static unsafe partial class Particles
     /// draw-call reduction the engine could not have made.</summary>
     internal static string Stats(int frames) => _off ? "particles vanilla (Alloy pass unavailable)"
         : !Enabled.V ? "particles vanilla (/particles enabled 0)"
-        : $"particles {_tabN} emitters, {_emitters} owned in {_groups} draws"
+        : $"particles {_tabN} emitters ({_captured} captured), {_emitters} owned in {_groups} draws"
           + (_emitters == 0 ? "" : $" ({(float)_emitters / MathF.Max(1, _groups):F1}x batched)")
           + $", {_suppressed} engine draws suppressed"
           + (_declined == 0 ? "" : $", {_declined} declined ({_decFade} fading, {_decEmpty} empty, " +
@@ -1546,6 +1548,7 @@ internal static unsafe partial class Particles
           + (_recResets == 0 ? "" : $", {_recResets} BLOCK-ALLOCATOR RESETS (see EnsureBlock)")
           + (_overflow == 0 ? "" : $", {_overflow} passes OVERFLOWED (group or record cap)")
           + (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped")
+          + (_dbNoTint == 0 ? "" : $", {_dbNoTint} tinted emitters drawn UNTINTED (DB mode has no engine light list)")
           + Census();
 
     /// <summary><c>/particles diag 1</c> only: which of the seven billboard bases and which blend classes this period

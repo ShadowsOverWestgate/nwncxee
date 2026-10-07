@@ -28,12 +28,14 @@ internal static unsafe partial class Weather
     private static bool _esmFailed, _esmValid;
     private static float _esmC, _esmBias;
     internal static int EsmBakes;
+    /// <summary>The cover map's side at its last bake: what a knob-driven shelter re-bake sizes the cache by.</summary>
+    private static int _coverMapSize;
 
     /// <summary>After a cover bake landed: filter it. <paramref name="array"/> is the sun array the cover
     /// layer rides; the view onto it is remade when the array or the layer changes.</summary>
     internal static void FilterCover(uint array, int layer, int mapSize, float radius)
     {
-        _esmValid = false;
+        _esmValid = false; _shelValid = false;
         if (_esmFailed || Gl.TextureView == null) return;
         int size = mapSize < EsmSizeMax ? mapSize : EsmSizeMax;
         if (!EnsureEsm(array, layer, size)) return;
@@ -72,6 +74,8 @@ internal static unsafe partial class Weather
         // R2: the same bake, latched into the area wetness map -- the depth view is already in hand here
         // and nowhere else, and this is the one call site a new cover bake reaches.
         MapScatter(_esmView, radius);
+        _coverMapSize = mapSize;
+        ShelterBake(_esmView, mapSize);
         Gl.UseProgram((uint)prog);
     }
 
@@ -92,7 +96,7 @@ internal static unsafe partial class Weather
     }
 
     /// <summary>The cover map is gone with its bake (area edge, flush failure): so is the filtered copy.</summary>
-    internal static void EsmRelease() => _esmValid = false;
+    internal static void EsmRelease() { _esmValid = false; ShelterRelease(); }
 
     /// <summary>CX-102: the cover layer as PLAIN depth -- the same <c>glTextureView</c> the filter reads,
     /// compare mode off -- or 0 while there is none. The splash pass reconstructs each impact's landing

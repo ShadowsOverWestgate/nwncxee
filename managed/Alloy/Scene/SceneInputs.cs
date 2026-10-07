@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using CX.Alloy.Db;
 using CX.Engine;
 using CX.Framework;
 
@@ -109,11 +110,12 @@ public sealed unsafe class SceneInputs : IExtenderService
         // #257: the frame constants are read, not captured -- and ahead of the stand-down, because the
         // camera, the area terms and the fog are inputs to EVERY Alloy pass, shadows or no shadows.
         FrameRead.Resolve(log);
+        // CurrentArea() is DB mode's fog and interior source too, so it resolves whatever the shadows say.
+        _appMgr = Native.Sym(SymbolMap.AppManager);
+        _getModule = EngineFn.GetModule;
 
         if (!_enabled) return;
 
-        _appMgr = Native.Sym(SymbolMap.AppManager);
-        _getModule = EngineFn.GetModule;
         _getGspF = EngineFn.RiGetGlobalShaderParamf;
         // Resolved once into a static: asked per area light per frame.
         _getAdjRadius = EngineFn.GetLightAdjustedRadius;
@@ -653,6 +655,14 @@ public sealed unsafe class SceneInputs : IExtenderService
             // world the light cannot reach, at no visible gain.
             FrameInputs.RecordLocalLight(light.Ptr, pos, adjR, color);
         }
+        FinishWalk();
+    }
+
+    /// <summary>The light walk's tail: the departure fade, the bake's static-set close, and the count the
+    /// settle checks read. CX-120: DB mode walks a different SOURCE but must close the walk identically, so
+    /// the three live here rather than inline in one walk's body.</summary>
+    internal static void FinishWalk()
+    {
         FadeDepartedLights();
         LightmapBake.EndWalk();
         _walkDoneCount = FrameInputs.LightCount;
@@ -795,13 +805,24 @@ public sealed unsafe class SceneInputs : IExtenderService
             // Two LIVE sources only (shadows v2): the camera-follow target when there is one, else
             // camera-ground. The old sticky-last bridge could freeze the focus at a stale point (#67);
             // nothing keyed on focus needs sub-frame stability anymore -- selection/LOD anchor on the camera.
-            if (CameraTargetFocus() is Vector3 pp) { _focus = pp; src = 0; }
+            // CX-120: in DB mode the follow target is a database column, not an engine Gob chain -- the
+            // engine reader below returns null for every frame of it, and the fit then sat 24u straight
+            // DOWN from the camera (camera-ground against an identity camera rotation), i.e. underground,
+            // which spends cascade 0 on dirt and pancakes the rest onto the near plane.
+            if (DbFollowFocus() is Vector3 pp) { _focus = pp; src = 0; }
             else { _focus = ShadowMath.CameraGroundFocus(FrameInputs.CameraPos, FrameInputs.CameraRot, _focusDist); src = 2; }
             if (src != _focusSource)
             {
                 _log?.Info($"SceneInputs: focus source -> {FocusName(src)} at ({_focus.X:F1},{_focus.Y:F1},{_focus.Z:F1}) " +
                            $"(prev {FocusName(_focusSource)} held {_focusFrames} frames)");
                 _focusSource = src; _focusFrames = 0;
+            }
+            // CX-120 bring-up: a focus that JUMPS vertically, in either scene mode, named with its source.
+            if (MathF.Abs(_focus.Z - _lastFocusZ) > 1f)
+            {
+                _log?.Always($"SceneInputs: [focusjump] {FocusName(src)} z {_lastFocusZ:F3} -> {_focus.Z:F3} "
+                           + $"at ({_focus.X:F3},{_focus.Y:F3}) frame {_focusFrames}");
+                _lastFocusZ = _focus.Z;
             }
             _focusFrames++;
             _haveFocus = true;
@@ -810,11 +831,36 @@ public sealed unsafe class SceneInputs : IExtenderService
         return _focus;
     }
 
+    /// <summary>DB mode's half of <see cref="FrameStart"/>: the shadow focus and the world-caster bake.
+    /// <para><see cref="FrameStart"/> itself cannot run in DB mode -- it is reached from
+    /// <c>AlloyRenderer.FrameAnchor</c>, which hangs off <c>RspShim</c>, which is the engine's
+    /// <c>RenderSinglePass</c> and does not run at all when CX owns the scene graph. That is why
+    /// <c>[zones] Shadow</c> read 0,0 and no sun shadow was ever baked in DB mode.</para>
+    /// <para>The light walk and the interior read are NOT here: the database owns both
+    /// (<c>DbLights.Walk</c>, <c>SceneFeed</c>). What is left is the half with no DB equivalent, called from
+    /// the DB world pass at the same point in the frame -- after the light rig, before the colour
+    /// pass.</para></summary>
+    internal static void DbShadowSlot(DbId camera)
+    {
+        _dbCamera = camera;
+        if (!_enabled || _passDoneThisFrame) return;
+        if (_stage < 2) { _passDoneThisFrame = true; return; }
+        ShadowFocus();
+        if (_stage < 3) { _passDoneThisFrame = true; return; }
+        if (_stage >= 4) CasterPass.OnPassSlot();
+        // CX-120: and the light -> cube bind, in the same place and for the same reason as the engine path
+        // (see FrameStart). DB mode already BAKED its cubes -- 22 in the inn, the count mode 0 bakes there --
+        // and then told no light which layer its shadow sat in, so every lit draw took the receiver's silent
+        // -1 path and no torch cast a shadow. The bind was the whole of what was missing.
+        BindLightCubes();
+        _passDoneThisFrame = true;
+    }
+
     /// <summary>The current CNWCArea, or the null view while the chain is unavailable. Walks the engine's own
     /// chain (**g_pAppManager -&gt; CClientExoApp::GetModule -&gt; module+0xf8; the global needs TWO derefs --
     /// CAppManager first, its first field is the CClientExoApp*), every deref guarded. Compared, never
     /// retained. Alloc-free, once per frame.</summary>
-    private static CNWCArea CurrentArea()
+    internal static CNWCArea CurrentArea()
     {
         if (_appMgr == IntPtr.Zero || _getModule == null) return default;
         IntPtr mgr = *(IntPtr*)_appMgr;          // CAppManager*
@@ -849,6 +895,28 @@ public sealed unsafe class SceneInputs : IExtenderService
         IntPtr target = behavior.Target;
         if (target == IntPtr.Zero) return null;
         return new Gob(target).Position;
+    }
+
+    /// <summary>The focus height the <c>[focusjump]</c> tripwire last reported, so it fires on an EDGE rather
+    /// than once per frame of a standing disagreement.</summary>
+    private static float _lastFocusZ;
+
+    /// <summary>The world camera the DB pass is drawing, published by it so the focus can ask the database
+    /// what that camera follows. Default (invalid) outside a DB world pass.</summary>
+    private static DbId _dbCamera;
+
+    /// <summary>The world camera the DB pass last drew, for a diagnostic that needs to ask what it follows.</summary>
+    internal static DbId DbWorldCamera => _dbCamera;
+
+    /// <summary>CX-120: <see cref="CameraTargetFocus"/>'s database half -- the object the world camera
+    /// follows, which is the PC. One column read; null when the camera follows nothing (a cutscene camera,
+    /// or before the chase behaviour has solved), and the caller falls back exactly as it does for a
+    /// non-follow engine camera.</summary>
+    private static Vector3? DbFollowFocus()
+    {
+        if (!SceneDb.Cameras.Valid(_dbCamera)) return null;
+        DbId target = SceneDb.CamFollow[_dbCamera.Index];
+        return SceneDb.Objects.Valid(target) ? SceneDb.ObjPos[target.Index] : null;
     }
 
     /// <summary>Per-presented-frame edge from the UiHost roll-call: re-arm the once-per-frame walk and

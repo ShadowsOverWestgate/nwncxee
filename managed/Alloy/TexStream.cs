@@ -34,8 +34,6 @@ internal static unsafe class TexStream
     private static AurTextureBuildAndStoreAllFn _origDrain;
     private static AreaLoadAreaFn* _loadAreaSlot;
     private static MaterialInitializeTexturesFn _origInitTextures;
-    private static AurTextureBindFn _origBind;
-    private static AurTextureBindInUnitFn _origBindInUnit;
     /// <summary>Queued entries a model material asked for (<see cref="OnInitTextures"/>): the only ones that may wait.
     /// Everything else -- the 2D GUI, fonts, portraits -- builds when the engine would. GUI panels are models too, so
     /// their textures land here as well; <see cref="OnBind"/> builds any the engine itself binds before it draws.</summary>
@@ -69,14 +67,10 @@ internal static unsafe class TexStream
         _sentSlot = hooks.ChainSendAreaLoaded(&OnSent, SentPriority);
         _placedSlot = hooks.ChainSendAreaLoaded(&OnPlaced, PlacedPriority);
         _origInitTextures = hooks.InstallMaterialInitializeTextures(&OnInitTextures);
-        _origBind = hooks.InstallAurTextureBind(&OnBind);
-        _origBindInUnit = hooks.InstallAurTextureBindInUnit(&OnBindInUnit);
-        if (_origDrain == null || _loadAreaSlot == null || _sentSlot == null || _placedSlot == null || _origInitTextures == null
-            || _origBind == null || _origBindInUnit == null)
+        if (_origDrain == null || _loadAreaSlot == null || _sentSlot == null || _placedSlot == null || _origInitTextures == null)
         {
             log.Always($"TexStream: REFUSED -- drain {(_origDrain != null ? "ok" : "MISSING")}, LoadArea {(_loadAreaSlot != null ? "ok" : "MISSING")}, "
                        + $"Material::InitializeTextures {(_origInitTextures != null ? "ok" : "MISSING")}, "
-                       + $"CAurTexture::Bind/BindInUnit {(_origBind != null && _origBindInUnit != null ? "ok" : "MISSING")}, "
                        + $"AreaLoaded {(_sentSlot != null && _placedSlot != null ? "ok" : "MISSING")}; the engine drains its texture queue whole");
             return;
         }
@@ -226,30 +220,6 @@ internal static unsafe class TexStream
     }
 
     // ---- the engine's own binds ----
-
-    private static long _boundEarly;
-
-    /// <summary>The engine is about to draw with a texture streaming left queued -- a GUI panel's, a portrait scene's:
-    /// build it now, or it draws on no texture this frame (the main menu's one-frame white). Inside the shim window
-    /// the engine's draws are swallowed and the only binds are Alloy's own (<see cref="Particles"/>), which draw a
-    /// white stand-in as every Alloy pass does, so nothing is built mid-pass. Hot: a count test, then a set probe.</summary>
-    private static void BuildIfDeferred(IntPtr tex)
-    {
-        if (_world.Count == 0 || RspShim.InWindow) return;
-        IntPtr basic = new CAurTexture(tex).GetReferencedTexture().Ptr;   // AsCAurTextureBasic on a basic is itself
-        if (basic == IntPtr.Zero) basic = tex;
-        if (!_world.Contains(basic)) return;
-        Dequeue(basic);
-        if (new CAurTextureBasic(basic).FlagNoDrain != 0) return;
-        EngineFn.AurTextureBuildAndStoreTexture(basic);
-        _boundEarly++;
-    }
-
-    [UnmanagedCallersOnly]
-    private static void OnBind(IntPtr tex, int stage) { BuildIfDeferred(tex); _origBind(tex, stage); }
-
-    [UnmanagedCallersOnly]
-    private static void OnBindInUnit(IntPtr tex, uint unit, int stage) { BuildIfDeferred(tex); _origBindInUnit(tex, unit, stage); }
 
     // ---- the transition ----
 
@@ -409,14 +379,12 @@ internal static unsafe class TexStream
     {
         int n = Math.Min(_landedN, LandedCap);
         if (n == 0) return;
-        for (int k = 0; k < n; k++) SceneWalk.NoteChanged(_landed[k]);
-        SceneWalk.Dirty = true;
         _reenrolled += n;
         _landedN = 0;
     }
 
     internal static string Note()
-        => !_armed ? "" : $", texstream {(On ? $"{Renderer.TexStream.V} ms" : "off")}: {_queue.Count} queued, {_reenrolled} parts re-enrolled on arrival ({_landedDropped} past the cap), {_boundEarly} built at an engine bind";
+        => !_armed ? "" : $", texstream {(On ? $"{Renderer.TexStream.V} ms" : "off")}: {_queue.Count} queued, {_reenrolled} parts re-enrolled on arrival ({_landedDropped} past the cap)";
 
     // ---- self-check ----
 

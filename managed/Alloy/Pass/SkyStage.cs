@@ -77,25 +77,27 @@ internal static unsafe class SkyStage
         Forget();
     }
 
-    /// <summary>The program for one sky material's custom fragment stage, built on first sight of the resref
-    /// and cached for the module. 0 means this part cannot be drawn -- no stage named, the table full, or a
-    /// build that failed (logged once, by resref).</summary>
-    internal static uint Program(byte* fsName)
+    /// <summary>The program for a material's custom fragment stage <paramref name="fs"/>, built on first sight
+    /// and cached for the module. 0 when it cannot be built (logged there), which refuses the sky rather than
+    /// drawing a dome whose whole look that stage was.</summary>
+    internal static uint Program(string fs)
     {
-        if (fsName == null || *fsName == 0) return 0;
-        for (int i = 0; i < _count; i++) if (Same(fsName, _progs[i].Ref)) return _progs[i].Prog;
+        if (fs.Length == 0) return 0;
+        for (int i = 0; i < _count; i++)
+            if (string.Equals(fs, _progs[i].Ref, StringComparison.OrdinalIgnoreCase)) return _progs[i].Prog;
         if (_count >= MaxProgs)
         {
             _log?.Always($"SkyStage: more than {MaxProgs} distinct sky fragment stages in one session -- the sky "
                        + "is NOT DRAWN for this area");
             return 0;
         }
-        string resref = Name(fsName);
+        string resref = fs.ToLowerInvariant();
         ref Entry e = ref _progs[_count++];
         e.Ref = resref;
         e.Prog = Build(resref);
         if (e.Prog == 0) { e.Failed = true; return 0; }
         Locate(ref e);
+        _log?.Info($"SkyStage: {resref}.shd hosted as the sky's fragment stage");
         return e.Prog;
     }
 
@@ -236,40 +238,11 @@ internal static unsafe class SkyStage
         return sb.ToString();
     }
 
-    /// <summary>Case-insensitive compare of a NUL-terminated engine resref against a cached name, over the
-    /// whole name so a prefix cannot match. Same shape and reason as <c>AlloyCensus.Classify</c>.</summary>
-    private static bool Same(byte* name, string? cached)
-    {
-        if (cached == null) return false;
-        int i = 0;
-        for (; i < cached.Length; i++)
-        {
-            byte a = name[i];
-            if (a >= 'A' && a <= 'Z') a += 32;
-            if (a != (byte)cached[i]) return false;
-        }
-        return name[i] == 0;
-    }
-
-    private static string Name(byte* name)
-    {
-        int n = 0;
-        while (n < ShaderResource.ResRefBytes && name[n] != 0) n++;
-        char[] c = new char[n];
-        for (int i = 0; i < n; i++) { byte b = name[i]; c[i] = (char)(b >= 'A' && b <= 'Z' ? b + 32 : b); }
-        return new string(c);
-    }
-
-    /// <summary>Off-device: the resref compare and the token, which are the two places a typo would show as
-    /// "there is no sky and nothing says why".</summary>
+    /// <summary>Off-device: the token, the place a typo would show as "there is no sky and nothing says
+    /// why".</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
-        byte* n = stackalloc byte[8];
-        n[0] = (byte)'F'; n[1] = (byte)'s'; n[2] = (byte)'T'; n[3] = 0;
-        check.Expect(Same(n, "fst"), "a resref compare is case-insensitive over the whole name");
-        check.Expect(!Same(n, "fs") && !Same(n, "fsta"), "...and neither a prefix nor an extension of it matches");
-        check.Expect(Name(n) == "fst", "a resref reads back lowercased and NUL-terminated");
         string src = ShaderStages.Source(ShdFs);
         check.Expect(src.Contains("// $VANILLA-MAIN " + FsToken + "\n"), "the stage carries the whole-stage region, token and all");
         check.Expect(src.Contains("void " + VanillaShader.MainEntry + "()"), "...and a stub under the entry name the splice renames to");

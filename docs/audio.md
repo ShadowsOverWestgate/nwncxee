@@ -32,6 +32,15 @@ render thread (frame) ── SoundScene: Alloy's static tiles + Static placeable
                           area's static set has held still for a second
 ```
 
+An area change swaps that scene, and the IRs the render convolves are the **simulator's own memory**
+(`iplSourceGetOutputs`), which `iplSimulatorCommit` reallocates. So every commit -- the scene swap and the probe
+swap -- goes through the handoff in `refl_quiesce`/`refl_thaw`: the freeze and the cleared IR params are published
+under the same lock the render snapshots its slots with, the swap then waits out the frame that may already be
+inside `iplReflectionEffectApply`, and the reflection effects and the mixer are reset before reflections resume.
+Without it the render went on convolving the released IRs until the new area published new ones -- the
+intermittent libphonon SIGSEGV on area transitions (CX-57, 2026-10-06). It was never a DB-mode bug: the area
+edge sends its empty scene in mode 0 too.
+
 Everything 2D the engine plays -- interface, music, ambience streams, dialog, movies -- stays OpenAL's,
 except a **placed non-Positional loop** (group 2, `Looping_AreaWide_Ambients`): the engine never range-culls a
 2D source, so such a loop plays area-wide at one volume. `sound.placeloops` renders it at its object with the
@@ -78,7 +87,10 @@ for what it still plays.
 
 `/settings` -> Audio -> Sound, or `/knobs`. Every row is one declaration in
 `managed/Services/Sound/SoundKnobs.cs`. Master off: every sound plays as in the stock game (live -- voices CX
-owned are handed back to OpenAL at the engine's gain).
+owned are handed back to OpenAL at the engine's gain), and the feature stops rather than only going quiet --
+no Steam Audio work on either thread, the acoustic scene torn down and its gather stood down, sent again when
+the toggle comes back (ADR 0025). The threads themselves stay parked: the render keeps the ring filled with
+silence.
 
 ## Verified, and not
 

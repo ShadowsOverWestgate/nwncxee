@@ -87,17 +87,30 @@ internal static partial class MeshChart
         }
         catch (Exception e) { check.Expect(false, $"the prune check could not run ({e.Message})"); }
 
-        uint svVao = _vao; _vao = 1;
+        // the memo, over two real arena ranges (CX-114: the places are MeshArena's, so the fixture files
+        // them there and asserts against what it hands back)
+        CX.Alloy.Db.MeshArena.FakeVaoForCheck(CX.Alloy.Db.MeshArena.Fmt.Static, 1);
+        var stage = new float[4 * Stride];
+        for (int i = 0; i < 4; i++) { stage[i * Stride] = i; stage[i * Stride + 1] = i * 2; }
+        ushort[] i0 = { 0, 1, 2 }, i1 = { 0, 1, 2, 0, 2, 3 };
+        int rTwo = CX.Alloy.Db.MeshArena.AcquireRaw(0xC114_0001, CX.Alloy.Db.MeshArena.Fmt.Static, 4, stage,
+                                                    i0, 3, i1, 6, null, 0, default, default);
+        int rOne = CX.Alloy.Db.MeshArena.AcquireRaw(0xC114_0002, CX.Alloy.Db.MeshArena.Fmt.Static, 4, stage,
+                                                    i0, 3, null, 0, null, 0, default, default);
+        CX.Alloy.Db.MeshArena.Runs(rTwo, 1, out int wantBase, out nint wantOff, out _, out _);
+        CX.Alloy.Db.MeshArena.Runs(rOne, 0, out int oneBase, out nint oneOff, out _, out _);
         var memo = default(RangeMemo);
-        _table[KeyOf(-7, 1)] = new Entry { Done = true, Base = 5, Off0 = 8, Cnt0 = 3, Off1 = 16, Cnt1 = 6 };
-        check.Expect(Range(ref memo, -7, 1, 2, out int mb, out nint mo, out _, out int ml) && mb == 5 && mo == 16 && ml == 1,
+        _table[KeyOf(-7, 1)] = new Entry { Done = true, Range = rTwo };
+        check.Expect(Range(ref memo, -7, 1, 2, out int mb, out nint mo, out _, out int ml)
+                     && mb == wantBase && mo == wantOff && ml == 1,
           "the memo did not resolve LOD 2 to the finest level that exists");
-        _table[KeyOf(-7, 1)] = new Entry { Done = true, Base = 9, Off0 = 8, Cnt0 = 3 };
-        check.Expect(Range(ref memo, -7, 1, 2, out mb, out _, out _, out _) && mb == 5, "the memo re-probed inside one epoch");
-        check.Expect(Range(ref memo, -7, 1, 0, out mb, out mo, out _, out _) && mb == 9 && mo == 8, "a LOD change did not re-probe");
+        _table[KeyOf(-7, 1)] = new Entry { Done = true, Range = rOne };
+        check.Expect(Range(ref memo, -7, 1, 2, out mb, out _, out _, out _) && mb == wantBase, "the memo re-probed inside one epoch");
+        check.Expect(Range(ref memo, -7, 1, 0, out mb, out mo, out _, out _) && mb == oneBase && mo == oneOff, "a LOD change did not re-probe");
         ForgetSlot(-7);
         check.Expect(!Range(ref memo, -7, 1, 0, out _, out _, out _, out _), "the memo outlived a forgotten slot");
-        _vao = svVao;
+        CX.Alloy.Db.MeshArena.Release(rTwo);
+        CX.Alloy.Db.MeshArena.ResetForCheck();
 
         log.Info(check.Ok ? "MeshChart.SelfCheck: passed" : "MeshChart.SelfCheck: FAILED");
         return check.Ok;

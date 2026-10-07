@@ -182,12 +182,13 @@ public static unsafe class Native
     /// </summary>
     /// <remarks>
     /// This is the pre-main answer, and boot config (ADR 0013 bucket 2) is read through it -- before the
-    /// engine exists there is nothing else to ask. ponytail: a client launched with <c>-userdirectory</c>
-    /// keeps its per-feature cfgs there (those load after the engine answers) while boot settings would be
-    /// read from here; parsing the launch line or nwn.ini is the upgrade path if anyone actually runs one.
+    /// engine exists there is nothing else to ask. The launch LINE is askable pre-main, though, so
+    /// <c>-userdirectory</c> is honoured here as well (<see cref="LaunchUserDirectory"/>).
     /// </remarks>
     public static string DefaultUserDirectory()
     {
+        string? launched = LaunchUserDirectory();
+        if (launched != null) return launched;
         if (OperatingSystem.IsWindows())
             return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Neverwinter Nights");
         string? xdg = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
@@ -196,4 +197,30 @@ public static unsafe class Native
             : xdg;
         return System.IO.Path.Combine(data, "Neverwinter Nights");
     }
+
+    /// <summary>The <c>-userdirectory</c> the client was launched with, or null. Read from the command line
+    /// because that is the one thing available before the engine has resolved anything: without it a client
+    /// launched with the switch read its BOOT knobs (<c>alloy.enabled</c> among them) from the default
+    /// directory and wrote <c>cx.log</c> there, while the engine -- and the per-feature cfgs, which load
+    /// after <see cref="UserDirectory"/> can answer -- used the directory it was given. The Windows harness
+    /// found this the hard way: every knob it seeded went unread.
+    /// <para>The engine's own parse (<c>SetUpUserDirectory</c>) is case-insensitive and takes the LAST
+    /// occurrence, so this is too; a switch with no value after it is ignored, as there it is.</para></summary>
+    private static string? LaunchUserDirectory()
+    {
+        if (_launchDirTried) return _launchDir;
+        _launchDirTried = true;
+        string[] args;
+        try { args = Environment.GetCommandLineArgs(); } catch { return null; }
+        for (int i = args.Length - 2; i >= 0; i--)
+            if (string.Equals(args[i], "-userdirectory", StringComparison.OrdinalIgnoreCase)
+                && args[i + 1].Length > 0)
+            { _launchDir = args[i + 1]; break; }
+        return _launchDir;
+    }
+
+    /// <inheritdoc cref="LaunchUserDirectory"/>
+    private static string? _launchDir;
+    /// <inheritdoc cref="LaunchUserDirectory"/>
+    private static bool _launchDirTried;
 }

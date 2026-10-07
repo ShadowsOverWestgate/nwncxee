@@ -116,30 +116,9 @@ internal static class RenderPasses
             ContextLost = Ssr.Forget,
             Stats = Ssr.Stats,
         }, log);
-        // not a draw pass either -- it replaces the engine's per-frame dangly SOLVE, which is a
-        // separate pass from the dangly draw. No GL objects, so no ContextLost; no captured world state,
-        // so no Revoke; its only resources are the engine's own buffers.
-        r.Register(new PassLifecycle
-        {
-            Name = "dangly",
-            Install = DanglyPhysics.Install,
-            SelfCheck = DanglyPhysics.SelfCheck,
-            Stats = DanglyPhysics.Stats,
-        }, log);
         // CX-29: not a pass and not Alloy's -- the pose layer runs under either renderer. Registered for its
         // clause on the [alloy] period line only.
         r.Register(new PassLifecycle { Name = "pose", Stats = PoseService.Stats }, log);
-        // CX-106: not a pass either -- the animation RUNTIME. Registered here so that being registered at all
-        // is the boot renderer choice (RenderPasses.Register is not reached with alloy.enabled=0), which is
-        // the gate ADR 0010 asks for. No GL objects and no captured world state, so no ContextLost and no
-        // Revoke; its only resources are the engine's own AnimRun records.
-        r.Register(new PassLifecycle
-        {
-            Name = "animrt",
-            Install = AnimRuntime.Install,
-            SelfCheck = AnimRuntime.SelfCheck,
-            Stats = AnimRuntime.Stats,
-        }, log);
         r.Register(new PassLifecycle
         {
             Name = "sky",
@@ -154,24 +133,9 @@ internal static class RenderPasses
         }, log);
         r.Register(new PassLifecycle
         {
-            // CX-104: not a pass -- the scene-visibility registries every pass below reads instead of an
-            // engine bucket. Registered FIRST so its Install resolves before grass, emitsim and beams ask it
-            // for a population, and so its SelfCheck is the first line in the log.
-            Name = "buckets",
-            // The knob group declares in RenderCommands.Register, with every other Graphics group, so
-            // /buckets exists even in a session the renderer stands down. Symbols resolve at Install for the
-            // reason DoorFade does -- Native.Sym on a .bss data symbol answers only on the last boot pass.
-            Install = (log, _) =>
-            {
-                SceneParts.Resolve(log);
-                TileFadeRamp.Resolve(log);
-                BucketValidator.Resolve(log);
-                ScenePrep.Resolve(log);
-            },
+            // Not a pass: the second-story fade's arithmetic, which the tile stream runs, checked first in the log.
+            Name = "tilefade",
             SelfCheck = l => TileFadeRamp.SelfCheck(l),
-            Revoke = SceneParts.Reset,
-            Stats = _ => SceneParts.Note() + " | " + TileFadeRamp.Note() + " | " + ScenePrep.Note()
-                       + (Buckets.Validate.V ? " | " + BucketValidator.Note() : ""),
         }, log);
         r.Register(new PassLifecycle
         {
@@ -371,12 +335,130 @@ internal static class RenderPasses
             Stats = f => Join(AlloyCamera.Stats(f), AlloyWind.Stats(f)),
         }, log);
 
+        // CX-120 seam-scene: not a draw pass -- the CX scene/camera records behind the Aurora seam, the
+        // frame's view snapshot and the render thread. Attach resolves the three window reads the slots need
+        // (SeamFrame) and the thread is started by the seam's own boot switch, not here: the knob is Boot and
+        // the 4.6 context has to exist first.
+        r.Register(new PassLifecycle
+        {
+            Name = "scenedb",
+            Attach = l =>
+            {
+                CX.Alloy.Db.DbScene.Attach(l); CX.Alloy.Db.DbCamera.Attach(l);
+                CX.Alloy.Db.SceneShell.Attach(l); CX.Alloy.Db.SceneFeed.Attach(l);
+                CX.Alloy.Db.RenderSnapshot.Attach(l);
+                CX.Alloy.Seam.SceneSlots.Attach(l); CX.Alloy.Seam.CameraSlots.Attach(l);
+                CX.Alloy.Seam.SeamFrame.Attach(l);
+            },
+            // Both run: the render thread's preconditions are checked even when the scene checks failed.
+            SelfCheck = l => { CX.Alloy.Db.DbSceneSelfCheck.Run(l); CX.Alloy.Db.RenderThread.SelfCheck(l); },
+            // Context loss is terminal for the render thread: the context it holds is gone, so it must stop
+            // and let go BEFORE anything else rebuilds. Joined, not signalled -- the game thread may take the
+            // context back the instant this returns.
+            ContextLost = CX.Alloy.Db.RenderThread.Shutdown,
+            Stats = f => Join(Join(CX.Alloy.Db.DbScene.Stats(f), CX.Alloy.Db.DbCamera.Stats(f)),
+                              Join(CX.Alloy.Db.SeamDraw.Stats(f),
+                                   Join(CX.Alloy.Db.RenderSnapshot.Stats(f), CX.Alloy.Db.RenderThread.Stats(f)))),
+        }, log);
+
+        // CX-114: not a draw pass -- CX's part-tree builder and the ONE model-space vertex arena every part
+        // draws from. Its Pump is the frame edge where frees land and both mirrors go up, so it owns a
+        // ContextLost (forget the names, keep the mirrors) and no Revoke: every range is keyed on CONTENT, so
+        // an area change invalidates nothing in it and the next area re-uses every mesh it shares.
+        r.Register(new PassLifecycle
+        {
+            Name = "mesharena",
+            Attach = l => { CX.Alloy.Db.MeshArena.Attach(l); CX.Alloy.Db.PartTree.Attach(l); },
+            SelfCheck = l => CX.Alloy.Db.DbSelfCheck.Run(l),
+            ContextLost = CX.Alloy.Db.MeshArena.ContextLost,
+            // the live comparison is per AREA, so the world edge re-arms it
+            Revoke = () => { CX.Alloy.Db.PartTree.AreaEdge(); },
+            Stats = f => Join(CX.Alloy.Db.PartTree.Stats(f), CX.Alloy.Db.MeshArena.Stats(f)),
+        }, log);
+
+        // CX-116: not a draw pass -- the DB-side tile build. Registered here for the same reason buckets is:
+        // what it needs IS a pass lifecycle (a log, the live comparison's engine hook, off-device checks, the
+        // world edge and a line on the period report).
+        r.Register(new PassLifecycle
+        {
+            Name = "dbtiles",
+            Attach = CX.Alloy.Db.TileBuild.Attach,
+            Install = CX.Alloy.Db.TileCompare.Install,
+            SelfCheck = l => CX.Alloy.Db.TileBuildCheck.SelfCheck(l),
+            Revoke = () => { CX.Alloy.Db.TileCompare.Revoke(); CX.Alloy.Db.TileBuild.Revoke(); },
+            Stats = _ => CX.Alloy.Db.TileBuild.Stats() + CX.Alloy.Db.DbLightSet.StatsClause()
+                       + " | " + CX.Alloy.Db.TileCompare.Note(),
+        }, log);
+
+        // CX-117: not a draw pass either -- CX's own texture table, the master PLT palette and the
+        // per-instance colour rows (ADR 0028). Registered here for ownedtex's reason: a boot gate, a
+        // ContextLost, off-device checks and a line on the period report. It owns no engine hook: in Alloy
+        // mode the Aurora seam (CX-120) routes the game's texture and palette calls into it.
+        r.Register(new PassLifecycle
+        {
+            Name = "texreg",
+            Attach = l => { Db.TexRegistry.Attach(l); Db.PltColors.Attach(l); Db.PltVerify.Attach(l); },
+            SelfCheck = l => { Db.TexRegistry.SelfCheck(l); Seam.TexSeam.SelfCheck(l); },
+            // No Revoke: every slot is keyed on CONTENT (a resref, a kind, a cell), so a world edge
+            // invalidates nothing in it -- which is the whole point of the registry replacing the engine's
+            // per-area CAurTexture population.
+            ContextLost = () => { Db.TexRegistry.ContextLost(); Db.PltPalettes.ContextLost(); Db.PltColors.ContextLost(); Db.PltGpuCheck.ContextLost(); },
+            Stats = _ => Join(Join(Db.TexRegistry.Note() + ", " + Db.PltPalettes.Note() + ", " + Db.PltColors.Note(),
+                       Db.PltImage.Note()), Join(Join(Seam.TexSeam.Note(), Db.PltVerify.Note()),
+                       AlloyRenderer.StaleAuditNote())),
+        }, log);
+
+        // CX-113: the model cache -- not a pass, the content-keyed table every CX-owned object takes its model
+        // from, plus the engine-side feed that reads the bytes (ModelFeed) and the live comparison against the
+        // engine's own animation tables (ModelVerify). Its world edge is the area: the census is reported
+        // there and the resident set is trimmed back to its budget. No ContextLost -- it owns no GL name, and
+        // the arena ranges are CX-114's, handed back through ModelCache.Evicting.
+        r.Register(new PassLifecycle
+        {
+            Name = "modelcache",
+            Attach = l => { ModelFeed.Attach(l); ModelVerify.Attach(l); MtrFeed.Attach(l); },
+            SelfCheck = l => CX.Alloy.Mdl.ModelCache.SelfCheck(l),
+            Revoke = CX.Alloy.Mdl.ModelCache.AreaEdge,
+            Stats = f => Join(Join(CX.Alloy.Mdl.ModelCache.Stats(f), ModelFeed.Note()), MtrFeed.Stats()),
+        }, log);
+
+        // CX-120 seam-anim: the animation runtime, the behaviour solve, the dangly and skin poses and the
+        // transform step over the scene database. Not a pass either -- it runs on the GAME thread, ahead of
+        // everything the renderer does -- but its self-check belongs in this chain for the usual reason: a
+        // sampler, an event window or a bone palette that is wrong is a misrender nothing errors on.
+        r.Register(new PassLifecycle
+        {
+            Name = "dbanim",
+            SelfCheck = l => CX.Alloy.Db.DbAnim.SelfCheck(l),
+            Stats = CX.Alloy.Db.DbAnim.Period,
+        }, log);
+
+        // CX-112: the parser's live check -- not a pass either, a diagnostic that compares CX's own parse of
+        // every model the engine reads against the engine's tree. Its world edge is the area, where the
+        // tally is reported and the next area starts clean.
+        r.Register(new PassLifecycle
+        {
+            Name = "mdlparse",
+            Install = MdlParseCheck.Install,
+            SelfCheck = l => MdlParseCheckSelfCheck(l),
+            Revoke = MdlParseCheck.AreaEdge,
+            Stats = MdlParseCheck.Stats,
+        }, log);
+
         // CasterPass is deliberately NOT here yet. It runs in the SHADOW bracket, installs through its own
         // service, and its stand-down is a latched Disarm rather than a context edge -- so it does not fit
         // these slots without changing what they mean. Folding the shadow pass in is #176's work, which is
         // where the folder seam between it and the colour passes goes away.
 
         r.Seal();
+    }
+
+    /// <summary>CX-112's off-device suite, adapted to the repo's one assert.</summary>
+    private static void MdlParseCheckSelfCheck(ExtenderLog log)
+    {
+        var check = new Checker(log, "MdlParser.SelfCheck");
+        CX.Alloy.Mdl.MdlSelfCheck.Run((ok, why) => check.Expect(ok, why));
+        if (check.Ok) log.Info("MdlParser.SelfCheck: passed");
     }
 
     /// <summary>Two period-line clauses, comma-joined, with an empty one costing nothing.</summary>

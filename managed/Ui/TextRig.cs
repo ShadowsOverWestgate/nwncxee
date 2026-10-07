@@ -761,6 +761,89 @@ public static unsafe partial class TextRig
         "#version 330 core\nin vec2 vUV;\nin vec3 vCol;\nin float vA;\nuniform sampler2D uTex;\nout vec4 o;\n" +
         "void main(){ o = texture(uTex, vUV) * vec4(1.0, 1.0, 1.0, vA); }\n";
 
+    /// <summary>CX-120: the same icon quad for a PLT layer. An item's PLT icon is a PAIR texture (intensity
+    /// R, layer G) and its colour is <c>master[rows[layer]][intensity]</c> -- the lookup the engine performs
+    /// when it composites a (resref, scheme) texture, which in DB mode it never builds. texelFetch, because
+    /// the pair texture must never be filtered: the mean of two layer indices is a third layer. Bilinear is
+    /// done over the RESOLVED colours instead.</summary>
+    private const string FSrcIconPlt =
+        "#version 330 core\nin vec2 vUV;\nin vec3 vCol;\nin float vA;\n" +
+        "uniform sampler2D uTex;\nuniform sampler2D uPal;\nuniform int uRows[10];\nout vec4 o;\n" +
+        "vec4 tap(ivec2 p, ivec2 d){\n" +
+        "  vec2 rg = texelFetch(uTex, clamp(p, ivec2(0), d - 1), 0).rg;\n" +
+        "  int l = int(rg.g * 255.0 + 0.5); l = l < 9 ? l : 9;\n" +
+        "  return texelFetch(uPal, ivec2(int(rg.r * 255.0 + 0.5), uRows[l]), 0);\n}\n" +
+        "void main(){\n" +
+        "  ivec2 d = textureSize(uTex, 0); d = max(d, ivec2(1));\n" +
+        "  vec2 t = vUV * vec2(d) - 0.5; vec2 f = fract(t); ivec2 p = ivec2(floor(t));\n" +
+        "  vec4 c = mix(mix(tap(p, d), tap(p + ivec2(1,0), d), f.x),\n" +
+        "               mix(tap(p + ivec2(0,1), d), tap(p + ivec2(1,1), d), f.x), f.y);\n" +
+        "  o = c * vec4(1.0, 1.0, 1.0, vA);\n}\n";
+
+    private static uint _progIconPlt;
+    private static bool _progIconPltUp;
+    private static int _uProjIconPlt, _uTexIconPlt, _uPalIconPlt, _uRowsIconPlt;
+
+    private static bool EnsureIconPltProgram()
+    {
+        if (_progIconPltUp) return _progIconPlt != 0;
+        _progIconPltUp = true;
+        uint vs = Compile(Gl.VERTEX_SHADER, VSrc), fs = Compile(Gl.FRAGMENT_SHADER, FSrcIconPlt);
+        if (vs == 0 || fs == 0) return false;
+        _progIconPlt = Gl.CreateProgram();
+        Gl.AttachShader(_progIconPlt, vs); Gl.AttachShader(_progIconPlt, fs); Gl.LinkProgram(_progIconPlt);
+        int ok; Gl.GetProgramiv(_progIconPlt, Gl.LINK_STATUS, &ok);
+        Gl.DeleteShader(vs); Gl.DeleteShader(fs);
+        if (ok == 0) { _log?.Info("TextRig: PLT icon program link failed"); _progIconPlt = 0; return false; }
+        _uProjIconPlt = UniformOf(_progIconPlt, "uProj"); _uTexIconPlt = UniformOf(_progIconPlt, "uTex");
+        _uPalIconPlt = UniformOf(_progIconPlt, "uPal"); _uRowsIconPlt = UniformOf(_progIconPlt, "uRows[0]");
+        _log?.Info("TextRig: PLT icon shader program ready");
+        return true;
+    }
+
+    /// <summary>One PLT icon layer: <paramref name="tid"/> is the PAIR texture, <paramref name="pal"/> the
+    /// master palette, <paramref name="rows"/> this item's master-palette row per layer. Same quad, same
+    /// state and same clip as <see cref="DrawIconTid"/>; only the resolve differs.</summary>
+    public static void DrawIconPlt(int tid, uint pal, ReadOnlySpan<int> rows, float x, float y, float w, float h,
+                                   float alpha = 1f, float u1 = 1f, float v0 = 0f,
+                                   bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
+    {
+        if (tid == 0 || pal == 0 || rows.Length < 10 || _log == null || alpha <= 0f) return;
+        if (!Gl.Init(_log)) return;
+        if (!EnsureIconPltProgram()) return;
+
+        if (!_pvaoUp) SetupPortraitVao();
+        Gl.Disable(Gl.DEPTH_TEST); Gl.Disable(Gl.CULL_FACE);
+        Gl.Enable(Gl.BLEND); Gl.BlendFunc(Gl.SRC_ALPHA, Gl.ONE_MINUS_SRC_ALPHA);
+        if (clip) { Gl.Enable(Gl.SCISSOR_TEST); Gl.Scissor(cx, ViewportH - (cy + ch), cw < 0 ? 0 : cw, ch < 0 ? 0 : ch); }
+        else Gl.Disable(Gl.SCISSOR_TEST);
+
+        float* m = stackalloc float[16];
+        Ortho(m, ViewportW, ViewportH);
+        float a = alpha < 1f ? alpha : 1f, x1 = x + w, y1 = y + h;
+        float* v = stackalloc float[Floats * 6];
+        Vtx(v, 0, x, y, 0, 1, a); Vtx(v, 1, x1, y, u1, 1, a); Vtx(v, 2, x1, y1, u1, v0, a);
+        Vtx(v, 3, x, y, 0, 1, a); Vtx(v, 4, x1, y1, u1, v0, a); Vtx(v, 5, x, y1, 0, v0, a);
+
+        Gl.UseProgram(_progIconPlt);
+        Gl.UniformMatrix4fv(_uProjIconPlt, 1, (byte)Gl.FALSE, m);
+        Gl.Uniform1i(_uTexIconPlt, 0);
+        Gl.Uniform1i(_uPalIconPlt, 1);
+        fixed (int* r = rows) Gl.Uniform1iv(_uRowsIconPlt, 10, r);
+        Gl.BindVertexArray(_pvao);
+        Gl.BindBuffer(Gl.ARRAY_BUFFER, _pvbo);
+        Gl.BufferData(Gl.ARRAY_BUFFER, (IntPtr)(Floats * 6 * sizeof(float)), v, Gl.DYNAMIC_DRAW);
+        Gl.ActiveTexture(Gl.TEXTURE0 + 1);
+        Gl.BindTexture(Gl.TEXTURE_2D, pal);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+        Gl.BindTexture(Gl.TEXTURE_2D, (uint)tid);
+        // No sampler object: both reads are texelFetch, and one left bound on unit 0 would outlive this draw.
+        Gl.BindSampler(0, 0);
+        Gl.DrawArrays(Gl.TRIANGLES, 0, 6);
+        Gl.ActiveTexture(Gl.TEXTURE0 + 1); Gl.BindTexture(Gl.TEXTURE_2D, 0); Gl.ActiveTexture(Gl.TEXTURE0);
+        if (clip) Gl.Disable(Gl.SCISSOR_TEST);
+    }
+
     private static bool EnsureIconProgram()
     {
         if (_progIconUp) return _progIcon != 0;

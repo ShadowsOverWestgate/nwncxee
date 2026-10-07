@@ -123,7 +123,7 @@ internal static unsafe partial class Weather
 
     /// <summary>Per lit program bind: the amounts, the look, and the cover view (zero matrix = no map, which the
     /// stage reads as fully exposed). Absent on a stale content override (location -1): GL ignores it.</summary>
-    internal static void UploadLit(int locWeather, int locLook, int locCoverVp, int locCoverLayer, int locSnowLook, int locSnowLight, int locSnowPom, int locEdge, int locRun, bool capturing)
+    internal static void UploadLit(int locWeather, int locLook, int locCoverVp, int locCoverLayer, int locSnowLook, int locSnowLight, int locSnowPom, int locEdge, int locRun, int locCache, bool capturing)
     {
         if (locWeather < 0) return;
         TickSurface();
@@ -143,6 +143,8 @@ internal static unsafe partial class Weather
         // z = uv per metre in the cover view (the fit is 2 x radius across), for the soft-edge taps
         Gl.Uniform4f(locCoverLayer, CasterPass.CoverLayer, HollowStepM / (CoverDepthRadii * radius), CoverSoft.V * 0.5f / radius, SplashRate(capturing));
         UploadEdge(locEdge, cover);
+        UploadCache(locCache, cover);
+        BindTiles();
         if (locRun >= 0) Gl.Uniform4f(locRun, on ? RunOff.V : 0f, on ? ShoreRim.V : 0f, 0f, 0f);
     }
 
@@ -162,13 +164,14 @@ internal static unsafe partial class Weather
     /// <summary>The grass programs' shelter read: the cover view, its layer and the kernel, so a blade
     /// draws the SAME boundary the ground under it does. The lit stage gets these through
     /// <see cref="UploadLit"/>; nothing else may grow its own shelter test.</summary>
-    internal static void UploadGrassEdge(int locCoverVp, int locCoverLayer, int locEdge)
+    internal static void UploadGrassEdge(int locCoverVp, int locCoverLayer, int locEdge, int locCache)
     {
         bool cover = !_off && Enabled.V && Cover.V && CasterPass.CoverFresh && CasterPass.CascadesFresh;
         Matrix4x4 vp = cover ? CasterPass.CoverVp : default;
         if (locCoverVp >= 0) Gl.UniformMatrix4fv(locCoverVp, 1, 0, (float*)&vp);
         if (locCoverLayer >= 0) Gl.Uniform4f(locCoverLayer, CasterPass.CoverLayer, 0f, 0f, 0f);
         UploadEdge(locEdge, cover);
+        UploadCache(locCache, cover);
     }
 
     /// <summary>Drops per cell per period, 0..1: the density under the splash knob while it rains.</summary>
@@ -208,10 +211,15 @@ internal static unsafe partial class Weather
           $"a ring is a real drop's ring: {reach * 100f:F0} cm of reach over {life:F2} s, crest {crest * 100f:F1} cm");
         check.Expect(reach < cell * 0.5f,
           $"the 2x2 cell walk covers the reach ({reach:F3} m < half of the {cell:F2} m cell)");
+        string tile = ShaderSource.Get("cx_wx_ripl_c.glsl");
         check.Expect(r.Contains("vec2 CxRippleLayer(vec2 p, float rate, float salt)")
-          && r.Contains("kept = CxWeatherRippleFade(px);") && r.Contains("return -g * kept;"),
-          "the footprint FADES the rings and never reaches the lattice or the reach that size them");
-        check.Expect(ShaderStages.Source(AlloyRenderer.ShdLitFs).Contains("CxWeatherRipple(vWorld.xy, uCoverLayer.w, CxWeatherImpactPx(vWorld, V), wxRing)")
+          && r.Contains("kept = CxWeatherRippleFade(px);") && r.Contains("textureLod(uWxRipple, p / (CX_RIPPLE_CELL_M * CX_RIPPLE_WRAP), 0.0).xy * kept;")
+          && tile.Contains("vec2 g = CxRippleLayer(p, uRate, 0.0) + CxRippleLayer(p + CX_RIPPLE_CELL_M * 0.5, uRate, 37.0);")
+          && tile.Contains("imageStore(uOut, t, vec4(-g, 0.0, 0.0));"),
+          "the footprint FADES the baked rings and never reaches the lattice or the reach that size them");
+        check.Expect(GlslConst(r, "CX_RIPPLE_WRAP") == GlslConst(tile, "CX_RIPPLE_WRAP") && r.Contains($"layout(binding = {RippleUnit}) uniform sampler2D uWxRipple;"),
+          "the ripple tile wraps the lattice at the period the stages read it at");
+        check.Expect(ShaderStages.Source(AlloyRenderer.ShdLitFs).Contains("CxWeatherRipple(vWorld.xy, uCoverLayer.w, wxPx, wxRing)")
           && ShaderStages.Source(AlloyRenderer.ShdWaterFs).Contains("CxWeatherRipple(vWaterSurfaceCoords.xy, uSplash, CxWeatherImpactPx(vWorld, V), fSplashFade)"),
           "the film and the water surface both ring from the one library");
     }

@@ -128,8 +128,8 @@ public sealed unsafe partial class RadialService : IExtenderService
     private static readonly string[] RequiredSymbols =
     {
         SymbolMap.RadialActivateInternal, SymbolMap.RadialCreateSubMenu, SymbolMap.RadialRecursiveAutoDelete,
-        SymbolMap.GuiCurrentEventObject, SymbolMap.RadialMenuDepth, SymbolMap.StringGobGetTextLineCount,
-        SymbolMap.StringGobGetTextLine, SymbolMap.StartLoadBar, SymbolMap.GuiMan,
+        SymbolMap.GuiCurrentEventObject, SymbolMap.RadialMenuDepth,
+        SymbolMap.StartLoadBar, SymbolMap.GuiMan,
         SymbolMap.VtCRadialMenu, SymbolMap.VtCGuiCreatureMenu, SymbolMap.VtCClientSpellMenu, SymbolMap.VtCRadialSpellMenu,
         SymbolMap.VtCClientTrapMenu, SymbolMap.VtCGuiItemMenu, SymbolMap.VtCGuiPlaceableMenu, SymbolMap.VtCGuiDoorMenu,
         SymbolMap.VtCGuiQuickbarMenu, SymbolMap.VtCGuiChatWindowMenu,

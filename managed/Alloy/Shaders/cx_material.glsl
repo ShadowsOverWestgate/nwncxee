@@ -227,7 +227,10 @@ vec3 CxFilmStatics(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float coat, f
     return acc * uDayDim;
 }
 
-vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L, float spread)
+/// The lobe without the coat's: what the lightmap's dominant direction owes a film, whose coat already took
+/// each baked light's own image in CxFilmStatics -- a near-mirror coat lobe on a BLENDED direction points at
+/// no lamp, and drew the reflection as an arc that ended wherever the baked light did.
+vec3 CxLoopSpecBase(float lobe, vec3 N, vec3 V, vec3 L)
 {
     vec3 s = lobe * cxSpecScale;
     // Schlick per channel, F0 + (1 - F0) Fc, so coloured specular whitens at grazing. The lobe carries the
@@ -237,9 +240,15 @@ vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L, float spread)
         float fc = CxFresnel(clamp(dot(normalize(V + L), V), 0.0, 1.0)) * cxFresnel;
         s *= mix(cxF0, vec3(1.0), fc) / max(mix(cxSpec, 1.0, fc), 1e-4);
     }
-    if (cxCoat > 0.0) s += vec3(cxCoat * CxCoatLobe(N, V, L, cxCoatRough, spread));
     // the sheen is a broad retro-reflective rim by construction: a source's size cannot widen it usefully
     if (cxSheenRough > 0.0) s += cxSheen * CxSheenLobe(N, V, L, cxSheenRough);
+    return s;
+}
+
+vec3 CxLoopSpec(float lobe, vec3 N, vec3 V, vec3 L, float spread)
+{
+    vec3 s = CxLoopSpecBase(lobe, N, V, L);
+    if (cxCoat > 0.0) s += vec3(cxCoat * CxCoatLobe(N, V, L, cxCoatRough, spread));
     return s;
 }
 

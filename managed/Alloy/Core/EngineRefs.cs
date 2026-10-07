@@ -49,9 +49,6 @@ internal readonly unsafe ref struct PartRef
     internal IntPtr Tile => _p == IntPtr.Zero ? IntPtr.Zero : Tri.Tile.Ptr;
 
     internal float Alpha => Tri.Alpha;
-    /// <summary>Raw BITS of the texture-rotation angle: it is compared, never arithmetic, and a float
-    /// compare on a group key would make NaN a group of its own.</summary>
-    internal int TexRotateBits => Tri.TexRotate;
     internal float* SelfIllum => (float*)Unsafe.AsPointer(ref Tri.SelfIllum);
     internal float* BboxMin => (float*)Unsafe.AsPointer(ref Tri.BboxMin);
     internal float* BboxMax => (float*)Unsafe.AsPointer(ref Tri.BboxMax);
@@ -111,10 +108,6 @@ internal readonly unsafe ref struct MaterialRef
     /// <summary>Slots a plain <c>Material</c> owns itself (<c>BindAllStandardTextures</c> @0x4c6e30 stops at
     /// i &lt; 3); anything higher is real only in a SharedMaterial's table.</summary>
     private const int OwnSlots = 3;
-    /// <summary>#275: map slot <paramref name="s"/> (0-based, <see cref="AlloyRenderer.MapSlots"/> wide) by its
-    /// SOURCE: the AO slot lives in the extender-owned <c>texture11</c>, every other one is engine slot s+1.
-    /// The only accessor the map block reads through, so no caller has to know which is which.</summary>
-    internal TextureRef MapTexture(int s) => TextureAt(s == AlloyRenderer.AoSlot ? AlloyRenderer.AoTexture : s + 1);
     /// <summary>#275: a <c>.mtr</c> slot by its index, engine (<c>texture0..10</c>) or extender-owned (11+).</summary>
     internal TextureRef TextureAt(int n)
         => n >= MaterialExtraSlots.First ? MaterialExtraSlots.Texture(Shared.Ptr, n) : Texture(n);
@@ -162,15 +155,10 @@ internal readonly unsafe ref struct GobRef
 
     internal bool Highlight => View.Highlight != 0;
     internal bool SceneTint => View.SceneTint != 0;
-    /// <summary>The short that ARMS the colour/alpha modulation below; the values are meaningless without
-    /// it (PartTriMesh::Mat @0x450960 reads it first).</summary>
-    internal bool ColourMulArmed => View.ColourMul != 0;
-    internal bool SelfIllumArmed => View.SelfIllum != 0;
     internal float Alpha => View.Alpha;
     internal float FadeAlpha => View.FadeAlpha;
     internal float* Colour => (float*)Unsafe.AsPointer(ref View.Colour);
     internal float* Emissive => (float*)Unsafe.AsPointer(ref View.Emissive);
-    internal GobRef FadeOwner => new(View.Node.Ptr);
     internal IntPtr EnvOverride => View.EnvOverride;
     /// <summary>Bit 3 of the OWNER's flag byte, which is what arms the second alpha multiply. Named for what
     /// it decides rather than where it sits, because the owner is a gob and the byte is not on the gob whose
@@ -193,12 +181,6 @@ internal readonly unsafe ref struct NodeRef
     /// this is a copy and not a conversion -- every caller that wanted one was casting the pointer back.</summary>
     internal System.Numerics.Matrix4x4 Model => View.Matrix;
     internal byte Flags => View.Flags;
-    /// <summary>The <c>SetModelMatrix</c> half of RenderDrawBucket's matrix-class condition -- the flag bits
-    /// alone; the other half is <see cref="PartRef.IsInstance"/>.</summary>
-    internal bool MatrixClass => (Flags & MatrixClassBits) != 0;
-    /// <summary>The bits <c>Scene::RenderDrawBucket</c> @0x46d060 tests on <see cref="EngineLayout.NodeFlags"/>
-    /// before it pushes a matrix. A mask, not-an-offset: it names bits, not a place in memory.</summary>
-    private const int MatrixClassBits = 0x1e;   // not-an-offset: the matrix-class mask
 }
 
 internal readonly unsafe ref struct MdlRef
@@ -278,17 +260,11 @@ internal readonly unsafe ref struct TextureRef
     /// <summary>This texture's GL id, vtable-checked -- see AurTex (#138): Material::GetTexture is a plain
     /// field read, so the pointer it hands back can outlive the object.</summary>
     internal int ResolveTid() => AurTex.Tid(_p);
-    /// <summary>#211: the name an owned DRAW samples -- Alloy's own copy of this texture, or the engine's id
-    /// when <c>alloy.ownedtex=0</c> or the copy refused. Diagnostics stay on <see cref="ResolveTid"/>: they are
-    /// asking about the engine's texture, not about what we draw. Must be called inside the 4.6 bracket.</summary>
-    internal int OwnedTid() => OwnedTextures.Draw(AurTex.Tid(_p));
 }
 
 /// <summary>#193: the engine's own pure queries about a part or a material, taking the typed refs. The
 /// <c>_orig*</c> trampolines deliberately do NOT move here -- those belong beside the hooks they chain.</summary>
 internal static unsafe class Engine
 {
-    internal static bool IsOpaque(PartRef part) => PartTable._isOpaque(part.Ptr) != 0;
     internal static bool HasEnvMap(MaterialRef mat) => PartTable._hasEnvMap(mat.Ptr) != 0;
-    internal static bool HasBumpyShiny(MaterialRef mat) => PartTable._hasBumpyShiny(mat.Ptr) != 0;
 }

@@ -123,6 +123,33 @@ internal static unsafe class NormalWeld
 
     private static float* P(byte* host, in VertexStream s, int v) => (float*)(host + s.Off + (long)v * s.Stride);
 
+    /// <summary>Parts fed from a parsed model's own post-process, and the ones that could not be.</summary>
+    internal static int ModelParts, ModelRefused;
+
+    /// <summary>CX-112's per-model source: a <c>MeshDef</c> already carries welded, smoothing-group aware
+    /// normals from the parse, so a part cut from that mesh copies them in instead of re-deriving them from the
+    /// host shadow. One mesh is parsed once however many parts instance it, which is the point; <see cref="Run"/>
+    /// stays until CX-114 deletes the per-part path.
+    /// <para>The engine's <c>GenVertices</c> emits one GPU vertex per post-processed mesh vertex in order, so
+    /// part vertex <c>i</c> is mesh vertex <c>i</c>; a part whose range outruns the mesh is refused rather than
+    /// half-written.</para></summary>
+    internal static bool FromModel(ReadOnlySpan<System.Numerics.Vector3> normals, byte* vertHost,
+                                   int baseVertex, int vertCount, in VertexStream nrm)
+    {
+        if (vertHost == null || vertCount <= 0 || normals.Length < vertCount
+            || nrm.Type != Gl.FLOAT || nrm.Size < 3) { ModelRefused++; return false; }
+        for (int v = 0; v < vertCount; v++)
+        {
+            float* n = P(vertHost, nrm, baseVertex + v);
+            n[0] = normals[v].X; n[1] = normals[v].Y; n[2] = normals[v].Z;
+        }
+        long off = nrm.Off + (long)baseVertex * nrm.Stride;
+        long span = (long)(vertCount - 1) * nrm.Stride + nrm.Size * 4;
+        Gl.NamedBufferSubData(nrm.Buf, (IntPtr)off, (IntPtr)span, vertHost + off);
+        ModelParts++;
+        return true;
+    }
+
     /// <summary>Slot for a bitwise-equal position; a fresh one is claimed with an empty corner chain.</summary>
     private static int Slot(float* p, int gen)
     {

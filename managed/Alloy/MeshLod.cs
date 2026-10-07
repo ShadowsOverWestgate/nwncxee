@@ -122,9 +122,6 @@ internal static unsafe class MeshLod
     /// <see cref="MeshChart"/>'s levels live in its own arena and never arm this class's buffer.</summary>
     internal static bool On => Lod.G.Master is { V: true };
 
-    /// <summary>The element buffer the LOD VAOs bind. Zero until the first run lands.</summary>
-    internal static uint Ebo => _ebo;
-
     /// <summary>Start the worker and read the boot knob. Once, from the pass roll-call.</summary>
     internal static void Attach(ExtenderLog log)
     {
@@ -183,6 +180,33 @@ internal static unsafe class MeshLod
         }
         _offered++;
         _jobs.Offer(j, j.Key, sig);
+    }
+
+    /// <summary>CX-112's per-model source: queue a simplify straight off a parsed <c>MeshDef</c> instead of
+    /// copying one part's range back off the pools' host shadows. The parse has the whole mesh already, so the
+    /// copy and the index-range scan both go away; <see cref="Offer"/> stays until CX-114 deletes the per-part
+    /// path. Returns false when the mesh is outside the simplifier's bounds (too many corners or vertices, or
+    /// not a triangle list), which is a decline and not a silent skip.</summary>
+    internal static bool OfferModel(int slot, int item, CX.Alloy.Mdl.MeshDef mesh, ulong sig)
+    {
+        int count = mesh.Indices.Length, verts = mesh.Positions.Length;
+        if (count < 3 || count % 3 != 0 || count > MeshSimplify.MaxCorners) return false;
+        if (verts <= 0 || verts > MeshSimplify.MaxVerts) return false;
+        Job j = _jobs.Rent();
+        j.Key = KeyOf(slot, item); j.Sig = sig;
+        j.IdxCount = count; j.VertCount = verts; j.Out1N = 0; j.Out2N = 0;
+        Grow(ref j.Idx, count); Grow(ref j.Out1, count); Grow(ref j.Out2, count);
+        if (j.Pos.Length < verts * 3) j.Pos = new float[verts * 3];
+        for (int i = 0; i < count; i++) j.Idx[i] = (ushort)mesh.Indices[i];
+        for (int v = 0; v < verts; v++)
+        {
+            j.Pos[v * 3] = mesh.Positions[v].X;
+            j.Pos[v * 3 + 1] = mesh.Positions[v].Y;
+            j.Pos[v * 3 + 2] = mesh.Positions[v].Z;
+        }
+        _offered++;
+        _jobs.Offer(j, j.Key, sig);
+        return true;
     }
 
     private static void Grow(ref ushort[] a, int n) { if (a.Length < n) a = new ushort[n]; }

@@ -357,11 +357,17 @@ internal static unsafe partial class Weather
         check.Expect(edge.Contains("float CxWetOpen(vec3 worldPos, vec3 N, float fallback)")
           && edge.Contains("open += texture(uSunShadow, vec4(uv + sqrt(t) * r * vec2(cos(a), sin(a)), uCoverLayer.x, ref));")
           && edge.Contains("float a0 = CxWxEdgeHash(floor(worldPos.xy * CX_WX_EDGE_CELL)) * 6.2831853;")
-          && edge.Contains("return clamp(smoothstep(0.15, 0.85, open + n * uWxEdge.z * 4.0 * open * (1.0 - open)), 0.0, 1.0);"),
+          && edge.Contains("return CxWetOpenShape(open, worldPos.xy, uWxEdge.z);")
+          && edge.Contains("return clamp(smoothstep(0.15, 0.85, open + n * breakup * 4.0 * open * (1.0 - open)), 0.0, 1.0);"),
           "the shelter test is a world-rotated disk of hardware compares on the cover layer, thresholded through a breakup");
-        check.Expect(lit.Contains("float wxWetExp = CxWetOpen(vWorld, Ng, wxMapped ? CxWetShelter(wxM, vWorld.z) : wxExp);")
-          && GrassField.EmbeddedFs.Contains("float gOpen = CxWetOpen(vWorld, vec3(0.0, 0.0, 1.0), gMapped ? CxWetShelter(gWx, vWorld.z) : 1.0);")
-          && GrassField.EmbeddedBladeFs.Contains("CxWetOpen(vWorld, vec3(0.0, 0.0, 1.0), bMapped ? CxWetShelter(bWx, vWorld.z) : 1.0)"),
+        string shel = ShaderSource.Get("cx_wx_shel_c.glsl");
+        check.Expect(shel.Contains("open = CxWetOpenShape(open / float(CX_WX_SHEL_TAPS), p.xy, uEdge.z);")
+          && edge.Contains("if (N.z >= CX_WX_TOP_UP && CxWxTop(worldPos, uv)) return textureLod(uWxShelter, uv, 0.0).x;")
+          && edge.Contains($"layout(binding = {ShelterUnit}) uniform sampler2D uWxShelter;"),
+          "the shelter cache ends in the live test's own ramp, and only a level surface the rain lands on reads it");
+        check.Expect(lit.Contains("float wxWetExp = CxWetOpenFast(vWorld, Ng, wxMapped ? CxWetShelter(wxM, vWorld.z) : wxExp);")
+          && GrassField.EmbeddedFs.Contains("float gOpen = CxWetOpenFast(vWorld, vec3(0.0, 0.0, 1.0), gMapped ? CxWetShelter(gWx, vWorld.z) : 1.0);")
+          && GrassField.EmbeddedBladeFs.Contains("CxWetOpenFast(vWorld, vec3(0.0, 0.0, 1.0), bMapped ? CxWetShelter(bWx, vWorld.z) : 1.0)"),
           "every stage that wets a surface draws ONE boundary, and the area map's texel is only the fallback past the cover window");
         check.Expect(lit.Contains("wxWet = max(wxWet, wxBand * wxWetAmt * wxWetExp * uWxRun.x);")
           && lit.Contains("vec4 wxFoot = CxWetMap(vWorld.xy + Ng.xy * CX_WX_FOOT_M);")

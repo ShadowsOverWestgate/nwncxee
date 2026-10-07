@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Numerics;
+using CX.Alloy.Db;
 using CX.Graphics;
 
 namespace CX.Alloy;
@@ -15,13 +17,25 @@ public sealed unsafe partial class AlloyRenderer
     {
         int n = 0;
         for (int i = 0; i < _ownCount; i++)
-            if (_oTri[i] != IntPtr.Zero && IsAcoustic(i)) n++;
+            if (DbAcoustic(i) || (EngineSlot(i) && IsAcoustic(i))) n++;
         return n;
     }
 
     private static bool IsAcoustic(int i)
         => StaticAtEnroll(_oCls[i], _oGob[i], _oTileGob[i], _oMx[i], _vSkin[_oVao[i]], _oDangly[i], 0) == 0
            && _primTable != null && _primTable[_oPrim[i]] == Gl.TRIANGLES;
+
+    /// <summary>CX-120: the same question of a DATABASE slot. Every DB draw is TRIANGLES (the batch row says
+    /// so unconditionally), so what is left is "does this part hold still": a tile part always does, and an
+    /// object part does when its record says the object is static. Nothing here reads engine scene memory.</summary>
+    private static bool DbAcoustic(int i)
+    {
+        int part = _oDbPart[i];
+        if (part < 0 || _oDbRecipe[i] < 0) return false;
+        if (_oTileGob[i]) return true;
+        DbId obj = SceneDb.PartObj[part];
+        return SceneDb.Objects.Valid(obj) && (SceneDb.ObjFlags[obj.Index] & ObjFlag.Static) != 0;
+    }
 
     /// <summary>Every static triangle of at least <paramref name="minArea"/> square metres, appended as xyz vertex
     /// triples and index triples. A (VDO slot, item) is taken once however many slots draw it -- a static part sits
@@ -33,7 +47,8 @@ public sealed unsafe partial class AlloyRenderer
         int count0 = tris.Count;
         for (int i = 0; i < _ownCount; i++)
         {
-            if (_oTri[i] == IntPtr.Zero || !IsAcoustic(i)) continue;
+            if (DbAcoustic(i)) { DbGatherOne(i, verts, tris, minArea); continue; }
+            if (!EngineSlot(i) || !IsAcoustic(i)) continue;
             int s = _oVao[i], item = _oItem[i];
             if (!seen.Add(((long)s << 32) | (uint)item)) continue;
             var vdo = new VdoRef(_vVdo[s]);
@@ -65,6 +80,26 @@ public sealed unsafe partial class AlloyRenderer
             }
         }
         return (tris.Count - count0) / 3;
+    }
+
+    /// <summary>One static database part's triangles, worldized. The arena holds MODEL-space geometry (that is
+    /// what lets one range serve every instance), so unlike the engine path -- where a static part's vertices
+    /// are already world space under an identity matrix -- each part is transformed by its own world matrix
+    /// here. No (range, item) dedup for the same reason: two parts on one range are two different walls.</summary>
+    private static void DbGatherOne(int i, List<float> verts, List<int> tris, float minArea)
+    {
+        int at = verts.Count / 3, kept = tris.Count;
+        if (!MeshArena.HostTriangles(DrawRecipe.Range(_oDbRecipe[i]), verts, tris)) return;
+        MeshArena.WorldizeFrom(verts, at, SceneDb.PartWorld[_oDbPart[i]]);
+        // The area filter runs on the WORLD triangles, so it has to wait for the transform: a scaled part's
+        // slivers are not the same size in the two spaces.
+        int w = kept;
+        for (int k = kept; k + 2 < tris.Count; k += 3)
+        {
+            if (TriArea(verts, tris[k], tris[k + 1], tris[k + 2]) < minArea) continue;
+            tris[w] = tris[k]; tris[w + 1] = tris[k + 1]; tris[w + 2] = tris[k + 2]; w += 3;
+        }
+        tris.RemoveRange(w, tris.Count - w);
     }
 
     private static float TriArea(List<float> v, int a, int b, int c)

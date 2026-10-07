@@ -1,0 +1,84 @@
+{
+  "__data_type": "DLG ",
+  "DelayEntry": { "type": "dword", "value": 0 },
+  "DelayReply": { "type": "dword", "value": 0 },
+  "EndConverAbort": { "type": "resref", "value": "" },
+  "EndConversation": { "type": "resref", "value": "" },
+  "NumWords": { "type": "dword", "value": 24 },
+  "StartingList": {
+    "type": "list",
+    "value": [
+      { "__struct_id": 0, "Active": { "type": "resref", "value": "" }, "Index": { "type": "dword", "value": 0 } }
+    ]
+  },
+  "EntryList": {
+    "type": "list",
+    "value": [
+      {
+        "__struct_id": 0,
+        "Animation": { "type": "dword", "value": 0 },
+        "AnimLoop": { "type": "byte", "value": 1 },
+        "Comment": { "type": "cexostring", "value": "" },
+        "Delay": { "type": "dword", "value": 4294967295 },
+        "Quest": { "type": "cexostring", "value": "" },
+        "Script": { "type": "resref", "value": "" },
+        "Sound": { "type": "resref", "value": "" },
+        "Speaker": { "type": "cexostring", "value": "" },
+        "Text": { "type": "cexolocstring", "value": { "0": "CXLADDER: rung three. This is a conversation, and the client is drawing its dialogue panel." } },
+        "RepliesList": {
+          "type": "list",
+          "value": [
+            {
+              "__struct_id": 0,
+              "Active": { "type": "resref", "value": "" },
+              "Index": { "type": "dword", "value": 0 },
+              "IsChild": { "type": "byte", "value": 0 },
+              "LinkComment": { "type": "cexostring", "value": "" }
+            }
+          ]
+        }
+      },
+      {
+        "__struct_id": 1,
+        "Animation": { "type": "dword", "value": 0 },
+        "AnimLoop": { "type": "byte", "value": 1 },
+        "Comment": { "type": "cexostring", "value": "" },
+        "Delay": { "type": "dword", "value": 4294967295 },
+        "Quest": { "type": "cexostring", "value": "" },
+        "Script": { "type": "resref", "value": "" },
+        "Sound": { "type": "resref", "value": "" },
+        "Speaker": { "type": "cexostring", "value": "" },
+        "Text": { "type": "cexolocstring", "value": { "0": "CXLADDER: second node. That is the whole conversation; goblins are next." } },
+        "RepliesList": { "type": "list", "value": [] }
+      }
+    ]
+  },
+  "ReplyList": {
+    "type": "list",
+    "value": [
+      {
+        "__struct_id": 0,
+        "Animation": { "type": "dword", "value": 0 },
+        "AnimLoop": { "type": "byte", "value": 1 },
+        "Comment": { "type": "cexostring", "value": "" },
+        "Delay": { "type": "dword", "value": 4294967295 },
+        "Quest": { "type": "cexostring", "value": "" },
+        "Script": { "type": "resref", "value": "" },
+        "Sound": { "type": "resref", "value": "" },
+        "Text": { "type": "cexolocstring", "value": { "0": "Go on." } },
+        "EntriesList": {
+          "type": "list",
+          "value": [
+            {
+              "__struct_id": 0,
+              "Active": { "type": "resref", "value": "" },
+              "Index": { "type": "dword", "value": 1 },
+              "IsChild": { "type": "byte", "value": 0 },
+              "LinkComment": { "type": "cexostring", "value": "" }
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

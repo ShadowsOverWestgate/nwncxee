@@ -170,7 +170,7 @@ internal static unsafe class Diagonal
 
     private static void Yaw(IntPtr part, float angle)
     {
-        IntPtr parent = part == IntPtr.Zero ? IntPtr.Zero : new Part(part).Parent.Ptr;
+        IntPtr parent = part == IntPtr.Zero ? IntPtr.Zero : PoseRig.Parent(part);
         if (parent == IntPtr.Zero) return;
         World(parent, out _, out Quaternion qp);
         World(part, out _, out Quaternion q);

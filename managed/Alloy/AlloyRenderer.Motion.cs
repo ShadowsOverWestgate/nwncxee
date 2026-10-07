@@ -21,6 +21,9 @@ public sealed unsafe partial class AlloyRenderer
     /// ones past it camera-only vectors -- exactly the ghosting this pass exists to remove.</summary>
     private static readonly int[] _mvDraw = new int[MaxOwned];
     private static int _mvN, _mvDrawn, _mvSkinDrawn, _mvDanglyDrawn;
+    /// <summary>DB-mode record rewrites since the last period line: with the model moving (past the record's
+    /// 0,1 mm step) and without (alpha, lighting, reveal, prev catch-up). Bumped by the stage workers.</summary>
+    private static long _dbRecModel, _dbRecOther;
     private static bool _mvSkinned, _mvDangly;
     private static int _mvDanglyLoc;
 
@@ -117,13 +120,19 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = 0; k < n; k++)
         {
             int d = _mvDraw[k], i = _dSlot[d];
-            uint vao = VaoName(_oVao[i] | _oLodBit[i], _oCls[i]);
+            // CX-120: a DB slot's _oLodBit keeps only the arena bit, so the arena FORMAT comes from the slot's
+            // range, exactly as the colour batch keys it -- else a skinned mover pulls through the static VAO.
+            uint vao = VaoName(DbSlot(i) ? DbVaoKey(i) | DbArenaVaoBit : _oVao[i] | _oLodBit[i], _oCls[i]);
             if (vao == 0) continue;
             BindBatchState(_oNoCull[i], vao, ref boundCull, ref boundVao);
             Gl.Uniform1i(_mvBase, d);
             if (DanglyPrevNow(i)) { Gl.Uniform2i(_mvDanglyLoc, _oDpBase[i], _oDpN[i]); _mvDanglyDrawn++; }
             else Gl.Uniform2i(_mvDanglyLoc, 0, 0);
-            Gl.MultiDrawElementsBaseVertex(_primTable[_oPrim[i]], counts + d, GlUnsignedShort, (void**)(offs + d), 1, bases + d);
+            // CX-120: a DB slot carries no engine primitive enum, and index 0 is GL_POINTS in the engine's
+            // translation table -- the same trap that drew the sun cascades as points. An arena draw is
+            // TRIANGLES, which is what the colour batch row already says for it unconditionally.
+            Gl.MultiDrawElementsBaseVertex(DbSlot(i) ? Gl.TRIANGLES : _primTable[_oPrim[i]],
+                                           counts + d, GlUnsignedShort, (void**)(offs + d), 1, bases + d);
             _mvDrawn++;
             if (_oBone[i] >= 0) _mvSkinDrawn++;
         }
@@ -154,8 +163,10 @@ public sealed unsafe partial class AlloyRenderer
     internal static string MoverStats(int frames)
     {
         int d = _mvDrawn, sk = _mvSkinDrawn, dg = _mvDanglyDrawn; _mvDrawn = 0; _mvSkinDrawn = 0; _mvDanglyDrawn = 0;
+        long rm = System.Threading.Interlocked.Exchange(ref _dbRecModel, 0), ro = System.Threading.Interlocked.Exchange(ref _dbRecOther, 0);
         float f = MathF.Max(frames, 1);
-        return _mvFailed ? "movers FAILED" : d == 0 ? "" : $", {d / f:F1} mover draws/frame ({sk / f:F1} skinned, {dg / f:F1} dangly)";
+        string db = rm + ro == 0 ? "" : $", db records rewritten {rm / f:F1}/frame moved + {ro / f:F1}/frame other" + RecWhyStats(frames);
+        return _mvFailed ? "movers FAILED" : (d == 0 ? "" : $", {d / f:F1} mover draws/frame ({sk / f:F1} skinned, {dg / f:F1} dangly)") + db;
     }
 
     /// <summary>Context loss: the program name is gone.</summary>

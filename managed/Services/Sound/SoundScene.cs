@@ -39,6 +39,9 @@ internal static unsafe class SoundScene
     private static int _frame, _count, _sent;
     private static long _changedAt, _sentAt, _enteredAt;
     private static bool _saidEmpty;
+    /// <summary>The master toggle was off at the last tick: the native side drops the scene with it, so the area's
+    /// geometry is sent again when it comes back rather than left traced against nothing.</summary>
+    private static bool _wasOff;
 
     internal static void Arm(ExtenderLog log)
     {
@@ -51,6 +54,8 @@ internal static unsafe class SoundScene
 
     internal static void Tick()
     {
+        if (!SoundKnobs.Enabled.V) { _wasOff = true; return; }
+        if (_wasOff) { _wasOff = false; _sent = 0; _changedAt = Stopwatch.GetTimestamp(); }
         if (++_frame % Every != 0) return;
         CNWCArea area = CurrentArea();
         if (area.Ptr != _area || (!area.IsNull && area.Id != _areaId))

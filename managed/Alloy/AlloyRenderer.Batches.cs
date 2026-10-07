@@ -1,3 +1,4 @@
+using CX.Alloy.Db;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -33,7 +34,6 @@ public sealed unsafe partial class AlloyRenderer
         int n = 0, nb = 0;
         PrepareVisible();
         OccludeFrame();   // #537: the hit fan this walk tags occluders from
-        PrepareRouteMemo();   // BW1: after both, which is where the keyhole and the fade generation are read
         fixed (float* sph = _dSph)
         {
         for (int c = (int)AlloyClass.Opaque; c <= (int)AlloyClass.Cutout; c++)
@@ -42,21 +42,7 @@ public sealed unsafe partial class AlloyRenderer
             int[] list = RouteRange(c, out int from, out int to);
             for (int k = from; k < to; k++)
             {
-                // BW1: a slot the static path froze last frame replays its verdict; on the audit cadence it
-                // is re-derived here anyway and the two are compared (`routecheck` on the period line).
-                int memo = RouteMemo(list[k], sph, ref n);
-                if (memo == MemoReplayed) continue;
-                if (!RouteLive(list[k], k, sph, out int i, out IntPtr tri))
-                {
-                    // For an audited slot the ways out of RouteLive are the frustum (which the memo answers the
-                    // same way), a REVOKED identity, and an inactive LOD alternate -- which needs a gob, so a
-                    // gobless eligible slot should never have one. The memo would have drawn either.
-                    if (memo == MemoAudit && (_oTri[list[k]] == IntPtr.Zero || _oLodRoot[list[k]] != IntPtr.Zero))
-                        RouteMemoMiss(list[k], 1f, false, _oTri[list[k]] == IntPtr.Zero
-                                      ? "its identity changed and the slot was revoked"
-                                      : "it is an inactive LOD alternate");
-                    continue;
-                }
+                if (!RouteLive(list[k], k, sph, out int i, out IntPtr tri)) continue;
                 bool samp = (k & (ChaseEvery - 1)) == 0;
                 long tFade = samp ? FrameZones.Now : 0;
                 // The fade overlay, and the part's own animated alpha with it: while its tile fades, an opaque
@@ -72,17 +58,13 @@ public sealed unsafe partial class AlloyRenderer
 
                 if (fade <= 0f)
                 {
-                    if (memo == MemoAudit) RouteMemoMiss(i, 0f, false, "its tile's fog ramp has reached 0");
-                    if (_oGob[i] != IntPtr.Zero) Counters._skipFogGob++; else Counters._skipFogTile++;
-                    _oFading[i] = true; W(i, "skipped: tile fog ramp at 0"); continue;
+                    Counters._skipFogTile++;
+                    _oFading[i] = true; continue;
                 }
                 _oFading[i] = fade < 1f;
                 // #537: a faded occluder is a translucent part like any other, so it takes the blended run too.
-                float alpha = PartAlphaCached(i, tri) * fade * (_oGob[i] != IntPtr.Zero ? AlloyCensus.GobAlphaMul(tri) : 1f)
-                              * (1f - OccludeVerdict(i));
+                float alpha = PartAlphaCached(i, tri) * fade * (1f - OccludeVerdict(i));
                 bool dis = alpha >= 1f && Dissolves(i, tri, ref _stageCounters[0]);
-                if (memo == MemoAudit && (alpha != 1f || dis))
-                    RouteMemoMiss(i, alpha, dis, alpha != 1f ? "its live alpha is not 1" : "it is dissolving");
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Fade, tFade, ChaseEvery);
                 if (alpha < 1f)
                 { Counters._ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = BlendKey(i); nb++; continue; }
@@ -160,19 +142,17 @@ public sealed unsafe partial class AlloyRenderer
         if (tri == IntPtr.Zero || !RouteWanted(i, sph))
         {
             if (samp) FrameZones.AddSampled(FrameZones.Zone.Route, t0, ChaseEvery);
-            W(i, tri == IntPtr.Zero ? "skipped: slot vacated (revoked or class dropped)"
-                                    : "skipped: off this pass's frustum, record kept");
+            
             return false;
         }
-        if (!IdentityOk(i, tri))
-        { Counters._skipIdentity++; W(i, "skipped: identity changed -- revoked"); Revoke(i); return false; }
-        // CX-103: no placement gate. Alloy composes every enrolled gob's matrix (GobXform), so "the engine
-        // never placed this gob" -- the Fault 1 latch, and the part drawn at the area's (0,0) corner -- cannot
-        // happen any more.
-        // #336: a part of a LOD tree the gob is not showing. The engine draws GobPartTree alone; the walk
-        // enrols all three trees so a swap is a field read, and this is that read. Casts nothing either.
-        if (_oLodRoot[i] != IntPtr.Zero && new Gob(_oGob[i]).PartTree.Ptr != _oLodRoot[i])
-        { Counters._skipLod++; SetCastOk(i, false); W(i, "skipped: inactive LOD alternate"); return false; }
+        // The draw order is one table over every slot, so a world pass would otherwise walk every GUI panel's
+        // controls too (measured: 405 of 1830). They all fail the frustum, so this costs work rather than
+        // correctness -- but it is work every frame, and the scene is the cheapest possible test. Read live
+        // rather than cached at seat time: an object can be re-parented between scenes.
+        if (!DbInPassScene(_oDbPart[i]))
+        { Counters._skipForeignScene++; return false; }
+        if (!DbPartShown(_oDbPart[i]))
+        { Counters._skipLod++; SetCastOk(i, false); return false; }
         if (samp) FrameZones.AddSampled(FrameZones.Zone.Ident, t0, ChaseEvery);
         return true;
     }
@@ -185,34 +165,6 @@ public sealed unsafe partial class AlloyRenderer
     /// two columns the second walk existed for (the draw's batch and that batch's output base) are both known
     /// at this store, because the cut has just placed the draw.</para></summary>
     private static readonly uint[] _dSrc = new uint[MaxOwned * CullPass.SrcUints];
-
-    /// <summary>Is this slot's part still the one that enrolled? The single-level compare
-    /// <see cref="RouteParts"/> revokes on, once per pass at route (the staging walk trusts the verdict; #322)
-    /// -- node, material and texture rotation read straight off the part. Reading a stale part is the
-    /// accepted risk model here; chasing a POINTER out of one is not, so every dereference this pass makes
-    /// sits behind this. Pointer identity ONLY: an instance's live shading state is a skip of its own in
-    /// <see cref="BuildBatches"/>, since a false answer here would leave the part in the OPAQUE run at alpha 1
-    /// and the staging walk never re-asks (#128).
-    /// <para>The entry must be a LIVE recording of this part before any of that is read: a destroyed part can
-    /// keep every field long enough to pass the compares, and then the gob chase in <see cref="LiveAlpha"/>
-    /// walks a freelist word. <c>Part::~Part</c> is what makes this answer no (#145).</para>
-    /// <para>The three field compares are an AUDIT on the colour cadence, not a per-frame gate. The Ghidra
-    /// store scan (every write to <c>[reg+0x58|0x88|0xb0]</c> in the binary, on the ticket): part+0x58 has NO
-    /// post-construction writer -- set in <c>PartTriMesh::PartTriMesh</c>, freed by <c>Part::~Part</c>;
-    /// part+0x88 is written once by <c>PartInitMaterial</c> @0x43de50 and part+0xb0 once by
-    /// <c>SetPartTextureRotate</c> @0x461670, both on a tree <c>CreateInstanceTree</c> made moments before,
-    /// never on a part that has been drawn. So <c>EntryLive</c> (the death notice) is the whole lifetime
-    /// guard, and the compares run every <see cref="ColourCadence"/> frames per slot (every frame under
-    /// <c>/alloy poll 1</c>) so a writer the scan could miss (a LEA-then-store, a memcpy) shows on the [alloy]
-    /// line as <c>identity N</c> within eight frames rather than never (#336).</para></summary>
-    private static bool IdentityOk(int i, IntPtr tri)
-    {
-        if (!PartTable.EntryLive(_oEntry[i], tri)) return false;
-        if (!_fullPoll && ((i + _frameSeq) & (ColourCadence - 1)) != 0) return true;
-        var part = new PartRef(tri);
-        return part.Node.Ptr == _oNode[i] && part.Material.Ptr == _oMat[i]
-               && part.TexRotateBits == _oRotBits[i];
-    }
 
     /// <summary>#126: order the blended run back to front -- the farthest key first, so nearer surfaces
     /// composite over what is already behind them. Stable, which is what keeps parts at equal distance in
@@ -299,32 +251,40 @@ public sealed unsafe partial class AlloyRenderer
     /// state.</summary>
     private static float PartAlpha(IntPtr tri) => new PartRef(tri).Alpha;
 
+    /// <summary>CX-120: the scene this pass is drawing. Set by the DB world pass before the route walk; a
+    /// DB slot of any other scene is skipped, which is what keeps one view from drawing another's objects.</summary>
+    internal static DbId _dbPassScene;
+
+    /// <summary>Is this DB part's object in the scene this pass is drawing?</summary>
+    private static bool DbInPassScene(int part)
+    {
+        DbId o = SceneDb.PartObj[part];
+        return SceneDb.Objects.Valid(o) && SceneDb.ObjScene[o.Index].Value == _dbPassScene.Value;
+    }
+
+    /// <summary>CX-120: is this DB part in the alternate its object is showing? 0 = in every alternate.</summary>
+    private static bool DbPartShown(int part)
+    {
+        byte tree = SceneDb.PartLodTree[part];
+        return tree == 0 || tree == SceneDb.ObjLodShown[SceneDb.PartObj[part].Index];
+    }
+
+    /// <summary>CX-120: the object-wide alpha multiplier the engine path read by chasing the gob's fade
+    /// owner (<c>AlloyCensus.GobAlphaMul</c>). One column load: the tint's w.</summary>
+    private static float DbObjAlpha(int part) => SceneDb.ObjTint[SceneDb.PartObj[part].Index].W;
+
     /// <summary>#336: the part's own alpha, read off the part every frame for a gob part or a matrix-class
     /// part (the animated ones) and every <see cref="ColourCadence"/> frames for a still gobless part --
     /// the tile geometry that is the routed majority, whose +0xa0 only an MDL alpha controller writes.
     /// Under <c>/alloy poll 1</c> every frame reads and audits the cache.</summary>
-    private static float PartAlphaCached(int i, IntPtr tri)
-    {
-        // BW3: a write to this part's +0xa0 is MARKED (PartTable.NoteAlphaWrite), and the route memo consumes
-        // the mark by clearing _alphaKnown -- so a written alpha is read the frame it is written, and this
-        // cadence only ever bounds how long an unwritten one is trusted.
-        bool poll = _oGob[i] != IntPtr.Zero || _oMx[i] || !_alphaKnown[i] || _fullPoll
-                    || ((i + _frameSeq) & (ColourCadence - 1)) == 0;
-        if (!poll) return _oAlpha[i];
-        float a = PartAlpha(tri);
-        if (_fullPoll && _alphaKnown[i] && a != _oAlpha[i]) _pollMissAlpha++;
-        _oAlpha[i] = a; _alphaKnown[i] = true;
-        return a;
-    }
-    private static readonly float[] _oAlpha = new float[MaxOwned];
-    private static readonly bool[] _alphaKnown = new bool[MaxOwned];
+    private static float PartAlphaCached(int i, IntPtr tri) => SceneDb.PartAlpha[_oDbPart[i]];
 
     /// <summary>#128: this frame's whole alpha multiplier for a part -- its own animated alpha, the fade
     /// factor of the tile it stands on, and the instance's two multiplies. Every term is read live and none
     /// is cached at capture, which is what the creature case demands: a gob can fade a whole creature into
     /// the transparent run for a single frame and out again.</summary>
     private static float LiveAlpha(int i, IntPtr tri)
-        => PartAlpha(tri) * TileFade(i, tri) * AlloyCensus.GobAlphaMul(tri);
+        => SceneDb.PartAlpha[_oDbPart[i]] * SceneDb.PartFade[_oDbPart[i]] * DbObjAlpha(_oDbPart[i]);
 
     /// <summary>Squared distance from THIS pass's eye to the part's world centre -- the blended sort key.
     /// Derived exactly as the caster cull derives it and for the same reason (live-verified there): a
@@ -335,10 +295,12 @@ public sealed unsafe partial class AlloyRenderer
     /// run the frame can depth-prepass and colour as a unit. A gobless part keeps its own centre.</summary>
     private static float BlendKey(int i)
     {
-        IntPtr g = RunGob(i);
-        if (g == IntPtr.Zero) return EyeDist2(i);
-        float* p = new GobRef(g).Position;
-        float dx = p[0] - _eyePos.X, dy = p[1] - _eyePos.Y, dz = p[2] - _eyePos.Z;
+        // CX-120: a part sorts by its RUN ROOT's world position -- the object a fade and a blended run apply to,
+        // resolved when attachment changed rather than climbed per part per pass.
+        DbId root = SceneDb.ObjRunRoot[SceneDb.PartObj[_oDbPart[i]].Index];
+        if (root.IsNull) return EyeDist2(i);
+        Matrix4x4 w = SceneDb.ObjWorld[root.Index];
+        float dx = w.M41 - _eyePos.X, dy = w.M42 - _eyePos.Y, dz = w.M43 - _eyePos.Z;
         return dx * dx + dy * dy + dz * dz;
     }
 
@@ -347,23 +309,10 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The gob a blended part composites WITH: its fade owner, else the root of its attachment chain
     /// (#490: a creature's body parts and held items are gobs attached to the creature's, and one ghosted
     /// creature is one layer, not one per part). Bounded climb; a cycle is not a shape the engine builds.</summary>
-    private static IntPtr RunGob(int i)
-    {
-        IntPtr g = _oGob[i];
-        if (g == IntPtr.Zero) return g;
-        // Climb FIRST: an attached gob's node pointer is the part it hangs on (a head keys on the neck, each
-        // weapon piece on a hand), so the owner rule below applies to the root, not to the attachment.
-        for (int hop = 0; hop < 8; hop++)
-        {
-            CAurBehavior behavior = new Gob(g).Attach;
-            if (behavior.IsNull) break;
-            IntPtr parent = behavior.Target.Ptr;
-            if (parent == IntPtr.Zero) break;
-            g = parent;
-        }
-        GobRef owner = new GobRef(g).FadeOwner;
-        return owner.IsNull ? g : owner.Ptr;
-    }
+    /// <summary>CX-120: the blended batch key's run identity -- the DB run root as an opaque value for a DB
+    /// slot, the engine's chased gob for an engine one. Compared, never dereferenced, by every reader.</summary>
+    private static IntPtr RunKey(int i)
+        => (IntPtr)(long)SceneDb.ObjRunRoot[SceneDb.PartObj[_oDbPart[i]].Index].Value;
 
     /// <summary>#618: is this part a creature's? Its own gob, or any gob up its attachment chain, carries
     /// <see cref="EngineLayout.GobKindCreature"/> (a hat or a held weapon is its own gob hanging off the body's).
@@ -374,28 +323,23 @@ public sealed unsafe partial class AlloyRenderer
     internal static bool SlotCreature(int i) => (uint)i < (uint)_oGob.Length && CreaturePart(i);
     private static bool CreaturePart(int i)
     {
-        IntPtr g = _oGob[i];
-        for (int hop = 0; hop < 8 && g != IntPtr.Zero; hop++)
+        // Up the ATTACHMENT chain: a creature's body parts, its hat and its held weapon are each their own object
+        // and only the one the game called SetExternalDataType on carries the kind. Eight hops.
+        DbId o = SceneDb.PartObj[_oDbPart[i]];
+        for (int hop = 0; hop < 8 && SceneDb.Objects.Valid(o); hop++)
         {
-            if (SceneRay.IsCreature(g)) return true;
-            CAurBehavior behavior = new Gob(g).Attach;
-            if (behavior.IsNull) return false;
-            g = behavior.Target.Ptr;
+            if ((SceneDb.ObjFlags[o.Index] & ObjFlag.Creature) != 0) return true;
+            o = SceneDb.ObjAttachTo[o.Index];
         }
         return false;
     }
 
     private static float EyeDist2(int i)
     {
-        float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i];
-        if (_oMx[i])
-        {
-            // CX-103: composed, not read off vp+0x18. Blended matrix-class parts are the small minority of a
-            // scene by construction, so this is a handful of composes per pass.
-            Matrix4x4 m = GobXform.Armed ? GobXform.Compose(_oTri[i], _oGob[i]) : new NodeRef(_oNode[i]).Model;
-            cx = m.M41; cy = m.M42; cz = m.M43;
-        }
-        float dx = cx - _eyePos.X, dy = cy - _eyePos.Y, dz = cz - _eyePos.Z;
+        // The recipe's centre is MODEL space (it comes off the mesh's own bounds), so it goes through the part's
+        // world matrix -- the composed column, never a node read.
+        Vector3 wc = Vector3.Transform(new Vector3(_oCx[i], _oCy[i], _oCz[i]), SceneDb.PartWorld[_oDbPart[i]]);
+        float dx = wc.X - _eyePos.X, dy = wc.Y - _eyePos.Y, dz = wc.Z - _eyePos.Z;
         return dx * dx + dy * dy + dz * dz;
     }
 
@@ -460,7 +404,7 @@ public sealed unsafe partial class AlloyRenderer
             // The centre is the model TRANSLATION, not _oC* through the matrix: that bbox centre is not
             // object-space (EyeDist2, CasterPass), and transforming it would add the node translation twice.
             float cx = _oCx[i], cy = _oCy[i], cz = _oCz[i], r = _oR[i];
-            if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; r *= GobXform.ScaleOf(f.Model); }
+            if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; r *= DbAnim.ScaleOf(f.Model); }
             s[0] = cx; s[1] = cy; s[2] = cz; s[3] = r;
         }
     }
@@ -481,9 +425,9 @@ public sealed unsafe partial class AlloyRenderer
             if (f.HasModel && _oBr[i] > 0f && !_vSkin[_oVao[i]] && !_oDangly[i])
             {
                 var c = Vector3.Transform(new Vector3(_oBx[i], _oBy[i], _oBz[i]), f.Model);
-                cx = c.X; cy = c.Y; cz = c.Z; r = _oBr[i] * GobXform.ScaleOf(f.Model);
+                cx = c.X; cy = c.Y; cz = c.Z; r = _oBr[i] * DbAnim.ScaleOf(f.Model);
             }
-            else if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; r *= GobXform.ScaleOf(f.Model); }
+            else if (f.HasModel) { cx = f.Model.M41; cy = f.Model.M42; cz = f.Model.M43; r *= DbAnim.ScaleOf(f.Model); }
             // Review, restoring the deleted MinSkinRadius insurance: a skinmesh's bbox is its BIND pose,
             // and an animated pose (an extended arm, a swinging cloak) reaches past it. The slack keeps the
             // reach culls and the staleness volumes honest about where the pose can actually be; keyed on
@@ -592,6 +536,8 @@ public sealed unsafe partial class AlloyRenderer
     private static bool CasterBoundSelfCheck(ExtenderLog log)
     {
         const int i = 0;
+        // CX-120 (R1-35): scratch slot 0 must not be a live DB tenant while this forges a box into it.
+        int wasDb = _oDbPart[i]; _oDbPart[i] = -1;
         float bx = _oBx[i], by = _oBy[i], bz = _oBz[i], br = _oBr[i], ccx = _oCx[i], ccy = _oCy[i], ccz = _oCz[i], cr = _oR[i];
         int vao = _oVao[i];
         Span<float> was = stackalloc float[4];
@@ -615,6 +561,7 @@ public sealed unsafe partial class AlloyRenderer
         }
         bool tight = sr < 12.21f * 1.5f * 0.5f;
         _vSkin[0] = skin; _oDangly[i] = dangly;
+        _oDbPart[i] = wasDb;
         _oBx[i] = bx; _oBy[i] = by; _oBz[i] = bz; _oBr[i] = br; _oCx[i] = ccx; _oCy[i] = ccy; _oCz[i] = ccz; _oR[i] = cr; _oVao[i] = vao;
         for (int k = 0; k < 4; k++) _dCastSph[k] = was[k];
         if (!(inside && tight)) log.Info("AlloyRenderer.CasterBoundSelfCheck: FAILED -- the caster sphere does not hold its own vertex box "
@@ -784,20 +731,6 @@ public sealed unsafe partial class AlloyRenderer
         FrameZones.Add(FrameZones.Zone.Scan, tScan);
         long tRestage = FrameZones.Now;
         bool dumping = FrameDump.Begin();
-        // #134: routing walks the CLASS RANGES, not the ownership table -- a part whose class range was
-        // never built simply never appears, and no skip site can report on it. Say so once.
-        if (Diag._watchDrawLeft > 0 && AlloyCensus._watchEntry >= 0)
-        {
-            bool routedWatch = false;
-            for (int k = 0; k < routed && !routedWatch; k++) routedWatch = AlloyCensus.WatchedEntry(_oEntry[_pass[k]]);
-            if (!routedWatch)
-            {
-                bool owned = false;
-                for (int i = 0; i < _ownCount && !owned; i++)
-                    owned = _oTri[i] != IntPtr.Zero && AlloyCensus.WatchedEntry(_oEntry[i]);
-                if (owned) { Diag._watchDrawLeft--; _log?.Info("[dumpframe] DRAW never routed -- owned, but RouteParts did not include it"); }
-            }
-        }
         _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = 0;
         _mvN = 0; _mvSkinned = false; _mvDangly = false;   // #392: this pass's mover list, whether or not a velocity pass consumes it
         // #242: the persistent buffer grows to the high-water ownership count and never shrinks. A growth
@@ -867,15 +800,21 @@ public sealed unsafe partial class AlloyRenderer
             // #673: a charted mesh is the whole geometry (split vertices), picked at every level -- see MeshChart.Range.
             bool chartArmed = MeshChart.Armed;
             int drawn = 0;
-            if (chartArmed && MeshChart.Range(ref _oChart[i], v, row.Item, lvl, out int cb, out nint co, out int cc, out drawn))
-            {
-                idxOff = co; idxCount = cc; baseVertex = cb; vKey = v | ChartVaoBit; MeshChart.Drew(cc);
-                LightmapBake.Enrol(i, v, row.Item);   // #674: once per slot (a -1 test after the first)
-            }
-            else if (lvl > 0 && MeshLod.Range(v, row.Item, lvl, out nint lo, out int lc, out int ll) && LodVao(v) != 0)
-            { idxOff = lo; idxCount = lc; vKey = v | LodVaoBit; drawn = ll; }
+            // CX-120: the arena IS the chart and the LOD table. StageDbPart already asked it for this
+            // level's runs, so there is nothing to look up here -- and both lookups below are keyed on a
+            // (VDO slot, item) pair a DB slot does not have.
+            vKey = v | DbArenaVaoBit;
+            // `drawn` is the LEVEL the arena actually served, not a count: MeshLod.Drew indexes its
+            // per-level tally with it. Handing it the index count walked off that array and took the
+            // first DB frame that got this far down with it.
+            drawn = _oDbLevel[i];
+            // CX-120: ...and the CHARTED copy of that mesh when one exists, which is what lets the bake
+            // enrol the slot. It belongs here rather than in the stage walk for the reason the comment
+            // above gives about the other two lookups: this loop is main-thread, the stage walk is not,
+            // and both the chart table and the bake's rect tables are main-thread only.
+            if (chartArmed && DbBakeable(i)) DbChart(i, lvl, ref idxOff, ref baseVertex, ref idxCount);
             if (MeshLod.On) MeshLod.Drew(drawn, idxCount);
-            _oLodBit[i] = vKey & (LodVaoBit | ChartVaoBit);
+            _oLodBit[i] = DbArenaVaoBit;
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
             // but so the depth prepass can drop a whole batch: a displacing feature must not write its
             // undisplaced depth, and the prepass has no per-draw granularity. #137: a posed skinmesh overrides
@@ -935,8 +874,7 @@ public sealed unsafe partial class AlloyRenderer
                 keyLit = lit; keyVao = vKey; keyTex = tidKey; keyMode = mode; keyFeat = feat; keyDis = dis;
                 keyCls = cls; keyBlend = blend; keyNoCull = noCull; keyGob = gobKey;
             }
-            W(i, "SUBMITTED");
-            if (AlloyCensus.WatchTex[row.Entry]) Counters._watchSubmitted++;
+            
             _dCount[n] = idxCount;
             _dOff[n] = idxOff;
             _dBase[n] = baseVertex;
@@ -974,7 +912,6 @@ public sealed unsafe partial class AlloyRenderer
             if (row.HasGob) Counters._drawsGob++;
             // #302: no shadow feed here any more. An instance part IS an ownership slot, and the bake walks
             // the ownership table -- so there is nothing to hand over and nothing that can be double-recorded.
-            AlloyCensus.OwnGen[row.Entry] = PassGen;
         }
         // #126: where each pass's batch range ends. Read off the batches themselves rather than tracked
         // through the cut above -- the routed order is class-ordered by construction, so the first batch of a
@@ -1028,16 +965,24 @@ public sealed unsafe partial class AlloyRenderer
         row.Slot = i; row.Entry = _oEntry[i]; row.Cls = (byte)cls;
         row.Lit = lit; row.Dis = dis; row.Tid = tid; row.Slots = slots;
         row.IdxCount = idxCount; row.IdxOff = _cOff[i]; row.BaseVertex = _cBase[i];
-        row.Vao = _oVao[i]; row.Item = _oItem[i]; row.Feat = feat;
-        row.Mode = _primTable[_oPrim[i]];
+        // CX-120 (R1-18): a DB slot's VAO key is its ARENA SECTION, so the two vertex formats cut apart and
+        // every range of one format batches together -- where _oVao = 0 for all of them would have collapsed
+        // the key and _oItem = -1 would have collided every (vao, item) table on one entry.
+        bool db = _oDbPart[i] >= 0;
+        row.Vao = db ? DbVaoKey(i) : _oVao[i];
+        row.Item = db ? _oDbPart[i] : _oItem[i];
+        row.Feat = feat;
+        row.Mode = db ? Gl.TRIANGLES : _primTable[_oPrim[i]];
         row.NoCull = _oNoCull[i];
         row.Src = (byte)_oSrc[i]; row.Dst = (byte)_oDst[i]; row.Wash = (byte)_oWash[i];
         // #126: the class and the blend pair are GL state, which one multidraw cannot vary inside.
         row.Blend = AlloyClasses.Blends(cls) ? (_oWash[i] << 16) | (_oSrc[i] << 8) | _oDst[i] : 0;
         // A blended batch never straddles two creatures: the frame prepasses and colours each run of one gob's
         // batches as a unit, so the gob is a key term and a tag on the batch.
-        row.GobKey = cls == (int)AlloyClass.Blended ? RunGob(i) : IntPtr.Zero;
-        row.HasGob = _oGob[i] != IntPtr.Zero;
+        row.GobKey = cls == (int)AlloyClass.Blended ? RunKey(i) : IntPtr.Zero;
+        // "has an instance behind it", which in DB mode is "is not tileset geometry".
+        row.HasGob = db ? (SceneDb.ObjFlags[SceneDb.PartObj[_oDbPart[i]].Index] & ObjFlag.Tile) == 0
+                        : _oGob[i] != IntPtr.Zero;
         // Automatic mesh LOD: the screen radius of the sphere the cull already needs. The RANGE lookup stays on
         // the main thread (a dictionary and a shared counter); only the level is arithmetic.
         int lvl = 0;
@@ -1077,10 +1022,15 @@ public sealed unsafe partial class AlloyRenderer
             BatchRow was = _bRow[k];
             int i = _pass[k];
             if (was.Slot != i) { BatchMismatch(k, i, "slot"); continue; }
+            // CX-120: the audit rebuilds a row the way the ENGINE path builds one -- off _oEntry, the census
+            // and the engine prim table, none of which a DB slot has. It reported a mismatch on every DB row
+            // and would have gone on doing so for ever, which is worse than no audit: a check that is always
+            // red is a check nobody reads. It needs a DB-mode rebuild of its own before it means anything.
+            if (_oDbPart[i] >= 0) continue;
             _bAudited++;
             int feat = _oBone[i] >= 0 ? (int)ShaderFeature.Skin : (int)_oFeat[i * 4];
             int blend = AlloyClasses.Blends(_passCls[k]) ? (_oWash[i] << 16) | (_oSrc[i] << 8) | _oDst[i] : 0;
-            IntPtr gobKey = _passCls[k] == (int)AlloyClass.Blended ? RunGob(i) : IntPtr.Zero;
+            IntPtr gobKey = _passCls[k] == (int)AlloyClass.Blended ? RunKey(i) : IntPtr.Zero;
             bool posed = _oBone[i] >= 0, dangly = !posed && DanglyPrevNow(i);
             bool recMoved = _recMovedAt[i] == _frameSeq;
             bool moved = posed ? recMoved || _poseMovedAt[i] == _frameSeq : dangly || recMoved && _oMx[i];
@@ -1190,418 +1140,7 @@ public sealed unsafe partial class AlloyRenderer
     /// object, logs, allocates or touches a shared collection returns <see cref="Deferred"/> with the counters
     /// rolled back, and the main thread re-runs the part after the join.</para></summary>
     private static byte StagePart(int k, float* data, int* slotTid, bool lightingOn, ref StageCounters c, bool main)
-    {
-        {
-            int i = _pass[k];
-            StageCounters snap = c;
-            if (!main && AlloyCensus.WatchedEntry(_oEntry[i])) return Deferred;
-            // unarmed ownership under bindless: the main path mints on raw engine names (#220), a worker cannot
-            if (!main && _bindless && !OwnedTextures.Armed) return Deferred;
-            int cls = _passCls[k];
-            // #129: never stamp what the frame cannot draw -- see _waterArmed. Ahead of the stale check
-            // below because it is a decision about the PASS, not about this part.
-            if (cls == (int)AlloyClass.Water && !_waterArmed) return Skipped;
-            IntPtr tri = _oTri[i];
-            if (tri == IntPtr.Zero) return Skipped;
-            var part = new PartRef(tri);
-            // #264: EVERY owned part is staged, and CullPass decides what survives. The gate that used to
-            // sit here asked the engine's bucket walk "did you touch this part lately", which was enrolment
-            // cadence wearing visibility's clothes (#243) -- and there is no walk to ask. A cull that cannot
-            // run is now a BOOT refusal (AlloyGate), not a per-frame downgrade, because the only alternative
-            // left is drawing the whole enumerated area every frame.
-            // Lit parts sort last. One with the lighting rig unavailable this pass is skipped rather than
-            // painted flat. #285: that skip is a HOLE, not a hand-back -- see `unlit-pass` on the [alloy]
-            // line, which must read 0 on a pass that has a lighting rig at all.
-            bool lit = _oLit[i];
-            if (lit && !lightingOn) { Inc(ref Counters._skipNoLight); W(i, "skipped: lighting off this pass"); return Skipped; }
-            // #322: identity was verified (and a mismatch revoked) by RouteParts this pass -- every engine
-            // read below sits behind that verdict, not behind a second copy of the same four compares.
-            bool samp = main && (k & (ChaseEvery - 1)) == 0;
-            long tChase = samp ? FrameZones.Now : 0;
-            // #126: a fading tile is no longer a reason to hand the part back. RouteParts has already moved
-            // it into the blended run with the tile's factor folded into its alpha, which is what the engine
-            // does with it in bucket 8 -- and bucket 8 is a bucket IterSight can suppress now.
-            // #124: the camera dissolve is a FEATURE of the Alloy program now, not a reason to hand the part
-            // back -- dissolving parts sit in bucket 1, which IterSight can suppress. #123's exemption still
-            // stands: nokeyhole, roofkn and flowmap compile their FRAGMENT stage with KEYHOLING 0, so vanilla
-            // draws them solid through a dissolve and so must we.
-            // ...and only on a LIT part: every unlit fragment stage in base_shaders.bif compiles KEYHOLING 0
-            // (fst, fst_sm, fsglu, fs, fstc), so vanilla draws an unlit part solid through the aperture.
-            // Keeping the flag off them also keeps them out of the prepass exclusion below, which they would
-            // otherwise pay for a discard their stage does not have.
-            bool dis = cls <= (int)AlloyClass.Cutout ? _passDis[k] : Dissolves(i, tri, ref c);
-            float dissolve = dis ? 1f : 0f;
-            if (dis) c.OwnDissolve++;
-            // #242: this slot's persistent record. Three states, cheapest first -- already verified by an
-            // earlier pass THIS frame (nothing to re-read at all), unchanged since the last frame (the
-            // texture re-fetch and the handle mints are skipped, which is the expensive half), or dirty.
-            // A stale epoch forces the third: see InvalidateRecords for what can make every record wrong.
-            bool stale = _gate[i].RecGen != _recEpoch;
-            bool verified = !stale && _gate[i].RecFrame == _frameSeq;
-            // The static set's fourth record state, below `verified` and cheaper than it: a settled member has
-            // nothing left that a frame can move, so its record, sphere, handles and cast admission are last
-            // frame's by construction and everything below is skipped. See StaticShape for the membership test
-            // and StaticFrozen for the three stamps and the recheck stagger that bound its staleness.
-            bool member = !stale && GpuStatic.On && StaticShape(i, cls, dis, dissolve, _passAlpha[k]);
-            if (member) c.StSettled++;
-            if (!verified && StaticFrozen(i, member))
-            { verified = true; _gate[i].RecFrame = _frameSeq; _gate[i].FrozenAt = _frameSeq; c.StFrozen++; }   // BW1 stamps the memo here
-            else if (!member && _stSettle[i] != 0) { _stSettle[i] = 0; c.StThawed++; }
-            // #322: the colour cadence, staggered by slot. The measured Restage bulk is the per-part
-            // engine chases, and the slow-drift half of them -- the mdl colour triples, self-illum, the gob
-            // colour folds, the non-animated slot-map pointers -- moves over SECONDS (day-night, a scripted
-            // glow), so it is read every ColourCadence frames per slot and reloaded from the record in
-            // between. Everything fast-visible stays per frame: alpha, tile fade, the matrix, the DIFFUSE
-            // pointer (animated textures), dissolve, instance state.
-            // #364: _fullPoll belongs here. `/alloy poll 1` says it re-reads every engine term every frame
-            // and its audit counters must read 0 -- but this term sat outside it, so the slow-drift fold
-            // stayed on its stagger under a full poll and the knob could not A/B a colour-cadence bug at all.
-            //
-            // ...and an INSTANCED part is off the cadence entirely. #336 and #362 both tried to name the one
-            // event that must bypass it (a highlight) and both missed, because Scene::AddHighlightGob
-            // @0x462280 is two list writes and arms nothing -- whatever arms the gob's colour on a highlight
-            // is somewhere else, and guessing at it twice is enough. The cadence's own justification is that
-            // these terms "move over SECONDS", and the terms that can move at all are the GOB folds:
-            // GobDiffuseMul (gob+0xf6/+0xfc, Gob::SetColorShifting) and GobEmissiveAdd (gob+0xf8/+0x110,
-            // Gob::SetIllumination). A part with no gob folds neither -- both return their identity without
-            // dereferencing anything -- and all it has left is mdl ambient/diffuse and part self-illum,
-            // which are material statics that genuinely never move.
-            //
-            // So the split is by what CAN change, not by what we think just did. It is also cheaper than the
-            // stagger it replaces: gob parts are ~9% of a dense area's population (112 instanced of 1245 on
-            // the live [alloy] line) against the 12.5% a 1-in-8 cadence re-reads every frame.
-            bool colour = stale || _fullPoll || _oGob[i] != IntPtr.Zero
-                          || ((i + _frameSeq) & (ColourCadence - 1)) == 0;
-            // MatStatic (Ghidra @0x450560): ambient = node+0xf4, diffuse = node+0xe8, emissive = part+0x7c.
-            // ponytail: MatStatic also multiplies ambient+diffuse by AurGetTileColor() when the part's tile
-            // record (part+0x98, +0x54) is set. Not reproduced -- add it if tiles read the wrong hue.
-            IntPtr mdl = lit && colour ? part.Mdl.Ptr : IntPtr.Zero;
-            // #302 (review): every content skip from here down also revokes the slot's SHADOW tenancy.
-            // The record block never runs for a skipped part, so its mover stamps freeze at their last
-            // values -- frozen-equal is a caster re-baking every view it stands in forever, frozen-unequal
-            // is a shadow that stops tracking -- and the #302 contract is simpler than either: a part
-            // nothing draws casts nothing. The stale rebuild on return stamps it a mover (newTenant), so
-            // the views it re-enters re-bake. Cadenced with the colour reads -- the mdl is only chased on a
-            // colour frame, so its absence is only observable then.
-            if (lit && colour && mdl == IntPtr.Zero) { Inc(ref Counters._skipNoMdl); _gate[i].RecEnroll = 0; SetCastOk(i, false, ref c); W(i, "skipped: no mdl node"); return Skipped; }
-
-            var mat = new MaterialRef(_oMat[i]);
-            int tid, slots;
-            bool texDirty = false, nullTex = false;
-            if (verified) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
-            else
-            {
-                // texture: the engine name is re-fetched -- CAurTexture* is BORROWED, freed on area
-                // transitions (never cache the pointer). #211 then maps that name to OUR copy, which cannot
-                // be freed under the draw; every cell of a cycle texture is adopted at upload, so a step
-                // resolves to a copy already resident.
-                // #242: the POINTER is compared per frame; only a change re-resolves it to a tid and a
-                // bindless handle. That is the ADR 0017 split's per-frame half -- the fetch stays, the two
-                // hash probes behind it do not.
-                // #336: ...on the colour cadence. The #330 RE found a cycling texture rewrites the GL name
-                // INSIDE the CAurTexture (basic+0x6c), never the pointer -- so this compare never sees a
-                // cycle. #331: the step reaches the record through TickCycleTextures (Alloy calls the
-                // engine's Control itself; the M4 shim removed the Bind tail that used to) and the IsDirty
-                // term below. What the compare does catch is a material re-bind (a re-skin, an equip: cold),
-                // which can wait eight frames. A slot with no record yet, or under /alloy poll 1, still reads
-                // every frame.
-                // CX-25: a re-resolve reads a FRESH ref; the cached one may be a freed block re-used by a new texture
-                bool cycled = _recCtl[i] != IntPtr.Zero && CycleTextures.IsDirty(_recCtl[i]);
-                bool texPoll = stale || colour || _fullPoll || _recAur[i] == IntPtr.Zero || _gate[i].TexStale || cycled;
-                var aur = texPoll ? mat.Texture(0) : new TextureRef(_recAur[i]);
-                // CX-91: a material with NO diffuse slot is not a skip -- it is an UNTEXTURED part, and
-                // vanilla draws it. Material::BindAllStandardTextures @0x4c6e30 answers a null slot with
-                // SetActiveTextureAndBind(unit, 4, 0), i.e. GLRender::SetTextureStageEnabled(unit, 0)
-                // @0x4c93d0: the stage leaves m_bEnabledTextureStages and contributes no multiply, and
-                // PartTriMesh::Draw @0x4513d0 calls RenderFlat regardless. So it takes the same white
-                // stand-in the tid-0 branch below takes, which is what that multiply is missing.
-                bool noDiffuse = aur.IsNull;
-                if (noDiffuse) Inc(ref Counters._noDiffuseDraws);
-                texDirty = noDiffuse || stale || aur.Ptr != _recAur[i] || _gate[i].TexStale || cycled;
-                // #322: slot maps ride the colour cadence -- no shipped normal/spec/height map animates, so
-                // their pointer compares (8k+ chases a frame in a dense area) wait for the slot's colour
-                // frame. The DIFFUSE compare above stays per frame; it is the animated one.
-                for (int s = 0; !texDirty && lit && colour && s < MapSlots; s++)
-                {
-                    if ((_oSlots[i] & SlotBit(s)) == 0) continue;
-                    IntPtr was = _recAurS[i * MapSlots + s];
-                    if (mat.MapTexture(s).Ptr != was
-                        || (_recSlotQueued[i] && _recTidS[i * MapSlots + s] == 0 && was != IntPtr.Zero && AurTex.Tid(was) != 0))
-                        texDirty = true;
-                }
-                if (!texDirty) { tid = _recTid[i]; slots = _recSlotMask[i]; LoadSlotTids(i, slotTid); }
-                else
-                {
-                    int bb = OwnedTextures.Borrowed;
-                    if (noDiffuse) tid = 0;                       // no slot to resolve: straight to the stand-in
-                    else if (main) tid = aur.OwnedTid();
-                    else if (!OwnedTextures.TryDraw(AurTex.Tid(aur.Ptr), out tid)) { c = snap; return Deferred; }
-                    if (!noDiffuse && main && OwnedTextures.Borrowed != bb) OwnedTextures.NoteBorrowedName(aur.Ptr, tid);
-                    // #317: and NOTE it, because this is the only place that still knows. AlloyCensus does
-                    // the same at enrollment on the stated grounds that "enrollment is the Alloy-owned edge
-                    // that notices" -- but enrollment is edge-triggered (#256), so a part that enrolls once
-                    // and is skipped here every frame after is never re-asked, and one whose tid was FINE at
-                    // enrollment and went to 0 later (an area transition retiring the owned copy) is never
-                    // asked at all. Both read as "0 queued" beside a nonzero null-tex: an empty queue
-                    // because nothing is asking, not because nothing is waiting. NoteUnbuilt is a dictionary
-                    // probe that dedups and self-caps (attempts, re-arm, Never), so the per-frame cost of
-                    // asking here is that count -- and that count is the bug.
-                    if (tid == 0)
-                    {
-                        if (!main) { c = snap; return Deferred; }
-                        if (!noDiffuse) OwnedTextures.NoteUnbuilt(aur.Ptr);
-                        // ...and DRAW it meanwhile, on the white texel vanilla would draw it on (see
-                        // OwnedTextures.WhiteTid). The skip here was the structural analysis's divergence A:
-                        // since #264 nothing renders an unowned part, so refusing tid 0 deleted from the
-                        // frame a part the engine would merely have rendered blank.
-                        tid = OwnedTextures.WhiteTid();
-                        if (tid == 0)
-                        {
-                            Inc(ref Counters._skipTex); Inc(ref Counters._skipTexNoId); _gate[i].RecEnroll = 0; SetCastOk(i, false, ref c);
-                            W(i, "skipped: diffuse has no GL id and no white stand-in"); return Skipped;
-                        }
-                        if (!noDiffuse) Inc(ref Counters._nullTexDraws);   // the two populations are counted apart
-                        // ...but an ABSENT slot is not a pending build, and the stale mark is what tells
-                        // TexStream a stand-in was REPLACED: left set it would re-enrol the part every frame
-                        // for a diffuse that is never coming.
-                        nullTex = !noDiffuse;
-                        W(i, noDiffuse ? "no diffuse texture -- drawn untextured on the white stand-in"
-                                       : "diffuse has no GL id -- drawn on the white stand-in");
-                    }
-                    // #220: a bindless handle must only ever name a texture ALLOY owns. A handle on an
-                    // engine texture is a handle on an object the engine may delete or re-upload under us,
-                    // which is exactly the corruption this fixes -- so a part whose copy was refused (a
-                    // format we will not take) is NOT DRAWN rather than drawn through a handle we cannot
-                    // vouch for (#285: there is no engine walk behind it; `not-owned` is the count).
-                    // Bind-path batches are unaffected: they rebind the engine id every frame.
-                    if (lit && _bindless && OwnedTextures.Armed)
-                    {
-                        // Two DIFFERENT faults behind one guard, and they have different fixes: a texture
-                        // Alloy never adopted (it never reached the upload funnel -- a GPU-composited PLT, a
-                        // cube, a movie frame) versus one it owns but could not mint a resident handle for.
-                        bool owned = OwnedTextures.IsOwned(tid);
-                        if (!owned || Handle(tid, main) == 0)
-                        {
-                            if (!main && owned) { c = snap; return Deferred; }   // the main thread may still mint it
-                            Inc(ref Counters._skipTex); _gate[i].RecEnroll = 0; SetCastOk(i, false, ref c);
-                            if (owned) Inc(ref Counters._skipTexNoHandle); else Inc(ref Counters._skipTexNotOwned);
-                            TexSkipDiag(owned, tid, aur);
-                            W(i, owned ? "skipped: diffuse has no bindless handle"
-                                       : "skipped: diffuse is not an Alloy-owned texture");
-                            return Skipped;
-                        }
-                    }
-
-                    // #120: the same re-fetch for whichever of the PBR slots this material declared. A slot
-                    // that declared a map but resolves to nothing this frame drops out of the mask rather
-                    // than leaving the shader sampling an empty unit.
-                    slots = 0;
-                    // #294: a map needs COORDINATES to be a map. On a VDO with no UV stream every sampler
-                    // resolves to the one texel at the generic constant (0,0) -- the same value for every
-                    // fragment of the mesh -- so the normal, specular, roughness, height and AO slots stop
-                    // carrying material detail and start carrying whichever pixel happens to sit in the
-                    // corner of the sheet. That is not the .mtr's intent, it is an artifact of sampling a 2D
-                    // map with nothing to sample it by, and it is load-bearing: CxSynthPbr takes a declared
-                    // roughness WHOLE, so one dark corner texel makes a frosted crystal a mirror.
-                    // The env flag survives -- it is keyed on the normal and the reflection vector, not on
-                    // uv -- and so does the diffuse, which the engine reads at the same constant for the same
-                    // reason (it is where envLevel comes from). What is dropped is only what cannot mean
-                    // anything, so the synthesis falls back to its generated floor exactly as it does for
-                    // content that ships no maps at all.
-                    bool mapsMeanNothing = !_vUv[_oVao[i]].Present;
-                    bool slotQueued = false;
-                    for (int s = 0; s < MapSlots; s++)
-                    {
-                        slotTid[s] = 0;
-                        _recAurS[i * MapSlots + s] = IntPtr.Zero;
-                        if (lit && !mapsMeanNothing && (_oSlots[i] & SlotBit(s)) != 0)
-                        {
-                            var sa = mat.MapTexture(s);
-                            int t;
-                            int bbs = OwnedTextures.Borrowed;
-                            if (main) t = sa.OwnedTid();
-                            else if (!OwnedTextures.TryDraw(AurTex.Tid(sa.Ptr), out t)) { c = snap; return Deferred; }
-                            if (main && OwnedTextures.Borrowed != bbs) OwnedTextures.NoteBorrowedName(sa.Ptr, t);
-                            // ...and the same rule per slot, but a slot drops out of the mask instead of
-                            // taking the part with it -- an unowned normal map costs that one map, not the
-                            // whole draw.
-                            if (t != 0 && _bindless && OwnedTextures.Armed
-                                && (!OwnedTextures.IsOwned(t) || Handle(t, main) == 0))
-                            { if (!main && OwnedTextures.IsOwned(t)) { c = snap; return Deferred; } t = 0; }
-                            _recAurS[i * MapSlots + s] = sa.Ptr;   // stamped only past the gates: a deferred slot must re-resolve
-                            if (t != 0) { slotTid[s] = t; slots |= SlotBit(s); }
-                            else if (TexStream.On && AurTex.Tid(sa.Ptr) == 0) slotQueued = true;   // CX-52 step 5: no id yet, re-asked on the colour cadence
-                        }
-                    }
-                    if (lit) slots |= _oSlots[i] & EnvSlot;   // #121: no live texture to re-fetch, just the flag
-                    // #146's zero-content test path, see _aoTest. Stands in for a texture11 nothing ships yet.
-                    if (lit && _aoTest && !mapsMeanNothing) { slotTid[AoSlot] = tid; slots |= AoBit; }
-                    // #331: registered on a pointer change only -- a cycle STEP re-resolves every record on
-                    // the sheet, and re-asking the engine for a controller already on file would cost that
-                    if (aur.Ptr != _recAur[i] || _recCtl[i] == IntPtr.Zero) _recCtl[i] = CycleTextures.Register(aur.Ptr);
-                    // A record holding the white stand-in stays STALE: the engine writes a late GL name
-                    // INSIDE the CAurTexture (basic+0x6c) without touching the pointer this cadence compares,
-                    // so a cached stand-in would never re-resolve and the part would stay white for the life
-                    // of the record. The cost is one re-resolve per frame per affected part, which is the
-                    // null-tex count.
-                    // CX-52 step 5: a record that drew the white stand-in now resolves a real diffuse -- the part was
-                    // classed against the unbuilt texture (GetIsOpaque answers "not opaque" for one), so re-enrol it.
-                    if (!nullTex && _gate[i].TexStale && TexStream.On && _recTid[i] != 0 && _recTid[i] == OwnedTextures.WhiteName)
-                    { TexStream.Landed(_oEntry[i]); _recArrive[i] = TexStream.Clock; }
-                    _recAur[i] = aur.Ptr; _recTid[i] = tid; _recSlotMask[i] = slots; _gate[i].TexStale = nullTex; _recSlotQueued[i] = slotQueued;
-                    for (int s = 0; s < MapSlots; s++) _recTidS[i * MapSlots + s] = slotTid[s];
-                }
-            }
-            // Did the normal map declared by the .mtr actually reach the shader? The two numbers apart say
-            // whether an area has no normal-mapped content at all or has it and the re-fetch above dropped it.
-            if (lit && (_oSlots[i] & SlotBit(0)) != 0) { c.NrmDeclared++; if (slotTid[0] != 0) c.NrmBound++; }
-
-            int src = i;
-            // #322: index range read live from the VDO item tables only when the slot's cache stamp fell
-            // (UnstampRecord fires on every re-tenant and drifted keep -- the only edges that re-point
-            // _oVdo/_oItem -- and on every transient range failure; Repack revokes before the tables move),
-            // then served from the slot cache.
-            int idxCount;
-            if (_cGen[i] == _recEpoch) idxCount = _cIdx[i];
-            else
-            {
-                var vdo = new VdoRef(_oVdo[src]);
-                long elem = vdo.ElemItems;
-                long vert = vdo.VertItems;
-                int item = _oItem[src];
-                if (elem == 0 || vert == 0 || item < 0
-                    || item >= vdo.ElemCount || item >= vdo.VertCount)
-                { Inc(ref Counters._skipRange); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: item out of range"); return Skipped; }
-                idxCount = *(int*)(elem + item * 8 + 4);
-                if (idxCount <= 0) { Inc(ref Counters._skipRange); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: empty index range"); return Skipped; }
-                _cIdx[i] = idxCount;
-                _cOff[i] = (nint)((long)(uint)*(int*)(elem + item * 8) * 2);
-                _cBase[i] = *(int*)(vert + item * 8);
-                _cGen[i] = _recEpoch;
-            }
-
-            if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
-            int v = _oVao[src];
-            if (!main && !VaoReady(v)) { c = snap; return Deferred; }
-            if (!EnsureVao(v)) { Inc(ref Counters._skipVao); UnstampRecord(i); SetCastOk(i, false, ref c); W(i, "skipped: no VAO"); return Skipped; }
-            int feat = _oBone[i] >= 0 ? (int)ShaderFeature.Skin : (int)_oFeat[i * 4];
-            bool merge = _bindless && lit && cls != (int)AlloyClass.Water;
-
-            // the per-draw record. The model matrix drives BOTH the world position the light loop shades at
-            // and the world normal (mat3 of the same GLSL-visible matrix is the correct normal transform here
-            // -- the raw bytes already read as the transpose), and the shaders reach uVP * model for clip.
-            // #242: every field below is COMPARED before it is written, and the record is only re-sent to the
-            // GPU if something actually moved. Which fields can move at all is ADR 0017's split table; the
-            // compares here are the enforcement, and the self-check pins them.
-            float* r = data + (long)i * DrawFloats;
-            if (!verified)
-            {
-                if (samp) tChase = FrameZones.Now;
-                bool rec = texDirty;
-                if (stale) { WriteStable(r, i, lit); rec = true; }
-                if (lit && r[ArriveFloat] != _recArrive[i]) { r[ArriveFloat] = _recArrive[i]; rec = true; }
-                var pf = default(RecordFrameState);
-                // rot.z carries #124's dissolve flag and rot.w #126's per-draw alpha multiplier (the part's
-                // own alpha, times the tile fade factor where one applies): the record already had two dead
-                // floats here, so both folds cost no stride growth and leave RecordSafe's vec4 count alone.
-                pf.Dissolve = dissolve; pf.Alpha = _passAlpha[k];
-                pf.HasModel = _oMx[i];
-                bool newTenant = _gate[i].RecEnroll != _gate[i].EnrollGen;
-                // #330: read off the engine only if it can have moved -- see ChaseModel.
-                if (pf.HasModel) pf.Model = ChaseModel(i, r, stale, newTenant, ref c);
-                pf.Lit = lit;
-                if (lit)
-                {
-                    if (colour)
-                    {
-                        var mdlRef = new MdlRef(mdl);
-                        float* amb = mdlRef.Ambient;
-                        float* dif = mdlRef.Diffuse;
-                        float* emi = part.SelfIllum;
-                        // #128: PartTriMesh::Mat @0x450960's remaining two instance terms, live. Lit-only
-                        // because the decompile guards its three SetMaterialv calls behind IsEnabled(5) --
-                        // an unlit part gets a flat constant colour and the instance's alpha, which is all
-                        // the record above carries.
-                        var cm = AlloyCensus.GobDiffuseMul(tri);
-                        var ea = AlloyCensus.GobEmissiveAdd(tri);
-                        pf.AmbR = amb[0]; pf.AmbG = amb[1]; pf.AmbB = amb[2];
-                        pf.DifR = dif[0] * cm.X; pf.DifG = dif[1] * cm.Y; pf.DifB = dif[2] * cm.Z;
-                        pf.EmiR = emi[0] + ea.X; pf.EmiG = emi[1] + ea.Y; pf.EmiB = emi[2] + ea.Z;
-                    }
-                    else
-                    {   // #322: not a colour frame -- reload the record's own terms so the compare sees no
-                        // change. Sound because !colour implies !stale: the record was built this epoch.
-                        pf.AmbR = r[20]; pf.AmbG = r[21]; pf.AmbB = r[22];
-                        pf.DifR = r[24]; pf.DifG = r[25]; pf.DifB = r[26];
-                        pf.EmiR = r[28]; pf.EmiG = r[29]; pf.EmiB = r[30];
-                    }
-                    pf.Slots = slots;
-                }
-                // #123: outside the lit branch -- the FULLBRIGHT vertex stage switches on it too, so an unlit
-                // wind part still sways. Only the fragment-side features (the roof anchor discard, the
-                // flow-map slide) are lit-only, and neither of those parts is ever unlit.
-                // #137: feat.y is this draw's bone base -- the MATRIX index of its first bone in the block,
-                // so the stage indexes it with a single add. It REPLACES the .mtr feature, which is why a
-                // posed skinmesh is the per-frame arm rather than a write after the .mtr copy.
-                int fo = i * 4;
-                pf.FeatX = _oBone[i] >= 0 ? (int)ShaderFeature.Skin : _oFeat[fo];
-                pf.FeatY = _oBone[i] >= 0 ? _oBone[i] * BoneCount : _oFeat[fo + 1];
-                // #302: the shadow's mover signal wants GEOMETRY motion, not "the record was re-sent" --
-                // tile-fade alpha and the day-night ambient drift rewrite hundreds of records a frame, and
-                // charging those as movers re-baked every cube every frame (the predicate skipped nothing).
-                // So the model is compared HERE, before the write consumes the difference; a change of
-                // tenant is the other true mover (the new part APPEARED in the views it stands in).
-                if (samp) FrameZones.AddSampled(FrameZones.Zone.Chase, tChase, ChaseEvery);
-                // the record moves at a tenth of a millimetre (it is what the shader draws); a CASTER moves at a
-                // centimetre -- a 256 px cube over a 20 m light has 8 cm texels, and the harbour barrels bobbing
-                // a few millimetres a frame held 13 moving-caster pages and 40 cube faces a frame with the camera
-                // still (run 15). Creatures are bone movers and never pass through here.
-                bool casterMoved = pf.HasModel && Moved(in *(Matrix4x4*)r, in pf.Model, CasterStep);
-                // #392: prev rolls once per FRAME -- a second build of this record in the same frame (a
-                // reflection subframe) must not catch prev up to the model and erase the mover's vectors.
-                rec |= WritePerFrame(r, in pf, roll: _gate[i].RecFrame != _frameSeq, fresh: stale || newTenant);
-                // #153: this record's textures as resident handles -- diffuse at 0, material slots 1..7 in
-                // the shader's macro order (slotTid[k] = material texture k+1). Only for lit records; unlit
-                // parts draw on the bind path and never read the block. Re-minted only when the borrowed
-                // CAurTexture* moved: an unchanged pointer is an unchanged copy is an unchanged handle.
-                if (merge && texDirty)
-                {
-                    fixed (ulong* th = _dTexH)
-                    {
-                        ulong* hh = th + (long)i * 8;
-                        // Both already minted and non-zero: the gate above refuses the part (and drops the
-                        // slot) on a zero handle, so nothing reaches here that would sample handle 0 --
-                        // which is a BLACK texture, not a missing one, and the reason that gate exists.
-                        hh[0] = Handle(tid, main);
-                        for (int t = 0; t < MapSlots; t++) hh[1 + t] = Handle(slotTid[t], main);
-                        _texHDirty = true;
-                    }
-                }
-                // #243: the cull's bounds ride the same edge as the record -- a part that did not move did
-                // not move its sphere either. Written before the dirty mark so a caller reading the two
-                // together never sees a fresh record beside last frame's bounds.
-                if (rec) WriteSphere(i, in pf, tri, feat);
-                if (rec) { WriteCasterSphere(i, in pf); NoteCasterTouched(i); }
-                if (rec) MarkRecordDirty(i, ref c); else c.RecStable++;
-                // Membership alone is not enough to freeze on: the record has to have STOPPED changing too,
-                // which is what the settle run measures. Capped so a slot that has been still for an hour
-                // cannot overflow the counter.
-                _stSettle[i] = !rec && member ? Math.Min(_stSettle[i] + 1, SettleCeiling) : 0;
-                _gate[i].RecGen = _recEpoch; _gate[i].RecFrame = _frameSeq; _gate[i].RecEnroll = _gate[i].EnrollGen;
-                // #302: a LEVEL the shadow pass compares against the gate row's RecFrame, never an edge it consumes.
-                if (casterMoved || newTenant) _recMovedAt[i] = _frameSeq;
-                // #328: ...and the admission level beside it, on the same edge: a record landed for this
-                // tenant, so the slot casts unless its tile is fading or its class cannot write depth.
-                // #363: an unskinned blended part casts too, at its record alpha through the masked stage's
-                // dither; a posed one has no mask stage and would cast its bind pose solid.
-                SetCastOk(i, !_oFading[i] && (_oCls[i] <= (byte)AlloyClass.Cutout
-                                              || (_oCls[i] == (byte)AlloyClass.Blended && _oBone[i] < 0)), ref c);
-            }
-            _pkDis[k] = dis ? (byte)1 : (byte)0;
-            WriteBatchRow(k, i, cls, lit, dis, tid, slots, idxCount, feat);
-            return Staged;
-        }
-    }
+        => StageDbPart(k, _pass[k], data, lightingOn, ref c, main);
 
     /// <summary>#125: stage the sky's draws behind the batch records, in the engine's own order -- current
     /// sky, then the one fading in over it, then the cross-fade gob. One record per part, carrying the model
@@ -1617,98 +1156,7 @@ public sealed unsafe partial class AlloyRenderer
     private static void StageSky()
     {
         _skyN = 0; _skyFirst = _drawN;
-        IntPtr scene = SkyBox.Scene;
-        // #91's rule again: only the enrolled world Scene's sky, never a GUI 3D panel's.
-        if (scene == IntPtr.Zero || scene != _enrollScene) return;
-        Span<SkyBox.Role> roles = stackalloc SkyBox.Role[3];
-        int nr = SkyBox.Roles(scene, roles);
-        SkyBox.NoteRoles(roles, nr);
-        fixed (float* data = _dData)
-        fixed (float* t3 = _skTint)
-        fixed (int* texAll = _skTex)
-        for (int r = 0; r < nr; r++)
-        {
-            int staged = 0;
-            for (int i = 0; i < SkyBox.Count; i++)
-            {
-                ref SkyBox.Part p = ref SkyBox.At(i);
-                if (p.Gob != roles[r].Gob) continue;
-                if (p.Vao < 0 || !SkyBox.Drawable(i) || _drawN >= MaxOwned || _skyN >= MaxSkyDraws)
-                { staged = -1; break; }
-                var mat = new MaterialRef(p.Mat);
-                // CX-88: the material's own fragment stage, compiled on first sight and cached for the
-                // module. 0 back means it cannot be built (no stage named, or the compile refused -- logged
-                // there), which refuses the sky rather than drawing a dome whose whole look that stage was.
-                uint prog = p.Ported ? 0u : SkyStage.Program(mat.Shared.FsName);
-                if (!p.Ported && prog == 0) { staged = -1; break; }
-                // borrowed CAurTexture*, re-fetched per frame like every other Alloy draw. A hosted stage
-                // takes the ENGINE's own texture objects: an owned copy shares the texels but not the
-                // filter/anisotropy state the engine sets on its own name, and the dome's polar fan is the
-                // most anisotropic footprint in the frame (#136, live -- it showed as zenith spokes).
-                int tid = prog != 0 ? mat.Texture(0).ResolveTid() : mat.Texture(0).OwnedTid();
-                var vdo = new VdoRef(p.Vdo);
-                long elem = vdo.ElemItems;
-                long vert = vdo.VertItems;
-                if (tid == 0 || elem == 0 || vert == 0 || p.Item < 0
-                    || p.Item >= vdo.ElemCount || p.Item >= vdo.VertCount)
-                { staged = -1; break; }
-                int idxCount = *(int*)(elem + p.Item * 8 + 4);
-                if (idxCount <= 0 || !EnsureVao(p.Vao)) { staged = -1; break; }
-
-                int n = _drawN;
-                _dCount[n] = idxCount;
-                _dOff[n] = (nint)((long)(uint)*(int*)(elem + p.Item * 8) * 2);
-                _dBase[n] = *(int*)(vert + p.Item * 8);
-                // #242: the sky's records live in the reserved block above the ownership slots and are
-                // restaged every pass -- a composed matrix stack is per pass by construction, so there is
-                // nothing here for a persistence scheme to save.
-                int srec = _recOwnCap + _skyN;
-                _dSlot[n] = srec;
-                MarkRecordDirty(srec);
-                float* rec = data + (long)srec * DrawFloats;
-                *(Matrix4x4*)rec = p.Model;
-                // identity texture rotation, no dissolve, the role's alpha; no feature, and the lit block is
-                // never read because the sky takes an unlit stage (the engine draws it Disable(5)).
-                // #222: Mat()'s two branches, in full. A fog-tinted gob is drawn in the scene's fog
-                // colour at alpha 1.0 -- the alpha override is part of the same branch, not a separate
-                // decision, and dropping it would tint the fade and then fade the tint away again.
-                // #341: the band's colour is the fully-fogged colour the terrain under it converges to,
-                // which is the raw fog colour only while /fog sky is 0. The dome parts feed the fog its sky
-                // colour on the way past -- the band itself must not, or the fog would read its own output.
-                bool tinted = SkyBox.FogTinted(p.Gob);
-                float* tint = t3 + _skyN * 3;
-                if (tinted) SceneFog.SkyfadeTint(tint);
-                else
-                {
-                    tint[0] = 1f; tint[1] = 1f; tint[2] = 1f;
-                    // ...and only a stock-shaded dome's texture is a statement about the sky's colour: a
-                    // procedural stage's diffuse is a night moon mask, not the sky (#136's black-sky case).
-                    if (prog == 0) SceneFog.NoteSky((uint)tid, roles[r].Alpha);
-                }
-                rec[16] = 1f; rec[17] = 0f; rec[18] = 0f;
-                rec[19] = tinted ? 1f : roles[r].Alpha;
-                rec[40] = 0f; rec[41] = 0f; rec[42] = 0f; rec[43] = 0f;
-                int* tex = texAll + _skyN * MaxEngTex;
-                tex[0] = tid;
-                // Every unit the stage could declare, 0 included: an unbound unit samples black under the
-                // engine, never a neighbour's texture.
-                for (int k = 1; k < MaxEngTex; k++)
-                {
-                    var t = mat.Texture(k);
-                    tex[k] = prog != 0 && !t.IsNull ? t.ResolveTid() : 0;
-                }
-                _skVao[_skyN] = p.Vao; _skMode[_skyN] = _primTable[p.Prim];
-                _skSrc[_skyN] = roles[r].Src; _skDst[_skyN] = roles[r].Dst;
-                _skAlpha[_skyN] = rec[19]; _skProg[_skyN] = prog;
-                _skyN++; _drawN = n + 1; staged++;
-            }
-            // All-owned-or-none, per #107 and exactly as the blended class is: a role that cannot stage
-            // every one of its parts -- or has enrolled none of them yet -- would leave a permanent hole in
-            // the sky. Refuse the whole sky for the frame instead; since CX-87 nothing else draws it, so that
-            // frame has no dome at all rather than a partial one.
-            if (staged <= 0) { _drawN = _skyFirst; _skyN = 0; SceneFog.EndSky(); return; }
-        }
-        SceneFog.EndSky();
+        StageDbSky(_dbPassScene);
     }
 
     /// <summary>The skybox, after the opaque set and before the blended one (ADR 0011 step 3, #125).
@@ -1755,7 +1203,7 @@ public sealed unsafe partial class AlloyRenderer
         // in over there is the state it is drawn correctly in here.
         Gl.Enable(Gl.CULL_FACE); Gl.CullFace(Gl.BACK);
         Gl.Enable(Gl.BLEND); _blendOn = true;
-        int boundVao = -1;
+        uint boundVaoName = 0;
         uint boundProg = 0, boundSrc = 0xFFFFFFFF, boundDst = 0xFFFFFFFF;
         int* boundTex = stackalloc int[MaxEngTex];
         for (int k = 0; k < MaxEngTex; k++) boundTex[k] = -1;
@@ -1778,7 +1226,9 @@ public sealed unsafe partial class AlloyRenderer
                 // sampler units are per PROGRAM state but the bindings are the CONTEXT's, so only the
                 // program-side cache resets here; the texture cache below is still valid.
             }
-            if (_skVao[i] != boundVao) { Gl.BindVertexArray(SkyVao(_skVao[i])); boundVao = _skVao[i]; }
+            // The draw carries the arena's VAO name.
+            uint vaoName = _skVaoName[i];
+            if (vaoName != boundVaoName) { Gl.BindVertexArray(vaoName); boundVaoName = vaoName; }
             int* tex = texAll + i * MaxEngTex;
             // Unit 0 for either stage; the rest only where a hosted stage could declare them. Units 1 and 2
             // are the shadow ARRAYS (TextureSlots.SunShadow/LocalShadow) and 3 is the material map block, so a
@@ -1820,4 +1270,28 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Uniform1f(Programs._locCut, -1f);
         Gl.Uniform1f(Programs._locSkyFog, SceneFog.SkyBand);
     }
+
+    /// <summary>CX-120: pick this DB slot's charted range, or offer its mesh to the charter if it has none.
+    /// A chart is the same arena section in the same format with the chart lane filled, so picking it is
+    /// three integers -- and <see cref="LightmapBake.Enrol"/> on the back of it is the whole of baked
+    /// lighting in DB mode: nothing else mints a rect.
+    /// <para>Main thread (the batch build's). Offers are budgeted per frame because each one takes the arena
+    /// lock and allocates the job's arrays, and an area's whole tile set would otherwise go in one pass.</para></summary>
+    private static void DbChart(int i, int lvl, ref nint idxOff, ref int baseVertex, ref int idxCount)
+    {
+        int recipe = _oDbRecipe[i];
+        if (recipe < 0) return;
+        int range = Db.DrawRecipe.Range(recipe);
+        if (range < 0) return;
+        if (MeshChart.Range(ref _oChart[i], MeshChart.DbSlot, range, lvl,
+                            out int cb, out nint co, out int cc, out _) && cc > 0)
+        {
+            idxOff = co; baseVertex = cb; idxCount = cc;
+            MeshChart.Drew(cc);
+            LightmapBake.Enrol(i, MeshChart.DbSlot, range);
+            return;
+        }
+        if (_dbOfferBudget > 0 && MeshChart.HasRoom() && MeshChart.OfferDb(range)) _dbOfferBudget--;
+    }
+
 }

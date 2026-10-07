@@ -36,6 +36,9 @@ internal static unsafe class GuiCapture
         public int Slot, Count, BaseVertex, Stride, Tex;
         public uint Prim, Format, Src, Dst;
         public long Offset;
+        /// <summary>CX-120: a VAO the caller already owns (the CX-114 mesh arena's), bound as-is. 0 = this draw
+        /// takes its VAO from <see cref="Slot"/> or <see cref="Format"/> as before, so mode 0 is untouched.</summary>
+        public uint RawVao;
     }
 
     /// <summary>Floats per draw record, which is <see cref="GuiPass"/>'s SSBO stride (16 vec4): mvp, mv, the texture
@@ -43,6 +46,9 @@ internal static unsafe class GuiCapture
     internal const int RecFloats = 64;
     /// <summary>Flag bits in a record's misc word.</summary>
     internal const int FlagTex = 1, FlagVColor = 2, FlagLit = 4, FlagAlphaTest = 8, FlagSkin = 16;
+    /// <summary>This draw's texture is a PLT pair texture, so the fragment stage resolves it through the
+    /// master palette with the ten rows carried in the record (floats 54, 55 and 56..63).</summary>
+    internal const int FlagPlt = 32;
     /// <summary>ponytail: fixed staging. A busy screen is a few hundred draws; past any ceiling the rest is NOT
     /// DRAWN and said once, loudly. Grow on the log line, never silently.</summary>
     internal const int MaxDraws = 16384, MaxLayers = 1024, MaxSkins = 64;
@@ -67,9 +73,6 @@ internal static unsafe class GuiCapture
 
     /// <summary>A GUI scene's draws are being captured: the funnels record instead of drawing.</summary>
     internal static bool Open;
-    /// <summary>A VDO's VAO could not be harvested this frame. In a module the world's enrollment re-arms the VAO drip;
-    /// outside one <see cref="GuiPass"/> does, off this flag.</summary>
-    internal static bool SlotMissed;
 
     private static ExtenderLog? _log;
     private static SceneRenderOnlyGobsFn _orig;
@@ -163,6 +166,53 @@ internal static unsafe class GuiCapture
         ref Layer cur = ref Layers[LayerN - 1];
         cur.Count = DrawN - cur.First;
         _layers++;
+        // CX-120: the engine's own answer to "where does this panel draw, and how much of it is there", for
+        // comparison against the DB path's. Log only -- mode 0's pixels are untouched by it -- and keyed on the
+        // scene NAME so a panel that opens mid-session (the inventory) is in the dump rather than crowded out
+        // by the HUD. This is MODE 0's half of the comparison (in DB mode the engine never calls
+        // RenderOnlyGobs), so it cannot be gated on the mode: it is the hot GL hook's own path and allocates
+        // nothing until a line is actually printed (64 of them, review #2).
+        if (_dumped < 64 && _dumpCalls < 40000)
+        {
+            _dumpCalls++;
+            // FIRST sight and then once more at the DumpAtSighting'th: the first answers "does the engine
+            // render this scene at all", which is the question a shape CX draws and vanilla does not asks, and
+            // the second is comparable with DbGui's settled line.
+            int seen = NoteSighting(name);
+            if (seen == 1 || seen == DumpAtSighting)
+            {
+                _dumped++;
+                _log?.Always($"GuiCapture: [scene {_dumped}] \"{Marshal.PtrToStringUTF8((IntPtr)name)}\" "
+                    + $"rect={cur.X},{cur.Y} {cur.W}x{cur.H} depth={cur.Near:F3}..{cur.Far:F3} clear={cur.Clear} "
+                    + $"gobs={n} draws={cur.Count}");
+            }
+        }
+    }
+
+    /// <summary>Sightings of a scene before its line, matching <c>DbGui</c>'s: the two are only comparable if
+    /// they describe the same moment in a panel's life.</summary>
+    private const int DumpAtSighting = 60;
+    private static int _dumped, _dumpCalls;
+    /// <summary>Scene names seen, as a 64-bit hash each, with the sighting count beside it. A hash and a
+    /// linear scan rather than a <c>Dictionary&lt;string, int&gt;</c> because this runs in the capture hook: a
+    /// managed string per call is an allocation per GUI scene per frame. A collision would merge two panels'
+    /// counts in a diagnostic, which is the whole cost of being wrong here.</summary>
+    private static readonly ulong[] _dumpKey = new ulong[64];
+    private static readonly int[] _dumpCount = new int[64];
+    private static int _dumpKeys;
+
+    /// <summary>Count this sighting of scene <paramref name="name"/> and return how many there have now been;
+    /// 0 once the table is full (a name past the 64th is not tracked).</summary>
+    private static int NoteSighting(byte* name)
+    {
+        ulong h = 14695981039346656037;   // not-an-offset: the FNV-1a 64 offset basis
+        for (int i = 0; name[i] != 0; i++) { h ^= name[i]; h *= 1099511628211; }
+        for (int i = 0; i < _dumpKeys; i++)
+            if (_dumpKey[i] == h) return ++_dumpCount[i];
+        if (_dumpKeys == _dumpKey.Length) return 0;
+        _dumpKey[_dumpKeys] = h;
+        _dumpCount[_dumpKeys++] = 1;
+        return 1;
     }
 
     /// <summary>The engine's clear latch (<c>DAT_019aa3a4</c>): set by the first GUI view's clear, dropped by a non-GUI
@@ -213,35 +263,10 @@ internal static unsafe class GuiCapture
         return true;
     }
 
+    /// <summary>An engine VDO draw in a GUI scene. The scene database creates no engine geometry, so one reaching
+    /// here is CX's own gap, counted and named rather than drawn from a cache that no longer exists.</summary>
     private static void CaptureVdo(IntPtr vdo, uint item, uint prim, uint size, uint offset)
-    {
-        var v = new VdoRef(vdo);
-        int mode = v.Mode;
-        if (mode != 1 && mode != 2) { Refuse(ref _arrays, "a non-indexed VDO"); return; }
-        if (item >= (uint)v.VertCount || (mode == 1 && item >= (uint)v.ElemCount)) { Refuse(ref _arrays, "an item past its VDO's tables"); return; }
-        int baseVertex = *(int*)(v.VertItems + item * 8);
-        long off; int count;
-        if (mode == 1)
-        {
-            off = (offset == NoItem ? *(int*)(v.ElemItems + item * 8) : offset) * 2L;
-            count = size == NoItem ? *(int*)(v.ElemItems + item * 8 + 4) : (int)size;
-        }
-        else
-        {
-            off = offset == NoItem ? 0 : offset * 2L;
-            count = size == NoItem ? 0 : (int)size;
-        }
-        if (count <= 0) return;
-        int slot = Slot(vdo);
-        if (slot < 0) { SlotMissed = true; Refuse(ref _noSlot, "a VDO with no harvestable VAO"); return; }
-        if (!Room()) return;
-        ref Draw d = ref Draws[DrawN];
-        d.Stream = false; d.Indexed = true; d.Slot = slot; d.Prim = _primTable[prim];
-        d.Count = count; d.Offset = off; d.BaseVertex = baseVertex; d.Stride = 0; d.Format = 0;
-        int flags = Snapshot(ref d);
-        if (AlloyRenderer.GuiSlotSkinned(slot)) flags = Skin(flags);
-        Seal(flags);
-    }
+        => Refuse(ref _noSlot, "an engine VDO draw (the scene database makes no engine geometry)");
 
     /// <summary>A <c>GLRender::RenderVertexStreamData</c> call inside a GUI scene -- text, particles, anything built on
     /// the CPU. The bytes are copied out of the pool's host shadow NOW: the stream is rewritten by the next draw that
@@ -310,6 +335,7 @@ internal static unsafe class GuiCapture
             n = hi - lo + 1;
             if (IdxN + count > IdxMax) { Overflow("indices"); return false; }
         }
+        d.RawVao = 0;   // Draws[] is reused across frames: a stale arena VAO here would rebind the wrong buffers
         int at = (VtxN + stride - 1) / stride * stride;
         long bytes = (long)n * stride;
         if (at + bytes > VtxBytes) { Overflow("vertex bytes"); return false; }
@@ -337,6 +363,119 @@ internal static unsafe class GuiCapture
         return true;
     }
 
+    /// <summary>CX-120: the longest scene name <see cref="DepthOf"/>'s table can need, plus its terminator.
+    /// The names it tests are <c>sceneGUI_Viewport_Compass</c> and friends; 64 is past every one.</summary>
+    internal const int MaxSceneName = 64;
+
+    /// <summary>CX-120: open a layer for a GUI scene drawn out of the scene database. The engine's own
+    /// <c>RenderOnlyGobs</c> layer, without the engine: the depth range and clear are the caller's -- it asked
+    /// <see cref="DepthOf"/>, which is the one implementation of the name table, rather than deriving the
+    /// convention a second time.
+    /// <para>The RECT is the caller's too, and that is the whole difference from mode 0. There,
+    /// <c>Camera::RenderScene</c> had just written this view's rect into <c>GLRender::m_viewport</c> and the
+    /// capture read it back; in DB mode no engine camera runs, so that global holds whatever the last engine
+    /// draw left -- the full screen at best, a zero rect at worst, and a zero-width layer is skipped outright
+    /// by <see cref="GuiPass"/>. The view's own rect comes off the snapshot instead.</para></summary>
+    internal static bool BeginDbLayer(int x, int y, int w, int h, float near, float far, bool clear)
+    {
+        if (LayerN >= MaxLayers) { Overflow("layers"); return false; }
+        ref Layer l = ref Layers[LayerN++];
+        l.X = l.SX = x; l.Y = l.SY = y; l.W = l.SW = w; l.H = l.SH = h;
+        l.First = DrawN; l.Count = 0; l.Near = near; l.Far = far; l.Clear = clear;
+        return true;
+    }
+
+    /// <summary>CX-120: one database part's geometry, as <see cref="DbPart"/> takes it. A struct rather than
+    /// fifteen arguments, and every term is a column or an interned recipe read -- nothing here is harvested
+    /// from a <c>GLRender</c> cache, because in DB mode no engine draw ever ran to fill one.</summary>
+    internal struct DbDraw
+    {
+        /// <summary>The mesh arena's VAO for this range's format, and the three integers that address the run.</summary>
+        public uint Vao, Prim, Src, Dst;
+        public int Count, BaseVertex, Tex;
+        /// <summary>The DB bone slot whose 64-matrix palette poses this draw; -1 = rigid.</summary>
+        public int Bones;
+        public long Offset;
+        public Matrix4x4 Mvp, Mv;
+        /// <summary>The record's <c>globalColor</c> lane: the object's tint, with the part's alpha folded in.</summary>
+        public Vector4 Colour, Ambient, Diffuse, Emissive;
+        public bool Blend, DepthTest, DepthWrite, Cull, AlphaTest, Lit;
+        /// <summary>The object's master-palette row per PLT layer, or null when the texture is not a PLT.
+        /// <c>Gob::ReplaceTexture</c> carries exactly these to <c>Material::ReplaceTexturePLT</c>.</summary>
+        public ushort[]? PltRows;
+        /// <summary>Where this draw's ten rows start in <see cref="PltRows"/>.</summary>
+        public int PltAt;
+    }
+
+    /// <summary>CX-120: one database part drawn into the open GUI layer -- a GUI control's model geometry, which
+    /// in DB mode has no engine funnel to be captured at. The record is the same 16 vec4 the engine's own GUI
+    /// draws fill, so <see cref="GuiPass"/>'s program, SSBO and per-rect viewport are unchanged; what differs is
+    /// where every term came from.</summary>
+    internal static void DbPart(in DbDraw p)
+    {
+        if (p.Count <= 0 || p.Vao == 0 || LayerN == 0 || !Room()) return;
+        ref Draw d = ref Draws[DrawN];
+        d.Stream = false; d.Indexed = true; d.Slot = 0; d.Stride = 0; d.Format = 0;
+        d.RawVao = p.Vao; d.Prim = p.Prim; d.Count = p.Count; d.Offset = p.Offset; d.BaseVertex = p.BaseVertex;
+        d.Blend = p.Blend; d.Src = p.Src; d.Dst = p.Dst;
+        d.DepthTest = p.DepthTest; d.DepthWrite = p.DepthWrite; d.Cull = p.Cull; d.Tex = p.Tex;
+        fixed (float* r = &Records[DrawN * RecFloats])
+        {
+            *(Matrix4x4*)r = p.Mvp;
+            *(Matrix4x4*)(r + 16) = p.Mv;
+            r[32] = 1f; r[33] = 0f; r[34] = 0f; r[35] = 1f;
+            *(Vector4*)(r + 36) = p.Colour;
+            *(Vector4*)(r + 40) = p.Lit ? p.Ambient : Vector4.Zero;
+            *(Vector4*)(r + 44) = p.Lit ? p.Diffuse : Vector4.Zero;
+            *(Vector4*)(r + 48) = p.Lit ? p.Emissive : Vector4.Zero;
+        }
+        int flags = (p.Tex != 0 ? FlagTex : 0) | (p.AlphaTest ? FlagAlphaTest : 0) | (p.Lit ? FlagLit : 0);
+        if (p.Tex != 0 && p.PltRows != null)
+        {
+            fixed (float* r = &Records[DrawN * RecFloats])
+            {
+                for (int k = 0; k < 8; k++) r[56 + k] = p.PltRows[p.PltAt + k];
+                r[54] = p.PltRows[p.PltAt + 8];
+                r[55] = p.PltRows[p.PltAt + 9];
+            }
+            flags |= FlagPlt;
+        }
+        if (p.Bones >= 0) flags = DbSkin(p.Bones, flags);
+        Seal(flags);
+        Layers[LayerN - 1].Count = DrawN - Layers[LayerN - 1].First;
+        _dbParts++;
+    }
+
+    /// <summary>CX-120: copy a DB part's solved palette beside the record, as <see cref="Skin"/> copies the
+    /// engine's. The source is the renderer's own DB bone stage -- the block the pose step wrote, not
+    /// <c>GLRender::m_bones</c>, which no DB frame ever fills.</summary>
+    private static int DbSkin(int slot, int flags)
+    {
+        if (SkinN >= MaxSkins) { Overflow("skinned draws"); return flags; }
+        float* src = AlloyRenderer.DbBoneStage(slot);
+        if (src == null) return flags;
+        fixed (float* dst = &Bones[SkinN * BoneFloats])
+            Buffer.MemoryCopy(src, dst, BoneFloats * sizeof(float), BoneFloats * sizeof(float));
+        Records[DrawN * RecFloats + 53] = SkinN * BoneFloats / 4;
+        SkinN++;
+        return flags | FlagSkin;
+    }
+
+    private static long _dbParts;
+
+    /// <summary>Database part draws issued this session, for the period line.</summary>
+    internal static long DbParts => _dbParts;
+
+    /// <summary>CX-120: close the layer <see cref="BeginDbLayer"/> opened. The LAST layer, not the one opened:
+    /// a custom-shader draw flushes mid-scene and reopens, exactly as it does for the engine's own traversal.</summary>
+    internal static void EndDbLayer()
+    {
+        if (LayerN == 0) return;
+        ref Layer cur = ref Layers[LayerN - 1];
+        cur.Count = DrawN - cur.First;
+        _layers++;
+    }
+
     /// <summary>CX-101: one CPU-built draw into the open raw layer -- unlit, blended with (<paramref name="src"/>,
     /// <paramref name="dst"/>), no depth, no cull, white global colour, identity texture matrix.</summary>
     internal static void Raw(byte* vtx, int stride, uint fmt, ushort* idx, int count, int first, uint glPrim,
@@ -356,6 +495,43 @@ internal static unsafe class GuiCapture
         Seal((tex != 0 ? FlagTex : 0) | ((fmt & GuiStream.FmtColor) != 0 ? FlagVColor : 0));
         Layers[LayerN - 1].Count = DrawN - Layers[LayerN - 1].First;
     }
+
+    /// <summary>CX-119: one run of CX-owned glyph quads into the open layer. The engine's own text goes through
+    /// <see cref="Snapshot"/> and so costs a MODEL and TEXTURE matrix-stack read per draw; this does not -- the
+    /// transform arrives as <paramref name="mvp"/>, composed from the text object's own place in
+    /// <see cref="Db.SceneDb"/>, and the colour as <paramref name="rgba"/>, which is the run's markup or
+    /// colour-table entry rather than <c>GLRender</c>'s cached <c>globalColor</c>. The vertices are the engine's
+    /// own stream shape (format 0x804, 20 bytes, non-indexed triangles), so the flush path is unchanged.
+    /// <para>The depth treatment, the primitive and the blend pair are the CALLER's: the traversal that owns the
+    /// scene knows them, this must not guess them from a cache it no longer reads, and <c>Alloy/Scene</c> names no
+    /// GL constant of its own (#206).</para></summary>
+    internal static void TextRun(float* verts, int count, uint glPrim, in Matrix4x4 mvp, int tex,
+                                 in Vector4 rgba, uint src, uint dst, bool depthTest, bool depthWrite)
+    {
+        if (count <= 0 || !Room() || LayerN == 0) return;
+        ref Draw d = ref Draws[DrawN];
+        if (!Stage(ref d, (byte*)verts, TextVertexStride, GuiStream.FmtPos | GuiStream.FmtUv0, glPrim,
+                   null, count, 0)) return;
+        d.Blend = true; d.Src = src; d.Dst = dst;
+        d.DepthTest = depthTest; d.DepthWrite = depthWrite; d.Cull = false; d.Tex = tex;
+        fixed (float* r = &Records[DrawN * RecFloats])
+        {
+            *(Matrix4x4*)r = mvp;
+            *(Matrix4x4*)(r + 16) = mvp;
+            r[32] = 1f; r[33] = 0f; r[34] = 0f; r[35] = 1f;
+            *(Vector4*)(r + 36) = rgba;
+        }
+        Seal(tex != 0 ? FlagTex : 0);
+        Layers[LayerN - 1].Count = DrawN - Layers[LayerN - 1].First;
+        _textRuns++;
+    }
+
+    /// <summary>The engine's text vertex: position + uv, 20 bytes (<c>CAurFont::TextOut</c>'s stream).</summary>
+    internal const int TextVertexStride = 20;
+    private static long _textRuns;
+
+    /// <summary>Glyph runs issued from CX-owned quad lists this session, for <c>/alloy</c>.</summary>
+    internal static long TextRuns => _textRuns;
 
     /// <summary>Everything the engine's program would have been fed, read off <c>GLRender</c>'s caches into the draw
     /// and its record: stage 0's texture, the blend/depth/cull caps, the global colour and (lit) the material, plus
@@ -427,16 +603,6 @@ internal static unsafe class GuiCapture
         return false;
     }
 
-    /// <summary>The VAO-cache slot for a VDO, remembered across frames and re-validated on every use: a world edge can
-    /// retire the slot and a recycled address changes its signature (<see cref="AlloyRenderer.SlotHolds"/>).</summary>
-    private static int Slot(IntPtr vdo)
-    {
-        if (_slots.TryGetValue(vdo, out int s) && AlloyRenderer.SlotHolds(s, vdo)) return s;
-        s = AlloyRenderer.VdoSlot(vdo);
-        if (s >= 0) _slots[vdo] = s; else _slots.Remove(vdo);
-        return s;
-    }
-
     private static void Refuse(ref long counter, string what)
     {
         counter++;
@@ -451,6 +617,19 @@ internal static unsafe class GuiCapture
             _log?.Always($"GuiCapture: a frame's GUI ran past the {what} staging ceiling -- the rest of it is NOT DRAWN (raise the cap)");
     }
 
+    private static readonly Layer[] _lead = new Layer[MaxLayers];
+
+    /// <summary>Move layers <c>[from, LayerN)</c> ahead of <c>[0, from)</c>, order kept within each run. DB mode
+    /// records the panels at the frame boundary, after NUI was recorded at <c>nk_sdl_render</c>; the engine's
+    /// order is panels, then NUI.</summary>
+    internal static void Lead(int from)
+    {
+        if (from <= 0 || from >= LayerN) return;
+        Array.Copy(Layers, 0, _lead, 0, from);
+        Array.Copy(Layers, from, Layers, 0, LayerN - from);
+        Array.Copy(_lead, 0, Layers, LayerN - from, from);
+    }
+
     /// <summary>Consumed by a flush: the next scene starts a fresh list.</summary>
     internal static void Reset() { LayerN = 0; DrawN = 0; SkinN = 0; VtxN = 0; IdxN = 0; }
 
@@ -458,7 +637,16 @@ internal static unsafe class GuiCapture
     internal static void Forget() => _slots.Clear();
 
     internal static string Stats()
-        => $"{_layers} scenes, {_draws} draws captured" +
+        => $"{_layers} scenes, {_draws} draws captured"
+           + (_textRuns == 0 && Db.TextQuads.Stale == 0 && Db.TextFontBake.Baked == 0
+              && Db.TextFontBake.Bitmaps == 0 && Db.DbAnim.TextOffsetsApplied == 0 ? "" :
+              $"; text: {_textRuns} CX glyph runs issued with no matrix-stack read, "
+            + $"{Db.TextObjects.Builds} quad list(s) built / {Db.TextObjects.CacheHits} reused, "
+            + $"{Db.TextFontBake.Baked} TTF atlas(es) + {Db.TextFontBake.Bitmaps} bitmap font(s), "
+            + $"{Db.TextFontBake.Refused} font(s) NOT LOADED, {Db.TextQuads.Stale} stale list(s) NOT DRAWN, "
+            + $"{Db.TextSlots.CornersMissed} corner box(es) unresolved, "
+            + $"{Db.DbAnim.TextOffsetsApplied} position offset(s) applied / {Db.TextSlots.OffsetRefused} refused "
+            + "(no AttachTranslate behaviour, as vanilla refuses them)") +
            (_noSlot + _noHost + _badFormat + _arrays + _overflow == 0 ? "" :
             $"; NOT DRAWN: {_noSlot} no-vao, {_noHost} no-host, {_badFormat} format, {_arrays} non-indexed, {_overflow} over-cap") +
            (_toEngine == 0 ? "" : $"; {_toEngine} custom-shader draws by the engine's own program");

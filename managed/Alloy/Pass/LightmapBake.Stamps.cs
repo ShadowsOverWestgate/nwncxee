@@ -62,7 +62,7 @@ internal static unsafe partial class LightmapBake
     private static void StampCharts()
     {
         if (!Held) return;
-        if (MeshChart.InFlight != 0 || AlloyRenderer.ChartDeferred != 0) { _stCharts = 0; return; }
+        if (MeshChart.InFlight != 0) { _stCharts = 0; return; }
         if (_stCharts == 0) { _stCharts = Stopwatch.GetTimestamp(); _stChartsOffered = MeshChart.Offered; }
     }
 

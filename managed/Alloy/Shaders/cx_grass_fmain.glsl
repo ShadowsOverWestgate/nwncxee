@@ -27,7 +27,7 @@ void main()
     bool gMapped = CxWetMapped(gWx);
     // R5: the shelter test is the lit stage's own -- the cover map at its own resolution, not the wetness
     // map's texel. The blade stands on the ground, so the test is made against the ground's up.
-    float gOpen = CxWetOpen(vWorld, vec3(0.0, 0.0, 1.0), gMapped ? CxWetShelter(gWx, vWorld.z) : 1.0);
+    float gOpen = CxWetOpenFast(vWorld, vec3(0.0, 0.0, 1.0), gMapped ? CxWetShelter(gWx, vWorld.z) : 1.0);
     float gWet = clamp((gMapped ? gWx.x * uWxMapXf.w : uLook.z) * gOpen, 0.0, 1.0);
     // R3: Lagarde's soak -- the albedo is raised to a power, so the green deepens instead of greying, and
     // CX_WX_LEAF_SOAK holds a waxy blade well short of the exponent porous stone takes. Bounded in

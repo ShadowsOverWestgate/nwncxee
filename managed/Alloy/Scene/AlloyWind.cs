@@ -166,6 +166,15 @@ internal static unsafe class AlloyWind
         ((delegate* unmanaged<IntPtr, AurXform.V3*, float, float, float, void>)_origAdd)(wm, pos, radius, life, strength);
     }
 
+    /// <summary>A gust raised by CX itself, for the paths where the engine's <c>AddPointSourceWind</c> is
+    /// never called: DB mode owns <c>Gob::Animate</c> and the particle step, so a moved creature's gust and a
+    /// detonation's go straight into this list. Same four arguments as the engine's, same list. Hot-adjacent
+    /// (a handful per frame) and allocation-free.</summary>
+    internal static void AddGust(Vector3 pos, float radius, float life, float strength)
+    {
+        if (_armed) Add(pos, radius, life, strength);
+    }
+
     private static void Add(Vector3 pos, float radius, float life, float strength)
     {
         if (radius <= 0f || life < 0f) return;   // a source with no reach or no life is never sampled

@@ -500,14 +500,20 @@ def programs(g):
         "grass blades": (g["cx_gblade_vs"], g["cx_gblade_fs"]),
         "grass blade depth": (g["cx_gblade_vs"], g["cx_gblade_df"]),
         "clustered light build": (g["cx_cluster_cs"],),
-        "highlight glow": (g["cx_hiliteglow_v"], g["cx_hiliteglow_f"]),
         "gui": (g["cx_gui_v"], g["cx_gui_f"]),
         "trigger highlight": (g["cx_fullscreen_v"], g["cx_hilitetrig_f"]),
         "halo occlusion probe": (g["cx_haloocc_c"],),
         "oit resolve": (g["cx_fullscreen_v"], g["cx_oitresolve_f"]),
         "oit clear": (g["cx_fullscreen_v"], g["cx_oitclear_f"]),
+        "light beams": (g["cx_beam_v"], g["cx_beam_f"]),
+        "light beams (scene database)": (g["cx_beamdb_v"], g["cx_beam_f"]),
         "lightmap bake": (g["cx_bake_v"], g["cx_bake_f"]),
         "lightmap finish": (g["cx_fullscreen_v"], g["cx_bakefinish_f"]),
+        "weather map scatter": (g["cx_wx_scat_c"],),
+        "weather map integrate": (g["cx_wx_int_c"],),
+        "weather shelter cache": (g["cx_wx_shel_c"],),
+        "weather noise tile": (g["cx_wx_noise_c"],),
+        "weather ripple tile": (g["cx_wx_ripl_c"],),
     }
 
 
@@ -539,6 +545,84 @@ def check_early_z(progs):
         return bad
 
 
+# The shipped sizes, for the driver link below: NVIDIA's linker range-checks constant indices the inliner
+# produces, so the shapes glslang accepts at any size can still be refused at these.
+DRIVER_TOKENS = dict(TOKENS, **{"$DYNSPH$": "16", "$GROUP$": "64"})
+NV_EGL = "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+
+
+def check_driver_link(progs, g):
+    """Link every program on the NVIDIA driver through a headless EGL device context, where one exists.
+    glslang compiled the lit stage clean while the driver refused it at LINK ("array index out of bounds" on
+    a path the inliner proved constant) and the whole world drew black -- this is the gate that sees that."""
+    if not os.path.exists(NV_EGL):
+        print("driver link: skipped (no NVIDIA EGL vendor)")
+        return 0
+    os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = NV_EGL
+    import ctypes as C
+    try:
+        egl = C.CDLL("libEGL.so.1")
+    except OSError:
+        print("driver link: skipped (no libEGL)")
+        return 0
+    egl.eglGetProcAddress.restype = C.c_void_p
+    egl.eglGetProcAddress.argtypes = [C.c_char_p]
+    def fn(name, res, *args):
+        p = egl.eglGetProcAddress(name.encode())
+        return C.CFUNCTYPE(res, *args)(p) if p else None
+    qd = fn("eglQueryDevicesEXT", C.c_uint, C.c_int, C.POINTER(C.c_void_p), C.POINTER(C.c_int))
+    gpd = fn("eglGetPlatformDisplayEXT", C.c_void_p, C.c_uint, C.c_void_p, C.c_void_p)
+    devs = (C.c_void_p * 8)(); n = C.c_int(0)
+    if not qd or not gpd or not qd(8, devs, C.byref(n)) or n.value == 0:
+        print("driver link: skipped (no EGL device)")
+        return 0
+    egl.eglInitialize.argtypes = [C.c_void_p, C.c_void_p, C.c_void_p]
+    egl.eglCreateContext.restype = C.c_void_p
+    egl.eglCreateContext.argtypes = [C.c_void_p, C.c_void_p, C.c_void_p, C.POINTER(C.c_int)]
+    egl.eglMakeCurrent.argtypes = [C.c_void_p] * 4
+    dpy = gpd(0x313F, devs[0], None)   # not-an-offset: EGL_PLATFORM_DEVICE_EXT
+    if not dpy or not egl.eglInitialize(dpy, None, None):
+        print("driver link: skipped (EGL device did not initialise)")
+        return 0
+    egl.eglBindAPI(0x30A2)   # not-an-offset: EGL_OPENGL_API
+    attrs = (C.c_int * 5)(0x3098, 4, 0x30FB, 6, 0x3038)   # not-an-offset: MAJOR 4, MINOR 6, EGL_NONE
+    ctx = egl.eglCreateContext(dpy, None, None, attrs)
+    if not ctx or not egl.eglMakeCurrent(dpy, None, None, ctx):
+        print("driver link: skipped (no 4.6 context on the EGL device)")
+        return 0
+    u, i, p_ = C.c_uint, C.c_int, C.c_char_p
+    create = fn("glCreateShader", u, u)
+    source = fn("glShaderSource", None, u, i, C.POINTER(p_), C.c_void_p)
+    compile_ = fn("glCompileShader", None, u)
+    program = fn("glCreateProgram", u)
+    attach = fn("glAttachShader", None, u, u)
+    link = fn("glLinkProgram", None, u)
+    status = fn("glGetProgramiv", None, u, u, C.POINTER(i))
+    infolog = fn("glGetProgramInfoLog", None, u, i, C.c_void_p, C.c_char_p)
+    kinds = {"vert": 0x8B31, "geom": 0x8DD9, "frag": 0x8B30, "comp": 0x91B9,   # not-an-offset: GL stage enums
+             "tesc": 0x8E88, "tese": 0x8E87}   # not-an-offset: GL stage enums
+    bad = 0
+    for name, stages in progs.items():
+        exts = EXTS[len(stages)]
+        if name == "lightmap bake":   # glslang links it without its geometry stage; the driver needs it
+            stages, exts = (stages[0], g["cx_bake_g"], stages[1]), ("vert", "geom", "frag")
+        prog = program()
+        for src, ext in zip(stages, exts):
+            for tok, val in DRIVER_TOKENS.items():
+                src = src.replace(tok, val)
+            s = create(kinds[ext]); buf = p_(src.encode())
+            source(s, 1, C.byref(buf), None); compile_(s); attach(prog, s)
+        link(prog)
+        ok = i(0); status(prog, 0x8B82, C.byref(ok))   # not-an-offset: GL_LINK_STATUS
+        if not ok.value:
+            log = C.create_string_buffer(8192); infolog(prog, 8192, None, log)
+            errs = [l for l in log.value.decode(errors="replace").splitlines() if "error" in l]
+            print(f"driver link: {name}: FAILED\n  " + "\n  ".join(errs[:8]))
+            bad = 1
+    print(f"driver link: {'ok' if not bad else 'FAILED'} ({len(progs)} programs on the NVIDIA driver)")
+    return bad
+
+
 def main():
     g = spliced(shaders())
     try:
@@ -562,6 +646,7 @@ def main():
                 bad = 1
                 print(r.stdout, r.stderr)
     print(f"{len(progs)} programs from {len(g)} embedded .glsl")
+    bad |= check_driver_link(progs, g)
     bad |= check_early_z(progs)
     bad |= check_material(g)
     bad |= audit(g)

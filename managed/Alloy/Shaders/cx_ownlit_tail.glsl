@@ -11,6 +11,8 @@
     // where standing water is the mirror. cxCoat already carries the film's coverage, so this is taken at
     // its full strength and the BASE weight is what it displaces, never a second fade on top of it.
     vec3 reflFilm = vec3(0.0);
+    // the share of the reflection that is lit legacy env content, not the probe: the screen march leaves it alone
+    float envMix = 0.0;
     if (uCapture != 1)
     {
         vec3 R = reflect(-V, N);
@@ -18,7 +20,23 @@
         vec3 reflF0 = physical ? cxF0 : mix(vec3(CX_DIELECTRIC_F0), cxF0, metal);
         reflW = min((reflF0 * reflAb.x + reflAb.y) * msc * CxSpecOcclusion(NoV, occl, rough) * coatT * uProbeGain, vec3(1.0));
         if (uProbeMips > 0.0)
-            specLight += CxProbeFetch(uProbe, vWorld, R, sqrt(rough) * (uProbeMips - 1.0)) * reflW;
+        {
+            vec3 env = CxProbeFetch(uProbe, vWorld, R, sqrt(rough) * (uProbeMips - 1.0));
+            // legacy shiny content reflects the LIGHT ARRIVING HERE through its env map's pattern
+            // (inc_lighting.shd:468-512, EnvironmentColor = (Ambient + Diffuse) * envTexel): a torchlit
+            // breastplate shines however dark the area probe is. The probe, normalised by its own mean,
+            // is the pattern -- its LUMINANCE only: the stock env maps are grey, so the tint is the light's,
+            // and the sky's blue carried into the pattern drew silver armour blue.
+            if (!physical && envLevel > 0.0)
+            {
+                vec3 mean = CxProbeFetch(uProbe, vWorld, R, uProbeMips - 1.0);
+                float m = dot(mean, vec3(0.2126, 0.7152, 0.0722));
+                float pat = m > 1e-5 ? min(dot(env, vec3(0.2126, 0.7152, 0.0722)) / m, CX_ENV_PAT_MAX) : 1.0;
+                envMix = min(envLevel * CX_ENV_SPEC_SCALE, 1.0);
+                env = mix(env, (ambient + diffuse) * pat * CX_ENV_GREY_LIN, envMix);
+            }
+            specLight += env * reflW;
+        }
         if (wxFilm > 0.0 && cxCoat > 0.0)
         {
             vec2 fab = CxEnvBrdf(NoV, sqrt(cxCoatRough));
@@ -83,6 +101,6 @@
     // the display overlays never reach the swapped-in reflection. Exact = Ssr refogging, if a foggy puddle shows it.
     // R4: where the water film dominates, the record carries the FILM's roughness and the film's weight --
     // the screen march must trace the mirror the film is, not the matte bed the base roughness describes.
-    CxReflOut(N, mix(rough, cxCoatRough, wxFilm), max(reflW, reflFilm) * (kh * (1.0 - CxFogFactor(vWorld, vDepth))));
-    frag = CxOitOut(vec4(CxDisplayOverlays(CxFog(lit * kh, vWorld, vDepth)), coverage * d.rot.w));
+    CxReflOut(N, mix(rough, cxCoatRough, wxFilm), max(reflW * (1.0 - envMix), reflFilm) * (kh * (1.0 - CxFogFactor(vWorld, vDepth))));
+    frag = CxOitOut(vec4(CxDisplayOverlays(CxFogReveal(lit * kh, vWorld, vDepth, d.ext2.w)), coverage * d.rot.w));
 }

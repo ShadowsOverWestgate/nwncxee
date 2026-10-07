@@ -1,6 +1,8 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Alloy.Db;
+using CX.Alloy.Seam;
 using CX.Engine;
 using CX.Framework;
 using static CX.Framework.EngineLayout;
@@ -10,7 +12,13 @@ namespace CX.Services.Camera;
 /// <summary>One segment test through the engine's own <c>Scene::HitCheck</c> -- tile BSP parts then gobs,
 /// nearest hit wins -- with the one <c>CHitInfo</c> its users share (#537 occlusion fade, #538
 /// spring arm, CX-29 foot placement from inside <c>Gob::Animate</c>). The record is allocated once and never moves: a hit links it into the gob's SafePointer
-/// list, so <see cref="Release"/> must unlink it before the frame ends. Hot: no allocation per cast.</summary>
+/// list, so <see cref="Release"/> must unlink it before the frame ends. Hot: no allocation per cast.
+/// <para><b>DB mode</b> (ADR 0028) routes the same cast through <see cref="HitTest"/> -- CX-118's own
+/// <c>HitQuery.Ray</c>, which names the camera spring arm and the footstep as its callers. The engine function
+/// is not an option there: it would run engine code over a facade scene. The <c>IntPtr scene</c> callers pass
+/// around stays an opaque handle; in DB mode it is the world scene's facade, so nothing above this file
+/// changes. Without this every caster stood down silently, because a facade's <c>Scene+0x188</c> is never
+/// written and <see cref="WorldScene"/>'s BSP-root test therefore read zero for every DB scene.</para></summary>
 public static unsafe class SceneRay
 {
     private static SceneHitCheckFn _hitCheck;
@@ -24,11 +32,11 @@ public static unsafe class SceneRay
     /// <summary>The engine's own nudge past a hit before re-casting (UpdateNormalCameraCollision's 0.001).</summary>
     public const float Nudge = 0.001f;
 
-    public static bool Armed => _info != null;
+    public static bool Armed => CX.Alloy.Renderer.On || _info != null;
 
     public static void Init()
     {
-        if (_info != null) return;
+        if (CX.Alloy.Renderer.On || _info != null) return;
         _hitCheck = EngineFn.SceneHitCheck;
         _reset = EngineFn.HitInfoReset;
         _scene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
@@ -40,9 +48,34 @@ public static unsafe class SceneRay
     /// <summary>The world scene being animated/rendered, or zero (no area, or a GUI panel's scene).</summary>
     public static IntPtr WorldScene()
     {
+        if (CX.Alloy.Renderer.On) return DbWorldShell();
         IntPtr s = _scene == null ? IntPtr.Zero : *_scene;
         return s == IntPtr.Zero || new Scene(s).BspRoot == IntPtr.Zero ? IntPtr.Zero : s;
     }
+
+    /// <summary>DB mode's world scene, as the facade the game holds for it. Cached on the handle, which the
+    /// generation check invalidates by itself when the area changes.</summary>
+    private static IntPtr DbWorldShell()
+    {
+        if (!SceneDb.Scenes.Valid(_dbWorld) || !SceneDb.SceneIsWorld[_dbWorld.Index])
+        {
+            _dbWorld = default;
+            for (int i = 1; i < SceneDb.Scenes.High; i++)
+                if (SceneDb.Scenes.LiveAt(i) && SceneDb.SceneIsWorld[i]) { _dbWorld = SceneDb.Scenes.IdAt(i); break; }
+        }
+        if (_dbWorld.IsNull) return IntPtr.Zero;
+        nint shell = SceneDb.SceneFacade[_dbWorld.Index];
+        if (shell == 0 && !_noShellSaid)
+        {
+            _noShellSaid = true;
+            HitTest.Log?.Always("SceneRay: the DB world scene has no facade shell -- the camera spring arm, the "
+                              + "occlusion fade and foot placement have nothing to cast against");
+        }
+        return (IntPtr)shell;
+    }
+
+    private static DbId _dbWorld;
+    private static bool _noShellSaid;
 
     /// <summary>Nearest hit on <paramref name="from"/>-&gt;<paramref name="to"/>, skipping <paramref name="ignore"/>
     /// (the followed gob). <paramref name="gob"/> is the gob hit, zero for a tile part or a static placeable.
@@ -50,6 +83,7 @@ public static unsafe class SceneRay
     /// footstep cast does -- a no-op on a client where the switch did not resolve.</summary>
     public static bool Cast(IntPtr scene, Vector3 from, Vector3 to, IntPtr ignore, out Vector3 hit, out IntPtr gob, bool statics = false)
     {
+        if (CX.Alloy.Renderer.On) return DbCast(scene, from, to, ignore, out hit, out gob, statics);
         var info = new CHitInfo((IntPtr)_info);
         // mode 0 = BSP parts then gobs; -0x40000001 and box 0 are the camera's own arguments
         _reset((IntPtr)_info, 0, -0x40000001L, 0);
@@ -69,10 +103,45 @@ public static unsafe class SceneRay
         return r != 0;
     }
 
+    /// <summary>The ignore list, one slot, allocated once: a <see cref="HitQuery"/> carries it by reference and
+    /// the spring arm casts fifteen times a frame.</summary>
+    private static readonly DbId[] _dbIgnore = new DbId[1];
+
+    /// <inheritdoc cref="Cast"/>
+    private static bool DbCast(IntPtr scene, Vector3 from, Vector3 to, IntPtr ignore,
+                              out Vector3 hit, out IntPtr gob, bool statics)
+    {
+        hit = default; gob = IntPtr.Zero;
+        DbId s = Facade.SceneId(scene);
+        if (s.IsNull) return false;
+        HitQuery q = HitQuery.Ray(s, from, to, statics);
+        _dbIgnore[0] = Facade.ObjectId(ignore);
+        if (!_dbIgnore[0].IsNull) { q.Ignore = _dbIgnore; q.IgnoreCount = 1; }
+        if (!HitTest.Cast(q, out HitResult r)) return false;
+        hit = r.Point;
+        // The callers speak in facade pointers (IsCreature / IsPlaceable read the shell's mirrored
+        // Gob+externalType), so the hit object goes back out as its shell, as a static hit goes back as zero.
+        gob = r.Obj.IsNull ? IntPtr.Zero : (IntPtr)Facade.ObjectShell(r.Obj);
+        return true;
+    }
+
     /// <summary>True when <paramref name="gob"/> is a creature's (never a camera obstacle, like the engine).</summary>
     public static bool IsCreature(IntPtr gob) => gob != IntPtr.Zero && new Gob(gob).ExternalType == GobKindCreature;
     public static bool IsPlaceable(IntPtr gob) => gob != IntPtr.Zero && new Gob(gob).ExternalType == GobKindPlaceable;
 
-    /// <summary>Unlink the SafePointer the last hit left behind -- now, not when the gob dies mid-frame.</summary>
-    public static void Release() => _reset((IntPtr)_info, 0, -0x40000001L, 0);
+    /// <summary>Is the hit object tile geometry -- ground, for a floor cast? The engine answers it with the
+    /// gob's tile-data pointer, which a facade shell does NOT mirror: in DB mode that offset reads zero and
+    /// every tile gob would be classed "cast past". The database's own answer is the record's
+    /// <see cref="ObjFlag.Tile"/> bit, written when the placement is fed.</summary>
+    public static bool IsTile(IntPtr gob)
+    {
+        if (gob == IntPtr.Zero) return false;
+        if (!CX.Alloy.Renderer.On) return !new Gob(gob).TileData.IsNull;
+        DbId id = Facade.ObjectId(gob);
+        return !id.IsNull && (SceneDb.ObjFlags[id.Index] & ObjFlag.Tile) != 0;
+    }
+
+    /// <summary>Unlink the SafePointer the last hit left behind -- now, not when the gob dies mid-frame. Nothing
+    /// to unlink in DB mode: a <see cref="HitResult"/> is a generation-checked handle, not a linked pointer.</summary>
+    public static void Release() { if (!CX.Alloy.Renderer.On) _reset((IntPtr)_info, 0, -0x40000001L, 0); }
 }

@@ -77,50 +77,26 @@ float CxWeatherHollow(vec3 worldPos)
     return 1.0 - s * 0.125;
 }
 
-// Snow drift against walls: three rings of eight compares out to the drift width, each tap asking whether
-// the ground there stands a step higher. Returns x = drift height (1 at the wall, falling off with the
-// ring radius), yz = the uv direction toward the higher ground -- the slope the mound rises along.
-vec3 CxSnowDrift(vec3 worldPos, float width)
-{
-    if (uCoverVp[3][3] == 0.0 || width <= 0.0) return vec3(0.0);
-    vec4 clip = uCoverVp * vec4(worldPos, 1.0);
-    vec3 ndc = clip.xyz / clip.w;
-    if (any(greaterThan(abs(ndc.xy), vec2(1.0))) || abs(ndc.z) > 1.0) return vec3(0.0);
-    vec2 uv = ndc.xy * 0.5 + 0.5;
-    float ref = ndc.z * 0.5 + 0.5 - uCoverLayer.y;
-    float L = uCoverLayer.x;
-    vec3 r = vec3(0.0);
-    for (int k = 0; k < 3; k++)
-    {
-        float rad = width * (0.25 + 0.375 * float(k));
-        float w = 1.0 - 0.3 * float(k);
-        for (int i = 0; i < 8; i++)
-        {
-            float a = float(i) * 0.7853982 + float(k) * 0.3;
-            vec2 o = vec2(cos(a), sin(a));
-            float higher = 1.0 - texture(uSunShadow, vec4(uv + o * rad, L, ref));
-            r.x += higher * w;
-            r.yz += o * higher * w;
-        }
-    }
-    r.x /= 8.0 * 2.1;
-    return r;
-}
+// The weather noise tile (Weather.Shelter): four value-noise fields baked once into a 32 m world tile, so the
+// splice and the snow relief march read a texel where they used to hash four lattice corners per octave.
+//   x the soak / puddle micro-relief (0.75 /m), y its fine octave (3.125 /m), z the snow's ground variation
+//   (0.25 /m), w the snow mound field 0.3 + 0.45 n(1.6875 /m) + 0.25 n(6 /m)
+// The frequencies are the old ones rounded to whole cells per tile, so the tile repeats seamlessly.
+layout(binding = 24) uniform sampler2D uWxNoise;
+const float CX_WX_NOISE_TILE_M = 32.0;
+/// Metres per texel of the tile's base level: the LOD a footprint reads at.
+const float CX_WX_NOISE_TEXEL_M = CX_WX_NOISE_TILE_M / 1024.0;
 
-float CxWeatherNoise(vec2 p)
-{
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(CxWeatherHash(i), CxWeatherHash(i + vec2(1.0, 0.0)), f.x),
-               mix(CxWeatherHash(i + vec2(0.0, 1.0)), CxWeatherHash(i + vec2(1.0, 1.0)), f.x), f.y);
-}
+/// The mip a footprint of <c>px</c> metres reads the tile at. Explicit, because the relief march samples it
+/// inside a loop that breaks per pixel, where implicit derivatives are undefined.
+float CxWxNoiseLod(float px) { return max(log2(max(px, 1e-6) / CX_WX_NOISE_TEXEL_M), 0.0); }
 
-// The snow relief, 0..1 of the depth knob: mounds from two noise octaves under the ground-variation
-// patches, plus the drift banked against the wall. Cheap enough to march: the drift (the expensive
-// part) comes in as a value, interpolated by the caller along the ray.
-float CxSnowHeight(vec2 p, float vary, float pile)
+vec4 CxWxNoise(vec2 worldXY, float lod) { return textureLod(uWxNoise, worldXY / CX_WX_NOISE_TILE_M, lod); }
+
+// The snow relief, 0..1 of the depth knob: the tile's mound field under its ground-variation patches, plus
+// the drift banked against the wall (from the shelter cache, interpolated by the caller along the ray).
+float CxSnowHeight(vec4 nz, float vary, float pile)
 {
-    float m = 0.3 + 0.45 * CxWeatherNoise(p * 1.7) + 0.25 * CxWeatherNoise(p * 6.0);
-    m *= 1.0 - vary * smoothstep(0.35, 0.7, CxWeatherNoise(p * 0.23)) * 0.6;
+    float m = nz.w * (1.0 - vary * smoothstep(0.35, 0.7, nz.z) * 0.6);
     return clamp(m * 0.7 + pile * 0.6, 0.0, 1.0);
 }

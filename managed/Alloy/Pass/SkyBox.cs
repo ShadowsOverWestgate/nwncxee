@@ -89,7 +89,7 @@ internal static unsafe class SkyBox
     /// <summary>The player's own switch (<c>effects.sky</c>). Distinct from <see cref="_off"/>, which means
     /// "this session cannot own the sky at all": the hook is armed either way, so the toggle is live rather
     /// than a relaunch.</summary>
-    private static bool Disabled => !Effects.Sky.V;
+    internal static bool Disabled => !Effects.Sky.V;
 
     /// <summary>The Scene whose sky was enrolled, for the Alloy pass to compare against its own.</summary>
     internal static IntPtr Scene;
@@ -215,18 +215,6 @@ internal static unsafe class SkyBox
     /// The alphas come off the Scene live rather than off <c>gob+0x108</c>, which the engine writes at the
     /// vanilla site and would therefore be a frame behind.</summary>
     internal struct Role { public IntPtr Gob; public float Alpha; public int Src, Dst; }
-
-    /// <summary>The engine's own gates, mirrored: the skybox off byte, "no current sky", the fade epsilon
-    /// (<c>DAT_013eeeb0</c> is 0.0f) on the desired sky, and a null cross-fade gob. Miss one of these and the
-    /// Alloy pass paints a sky into an interior.</summary>
-    /// <summary>#222: is this gob painted in the scene's FOG COLOUR? <c>PartTriMesh::Mat</c> @0x450960:
-    /// with <c>gob+0x19</c> set and a live scene it calls <c>SetColor4f(fog.rgb, 1.0)</c> -- the part is
-    /// drawn in the fog colour at FULL alpha, not white at its own. The skyfade gob is exactly that, which
-    /// is why vanilla's horizon fade goes dark at night while ours drew the raw grey texture.
-    /// <para>Reads the gob only to compare a byte; the pointer is the one <see cref="Roles"/> just took off
-    /// the Scene, so it is live for the length of the staging walk.</para></summary>
-    internal static bool FogTinted(IntPtr gob)
-        => gob != IntPtr.Zero && new Gob(gob).SceneTint != 0;
 
     internal static int Roles(IntPtr scene, Span<Role> into)
     {

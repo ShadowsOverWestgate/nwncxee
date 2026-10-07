@@ -14,7 +14,7 @@ internal static class Lightmap
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<int> Density, Disk, Pages, Near, Tiers, HoldSeconds, GrowSlice;
-    internal static readonly Knob<bool> Movers;
+    internal static readonly Knob<bool> Movers, MoverTaps;
 
     static Lightmap()
     {
@@ -43,6 +43,8 @@ internal static class Lightmap
                                help: "Seconds the loading screen may wait for the area's baked lighting before Escape is offered to skip ahead; the bake then finishes in the background. 0 never waits.");
         Movers = G.Toggle("movers", "Creature shadows from baked lights", true,
                           help: "A creature standing under a baked light casts its shadow on the baked surface. Off is cheaper: baked surfaces take no shadow from creatures under static lights.");
+        MoverTaps = G.Toggle("movertaps", "movertaps", true, Tier.ChatOnly,
+                             help: "Diagnostic: 0 keeps creature-hot baked lights in the light loop (the ray test) but skips their light body and shadow reads, so /alloy bench splits the creature-shadow cost.");
         // 2048: one area's bake at density 10 is ~500 MiB of .lmp blobs, and a 512 MiB budget pruned the
         // live files of the area being walked (4890 of 7425 hit, live)
         Disk = G.Slider("disk", "Chart cache size", 64, 8192, 64, 2048, "MiB", tier: Tier.Advanced,
@@ -55,8 +57,10 @@ internal static class Lightmap
 /// background worker and cached on disk by mesh CONTENT, so the second load of any area is a file read.
 /// <para><b>MeshLod's sibling, with its own vertices.</b> A chart splits vertices wherever a seam falls, so
 /// a charted mesh cannot ride the engine's vertex pool: the worker emits the whole mesh -- position, normal,
-/// UV, chart UV -- into one Alloy VERTEX arena plus its index runs into one Alloy element arena, and a
-/// charted part draws from the pair under <see cref="AlloyRenderer.ChartVaoBit"/>. Chart BEFORE simplify:
+/// UV, chart UV -- and it is filed in <see cref="CX.Alloy.Db.MeshArena"/>, the ONE model-space arena every
+/// Alloy part draws from (CX-114; the storage, the uploads, the VAO and the compaction are all its, and a
+/// charted mesh is simply a range in it whose chart columns are filled). A charted part draws that range
+/// under <see cref="AlloyRenderer.ChartVaoBit"/>. Chart BEFORE simplify:
 /// <see cref="MeshSimplify"/> runs on the charted mesh, so every LOD level carries chart UVs and the far
 /// field is lightmapped too. The engine's own range stays untouched -- an entry that never lands, a refusal,
 /// or the master off simply draws the engine's geometry, which is vanilla.</para>
@@ -72,16 +76,18 @@ internal static unsafe partial class MeshChart
     internal const float AtlasTexelsPerUnit = 8f;
     /// <summary>Texels xatlas leaves between charts inside the mesh atlas (#656: 2-texel gutter).</summary>
     internal const uint Padding = 2;
-    /// <summary>Floats per arena vertex: pos3 nrm3 uv2 chart2.</summary>
+    /// <summary>Floats per arena vertex in <see cref="CX.Alloy.Db.MeshArena.Fmt.Static"/>: pos3 nrm3 uv2 chart2.
+    /// The charted interleave below writes exactly this layout, which is why a charted mesh needs no format of
+    /// its own.</summary>
     internal const int Stride = 10;
     /// <summary>Alloy attribute location of the chart UV stream (3..7 are free; 0/1/2 pos/uv/nrm, 8/9 bones).</summary>
     internal const uint LocChartUv = 3;
 
     private const int MaxPending = 256;
+    /// <summary>xatlas threads: a job is one mesh on its own atlas, so the meshes of an area chart in parallel.
+    /// Two cores stay with the game and render threads.</summary>
+    private static int Workers => Math.Clamp(Environment.ProcessorCount - 2, 1, 8);
     private const int MaxEntries = 1 << 16;   // the plaza filled 1 << 14 exactly and the rest stayed magenta
-    /// <summary>Vertices the arena may hold (2M x 40 B = 80 MiB). ponytail: no compaction; Revoke rewinds.</summary>
-    private const int MaxArenaVerts = 1 << 21;
-    private const int MaxArenaIndices = 8 << 20;
     private const int LogCap = 8;
 
     private static ExtenderLog? _log;
@@ -92,13 +98,12 @@ internal static unsafe partial class MeshChart
     internal enum Refusal : byte { None, Input, Xatlas, Uncharted, Overflow, Arena, Unlit, Corners }
     internal static readonly string[] RefusalName = { "none", "input", "xatlas", "uncharted", "overflow", "arena", "unlit", "corners" };
 
-    /// <summary>One charted mesh in the arenas: base vertex, three index runs (BYTE offsets, the LOD 1/2
-    /// ones zero-count when the simplifier declined), the atlas size in texels.</summary>
+    /// <summary>One charted mesh: its <see cref="CX.Alloy.Db.MeshArena"/> range (which carries the base vertex
+    /// and the three index runs) and the atlas size in texels.</summary>
     private struct Entry : ISlotEntry
     {
-        internal int Base;
-        internal nint Off0, Off1, Off2;
-        internal int Cnt0, Cnt1, Cnt2;
+        /// <summary>The arena range, -1 for a refused entry. Every holder of one owns a reference to it.</summary>
+        internal int Range;
         internal ushort W, H;
         internal ulong Content;
         /// <summary>The mesh's bounds in ITS OWN space (world space for a tile part): the engine's part
@@ -110,7 +115,7 @@ internal static unsafe partial class MeshChart
         /// freed and refilled keeps its (slot, item) key, and without this the new tenant drew the OLD mesh
         /// out of the arena -- the floating nonsense after an area change.</summary>
         public ulong Sig { get; set; }
-        /// <summary>Charted vertices in the arena, for the compaction.</summary>
+        /// <summary>Charted vertices, for the log line.</summary>
         internal int NV;
     }
 
@@ -164,17 +169,9 @@ internal static unsafe partial class MeshChart
 
     private static int[] _remap = Array.Empty<int>();
 
-    private static float[] _vMirror = Array.Empty<float>();
-    private static ushort[] _iMirror = Array.Empty<ushort>();
-    private static int _vUsed, _vUploaded, _vCapacity, _iUsed, _iUploaded, _iCapacity;
-    private static uint _vbo, _ebo, _vao;
-    private static bool _arenaFull;
-    /// <summary>Arena vertices whose entry is gone (a vacated slot, a refilled item): what a compaction
-    /// reclaims. The world edge (<see cref="Revoke"/>) does not fire on an in-module area change, so
-    /// without it three areas filled the 2M-vertex arena and the fourth charted nothing (run 29: 11268
-    /// refused, viz 43 magenta across the town).</summary>
-    private static long _deadVerts;
-    private static int _compactions;
+    /// <summary>The interleave scratch one charted mesh is built in before it goes to the arena. Render
+    /// thread only, reused: the collect is one mesh at a time.</summary>
+    private static float[] _stage = Array.Empty<float>();
 
     private static int _offered, _hit, _missed, _built, _refused, _stale, _tableFull, _logLeft = LogCap;
     /// <summary>Charted meshes at or past <see cref="MeshLod.MinTris"/>, and those that kept a generated level.</summary>
@@ -192,21 +189,83 @@ internal static unsafe partial class MeshChart
 
     /// <summary>Is a charted range available to pick this frame? False leaves every draw on the engine's own
     /// geometry -- the stand-down, not a second code path.</summary>
-    internal static bool Armed => _vao != 0 && Lightmap.G.Master is { V: true };
+    internal static bool Armed => Vao != 0 && Lightmap.G.Master is { V: true };
 
-    /// <summary>The VAO over both arenas, zero until the first chart lands in this context.</summary>
-    internal static uint Vao => _vao;
+    /// <summary>The arena's static-format VAO, zero until the first mesh lands in this context.</summary>
+    internal static uint Vao => CX.Alloy.Db.MeshArena.Vao(CX.Alloy.Db.MeshArena.Fmt.Static);
 
     internal static void Attach(ExtenderLog log)
     {
         _log = log;
         _ = Lightmap.G;
         if (_jobs.Running) return;
-        _jobs.Start("cx-chart", Work);
-        log.Info("MeshChart: worker up -- static meshes are charted as they enrol when lightmap.enabled=1 (default off)");
+        _jobs.Start("cx-chart", Work, Workers);
+        log.Info($"MeshChart: {Workers} worker(s) up -- static meshes are charted as they enrol when lightmap.enabled=1 (default off)");
     }
 
     internal static long KeyOf(int slot, int item) => SlotJobTable<Job, Entry>.KeyOf(slot, item);
+
+    /// <summary>CX-120: the slot half of a DB mesh's chart key. A scene-database part has no VDO slot (the
+    /// engine's vertex objects are what a slot indexes, and in DB mode there are none), so every DB mesh
+    /// shares this reserved one and takes the ARENA RANGE as its item -- which is an identity the arena
+    /// already dedups by content, so one range is one distinct mesh and two instances of it share a chart.
+    /// Negative, so it can never collide with a real slot index.</summary>
+    internal const int DbSlot = -1;
+
+    /// <summary>CX-120: offer the arena's unoffered static ranges, a few per frame, from the GAME thread's
+    /// frame fold. The draw cannot be the only offer site: the bake's loading-screen hold waits for charts
+    /// and holds back the frames the batch build would have offered from, which is a 45 s cap hold on the
+    /// first area (measured). The arena has the geometry as soon as the area is built, so this is the
+    /// creation edge the offers belong on.</summary>
+    internal static void DripDb(int budget)
+    {
+        if (!_jobs.Running || !Lightmap.G.Master!.V) return;
+        for (int n = 0; n < budget; n++)
+        {
+            if (!HasRoom()) return;
+            int range = CX.Alloy.Db.MeshArena.NextOfferable(ref _dripCursor);
+            if (range < 0) return;
+            OfferDb(range);
+        }
+    }
+
+    /// <inheritdoc cref="DripDb"/>
+    private static int _dripCursor;
+
+    /// <summary>CX-120: offer an arena range to the charter, reading its geometry off the arena's own host
+    /// mirror. The engine path's <see cref="Offer"/> copies out of the engine's VBO shadows through a
+    /// <see cref="VertexStream"/> descriptor and re-indexes densely; an arena range is already dense and
+    /// already interleaved in the layout the chart files back into, so this is the same offer with the
+    /// copying it does not need taken out.
+    /// <para>Returns false when there is nothing to do -- no room, already charted, charted output, skinned
+    /// or dead. Cold: once per mesh, on the enrolment path, and it allocates (job arrays) like
+    /// <see cref="Offer"/> does.</para></summary>
+    internal static bool OfferDb(int range)
+    {
+        if (!CX.Alloy.Db.MeshArena.HostMeshSize(range, out int nv, out int ni, out ulong content, out uint gen))
+            return false;
+        // The signature is the content hash and the range's hand-out generation: a recycled range index is a
+        // DIFFERENT mesh under the same item, and Wanted re-charts on a signature change.
+        ulong sig = content ^ ((ulong)gen << 48);
+        if (!Wanted(DbSlot, range, ni, sig, out _)) return false;
+        Job j = _jobs.Rent();
+        j.Key = KeyOf(DbSlot, range); j.Sig = sig;
+        j.IdxCount = ni; j.HasNrm = true; j.HasUv = true;
+        j.Refused = Refusal.None; j.Hit = false; j.Stale = false;
+        j.Out0N = j.Out1N = j.Out2N = 0; j.OutVerts = 0; j.Charts = 0; j.Loose = 0;
+        Grow(ref j.Idx, ni);
+        if (j.Pos.Length < nv * 3) j.Pos = new float[nv * 3];
+        if (j.Nrm.Length < nv * 3) j.Nrm = new float[nv * 3];
+        if (j.Uv.Length < nv * 2) j.Uv = new float[nv * 2];
+        if (!CX.Alloy.Db.MeshArena.HostMeshCopy(range, j.Pos, j.Nrm, j.Uv, j.Idx))
+        { _jobs.Recycle(j); Skip(Refusal.Input); return false; }
+        j.VertCount = nv;
+        _offered++;
+        CX.Alloy.Db.MeshArena.MarkOffered(range);
+        _jobs.Offer(j, j.Key, sig);
+        return true;
+    }
+
 
     /// <summary>Charts on file, claimed or landed -- the area edge's tally (CX-19).</summary>
     internal static int TableCount => _table.Count;
@@ -224,11 +283,9 @@ internal static unsafe partial class MeshChart
             if (have.Sig == sig) return false;
             _table.Remove(KeyOf(slot, item));   // the item was refilled under the same key: chart the new mesh
             _epoch++;
-            if (have.Done && have.Refused == Refusal.None) _deadVerts += have.NV;
+            Drop(have);
         }
         if (_table.Count >= MaxEntries) { _tableFull++; return false; }
-        // full with dead bytes in it: the next Pump compacts, and the offer comes back through the deferred list
-        if (_arenaFull) { if (_deadVerts > 0) { later = true; return false; } Skip(Refusal.Arena); return false; }
         if (idxCount > MeshSimplify.MaxCorners) { Skip(Refusal.Corners); return false; }
         later = !_jobs.QueueHasRoom;
         return !later;
@@ -293,8 +350,9 @@ internal static unsafe partial class MeshChart
     private static void Grow(ref ushort[] a, int n) { if (a.Length < n) a = new ushort[n]; }
     private static void Grow(ref float[] a, int n) { if (a.Length < n) a = new float[n]; }
 
-    /// <summary>The worker: content key, ledger probe, xatlas on a miss, then the two LOD runs over the
-    /// charted mesh. One mesh at a time, byte-identical across runs (xatlas single-threaded, fixed options).</summary>
+    /// <summary>A worker: content key, ledger probe, xatlas on a miss, then the two LOD runs over the charted
+    /// mesh. One mesh per worker at a time, byte-identical across runs (each xatlas call single-threaded on its
+    /// own atlas, fixed options); results file in completion order, which nothing downstream depends on.</summary>
     private static void Work(Job j)
     {
         try { Chart(j); }
@@ -431,28 +489,23 @@ internal static unsafe partial class MeshChart
     internal static void Pump()
     {
         if (!_jobs.Running || Gl.CreateBuffers == null) return;
-        if (_deadVerts > MaxArenaVerts / 2 || (_arenaFull && _deadVerts > 0)) Compact();
-        int vFrom = _vUsed, iFrom = _iUsed;
         while (_jobs.TryTake(out Job j))
         {
-            var e = new Entry { Done = true, Refused = j.Refused, Content = j.Content, Bmin = j.Bmin, Bmax = j.Bmax, Sig = j.Sig };
+            var e = new Entry { Done = true, Refused = j.Refused, Content = j.Content, Bmin = j.Bmin, Bmax = j.Bmax, Sig = j.Sig, Range = -1 };
             if (j.Hit) _hit++; else _missed++;
             if (j.Stale) _stale++;
+            int lod1 = 0, lod2 = 0;
             if (j.Refused == Refusal.None)
             {
                 if (!j.Hit) _built++;
-                if (!AppendVerts(j, out e.Base)) e.Refused = Refusal.Arena;
+                e.Range = FileRange(j);
+                if (e.Range < 0) e.Refused = Refusal.Arena;
                 else
                 {
-                    Append(j.Out0, j.Out0N, out e.Off0, out e.Cnt0);
-                    if (j.Out1N > 0) Append(j.Out1, j.Out1N, out e.Off1, out e.Cnt1);
-                    if (j.Out2N > 0) Append(j.Out2, j.Out2N, out e.Off2, out e.Cnt2);
-                    if (e.Cnt0 == 0) e.Refused = Refusal.Arena;
-                    else
-                    {
-                        if (e.Cnt0 / 3 >= MeshLod.MinTris) _lodBig++;
-                        if (e.Cnt1 > 0 || e.Cnt2 > 0) _lodKept++;
-                    }
+                    CX.Alloy.Db.MeshArena.Runs(e.Range, 1, out _, out _, out lod1, out _);
+                    CX.Alloy.Db.MeshArena.Runs(e.Range, 2, out _, out _, out lod2, out _);
+                    if (j.Out0N / 3 >= MeshLod.MinTris) _lodBig++;
+                    if (j.Out1N > 0 || j.Out2N > 0) _lodKept++;
                     e.W = j.W; e.H = j.H; e.NV = j.OutVerts;
                 }
             }
@@ -463,109 +516,42 @@ internal static unsafe partial class MeshChart
                     _log?.Info($"MeshChart: REFUSED {RefusalName[(int)e.Refused]} -- mesh {j.IdxCount / 3} tris, {j.VertCount} verts, content {j.Content:x16}");
             }
             else if (_logLeft-- > 0)
-                _log?.Info($"MeshChart: mesh {j.IdxCount / 3} tris {j.VertCount} verts -> {j.OutVerts} charted verts, atlas {j.W}x{j.H} ({(j.Hit ? "cache hit" : "built")}), lod {e.Cnt1 / 3}/{e.Cnt2 / 3}" + (j.Loose > 0 ? $", {j.Loose} loose verts (no face)" : ""));
+                _log?.Info($"MeshChart: mesh {j.IdxCount / 3} tris {j.VertCount} verts -> {j.OutVerts} charted verts, atlas {j.W}x{j.H} ({(j.Hit ? "cache hit" : "built")}), lod {lod1 / 3}/{lod2 / 3}" + (j.Loose > 0 ? $", {j.Loose} loose verts (no face)" : ""));
             if (_jobs.File(j.Key, j.Sig, e)) _epoch++;
-            else if (e.Refused == Refusal.None) _deadVerts += e.NV;   // appended, unclaimed: the compaction takes it back
+            else Drop(e);   // nobody claimed it: the reference goes straight back
             _jobs.Recycle(j);
         }
-        if (_vUsed != vFrom || _vUploaded != _vUsed) UploadVerts(vFrom);
-        if (_iUsed != iFrom || _iUploaded != _iUsed) UploadIndices(iFrom);
-        if (_vao == 0 && _vbo != 0 && _ebo != 0) BuildVao();
     }
 
-    /// <summary>Interleave the charted vertices onto the vertex mirror. False = the arena ceiling.</summary>
-    private static bool AppendVerts(Job j, out int baseVertex)
+    /// <summary>Interleave one charted mesh into <see cref="CX.Alloy.Db.MeshArena.Fmt.Static"/>'s layout and
+    /// file it. The chart UVs are the stream the arena's fourth column exists for; two charted meshes with the
+    /// same bytes come back as ONE range, refcounted, like every other mesh in the arena.</summary>
+    private static int FileRange(Job j)
     {
-        baseVertex = 0;
         int n = j.OutVerts;
-        if (n <= 0 || _vUsed + n > MaxArenaVerts) { _arenaFull = true; return false; }
-        if (_vMirror.Length < (_vUsed + n) * Stride)
-        {
-            int cap = _vMirror.Length == 0 ? (1 << 16) * Stride : _vMirror.Length;
-            while (cap < (_vUsed + n) * Stride) cap *= 2;
-            if (cap > MaxArenaVerts * Stride) cap = MaxArenaVerts * Stride;
-            Array.Resize(ref _vMirror, cap);
-        }
+        if (n <= 0 || j.Out0N < 3) return -1;
+        if (_stage.Length < n * Stride) _stage = new float[Math.Max(n * Stride, (1 << 12) * Stride)];
         for (int i = 0; i < n; i++)
         {
-            int o = (_vUsed + i) * Stride, s = j.Xref[i];
-            _vMirror[o] = j.Pos[s * 3]; _vMirror[o + 1] = j.Pos[s * 3 + 1]; _vMirror[o + 2] = j.Pos[s * 3 + 2];
-            if (j.HasNrm) { _vMirror[o + 3] = j.Nrm[s * 3]; _vMirror[o + 4] = j.Nrm[s * 3 + 1]; _vMirror[o + 5] = j.Nrm[s * 3 + 2]; }
-            else _vMirror[o + 3] = _vMirror[o + 4] = _vMirror[o + 5] = 0f;
-            if (j.HasUv) { _vMirror[o + 6] = j.Uv[s * 2]; _vMirror[o + 7] = j.Uv[s * 2 + 1]; }
-            else _vMirror[o + 6] = _vMirror[o + 7] = 0f;
-            _vMirror[o + 8] = j.ChartUv[i * 2]; _vMirror[o + 9] = j.ChartUv[i * 2 + 1];
+            int o = i * Stride, src = j.Xref[i];
+            _stage[o] = j.Pos[src * 3]; _stage[o + 1] = j.Pos[src * 3 + 1]; _stage[o + 2] = j.Pos[src * 3 + 2];
+            if (j.HasNrm) { _stage[o + 3] = j.Nrm[src * 3]; _stage[o + 4] = j.Nrm[src * 3 + 1]; _stage[o + 5] = j.Nrm[src * 3 + 2]; }
+            else _stage[o + 3] = _stage[o + 4] = _stage[o + 5] = 0f;
+            if (j.HasUv) { _stage[o + 6] = j.Uv[src * 2]; _stage[o + 7] = j.Uv[src * 2 + 1]; }
+            else _stage[o + 6] = _stage[o + 7] = 0f;
+            _stage[o + 8] = j.ChartUv[i * 2]; _stage[o + 9] = j.ChartUv[i * 2 + 1];
         }
-        baseVertex = _vUsed;
-        _vUsed += n;
-        return true;
+        return CX.Alloy.Db.MeshArena.AcquireRaw(j.Content, CX.Alloy.Db.MeshArena.Fmt.Static, n,
+                                                _stage.AsSpan(0, n * Stride),
+                                                j.Out0, j.Out0N, j.Out1, j.Out1N, j.Out2, j.Out2N,
+                                                j.Bmin, j.Bmax);
     }
 
-    /// <summary>Reserve element-arena room for one run; a zero count means the ceiling.</summary>
-    private static void Append(ushort[] run, int n, out nint off, out int count)
+    /// <summary>Give one entry's arena reference back. The arena frees the range at its own frame edge once
+    /// nothing holds it, so a key forgotten here never pulls geometry out from under a draw in flight.</summary>
+    private static void Drop(in Entry e)
     {
-        off = 0; count = 0;
-        if (_iUsed + n > MaxArenaIndices) { _arenaFull = true; return; }
-        if (_iMirror.Length < _iUsed + n)
-        {
-            int cap = _iMirror.Length == 0 ? 1 << 16 : _iMirror.Length;
-            while (cap < _iUsed + n) cap *= 2;
-            if (cap > MaxArenaIndices) cap = MaxArenaIndices;
-            Array.Resize(ref _iMirror, cap);
-        }
-        Array.Copy(run, 0, _iMirror, _iUsed, n);
-        off = (nint)((long)_iUsed * 2); count = n;
-        _iUsed += n;
-    }
-
-    /// <summary>Both uploads are by name, touching no binding. A grow respecifies under the same NAME, so the
-    /// VAO built over it stays valid.</summary>
-    private static void UploadVerts(int from)
-    {
-        if (_vbo == 0) { uint b; Gl.CreateBuffers(1, &b); if (b == 0) return; _vbo = b; _vUploaded = 0; _vCapacity = 0; }
-        fixed (float* p = _vMirror)
-        {
-            if (_vUploaded < _vUsed && _vCapacity >= _vUsed)
-                Gl.NamedBufferSubData(_vbo, (IntPtr)((long)from * Stride * 4),
-                                 (IntPtr)((long)(_vUsed - from) * Stride * 4), p + (long)from * Stride);
-            else
-            {
-                _vCapacity = _vMirror.Length / Stride;
-                Gl.NamedBufferData(_vbo, (IntPtr)((long)_vMirror.Length * 4), p, Gl.STATIC_DRAW);
-            }
-        }
-        _vUploaded = _vUsed;
-    }
-
-    private static void UploadIndices(int from)
-    {
-        if (_ebo == 0) { uint b; Gl.CreateBuffers(1, &b); if (b == 0) return; _ebo = b; _iUploaded = 0; _iCapacity = 0; }
-        fixed (ushort* p = _iMirror)
-        {
-            if (_iUploaded < _iUsed && _iCapacity >= _iUsed)
-                Gl.NamedBufferSubData(_ebo, (IntPtr)((long)from * 2), (IntPtr)((long)(_iUsed - from) * 2), p + from);
-            else
-            {
-                _iCapacity = _iMirror.Length;
-                Gl.NamedBufferData(_ebo, (IntPtr)((long)_iCapacity * 2), p, Gl.STATIC_DRAW);
-            }
-        }
-        _iUploaded = _iUsed;
-    }
-
-    /// <summary>ONE VAO for every charted part: the arena carries every stream a stage reads (a program that
-    /// wants no normal or UV simply never fetches the location), so there is nothing per VDO slot to vary.
-    /// Built by name, so the draw loops' bound-VAO latch is never disturbed.</summary>
-    private static void BuildVao()
-    {
-        uint vao; Gl.CreateVertexArrays(1, &vao);
-        const int bytes = Stride * 4;
-        VertexArrays.Bind(vao, AlloyRenderer.LocPos, new VertexStream { Buf = _vbo, Size = 3, Type = Gl.FLOAT, Stride = bytes, Off = 0 });
-        VertexArrays.Bind(vao, AlloyRenderer.LocNrm, new VertexStream { Buf = _vbo, Size = 3, Type = Gl.FLOAT, Stride = bytes, Off = 12 });
-        VertexArrays.Bind(vao, AlloyRenderer.LocUv, new VertexStream { Buf = _vbo, Size = 2, Type = Gl.FLOAT, Stride = bytes, Off = 24 });
-        VertexArrays.Bind(vao, LocChartUv, new VertexStream { Buf = _vbo, Size = 2, Type = Gl.FLOAT, Stride = bytes, Off = 32 });
-        Gl.VertexArrayElementBuffer(vao, _ebo);
-        _vao = vao;
+        if (e.Done && e.Refused == Refusal.None && e.Range >= 0) CX.Alloy.Db.MeshArena.Release(e.Range);
     }
 
     /// <summary>This mesh's charted range at <paramref name="lod"/> (falling back to the finer level that
@@ -573,24 +559,22 @@ internal static unsafe partial class MeshChart
     internal static bool Range(int slot, int item, int lod, out int baseVertex, out nint off, out int count, out int level)
     {
         baseVertex = 0; off = 0; count = 0; level = 0;
-        if (_vao == 0 || !_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done || e.Refused != Refusal.None) return false;
-        baseVertex = e.Base;
-        if (lod >= 2 && e.Cnt2 > 0) { off = e.Off2; count = e.Cnt2; level = 2; return true; }
-        if (lod >= 1 && e.Cnt1 > 0) { off = e.Off1; count = e.Cnt1; level = 1; return true; }
-        off = e.Off0; count = e.Cnt0;
-        return true;
+        if (Vao == 0 || !_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done || e.Refused != Refusal.None) return false;
+        return CX.Alloy.Db.MeshArena.Runs(e.Range, lod, out baseVertex, out off, out count, out level);
     }
 
     /// <summary><see cref="Range"/> through the caller's <paramref name="m"/>: one probe per (key, LOD) per
     /// table epoch instead of one per call.</summary>
     internal static bool Range(ref RangeMemo m, int slot, int item, int lod, out int baseVertex, out nint off, out int count, out int level)
     {
-        if (_vao == 0) { baseVertex = 0; off = 0; count = 0; level = 0; return false; }
+        if (Vao == 0) { baseVertex = 0; off = 0; count = 0; level = 0; return false; }
         long key = KeyOf(slot, item);
-        if (m.Epoch != _epoch || m.Key != key || m.Lod != lod)
+        // the arena's epoch is part of this one: a compaction there rebases every offset a memo cached
+        int epoch = _epoch + CX.Alloy.Db.MeshArena.Epoch;
+        if (m.Epoch != epoch || m.Key != key || m.Lod != lod)
         {
             m.Hit = Range(slot, item, lod, out m.Base, out m.Off, out m.Count, out int lvl);
-            m.Key = key; m.Epoch = _epoch; m.Lod = (byte)lod; m.Level = (byte)lvl;
+            m.Key = key; m.Epoch = epoch; m.Lod = (byte)lod; m.Level = (byte)lvl;
         }
         baseVertex = m.Base; off = m.Off; count = m.Count; level = m.Level;
         return m.Hit;
@@ -612,7 +596,7 @@ internal static unsafe partial class MeshChart
     /// longer there. Arena bytes stay until <see cref="Revoke"/>.</summary>
     internal static void ForgetSlot(int slot)
     {
-        _jobs.ForgetSlot(slot, static e => { if (e.Done && e.Refused == Refusal.None) _deadVerts += e.NV; });
+        _jobs.ForgetSlot(slot, static e => Drop(e));
         _epoch++;
     }
 
@@ -631,69 +615,33 @@ internal static unsafe partial class MeshChart
         int verts = 0;
         for (int i = 0; i < dead.Count; i++)
         {
-            if (_table.TryGetValue(dead[i], out Entry e) && e.Done && e.Refused == Refusal.None) { _deadVerts += e.NV; verts += e.NV; }
+            if (_table.TryGetValue(dead[i], out Entry e)) { Drop(e); if (e.Done && e.Refused == Refusal.None) verts += e.NV; }
             _table.Remove(dead[i]);
+            // a DB key's item is its source range, still marked offered: unmarked, a later seat charts it again
+            if ((int)(dead[i] >> 32) == DbSlot) CX.Alloy.Db.MeshArena.ClearOffered((int)dead[i]);
         }
         _log?.Info($"MeshChart: swept {dead.Count} entries nobody enrolled ({verts} vertices) -- {_table.Count} kept");
     }
 
-    /// <summary>Rewrite both arenas with only the live entries, in place under the same buffer names (the VAO
-    /// stays valid), and re-upload. Render thread, before the frame's batches are built, so no draw holds an
-    /// old offset. Cold: an area change's worth of copying.</summary>
-    private static void Compact()
-    {
-        var keys = new List<long>(_table.Keys);
-        _epoch++;
-        // ascending by arena place, so every copy slides DOWN over bytes already moved or dead
-        keys.Sort((a, b) => _table[a].Base.CompareTo(_table[b].Base));
-        int vU = 0, iU = 0;
-        for (int k = 0; k < keys.Count; k++)
-        {
-            Entry e = _table[keys[k]];
-            if (!e.Done || e.Refused != Refusal.None) continue;
-            if (vU != e.Base) Array.Copy(_vMirror, (long)e.Base * Stride, _vMirror, (long)vU * Stride, (long)e.NV * Stride);
-            e.Base = vU; vU += e.NV;
-            e.Off0 = Move(e.Off0, e.Cnt0, ref iU);
-            e.Off1 = Move(e.Off1, e.Cnt1, ref iU);
-            e.Off2 = Move(e.Off2, e.Cnt2, ref iU);
-            _table[keys[k]] = e;
-        }
-        int freed = _vUsed - vU;
-        _vUsed = vU; _iUsed = iU; _vUploaded = 0; _iUploaded = 0; _arenaFull = false; _deadVerts = 0; _compactions++;
-        // the whole compacted range goes back up NOW: the caller's incremental upload starts at the
-        // post-compaction cursor and would have left the GPU copy in the old layout under the new offsets
-        if (_vbo != 0 && vU > 0) UploadVerts(0);
-        if (_ebo != 0 && iU > 0) UploadIndices(0);
-        _log?.Info($"MeshChart: arena compacted -- {freed} of {vU + freed} vertices reclaimed, {keys.Count} entries kept");
-    }
-
-    /// <summary>Slide one index run down to the compaction cursor. Runs were appended in the same order as
-    /// their vertices, so the Base-sorted visit copies each run to a cursor at or below its old place.</summary>
-    private static nint Move(nint off, int count, ref int cursor)
-    {
-        if (count <= 0) return 0;
-        int from = (int)((long)off / 2);
-        if (from != cursor) Array.Copy(_iMirror, from, _iMirror, cursor, count);
-        nint at = (nint)((long)cursor * 2);
-        cursor += count;
-        return at;
-    }
-
-    /// <summary>The world edge: every (slot, item) key means nothing and both arenas rewind.</summary>
+    /// <summary>The world edge: every (slot, item) key means nothing, and every arena reference those keys
+    /// held goes back. The arena itself keeps what OTHER holders still want -- its ranges are keyed on
+    /// content, so an area change invalidates nothing in it.</summary>
     internal static void Revoke()
     {
+        foreach (var kv in _table) Drop(kv.Value);
         _jobs.Revoke();
+        // CX-120: and the DB offer marks, or the next area charts nothing -- the mark says a range is the
+        // charter's already, and this call is the moment that stops being true.
+        CX.Alloy.Db.MeshArena.ClearOfferMarks();
         _epoch++;
-        _vUsed = _vUploaded = _iUsed = _iUploaded = 0; _arenaFull = false; _deadVerts = 0;
         _offered = _hit = _missed = _built = _refused = _stale = _lodBig = _lodKept = 0; Array.Clear(_refusedBy);
         _logLeft = LogCap;
     }
 
-    /// <summary>The context is gone: forget every name, never delete. The mirrors go back up on the next Pump.</summary>
-    internal static void ContextLost()
-    {
-        _vao = 0; _vbo = 0; _ebo = 0; _vUploaded = 0; _iUploaded = 0; _vCapacity = 0; _iCapacity = 0;
-    }
+    /// <summary>The context is gone. Nothing to do: the names, the mirrors and the re-upload are the arena's
+    /// (<see cref="CX.Alloy.Db.MeshArena.ContextLost"/>, registered on its own pass), and this table holds
+    /// range ids, which survive it.</summary>
+    internal static void ContextLost() { }
 
     /// <summary>The <c>lod</c> panel's clause for the charted population, which never reaches <see cref="MeshLod"/>.</summary>
     internal static string LodNote()
@@ -703,8 +651,7 @@ internal static unsafe partial class MeshChart
         => !_jobs.Running ? "not running"
          : !Lightmap.G.Master!.V ? "Off — every mesh draws from the game's own geometry"
          : $"{_offered} meshes offered: {_hit} charts from cache, {_built} built, {_refused} refused; "
-           + $"{_vUsed} arena vertices ({_vUsed * Stride * 4 >> 20} MiB)" + (_arenaFull ? "; the arena is full" : "")
-           + "; " + LightmapBake.Describe();
+           + CX.Alloy.Db.MeshArena.Describe() + "; " + LightmapBake.Describe();
 
     /// <summary>One clause of the Alloy period line: charts hit/missed/built/refused, and what drew from them.</summary>
     internal static string Stats(int frames)

@@ -166,6 +166,13 @@ internal static unsafe class AlloyLights
     /// (LoadAndCompileSingleShader @0x4d34b0); the subsurface term compiles in above 1.</summary>
     private const uint QualityParam = 7;
     private static RiGetGlobalShaderParamiFn _gspI;
+
+    /// <summary>One of the engine's global shader params, int and float. Resolved once with the rest of the
+    /// light rig's entry points; 0 before that, which is every caller's "the engine has not said yet".</summary>
+    internal static int GlobalShaderParami(uint k) => _gspI == null ? 0 : _gspI(k);
+    /// <inheritdoc cref="GlobalShaderParami"/>
+    internal static float GlobalShaderParamf(uint k)
+        => EngineFn.RiGetGlobalShaderParamf == null ? 0f : EngineFn.RiGetGlobalShaderParamf(k);
     /// <summary>The stock energy factor for the subsurface term at wrap <paramref name="w"/>:
     /// fEnergyPreservation / (1 + w) = 2 / (2 + PI * w).</summary>
     internal static float SssK(float w) => 2f / (2f + MathF.PI * w);
@@ -305,7 +312,8 @@ internal static unsafe class AlloyLights
         check.Expect(FragmentLib.Contains("c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y)"), "the point loop carries the subsurface term on the MAPPED normal");
         check.Expect(FragmentLib.Contains("if (mirror) { spec += spc; continue; }")
           && FragmentLib.Contains("if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)") && FragmentLib.Contains("if (l > mLum) { mLum = l; mSlot = slot; mNdl = ndlRaw; mSpc = spc; }")
-          && AlloyRenderer.OwnedLitFsMain.Contains("pointSpec += lm * (1.0 - CxGlossW(rough)) * CxLoopSpec(CxSpecLobe"),
+          && AlloyRenderer.OwnedLitFsMain.Contains("pointSpec += lm * (1.0 - CxGlossW(rough)) * (wxFilm")
+          && AlloyRenderer.OwnedLitFsMain.Contains("float lmLobe = CxSpecLobe(N, V, lmDir, rough, spec);"),
           "a glossy lobe carries its light's shadow whatever the cap says, in the pages' place too");
         check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
 

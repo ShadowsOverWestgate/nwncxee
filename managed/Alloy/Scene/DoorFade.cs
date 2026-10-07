@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using CX.Alloy.Db;
 using CX.Engine;
 using CX.Framework;
 
@@ -115,6 +116,27 @@ internal static unsafe class DoorFade
     /// <summary>The engine's clamp, in its order: ceiling at 1 first, then the <c>mindooralpha</c> floor, so a
     /// floor above 1 wins. Both branches of the original land here.</summary>
     internal static float Clamp(float alpha, float floor) => MathF.Max(floor, MathF.Min(1f, alpha));
+
+    /// <summary>CX-118, DB mode: one door object's new fade, into the two columns that replace
+    /// <c>Gob+0x10c</c>. There is no engine field to write in DB mode, and the one value has two readers
+    /// that must never disagree -- <see cref="SceneDb.HitObjFadeAlpha"/> is what the hit test gates a click
+    /// on (<c>Gob::HitCheck</c>'s <c>mindooralpha</c> test), and <c>SceneDb.PartFade</c> is what the draw
+    /// multiplies in (the seam-feed contract). A door that faded out of the picture but not out of the pick,
+    /// or the reverse, is exactly the bug the single writer exists to prevent.</summary>
+    internal static void StepDb(DbId obj, float step, bool opaque, float floor)
+    {
+        if (!SceneDb.Objects.Valid(obj)) return;
+        int o = obj.Index;
+        float a = Clamp(SceneDb.HitObjFadeAlpha[o] + (opaque ? step : -step), floor);
+        SceneDb.HitObjFadeAlpha[o] = a;
+        int first = SceneDb.ObjPartFirst[o];
+        for (int i = first; i < first + SceneDb.ObjPartCount[o]; i++)
+        {
+            SceneDb.PartFade[i] = a;
+            SceneDb.TouchPart(i, Dirty.Material);
+        }
+        SceneDb.Touch(obj, Dirty.Material);
+    }
 
     /// <summary>Should this door be driven toward opaque? The engine's own test, transcribed from the
     /// disassembly of <c>Scene::FadeDoors</c> @0x467a6e..0x467d5b: shoot a segment through the door's bounding

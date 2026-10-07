@@ -1,3 +1,4 @@
+using CX.Alloy.Db;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -804,8 +805,17 @@ internal static unsafe class LightRegistry
                  + $"table {_used}/{Slots} slots ({_tombs} retired), overflow={_overflow} (must be 0), "
                  + $"node-residue={_residueSeen} unexplained (+{_residueDebris} known dead, "
                  + $"{_residueOverflow} past the pass cap{(_deadFull > 0 ? ", DEATH LEDGER FULL so the split is unreliable" : "")}), "
-                 + $"area ambient={(AreaAmbient != IntPtr.Zero ? "yes" : "NONE")} "
-                 + $"diffuse={(AreaDiffuse != IntPtr.Zero ? "yes" : "NONE")}, "
+                 // CX-120: in DB mode this registry is empty BY DESIGN -- the area pair comes from DbLights
+                 // -- so reporting its own two fields as NONE describes this class rather than the frame, and
+                 // reads as a fault. The frame's actual answer is FrameInputs', which is what every stage uses.
+                 + $"area ambient={(FrameInputs.HasAreaAmbient ? "yes" : "NONE")} "
+                 + $"diffuse={(FrameInputs.HasAreaDiffuse ? "yes" : "NONE")} (from the scene database), "
+                 // ...and WHAT they are. "yes" only says a term arrived; two modes can both say yes and
+                 // light the same area stops apart, which nothing else in a session would show.
+                 + $"amb=({FrameInputs.AreaAmbient.X:F3},{FrameInputs.AreaAmbient.Y:F3},{FrameInputs.AreaAmbient.Z:F3}) "
+                 + $"dif=({FrameInputs.AreaDiffuse.X:F3},{FrameInputs.AreaDiffuse.Y:F3},{FrameInputs.AreaDiffuse.Z:F3}) "
+                 + $"dir=({FrameInputs.AreaDiffuseDir.X:F2},{FrameInputs.AreaDiffuseDir.Y:F2},{FrameInputs.AreaDiffuseDir.Z:F2}) "
+                 + $"sun={(FrameInputs.HasSun ? "yes" : "NONE")}, "
                  // The peak table is keyed on THIS population, so its own overflow belongs on this line.
                  + SceneInputs.FlickerClause();
         _arrived = 0; _left = 0; _died = 0; _selTicks = 0; _selFrames = 0;

@@ -127,6 +127,7 @@ public sealed unsafe class GlContextService : IExtenderService
         log.Info(_disabled
             ? "GlContextService: stood down (alloy.gl46=0 in cx.cfg)"
             : "GlContextService: armed -- 4.6 share-listed context on first presented frame");
+        SelfCheck(log);
     }
 
     [DllImport("libdl.so.2")] private static extern IntPtr dlsym(IntPtr handle, string name);
@@ -165,19 +166,62 @@ public sealed unsafe class GlContextService : IExtenderService
     [UnmanagedCallersOnly]
     private static int XErrorNoop(IntPtr dpy, IntPtr ev) => 0;   // default handler exits the client
 
-    private static bool _worked;   // a consumer ran Enter/Leave since the last present
+    /// <summary><see cref="InBracket"/>'s work has already run this frame, in some other bracket. This is the
+    /// only reason the health bracket may stand down, and it is about the WORK, not about the bracket: it used
+    /// to be set by <see cref="Leave"/>, i.e. by anyone entering the context at all, and <c>GuiPass</c>'s GUI
+    /// flush enters every frame from the second present onwards (main menu included) without doing the work --
+    /// so the health bracket ran once per session and #211/#212's deletes were never issued in the states those
+    /// tickets exist for.</summary>
+    private static bool _workRan;
+    /// <summary>Some bracket closed this frame (the old <c>_worked</c>). Diagnostic only -- it is what
+    /// separates "the health bracket had the frame to itself" from "a foreign bracket ran and left the work
+    /// undone", which is the population the old flag starved.</summary>
+    private static bool _entered;
+    private static long _healthAlone, _healthAfterForeign, _workElsewhere;
+
+    /// <summary>Is <see cref="InBracket"/>'s work still owed this frame? The health bracket's whole
+    /// condition bar the context's own availability, so <see cref="SelfCheck"/> can assert it with no GL.</summary>
+    internal static bool WorkDue => !_workRan;
 
     /// <summary>Per-frame entry from the frame owner's present (render thread). Creates the context on
-    /// first call, then runs the health bracket -- unless a consumer (tracer draw) already ran one this
-    /// frame. Near-free when disabled/failed.</summary>
+    /// first call, then runs the health bracket -- unless the deferred work already ran in another bracket
+    /// this frame. Near-free when disabled/failed.</summary>
     public static void OnFrame()
     {
         Presents++;
         if (_disabled) return;
         if (!_tried) { _tried = true; try { Create(); } catch (Exception e) { Fail($"EXCEPTION {e.Message}"); } }
-        if (Available && !_worked && Enter()) { InBracket?.Invoke(); Leave(); }
-        _worked = false;
+        bool foreign = _entered, done = _workRan;
+        if (Available && !_heldElsewhere && WorkDue && Enter()) { RunInBracketHere(); Leave(); }
+        if (done) _workElsewhere++; else if (foreign) _healthAfterForeign++; else _healthAlone++;
+        _workRan = false; _entered = false;
         _span.Rotate(); _stamped = false;
+    }
+
+    /// <summary>#211/#212's contract, with no context and no GL: the per-frame flag means THE WORK RAN, not
+    /// "a bracket was entered". A foreign bracket must leave the work owed, running it must not run it twice,
+    /// and the frame boundary must owe it again.</summary>
+    internal static bool SelfCheck(ExtenderLog log)
+    {
+        Action? savedWork = InBracket;
+        bool savedRan = _workRan, savedEntered = _entered;
+        int ran = 0;
+        InBracket = () => ran++;
+        _workRan = false; _entered = false;
+        bool fresh = WorkDue;
+        _entered = true;                 // a GUI flush entered the context and left, doing none of the work
+        bool afterForeign = WorkDue;
+        RunInBracketHere();
+        bool afterWork = WorkDue;
+        _workRan = false; _entered = false;   // the frame boundary OnFrame draws
+        bool nextFrame = WorkDue;
+        InBracket = savedWork; _workRan = savedRan; _entered = savedEntered;
+        bool ok = fresh && afterForeign && ran == 1 && !afterWork && nextFrame;
+        log.Info(ok
+            ? "GlContextService.SelfCheck: passed -- the deferred work is owed until it RUNS, not until someone enters the context"
+            : $"GlContextService.SelfCheck: FAILED -- fresh={fresh} afterForeignBracket={afterForeign} ran={ran} "
+            + $"afterWork={afterWork} nextFrame={nextFrame}");
+        return ok;
     }
 
     /// <summary>Work that needs A context but not the Alloy pass: the health bracket runs every in-play frame
@@ -324,7 +368,7 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <see cref="Leave"/> before returning to engine code.</summary>
     public static bool Enter()
     {
-        if (!Available) return false;
+        if (!Available || _heldElsewhere) return false;
         // Latch the probe pixel here, in the ENGINE context, where the viewport is the window.
         if (_swapProbe > 0 && GameGate.InModule)
         {
@@ -416,7 +460,7 @@ public sealed unsafe class GlContextService : IExtenderService
         }
         if (fOut != IntPtr.Zero) { _waitSync(fOut, 0, TimeoutIgnored); _deleteSync(fOut); }
         _errEng += Gl.DrainErrors();
-        _worked = true;
+        _entered = true;
 
         if (_swapProbe > 0 && GameGate.InModule)
         {
@@ -427,7 +471,9 @@ public sealed unsafe class GlContextService : IExtenderService
         if (++_frames >= LogEvery)
         {
             _log?.Info($"GlContextService: [gl46] {_frames} brackets (>= 1/frame; +1 per Alloy pass), " +
-                       $"errors 4.6={_err46} engine={_errEng}, switch-fails={_switchFails}" +
+                       $"errors 4.6={_err46} engine={_errEng}, switch-fails={_switchFails}, " +
+                       $"deferred work since boot: {_healthAlone} health-only frames + {_healthAfterForeign} " +
+                       $"after a foreign bracket, {_workElsewhere} already done elsewhere" +
                        (_debug ? $", debug msgs={_dbgTotal} this period ({_dbgLogged} logged, {_dbgDropped} dropped since boot)" : ""));
             _dbgTotal = 0;
             _frames = 0; _err46 = 0; _errEng = 0; _switchFails = 0;
@@ -516,6 +562,80 @@ public sealed unsafe class GlContextService : IExtenderService
         }
         Gl.ActiveTexture((uint)active);
         _log?.Info(sb.ToString());
+    }
+
+    // ---- CX-120 seam-scene: the 4.6 context on a render thread ----
+
+    /// <summary>Make the 4.6 context current on the CALLING thread and leave it current -- what
+    /// <c>CX.Alloy.Db.RenderThread</c> does once at start instead of running the per-frame Enter/Leave
+    /// bracket on the game thread. A GL context is current on at most one thread, so this is only valid when
+    /// the game thread holds no bracket (<see cref="Inside"/> is false), and from then on the game thread must
+    /// not call <see cref="Enter"/>.
+    /// <para>The engine's own context is NOT touched: it stays current on the game thread, which is what lets
+    /// the engine's 2D, NUI and the present keep running there while this thread draws.</para></summary>
+    public static bool MakeCurrentHere()
+    {
+        // _heldElsewhere is expected to be TRUE here: the game thread reserved it before starting this
+        // thread (ReserveForOtherThread). What must not be true is that the game thread is mid-bracket.
+        if (!Available || Inside) return false;
+        if (MakeCur(Context) == 0) { _switchFails++; return false; }
+        Gl.DrainErrors();
+        // Latch BEFORE returning: from here the game thread's Enter must refuse, or its MakeCurrent would
+        // target a context current on this thread and GLX answers BadAccess -- which Xlib's default handler
+        // turns into process exit, not an error code.
+        _heldElsewhere = true;
+        return true;
+    }
+
+    /// <summary>The 4.6 context is current on a thread that is not the game thread, so the game thread's
+    /// per-frame bracket must stand aside entirely. Read by <see cref="Enter"/> and <see cref="OnFrame"/>.
+    /// <para>Volatile: it is written on the render thread at start and stand-down and read on the game thread
+    /// every frame, and a stale read either way is the BadAccess this flag exists to prevent.</para></summary>
+    private static volatile bool _heldElsewhere;
+
+    /// <summary>True while another thread owns the 4.6 context. The frame owner asks before it assumes the
+    /// bracket ran.</summary>
+    public static bool HeldElsewhere => _heldElsewhere;
+
+    /// <summary>Claim the context for a thread that is about to take it, from the GAME thread, before that
+    /// thread runs. Without this there is a window between "the render thread was started" and "it called
+    /// MakeCurrentHere" in which the game thread's own bracket can still open -- and then the render thread
+    /// finds the context busy and stands down for the session over a race. False = someone already holds it.</summary>
+    public static bool ReserveForOtherThread()
+    {
+        if (!Available || Inside || _heldElsewhere) return false;
+        _heldElsewhere = true;
+        return true;
+    }
+
+    /// <summary>Give the reservation back without ever having taken the context (the thread failed to
+    /// start).</summary>
+    public static void CancelReservation() => _heldElsewhere = false;
+
+    /// <summary>Drop the 4.6 context from the calling thread (session end, or a stand-down), so the game
+    /// thread's bracket can own it again.</summary>
+    public static void ReleaseCurrentHere()
+    {
+        if (!Available) return;
+        MakeCur(IntPtr.Zero);
+        // Cleared LAST: the game thread may Enter the moment this is false, and it must not do so until the
+        // context is genuinely free.
+        _heldElsewhere = false;
+    }
+
+    /// <summary>Run <see cref="InBracket"/> on the thread that already holds the 4.6 context -- the work that
+    /// needs A context but not the Alloy pass (#211's texture retires, the texture registry's drain, the
+    /// arena pump, the palette and glyph-atlas builds). With a render thread the game thread's bracket never
+    /// opens, so this is where that work happens instead; without one it stays in <see cref="OnFrame"/>.
+    /// <para>This is the ONE declaration of "the frame's deferred work ran": every site that performs it calls
+    /// through here, which is what lets <see cref="OnFrame"/>'s health bracket stand down for the right
+    /// reason. A caller must hold the 4.6 context.</para></summary>
+    public static void RunInBracketHere()
+    {
+        Action? work = InBracket;
+        if (work == null) return;
+        work();
+        _workRan = true;
     }
 
     private static string CStr(byte* p, int max)

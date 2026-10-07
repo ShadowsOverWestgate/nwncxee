@@ -12,6 +12,7 @@ flat in int vDraw;             // this fragment's CxDraw record: the material co
 #include "cx_featdecl.glsl"
 #include "cx_keyfogdecl.glsl"
 #include "cx_chartbuf.glsl"
+#include "cx_plt.glsl"
 uniform sampler2D uTex;
 #define CX_ARRIVE_SECONDS 0.6   // CX-52: a streamed diffuse's fade-in, see the diffuse sample
 #define CX_ARRIVE_MIPS 6.0      // ...starting this many mips blurred
@@ -33,6 +34,7 @@ uniform int uViz;              // /alloy viz, see OwnedLitFsMain
 uniform samplerCube uProbe;
 // uProbeMips / uProbeGain / uSceneEnv ride the pass block (cx_pass).
 uniform int uCapture;          // 1 = this draw IS the probe capture: stay linear, never sample uProbe; 2 = the planar reflection's mirrored draw
+uniform float uMirrorZ;        // uCapture 2: the mirror plane's world z -- what lies under it would mirror up over the reflection
 uniform sampler2D uSsao;       // #379: this frame's screen-space visibility (SsaoPass), at gl_FragCoord
 uniform int uSsaoOn;           // >0 when this BATCH is in the depth SsaoPass read; <0 names why not (viz 35)
 uniform int uSsaoHalf;         // post.halfres: 1 = uSsao is half the frame's extent, read bilaterally
@@ -52,6 +54,8 @@ const int CX_SLOT_NORMAL = 1, CX_SLOT_SPEC = 2, CX_SLOT_ROUGH = 4,
 // #146: bit 6, texture slot 7 -- the AO map. It multiplies the SAME occlusion factor the height
 // map's local term feeds, so a material carrying both gets one combined ambient scale.
 const int CX_SLOT_AO = 128;
+// bit 8: no shadow lands on this record (an untextured blended sheet: a door's transition sheen)
+const int CX_SLOT_NOSHADOW = 256;
 /// the depth encode's own rounding, nothing more: #119 makes a prepassed fragment's depth EQUAL
 const float CX_AO_DEPTH_EPS = 1e-5;
 /// The half-res upsample's depth tolerance, in fragment depth SLOPES: a neighbour more than this
@@ -88,6 +92,11 @@ const float CX_ENV_SPEC_MAX = 0.98, CX_ENV_SPEC_SCALE = 8.0, CX_ENV_ROUGH_SCALE 
 // inc_standard.shd:250-252: the albedo is desaturated toward this grey in proportion to reflectivity,
 // so the reflection is not counted twice. DISPLAY space -- the engine does it before the :253 linearise.
 const vec3 CX_ENV_GREY = vec3(0.666667);
+// inc_lighting.shd:504: CX_ENV_GREY linearised, the env map's mean level -- vanilla's own constant where no env
+// texture is bound. Scales the lit legacy reflection (cx_ownlit_tail).
+const vec3 CX_ENV_GREY_LIN = vec3(0.4098);
+// the ceiling on the probe pattern over its mean: a torch in an otherwise black night probe is a spike, not a mirror
+const float CX_ENV_PAT_MAX = 4.0;
 
 // #379: the visibility at this pixel. At full resolution that is one fetch. Under post.halfres the
 // pass ran at half the frame's extent, and the four surrounding half-res texels are weighted by the

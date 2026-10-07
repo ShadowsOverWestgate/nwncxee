@@ -173,7 +173,6 @@ internal static unsafe class Programs
         GrassField.DropProgram();
         PostStack.DropSpliced();
         SkyStage.DropPrograms();
-        SceneWalk.Dirty = true;
         _log?.Info("AlloyRenderer: module changed -- the spliced programs (lit, hosted lit, water, grass, post, sky) are dropped and rebuild from this module's resource chain");
     }
 
@@ -370,7 +369,6 @@ internal static unsafe class Programs
         if (prog == 0)
         {
             _litFailed = true;
-            SceneWalk.Dirty = true;   // re-enroll at once so lit parts revert to the engine's own draw
             _log?.Info("AlloyRenderer: clustered lit program unavailable -- lit parts revert to engine drawing");
             return;
         }
@@ -417,7 +415,7 @@ internal static unsafe class Programs
         L.CubeTex = GlProgram.Loc(prog, "uLocalShadow"); L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow");
         L.CubeCount = GlProgram.Loc(prog, "uLocalCubes");
         L.Probe = GlProgram.Loc(prog, "uProbe");
-        L.Capture = GlProgram.Loc(prog, "uCapture");
+        L.Capture = GlProgram.Loc(prog, "uCapture"); L.MirrorZ = GlProgram.Loc(prog, "uMirrorZ");
         L.LmPages = GlProgram.Loc(prog, "uLmPages"); L.LmMovers = GlProgram.Loc(prog, "uLmMovers");
         L.Ssao = GlProgram.Loc(prog, "uSsao"); L.SsaoOn = GlProgram.Loc(prog, "uSsaoOn");
         L.SsaoHalf = GlProgram.Loc(prog, "uSsaoHalf");
@@ -428,7 +426,7 @@ internal static unsafe class Programs
         L.CoverVp = GlProgram.Loc(prog, "uCoverVp"); L.CoverLayer = GlProgram.Loc(prog, "uCoverLayer");
         L.SnowLook = GlProgram.Loc(prog, "uSnowLook"); L.SnowLight = GlProgram.Loc(prog, "uSnowLight"); L.CoverEsm = GlProgram.Loc(prog, "uCoverEsmP"); L.SnowPom = GlProgram.Loc(prog, "uSnowPom");
         L.WxMapXf = GlProgram.Loc(prog, "uWxMapXf"); L.WxMapP = GlProgram.Loc(prog, "uWxMapP");
-        L.WxEdge = GlProgram.Loc(prog, "uWxEdge"); L.WxRun = GlProgram.Loc(prog, "uWxRun");
+        L.WxEdge = GlProgram.Loc(prog, "uWxEdge"); L.WxRun = GlProgram.Loc(prog, "uWxRun"); L.WxCache = GlProgram.Loc(prog, "uWxCache");
         L.Feat = FeatLocs(prog);
         // Bind the two shadow samplers to their units ONCE, here, and not only on the frames a map is fresh.
         // A sampler uniform defaults to unit 0 -- the same unit uTex lives on -- and GL forbids two samplers

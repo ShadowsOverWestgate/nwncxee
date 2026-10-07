@@ -78,7 +78,9 @@ internal static unsafe class AreaBorder
         _areas++;
         GrassField.BorderClear();
         _area = area;
+        CX.Alloy.Db.TileBuild.BorderWindow(true);   // CX-116: the same window widens the DB ring
         int r = _origLoad(area, screen, progress);
+        CX.Alloy.Db.TileBuild.BorderWindow(false);
         _area = IntPtr.Zero;
         return r;
     }
@@ -87,7 +89,9 @@ internal static unsafe class AreaBorder
     private static void OnReloadBorder(IntPtr area)
     {
         _area = area;
+        CX.Alloy.Db.TileBuild.BorderWindow(true);
         _origReload(area);
+        CX.Alloy.Db.TileBuild.BorderWindow(false);
         _area = IntPtr.Zero;
     }
 

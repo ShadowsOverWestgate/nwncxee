@@ -1,6 +1,8 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Alloy.Db;
+using CX.Alloy.Mdl;
 using CX.Engine;
 using CX.Framework;
 
@@ -9,9 +11,12 @@ namespace CX.Alloy;
 internal static unsafe partial class EmitterSim
 {
     /// <summary>
-    /// Off-device: every part of the simulation that is a DECISION rather than a read. The engine objects are
-    /// synthetic -- a <c>PartEmitter</c> is 0x250 zeroed bytes with the fields this file writes, and the pool
-    /// is the real one -- so the whole thing runs on a machine with no client and no GL.
+    /// Off-device: every part of the simulation that is a DECISION rather than a read. The step is driven
+    /// through an <see cref="Emitter"/> snapshot, which is what both sources produce, and the pool is the real
+    /// one -- so the whole thing runs on a machine with no client and no GL.
+    /// <para>CX-120 adds the check that matters most to this ticket: <see cref="BothSources"/> fills ONE
+    /// parameter set through both fillers and runs the same fountain from each, so "the DB path behaves like
+    /// the engine path" is a measurement rather than a claim.</para>
     /// <para>What is NOT covered, and cannot be: <c>Part::GetWorld</c>, <c>Gob::GetAdjustedScale</c>, the wind
     /// call and the p2p target's position virtual are engine calls with no seam. Those are read, reasoned
     /// about and left to the live check.</para>
@@ -23,18 +28,17 @@ internal static unsafe partial class EmitterSim
         // ---- the maths the rest of the file stands on ------------------------------------------------
         // A transposed basis column sends every spawn sideways, and the symptom reads as "the effect is in
         // the wrong place" rather than as an algebra error.
-        IntPtr em = Fake(out IntPtr nodePtr);
-        var node = new MdlNodeEmitter(nodePtr);
-        var e = new PartEmitter(em);
-        e.Orient = new Quat { W = 1f };
+        Emitter e = default;
+        e.Part = -1;
+        e.M.Orient = new Quat { W = 1f };
         Basis(ref e);
-        check.Expect(AxisX(e.Basis) == new Vector3(1f, 0f, 0f) && AxisY(e.Basis) == new Vector3(0f, 1f, 0f)
-                     && AxisZ(e.Basis) == new Vector3(0f, 0f, 1f),
+        check.Expect(e.M.Bx == new Vector3(1f, 0f, 0f) && e.M.By == new Vector3(0f, 1f, 0f)
+                     && e.M.Bz == new Vector3(0f, 0f, 1f),
           "the identity quaternion gives the identity spawn basis, column-major");
         float h = MathF.Sqrt(0.5f);
-        e.Orient = new Quat { W = h, Z = h };                 // a quarter turn about Z
+        e.M.Orient = new Quat { W = h, Z = h };                 // a quarter turn about Z
         Basis(ref e);
-        check.Expect(Near(AxisX(e.Basis), new Vector3(0f, 1f, 0f)) && Near(AxisZ(e.Basis), new Vector3(0f, 0f, 1f)),
+        check.Expect(Near(e.M.Bx, new Vector3(0f, 1f, 0f)) && Near(e.M.Bz, new Vector3(0f, 0f, 1f)),
           "...and a quarter turn about Z carries the basis X onto world Y -- (w,x,y,z), not (x,y,z,w)");
         check.Expect(Near(QuatZ(new Quat { W = 1f }), new Vector3(0f, 0f, 1f))
                      && Near(QuatZ(AxisAngle(new Vector3(1f, 0f, 0f), HalfPi)), new Vector3(0f, -1f, 0f)),
@@ -55,29 +59,28 @@ internal static unsafe partial class EmitterSim
         // ---- the spawn accumulator. A 3/s emitter at 60fps births 0.05 of a particle a frame; without the
         // carry it births none at all, forever, and the effect is simply missing.
         Reset();
-        e.BirthRate = 3f; e.Life = 10f; e.Velocity = 0f; e.FrameEnd = 0f; e.FrameStart = 0f;
-        e.Orient = new Quat { W = 1f };
-        Basis(ref e);
-        Declare(node, "Fountain");
-        int s = Open(0, em); _tabN = 1;
+        e = Params(ModeFountain);
+        e.BirthRate = 3f; e.Life = 10f;
+        int s = Slot0(in e);
         check.Expect(s == 0 && _tab[0].Mode == ModeFountain && _tab[0].Mover == MoveStandard,
           "the model's `update Fountain` with no p2p bit resolves to the fountain mode and the plain mover");
         check.Expect(_tab[0].Cap >= 32, "a 3/s emitter living 10s reserves room for its population");
         ref Slot slot = ref _tab[0];
         int frames = 0;
-        // Age then birth, which is Advance's order minus the mover -- the mover needs a live Scene and the
-        // accumulator is entirely FountainBirth's.
-        while (slot.Live == 0 && frames < 60) { Tick(ref slot, em, ref e, node, 1f / 60f); frames++; }
+        // Age then birth, which is Advance's order minus the mover -- the mover needs a scene for wind and
+        // collision and the accumulator is entirely FountainBirth's.
+        while (slot.Live == 0 && frames < 60) { Tick(ref slot, ref e, 1f / 60f); frames++; }
         check.Expect(slot.Live == 1 && frames >= 19 && frames <= 21,
           "the accumulator births the first particle after ~1/3 s at 60fps, not on frame one and not never");
-        for (int i = 0; i < 60; i++) Tick(ref slot, em, ref e, node, 1f / 60f);
+        for (int i = 0; i < 60; i++) Tick(ref slot, ref e, 1f / 60f);
         check.Expect(slot.Live == 4, "one more second of a 3/s emitter is three more particles");
 
         // ---- lifetime and death, and the ORDER death leaves behind. An index-domain fade and the linked
         // render type both read the live slice as oldest-first, so a swap-remove would recolour the chain.
         Reset();
+        e = Params(ModeFountain);
         e.BirthRate = 0f; e.Life = 1f;
-        s = Open(0, em); _tabN = 1;
+        s = Slot0(in e);
         slot = ref _tab[0];
         slot.Cap = 8;
         for (int i = 0; i < 4; i++) { Particle p = Take(ref slot); p.Age = i * 0.3f; p.Roll = i; }
@@ -106,17 +109,16 @@ internal static unsafe partial class EmitterSim
         // ---- gravity and the inherited-velocity decay. Both are the engine's exact arithmetic, and both are
         // what a comparison shot would show first if they were wrong.
         Reset();
+        e = Params(ModeFountain);
         e.Life = 10f; e.Gravity = 1f; e.BirthRate = 0f;
-        e.Pos = Vector3.Zero; e.PrevPos = Vector3.Zero; e.PrevRot = new Quat { W = 1f };
-        e.Orient = new Quat { W = 1f }; Basis(ref e);
-        s = Open(0, em); _tabN = 1;
+        s = Slot0(in e);
         slot = ref _tab[0];
         Particle q = Take(ref slot);
         Clear(q);
         q.Vel = new Vector3(1f, 0f, 0f);
         q.InhVel = new Vector3(0f, 1f, 0f);
         q.InhDecay = 1f;
-        Standard(ref slot, ref e, default, 0, IntPtr.Zero, 0.5f);
+        Standard(ref slot, ref e, IntPtr.Zero, 0.5f);
         check.Expect(Near(q.Pos, new Vector3(0.5f, 0.5f, 0f)),
           "one half-second step moves by velocity AND by the inherited velocity scaled by its own decay");
         check.Expect(MathF.Abs(q.Vel.Z - (-9.81f * 0.5f)) < 1e-4f,
@@ -125,15 +127,12 @@ internal static unsafe partial class EmitterSim
           "the inherited velocity decays by |(1 - dt)| per step -- the engine's own frame-rate-dependent term");
         q.Splat = 1;
         Vector3 held = q.Pos;
-        Standard(ref slot, ref e, default, 0, IntPtr.Zero, 0.5f);
+        Standard(ref slot, ref e, IntPtr.Zero, 0.5f);
         check.Expect(q.Pos == held, "a landed splat does not integrate at all");
 
         // ---- the p2p bezier's shape. t=0 must sit exactly on the emitter and t=1 exactly on the target, or
         // a chain starts or ends in mid-air; combineTime 0 means "on the curve from birth".
-        Reset();
-        e.Life = 1f; e.Gravity = 0f; e.CombineTime = 0f; e.Bezier2 = 0f; e.Bezier3 = 0f;
-        e.Pos = new Vector3(1f, 2f, 3f); e.PrevPos = e.Pos;
-        Vector3 c0 = e.Pos, c3 = new Vector3(5f, 2f, 3f);
+        Vector3 c0 = new(1f, 2f, 3f), c3 = new(5f, 2f, 3f);
         check.Expect(Near(CubeAt(c0, c0, c3, c3, 0f), c0) && Near(CubeAt(c0, c0, c3, c3, 1f), c3),
           "the p2p curve begins on the emitter and ends on the target");
         check.Expect(Near(CubeAt(c0, c0, c3, c3, 0.5f), (c0 + c3) * 0.5f),
@@ -142,8 +141,9 @@ internal static unsafe partial class EmitterSim
         // ---- the lightning fractal. Determinism is the property that matters: one emitter, one seed, one
         // shape -- otherwise a bolt reshapes itself every frame and reads as noise rather than as lightning.
         Reset();
-        e.BoltRadius = 1f; e.ZigZag = 0f;
-        s = Open(0, em); _tabN = 1;
+        e = Params(ModeLightning);
+        e.BoltRadius = 1f; e.ZigZag = 0f; e.BirthRate = 9f; e.Life = 1f;
+        s = Slot0(in e);
         slot = ref _tab[0];
         slot.Cap = 9;
         for (int i = 0; i < 9; i++) { Particle p = Take(ref slot); Clear(p); p.Pos = new Vector3(i, 0f, 0f); }
@@ -166,7 +166,9 @@ internal static unsafe partial class EmitterSim
 
         // ---- the motion-blur trail and the roll wrap.
         Reset();
-        s = Open(0, em); _tabN = 1;
+        e = Params(ModeFountain);
+        e.BirthRate = 0f; e.Life = 10f;
+        s = Slot0(in e);
         slot = ref _tab[0];
         slot.Cap = 4;
         e.Type = 6; e.BlurLength = 1f;
@@ -186,23 +188,36 @@ internal static unsafe partial class EmitterSim
           "roll wraps into +-2pi instead of growing until sin loses its precision");
 
         // ---- the flag bit map. Eleven bits read as one word; one off-by-one there turns every emitter into
-        // a differently wrong one, silently.
+        // a differently wrong one, silently. The two the DRAW reads are in the same word, measured on
+        // MdlNodeEmitter::IsTinted @0x4aafc0 (>> 3) and IsSplat @0x4ab070 (>> 9).
         check.Expect(FP2P == 1 && FP2PSel == 2 && FWind == 4 && FBounce == 0x10 && FRandom == 0x20
                      && FInherit == 0x40 && FInheritVel == 0x80 && FInheritLocal == 0x100
-                     && FInheritPart == 0x400,
-          "the MdlNodeEmitter flag bits match the Is* accessors' shifts (0,1,2,4,5,6,7,8,10)");
+                     && FInheritPart == 0x400 && FTinted == 8 && FSplat == 0x200,
+          "the MdlNodeEmitter flag bits match the Is* accessors' shifts (0,1,2,3,4,5,6,7,8,9,10)");
 
         // ---- the update-mode string compare, which is what picks the whole behaviour.
         check.Expect(Is(Lit("Fountain"), "Fountain") && !Is(Lit("Fountainhead"), "Fountain")
                      && !Is(Lit("Single"), "Fountain") && Is(Lit("Lightning"), "Lightning"),
           "the update mode matches the model's whole literal, not a prefix of it");
+        // ...and the DB side reads the same four names out of the model's own string, case-insensitively,
+        // because the ASCII corpus spells them both ways and the engine's compare is strcasecmp.
+        check.Expect(ModeOf("fountain") == ModeFountain && ModeOf("EXPLOSION") == ModeExplosion
+                     && ModeOf("Lightning") == ModeLightning && ModeOf("anything else") == ModeSingle,
+          "the DB filler picks the same four modes off the parsed literal, case-insensitively");
+        check.Expect(RenderTypeOf("Normal") == 0 && RenderTypeOf("Billboard_to_Local_Z") == 1
+                     && RenderTypeOf("Billboard_to_World_Z") == 2 && RenderTypeOf("Linked") == 3
+                     && RenderTypeOf("Aligned_to_World_Z") == 4 && RenderTypeOf("Aligned_to_Particle_Dir") == 5
+                     && RenderTypeOf("Motion_Blur") == 6 && RenderTypeOf("") == 0,
+          "...and the seven render types in PartEmitter::Initialize's own order, unknown falling through to 0");
+        check.Expect(BlendOf("Normal") == 0 && BlendOf("Punch-Through") == 1 && BlendOf("Lighten") == 2,
+          "...and the three blend modes: normal 0, punch-through 1, anything else additive");
 
         // ---- the draw order. This is a DECISION with a history: the first cut sorted descending on a note
         // that called the engine's sort "back to front", and it is ascending. Getting it wrong recolours
         // every overlapping pair of alpha plumes and nothing else says so.
         Reset();
         _tabN = 4;
-        for (int i = 0; i < 4; i++) { _tab[i] = default; _tab[i].Em = (IntPtr)(i + 1); }
+        for (int i = 0; i < 4; i++) { _tab[i] = default; _tab[i].Part = -1; _tab[i].Em = (IntPtr)(i + 1); }
         _tab[0].Dist = 9f; _tab[1].Dist = 1f; _tab[2].Dist = 5f; _tab[3].Dist = 5f;
         // The two at equal distance share a Gob, so the tiebreak reaches them; 3 declares the lower order.
         _tab[2].Gob = (IntPtr)0x1000; _tab[2].Order = 7;
@@ -227,7 +242,9 @@ internal static unsafe partial class EmitterSim
         // INVISIBLY -- a floor that never reports a hit looks exactly like a floor nobody bounced on.
         BounceWorld.Check(check);
         Reset();
-        s = Open(0, em); _tabN = 1;
+        e = Params(ModeFountain);
+        e.BirthRate = 0f; e.Life = 10f;
+        s = Slot0(in e);
         slot = ref _tab[0];
         slot.Cap = 4;
         Floor(check, ref slot, 0.5f);
@@ -270,9 +287,252 @@ internal static unsafe partial class EmitterSim
           "a block is a power of two, so a ramping emitter grows O(log N) times, not N");
         check.Expect(Block(0) == 1 && Block(-5) == 1, "...and is never zero or negative, whatever Want returned");
 
+        BothSources(check);
+
+        Reset();
+        log.Info(check.Ok ? "EmitterSim.SelfCheck: passed" : "EmitterSim.SelfCheck: FAILED");
+    }
+
+    /// <summary>CX-120: <b>the two fillers, over one emitter.</b> The same thirty parameters are stated twice
+    /// -- once in a synthetic engine <c>PartEmitter</c>/<c>MdlNodeEmitter</c> pair and once as a parsed
+    /// <see cref="EmitterDef"/> with the matching controller rest keys -- and the check asserts that the two
+    /// snapshots agree field for field, and then that two hundred frames of the same fountain run from each
+    /// produce the same particles.
+    /// <para>This is the whole argument that CX-120 did not change mode 0: if the engine filler is a
+    /// transcription and the step reads nothing but the snapshot, then the step cannot have changed. The
+    /// field comparison pins the first half and the simulated run pins the second.</para></summary>
+    private static void BothSources(Checker check)
+    {
+        Reset();
+        DbInputs.Reset();
+
+        // The parameter set, stated once. Deliberately awkward values: a rate that needs the accumulator, a
+        // lifespan that reaps mid-run, a non-zero spawn rectangle and a spread so the RNG is exercised.
+        const float Rate = 7f, Life = 1.5f, Vel = 3f, RandV = 0.5f, Spread = 0.8f, Spin = 2f, Mass = 1f,
+                    XSize = 0.4f, YSize = 0.25f, Threshold = 0.3f, Blur = 0.6f, BoltDelay = 0.2f,
+                    BoltRadius = 0.9f, BoltScale = 1.3f, Drag = 0.5f, Grav = 4f, Bez2 = 1f, Bez3 = 2f,
+                    Comb = 3f, A0 = 0.9f, A1 = 0.1f, Fps = 12f, F0 = 1f, F1 = 5f,
+                    SX0 = 0.5f, SX1 = 1.5f, SY0 = 0.2f, SY1 = 0.7f, Bnc = 0.4f;
+        const int Flags = FRandom | FInheritVel;
+
+        // ---- the engine side ----
+        IntPtr em = Fake(out IntPtr nodePtr);
+        var ev = new PartEmitter(em);
+        var node = new MdlNodeEmitter(nodePtr);
+        ev.BirthRate = Rate; ev.Life = Life; ev.Velocity = Vel; ev.RandVel = RandV; ev.Spread = Spread;
+        ev.Spin = Spin; ev.Gravity = Mass; ev.SpawnX = XSize; ev.SpawnY = YSize; ev.DeadSpace = Threshold;
+        ev.BlurLength = Blur; ev.BoltDelay = BoltDelay; ev.BoltRadius = BoltRadius; ev.ZigZag = BoltScale;
+        ev.P2pDrag = Drag; ev.P2pGrav = Grav; ev.Bezier2 = Bez2; ev.Bezier3 = Bez3; ev.CombineTime = Comb;
+        ev.AlphaStart = A0; ev.AlphaEnd = A1; ev.Fps = Fps; ev.FrameStart = F0; ev.FrameEnd = F1;
+        ev.SizeStartX = SX0; ev.SizeEndX = SX1; ev.SizeStartY = SY0; ev.SizeEndY = SY1; ev.Bounce = Bnc;
+        ev.ColorStart = new Vector3(1f, 0.5f, 0.25f); ev.ColorEnd = new Vector3(0f, 0.25f, 1f);
+        ev.Type = 0; ev.Blend = 2; ev.LifeInterp = 1;
+        ev.Pos = new Vector3(10f, 20f, 3f); ev.Orient = new Quat { W = 1f };
+        new CX.Engine.Part(em).Scale = 1f;   // zeroed memory otherwise; a real Part is seeded to 1
+        node.Flags = Flags;
+        node.GridX = 4; node.GridY = 2; node.Loop = 1; node.NoCull = 1;
+        node.ConeCap = 0.75f; node.WindStrength = 1.25f; node.WindFalloff = 2.5f;
+        Declare(node, "Fountain");
+
+        // ---- the database side ----
+        ModelDef m = DbModel(Flags);
+        DbId obj = SceneDb.Objects.Alloc();
+        DbFeed.InitObject(obj.Index);
+        DbId ph = SceneDb.Parts.Alloc();
+        int part = ph.Index;
+        DbFeed.InitPart(part);
+        SceneDb.PartObj[part] = obj;
+        SceneDb.PartModel[part] = m;
+        SceneDb.PartNode[part] = 1;
+        SceneDb.PartScale[part] = 1f;
+        SceneDb.ObjScale[obj.Index] = 1f;
+        SceneDb.PartWorld[part] = Matrix4x4.CreateTranslation(10f, 20f, 3f);
+        SceneDb.ObjWorld[obj.Index] = SceneDb.PartWorld[part];
+        SceneDb.ObjRot[obj.Index] = Quaternion.Identity;
+
+        Emitter a = default, d = default;
+        bool okA = FillEngine(em, ref a);
+        bool okD = FillDb(part, ref d);
+        check.Expect(okA && okD, "both fillers accept the same emitter");
+
+        string? diff = FirstDiff(in a, in d);
+        check.Expect(diff == null,
+          "the engine views and the parsed model + controller rest keys fill the SAME snapshot -- which is "
+          + $"what makes the DB path the same simulation and not a second one (first difference: {diff ?? "none"})");
+        // The three field names that mean something else in the file. Getting any of them wrong is silent:
+        // the emitter simply behaves as if the parameter were zero.
+        check.Expect(d.ConeCap == 0.75f && d.WindStrength == 1.25f && d.WindFalloff == 2.5f,
+          "the MDL's `deadspace`, `blastRadius` and `blastLength` are the engine's coneCap, windStrength and "
+          + "windFalloff (node+0x9c/+0xa0/+0xa4, InternalParseField)");
+        check.Expect(d.DeadSpace == Threshold,
+          "...and the engine's deadSpace -- the p2p arrival radius -- is the MDL's `threshold` CONTROLLER "
+          + "(file id 188 -> PartEmitter+0xd4)");
+
+        // ---- and now the step itself, from each snapshot, over the same stream ----
+        Reset();
+        int sa = Slot0(in a);
+        _tab[sa].Rng = 0x5eed;
+        for (int i = 0; i < 200; i++) Tick(ref _tab[sa], ref a, 1f / 60f);
+        int liveA = _tab[sa].Live;
+        var posA = new Vector3[liveA];
+        var ageA = new float[liveA];
+        for (int i = 0; i < liveA; i++) { posA[i] = At(ref _tab[sa], i).Pos; ageA[i] = At(ref _tab[sa], i).Age; }
+
+        Reset();
+        int sd = Slot0(in d);
+        _tab[sd].Rng = 0x5eed;
+        for (int i = 0; i < 200; i++) Tick(ref _tab[sd], ref d, 1f / 60f);
+        int liveD = _tab[sd].Live;
+        bool match = liveA == liveD && liveA > 0;
+        for (int i = 0; match && i < liveA; i++)
+            match = At(ref _tab[sd], i).Pos == posA[i] && At(ref _tab[sd], i).Age == ageA[i];
+        check.Expect(match,
+          $"200 frames of one fountain run from either filler produce the same particles ({liveA} vs {liveD}) "
+          + "-- bit for bit, including the spawn rectangle's and the launch cone's RNG draws");
+
+        // The slot keys: a DB part index the database re-tenants must not inherit the dead emitter's block.
+        uint gen = SceneDb.PartObj[part].Gen;
+        int k1 = FindDb(part, gen);
+        check.Expect(FindDb(part, gen) == k1, "a DB slot is found again by (part, generation)");
+        int k2 = FindDb(part, gen + 1);
+        check.Expect(k2 != k1 || _tab[k2].Live == 0,
+          "...and a re-tenanted part index takes a fresh slot rather than the dead emitter's particles");
+        ForgetDbPart(part);
+        check.Expect(_tab[k1].Part < 0 || _tab[k2].Part < 0,
+          "a destroyed part releases its slot on the edge, not on a stale sweep");
+
+        SceneDb.Parts.Free(ph);
+        SceneDb.Objects.Free(obj);
+        SceneDb.Parts.TakeDirty();
+        SceneDb.Objects.TakeDirty();
+        DbInputs.Reset();
         Reset();
         NativeMemory.Free(em.ToPointer());
-        log.Info(check.Ok ? "EmitterSim.SelfCheck: passed" : "EmitterSim.SelfCheck: FAILED");
+    }
+
+    /// <summary>The first field on which two snapshots disagree, or null. Named rather than a bare boolean:
+    /// a failing field comparison over fifty members is only actionable if it says WHICH member.</summary>
+    private static string? FirstDiff(in Emitter a, in Emitter d)
+    {
+        if (a.Flags != d.Flags) return $"Flags {a.Flags:x} vs {d.Flags:x}";
+        if (a.Mode != d.Mode) return $"Mode {a.Mode} vs {d.Mode}";
+        if (a.Type != d.Type) return $"Type {a.Type} vs {d.Type}";
+        if (a.Blend != d.Blend) return $"Blend {a.Blend} vs {d.Blend}";
+        if (a.LifeInterp != d.LifeInterp) return $"LifeInterp {a.LifeInterp} vs {d.LifeInterp}";
+        if (a.Loop != d.Loop) return $"Loop {a.Loop} vs {d.Loop}";
+        if (a.NoCull != d.NoCull) return $"NoCull {a.NoCull} vs {d.NoCull}";
+        if (a.Splat != d.Splat) return "Splat";
+        if (a.Tinted != d.Tinted) return "Tinted";
+        if (a.GridX != d.GridX) return $"GridX {a.GridX} vs {d.GridX}";
+        if (a.GridY != d.GridY) return $"GridY {a.GridY} vs {d.GridY}";
+        if (a.ConeCap != d.ConeCap) return $"ConeCap {a.ConeCap} vs {d.ConeCap}";
+        if (a.WindStrength != d.WindStrength) return $"WindStrength {a.WindStrength} vs {d.WindStrength}";
+        if (a.WindFalloff != d.WindFalloff) return $"WindFalloff {a.WindFalloff} vs {d.WindFalloff}";
+        if (a.Chunk != d.Chunk) return "Chunk";
+        if (a.BirthRate != d.BirthRate) return $"BirthRate {a.BirthRate} vs {d.BirthRate}";
+        if (a.Life != d.Life) return $"Life {a.Life} vs {d.Life}";
+        if (a.Velocity != d.Velocity) return $"Velocity {a.Velocity} vs {d.Velocity}";
+        if (a.RandVel != d.RandVel) return $"RandVel {a.RandVel} vs {d.RandVel}";
+        if (a.Spread != d.Spread) return $"Spread {a.Spread} vs {d.Spread}";
+        if (a.Spin != d.Spin) return $"Spin {a.Spin} vs {d.Spin}";
+        if (a.Gravity != d.Gravity) return $"Gravity {a.Gravity} vs {d.Gravity}";
+        if (a.Bounce != d.Bounce) return $"Bounce {a.Bounce} vs {d.Bounce}";
+        if (a.CombineTime != d.CombineTime) return $"CombineTime {a.CombineTime} vs {d.CombineTime}";
+        if (a.P2pDrag != d.P2pDrag) return $"P2pDrag {a.P2pDrag} vs {d.P2pDrag}";
+        if (a.P2pGrav != d.P2pGrav) return $"P2pGrav {a.P2pGrav} vs {d.P2pGrav}";
+        if (a.Bezier2 != d.Bezier2) return $"Bezier2 {a.Bezier2} vs {d.Bezier2}";
+        if (a.Bezier3 != d.Bezier3) return $"Bezier3 {a.Bezier3} vs {d.Bezier3}";
+        if (a.DeadSpace != d.DeadSpace) return $"DeadSpace {a.DeadSpace} vs {d.DeadSpace}";
+        if (a.SpawnX != d.SpawnX) return $"SpawnX {a.SpawnX} vs {d.SpawnX}";
+        if (a.SpawnY != d.SpawnY) return $"SpawnY {a.SpawnY} vs {d.SpawnY}";
+        if (a.BlurLength != d.BlurLength) return $"BlurLength {a.BlurLength} vs {d.BlurLength}";
+        if (a.BoltDelay != d.BoltDelay) return $"BoltDelay {a.BoltDelay} vs {d.BoltDelay}";
+        if (a.BoltRadius != d.BoltRadius) return $"BoltRadius {a.BoltRadius} vs {d.BoltRadius}";
+        if (a.ZigZag != d.ZigZag) return $"ZigZag {a.ZigZag} vs {d.ZigZag}";
+        if (a.AlphaStart != d.AlphaStart) return $"AlphaStart {a.AlphaStart} vs {d.AlphaStart}";
+        if (a.AlphaEnd != d.AlphaEnd) return $"AlphaEnd {a.AlphaEnd} vs {d.AlphaEnd}";
+        if (a.Fps != d.Fps) return $"Fps {a.Fps} vs {d.Fps}";
+        if (a.FrameStart != d.FrameStart) return $"FrameStart {a.FrameStart} vs {d.FrameStart}";
+        if (a.FrameEnd != d.FrameEnd) return $"FrameEnd {a.FrameEnd} vs {d.FrameEnd}";
+        if (a.SizeStartX != d.SizeStartX) return $"SizeStartX {a.SizeStartX} vs {d.SizeStartX}";
+        if (a.SizeEndX != d.SizeEndX) return $"SizeEndX {a.SizeEndX} vs {d.SizeEndX}";
+        if (a.SizeStartY != d.SizeStartY) return $"SizeStartY {a.SizeStartY} vs {d.SizeStartY}";
+        if (a.SizeEndY != d.SizeEndY) return $"SizeEndY {a.SizeEndY} vs {d.SizeEndY}";
+        if (a.ColorStart != d.ColorStart) return $"ColorStart {a.ColorStart} vs {d.ColorStart}";
+        if (a.ColorEnd != d.ColorEnd) return $"ColorEnd {a.ColorEnd} vs {d.ColorEnd}";
+        if (a.WorldPos != d.WorldPos) return $"WorldPos {a.WorldPos} vs {d.WorldPos}";
+        if (a.Scale != d.Scale) return $"Scale {a.Scale} vs {d.Scale}";
+        if (a.PartScale != d.PartScale) return $"PartScale {a.PartScale} vs {d.PartScale}";
+        return null;
+    }
+
+    /// <summary>The database twin of <see cref="BothSources"/>'s engine emitter: one emitter node whose
+    /// <see cref="EmitterDef"/> and controller REST keys state the same parameter set.</summary>
+    private static ModelDef DbModel(int flags)
+    {
+        var m = new ModelDef { Name = "cx_bothsrc", ContentHash = 0xB0D15 };
+        var root = new NodeDef { Name = "root", Index = 0, Kind = NodeKind.Dummy };
+        var emit = new NodeDef
+        {
+            Name = "puff", Index = 1, Parent = 0, Kind = NodeKind.Emitter,
+            Emitter = new EmitterDef
+            {
+                Update = "Fountain", Render = "Normal", Blend = "Lighten", Texture = "fxpa_flame",
+                XGrid = 4, YGrid = 2, Loop = true, TwoSidedTex = true, Flags = (uint)flags,
+                DeadSpace = 0.75f, BlastRadius = 1.25f, BlastLength = 2.5f,
+            },
+            Controllers = new[]
+            {
+                Ctl1(Ctl.EmBirthRate, 7f), Ctl1(Ctl.EmLifeExp, 1.5f), Ctl1(Ctl.EmVelocity, 3f),
+                Ctl1(Ctl.EmRandVel, 0.5f), Ctl1(Ctl.EmSpread, 0.8f), Ctl1(Ctl.EmParticleRot, 2f),
+                Ctl1(Ctl.EmMass, 1f), Ctl1(Ctl.EmXSize, 0.4f), Ctl1(Ctl.EmYSize, 0.25f),
+                Ctl1(Ctl.EmThreshold, 0.3f), Ctl1(Ctl.EmBlurLength, 0.6f),
+                Ctl1(Ctl.EmLightningDelay, 0.2f), Ctl1(Ctl.EmLightningRadius, 0.9f),
+                Ctl1(Ctl.EmLightningScale, 1.3f), Ctl1(Ctl.EmDrag, 0.5f), Ctl1(Ctl.EmGrav, 4f),
+                Ctl1(Ctl.EmP2PBezier2, 1f), Ctl1(Ctl.EmP2PBezier3, 2f), Ctl1(Ctl.EmCombineTime, 3f),
+                Ctl1(Ctl.EmAlphaStart, 0.9f), Ctl1(Ctl.EmAlphaEnd, 0.1f), Ctl1(Ctl.EmFps, 12f),
+                Ctl1(Ctl.EmFrameStart, 1f), Ctl1(Ctl.EmFrameEnd, 5f),
+                Ctl1(Ctl.EmSizeStart, 0.5f), Ctl1(Ctl.EmSizeEnd, 1.5f),
+                Ctl1(Ctl.EmSizeStartY, 0.2f), Ctl1(Ctl.EmSizeEndY, 0.7f), Ctl1(Ctl.EmBounceCo, 0.4f),
+                Ctl3(Ctl.EmColorStart, 1f, 0.5f, 0.25f), Ctl3(Ctl.EmColorEnd, 0f, 0.25f, 1f),
+            },
+        };
+        m.Nodes = new[] { root, emit };
+        m.NodeByName["root"] = 0; m.NodeByName["puff"] = 1;
+        return m;
+    }
+
+    private static ControllerTrack Ctl1(int type, float v)
+        => new() { Type = type, Columns = 1, Times = new[] { 0f }, Values = new[] { v } };
+
+    private static ControllerTrack Ctl3(int type, float x, float y, float z)
+        => new() { Type = type, Columns = 3, Times = new[] { 0f }, Values = new[] { x, y, z } };
+
+    /// <summary>A snapshot with the fixed declarations a check needs and nothing else: an owner at the origin,
+    /// the identity orientation, no target and no tile fade.</summary>
+    private static Emitter Params(int mode)
+    {
+        Emitter e = default;
+        e.Part = -1;
+        e.Mode = mode;
+        e.Scale = 1f;
+        e.PartScale = 1f;
+        e.M.Orient = new Quat { W = 1f };
+        e.M.PrevRot = new Quat { W = 1f };
+        Basis(ref e);
+        return e;
+    }
+
+    /// <summary>Open slot 0 for this snapshot, as the walk would. Returns its index.</summary>
+    private static int Slot0(in Emitter e)
+    {
+        _tabN = 1;
+        _tab[0] = default;
+        _tab[0].Part = e.Part;
+        _tab[0].Em = e.Em;
+        _tab[0].Rng = 0x1234567u;
+        Open(ref _tab[0], in e);
+        return 0;
     }
 
     /// <summary>A zeroed <c>LightningEmitter</c> and the <c>MdlNodeEmitter</c> it points at, big enough for
@@ -290,15 +550,14 @@ internal static unsafe partial class EmitterSim
 
     /// <summary>One fountain frame, in <see cref="Advance"/>'s order with the mover left out: the mover reads
     /// a live Scene for wind and collision, and nothing this check asserts goes through it.</summary>
-    private static void Tick(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node, float dt)
+    private static void Tick(ref Slot slot, ref Emitter e, float dt)
     {
         FountainAge(ref slot, ref e, dt);
-        FountainBirth(ref slot, em, ref e, node, 0, dt);
+        FountainBirth(ref slot, ref e, dt);
     }
 
-    /// <summary>Write a model's <c>update</c> literal into the fake node, which is what <see cref="Open"/>
-    /// reads to pick the mode -- and therefore what a check has to set before it takes a slot rather than
-    /// after.</summary>
+    /// <summary>Write a model's <c>update</c> literal into the fake node, which is what
+    /// <see cref="FillEngine"/> reads to pick the mode.</summary>
     private static void Declare(MdlNodeEmitter node, string mode)
     {
         Span<byte> u = node.Update;

@@ -3,6 +3,8 @@ using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Alloy;
 using CX.Engine;
+using CX.Alloy.Db;
+using CX.Alloy.Seam;
 using CX.Framework;
 using EngCamera = CX.Engine.Camera;
 
@@ -88,6 +90,10 @@ public sealed unsafe class CameraService : IExtenderService
     private static int _calls, _callsMin = int.MaxValue, _callsMax, _frames, _fovRewrites;
     /// <summary>§9.5: frames the engine's pull-in shortened dist without the user zooming, offset off / on.</summary>
     private static int _pullIns, _pullInsOffset;
+    /// <summary>Spring-arm frames that cast, and frames it wanted to and had no scene to cast against -- the
+    /// one way to tell an unobstructed arm from an arm that is not testing anything (which is what DB mode
+    /// silently had before <see cref="SceneRay"/> learned the database).</summary>
+    private static int _armCasts, _armNoScene;
     private static float _distAfter = float.NaN;
     private static float _fovWritten = float.NaN, _fovFirst = float.NaN;
     private static bool _live, _probeOk;
@@ -115,14 +121,72 @@ public sealed unsafe class CameraService : IExtenderService
                                   "CClientExoAppInternal", "CClientOptions", "Camera", "CNWCObject")) return;
         if (!SymbolMap.Require(log, "CameraService", SymbolMap.CameraFollowControl, SymbolMap.AppManager,
                                SymbolMap.GetModule, SymbolMap.GetGameObject)) return;
-
-        _next = hooks.ChainCameraFollowControl(&OnControl, 10);
-        if (_next == null) { log.Info("CameraService: standing down (Control chain refused)"); return; }
+        // CX-120: the one other mode-0 chain that can be ENTERED with a facade. The follow behaviour the game
+        // installs is a real engine-layout CAurBehaviorCameraFollow, so its Control is this hooked function;
+        // forwarding to `next` would reach the engine's own solve, which reads the owner at behavior+0x18 -- a
+        // facade in DB mode. DbAnim solves camera-follow over the database's columns instead, so funchook is
+        // not used there at all: the layer takes the two edges DbAnimCamera offers around that solve, which
+        // are the same two places in the frame the chain occupied.
+        if (CX.Alloy.Renderer.On)
+        {
+            DbAnimCamera.FeelBefore = &DbBefore;
+            DbAnimCamera.FeelAfter = &DbAfter;
+            log.Info("CameraService: layered on the scene database's own camera-follow solve (CX-120)");
+        }
+        else
+        {
+            _next = hooks.ChainCameraFollowControl(&OnControl, 10);
+            if (_next == null) { log.Info("CameraService: standing down (Control chain refused)"); return; }
+            log.Info("CameraService: chained on CAurBehaviorCameraFollow::Control");
+        }
 
         FrameRegistry.Global.Register(FramePhase.PostPresent, 50, OnFrameEnd, "CameraService", log);
         KnobSurface.Note(Report);
         SceneRay.Init();
-        log.Info("CameraService: chained on CAurBehaviorCameraFollow::Control");
+    }
+
+    // ---- the DB-mode edges -------------------------------------------------------------------
+    //
+    // DbAnimCamera.Animate IS a camera's whole step (a camera has no animations of its own), so these two
+    // calls sit exactly where the funchook chain's before/after halves sat: the recenter's yaw velocity is
+    // written into the behaviour field the solve is about to consume, and the pose rewrite runs on the answer.
+
+    /// <summary>The pre-solve edge: <see cref="Recenter"/>, plus the engine-pull-in instrument whose
+    /// comparison needs the behaviour's distance BEFORE the solve overwrites it.</summary>
+    private static void DbBefore(IntPtr self, float dt)
+    {
+        FirstCall();
+        IntPtr target = new CAurBehaviorCameraFollow(self).Target;
+        if (target == IntPtr.Zero) return;
+        var b = new CAurBehaviorCameraFollow(self);
+        if (!float.IsNaN(_distAfter) && b.ZoomVel == 0f && b.Dist < _distAfter - 1e-4f)
+        { if (_offsetOn) _pullInsOffset++; else _pullIns++; }
+        if (_probeOk && !FreeCameraService.Active) Recenter(self, dt);
+    }
+
+    /// <summary>The post-solve edge: the pose rewrite, on the pose <c>DbAnim.CameraFollow</c> just wrote into
+    /// the camera's object record.</summary>
+    private static void DbAfter(IntPtr self, float dt)
+    {
+        _calls++;
+        var b = new CAurBehaviorCameraFollow(self);
+        if (b.Target == IntPtr.Zero) { _distAfter = float.NaN; return; }
+        _distAfter = b.Dist;
+        if (!_probeOk) return;
+        Adjust(self, dt);
+        SettleCollision(Module());
+    }
+
+    /// <summary>The one-shot boot probe of the module rows (#536 AC: Windows offsets get a probe, not a hope).
+    /// In mode 0 it runs on the first <c>Control</c> to return; in DB mode on the first solve to begin, which
+    /// is the same frame.</summary>
+    private static void FirstCall()
+    {
+        if (_live) return;
+        _live = true;
+        _probeOk = EngineLayout.Probe("CNWCModule", Module(), _log);
+        _log?.Info(_probeOk ? "CameraService: first Control -- hook is LIVE"
+                            : "CameraService: layout probe failed -- passing the engine's answer through");
     }
 
     // ---- the hook ---------------------------------------------------------------------------
@@ -141,13 +205,7 @@ public sealed unsafe class CameraService : IExtenderService
         _calls++;
         if (target == IntPtr.Zero) { _distAfter = float.NaN; return r; }
         _distAfter = b.Dist;
-        if (!_live)
-        {
-            // One-shot boot probe of the module rows (#536 AC: Windows offsets get a probe, not a hope).
-            _live = true;
-            _probeOk = EngineLayout.Probe("CNWCModule", Module(), _log);
-            _log?.Info(_probeOk ? "CameraService: first Control -- hook is LIVE" : "CameraService: layout probe failed -- passing the engine's answer through");
-        }
+        FirstCall();
         if (_probeOk) { Adjust(self, dt); SettleCollision(Module()); }
         return r;
     }
@@ -167,27 +225,83 @@ public sealed unsafe class CameraService : IExtenderService
         else if (_weSetFlag) { flags &= ~EngineLayout.CameraFlagDisableCollision; _weSetFlag = false; }
     }
 
+    /// <summary>Where the layer reads and writes the camera pose. Mode 0 is the engine's one <c>Camera</c>
+    /// object. In DB mode (ADR 0028) a <c>Camera</c> is split three ways -- a camera record, the
+    /// <c>CAurObject</c> record its <c>Gob</c> half IS, and the layout-compatible shell the game holds -- and
+    /// <see cref="DbCamera.PosOf"/>/<c>RotOf</c> are the truth: a write through the engine view would land in
+    /// the shell alone, which <c>DbCamera.PublishShell</c> overwrites from the columns on the next frame.
+    /// The DB setters write every home, so either mode reads back what the layer just wrote.</summary>
+    internal readonly struct CamSink
+    {
+        private readonly IntPtr _cam;
+        private readonly DbId _db;
+        private CamSink(IntPtr cam, DbId db) { _cam = cam; _db = db; }
+
+        /// <summary>The sink for the camera the game holds at <paramref name="cam"/> -- in DB mode its facade,
+        /// which resolves back to the record.</summary>
+        internal static CamSink Of(IntPtr cam)
+            => CX.Alloy.Renderer.On ? new CamSink(cam, Facade.CameraId(cam)) : new CamSink(cam, default);
+
+        /// <summary>False when DB mode handed us a camera pointer that is not a live camera facade: the layer
+        /// has nowhere to write and says so rather than writing into the shell the next frame discards.</summary>
+        internal bool Ok => CX.Alloy.Renderer.On ? SceneDb.Cameras.Valid(_db) : _cam != IntPtr.Zero;
+
+        internal Vector3 Pos => CX.Alloy.Renderer.On ? DbCamera.PosOf(_db) : new EngCamera(_cam).Pos;
+        internal float ViewAngle => CX.Alloy.Renderer.On ? DbCamera.ViewAngleOf(_db) : new EngCamera(_cam).ViewAngle;
+
+        internal void Place(Vector3 pos, Quaternion rot)
+        {
+            if (!CX.Alloy.Renderer.On) { var c = new EngCamera(_cam); c.Rot = rot; c.Pos = pos; return; }
+            DbCamera.SetOrientation(_db, rot);
+            DbCamera.SetPosition(_db, pos);
+            // ...and into the shell now, not at the next frame's walk: mode 0's readers see this write in the
+            // frame it happens, and the nameplate fade and the aim assist's projector are two of them.
+            DbCamera.Publish(_db);
+        }
+
+        internal void SetViewAngle(float degrees)
+        {
+            if (CX.Alloy.Renderer.On) DbCamera.SetViewAngle(_db, degrees);
+            else new EngCamera(_cam).ViewAngle = degrees;
+        }
+    }
+
+    /// <summary>Frames the layer had a pose to write and no live camera to write it to (DB mode only).</summary>
+    private static int _noSink;
+    private static bool _noSinkSaid;
+
     private static void Adjust(IntPtr self, float dt)
     {
         var b = new CAurBehaviorCameraFollow(self);
         IntPtr cam = new CAurBehavior(self).Owner - CameraFromOwner;
+        CamSink c = CamSink.Of(cam);
+        if (!c.Ok)
+        {
+            _noSink++;
+            if (!_noSinkSaid)
+            {
+                _noSinkSaid = true;
+                _log?.Always("CameraService: the follow behaviour's owner is not a live camera -- the camera "
+                           + "feel (ease, recenter, FOV, offsets) is NOT being applied");
+            }
+            return;
+        }
         Gate g = Check(self, cam, out int mode);
         _gate = g; _mode = mode;
         _yaw = b.Yaw; _pitch = b.Pitch; _dist = b.Dist;
-        var c = new EngCamera(cam);
         _fovRead = c.ViewAngle;
         _pos = c.Pos;
         if (FreeCameraService.Active)
         {
             // #543: the free camera owns the pose; the frame it lets go is a weld (snap + cut) like any gate's.
             // _fovWritten is kept: Leave() puts the entry angle back, which is the layer's last write or nothing.
-            FreeCameraService.Frame(cam, g, dt);
+            FreeCameraService.Frame(c, g, dt);
             if (FreeCameraService.Active) { _welded = true; _wantNoCollision = true; _offsetOn = false; _arm = 1f; return; }
         }
         if (g != Gate.Active)
         {
             // Off is enterable by the free camera: the seed it reads (Rendered) must be the engine's pose, not a stale lag.
-            if (g == Gate.Off) { RestoreFov(cam); _sYaw = _yaw; _outPitch = _pitch; }
+            if (g == Gate.Off) { RestoreFov(c); _sYaw = _yaw; _outPitch = _pitch; }
             _welded = true; _offsetOn = _wantNoCollision = false; _arm = 1f; return;
         }
 
@@ -229,22 +343,21 @@ public sealed unsafe class CameraService : IExtenderService
         _wantNoCollision = _offsetOn;
         if (_offsetOn) pos = SpringArm(self, focus, pos + offX * Right(q) + offY * Vector3.UnitZ, dt);
         else _arm = 1f;
-        c.Rot = q;
-        c.Pos = pos;
+        c.Place(pos, q);
         _pos = pos;
         // No magic zero (ADR 0025): the slider is written whenever the layer drives the mode.
         float fov = m.Fov.V;
-        c.ViewAngle = fov; _fovWritten = fov;
+        c.SetViewAngle(fov); _fovWritten = fov;
     }
 
     /// <summary>#584: the mode's master went off, or the mode changed into one whose master is off, with the layer's
     /// view angle still in the camera. <c>Camera+0x4c4</c> has no engine restorer, so the first angle read goes back,
     /// once, and the frame is a cut. NaN = the layer never wrote it (nothing to restore); the on edge needs nothing
     /// here, <see cref="Adjust"/> writes the slider again on its first Active frame.</summary>
-    private static void RestoreFov(IntPtr cam)
+    private static void RestoreFov(in CamSink cam)
     {
         if (float.IsNaN(_fovWritten)) return;
-        new EngCamera(cam).ViewAngle = _fovFirst;
+        cam.SetViewAngle(_fovFirst);
         _fovWritten = float.NaN;
         AlloyRenderer.CameraCut();
     }
@@ -502,8 +615,10 @@ public sealed unsafe class CameraService : IExtenderService
         float len = seg.Length();
         IntPtr scene = SceneRay.Armed ? SceneRay.WorldScene() : IntPtr.Zero;
         float target = 1f;
-        if (scene != IntPtr.Zero && len > 0.05f)
+        if (scene == IntPtr.Zero) _armNoScene++;
+        else if (len > 0.05f)
         {
+            _armCasts++;
             Vector3 d = seg / len;
             Vector3 right = Vector3.Cross(d, Vector3.UnitZ);
             right = right.LengthSquared() < 1e-6f ? Vector3.UnitX : Vector3.Normalize(right);
@@ -561,9 +676,13 @@ public sealed unsafe class CameraService : IExtenderService
         if (++_frames < 600 || !ExtenderLog.Enabled) return;
         // §9.3 / §9.2 under logs=1, once per 600 presents.
         _log?.Info(Inv($"[camera] Control {_callsMin}..{_callsMax} call(s)/present over {_frames} presents; ")
-                 + Inv($"view angle first read {_fovFirst:0.##}, {_fovRewrites} rewrite(s) between ours; gate: {GateNames[(int)_gate]}; ")
-                 + Inv($"engine pull-ins {_pullIns} (offset off) / {_pullInsOffset} (offset on), arm {_arm:0.00}"));
+                 + Inv($"view angle first read {_fovFirst:0.##}, {_fovRewrites} rewrite(s) between ours; gate: {GateNames[(int)_gate]}, ")
+                 + Inv($"mode {_mode}, offset {(_offsetOn ? "on" : "off")}; ")
+                 + Inv($"engine pull-ins {_pullIns} (offset off) / {_pullInsOffset} (offset on), arm {_arm:0.00} ")
+                 + Inv($"over {_armCasts} casting frame(s)")
+                 + (_armNoScene == 0 ? "" : Inv($" and {_armNoScene} with NO scene to cast against")));
         _frames = 0; _callsMin = int.MaxValue; _callsMax = 0; _pullIns = _pullInsOffset = 0;
+        _armCasts = _armNoScene = 0;
     }
 
     // ---- the /knobs note (cold) ----------------------------------------------------------------

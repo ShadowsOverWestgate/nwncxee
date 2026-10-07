@@ -80,10 +80,14 @@
         lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5) + lmSub.y, 1.0)) * uDayDim;
         point += lm;
         // a glossy receiver took each static light's own lobe in the loop instead, cross-faded (light.hidden)
-        pointSpec += lm * (1.0 - CxGlossW(rough)) * CxLoopSpec(CxSpecLobe(N, V, lmDir, rough, spec), N, V, lmDir);
+        // ...and a film's coat took each one's own image in CxFilmStatics below, so the pages' lobe leaves it out
+        float lmLobe = CxSpecLobe(N, V, lmDir, rough, spec);
+        pointSpec += lm * (1.0 - CxGlossW(rough)) * (wxFilm > 0.0 && cxCoat > 0.0 && uCapture != 2
+                     ? CxLoopSpecBase(lmLobe, N, V, lmDir) : CxLoopSpec(lmLobe, N, V, lmDir));
     }
     // 43 = the lightmap term alone: the baked light on a baked surface, MAGENTA on an unbaked one.
     // 44 = the pages' texel grid over baked surfaces (chart seams and density), magenta unbaked.
+    if (uViz == 51) { frag = vec4(cxHotViz.x * 0.25, cxHotViz.y * 0.25, 0.0, 1.0); return; }
     if (uViz == 43) { frag = vec4(baked ? lm : vec3(1.0, 0.0, 1.0), 1.0); return; }
     if (uViz == 44)
     {

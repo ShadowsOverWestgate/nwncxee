@@ -35,6 +35,7 @@ offset	Scene	fogEnd	0x148	0x148	# SceneFogEnd
 offset	Scene	fogColor	0x14c	0x14c	# SceneFogColor
 offset	Scene	lightManager	0x158	0x158	# SceneLightManager
 offset	Scene	windManager	0x160	0x160	# SceneWindManager
+offset	WindManager	size	0x870	0x870	# WindManagerSize
 offset	Scene	drawBuckets	0x208	0x208	# SceneDrawBuckets
 offset	Scene	vtbl.IsAnimating	0x288	0x280	# SceneIsAnimatingSlot
 offset	Gob	highlight	0x18	0x18	# GobHighlight
@@ -55,6 +56,10 @@ offset	Gob	appendRoots	0x130	0x130	# GobAppendRoots
 offset	Gob	appendCount	0x138	0x138	# GobAppendCount
 offset	Gob	tileData	0x1a8	0x1a8	# GobTileData
 offset	Gob	envOverride	0x480	0x480	# GobEnvOverride
+offset	Model	anims	0x98	0x98	# MdlcModelAnims
+offset	Model	animCount	0xa0	0xa0	# MdlcModelAnimCount
+offset	Model	super	0xa8	0xa8	# MdlcModelSuper
+offset	Model	animScale	0xcc	0xcc	# MdlcModelAnimScale
 offset	Model	ownerFlags	0x8e	0x92	# NodeOwnerFlags
 offset	MdlNode	parent	0x60	0x60	# MdlNodeParent
 offset	MdlNode	name	0x38	0x38	# MdlNodeName
@@ -223,7 +228,10 @@ offset	CNWCModule	minutesPerHour	0x15c	0x15c	# ModuleMinutesPerHour
 offset	CGuiInGameChatPrompt	shown	0x230	0x200	# ChatPromptShown
 offset	CGuiInGameChatPrompt	edit	0x100	0xf8	# ChatPromptEdit
 offset	CGuiEdit	string	0x90	0x90	# GuiEditString
+offset	CGuiEdit	readOnly	0x110	0xe8	# GuiEditReadOnly
 offset	CAurString	vtbl.SetText	0xd8	0xd0	# AurStringSetTextSlot
+offset	CAurString	vtbl.GetTextLine	0xe8	0xe0	# AurStringGetTextLineSlot
+offset	CAurString	vtbl.GetTextLineCount	0xf0	0xe8	# AurStringGetTextLineCountSlot
 offset	CGuiInGame	quickbar	0x60	0x60	# InGameGuiQuickbar
 offset	CGuiInGame	dialog	0x70	0x70	# InGameGuiDialog
 offset	CGuiInGame	chatWindow	0x8	0x8	# InGameGuiChatWindow
@@ -234,6 +242,14 @@ offset	CGuiMan	vpHeight	0xbc	0xbc	# GuiManVpH
 offset	CGuiMan	mouseX	0xd4	0xd4	# GuiManMouseX
 offset	CGuiMan	mouseY	0xd8	0xd8	# GuiManMouseY
 offset	CGuiMan	modalCount	0x90	0x90	# GuiManModalCount
+offset	CGuiMan	tooltipTimer	0x98	0x98	# GuiManTipTimer
+offset	CGuiMan	tooltipObject	0x68	0x68	# GuiManTipObject
+offset	CGuiMan	tooltipBubble	0x178	0x170	# GuiManTipBubble
+offset	CGuiObject	model	0x10	0x10	# GuiObjectModel
+offset	CGuiMan	keyboardFocus	0x50	0x50	# GuiManKeyboard
+offset	CGuiMan	doubleClick	0xb0	0xb0	# GuiManDoubleClick
+offset	CGuiMan	hitPoint	0x108	0x108	# GuiManHitPoint
+offset	CGuiMan	hitObject	0x78	0x78	# GuiManHitObject
 offset	(abi)	vtblSymbolHeader	0x10	0x0	# VtblSymbolHeader
 offset	Part	node	0x8	0x8	# PartNodeLink
 offset	Part	scale	0x2c	0x2c	# PartScale
@@ -246,6 +262,9 @@ offset	PartTrigger	highlighted	0xd8	0xd8	# TriggerHighlighted
 offset	PartTrigger	height	0xdc	0xdc	# TriggerHeight
 offset	PartTrigger	half	0xe0	0xe0	# TriggerHalf
 offset	PartTrigger	highlightColour	0xe4	0xe4	# TriggerColour
+offset	PartTrigger	tris	0x100	0x100	# TriggerTris
+offset	PartTrigger	triVerts	0x108	0x108	# TriggerTriVerts
+offset	PartTrigger	payload	0xd0	0xd0	# TriggerPayload
 offset	PartLight	flareFade	0xa0	0xa4	# LightFlareFade
 offset	PartEmitter	blend	0x64	0x68	# EmBlend
 offset	PartEmitter	alphaEnd	0x68	0x6c	# EmAlphaEnd
@@ -331,6 +350,8 @@ offset	MdlNodeLight	flareSizes	0xc0	0xc8	# FlareSizes
 offset	MdlNodeLight	flareShifts	0xd0	0xd8	# FlareShifts
 offset	MdlNodeLight	fadingLight	0x108	0x110	# LightFadingLight
 offset	MdlNodeTriMesh	faces	0xb0	0xb0	# MeshFaces
+offset	MdlNodeTriMesh	radius	0xd8	0xd8	# MdlRadius
+offset	MdlNodeTriMesh	textureRotate	0x2b9	0x2b9	# MdlTextureRotate
 offset	MdlNodeTriMesh	bboxMin	0xc0	0xc0	# MdlBboxMin
 offset	MdlNodeTriMesh	bboxMax	0xcc	0xcc	# MdlBboxMax
 offset	MdlNodeTriMesh	faceCount	0xb8	0xb8	# MeshFaceCount
@@ -359,6 +380,10 @@ offset	TileData	parts	0x30	0x30	# TileParts
 offset	TileData	partCount	0x38	0x38	# TilePartCount
 offset	TileData	geomFade	0xc8	0xc8	# TileGeomFade
 offset	TileData	foggedByWar	0xc4	0xc4	# TileFoggedByWar
+offset	TileData	mainLight1	0x0	0x0	# TileMainLight1
+offset	TileData	mainLight2	0x8	0x8	# TileMainLight2
+offset	TileData	sourcePart1	0x10	0x10	# TileSourcePart1
+offset	TileData	sourcePart2	0x18	0x18	# TileSourcePart2
 offset	CAurTriangleBin	lists	0x38	0x38	# BinLists
 offset	CAurTriangleBin	listCount	0x40	0x40	# BinListCount
 offset	CAurTriangleList	verts	0x0	0x0	# ListVerts
@@ -492,7 +517,8 @@ offset	MdlNodeTriMesh	diffuse	0xe8	0xe8	# MdlDiffuse
 offset	MdlNodeTriMesh	ambient	0xf4	0xf4	# MdlAmbient
 offset	Material	slotStride	0x10	0x10	# MatSlotStride
 offset	SharedMaterial	slot0	0xd8	0xd8	# SharedSlot0
-offset	SharedMaterial	resrefStride	0x11	0x11	# SharedNameLen
+offset	Material	pltRows	0xd8	0xd8	# MatPltRows
+offset	Material	pltRowCount	0x114	0x114	# MatPltRowCount
 offset	CRes	sizeof	0x60	0x60	# SizeOfCRes
 offset	CRes	data	0x20	0x20	# CResData
 offset	CRes	size	0x30	0x30	# CResSize
@@ -523,6 +549,7 @@ offset	ErfResListEntry	compressed	0x8	0x8	# ErfEntryCompressed
 offset	ErfResListEntry	plainSize	0xc	0xc	# ErfEntryPlain
 offset	CExoBase	aliasList	0x20	0x20	# ExoBaseAliasList
 offset	CNWTileSet	tileCount	0x4c	0x54	# TileSetTileCount
+offset	CNWTileSet	heightTransition	0x44	0x4c	# TileSetHeightTransition
 offset	CAuroraCompressedTextureDDS	res	0x18	0x18	# DdsHelperRes
 offset	CResTGA	header	0x88	0x88	# TgaHeader
 offset	CResTGA	colorMap	0x78	0x78	# TgaColorMap
@@ -628,6 +655,18 @@ offset	CHitInfo	ignoreCount	0x18	0x18	# HitInfoIgnoreCount
 offset	CHitInfo	kind	0x24	0x24	# HitInfoKind
 offset	CHitInfo	point	0x28	0x28	# HitInfoPoint
 offset	CHitInfo	gob	0x48	0x48	# HitInfoGob
+offset	CHitInfo	surfaceMask	0x8	0x8	# HitInfoSurfaceMask
+offset	CHitInfo	boxOnly	0x20	0x20	# HitInfoBoxOnly
+offset	CHitInfo	localPoint	0x34	0x34	# HitInfoLocalPoint
+offset	CHitInfo	surface	0x40	0x40	# HitInfoSurface
+offset	CHitInfo	safeIndex	0x50	0x50	# HitInfoSafeIndex
+offset	CHitInfo	face	0x58	0x58	# HitInfoFace
+offset	CHitInfo	normal	0x5c	0x5c	# HitInfoNormal
+offset	CHitInfo	partName	0x68	0x68	# HitInfoPartName
+offset	CHitInfo	trigger	0x70	0x70	# HitInfoTrigger
+offset	CHitInfo	rejectInside	0x78	0x78	# HitInfoRejectInside
+offset	CHitInfo	skipCharacters	0x7c	0x7c	# HitInfoSkipCharacters
+offset	CHitInfo	doorAlpha	0x7d	0x7d	# HitInfoDoorAlpha
 offset	CRadialMenu	text	0xf8	0xf8	# RadialText
 offset	CRadialMenu	entry	0x138	0x138	# RadialEntry
 offset	CGuiCallback	obj	0x0	0x0	# CallbackObj
@@ -650,7 +689,6 @@ offset	CClientSpellMenu	targetId	0x90c	0x88c	# SpellMenuTargetId
 offset	CGuiCreatureMenu	sizeof	0x8c0	0x840	# CreatureMenuSize
 offset	CClientSpellMenu	sizeof	0x920	0x8a0	# SpellMenuSize
 offset	CGuiTextBubble	aurString	0xf8	0xf0	# TextBubbleString
-offset	StringGob	readerThisAdjust	0x4c0	0x0	# StringGobReaderAdjust
 offset	CLayeredIcon	schemeCount	0x48	0x48	# LayeredIconSchemeCount
 offset	CLayeredIcon	scheme	0x50	0x50	# LayeredIconScheme
 offset	CCompositeIcon	resref2	0x48	0x48	# CompositeIconResRef2
@@ -702,6 +740,16 @@ offset	CExoSoundSourceInternal	sampleOffset	0x84	0x84	# SoundSrcOffset
 offset	C3DVoice	source	0x8	0x8	# Voice3DSource
 offset	CExoSoundSourceInternal	voice2d	0x58	0x58	# SoundSrcVoice2D
 offset	CNWCArea	ambientSound	0x2d8	0x2d8	# AreaAmbientSound
+offset	CNWCArea	nightAmbient	0x164	0x164	# AreaNightAmbient
+offset	CNWCArea	nightDiffuse	0x170	0x170	# AreaNightDiffuse
+offset	CNWCArea	dayAmbient	0x1c8	0x1c8	# AreaDayAmbient
+offset	CNWCArea	dayDiffuse	0x1d4	0x1d4	# AreaDayDiffuse
+offset	CNWCArea	nightFog	0x17c	0x17c	# AreaNightFog
+offset	CNWCArea	nightFogAmount	0xa4	0xa4	# AreaNightFogAmount
+offset	CNWCArea	dayFog	0x1e0	0x1e0	# AreaDayFog
+offset	CNWCArea	dayFogAmount	0xc4	0xc4	# AreaDayFogAmount
+offset	CNWCArea	isNight	0xdc	0xdc	# AreaIsNight
+offset	CNWCArea	scene	0x248	0x248	# AreaScene
 offset	CNWCAmbientSound	music	0x188	0x188	# AmbientMusic
 offset	CNWCAmbientSound	ambient	0x190	0x190	# AmbientBed
 offset	CNWCAmbientSound	truncated	0x1b8	0x1b8	# AmbientTruncated
@@ -845,6 +893,8 @@ offset	CAurBehaviorAttach	part	0x30	0x30	# AttachPart
 offset	CAurBehaviorAttach	dieWithoutParent	0x3c	0x3c	# AttachDieWithoutParent
 offset	CAurBehaviorAttach	offset	0x70	0x70	# AttachOffset
 offset	CAurBehaviorCrossSceneAttach	offset	0x84	0x88	# CrossAttachOffset
+offset	CAurBehaviorCrossSceneAttach	keptScene	0x70	0x70	# CrossAttachKeptScene
+offset	CAurBehaviorCrossSceneAttach	latch	0x80	0x80	# CrossAttachLatch
 offset	CAurBehaviorSubwindow	partA	0x30	0x30	# SubwindowPartA
 offset	CAurBehaviorSubwindow	partB	0x38	0x38	# SubwindowPartB
 offset	CAurBehaviorSubwindow	setPos	0x40	0x40	# SubwindowSetPos
@@ -907,6 +957,7 @@ offset	Gob	vtbl.IsAnimating	0x268	0x260	# GobIsAnimatingSlot
 offset	Gob	vtbl.IsInViewVolume	0x2c0	0x2b8	# GobInViewSlot
 offset	Gob	vtbl.GetMinimumSphere	0x2d0	0x2c8	# GobMinSphereSlot
 offset	Part	vtbl.Animate	0xd8	0xd0	# PartAnimateSlot
+offset	Part	vtbl.GetWorld	0x20	0x18	# PartGetWorldSlot
 offset	Part	vtbl.AsPartAnimMesh	0x68	0x60	# PartAsAnimMeshSlot
 offset	CAurBehavior	vtbl.Control	0x20	0x18	# BehaviorControlSlot
 offset	LookAtAnimation	vtbl.IsActive	0x10	0x8	# LookAtIsActiveSlot
@@ -1098,3 +1149,40 @@ offset	WindManager	baseWind	0x20	0x20	# WindBase
 offset	WindManager	maxYaw	0x848	0x848	# WindMaxYaw
 offset	WindManager	maxPitch	0x84c	0x84c	# WindMaxPitch
 offset	WindManager	period	0x858	0x858	# WindPeriod
+# ---- CX-112 ----
+offset	Model	root	0x50	0x50	# MdlParseModelRoot
+
+# ---- CX-120 seam-obj: the Aurora seam shell's layout. Windows measured off nwmain.exe's own
+# name-exported accessors (objdump the export table, join name->RVA, read the rcx displacement);
+# every Gob/Scene offset below is IDENTICAL on both images on this build.
+offset	Gob	seamSafeCap	0x14	0x14	# SafePointerList capacity
+offset	Gob	seamForceAnim	0x1a	0x1a	# EnableForceAnimations / IsForceAnimated
+offset	Gob	seamAnimEnabled	0x1d	0x1d	# EnableAnimations / IsAnimating
+offset	Gob	seamName	0x24	0x24	# inline char[0x40]; Gob::GetName returns its address
+offset	Gob	seamShadows	0xf4	0xf4	# TurnOnShadows / TurnOffShadows, a 16-bit store
+offset	Gob	seamPersonalSpace	0x198	0x198	# SetRenderPersonalSpace
+offset	Gob	seamCallbackCap	0x46c	0x46c	# callback capacity
+offset	Gob	seamScaleChannel	0x4a0	0x4a0	# ScaleObject's two channels, 0x4a0 and 0x4a4
+offset	Gob	seamAttachList	0x4a8	0x4a8	# CExoArrayList<Gob*> of attachments
+offset	Gob	seamAttachCount	0x4b0	0x4b0	# attachment count
+offset	Gob	seamAttachCap	0x4b4	0x4b4	# attachment capacity
+offset	Gob	seamTriMeshArea	0x4b8	0x4b8	# GetRandomPart's cached total, -1 = stale
+offset	Gob	seamSizeof	0x4c0	0x4c0	# NewCAurObject's operator new size
+offset	Scene	seamSafeList	0x08	0x08	# SafePointerList array pointer
+offset	Scene	seamSafeCount	0x10	0x10	# SafePointerList count
+offset	Scene	seamSafeCap	0x14	0x14	# SafePointerList capacity
+offset	Scene	seamAmbient	0x168	0x168	# CAurScene::SetAmbient
+offset	Scene	seamAmbient2	0x170	0x170	# the second vector SetAmbient writes
+offset	Scene	seamSizeof	0x518	0x518	# NewCAurScene's operator new size
+offset	StringGob	seamStringSub	0x4c0	0x4c0	# the CAurString sub-object vptr; NOT readerThisAdjust, which is 0 on Windows
+offset	StringGob	seamSizeof	0x558	0x558	# NewCAurString's operator new size
+offset	Camera	seamGobSub	0x08	0x08	# the CAurObject (Gob) sub-object
+offset	Camera	seamSizeof	0xe68	0xe70	# Camera::Camera's operator new size -- the ONE class whose size differs per OS
+
+offset	CallBack	seamFn	0x20	0x20	# the callback function pointer
+offset	CallBack	seamData	0x28	0x28	# the callback's registered user data
+offset	CallBack	seamSizeof	0x30	0x30	# Gob::RegisterCallBack's operator new size
+offset	LerpFloat	seamSizeof	0x40	0x40	# one animated float of a CAurObjectVisualTransformData
+offset	CAurBehavior	vtbl.dtorDeleting	0x08	0x00	# Itanium slot 1; MSVC's single scalar-deleting destructor is slot 0
+offset	CAurBehavior	vtbl.Message	0x28	0x20	# CAurBehavior::Message(char const*)
+offset	CAurBehavior	vtbl.GetType	0x30	0x28	# CAurBehavior::GetType() -> int

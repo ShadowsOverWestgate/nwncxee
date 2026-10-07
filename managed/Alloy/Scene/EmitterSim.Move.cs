@@ -17,33 +17,31 @@ internal static unsafe partial class EmitterSim
     /// <para>The order is the engine's and two steps of it are not interchangeable -- the inherited velocity
     /// is measured against the position the spawn rectangle just chose, and the launch direction is composed
     /// ONTO the emitter's own orientation rather than replacing it.</para></summary>
-    private static void Spawn(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node,
-                              int flags, float dt, float scale)
+    private static void Spawn(ref Slot slot, ref Emitter e, float dt, float scale)
     {
         Particle p = Take(ref slot);
         if (p.IsNull) return;
-        Seeded(ref slot, em, ref e, node, flags, p, dt, scale);
+        Seeded(ref slot, ref e, p, dt, scale);
     }
 
     /// <summary>Lightning's birth: a chain particle, which takes its place from the fractal rather than from
     /// the spawn rectangle, so it needs the seeding but not the launch.</summary>
-    private static void Seed(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node)
+    private static void Seed(ref Slot slot, ref Emitter e)
     {
         Particle p = Take(ref slot);
         if (p.IsNull) return;
         Clear(p);
-        p.Quat = e.Orient;
-        p.Pos = e.Pos;
-        p.PrevPos = e.Pos;
+        p.Quat = e.M.Orient;
+        p.Pos = e.M.Pos;
+        p.PrevPos = e.M.Pos;
         p.Frame = (int)e.FrameStart;
-        p.SplatNormal = AxisZ(e.Basis);
+        p.SplatNormal = e.M.Bz;
     }
 
-    private static void Seeded(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node,
-                              int flags, Particle p, float dt, float scale)
+    private static void Seeded(ref Slot slot, ref Emitter e, Particle p, float dt, float scale)
     {
         Clear(p);
-        p.Quat = e.Orient;
+        p.Quat = e.M.Orient;
         p.Frame = (int)e.FrameStart;
 
         // The speed jitter is drawn FIRST, because the engine draws it before it moves the particle and the
@@ -57,12 +55,12 @@ internal static unsafe partial class EmitterSim
         }
 
         int sx = (int)(e.SpawnX * 100f * scale), sy = (int)(e.SpawnY * 100f * scale);
-        if (sx == 0 && sy == 0) p.Pos = e.Pos;
+        if (sx == 0 && sy == 0) p.Pos = e.M.Pos;
         else RandomPosition(ref slot, ref e, p, scale);
         p.PrevPos = p.Pos;
 
-        if ((flags & FInheritVel) != 0) Inherit(ref e, p, dt);
-        if (e.Spread != 0f) Launch(ref slot, ref e, node, p);
+        if ((e.Flags & FInheritVel) != 0) Inherit(ref e, p, dt);
+        if (e.Spread != 0f) Launch(ref slot, ref e, p);
 
         Vector3 dir = QuatZ(p.Quat);
         p.SplatNormal = dir;
@@ -70,7 +68,7 @@ internal static unsafe partial class EmitterSim
 
         // chkRandom: a "random" emitter starts each particle on a random cell of its own declared range,
         // which is what makes a sparse smoke plume not look like one animation played N times.
-        if ((flags & FRandom) != 0)
+        if ((e.Flags & FRandom) != 0)
         {
             int span = (int)MathF.Abs(e.FrameEnd - e.FrameStart) + 1;
             p.Frame = (int)(Rnd(ref slot.Rng, span) + e.FrameStart);
@@ -90,15 +88,14 @@ internal static unsafe partial class EmitterSim
     /// ten-thousandths and takes HALF the declared extent as the draw range, so the declared size is the full
     /// width rather than a radius; and it skips the draw entirely below four ticks, because
     /// <c>rand() % 1</c> is always zero anyway.</summary>
-    private static void RandomPosition(ref Slot slot, ref PartEmitter e, Particle p, float scale)
+    private static void RandomPosition(ref Slot slot, ref Emitter e, Particle p, float scale)
     {
         int sx = (int)(e.SpawnX * 100f * scale), sy = (int)(e.SpawnY * 100f * scale);
         int ox = sx > 3 ? Rnd(ref slot.Rng, (int)(sx * 0.5f)) : 0;
         int oy = sy > 3 ? Rnd(ref slot.Rng, (int)(sy * 0.5f)) : 0;
         if (Coin(ref slot.Rng)) ox = -ox;
         if (Coin(ref slot.Rng)) oy = -oy;
-        Span<float> m = e.Basis;
-        p.Pos = e.Pos + AxisX(m) * (ox * Deci4) + AxisY(m) * (oy * Deci4);
+        p.Pos = e.M.Pos + e.M.Bx * (ox * Deci4) + e.M.By * (oy * Deci4);
     }
 
     /// <summary><c>randomDirection</c>: tilt off the emitter's Z by up to half the spread, then spin that
@@ -107,19 +104,17 @@ internal static unsafe partial class EmitterSim
     /// <para>The engine's fold loop has no bound and terminates on float luck; this one stops after
     /// <see cref="MaxConeFolds"/>, which on a frame hook is the difference between a wrong angle and a hung
     /// client.</para></summary>
-    private static void Launch(ref Slot slot, ref PartEmitter e, MdlNodeEmitter node, Particle p)
+    private static void Launch(ref Slot slot, ref Emitter e, Particle p)
     {
-        Span<float> m = e.Basis;
         float tilt = Rnd(ref slot.Rng, (int)(e.Spread * 0.5f * 100f) + 1) * Centi;
-        p.Quat = QMul(AxisAngle(Norm(AxisX(m)), tilt), p.Quat);
+        p.Quat = QMul(AxisAngle(Norm(e.M.Bx), tilt), p.Quat);
         float spin = Rnd(ref slot.Rng, AzimuthTicks) * Centi;
-        p.Quat = QMul(AxisAngle(Norm(AxisZ(m)), spin), p.Quat);
+        p.Quat = QMul(AxisAngle(Norm(e.M.Bz), spin), p.Quat);
 
-        float cap = node.ConeCap;
+        float cap = e.ConeCap;
         if (cap == 0f) return;
-        IntPtr cam = AlloyCamera.World;
-        if (cam == IntPtr.Zero) return;
-        Vector3 view = Norm(p.Pos - new CX.Engine.Camera(cam).Pos);
+        if (!_hasEye) return;
+        Vector3 view = Norm(p.Pos - _eye);
         if (view == Vector3.Zero) return;
         float limit = MathF.Cos(HalfPi - cap);
         for (int k = 0; k < MaxConeFolds; k++)
@@ -138,11 +133,11 @@ internal static unsafe partial class EmitterSim
     /// unit direction plus a magnitude that the movers decay toward zero. Both halves count -- the
     /// translation over the step, and the sweep the emitter's own rotation gives a particle standing at
     /// distance <c>d</c> from it.</summary>
-    private static void Inherit(ref PartEmitter e, Particle p, float dt)
+    private static void Inherit(ref Emitter e, Particle p, float dt)
     {
         float inv = dt > 0f ? 1f / dt : Epsilon;
-        float d = (e.Pos - p.Pos).Length();
-        Vector3 v = (AxisZ(e.Basis) - QuatZ(e.PrevRot)) * (d * inv) + (e.Pos - e.PrevPos) * inv;
+        float d = (e.M.Pos - p.Pos).Length();
+        Vector3 v = (e.M.Bz - QuatZ(e.M.PrevRot)) * (d * inv) + (e.M.Pos - e.M.PrevPos) * inv;
         float mag = v.Length();
         p.InhDecay = mag;
         p.InhVel = mag != 0f ? v / mag : Vector3.Zero;
@@ -152,19 +147,17 @@ internal static unsafe partial class EmitterSim
 
     /// <summary>Integrate one emitter's particles and then record the transform the next step measures
     /// against.</summary>
-    private static void Move(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node,
-                            int flags, IntPtr scene, float dt)
+    private static void Move(ref Slot slot, ref Emitter e, IntPtr scene, float dt)
     {
-        var gob = new CX.Engine.Part(em).Gob;
         switch (slot.Mover)
         {
-            case MoveBezier: Bezier(ref slot, ref e, gob, flags, scene, dt); break;
-            case MoveGrav: Grav(ref slot, ref e, gob, flags, scene, dt); break;
-            default: Standard(ref slot, ref e, gob, flags, scene, dt); break;
+            case MoveBezier: Bezier(ref slot, ref e, scene, dt); break;
+            case MoveGrav: Grav(ref slot, ref e, scene, dt); break;
+            default: Standard(ref slot, ref e, scene, dt); break;
         }
-        bool local = (flags & FInheritLocal) != 0;
-        if (!gob.IsNull && local) { e.PrevWorldPos = gob.Position; e.PrevWorldRot = gob.Rot; }
-        else if ((flags & FInheritPart) != 0) { e.PrevWorldPos = e.Pos; e.PrevWorldRot = e.Orient; }
+        bool local = (e.Flags & FInheritLocal) != 0;
+        if (e.HasOwner && local) { e.M.PrevWorldPos = e.OwnerPos; e.M.PrevWorldRot = e.OwnerRot; }
+        else if ((e.Flags & FInheritPart) != 0) { e.M.PrevWorldPos = e.M.Pos; e.M.PrevWorldRot = e.M.Orient; }
     }
 
     /// <summary>The three inherit modes, factored out of the movers that each open with their own copy.
@@ -177,22 +170,23 @@ internal static unsafe partial class EmitterSim
     /// declaring <c>inherit_local</c> AND spinning its owner will drift where vanilla would carry it. Named
     /// rather than reproduced: the engine's version reads two more transforms per particle for a combination
     /// no stock effect uses.</para></summary>
-    private static Vector3 Carry(ref PartEmitter e, CX.Engine.Gob gob, int flags, Particle p, in Quat rebase)
+    private static Vector3 Carry(ref Emitter e, Particle p, in Quat rebase)
     {
+        int flags = e.Flags;
         Vector3 start = p.Pos;
         if ((flags & FInherit) != 0)
         {
-            start = Rotate(rebase, p.Pos - e.PrevPos) + e.Pos;
+            start = Rotate(rebase, p.Pos - e.M.PrevPos) + e.M.Pos;
             p.Vel = Rotate(rebase, p.Vel);
         }
-        else if ((flags & FInheritLocal) != 0 && !gob.IsNull)
+        else if ((flags & FInheritLocal) != 0 && e.HasOwner)
         {
-            Vector3 d = gob.Position - e.PrevWorldPos;
+            Vector3 d = e.OwnerPos - e.M.PrevWorldPos;
             start += d; p.PrevPos += d;
         }
         if ((flags & FInheritPart) != 0)
         {
-            Vector3 d = e.Pos - e.PrevWorldPos;
+            Vector3 d = e.M.Pos - e.M.PrevWorldPos;
             start += d; p.PrevPos += d;
         }
         return start;
@@ -201,27 +195,26 @@ internal static unsafe partial class EmitterSim
     /// <summary>The ordinary mover: velocity, the decaying inherited velocity, wind, gravity. The decay is
     /// <c>|(1 - dt) * decay|</c> per step, which is the engine's own -- frame-rate dependent, and kept,
     /// because it is what sets how far a spawn's inherited motion carries.</summary>
-    private static void Standard(ref Slot slot, ref PartEmitter e, CX.Engine.Gob gob, int flags,
-                                 IntPtr scene, float dt)
+    private static void Standard(ref Slot slot, ref Emitter e, IntPtr scene, float dt)
     {
-        Quat rebase = QMul(e.Orient, Conj(e.PrevRot));
-        bool wind = (flags & FWind) != 0;
-        bool bounce = (flags & FBounce) != 0 && Bouncing.V;
+        Quat rebase = QMul(e.M.Orient, Conj(e.M.PrevRot));
+        bool wind = (e.Flags & FWind) != 0;
+        bool bounce = (e.Flags & FBounce) != 0 && Bouncing.V && !e.Db;
         float grav = e.Gravity * Gravity * dt;
         for (int i = 0; i < slot.Live; i++)
         {
             Particle p = At(ref slot, i);
             if (p.Splat != 0) continue;
             Vector3 was = p.Pos;
-            Vector3 start = Carry(ref e, gob, flags, p, rebase);
+            Vector3 start = Carry(ref e, p, rebase);
             float decay = p.InhDecay;
             Vector3 pos = start + p.Vel * dt + p.InhVel * (decay * dt);
-            if (wind) pos += Wind(scene, pos, dt);
+            if (wind) pos += Wind(in e, scene, pos, dt);
             Vector3 v = p.Vel;
             p.Vel = new Vector3(v.X, v.Y, v.Z + grav);
             p.InhDecay = MathF.Abs((1f - dt) * decay);
             p.Pos = pos;
-            if (bounce) Reflect(ref e, p, was, dt);
+            if (bounce) Reflect(in e, p, was, dt);
         }
     }
 
@@ -229,21 +222,17 @@ internal static unsafe partial class EmitterSim
     /// by <c>pow(t³, combineTime)</c> so a particle leaves the emitter under its own velocity and arrives on
     /// the curve. Control points are the emitter's Z axis times <c>bezier2</c> and the target's times
     /// <c>bezier3</c>.</summary>
-    private static void Bezier(ref Slot slot, ref PartEmitter e, CX.Engine.Gob gob, int flags,
-                               IntPtr scene, float dt)
+    private static void Bezier(ref Slot slot, ref Emitter e, IntPtr scene, float dt)
     {
-        var target = e.P2pTarget;
-        if (target.IsNull) { _p2pNoTarget++; return; }
-        AurXform.V3 t3 = AurXform.Position(target.Ptr);
-        Vector3 tip = new(t3.X, t3.Y, t3.Z);
-        Quat tq = AurXform.Orientation(target.Ptr);
-        Vector3 c0 = e.Pos, c3 = tip;
-        Vector3 c1 = c0 + AxisZ(e.Basis) * e.Bezier2;
-        Vector3 c2 = c3 + QuatZ(tq) * e.Bezier3;
+        if (!e.HasTarget) { _p2pNoTarget++; return; }
+        Vector3 tip = e.TargetPos;
+        Vector3 c0 = e.M.Pos, c3 = tip;
+        Vector3 c1 = c0 + e.M.Bz * e.Bezier2;
+        Vector3 c2 = c3 + QuatZ(e.TargetRot) * e.Bezier3;
 
-        Quat rebase = QMul(e.Orient, Conj(e.PrevRot));
-        bool wind = (flags & FWind) != 0;
-        bool bounce = (flags & FBounce) != 0 && Bouncing.V;
+        Quat rebase = QMul(e.M.Orient, Conj(e.M.PrevRot));
+        bool wind = (e.Flags & FWind) != 0;
+        bool bounce = (e.Flags & FBounce) != 0 && Bouncing.V && !e.Db;
         float life = e.Life, comb = e.CombineTime;
         float grav = e.Gravity * Gravity * dt;
         for (int i = 0; i < slot.Live; i++)
@@ -251,9 +240,9 @@ internal static unsafe partial class EmitterSim
             Particle p = At(ref slot, i);
             if (p.Splat != 0) continue;
             Vector3 was = p.Pos;
-            Vector3 start = Carry(ref e, gob, flags, p, rebase);
+            Vector3 start = Carry(ref e, p, rebase);
             Vector3 ball = start + p.Vel * dt;
-            if (wind) ball += Wind(scene, ball, dt);
+            if (wind) ball += Wind(in e, scene, ball, dt);
 
             float t = life > 0f ? MathF.Min(1f, p.Age / life) : 1f;
             float u = 1f - t, tt = t * t;
@@ -264,24 +253,21 @@ internal static unsafe partial class EmitterSim
             p.Vel = new Vector3(v.X, v.Y, v.Z + grav);
             p.InhDecay = MathF.Abs((1f - dt) * decay);
             p.Pos = curve * k + ball * (1f - k) + p.InhVel * (decay * dt);
-            if (bounce) Reflect(ref e, p, was, dt);
+            if (bounce) Reflect(in e, p, was, dt);
         }
     }
 
     /// <summary>p2p gravity: drag plus a constant acceleration toward the target, and a particle that reaches
     /// the target's <c>deadSpace</c> is aged out on the spot. The arrival test is against the SWEPT segment,
     /// not the end point, so a fast particle cannot tunnel past a small target.</summary>
-    private static void Grav(ref Slot slot, ref PartEmitter e, CX.Engine.Gob gob, int flags,
-                            IntPtr scene, float dt)
+    private static void Grav(ref Slot slot, ref Emitter e, IntPtr scene, float dt)
     {
-        var target = e.P2pTarget;
-        if (target.IsNull) { _p2pNoTarget++; return; }
-        AurXform.V3 t3 = AurXform.Position(target.Ptr);
-        Vector3 tip = new(t3.X, t3.Y, t3.Z);
+        if (!e.HasTarget) { _p2pNoTarget++; return; }
+        Vector3 tip = e.TargetPos;
 
-        Quat rebase = QMul(e.Orient, Conj(e.PrevRot));
-        bool wind = (flags & FWind) != 0;
-        bool bounce = (flags & FBounce) != 0 && Bouncing.V;
+        Quat rebase = QMul(e.M.Orient, Conj(e.M.PrevRot));
+        bool wind = (e.Flags & FWind) != 0;
+        bool bounce = (e.Flags & FBounce) != 0 && Bouncing.V && !e.Db;
         float dead = e.DeadSpace, dead2 = dead * dead;
         float keep = MathF.Pow(e.P2pDrag, dt), accel = e.P2pGrav;
         float life = e.Life, grav = e.Gravity * Gravity * dt;
@@ -290,9 +276,9 @@ internal static unsafe partial class EmitterSim
             Particle p = At(ref slot, i);
             if (p.Splat != 0) continue;
             Vector3 was = p.Pos;
-            Vector3 start = Carry(ref e, gob, flags, p, rebase);
+            Vector3 start = Carry(ref e, p, rebase);
             Vector3 ball = start + p.Vel * dt;
-            if (wind) ball += Wind(scene, ball, dt);
+            if (wind) ball += Wind(in e, scene, ball, dt);
             if ((tip - start).LengthSquared() <= dead2) { p.Age = life; continue; }
 
             p.Vel *= keep;
@@ -311,7 +297,7 @@ internal static unsafe partial class EmitterSim
             p.Vel = new Vector3(v.X, v.Y, v.Z + grav);
             p.InhDecay = MathF.Abs((1f - dt) * decay);
             p.Pos = ball + p.InhVel * (decay * dt);
-            if (bounce) Reflect(ref e, p, was, dt);
+            if (bounce) Reflect(in e, p, was, dt);
         }
     }
 
@@ -324,8 +310,10 @@ internal static unsafe partial class EmitterSim
     /// stopping. <b>The factor is <c>clamp(0.033 / dt, 0.5, 1)</c></b>: one at 60 and 30fps, damping the
     /// bounce below that, which is what stops a stuttering frame from launching debris.</para>
     /// <para>Geometry is <see cref="BounceWorld"/>'s: up-facing tile faces, no walls and no placeables. See
-    /// its class doc for why, and <c>emitsim.bounce=0</c> for the A/B.</para></summary>
-    private static void Reflect(ref PartEmitter e, Particle p, Vector3 was, float dt)
+    /// its class doc for why, and <c>emitsim.bounce=0</c> for the A/B. In DB mode there is no engine tile
+    /// geometry to build the set from, so the bounce stands down -- see the <c>[emitsim]</c> line.</para>
+    /// </summary>
+    private static void Reflect(in Emitter e, Particle p, Vector3 was, float dt)
     {
         Vector3 now = p.Pos;
         if (was == now) return;
@@ -368,22 +356,25 @@ internal static unsafe partial class EmitterSim
     private const float BounceLoss = 0.75f, DtRef = 0.033f, MinBounceScale = 0.5f,
                         LandSpeed2 = 0.5f, LandLift = 0.02f;
 
-    private static Vector3 Wind(IntPtr scene, Vector3 at, float dt)
+    /// <summary>The wind displacement at a point. Engine mode asks <see cref="AurXform.Wind"/>, which is
+    /// <see cref="AlloyWind"/>'s own field or <c>Scene::GetWindVector</c> behind <c>view.wind</c>. DB mode has
+    /// no engine Scene, so it asks Alloy's field directly -- and when that is not armed the emitter feels no
+    /// wind at all, which is counted rather than assumed.</summary>
+    private static Vector3 Wind(in Emitter e, IntPtr scene, Vector3 at, float dt)
     {
+        if (e.Db || scene == IntPtr.Zero)
+        {
+            if (AlloyWind.Owned) return AlloyWind.Wind(at, dt);
+            _windRefused++;
+            return Vector3.Zero;
+        }
         AurXform.V3 w = AurXform.Wind(scene, new AurXform.V3 { X = at.X, Y = at.Y, Z = at.Z }, dt);
         return new Vector3(w.X, w.Y, w.Z);
     }
 
-    // ---- small maths, all of it the engine's own free functions ---------------------------------------
+    private static int _windRefused;
 
-    /// <summary>The Gob's uniform scale, which every spawn extent is measured in
-    /// (<c>Gob::GetAdjustedScale</c>, the vcall three of the four update modes make). One without a Gob is
-    /// unscaled.</summary>
-    private static float Scale(IntPtr em)
-    {
-        var gob = new CX.Engine.Part(em).Gob;
-        return gob.IsNull ? 1f : gob.GetAdjustedScale();
-    }
+    // ---- small maths, all of it the engine's own free functions ---------------------------------------
 
     /// <summary>Hamilton product, (w, x, y, z) in and out -- the engine's <c>Quaternion::operator*</c>.
     /// </summary>

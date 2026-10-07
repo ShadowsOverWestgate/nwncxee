@@ -6,7 +6,7 @@ using CX.Framework;
 namespace CX.Services.Anim;
 
 /// <summary>The pose layer's shared maths and part access: springs, the two-bone solve, and the engine's
-/// w-first part rotations. Pure except <see cref="World"/>, which calls <c>Part::GetWorld</c>.</summary>
+/// w-first part rotations. Part access goes through <see cref="PoseRig"/>, which answers both scene layers.</summary>
 internal static unsafe class PoseMath
 {
     /// <summary><c>Part::GetWorld</c>, set by <see cref="PoseService"/> before anything is chained.</summary>
@@ -156,14 +156,7 @@ internal static unsafe class PoseMath
     /// <summary><c>Part::GetWorld</c>; the engine's quaternion is w-first, System.Numerics' is w-last. Both products
     /// are Hamilton (<c>operator*(Quaternion const&amp;, Quaternion const&amp;)</c> @0x5b5c30), and a child's world
     /// rotation is its parent's times its local.</summary>
-    internal static void World(IntPtr part, out Vector3 pos, out Quaternion rot)
-    {
-        Vector3 p;
-        float* q = stackalloc float[4];
-        GetWorld(part, &p, q);
-        pos = p;
-        rot = new Quaternion(q[1], q[2], q[3], q[0]);
-    }
+    internal static void World(IntPtr part, out Vector3 pos, out Quaternion rot) => PoseRig.World(part, out pos, out rot);
 
     /// <summary>The rotation vector (axis times angle, radians) of <paramref name="q"/>, the short way round.</summary>
     internal static Vector3 Log(Quaternion q)
@@ -181,7 +174,7 @@ internal static unsafe class PoseMath
         return a < 1e-7f ? Quaternion.Normalize(new Quaternion(0.5f * r, 1f)) : Quaternion.CreateFromAxisAngle(r / a, a);
     }
 
-    internal static Quaternion Local(IntPtr part) => new Part(part).Rot;
+    internal static Quaternion Local(IntPtr part) => PoseRig.Local(part);
 
-    internal static void SetLocal(IntPtr part, Quaternion q) => new Part(part).Rot = Quaternion.Normalize(q);
+    internal static void SetLocal(IntPtr part, Quaternion q) => PoseRig.SetLocal(part, Quaternion.Normalize(q));
 }

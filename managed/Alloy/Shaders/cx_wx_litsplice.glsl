@@ -16,13 +16,19 @@
             if (uWeather.w > 2.5) { frag = d.emi.w < -0.5 ? vec4(1.0, 0.0, 0.0, 1.0) : d.emi.w > 0.5 ? vec4(0.0, 0.0, 1.0, 1.0) : vec4(0.0, 1.0, 0.0, 1.0); return; }
             if (uWeather.x > 0.0 || uWeather.y > 0.0 || uWeather.w > 1.5)
             {
-                float wxExp = CxWeatherExposure(vWorld, N);
                 vec3 Ng = normalize(vNrm);
-                // /weather viz 2 paints the test that decides WETNESS -- the cover map's own filtered
-                // compare (cx_wx_edge), not the variance read snow still takes.
-                if (uWeather.w > 1.5) { frag = vec4(vec3(CxWetOpen(vWorld, Ng, wxExp)), 1.0); return; }
                 float up = clamp(Ng.z, 0.0, 1.0);
-                float n1 = CxWeatherNoise(vWorld.xy * 0.7), n2 = CxWeatherNoise(vWorld.xy * 3.1);
+                // the area map's record first: where it has latched, rain needs no variance read at all
+                vec4 wxM = CxWetMap(vWorld.xy);
+                bool wxMapped = CxWetMapped(wxM);
+                // the filtered (variance) exposure: snow's amount, and the fallback where the map has not latched
+                float wxExp = uWeather.y > 0.0 || !wxMapped || uWeather.w > 1.5 ? CxWeatherExposure(vWorld, N) : 1.0;
+                // /weather viz 2 paints the test that decides WETNESS -- the shelter cache where this is the
+                // surface the rain lands on, the live disk (cx_wx_edge) everywhere else.
+                if (uWeather.w > 1.5) { frag = vec4(vec3(CxWetOpenFast(vWorld, Ng, wxExp)), 1.0); return; }
+                float wxPx = CxWeatherImpactPx(vWorld, V);
+                vec4 wxNz = CxWxNoise(vWorld.xy, CxWxNoiseLod(wxPx));
+                float n1 = wxNz.x, n2 = wxNz.y;
                 // rain wets a face as much as the fall strikes it, relative to open ground: a wall parallel to the
                 // fall stays dry, a windward one takes the lean. The fall is the cover view's axis (it is baked along it).
                 vec3 wxFall = uCoverVp[3][3] == 0.0 ? vec3(0.0, 0.0, -1.0) : normalize(vec3(uCoverVp[0][2], uCoverVp[1][2], uCoverVp[2][2]));
@@ -32,9 +38,7 @@
                 // on a large area its one-fetch shelter test stair-stepped the dry strip under an eave in
                 // half-metre blocks. The edge comes off the cover map at its own resolution (cx_wx_edge),
                 // and the map's coarse test is only what a point outside the cover window falls back to.
-                vec4 wxM = CxWetMap(vWorld.xy);
-                bool wxMapped = CxWetMapped(wxM);
-                float wxWetExp = CxWetOpen(vWorld, Ng, wxMapped ? CxWetShelter(wxM, vWorld.z) : wxExp);
+                float wxWetExp = CxWetOpenFast(vWorld, Ng, wxMapped ? CxWetShelter(wxM, vWorld.z) : wxExp);
                 float wxWetAmt = clamp(wxMapped ? wxM.x * uWxMapXf.w : uWeather.x, 0.0, 1.0);
                 wxWet = wxWetAmt * wxWetExp * clamp(dot(Ng, -wxFall) / max(-wxFall.z, 0.2), 0.0, 1.0);
                 if (up < CX_WX_WALL_UP && wxWet > 0.0)
@@ -58,11 +62,11 @@
                 {
                     float wxSlope = smoothstep(uSnowLook.w - 0.15, uSnowLook.w + 0.15, up + (n1 - 0.5) * 0.4);
                     // drift: banked against whatever stands higher, out to the drift width
-                    vec3 wxDrift = uSnowLook.z > 0.0 ? CxSnowDrift(vWorld, uSnowLight.z) : vec3(0.0);
+                    vec3 wxDrift = uSnowLook.z > 0.0 ? CxWxDriftAt(vWorld) : vec3(0.0);
                     wxPile = smoothstep(0.0, 0.6, wxDrift.x) * uSnowLook.z * up;
                     wxDriftDir = wxDrift.yz;
                     // ground variation: broad patches of thinner cover across open ground
-                    float wxVary = 1.0 - uSnowLight.w * smoothstep(0.35, 0.7, CxWeatherNoise(vWorld.xy * 0.23)) * 0.6;
+                    float wxVary = 1.0 - uSnowLight.w * smoothstep(0.35, 0.7, wxNz.z) * 0.6;
                     wxSnow = clamp(uWeather.y * wxExp * wxSlope * (0.75 + 0.25 * n2) * wxVary * (1.0 + wxPile), 0.0, 1.0);
                     // parallax relief: the snow surface stands uSnowPom.x x height above the mesh. March the view
                     // ray from where it enters the relief's top down to the mesh, and shade the point where it
@@ -73,14 +77,14 @@
                         float amp = uSnowPom.x * wxSnow;
                         float vn = max(dot(V, Ng), 0.15);
                         vec2 top = vWorld.xy + V.xy * (amp / vn);
-                        float pileTop = uSnowLook.z > 0.0 ? smoothstep(0.0, 0.6, CxSnowDrift(vec3(top, vWorld.z), uSnowLight.z).x) * uSnowLook.z * up : 0.0;
-                        float n = uSnowPom.y, prevH = 1.0, prevS = 1.0, s = 1.0;
+                        float pileTop = uSnowLook.z > 0.0 ? smoothstep(0.0, 0.6, CxWxDriftAt(vec3(top, vWorld.z)).x) * uSnowLook.z * up : 0.0;
+                        float n = uSnowPom.y, prevH = 1.0, prevS = 1.0, s = 1.0, wxLod = CxWxNoiseLod(wxPx);
                         vec2 p = top;
                         for (int i = 1; i <= int(n); i++)
                         {
                             s = 1.0 - float(i) / n;
                             p = mix(vWorld.xy, top, s);
-                            float hs = CxSnowHeight(p, uSnowLight.w, mix(wxPile, pileTop, s));
+                            float hs = CxSnowHeight(CxWxNoise(p, wxLod), uSnowLight.w, mix(wxPile, pileTop, s));
                             if (s <= hs)
                             {
                                 float t = (prevS - prevH) / max((prevS - prevH) - (s - hs), 1e-4);   // where the ray crossed
@@ -128,8 +132,9 @@
                     rough = mix(rough, 0.75, wxSnow); spec = mix(spec, 0.08, wxSnow);
                     // mounds: the normal tilts down the relief's gradient at the point the ray met it (or under
                     // the pixel with the relief off), more as the cover deepens
-                    vec2 wxG = vec2(CxSnowHeight(wxP + vec2(0.05, 0.0), uSnowLight.w, wxPile) - CxSnowHeight(wxP - vec2(0.05, 0.0), uSnowLight.w, wxPile),
-                                    CxSnowHeight(wxP + vec2(0.0, 0.05), uSnowLight.w, wxPile) - CxSnowHeight(wxP - vec2(0.0, 0.05), uSnowLight.w, wxPile));
+                    float wxGl = CxWxNoiseLod(wxPx);
+                    vec2 wxG = vec2(CxSnowHeight(CxWxNoise(wxP + vec2(0.05, 0.0), wxGl), uSnowLight.w, wxPile) - CxSnowHeight(CxWxNoise(wxP - vec2(0.05, 0.0), wxGl), uSnowLight.w, wxPile),
+                                    CxSnowHeight(CxWxNoise(wxP + vec2(0.0, 0.05), wxGl), uSnowLight.w, wxPile) - CxSnowHeight(CxWxNoise(wxP - vec2(0.0, 0.05), wxGl), uSnowLight.w, wxPile));
                     // a drift is a slope rising toward the wall: the normal leans away from it, most at its foot.
                     // The cover view's uv axes are its own right/up, not world xy; the tilt is applied in world
                     // xy through the view's inverse rotation -- the map is a top-down orthographic fit, so its
@@ -179,7 +184,7 @@
                 {
                     // the rings a drop leaves are on the FILM, so they roughen the coat and not the bed
                     float wxRing, wxAmp = wxWetExp * wxFilm;
-                    N = normalize(N + vec3(CxWeatherRipple(vWorld.xy, uCoverLayer.w, CxWeatherImpactPx(vWorld, V), wxRing) * wxAmp, 0.0));
+                    N = normalize(N + vec3(CxWeatherRipple(vWorld.xy, uCoverLayer.w, wxPx, wxRing) * wxAmp, 0.0));
                     wxFilmRough = CxWeatherRippleRough(wxFilmRough, wxRing, wxAmp, uCoverLayer.w);
                 }
             }

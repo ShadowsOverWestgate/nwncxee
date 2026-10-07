@@ -330,6 +330,16 @@ internal static unsafe class SymbolMap
     public const string SdlGetModState  = "SDL_GetModState";                            // live Ctrl/Shift/Alt state at capture
     [Fn("uint(int* x, int* y)")]
     public const string SdlGetMouseState = "SDL_GetMouseState";
+    /// <summary><c>SDL_SetWindowSize(SDL_Window*, int, int)</c>: the one trigger CX has for the engine's own
+    /// resize path. SDL posts <c>SDL_WINDOWEVENT_SIZE_CHANGED</c> for a size it set itself, and
+    /// <c>WinMessageHandler</c> @0x62f960 (event type <c>0x200</c>, code 5) answers it with
+    /// <c>CGuiMan::SetGuiSize</c> @0x77efc0 -- every panel re-laid out, which is the path
+    /// <c>alloy.resizeat</c> exists to pull under a harness that cannot resize a window.</summary>
+    [Fn("void(IntPtr window, int w, int h)")]
+    public const string SdlSetWindowSize = "SDL_SetWindowSize";
+    /// <inheritdoc cref="SdlSetWindowSize"/>
+    [Fn("void(IntPtr window, int* w, int* h)")]
+    public const string SdlGetWindowSize = "SDL_GetWindowSize";
     /// <summary><c>CActionTarget::ActivateTargetMode()</c> @0x9652b0 -- the one funnel every "pick a target" mode
     /// reaches (quickbar spell/feat/item, radial, DM tool, script <c>SetupScriptTargetMode</c>); the subclasses only
     /// build the mode and call this last. Takes <c>this</c> and nothing else, returns void, on both builds.</summary>
@@ -491,6 +501,30 @@ internal static unsafe class SymbolMap
     /// Pass it exactly as the engine's own handlers do: press (mouseX, mouseY, 0, 1), wheel (…, 0, 8). Same on both builds.</summary>
     [Fn("IntPtr(CGuiMan this, int x, int y, int fresh, int mask)")]
     public const string GuiObjectHitCheck = "_ZN7CGuiMan17GuiObjectHitCheckEiiii";
+    /// <summary><c>CGuiMan::HandleGuiTimer(int dt)</c>: counts the tooltip delay down and, at zero, hit-tests the mouse
+    /// and calls the hit object's <c>HandleTriggerTooltip</c>. alloy.hitcheck's tooltip probe chains it.</summary>
+    [Fn("void(IntPtr self, int dt)")]
+    public const string GuiManHandleGuiTimer = "_ZN7CGuiMan14HandleGuiTimerEi";
+    /// <summary><c>CGuiMan::ShowTooltipText(CExoString const&amp;, int instant)</c>: every tooltip's one funnel -- sets the
+    /// text bubble's text, positions it by the mouse and activates it. alloy.hitcheck's tooltip probe chains it.</summary>
+    [Fn("void(IntPtr self, IntPtr text, int instant)")]
+    public const string GuiManShowTooltipText = "_ZN7CGuiMan15ShowTooltipTextERK10CExoStringi";
+    /// <summary><c>CGuiMan::HandleKeyPress(int)</c> @0x57e060: hands an engine key code to the keyboard-capture
+    /// object's own <c>HandleKeyPress</c> virtual. <see cref="CX.Alloy.Db.EditSelect"/> deletes a selection through it,
+    /// one backspace at a time, so every edit subclass's own key handling runs.</summary>
+    [Fn("int(IntPtr self, int key)")]
+    public const string GuiManHandleKeyPress = "_ZN7CGuiMan14HandleKeyPressEi";
+    /// <summary><c>CGuiMan::HandleMouseMove(int, int)</c> @0x57e140: stores the mouse, hit-tests it into the hit point
+    /// at +0x108 and forwards to the mouse-capture object. Text selection chains it for the drag.</summary>
+    [Fn("void(IntPtr self, int x, int y)")]
+    public const string GuiManHandleMouseMove = "_ZN7CGuiMan15HandleMouseMoveEii";
+    /// <summary><c>CGuiEdit::HandleLMouseDown()</c> @0x593270: a click in an edit box places the caret at the hit point
+    /// and takes the keyboard. Text selection chains it for the click, shift-click and double-click.</summary>
+    [Fn("void(IntPtr self)")]
+    public const string GuiEditHandleLMouseDown = "_ZN8CGuiEdit16HandleLMouseDownEv";
+    /// <summary><c>CGuiEdit::SetFocus()</c> @0x592b60: Tab, or a panel, moves the keyboard into an edit box.</summary>
+    [Fn("void(IntPtr self)")]
+    public const string GuiEditSetFocus = "_ZN8CGuiEdit8SetFocusEv";
     /// <summary>CTlkTable* global; the <c>this</c> for <see cref="TlkGetSimpleString"/>.</summary>
     public const string TlkTable   = "g_pTlkTable";
     /// <summary>The client's nuklear context, a <c>nk_context*</c> (Linux @0x1a039e0 -> the context itself at
@@ -555,6 +589,24 @@ internal static unsafe class SymbolMap
     public const string StbttMakeCodepointBitmap   = "stbtt_MakeCodepointBitmap";
     [Fn("int(byte* info, int codepoint)")]
     public const string StbttFindGlyphIndex        = "stbtt_FindGlyphIndex";
+    // ---- CX-119: the engine's OWN stb_truetype pack API and codepage mapper. CX bakes a font atlas by
+    //      calling the same statically linked rasteriser at the same parameters, so glyph pixels match by
+    //      construction rather than by matching a library version. All name-exported on BOTH OSes (verified
+    //      in nwmain.exe's export table), so one Nm() row each. ----
+    [Fn("void(byte* spc, byte* pixels, int width, int height, int strideInBytes, int padding, void* allocContext)")]
+    public const string Cx119StbttPackBegin           = "stbtt_PackBegin";
+    [Fn("void(byte* spc)")]
+    public const string Cx119StbttPackEnd             = "stbtt_PackEnd";
+    [Fn("void(byte* spc, int hOversample, int vOversample)")]
+    public const string Cx119StbttPackSetOversampling = "stbtt_PackSetOversampling";
+    [Fn("int(byte* spc, byte* fontdata, int fontIndex, byte* ranges, int numRanges)")]
+    public const string Cx119StbttPackFontRanges      = "stbtt_PackFontRanges";
+    /// <summary><c>Encoding::SingleCharToUTF8(char, Encoding::Locale)</c> @0x5fcef0 -- one codepage byte to its
+    /// Unicode codepoint, honouring the client's locale and a module's <c>encoding.2da</c> override. Returns
+    /// <c>int</c>, which the MSVC export name carries and the Itanium one does not.</summary>
+    [Fn("int(byte b, int locale)")]
+    public const string Cx119EncodingSingleCharToUtf8 = "_ZN8Encoding16SingleCharToUTF8EcNS_6LocaleE";
+
     // The client runs an OpenGL 3.3 CORE context (verified: SDL_GL_SetAttribute PROFILE_MASK=CORE),
     // so the owned draw is shader+VAO+VBO. Modern GL (>=1.3) resolves through this exported SDL entry.
     public const string SdlGlGetProcAddress = "SDL_GL_GetProcAddress";
@@ -585,6 +637,17 @@ internal static unsafe class SymbolMap
     /// to where the engine happens to have put its own.</para></summary>
     [Fn("void()")]
     public const string RiResetRenderStates = "_ZN15RenderInterface17ResetRenderStatesEv";
+    /// <summary>CX-120: <c>RenderInterface::CheckAndUpdateUniformDirtyDataForFrame(float)</c> @0x45de90 -- a
+    /// static thunk to <c>GLRender::CheckAndUpdateUniformDirtyDataForFrame</c> @0x4d4e50, which refills
+    /// <see cref="GlShaderRuntimeData"/> from the game: the world clock (<c>worldtimerTimeOfDay</c>, which is
+    /// every owned stage's <c>CxClock()</c>), the area wind, the area flags, the player and camera positions
+    /// and the module date. It reads game state and writes a struct -- no GL, no allocation.
+    /// <para><c>Scene::Render</c> @0x5762d0 is its ONLY caller, with <c>DeltaT</c>, right beside
+    /// <c>WindManager::updateTimer</c>. DB mode's <c>Scene::Render</c> draws nothing, so without this call the
+    /// struct keeps its zero-initialised boot value: a frozen clock and a dead wind for every stage that
+    /// animates.</para></summary>
+    [Fn("void(float dt)")]
+    public const string RiCheckUniformData = "_ZN15RenderInterface38CheckAndUpdateUniformDirtyDataForFrameEf";
     /// <summary>#210: RenderInterface::BindBuffer(target, name) @0x45d190 -- a static thunk to
     /// <c>GLRender::BindBuffer</c> @0x4d04a0, which is a CACHING wrapper: for GL_ARRAY_BUFFER it compares the
     /// requested name against <c>GLRender::m_nArrayBufferBound</c> (@0x4d04d7) and returns without calling
@@ -892,6 +955,17 @@ internal static unsafe class SymbolMap
     /// what made <see cref="CX.Alloy.SceneParts"/>' own trigger registry the population rather than a
     /// preference. Data symbol; read only.</para></summary>
     public const string TriggerBucket = "triggerbucket";
+    /// <summary><c>AurPartTriggerCreate(scene, points, n, snap, colour, data)</c> @0x4da840: an area transition's
+    /// prism, filed into the scene's BSP -- which a DB-mode scene does not have, so <see cref="CX.Alloy.Db.DbTriggers"/>
+    /// chains it to keep its own list.</summary>
+    [Fn("IntPtr(IntPtr scene, IntPtr points, int count, int snap, IntPtr colour, IntPtr data)")]
+    public const string AurPartTriggerCreate = "_Z20AurPartTriggerCreateP9CAurSceneP6VectoriiPfPv";
+    /// <summary><c>AurPartTriggerDelete(scene, trigger)</c> @0x4d9fc0: out of the scene (the object lives on).</summary>
+    [Fn("void(IntPtr scene, IntPtr trigger)")]
+    public const string AurPartTriggerDelete = "_Z20AurPartTriggerDeleteP9CAurSceneP11PartTrigger";
+    /// <summary><c>AurPartTriggerReleaseMemory(trigger)</c> @0x4d9fd0: the virtual delete.</summary>
+    [Fn("void(IntPtr trigger)")]
+    public const string AurPartTriggerReleaseMemory = "_Z27AurPartTriggerReleaseMemoryP11PartTrigger";
     /// <summary>#330: <c>gobbucket</c> @0x19abbf0 -- the engine's per-frame VISIBLE gob list, a
     /// <c>CExoArrayList&lt;Gob*&gt;</c> (items at +0, count at +8). <c>ManageSceneBSP</c> @0x47fa80 refills it from
     /// the Scene's gobs through <c>Gob::IsInViewVolume</c>, and <c>Scene::AddPartsToDrawBuckets</c> @0x4751d0
@@ -1115,6 +1189,46 @@ internal static unsafe class SymbolMap
     /// engine sets it to 1 around its own floor casts and restores it (<c>CNWCCreature::DoFootstepVisual</c>
     /// @0x72fb19, <c>CNWCItem::UpdatePosition</c> @0x7d001a). Data symbol; written only around a cast.</summary>
     public const string HitcheckStaticTrimesh = "hitcheck_static_trimesh_parts";
+    /// <summary>CX-118: <c>int counthitcheckscenebspnode</c> -- the engine's own counter, bumped once per BSP
+    /// node <c>HitPartOnBSPNode</c> @0x47b790 visits. Read-only, and the one honest measure of what a vanilla
+    /// cast walked: the live comparison the ticket asks for is this against Alloy's own candidate count, not
+    /// two wall clocks. Data symbol.</summary>
+    public const string HitCheckBspNodeCount = "counthitcheckscenebspnode";
+    /// <summary>CX-118 probe: <c>CNWCCreature::ComputeZValue(CNWCArea*, Vector*, float, Vector*)</c>
+    /// @0x61d4f0. It writes the literal 9.0f into the caller's position vector BEFORE its floor raycast and
+    /// leaves it there on any early-out -- a null area, a null <c>CNWCArea+0x248</c> (the area's
+    /// <c>CAurScene</c>), a <c>GetTile</c> miss, or two casts that both answer 0. That sentinel is the +9
+    /// camera, so this is where the question "why was no cast issued" is answered.
+    /// Linux-only: the <c>CNWC*</c> game layer is not name-exported by nwmain.exe and this is a diagnostic
+    /// behind <c>alloy.hitcheck</c>, not a shipped hook (no <c>_win</c> row -> skipped with a log there).</summary>
+    [Fn("void(IntPtr self, IntPtr area, IntPtr pos, float f, IntPtr outv)")]
+    public const string ComputeZValue = "_ZN12CNWCCreature13ComputeZValueEP8CNWCAreaP6VectorfS3_";
+    /// <summary>CX-118 probe: <c>CNWCArea::GetTile(Vector)</c> @0x703160 -- the game layer's own tile
+    /// lookup, and <c>ComputeZValue</c>'s last early-out before it casts. It answers 0 when the area's tile
+    /// array (<c>CNWCArea+0x298</c>) is null or the position falls outside the grid, and a 0 there is why a
+    /// floor cast is never issued at all. Read-only, called by the diagnostic. Linux-only, as above.</summary>
+    [Fn("IntPtr(IntPtr area, VectorArg at)")]
+    public const string AreaGetTile = "_ZN8CNWCArea7GetTileE6Vector";
+    /// <summary>CX-118: <c>SafePointer&lt;CAurObject&gt;&amp; SafePointer&lt;CAurObject&gt;::operator=(CAurObject*)</c>
+    /// @0x477d70 -- the ONLY correct way to put an object into <c>CHitInfo+0x48</c>. It unregisters the record
+    /// from the object it held (<c>FUN_0055f5b0</c>, whose <c>array[index]-&gt;index = index</c> branch is
+    /// UNGUARDED, so a hand-written -1 back-index reads <c>array[-1]</c>), stores the pointer, and pushes the
+    /// record onto the new object's back-reference array (<c>CAurObject+0x08</c> data, <c>+0x10</c> count,
+    /// <c>+0x14</c> capacity) taking its index. Hand-writing the pair is a SIGSEGV or a heap corruption at the
+    /// next <c>ClearOutput</c> or <c>~CHitInfo</c>, on both OSes.</summary>
+    [Fn("IntPtr(IntPtr self, IntPtr obj)")]
+    public const string SafePointerObjectAssign = "_ZN11SafePointerI10CAurObjectEaSEPS0_";
+    /// <summary>CX-118: <c>int hitcheck_static_bsp_parts</c> -- the other half of the static gate: while
+    /// non-zero, <c>HitPartOnBSPNode</c> also tests the tile's walkmesh part (node bin +0x90), which is the
+    /// ground a click-to-move pick lands on. Non-zero by default, unlike its trimesh sibling.</summary>
+    public const string HitcheckStaticBsp = "hitcheck_static_bsp_parts";
+    /// <summary>CX-120: <c>int enablenonbspgroundhit</c> @0x18aba88 -- the last arm of
+    /// <c>HitPartOnBSPNode</c> @0x47b790. For a tile whose BSP node carries NO walkmesh part
+    /// (<c>TileData+0x90</c> null -- which is MOST tiles), a downward segment that crosses z=0 and whose
+    /// <c>CHitInfo</c> carries no ignore list (<c>+0x10</c> and <c>+0x18</c> both zero) hits the <b>z=0
+    /// plane</b>, normal (0,0,1). That is the floor a client-side ground query actually lands on, and
+    /// <c>CNWCCreature::ComputeZValue</c>'s is one of them.</summary>
+    public const string EnableNonBspGroundHit = "enablenonbspgroundhit";
     /// <summary>#148: CAurTexture::BindInUnit(unsigned int, int) @0x48e1e0 -- the engine's OWN texture bind,
     /// and the reason a raw <c>glBindTexture</c> of <c>AurTextureGetTID</c>'s answer is not equivalent.
     /// <para>It resolves the object TWICE before taking an id: vtable+0x18 hands back a REFERENCED texture
@@ -1694,6 +1808,15 @@ internal static unsafe class SymbolMap
     [Fn("int(CAurBehaviorCameraFollow this, float dt)")]
     public const string CameraFollowControl = "_ZN24CAurBehaviorCameraFollow7ControlEf";
 
+    /// <summary>CX-120: <c>CAurBehaviorCameraFollow::CAurBehaviorCameraFollow(CAurObject* owner, CAurObject*
+    /// target)</c> @0x5a33f0 -- the constructor <c>Camera::SetFollow</c> @0x5aa500 runs on
+    /// <c>operator_new(0x90)</c>, with the camera's OWN <c>CAurObject</c> sub-object (<c>Camera+8</c>) as the
+    /// owner. ADR 0028 keeps <c>CAurBehavior</c> objects real engine-layout objects that the game constructs
+    /// and CX calls through their vtables; this is the one the GAME would have constructed here, so the seam
+    /// runs the same constructor rather than inventing a stand-in.</summary>
+    [Fn("void(nint self, nint owner, nint target)")]
+    public const string CameraFollowCtor = "_ZN24CAurBehaviorCameraFollowC2EP10CAurObjectS1_";
+
     /// <summary><c>CNWCModule::TurnCamera(float deg, int impulse)</c> @0x7d8960 / <c>TiltCamera</c> @0x7d88a0 -- the
     /// engine's own orbit input (#539). impulse=1 adds to the behavior's one-shot yaw/pitch impulse (+0x88/+0x8c),
     /// consumed by the next Control; the flag byte (+0x2bc bit 0x10 / 0x20) refuses a server-disabled axis and the
@@ -2081,6 +2204,17 @@ internal static unsafe class SymbolMap
     /// C wrapper (<c>KiwiOptimizeHook</c>), never by a managed handler.</summary>
     [Fn("void(IntPtr self, IntPtr objective)")]
     public const string KiwiOptimize = "_ZN4kiwi4impl10SolverImpl8optimizeERKNS0_3RowE";
+    /// <summary><c>CrashReporter_Linux::ReportCrashToUser(char const*, char const*)</c> @0xf075b0 (Windows
+    /// <c>CrashReporter_Windows</c>'s): the crash handler's last call (vtable +0x40), after the report file is closed, with
+    /// the dialog's title and text. Runs inside a signal handler, so it is hooked only through native/cxthunk.c
+    /// (<c>CrashReport</c>), never by a managed handler.</summary>
+    [Fn("void(IntPtr self, byte* title, byte* text)")]
+    public const string ReportCrashToUser = "_ZN19CrashReporter_Linux17ReportCrashToUserEPKcS1_";
+    /// <summary><c>CrashHandlerExpose(char const* key, char const* value, bool append)</c> @0xf056c0: files a
+    /// <c>key = 'value'</c> line under the crash report's <c>=== Props</c> (the engine's own: GL_VENDOR, GL_RENDERER).
+    /// Copies both strings.</summary>
+    [Fn("void(byte* key, byte* value, bool append)")]
+    public const string CrashHandlerExpose = "_Z18CrashHandlerExposePKcS0_b";
     /// <summary><c>kiwi::impl::SolverImpl::createRow(Constraint const&amp;, Tag&amp;)</c> @0x85eb40 (Windows rva 0x340e00):
     /// the constraint rewritten over the tableau's parametric symbols, returned as a <c>unique_ptr&lt;Row&gt;</c> by value
     /// (Itanium <c>(sret, this, constraint, tag)</c>, Win64 <c>(this, sret, constraint, tag)</c>, so hooked per OS by
@@ -2211,6 +2345,25 @@ internal static unsafe class SymbolMap
     /// <see cref="AuroraGetResource"/> returned). Reads <c>*(ushort*)(ptr-10)</c> to pick the resource kind.</summary>
     [Fn("void(IntPtr data)")]
     public const string AuroraReleaseResource = "_ZN16CAuroraInterface15ReleaseResourceEPv";
+    /// <summary><c>FindAnimation(Model*, const char*)</c> @0x497c30 -- the engine's own animation lookup, and
+    /// CX-113's oracle: it walks the supermodel chain (<c>Model+0xa8</c>) answering the first model whose own
+    /// <c>Animation*</c> array holds the name, then falls back to <c>"default"</c> in the TERMINAL model only.
+    /// A free function, so the <c>Animation*</c> it returns identifies the owning model as well as the
+    /// animation -- each model owns its own array. Windows rva 0x50f80 tail-recurses to the same answer.</summary>
+    [Fn("IntPtr(IntPtr model, byte* name)")]
+    public const string FindAnimation = "_Z13FindAnimationP5ModelPKc";
+    /// <summary><c>FindAnimScale(Model*, Animation*)</c> @0x499b10 -- the product of <c>Model+0xcc</c> over
+    /// every model in the chain BELOW the one whose array holds <paramref name="anim"/> (found by pointer
+    /// identity). Takes no string, so CX can call it directly with the pointer
+    /// <see cref="FindAnimation"/> answered. Windows rva 0x50ed0, same loads.</summary>
+    [Fn("float(IntPtr model, IntPtr anim)")]
+    public const string FindAnimScale = "_Z13FindAnimScaleP5ModelP9Animation";
+    /// <summary><c>List&lt;Model*&gt; Models</c> @0x18da6f0 -- the engine's sorted model table itself, which
+    /// <c>BinaryInsertModel</c> @0x4481b0 and <c>BinarySearchModel</c> @0x448110 maintain: the items pointer at
+    /// <see cref="EngineLayout.ListItems"/> and the count at <see cref="EngineLayout.ListItemCount"/>. Windows
+    /// exports it as data too, with the same two offsets -- rva 0x98ba0 loads the items from the symbol itself
+    /// and rva 0x99240 the count from symbol+8. CX-113's live verify enumerates it.</summary>
+    public const string ModelTable = "Models";
     /// <summary><c>BinaryFindModel(const char*)</c> @0x448190 -- the model name cache, and nothing else:
     /// <c>BinarySearchModel</c> @0x448110 <c>strcasecmp</c>s <c>Model+0x10</c> over the sorted global
     /// <c>Models</c> @0x18da6f0 and reads no file. <c>FindModel</c> @0x44c2a0 calls it first and only loads on
@@ -2292,15 +2445,6 @@ internal static unsafe class SymbolMap
     /// <c>addl $1</c> in the whole image; the dtor @0x583010 never touches it), so a delta counts constructions
     /// per open, not live instances (research §9.1). Exported by both builds.</summary>
     public const string RadialCtorCounter = "g_nCRadialMenu_ctorCounter";
-    /// <summary><c>StringGob::GetTextLineCount()</c> @0x495ac0 -- the wrapped line count of the CAurString behind a
-    /// CGuiTextBubble. <c>this</c> = the CAurString* minus <see cref="EngineLayout.StringGobReaderAdjust"/>: the
-    /// StringGob base on Linux, the sub-object itself on Windows. <c>(this) -> int</c>.</summary>
-    [Fn("int(StringGob this)")]
-    public const string StringGobGetTextLineCount = "_ZN9StringGob16GetTextLineCountEv";
-    /// <summary><c>StringGob::GetTextLine(int)</c> @0x4922f0 -- line <c>i</c>'s NUL-terminated bytes (the CStringItem's
-    /// <c>+0x8</c> buffer). <c>(this, int) -> const char*</c>.</summary>
-    [Fn("IntPtr(StringGob this, int line)")]
-    public const string StringGobGetTextLine = "_ZN9StringGob11GetTextLineEi";
     /// <summary>Root-kind vtables (Linux <c>_ZTV</c>; the object's vptr is the symbol + 0x10). The roots
     /// themselves are not exported on Windows -- the kind is a vptr compare against these, nothing is called.</summary>
     public const string VtCRadialMenu = "_ZTV11CRadialMenu";
@@ -2818,6 +2962,120 @@ internal static unsafe class SymbolMap
     [Fn("IntPtr(IntPtr scene, byte* name)")]
     public const string SceneGetObject = "_ZN5Scene9GetObjectEPKc";
 
+    // ---- CX-120 seam-scene: the three scene-shaped free functions CX answers for ----
+
+    /// <summary><c>NewCAurScene(char const*)</c> @0x472df0 (Windows <c>?NewCAurScene@@YAPEAVCAurScene@@PEBD@Z</c>)
+    /// -- the engine's scene factory, and one of the four creation points ADR 0028 replaces. Four game
+    /// callers: <c>CGuiPanel::CreateSceneView</c>, <c>CGuiMan::Initialize</c>,
+    /// <c>CGuiViewport::CGuiViewport</c> and the area load.</summary>
+    [Fn("IntPtr(byte* name)")]
+    public const string NewCAurScene = "_Z12NewCAurScenePKc";
+    /// <summary><c>NewCAurCamera(char const*)</c> @0x4a62d0 (Windows
+    /// <c>?NewCAurCamera@@YAPEAVCAurCamera@@PEBD@Z</c>) -- the camera factory. Four game callers.</summary>
+    [Fn("IntPtr(byte* name)")]
+    public const string NewCAurCamera = "_Z13NewCAurCameraPKc";
+    /// <summary><c>CAurScene::SetAmbient(Vector)</c> @0x461ab0 (Windows
+    /// <c>?SetAmbient@CAurScene@@QEAAXVVector@@@Z</c>) -- an out-of-line INTERFACE member the game links
+    /// non-virtually (three callers), which writes <c>Scene+0x168</c>/<c>+0x170</c> by field. There is no
+    /// vtable slot for it, so a facade cannot answer it and it is hooked. The <c>Vector</c> is BY VALUE: the
+    /// Itanium mangling says <c>E6Vector</c> and the MSVC export says <c>VVector@@</c>, so SysV passes it in
+    /// xmm0:xmm1 and Win64 passes a pointer to the caller's copy -- which is what
+    /// <see cref="CX.Engine.VectorArg"/> names once for both.</summary>
+    [Fn("void(IntPtr scene, VectorArg colour)")]
+    public const string CAurSceneSetAmbient = "_ZN9CAurScene10SetAmbientE6Vector";
+
+    /// <summary><c>FindScene(char const*)</c> @0x45f670 (Windows <c>?FindScene@@YAPEAVScene@@PEBD@Z</c>) --
+    /// the engine's scene REGISTRY lookup, and the one way the game layer reaches a scene it does not hold a
+    /// pointer to. Disassembled (not inferred): it loads the array base from <c>Scenes+0</c> and the count
+    /// from <c>Scenes+8</c>, then compares the argument against <c>Scene+0xf0</c> with <c>strcasecmp</c>.
+    /// <para>In DB mode that registry is EMPTY -- every <c>NewCAurScene</c> is answered by a CX shell and the
+    /// engine's own factory, which is what appends to it, never runs. So the lookup returns null and every
+    /// caller that goes through it silently does nothing; the area's fog is the one that shows
+    /// (<c>CNWCArea::SetFog</c> drives it as <c>FuncInterp("mainscene.fog*")</c> text, not through the
+    /// vtable). CX answers the lookup from its own scene table instead.</para></summary>
+    [Fn("IntPtr(byte* name)")]
+    public const string FindScene = "_Z9FindScenePKc";
+
+    /// <summary><c>WindManager::WindManager()</c> @0x491b90 (Windows <c>??0WindManager@@QEAA@XZ</c>) -- the
+    /// default ctor, run over a CX-owned block so a scene shell can carry a real <c>WindManager</c> at
+    /// <c>+0x160</c>. Called rather than transcribed because the ctor seeds two 0x400-byte noise fields and
+    /// then stores POINTERS INTO ITSELF at <c>+0x838</c>/<c>+0x840</c>; a hand-written copy would have to get
+    /// that self-reference right, and the engine's own body gets it right by construction.</summary>
+    [Fn("void(IntPtr self)")]
+    public const string WindManagerCtor = "_ZN11WindManagerC2Ev";
+
+    /// <summary><c>AuroraSetTileFoggedByWar(Vector&amp;, bool)</c> @0x453320 (Windows
+    /// <c>?AuroraSetTileFoggedByWar@@YAXAEAVVector@@_N@Z</c>) -- the fog of war's one entry into the tile
+    /// layer. A FREE function with no scene argument: it works on the current scene, so CX answers it for the
+    /// world scene (CX-116's <c>TileBuild.SetFoggedByWar</c>). The <c>Vector</c> is by REFERENCE on both OSes,
+    /// so one signature serves.</summary>
+    [Fn("void(IntPtr pos, bool fogged)")]
+    public const string AuroraSetTileFoggedByWar = "_Z24AuroraSetTileFoggedByWarR6Vectorb";
+
+    /// <summary><c>setalpha(CAurObject*, float)</c> @0x4524d0 (Windows
+    /// <c>?setalpha@@YAXPEAVCAurObject@@M@Z</c>) -- a thin out-of-line helper the game layer links NON-virtually
+    /// (11 callers: <c>CPanelScreenFade::SetFade</c>/<c>Update</c>, <c>CGuiInvbox</c>, <c>CGuiMultiInvbox</c>,
+    /// <c>CGuiQuickButton::SetGhosting</c>, <c>CPanelActionQueue</c>, <c>CPanelAreaMap</c>, ...). Its body is
+    /// <c>FUN_00550040(*(Part**)(gob + 0x90))</c>, which RECURSES the part tree -- child array at
+    /// <c>Part+0x38</c>, count at <c>Part+0x40</c> -- and writes each part's alpha at <c>Part+0xa0</c>.
+    /// <para>So it is a §1d-class glue function that <b>walks engine Parts from the game layer</b>, which
+    /// <c>CX-182</c> §3 concluded did not happen -- the sweep missed it
+    /// because <c>setalpha</c> itself lives below the 0x600000 game-layer threshold and was read as renderer
+    /// code. In DB mode it is a hard crash at the first module load (measured:
+    /// <c>CPanelScreenFade::SetFade</c> -&gt; <c>Part::Project</c>, segfault), so the seam answers it.</para></summary>
+    [Fn("void(IntPtr obj, float alpha)")]
+    public const string SetAlphaObject = "_Z8setalphaP10CAurObjectf";
+
+    // ---- CX-120 seam-obj: the Aurora seam. Every one is name-exported on Windows (the whole Aurora layer
+    // is, #430), so each has an Nm row below and none needs a build-locked RVA. ----
+    /// <summary><c>NewCAurObject(char const* model, char const* name, FILE* stream)</c> @0x4412c0 -- the game
+    /// layer's one object factory, 72 call sites. Arg 2 is a NAME OVERRIDE (empty = the model's own name), arg
+    /// 3 an already-open stream to parse the model from instead of the resref; neither is a flag word. Returns
+    /// NULL when the model does not resolve, with no log of its own.</summary>
+    public const string NewCAurObject = "_Z13NewCAurObjectPKcS0_P8_IO_FILE";
+    /// <summary><c>NewCAurString(int)</c> @0x494050 -- allocates a <c>StringGob</c> (0x558) and returns its
+    /// <c>CAurString</c> sub-object at +0x4c0.</summary>
+    public const string NewCAurString = "_Z13NewCAurStringi";
+    /// <summary><c>SetShadows(Part*, int)</c> @0x460c90 -- a FREE function, not a <c>Part</c> member: it
+    /// recurses a part tree and writes the shadow flag on every light node. <c>AurEnable/DisableShadowing</c>
+    /// read <c>Gob</c>+0x90 and call it, so hooking this one answers both without hooking either.</summary>
+    public const string SetShadowsPart = "_Z10SetShadowsP4Parti";
+    /// <summary><c>AurSetDynamicProjectionLight(CAurObject*)</c> @0x461b10 -- walks the object's collected
+    /// light list and filters it on each element's +0x74/+0x80, i.e. engine <c>Part</c> memory.</summary>
+    public const string AurSetDynamicProjectionLight = "_Z28AurSetDynamicProjectionLightP10CAurObject";
+    /// <summary><c>LerpFloat::Refresh()</c> @0x4f8d20 -- run after a raw write of the 0x40-byte record, which
+    /// is what <c>Gob::SetVisualTransformData</c> @0x439bd0 does for each of the ten.</summary>
+    [Fn("void(IntPtr lerp)")]
+    public const string LerpFloatRefresh = "_ZN9LerpFloat7RefreshEv";
+    /// <summary><c>YawPitchRoll(float, float, float)</c> @0x4b6690 -- returns a <c>Quaternion</c> BY VALUE, so
+    /// its declaration differs per OS (SysV xmm0:xmm1, Win64 a buffer in rcx with the floats one register
+    /// right). Called rather than reimplemented because the visual transform's axis convention is the
+    /// engine's, and a guess there silently tilts every server-driven transform.</summary>
+    public const string YawPitchRoll = "_Z12YawPitchRollfff";
+    /// <summary><c>AurSetPalette(int, char const*)</c> @0x485190 -- the object-free palette setter; CX-117's
+    /// <c>PltPalettes</c> answers it from a CPU row buffer and builds the texture in Alloy's bracket
+    /// (docs/alloy-db-texture-mode.md).</summary>
+    public const string AurSetPalette = "_Z13AurSetPaletteiPKc";
+    /// <summary><c>controlpart(char*)</c> @0x5437b0 -- the console function <c>CNWCArea::SetGlobalLightAmbient</c>
+    /// @0x8022d0 and <c>SetGlobalLightDiffuse</c> @0x802510 drive the area light through
+    /// (<c>FuncInterp("controlpart sun gidy_sun_amb|gidy_sun_diff color r g b")</c>); it finds the sun by
+    /// <c>FindGob</c>, whose <c>gobs</c> table only <c>Gob::Gob</c> fills, so in DB mode the seam answers it.</summary>
+    public const string ControlPart = "_Z11controlpartPc";
+    /// <summary><c>AurClearPalette()</c> @0x485090.</summary>
+    public const string AurClearPalette = "_Z15AurClearPalettev";
+    /// <summary><c>AurCreatePaletteTexture()</c> @0x4874d0 -- the engine built a GL texture inline; the seam
+    /// defers it to the frame, because CX's build has to run inside Alloy's bracket.</summary>
+    public const string AurCreatePaletteTexture = "_Z23AurCreatePaletteTexturev";
+    /// <summary><c>CExoArrayList&lt;CAurObject*&gt;::Add</c> @0x4b3540 -- how the seam appends to a
+    /// <c>List&lt;CAurObject*&gt;</c> the GAME owns (<c>Gob::GetAttachedGobs</c>). Calling the engine's own
+    /// list code keeps the array on the engine's heap, which is the only arrangement that is correct on
+    /// Windows: nwmain statically links its CRT and exports no <c>free</c>/<c>realloc</c>.</summary>
+    [Fn("void(IntPtr list, IntPtr item)")]
+    public const string ListAddCAurObject = "_ZN13CExoArrayListIP10CAurObjectE3AddES1_";
+    /// <summary><c>CExoArrayList&lt;CAurPart*&gt;::Add</c> @0x445a50 -- the same for <c>Gob::EnumParts</c>.</summary>
+    [Fn("void(IntPtr list, IntPtr item)")]
+    public const string ListAddCAurPart = "_ZN13CExoArrayListIP8CAurPartE3AddES1_";
+
     /// <summary>A symbol's Windows resolution. Four forms and no fifth -- the point of #447: a missing key
     /// used to mean both "never looked" and "deliberately Linux-only", so the absence could not be counted.
     /// Now every constant has a row, <see cref="Nm"/>/<see cref="At"/> resolve, <see cref="LinuxOnly"/> is a
@@ -2976,6 +3234,15 @@ internal static unsafe class SymbolMap
         [KeyboardModeOff] = Nm("?KeyboardModeOff@CExoInput@@QEAAXXZ"),
         [GuiManReleaseKeyboard] = Nm("?ReleaseKeyboard@CGuiMan@@QEAAXPEAVCGuiObject@@@Z"),
         [GuiObjectHitCheck] = Nm("?GuiObjectHitCheck@CGuiMan@@QEAAPEAVCGuiObject@@HHHH@Z"),
+        [GuiManHandleGuiTimer] = Nm("?HandleGuiTimer@CGuiMan@@QEAAXH@Z"),
+        [GuiManShowTooltipText] = Nm("?ShowTooltipText@CGuiMan@@QEAAXAEBVCExoString@@H@Z"),
+        [AurPartTriggerCreate] = Nm("?AurPartTriggerCreate@@YAPEAVPartTrigger@@PEAVCAurScene@@PEAVVector@@HHPEAMPEAX@Z"),
+        [AurPartTriggerDelete] = Nm("?AurPartTriggerDelete@@YAXPEAVCAurScene@@PEAVPartTrigger@@@Z"),
+        [AurPartTriggerReleaseMemory] = Nm("?AurPartTriggerReleaseMemory@@YAXPEAVPartTrigger@@@Z"),
+        [GuiManHandleKeyPress] = Nm("?HandleKeyPress@CGuiMan@@QEAAHH@Z"),
+        [GuiManHandleMouseMove] = Nm("?HandleMouseMove@CGuiMan@@QEAAXHH@Z"),
+        [GuiEditHandleLMouseDown] = Nm("?HandleLMouseDown@CGuiEdit@@MEAAXXZ"),
+        [GuiEditSetFocus] = Nm("?SetFocus@CGuiEdit@@QEAAXXZ"),
         // #580: the vanilla prompt's own text read; sret order branches at the call site (PromptCommandService).
         [GuiEditGetText]  = Nm("?GetText@CGuiEdit@@QEAA?AVCExoString@@XZ"),
 
@@ -2989,13 +3256,22 @@ internal static unsafe class SymbolMap
         [StbttGetCodepointBitmapBox] = Nm("stbtt_GetCodepointBitmapBox"),
         [StbttMakeCodepointBitmap]   = Nm("stbtt_MakeCodepointBitmap"),
         [StbttFindGlyphIndex]        = Nm("stbtt_FindGlyphIndex"),
+        // CX-119: the engine's own stb_truetype pack API + codepage mapper, name-exported on both OSes.
+        [Cx119StbttPackBegin]           = Nm("stbtt_PackBegin"),
+        [Cx119StbttPackEnd]             = Nm("stbtt_PackEnd"),
+        [Cx119StbttPackSetOversampling] = Nm("stbtt_PackSetOversampling"),
+        [Cx119StbttPackFontRanges]      = Nm("stbtt_PackFontRanges"),
+        [Cx119EncodingSingleCharToUtf8] = Nm("?SingleCharToUTF8@Encoding@@YAHDW4Locale@1@@Z"),
         [SdlGlGetProcAddress]        = Nm("SDL_GL_GetProcAddress"),
         [SdlGetMouseState]           = Nm("SDL_GetMouseState"),
+        [SdlSetWindowSize]           = Nm("SDL_SetWindowSize"),
+        [SdlGetWindowSize]           = Nm("SDL_GetWindowSize"),
         [SdlStartTextInput]          = Nm("SDL_StartTextInput"),
         [SdlGetClipboardText]        = Nm("SDL_GetClipboardText"),
         [SdlSetClipboardText]        = Nm("SDL_SetClipboardText"),
         [SdlFree]                    = Nm("SDL_free"),
         [RiResetRenderStates]        = Nm("?ResetRenderStates@RenderInterface@@SAXXZ"),
+        [RiCheckUniformData]         = Nm("?CheckAndUpdateUniformDirtyDataForFrame@RenderInterface@@SAXM@Z"),
         [RiBindBuffer]               = Nm("?BindBuffer@RenderInterface@@SAXII@Z"),
         [GuiPanelDeactivate]         = Nm("?Deactivate@CGuiPanel@@QEAAXH@Z"),
         [GuiPanelUnToggleOff]        = Nm("?UnToggleOff@CGuiPanel@@QEAAXXZ"),
@@ -3079,6 +3355,9 @@ internal static unsafe class SymbolMap
         [AuroraGetResource] = Nm("?GetResource@CAuroraInterface@@SAPEAXPEBD0PEAH@Z"),
         [AuroraReleaseResource] = Nm("?ReleaseResource@CAuroraInterface@@SAXPEAX@Z"),
         [BinaryFindModel] = Nm("?BinaryFindModel@@YAPEAVModel@@PEBD@Z"),
+        [ModelTable] = Nm("?Models@@3V?$List@PEAVModel@@@@A"),   // CX-113
+        [FindAnimation] = Nm("?FindAnimation@@YAPEAVAnimation@@PEAVModel@@PEBD@Z"),   // CX-113
+        [FindAnimScale] = Nm("?FindAnimScale@@YAMPEAVModel@@PEAVAnimation@@@Z"),   // CX-113
         [TileSetGetTileData] = Nm("?GetTileData@CNWTileSet@@QEAAPEAVCNWTileData@@H@Z"),
         [TileDataGetModelResRef] = Nm("?GetModelResRef@CNWTileData@@QEAA?AVCResRef@@XZ"),
         [NwTileSetID] = Nm("?SetID@CNWTile@@QEAAXH@Z"),
@@ -3124,6 +3403,8 @@ internal static unsafe class SymbolMap
         [CountPart] = Nm("?countpart@@3HA"),
         [CurrentCamera] = Nm("?CurrentCamera@@3PEAVCamera@@EA"),
         [CameraFollowControl] = Nm("?Control@CAurBehaviorCameraFollow@@UEAAHM@Z"),
+        // CX-120: verified against the shipped PE's export table, not derived.
+        [CameraFollowCtor] = Nm("??0CAurBehaviorCameraFollow@@QEAA@PEAVCAurObject@@0@Z"),
         // CNWCModule has 0 exports; both found by offset signature (+0x2bc flag, +0x134, +0x88/+0x8c impulse,
         // +0x280) with tools/ghidra/ScanOffsets.java -- bodies decompile identical to Linux, vtable slots -8.
         [TurnCamera] = At(),
@@ -3139,6 +3420,12 @@ internal static unsafe class SymbolMap
         [GuiInGameUnToggleOff] = At(),
         [CurrentScene] = Nm("?currentscene@@3PEAVScene@@EA"),
         [HitcheckStaticTrimesh] = Nm("?hitcheck_static_trimesh_parts@@3HA"),
+        [HitCheckBspNodeCount] = Nm("?counthitcheckscenebspnode@@3HA"),
+        [ComputeZValue] = LinuxOnly("CX-118 diagnostic behind alloy.hitcheck; CNWC* is not name-exported"),
+        [AreaGetTile] = LinuxOnly("CX-118 diagnostic behind alloy.hitcheck; CNWC* is not name-exported"),
+        [SafePointerObjectAssign] = Nm("??4?$SafePointer@VCAurObject@@@@QEAAAEAV0@QEAVCAurObject@@@Z"),
+        [HitcheckStaticBsp] = Nm("?hitcheck_static_bsp_parts@@3HA"),
+        [EnableNonBspGroundHit] = Nm("?enablenonbspgroundhit@@3HA"),
         [CycleTidControllerVtbl] = At(),   // RTTI type descriptor -> COL -> vftable (tools/abi/vtable-slots.py)
         [DeltaT] = Nm("?DeltaT@@3MA"),
         [GobHighlightAmplitude] = Nm("?m_fGobHighlightAmplitude@Scene@@0MA"),
@@ -3329,6 +3616,8 @@ internal static unsafe class SymbolMap
         [IdentityVisualTransform] = Nm("?s_IdentityVisualTransformData@ObjectVisualTransformData@@0U1@B"),
         [KiwiSubstitute] = Nm("?substitute@SolverImpl@impl@kiwi@@AEAAXAEBVSymbol@23@AEBVRow@23@@Z"),
         [KiwiOptimize] = Nm("?optimize@SolverImpl@impl@kiwi@@AEAAXAEBVRow@23@@Z"),
+        [ReportCrashToUser] = Nm("?ReportCrashToUser@CrashReporter_Windows@@UEAAXPEBD0@Z"),
+        [CrashHandlerExpose] = Nm("?CrashHandlerExpose@@YAXPEBD0_N@Z"),
         [KiwiCreateRow] = Nm("?createRow@SolverImpl@impl@kiwi@@AEAA?AV?$unique_ptr@VRow@impl@kiwi@@U?$default_delete@VRow@impl@kiwi@@@std@@@std@@AEBVConstraint@3@AEAUTag@123@@Z"),
         [NuiHandleError] = At(),   // its own .pdata entry holding the "Error " reference; its 3 callers match Linux's
         [NuiLayoutGroupVtbl] = At(),   // RTTI type descriptor -> COL -> vftable
@@ -3389,8 +3678,6 @@ internal static unsafe class SymbolMap
         [RadialMenuDepth]          = Nm("?static_nMenuDepth@CRadialMenu@@1HA"),
         [GuiCurrentEventObject]    = Nm("?s_pCurrentEventObject@CGuiObject@@1PEAV1@EA"),
         [RadialCtorCounter]        = Nm("?g_nCRadialMenu_ctorCounter@@3HA"),
-        [StringGobGetTextLineCount] = Nm("?GetTextLineCount@StringGob@@UEAAHXZ"),
-        [StringGobGetTextLine]     = Nm("?GetTextLine@StringGob@@UEAAPEBDH@Z"),
         [VtCRadialMenu]            = At(),
         [VtCGuiCreatureMenu]       = At(),
         [VtCClientSpellMenu]       = At(),
@@ -3471,6 +3758,14 @@ internal static unsafe class SymbolMap
         [GetInventoryPanel]      = At(),
         [GameCameraHitCheck]     = At(),   // body read: GetModuleCamera, info+0x20 = 1, camera vtbl +0x60
         [GetGameobjectHit]       = At(),   // body read: kind +0x24, gob +0x48, item -> +0x48
+        // ---- CX-120 seam-scene ----
+        [NewCAurScene]           = Nm("?NewCAurScene@@YAPEAVCAurScene@@PEBD@Z"),
+        [NewCAurCamera]          = Nm("?NewCAurCamera@@YAPEAVCAurCamera@@PEBD@Z"),
+        [CAurSceneSetAmbient]    = Nm("?SetAmbient@CAurScene@@QEAAXVVector@@@Z"),
+        [FindScene]              = Nm("?FindScene@@YAPEAVScene@@PEBD@Z"),
+        [WindManagerCtor]        = Nm("??0WindManager@@QEAA@XZ"),
+        [AuroraSetTileFoggedByWar] = Nm("?AuroraSetTileFoggedByWar@@YAXAEAVVector@@_N@Z"),
+        [SetAlphaObject]         = Nm("?setalpha@@YAXPEAVCAurObject@@M@Z"),
         [SendBarterStart]        = At(),   // 35 / 1
         [SendInputUseItem]       = At(),   // 6 / 9; the Vector by pointer
         [SendGoldTransfer]       = At(),   // 8 / 1, minor 0x0a / 0x16; the Vector by pointer
@@ -3500,6 +3795,20 @@ internal static unsafe class SymbolMap
         [TileSetGetEnvMapResRef] = Nm("?GetEnvMapResRef@CNWTileSet@@QEAA?AVCResRef@@XZ"),
         [CameraUpscaleViewport]  = Nm("?UpscaleViewport@Camera@@QEAA_NPEAM00@Z"),
         [WindUpdateTimer]        = Nm("?updateTimer@WindManager@@QEAAXM@Z"),
+
+        // ---- CX-120 seam-obj ---- read straight off nwmain.exe's export table.
+        [NewCAurObject]    = Nm("?NewCAurObject@@YAPEAVCAurObject@@PEBD0PEAU_iobuf@@@Z"),
+        [NewCAurString]    = Nm("?NewCAurString@@YAPEAVCAurString@@H@Z"),
+        [SetShadowsPart]   = Nm("?SetShadows@@YAXPEAVPart@@H@Z"),
+        [AurSetDynamicProjectionLight] = Nm("?AurSetDynamicProjectionLight@@YAXPEAVCAurObject@@@Z"),
+        [LerpFloatRefresh] = Nm("?Refresh@LerpFloat@@AEAAXXZ"),
+        [YawPitchRoll]     = Nm("?YawPitchRoll@@YA?AVQuaternion@@MMM@Z"),
+        [AurSetPalette]           = Nm("?AurSetPalette@@YAHHPEBD@Z"),
+        [ControlPart]             = Nm("?controlpart@@YAPEBDPEAD@Z"),
+        [AurClearPalette]         = Nm("?AurClearPalette@@YAXXZ"),
+        [AurCreatePaletteTexture] = Nm("?AurCreatePaletteTexture@@YAXXZ"),
+        [ListAddCAurObject] = Nm("?Add@?$CExoArrayList@PEAVCAurObject@@@@QEAAXPEAVCAurObject@@@Z"),
+        [ListAddCAurPart]   = Nm("?Add@?$CExoArrayList@PEAVCAurPart@@@@QEAAXPEAVCAurPart@@@Z"),
     };
 
     /// <summary>Why a symbol does not resolve on Windows, in the words of its own row. A key that is missing

@@ -16,7 +16,7 @@ void main()
     vec4 bWx = CxWetMap(vWorld.xy);
     bool bMapped = CxWetMapped(bWx);
     float bWet = clamp((bMapped ? bWx.x * uWxMapXf.w : uLook.z)
-                     * CxWetOpen(vWorld, vec3(0.0, 0.0, 1.0), bMapped ? CxWetShelter(bWx, vWorld.z) : 1.0), 0.0, 1.0);
+                     * CxWetOpenFast(vWorld, vec3(0.0, 0.0, 1.0), bMapped ? CxWetShelter(bWx, vWorld.z) : 1.0), 0.0, 1.0);
     albedo = CxWetSoak(albedo, uLook.w * bWet * CX_WX_LEAF_SOAK);
     vec3 N = normalize(vNrm);
     vec3 V = normalize(uEyePos - vWorld);

@@ -237,7 +237,14 @@ public sealed unsafe partial class AlloyRenderer
     {
         vao = item = 0; model = Matrix4x4.Identity;
         if ((uint)i >= (uint)MaxOwned || _oTri[i] == IntPtr.Zero) return false;
-        vao = _oVao[i]; item = _oItem[i];
+        // CX-120: a DB slot's chart key is (MeshChart.DbSlot, arena range) -- its _oVao/_oItem are 0/-1, and a
+        // slot the bake may not take (a mover, an unlit mesh) has no placement to offer it at all
+        if (DbSlot(i))
+        {
+            if (!DbBakeable(i)) return false;
+            vao = MeshChart.DbSlot; item = Db.DrawRecipe.Range(_oDbRecipe[i]);
+        }
+        else { vao = _oVao[i]; item = _oItem[i]; }
         fixed (float* r = _dData) model = *(Matrix4x4*)(r + (long)i * DrawFloats);
         return true;
     }
@@ -427,8 +434,15 @@ public sealed unsafe partial class AlloyRenderer
     /// deletes the texture in its own context before any drain runs. On radeonsi a sample through a dead
     /// handle is a GPU page fault and a hard reset (the Sencliff crash); NVIDIA reads garbage silently.
     /// Cold: once per retired name, the same scan class as <see cref="NoteOwnedNamesRetired"/>. The zeroed
-    /// block reads opaque in the handle-masked depth stage until the colour side re-resolves the record.</summary>
-    private static void ZeroHandle(ulong v)
+    /// block reads opaque in the handle-masked depth stage until the colour side re-resolves the record.
+    /// <para>Reached by TWO funnels. The engine-name handle cache calls it straight, from
+    /// <see cref="DropHandle(uint, bool)"/>. The DB registry mints and drops its OWN handles
+    /// (<c>TexRegistry.DropHandle</c>) and used to tell nobody: a DB record copies slot 0..7's handle at
+    /// staging and holds it across frames, so a released or retired registry slot left every record on it
+    /// sampling a non-resident handle -- garbage on NVIDIA, a GPU page fault on radeonsi. The registry now
+    /// queues the dying VALUE and <c>TexRegistry.Drain</c> hands it here inside the bracket, which the colour
+    /// frame enters before it binds a target or draws anything.</para></summary>
+    internal static void ZeroHandle(ulong v)
     {
         if (v == 0) return;
         NoteTexStalePending();
@@ -555,6 +569,10 @@ public sealed unsafe partial class AlloyRenderer
     // skybox is a handful of parts and each carries its own captured matrix, so there is nothing to group.
     internal const int MaxSkyDraws = 1024;
     private static readonly int[] _skVao = new int[MaxSkyDraws];
+    /// <summary>CX-120: the GL VAO NAME a DB sky draw binds, 0 when the draw is the engine path's and
+    /// <see cref="_skVao"/>'s index into the harvest cache is the answer. The arena hands out a name
+    /// directly, exactly as <c>Beams.EnrollDb</c> takes one.</summary>
+    private static readonly uint[] _skVaoName = new uint[MaxSkyDraws];
     private static readonly uint[] _skMode = new uint[MaxSkyDraws];
     private static readonly int[] _skSrc = new int[MaxSkyDraws], _skDst = new int[MaxSkyDraws];
     /// <summary>#222: the constant colour <c>PartTriMesh::Mat</c> would have set for this sky part -- white,
@@ -598,7 +616,4 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#137 armed: <c>ownskin</c> not 0. False refuses the skinmesh class at enrollment -- which
     /// since #264 means every cloak, robe and tail is NOT DRAWN, not drawn by the engine (#285).</summary>
     internal static bool _skinning;
-    /// <summary>#262: did <see cref="SkinPose.SelfCheck"/> pass? Checked once at install, ahead of every
-    /// engine-symbol stand-down, so the answer is about this BUILD and not about this client.</summary>
-    private static bool _skinMathOk;
 }

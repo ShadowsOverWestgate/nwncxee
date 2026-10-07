@@ -17,6 +17,10 @@ const int CX_DYN_SPHERES = $DYNSPH$;
 // Mirrored lights (light.hidden): x = on, y = the roughness ceiling a surface counts as glossy under.
 uniform vec2 uLightOcc;
 bool CxGlossy(float rough) { return uLightOcc.x > 0.0 && rough < uLightOcc.y; }
+// 0 = no local-light shadow lands on this fragment (CX_SLOT_NOSHADOW); the lit stage clears it per record.
+float cxRecvShadow = 1.0;
+// /alloy viz 51: hot lights this fragment ray-tested (x) and the ones whose ray hit a mover (y)
+vec2 cxHotViz = vec2(0.0);
 // the share of a baked light's highlight the mirror lobes carry, the pages' one lobe the rest: 0 at the ceiling,
 // 1 at half of it. A cut there swapped the baked shadow for one cube tap wherever rain crossed the ceiling.
 float CxGlossW(float rough) { return uLightOcc.x > 0.0 ? 1.0 - smoothstep(0.5 * uLightOcc.y, uLightOcc.y, rough) : 0.0; }
@@ -301,7 +305,8 @@ void CxMoverOwe(int slot, int ch, float lum, float ndlRaw, bool soft, vec3 world
     else if (lum > 0.0) lmSub.x += lum * dfade * (1.0 - CxLocalDynShadowQ(slot, worldPos, N, ndlRaw, soft, lmTexel));
 }
 // #674: lightmap.movers -- 1 = a HOT static light (a mover under it this frame) takes its mover's
-// shadow back out of the baked term; 0 = baked receivers skip static lights outright. Unset reads
+// shadow back out of the baked term; 0 = baked receivers skip static lights outright; 2 = hot lights run the ray test
+// and stop there (lightmap.movertaps 0, a diagnostic). Unset reads
 // 0, the off position, which is what a stale content override degrades to.
 uniform int uLmMovers;
 
@@ -335,7 +340,7 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     int capN = int(min(uLocalSoft.w, float(CX_CAP_MAX)));
     // shadow.cubedist: a far fragment pays no cube fetch at all (the old pipeline's distance cut), the
     // last quarter fades so the cut has no edge; uLocalPcss.w = 0 is every fragment
-    float dfade = uLocalPcss.w > 0.0 ? 1.0 - smoothstep(uLocalPcss.w * 0.75, uLocalPcss.w, viewDepth) : 1.0;
+    float dfade = (uLocalPcss.w > 0.0 ? 1.0 - smoothstep(uLocalPcss.w * 0.75, uLocalPcss.w, viewDepth) : 1.0) * cxRecvShadow;
     bool farSh = dfade <= 0.0;
     float aF2 = 1e30, bF2 = 1e30; int aSlot = -1, bSlot = -1; float aNdl = 0.0, bNdl = 0.0;
     // the MIRROR candidate (light.hidden): the strongest lobe on a glossy fragment with a cube to tap.
@@ -394,7 +399,8 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         // The cone widens with roughness: 20 deg at a puddle's 0.03, the hemisphere at the 0.5 ceiling.
         if (mirror && !hot && dot(R, normalize(pr.xyz - worldPos)) < 1.0 - 2.0 * rough) continue;
         if (hot)
-        {   // the light-to-fragment ray misses every mover sphere: nothing on the page can shadow here,
+        {   cxHotViz.x += 1.0;
+            // the light-to-fragment ray misses every mover sphere: nothing on the page can shadow here,
             // and the eight taps below are the opaque pass on a plaza (run 20: 15 hot lights, 7-8 ms)
             vec3 lp = uLocalLight[slot].xyz;
             vec3 dp = worldPos - lp; float dl = max(length(dp), 1e-4);
@@ -404,10 +410,15 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
                 vec4 ms = uDynMovers[slot * CX_DYN_SPHERES + q];
                 if (ms.w < 0.0) break;   // a slot's spheres run from 0 up, unused ones after
                 vec3 dc = ms.xyz - lp; float t = dot(dc, dp) / dl;
-                float rr = ms.w + 0.3;
+                float rr = ms.w;   // published with the shadow read's own reach (CasterPass.HotPad)
                 near = t > -rr && t < dl + rr && dot(dc, dc) - t * t <= rr * rr;
             }
             if (!near) { if (!mirror) continue; hot = false; }
+            else
+            {
+                cxHotViz.y += 1.0;
+                if (uLmMovers == 2) { if (!mirror) continue; hot = false; }   // lightmap.movertaps 0: the ray test alone
+            }
         }
         vec3 c, L; float att, f2, ndlRaw, ndl;
         if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;

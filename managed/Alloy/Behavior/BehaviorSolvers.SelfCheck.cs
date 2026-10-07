@@ -11,8 +11,7 @@ internal static unsafe partial class BehaviorSolvers
     private static bool Near(in Vector3 a, in Vector3 b, float eps = 2e-4f) => (a - b).Length() < eps;
 
     /// <summary>
-    /// The solvers' arithmetic against the decompilation, off-device. A solve itself cannot run here (it
-    /// reads engine memory through engine vtables), so what is pinned is every number a solve derives: the
+    /// The solvers' arithmetic against the decompilation, off-device. What is pinned is every number a solve derives: the
     /// zoom curve, the lag factor both the focus lerp and the orientation slerp share, the rig offset, the
     /// GUI-scale division, the viewport rounding, the navigate basis and the Euler slot order the rotate
     /// attach feeds <c>YawPitchRoll</c>.
@@ -85,80 +84,6 @@ internal static unsafe partial class BehaviorSolvers
         Expect(Near(fwd, BehaviorMath.Rotate(BehaviorMath.YawPitchRoll(37f, 0f, 0f), new Vector3(0f, 1f, 0f))),
                      "forward is the yaw quaternion applied to +Y -- the same convention as the orientation write");
 
-        // ---- the weak-reference bookkeeping, on synthetic memory ----
-        BehaviorCall.SafePtr probe = default;
-        Expect((byte*)&probe.Ptr - (byte*)&probe == 0 && (byte*)&probe.Index - (byte*)&probe == 8
-               && sizeof(BehaviorCall.SafePtr) == 0x10,
-               "a SafePointer is { object at +0, index at +8 } in 0x10 bytes -- the two fields the engine writes");
-        Expect(EngineLayout.AurObjBackRefs == 8 && EngineLayout.AurObjBackRefCount == 0x10,
-                     "the back-reference list is the CExoArrayList at CAurObject+0x08");
-        Expect(EngineLayout.BehaviorDeps == 8 && EngineLayout.BehaviorDepCount == 0x10,
-                     "a behaviour's dependency list is the same shape at +0x08");
-        Expect(EngineLayout.BehaviorOwner == 0x18 && EngineLayout.BehaviorTarget == 0x20,
-                     "owner at +0x18, the parent SafePointer at +0x20");
-        Expect(Unregisters(log), "Unregister swaps the last entry in and fixes its stored index");
-
-        // ---- the stand-down path, against a probe standing in for the engine's Control ----
-        // The CX-102 review's defect, in two halves: the gate read only the knob (so a stood-down feature
-        // solved anyway), and the stand-down threw the chain slots away (so the hand-back answered 1 without
-        // calling anything and every attach quietly froze). Both are checkable here.
-        //   The class under test is loose-follow on purpose: it is the ONE case whose Solve() never touches
-        // `self`, so a regression that routes a stood-down call into the port shows up as a failed check
-        // rather than a null dereference. `_solves` is what tells the two routes apart -- Solve() counts,
-        // Engine() does not -- and both routes end at the same probe, so the answer alone cannot.
-        const int k = (int)BehaviorKind.CameraLooseFollow;
-        Expect(!Driving, "nothing is armed yet, so the port is not driving");
-        IntPtr link = (IntPtr)(delegate* unmanaged<IntPtr, float, int>)&Probe;
-        Wire(k, &link);
-        StandDown("");                  // the silent form: covers the path without a spurious log line
-        _probeCalls = 0;
-        _solves[k] = 0;
-        int answer = Dispatch(k, IntPtr.Zero, 1f / 60f);
-        Wire(k, null);
-        Expect(answer == ProbeAnswer && _probeCalls == 1,
-               "stood down, a hooked Control still reaches the engine's own link and returns ITS answer");
-        Expect(_solves[k] == 0, "...and is not routed through the port, whatever behav.owned says");
-        _solves[k] = 0;
-        _looseWarned = false;
-
         log.Info(check.Ok ? $"BehaviorSolvers.SelfCheck: passed ({n} checks)" : "BehaviorSolvers.SelfCheck: FAILED");
-    }
-
-    /// <summary>What the engine's <c>Control</c> stands in as for the stand-down check: a distinctive answer
-    /// the caller cannot have fabricated, and a call counter.</summary>
-    private const int ProbeAnswer = 0x5107;   // not-an-offset: a distinctive answer only the probe can return
-    private static int _probeCalls;
-
-    /// <inheritdoc cref="ProbeAnswer"/>
-    [System.Runtime.InteropServices.UnmanagedCallersOnly]
-    private static int Probe(IntPtr self, float dt)
-    {
-        _probeCalls++;
-        return ProbeAnswer;
-    }
-
-    /// <summary>The one piece of engine bookkeeping that is testable without the engine: a three-entry
-    /// back-reference list, our entry in the middle, removed. The list is a bare
-    /// <c>CExoArrayList</c> -- pointer, count, capacity -- so a synthetic one is three fields.</summary>
-    private static bool Unregisters(ExtenderLog log)
-    {
-        // A fake CAurObject: only the list at +0x08 and the count at +0x10 are touched.
-        byte* obj = stackalloc byte[0x20];
-        BehaviorCall.SafePtr** items = stackalloc BehaviorCall.SafePtr*[3];
-        BehaviorCall.SafePtr s0 = new() { Ptr = (IntPtr)obj, Index = 0 };
-        BehaviorCall.SafePtr mine = new() { Ptr = (IntPtr)obj, Index = 1 };
-        BehaviorCall.SafePtr s2 = new() { Ptr = (IntPtr)obj, Index = 2 };
-        items[0] = &s0; items[1] = &mine; items[2] = &s2;
-        *(BehaviorCall.SafePtr***)(obj + EngineLayout.AurObjBackRefs) = items;
-        *(int*)(obj + EngineLayout.AurObjBackRefCount) = 3;
-
-        BehaviorCall.Unregister(&mine);
-
-        bool ok = *(int*)(obj + EngineLayout.AurObjBackRefCount) == 2
-                  && items[0] == &s0 && items[1] == &s2 && s2.Index == 1 && mine.Index == -1;
-        // A dead owner must be a no-op, not a write through null.
-        BehaviorCall.SafePtr dead = new() { Ptr = IntPtr.Zero, Index = 4 };
-        BehaviorCall.Unregister(&dead);
-        return ok && dead.Index == -1;
     }
 }

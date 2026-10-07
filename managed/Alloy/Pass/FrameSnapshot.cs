@@ -88,6 +88,29 @@ internal static unsafe class FrameSnapshot
                    + "environment map, and its reflection term stays dark (the pre-#339 look)");
     }
 
+    /// <summary>CX's own <c>solid_noise</c>, for the frames the engine's has no id in.
+    /// <para>In DB mode the engine never asks for it: <c>Scene::Render</c> @0x5762d0 is what loads the
+    /// resref into <c>Scene+0x1f8</c>, and DB mode does not run that body, so the first thing that ever
+    /// names the texture is this bind -- which creates the <c>CAurTexture</c> and leaves it queued on the
+    /// engine's <c>RefreshTextures</c> list. The registry answers from the resources instead, on CX's own
+    /// loader, so the wave field does not depend on the engine having drawn something first.</para>
+    /// <para>The acquire is once per session and the resident check is a table read; both run where the
+    /// pass runs, which is the game thread while <c>alloy.renderthread</c> is off (its outstanding work is
+    /// the handoff's, not this stage's).</para></summary>
+    private static int OwnNoise()
+    {
+        if (!_ownNoiseAsked) { _ownNoiseAsked = true; _ownNoise = Db.TexRegistry.Acquire(NoiseResref); }
+        return Db.TexRegistry.TryResident(_ownNoise, out uint name, out _) ? (int)name : 0;
+    }
+
+    /// <inheritdoc cref="OwnNoise"/>
+    private static Db.TexId _ownNoise;
+    /// <inheritdoc cref="OwnNoise"/>
+    private static bool _ownNoiseAsked;
+    /// <summary>What the ENGINE's <c>solid_noise</c> answered at the last bind, beside the id actually bound
+    /// (<see cref="_noiseTid"/>). The two differ exactly when <see cref="OwnNoise"/> is carrying the stage.</summary>
+    private static int _noiseEngTid;
+
     internal static string Describe()
         // #456: the noise texture DESCRIBED, not just named. A bound-but-incomplete texture (a mipmapped
         // min filter with no mips) samples as a constant, and a constant wave field is a flat sea -- which
@@ -255,17 +278,19 @@ internal static unsafe class FrameSnapshot
         // different RESOURCE or the same one built differently -- and only the object's own name says which.
         IntPtr noisePtr = CX.Framework.AurTex.FindByName(NoiseResref);
         int noise = CX.Framework.AurTex.Tid(noisePtr);
+        _noiseEngTid = noise;
         if (noise != _noiseTid) { _noiseName = AlloyCensus.TexName(noisePtr); _noiseEng = TexScan.Describe(noisePtr); }
-        _noiseTid = noise;
         // A zero here is "not uploaded YET" as often as "not there": AurTextureGet's create path queues the
         // upload on the engine's RefreshTextures list, so the first bind after a load legitimately misses.
         // Reported once, and worded as what it is -- a flat sea is the symptom either way.
         if (noise == 0 && !_noiseMissed)
         {
             _noiseMissed = true;
-            _log?.Info($"FrameSnapshot: the engine texture \"{NoiseResref}\" has no GL id yet -- if the water "
-                     + "reads flat, the vanilla wave field never got its noise");
+            _log?.Info($"FrameSnapshot: the engine texture \"{NoiseResref}\" has no GL id yet -- loading CX's "
+                     + "own copy of it instead (the wave field is sampled from it; without one the sea is flat)");
         }
+        if (noise == 0) noise = OwnNoise();
+        _noiseTid = noise;
         Gl.ActiveTexture(Gl.TEXTURE0 + NoiseUnit);
         Gl.BindTexture(Gl.TEXTURE_2D, (uint)noise);
         Gl.ActiveTexture(Gl.TEXTURE0);
@@ -413,7 +438,10 @@ internal static unsafe class FrameSnapshot
         int delta = tod - _todLast;
         _todLast = tod;
         return $"water: {Copies} copies, {Refusals} refused" + (frames > 0 ? $" over {frames} frames" : "")
-             + $", tod {tod} ({(delta >= 0 ? "+" : "")}{delta} since last)";
+             + $", tod {tod} ({(delta >= 0 ? "+" : "")}{delta} since last)"
+             // Per period, not just in the boot census: the noise id is read at BIND time, and the one-shot
+             // line could only ever report the state before any water had drawn.
+             + $", noise {_noiseTid}{(_noiseTid == 0 ? " -- NO WAVE FIELD" : _noiseEngTid == 0 ? " (CX's own; the engine's has none)" : "")}";
     }
 
     private static int _todLast;

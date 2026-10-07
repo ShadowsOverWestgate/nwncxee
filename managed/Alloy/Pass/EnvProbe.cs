@@ -126,9 +126,11 @@ internal static unsafe class EnvProbe
             foreach (string stage in new[] { "cx_ownlit_tail.glsl", "cx_ownlit_light.glsl", "cx_grass_fmain.glsl", "cx_gblade_fmain.glsl" })
             {
                 string src = ShaderSource.Get(stage);
+                // the one exemption: the legacy env pattern's MEAN, read at the top mip on purpose
                 int fetches = Count(src, "uProbe,"), mapped = Count(src, "CxProbeFetch(uProbe, vWorld, R, sqrt(")
-                              + Count(src, "CxProbeFetch(uProbe, vWorld, reflect(-V, N), sqrt(");
-                check.Expect(fetches > 0 && fetches == mapped && Count(src, "* (uProbeMips - 1.0))") == fetches,
+                              + Count(src, "CxProbeFetch(uProbe, vWorld, reflect(-V, N), sqrt("),
+                    mean = Count(src, "CxProbeFetch(uProbe, vWorld, R, uProbeMips - 1.0)");
+                check.Expect(fetches > 0 && fetches == mapped + mean && Count(src, "* (uProbeMips - 1.0))") == mapped,
                              $"{stage}: every probe fetch is parallax-corrected on the prefilter's sqrt(rough) * (uProbeMips - 1) mapping");
             }
             string mat = ShaderSource.Get("cx_material.glsl"), sh = ShaderSource.Get("cx_probe_sh.glsl"),

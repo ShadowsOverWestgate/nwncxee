@@ -32,9 +32,9 @@ internal static unsafe class Follow
     private const float Omega = 2f * MathF.PI * Hz;
     /// <summary>Times the physical pendulum's swing: the engine's motion arrives measured and smoothed (<c>MotionTime</c>,
     /// <c>AccelTime</c>), which takes the edge off every push.</summary>
-    private const float LagGain = 2f;
+    private const float LagGain = 1f;
     /// <summary>Largest lag any part takes, radians.</summary>
-    private const float MaxLag = 25f * Deg;
+    private const float MaxLag = 7f * Deg;
     /// <summary>Share of its upper arm's lag the forearm adds at the elbow.</summary>
     private const float ForearmShare = 0.5f;
     /// <summary>Seconds the steadied head takes to follow the pose (the spring's time, as <see cref="PoseMath.Smooth"/>):
@@ -77,13 +77,15 @@ internal static unsafe class Follow
         Vector3 fixRate = known ? (s.TorsoFix - s.TorsoFixWas) / dt : Vector3.Zero;
         s.TorsoFixWas = s.TorsoFix;
         s.TorsoFix = Vector3.Zero;
-        Vector3 spin = fixRate + new Vector3(0f, 0f, s.YawRate);
+        // the body turns its arms with the PATH, not the facing: a facing swung round at a waypoint is the engine
+        // re-aiming the model, and dragging the arms off it threw them wide on every click
+        Vector3 spin = fixRate + new Vector3(0f, 0f, s.PathRate);
         bool write = false;
         if (!AnimKnobs.Follow.V && s.FollowW < MinLag) Rest(ref s, spin, false);
         else
         {
             bool live = AnimKnobs.Follow.V && !gated && Transition.Movement(anim);
-            Advance(ref s, spin, new Vector3(-s.Speed * s.YawRate, s.Cue, 0f) / scale, live, reset, dt);
+            Advance(ref s, spin, new Vector3(-s.Speed * s.PathRate, s.Cue, 0f) / scale, live, reset, dt);
             write = s.FollowW > MinLag;
         }
         // a head not steadied this frame starts from the pose next time, not from a stale orientation
@@ -217,7 +219,7 @@ internal static unsafe class Follow
     /// <summary>The world rotation of a model-frame rotation vector: +X the character's right, +Y its forward, +Z up.</summary>
     private static Quaternion InWorld(Vector3 lag, Vector3 fwdH, Vector3 right) => Exp(right * lag.X + fwdH * lag.Y + Vector3.UnitZ * lag.Z);
 
-    private static IntPtr Parent(IntPtr part) => new Part(part).Parent.Ptr;
+    private static IntPtr Parent(IntPtr part) => PoseRig.Parent(part);
 
     /// <summary>A turn on the spot (6 rad/s for a second, measured as <see cref="PoseService.Motion"/> does) swings the
     /// arms behind -- the leading shoulder's hand forward, the trailing one's back; through the turn the spring

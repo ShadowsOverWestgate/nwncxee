@@ -8,63 +8,13 @@
 // as you approached, which read as a bug because it was one. The footprint is still used, for exactly one
 // thing: FADING a ring out once its crest is thinner than a pixel or two. It never sizes anything.
 
-float CxWeatherHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+#include "cx_wx_ring.glsl"
 uniform float uSplash;         // the water stage's rain impact rate (0 = none)
-
-/// The world cell one drop lands in per period. The 2x2 neighbourhood below is EXACT only while the crest
-/// reach stays under half a cell, which pins this to CX_RIPPLE_REACH_M (Weather.SelfCheck asserts the pair).
-const float CX_RIPPLE_CELL_M = 0.20;
-/// Seconds from the strike to the ring's death.
-const float CX_RIPPLE_LIFE = 0.5;
-/// How far the crest gets in that time. A rain drop on standing water rings out about this far and stops.
-const float CX_RIPPLE_REACH_M = 0.08;
-/// Half-width of the crest itself: the ring is this thin whatever radius it has reached.
-const float CX_RIPPLE_CREST_M = 0.012;
-/// Peak surface slope at the crest of a full-strength ring. A dent well under a millimetre deep on water
-/// this calm: enough to bend the highlight, not enough to read as a dimple in the stone.
-const float CX_RIPPLE_TILT = 0.30;
-/// Mean squared tilt of the whole field per unit rate. Estimated from the crest's own coverage: a live
-/// crest is a ~2.4 cm annulus at a mean 5 cm radius inside a 4 cm^2 cell, alive about three quarters of
-/// each period, and its RMS slope is about half the peak -- two layers of that come to ~0.007.
-/// What the footprint fade takes out of the normal goes into the lobe as microfacet variance instead, so
-/// distant rain hazes the sheen out to any range rather than ending at a line.
-/// ponytail: a number off the geometry, not a measurement. Re-derive it if the crest profile changes.
-const float CX_RIPPLE_VAR = 0.006;
-
-/// One lattice's rings over <c>p</c> (metres): the 2x2 cells whose drops can reach it, each carrying at
-/// most one live ring. <c>salt</c> decorrelates a layer's hashes from its neighbours'. Returns the height
-/// gradient, dimensionless (metres of rise per metre).
-vec2 CxRippleLayer(vec2 p, float rate, float salt)
-{
-    float t = CxClock() * 0.001;
-    vec2 q = p / CX_RIPPLE_CELL_M;
-    vec2 base = floor(q - 0.5);
-    vec2 g = vec2(0.0);
-    for (int i = 0; i < 4; i++)
-    {
-        vec2 cell = base + vec2(float(i & 1), float(i >> 1));
-        vec2 key = cell + salt;
-        float period = CX_RIPPLE_LIFE * (0.9 + 0.8 * CxWeatherHash(key));
-        float ph = t / period + CxWeatherHash(key + 11.0);
-        float idx = floor(ph);
-        float age = fract(ph) * period;
-        if (age > CX_RIPPLE_LIFE) continue;
-        if (CxWeatherHash(key + idx * 7.0 + 3.0) > rate) continue;
-        vec2 c = cell + vec2(CxWeatherHash(key + idx + 5.0), CxWeatherHash(key + idx + 9.0));
-        vec2 dv = (q - c) * CX_RIPPLE_CELL_M;
-        float d = length(dv);
-        // sqrt in time: the crest leaves fast and slows as it spreads, the way a capillary ring does
-        float r = CX_RIPPLE_REACH_M * sqrt(age / CX_RIPPLE_LIFE);
-        float u = (d - r) / CX_RIPPLE_CREST_M;
-        if (abs(u) > 3.0) continue;
-        float damp = 1.0 - age / CX_RIPPLE_LIFE;
-        float amp = CX_RIPPLE_TILT * damp * damp * (0.6 + 0.4 * CxWeatherHash(key + idx + 13.0));
-        // h(u) = amp * CREST * u * exp(-u^2/2): water piled just outside the crest and hollowed just
-        // inside it, one ring wide. This is dh/dd, which the CREST in the amplitude cancels out of.
-        g += dv / max(d, 1e-4) * (amp * (1.0 - u * u) * exp(-0.5 * u * u));
-    }
-    return g;
-}
+/// The ripple tile (Weather.Shelter): this frame's ring field over CX_RIPPLE_WRAP x CX_RIPPLE_WRAP cells, as
+/// the surface tilt. One fetch where the two lattices cost eight cells of hashing per pixel.
+layout(binding = 25) uniform sampler2D uWxRipple;
+/// Cells across the tile: 4.8 m, wide enough that a puddle field does not read as a repeat.
+const float CX_RIPPLE_WRAP = 24.0;
 
 /// A pixel's footprint on the ground, in metres: the geometric mean of its two axes (sqrt of N.V -- V.z here, the
 /// rings only ride level ground), so a grazing view stretches it by the axis it actually stretches.
@@ -88,9 +38,7 @@ vec2 CxWeatherRipple(vec2 p, float rate, float px, out float kept)
 {
     kept = CxWeatherRippleFade(px);
     if (kept <= 0.0 || rate <= 0.0) return vec2(0.0);
-    vec2 g = CxRippleLayer(p, rate, 0.0)
-           + CxRippleLayer(p + CX_RIPPLE_CELL_M * 0.5, rate, 37.0);
-    return -g * kept;
+    return textureLod(uWxRipple, p / (CX_RIPPLE_CELL_M * CX_RIPPLE_WRAP), 0.0).xy * kept;
 }
 
 /// The roughness the rings a pixel cannot resolve leave behind: their mean squared tilt, as microfacet

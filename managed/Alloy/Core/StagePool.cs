@@ -94,10 +94,6 @@ internal static class StagePool
         return false;
     }
 
-    /// <summary>Is the pool down? A caller with a serial path of its own should take it rather than call
-    /// <see cref="Run"/> for the early false, which costs it whatever it had queued.</summary>
-    internal static bool Faulted => _fault != null;
-
     /// <summary>Wake the workers ahead of the job so the routing walk hides their wake latency. Cheap when
     /// they are already spinning: the semaphore is capped at one and never over-released.</summary>
     internal static void Prewake(int chunks)

@@ -132,6 +132,8 @@ public sealed unsafe class UiInputService : IExtenderService
         // Unless a NUI edit box has focus: NUI draws over us and runs its own SDL pump, so a key routed to our
         // keyboard owner as well would land in BOTH fields at once.
         if (!NuiEditFocused() && UiHost.DispatchKey(key, mods)) return 0;
+        // Then a game edit box's selection keys (ui.textedit), ahead of the engine's own handling of the same key.
+        if (!NuiEditFocused() && CX.Alloy.Db.EditSelect.OnKey(key, mods)) return 0;
         // Chord layer: only on the fresh press (auto-repeat gate), and only when the gate is clear.
         bool fresh = _keysDown.Add(key);
         if (fresh && ChordGateClear()) UiHost.FireChords(key, mods);
@@ -169,7 +171,10 @@ public sealed unsafe class UiInputService : IExtenderService
                 case SdlTextInput:
                     // ...and the same for finished text: a focused NUI edit box owns the keyboard outright.
                     if (!NuiEditFocused())
+                    {
+                        if (!UiHost.AnyKeyboardOwner) CX.Alloy.Db.EditSelect.BeforeText();   // typing replaces a game edit box's selection
                         UiHost.DispatchText(ev + SdlEvTextOff);   // finished UTF-8 -> the keyboard owner's edit line
+                    }
                     break;
                 case SdlMouseMotion:
                 {
@@ -206,6 +211,7 @@ public sealed unsafe class UiInputService : IExtenderService
                 }
                 case SdlMouseUp:
                 {
+                    CX.Alloy.Db.EditSelect.MouseUp();
                     byte btn = *(byte*)(ev + SdlEvButtonOff);
                     int mx = *(int*)(ev + SdlEvMouseXOff), my = *(int*)(ev + SdlEvMouseYOff);
                     if (UiHost.DispatchMouseButton(false, btn, mx, my)) return 0;

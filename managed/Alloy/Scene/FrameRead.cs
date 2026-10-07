@@ -34,7 +34,7 @@ internal static unsafe class FrameRead
 {
     /// <summary>Accept only clearly downward-travelling light as the sun (NWN is Z-up). A horizontal or
     /// below-horizon directional would light undersides and read as garbage in the cascades.</summary>
-    private const float DownwardZ = -0.05f;
+    internal const float DownwardZ = -0.05f;
 
     private static IntPtr _currentCamera;
     private static IntPtr _onlyGob;

@@ -1,3 +1,4 @@
+using CX.Alloy.Db;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -78,7 +79,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#336: the part's world box at enrolment (six floats), for the dissolve verdict AND for
     /// <see cref="AreaGrid"/>'s filing -- it is the same box, populated by <c>ComputePartBBox</c> @0x561370 for
     /// tile geometry and six zeros for everything hanging off a gob.</summary>
-    private static readonly float[] _oBox = new float[MaxOwned * 6];
+    internal static readonly float[] _oBox = new float[MaxOwned * 6];
     /// <summary>#336: the camera's keyhole state, read once per pass at the top of the route walk: the on
     /// byte, the aperture plane, the height cut; <c>_khCam</c> false = no camera or no engine verdict armed,
     /// and the engine call stands in.</summary>
@@ -177,7 +178,12 @@ public sealed unsafe partial class AlloyRenderer
             for (int k = 0; k < _orderCount; k++)
             {
                 int i = _order[k];
-                if (_oGob[i] != IntPtr.Zero) { _dynList[_dynN++] = i; continue; }
+                // CX-120: "does this slot move" -- an instance's part in engine mode, a non-static object's
+                // in DB mode. A mover is routed every pass rather than filed, because its box moves with it.
+                bool mover = _oDbPart[i] >= 0
+                    ? (SceneDb.ObjFlags[SceneDb.PartObj[_oDbPart[i]].Index] & ObjFlag.Static) == 0
+                    : _oGob[i] != IntPtr.Zero;
+                if (mover) { _dynList[_dynN++] = i; continue; }
                 // The world box ComputePartBBox filled at tile spawn. One that was never filled is a part with
                 // no bounds to index on, and unbounded means VISIBLE -- the same answer its NeverCull sphere
                 // already gave the cull.
@@ -687,116 +693,6 @@ public sealed unsafe partial class AlloyRenderer
 
     // ================= BW1: the frozen slot's route verdict =================
 
-    /// <summary>Is the route memo armed this pass? Every term is global: the freeze itself
-    /// (<c>gpu.static</c>, which <c>/alloy poll 1</c> stands down), the ramp being ALLOY's (under
-    /// <c>/buckets tilefade 0</c>, or a ramp that did not resolve, the factors come off the engine's own
-    /// <c>TileData</c> and the generation below says nothing about them -- <see cref="TileFadeRamp.Tick"/>
-    /// returns before it can move), a camera with no keyhole aperture open (the only way a still gobless part
-    /// starts dissolving), a tile-fade generation that has not moved, and no <c>[dumpframe]</c> watch armed (the
-    /// memo skips the per-slot watch lines, so a watch takes the full path).
-    /// <para>The aperture term is "no camera, or a camera with its aperture shut", and both halves are
-    /// literally "nothing dissolves": <c>_khCam</c> is false exactly when
-    /// <see cref="PartTable.KeyholeDissolves"/> returns false for every part by construction (no armed symbol,
-    /// no camera slot, or no current camera), and <see cref="Dissolves"/> refuses every gob part on the same
-    /// byte. It is spelled out rather than left to <c>_khOn</c> alone because a lost camera used to leave
-    /// <c>_khOn</c> holding its last value, which disarmed the memo for the rest of the session
-    /// (<c>0/frame replayed frozen</c>, no reason on the line); <see cref="ReadKeyholeCamera"/> now clears
-    /// it, and this reads the same either way.</para></summary>
-    private static bool _routeMemoOn;
-    /// <summary>The tile-fade generation, latched ONCE per frame together with the frame it was read on. Per
-    /// PASS would consume a move: a capture or probe pass runs the frame path again under the same
-    /// <see cref="_frameSeq"/>, and a slot that pass did not route would then be replayed by the next pass
-    /// against a fade that moved this frame.</summary>
-    private static int _routeTileGen, _routeTileFrame = -1;
-    private static bool _routeTileHeld;
-    private static long _routeMemoed, _routeAudited, _routeMisses;
-    private static int _routeLogged;
-    private const int RouteLogCap = 6;
-
-    /// <summary>Per pass, before the walk: may a frozen slot's route verdict be replayed at all?</summary>
-    private static void PrepareRouteMemo()
-    {
-        if (_routeTileFrame != _frameSeq)
-        {
-            _routeTileFrame = _frameSeq;
-            _routeTileHeld = TileFadeRamp.Gen == _routeTileGen;
-            _routeTileGen = TileFadeRamp.Gen;
-        }
-        _routeMemoOn = GpuStatic.On && TileFadeRamp.Owned && (!_khCam || _khOn == 0) && _routeTileHeld
-                       && AlloyCensus._watchEntry < 0;
-    }
-
-    private const int MemoFull = 0, MemoReplayed = 1, MemoAudit = 2;
-
-    /// <summary>BW1: replay a frozen slot's route verdict instead of re-deriving it. A slot the static path
-    /// froze last frame was REFUSED membership unless its own alpha was 1, its tile was not fading, it was not
-    /// dissolving and its record was current (<c>StaticShape</c>) -- so last frame's verdict is known exactly:
-    /// class <c>_oCls[i]</c>, alpha 1, no dissolve. The walk therefore does not have to re-derive
-    /// <see cref="TileFade"/>, <c>PartAlphaCached</c>, <c>GobAlphaMul</c>, <see cref="OccludeVerdict"/>,
-    /// <see cref="Dissolves"/> or the cadenced identity compares to reach it.
-    /// <para>What still runs, per slot: the <c>Part::~Part</c> liveness verdict (#145 -- every dereference
-    /// downstream sits behind it, and the staging walk still reads the part on its colour frames), the record
-    /// terms <see cref="RouteWanted"/> gates on, the pass's own SPHERE test, which is camera-dependent and
-    /// cannot be memoised, and -- one frame in <see cref="ColourCadence"/> per slot -- the whole derivation, as
-    /// the audit.</para>
-    /// <para>What makes each skipped term sound. <b>Tile fade</b>: the registry bumps
-    /// <see cref="TileFadeRamp.Gen"/> whenever a factor moves, and the memo is disarmed for that frame.
-    /// <b>The part's own alpha</b>: with <c>anim.owned</c> the controller runtime is its only writer and it can
-    /// only reach a part inside a gob's part tree, which a GOBLESS slot is not -- and a write is marked anyway
-    /// (BW3), which stands the slot's memo down and forces the read. <b>The gob folds and the occlusion
-    /// fade</b>: both need a gob, and only gobless slots are eligible, so a hit cannot tag one and the folds
-    /// are the identity. <b>The dissolve</b>: with no keyhole aperture open the verdict is false for every
-    /// part, and the aperture is a global this pass already read. <b>Identity</b>: the three field compares are
-    /// an AUDIT on a cadence, not a gate (see <see cref="IdentityOk"/>), and the audit below re-runs them.</para>
-    /// <para>Returns <see cref="MemoReplayed"/> when the slot is handled here, <see cref="MemoAudit"/> when it
-    /// is eligible but this frame re-derives it to check the memo, and <see cref="MemoFull"/> otherwise.</para>
-    /// <para>BW8: a replayed slot takes none of <see cref="FrameZones"/>'s <c>Route</c>/<c>Ident</c>/<c>Fade</c>
-    /// samples, which were 2 timestamps per sampled visit at <see cref="ChaseEvery"/> and are now paid by the
-    /// full-path population alone. Those three rows therefore read "per slot the walk re-derived"; the
-    /// <c>Scan</c> zone around the whole walk is unchanged and is still the whole truth, and
-    /// <c>replayed frozen</c> on the period line is the population they no longer cover.</para></summary>
-    private static int RouteMemo(int i, float* sph, ref int n)
-    {
-        // BW7: every term but the part pointer, its entry and the sphere comes off ONE row (one cache line for
-        // the six reads below), which is what a replayed slot's whole visit costs.
-        ref RouteGate g = ref _gate[i];
-        if (!_routeMemoOn || g.FrozenAt < _frameSeq - 1 || _oGob[i] != IntPtr.Zero) return MemoFull;
-        if (g.OccFade != 0f || g.OccHeld > 0f) return MemoFull;
-        IntPtr tri = _oTri[i];
-        if (tri == IntPtr.Zero || !PartTable.EntryLive(_oEntry[i], tri)) return MemoFull;
-        if (g.RecGen != _recEpoch || g.RecEnroll != g.EnrollGen || g.TexStale) return MemoFull;
-        // BW3: the controller runtime moved this part's alpha. Consume the mark and force the read -- clearing
-        // _alphaKnown is what makes PartAlphaCached poll on a slot that is otherwise on the colour cadence.
-        if (PartTable.AlphaDirty(_oEntry[i]))
-        { PartTable.ClearAlphaDirty(_oEntry[i]); _alphaKnown[i] = false; return MemoFull; }
-        // The slot's own COLOUR frame is its audit frame, and the two have to be the same frame. Every cadence
-        // the full path carries is keyed on this residue -- PartAlphaCached's poll, IdentityOk's three field
-        // compares, StagePart's colour reads -- and the freeze's own recheck stagger (1 in 16, the same sum)
-        // means the memo's full-path frame would otherwise land on residue 1 and never on 0: a frozen slot
-        // would replay its alpha and its identity for ever, so an input this memo does not model (the ENGINE's
-        // controller under `anim.owned 0`, a writer the #336 store scan could have missed) would never be seen.
-        // Re-deriving here restores all of them AND gives every eligible slot an audit every ColourCadence
-        // frames, at every residue, for the price of a walk the cadence was always going to pay.
-        if (((i + _frameSeq) & (ColourCadence - 1)) == 0) { _routeAudited++; return MemoAudit; }
-        if (_passFrustumOk && !SphereInPass(i, sph)) { _routeOut++; return MemoReplayed; }
-        _routeIn++; _routeMemoed++;
-        _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = false; n++;
-        return MemoReplayed;
-    }
-
-    /// <summary>The audit found a slot whose live verdict is not the one the memo would have replayed: the
-    /// memo's premise is wrong somewhere. Counted on the period line (which must read 0) and named for the
-    /// first few, because one term being wrong reads as a part that will not fade rather than as an error.</summary>
-    private static void RouteMemoMiss(int i, float alpha, bool dis, string why)
-    {
-        _routeMisses++;
-        if (_routeLogged >= RouteLogCap) return;
-        _routeLogged++;
-        _log?.Always($"AlloyRenderer: [routecheck] frame {_frameSeq} slot {i} cls {_oCls[i]} would have been "
-                   + $"replayed as opaque at alpha 1, but {why} (alpha {alpha:F3}, dissolve {dis}, fading "
-                   + $"{_oFading[i]}, tile fade gen {TileFadeRamp.Gen}) -- the route memo's premise is wrong");
-    }
-
     // ================= the visible gobs =================
 
     /// <summary>CX-104: the gobs the world view is about to render, from Alloy's own enumeration
@@ -988,6 +884,16 @@ public sealed unsafe partial class AlloyRenderer
     /// it belongs to. <c>/alloy tiledissolve 0</c> is the vanilla A/B.</para>
     private static bool Dissolves(int i, IntPtr tri, ref StageCounters c)
     {
+        // CX-120: the keyhole verdict is a column the dissolve step writes, not a question asked of the
+        // engine's camera per part per pass. The feature and lit gates still apply -- they are the record's
+        // own content, and a bit that reaches a stage compiled KEYHOLING 0 does nothing.
+        if (_oDbPart[i] >= 0)
+        {
+            if (ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])) { c.DisNoFeat++; return false; }
+            if (!_oLit[i]) { c.DisNoLit++; return false; }
+            c.DisAsked++;
+            return SceneDb.PartDissolve[_oDbPart[i]] < 1f;
+        }
         // Gate order is the census order: each counter must read "parts that would have dissolved but for
         // THIS", so the cheap content refusals come first and the lit one last.
         if (ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])) { c.DisNoFeat++; return false; }
@@ -1030,40 +936,7 @@ public sealed unsafe partial class AlloyRenderer
     /// colour x f^2, fog end x f); Alloy fades it by alpha instead, at the same 4/s rate. ponytail: alpha, not
     /// fog-to-black -- a per-draw fog scale in the record is the upgrade if the 0,25 s see-through fade-in ever
     /// reads wrong.</para></summary>
-    private static float TileFade(int i, IntPtr tri)
-    {
-        IntPtr owner = _oTile[i];
-        if (!TileFadeRamp.Owned)
-        {
-            float own = owner == IntPtr.Zero ? 1f : TileFadeRamp.Explored(owner);
-            if (own <= 0f) return 0f;
-            IntPtr occ = _oFadeTile[i];
-            return occ == IntPtr.Zero ? own : TileFadeRamp.Fade(occ) * own;
-        }
-        // BW4: the two tiles resolved to registry SLOTS once per slot per registry generation. The two
-        // questions are asked of different tiles (the fog owner and the occluding tile), so the one-entry memo
-        // this replaces thrashed and ran the hash probe about twice per accepted slot per frame.
-        int gen = TileFadeRamp.Gen;
-        if (_oTileGen[i] != gen)
-        {
-            _oTileSlot[i] = TileFadeRamp.SlotOf(owner);
-            _oFadeSlot[i] = TileFadeRamp.SlotOf(_oFadeTile[i]);
-            _oTileGen[i] = gen;
-        }
-        float fog = TileFadeRamp.ExploredAt(_oTileSlot[i]);
-        if (fog <= 0f) return 0f;
-        return TileFadeRamp.FadeAt(_oFadeSlot[i]) * fog;
-    }
-
-    /// <summary>BW4: the registry slots of <see cref="_oTile"/> and <see cref="_oFadeTile"/>, and the
-    /// <see cref="TileFadeRamp.Gen"/> they were resolved under. -1 = a tile the registry does not know, which
-    /// reads as opaque and explored -- so a stale generation costs one probe, never a wrong factor. A
-    /// re-tenanted slot is cleared by <see cref="UnstampChase"/>, on the same edge and the same guarantee the
-    /// alpha cache beside it already keeps: the new tenant's tile is a different tile, and its slot must be
-    /// resolved again rather than inherited.</summary>
-    private static readonly int[] _oTileSlot = new int[MaxOwned];
-    private static readonly int[] _oFadeSlot = new int[MaxOwned];
-    private static readonly int[] _oTileGen = new int[MaxOwned];
+    private static float TileFade(int i, IntPtr tri) => SceneDb.PartFade[_oDbPart[i]];
 
     /// <summary>CX-103: the slot's model matrix -- COMPOSED, not read. Recomposed when there is no record to
     /// serve, when the record was not built on the previous frame (a slot re-entering the view, or a pass that
@@ -1076,23 +949,15 @@ public sealed unsafe partial class AlloyRenderer
     /// </para></summary>
     private static Matrix4x4 ChaseModel(int i, float* r, bool stale, bool newTenant, ref StageCounters c)
     {
-        if (!GobXform.Armed)
-        {
-            c.MxChased++;
-            return new NodeRef(_oNode[i]).Model;
-        }
-        bool recompose = stale || newTenant || _gate[i].RecFrame < _frameSeq - 1 || GobXform.Moved(_oGob[i]);
-        if (!recompose) { c.MxCached++; return *(Matrix4x4*)r; }
-        c.MxChased++;
-        Matrix4x4 m = GobXform.Compose(_oTri[i], _oGob[i]);
-        if (Renderer.XformCheck.V) GobXform.Check(_oNode[i], _oGob[i], in m);
-        return m;
+        // Nothing to chase: the transform step composed this matrix on the game thread and the feed rewrote the
+        // record when it did, so the draw reads the column and asks the engine nothing.
+        c.MxCached++;
+        return SceneDb.PartWorld[_oDbPart[i]];
     }
 
     /// <summary>A re-tenanted slot's caches describe the previous tenant.</summary>
     private static void UnstampChase(int i)
-    { _disGen[i] = 0; _alphaKnown[i] = false; _gate[i].OccFade = 0f; _gate[i].OccHeld = 0f; _oTileGen[i] = 0;
-      _gate[i].FrozenAt = -1; }
+    { _disGen[i] = 0; _gate[i].OccFade = 0f; _gate[i].OccHeld = 0f; _gate[i].FrozenAt = -1; }
 
     /// <summary>The [alloy] line's clause.</summary>
     private static string ChaseNote()
@@ -1100,11 +965,6 @@ public sealed unsafe partial class AlloyRenderer
         long mxAll = _mxChased + _mxCached, disAll = _disAsked + _disCached;
         long frames = Math.Max(1, Counters._frames);
         string s = $"route {(float)_routeIn / frames:F0}/frame, {(float)_routeOut / frames:F0} off-frustum untouched"
-                 + $", {(float)_routeMemoed / frames:F0}/frame replayed frozen"
-                 + (_routeAudited > 0 ? $" (routecheck {_routeMisses} miss(es) over "
-                                      + $"{(float)_routeAudited / frames:F0} re-derived/frame on their colour "
-                                      + "cadence, must be 0)"
-                                      : _routeMemoed > 0 ? " (routecheck has not run yet this period)" : "")
                  + (_visList ? $", visible set rebuilt {_visRebuilds} of {frames} frames from "
                              + $"{AreaGrid.Occupied} cells ({AreaGrid.Filed} indexed, {AreaGrid.Unboxed} unboxed ({_unboxedEmpty} never filled), "
                              + $"{_dynN} on gobs, {_visIndexed / Math.Max(1, _visRebuilds)}/rebuild, {_visTrimmed / Math.Max(1, _visRebuilds)} cell-only candidates trimmed/rebuild)"
@@ -1122,12 +982,9 @@ public sealed unsafe partial class AlloyRenderer
                  // that holds that fusion to account, and its miss count must read 0.
                  + (_visGobAudits == 0 ? "" : $" ({_visGobAuditMiss} of {_visGobAudits} audit(s) disagree)")
                  + (_visGobTruncSkips == 0 ? "" : $" ({_visGobTruncSkips} audit(s) skipped, list truncated)")
-                 + "; " + GobXform.Period() + "; " + GobLod.Period() + BatchAuditNote()
-                 // BW1: `route` is the memo's miss count. Under a full poll gpu.static is stood down, so the
-                 // memo never runs and this reads 0 by construction -- the routecheck clause above is what
-                 // holds the memo to account, on its own cadence, in a session that is not polling.
+                 + BatchAuditNote()
                  + (_fullPoll ? $"; POLL AUDIT misses (must be 0): keyhole {_pollMissDis} box {_pollMissBox} "
-                              + $"alpha {_pollMissAlpha} route {_routeMisses}" : "");
+                              + $"alpha {_pollMissAlpha}" : "");
         return s;
     }
 
@@ -1136,11 +993,10 @@ public sealed unsafe partial class AlloyRenderer
         _mxChased = _mxCached = _disAsked = _disCached = 0;
         _routeIn = _routeOut = 0; _visRebuilds = 0; _visIndexed = 0;
         _pollMissDis = 0; _pollMissBox = 0; _pollMissAlpha = 0; _disBoxed = 0;
-        _routeMemoed = 0; _routeAudited = 0; _routeMisses = 0; _visTrimmed = 0; _visBoxOnly = 0; _visSlices = 0;
+        _visTrimmed = 0; _visBoxOnly = 0; _visSlices = 0;
         _visGobAudits = 0; _visGobAuditMiss = 0; _visGobTruncSkips = 0;
         ResetBatchAuditPeriod();
         _disNoLit = _disNoFeat = _disGobUnpierced = 0;
-        GobXform.ResetPeriod();
     }
 
     /// <summary>Once per world frame at the frame anchor, engine context, after the engine's own scene work and
@@ -1148,107 +1004,8 @@ public sealed unsafe partial class AlloyRenderer
     /// with one -- which gobs moved -- and CX-105 turns an LOD swap into the re-walk it needs.</summary>
     private static void SampleEngineSets(IntPtr scene)
     {
-        GobXform.Tick(scene);
         fixed (ulong* key = _camKey)
             if (PartTable.KeyholeCameraMoved(PartTable.CurrentCamera, key)) _camGen++;
-    }
-
-    /// <summary>BW1, off-device: the memo's decision table. Each row is one term that can move a frozen slot's
-    /// verdict, and the row exists because replaying the verdict through it would draw the wrong thing -- a
-    /// window solid through a keyhole, a fading roof at full opacity, a revoked part. A term dropped from
-    /// <see cref="RouteMemo"/> is this check going red rather than a bug found live weeks later.</summary>
-    private static bool RouteMemoSelfCheck(Checker check)
-    {
-        const int i = MaxOwned - 2;
-        IntPtr triWas = _oTri[i], gobWas = _oGob[i];
-        int entryWas = _oEntry[i], frozenWas = _gate[i].FrozenAt, recGenWas = _gate[i].RecGen;
-        int recEnrollWas = _gate[i].RecEnroll, enrollWas = _gate[i].EnrollGen;
-        bool staleWas = _gate[i].TexStale, memoWas = _routeMemoOn, frustumWas = _passFrustumOk;
-        bool knownWas = _alphaKnown[i];
-        float occWas = _gate[i].OccFade, heldWas = _gate[i].OccHeld;
-        byte clsWas = _oCls[i];
-        long memoedWas = _routeMemoed, auditedWas = _routeAudited;
-        int seqWas = _frameSeq;
-        // A slot's audit frame is the one its colour cadence lands on, so the two frames the check needs are a
-        // residue apart: on `audit` the memo must re-derive, one frame off it the memo must replay.
-        int audit = 1024 + ((-i) & (ColourCadence - 1)), replay = audit + 1;
-
-        // A part the table holds as live, and a slot the static path froze last frame with every other term
-        // at rest. The entry is the one PartTable's own hash gives this pointer, so the dirty MARK below (which
-        // goes through Find) lands on the entry the memo reads. No sphere test: the pass has no frustum here,
-        // which is the path that routes everything.
-        IntPtr tri = (IntPtr)0x1000;
-        int e = (int)(((ulong)tri >> 4) % (ulong)PartTable.EntryCount);
-        byte stateWas = PartTable._pEnt[e].State;
-        IntPtr partWas = PartTable._pEnt[e].Part;
-        PartTable._pEnt[e].Part = tri; PartTable._pEnt[e].State = PartTable.StActive;
-        _oTri[i] = tri; _oEntry[i] = e; _oGob[i] = IntPtr.Zero; _oCls[i] = (byte)AlloyClass.Cutout;
-        _gate[i].FrozenAt = _frameSeq - 1; _gate[i].RecGen = _recEpoch; _gate[i].RecEnroll = _gate[i].EnrollGen = 7;
-        _gate[i].TexStale = false; _gate[i].OccFade = 0f; _gate[i].OccHeld = 0f;
-        _routeMemoOn = true; _passFrustumOk = false;
-        _frameSeq = replay; _gate[i].FrozenAt = replay - 1;
-
-        int n = 0;
-        bool ok = RouteMemo(i, null, ref n) == MemoReplayed && n == 1 && _pass[0] == i
-                  && _passCls[0] == (byte)AlloyClass.Cutout && _passAlpha[0] == 1f && !_passDis[0];
-        check.Expect(ok, "a slot frozen last frame does not replay its verdict, or replays the wrong one");
-        // ...and one term at a time, each restored after it.
-        bool Refuses(string why)
-        {
-            int m = 0;
-            bool full = RouteMemo(i, null, ref m) == MemoFull && m == 0;
-            check.Expect(full, $"the memo replays a verdict {why}");
-            return full;
-        }
-        _routeMemoOn = false; ok &= Refuses("with the memo disarmed (gpu.static off, a keyhole open, a moved tile fade)");
-        _routeMemoOn = true;
-        _gate[i].FrozenAt = replay - 2; ok &= Refuses("for a slot that was not frozen last frame");
-        _gate[i].FrozenAt = replay - 1;
-        _oGob[i] = (IntPtr)1; ok &= Refuses("for a slot on a gob, whose folds and occlusion fade it does not read");
-        _oGob[i] = IntPtr.Zero;
-        _gate[i].OccFade = 0.5f; ok &= Refuses("for a slot the wall fade is easing");
-        _gate[i].OccFade = 0f; _gate[i].OccHeld = 0.1f; ok &= Refuses("for a slot inside the wall fade's hold");
-        _gate[i].OccHeld = 0f;
-        _oTri[i] = IntPtr.Zero; ok &= Refuses("for a vacated slot");
-        _oTri[i] = tri;
-        PartTable._pEnt[e].State = PartTable.StDead; ok &= Refuses("for a part the death notice took");
-        PartTable._pEnt[e].State = PartTable.StActive;
-        _gate[i].RecGen = _recEpoch - 1; ok &= Refuses("for a slot with no record to serve");
-        _gate[i].RecGen = _recEpoch;
-        _gate[i].RecEnroll = 8; ok &= Refuses("for a re-tenanted slot");
-        _gate[i].RecEnroll = 7;
-        _gate[i].TexStale = true; ok &= Refuses("for a slot whose texture is stale");
-        _gate[i].TexStale = false;
-        // BW3: the alpha mark stands the slot down AND forces the read that the colour cadence would skip.
-        _alphaKnown[i] = true;
-        PartTable.NoteAlphaWrite(tri);
-        ok &= Refuses("for a part whose alpha the controller runtime just wrote");
-        check.Expect(!_alphaKnown[i] && !PartTable.AlphaDirty(e),
-                     "the alpha mark is consumed: the slot must re-read +0xa0 rather than serve its cache");
-        ok &= !_alphaKnown[i] && !PartTable.AlphaDirty(e);
-        // The slot's colour frame re-derives it instead of replaying, which is what keeps the alpha read, the
-        // identity compares and the colour reads on their cadence -- the freeze's own 1-in-16 stagger puts the
-        // memo's full-path frame one residue off the cadence, so without this they would never fire again.
-        _alphaKnown[i] = true;
-        _frameSeq = audit; _gate[i].FrozenAt = audit - 1;
-        int a = 0;
-        bool audited = RouteMemo(i, null, ref a) == MemoAudit && a == 0;
-        check.Expect(audited, "a slot's colour frame does not re-derive it, so its cadenced reads never fire");
-        ok &= audited;
-        _frameSeq = replay; _gate[i].FrozenAt = replay - 1;
-        int b = 0;
-        bool replayed = RouteMemo(i, null, ref b) == MemoReplayed && b == 1;
-        check.Expect(replayed, "...and one frame off the cadence it is not replayed after all");
-        ok &= replayed;
-
-        _oTri[i] = triWas; _oGob[i] = gobWas; _oEntry[i] = entryWas; _gate[i].FrozenAt = frozenWas;
-        _gate[i].RecGen = recGenWas; _gate[i].RecEnroll = recEnrollWas; _gate[i].EnrollGen = enrollWas;
-        _gate[i].TexStale = staleWas; _gate[i].OccFade = occWas; _gate[i].OccHeld = heldWas; _oCls[i] = clsWas;
-        _alphaKnown[i] = knownWas; _routeMemoOn = memoWas; _passFrustumOk = frustumWas;
-        _frameSeq = seqWas;
-        PartTable._pEnt[e].Part = partWas; PartTable._pEnt[e].State = stateWas;
-        _routeMemoed = memoedWas; _routeAudited = auditedWas;
-        return ok;
     }
 
     /// <summary>S1-6d, off-device: one cycle of <see cref="AuditSlice"/> visits every index of the table exactly
@@ -1324,7 +1081,6 @@ public sealed unsafe partial class AlloyRenderer
         for (int k = 0; k < AlloyClasses.Count; k++) { _visStart[k] = 0; _visEnd[k] = 0; }
         _visIndexGen++;
 
-        check.Expect(RouteMemoSelfCheck(check), "the route memo replays a verdict it should have re-derived");
         check.Expect(TrimSelfCheck(check), "the visible-set trim would hide geometry from a pass");
 
         // BW7: a row grown past its stride costs cache lines, not correctness, so it is SAID loudly and does

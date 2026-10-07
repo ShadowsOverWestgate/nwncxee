@@ -42,25 +42,18 @@ internal static unsafe class TriggerHighlight
 
     private static readonly float[] _stage = new float[Vec4s * 4];
     private static int _count, _points;
-    private static EngineList _bucket;
+    /// <summary>Enrolments that took at least one trigger (a non-zero highlight alpha), and draws that drew one,
+    /// for the DB period line.</summary>
+    internal static long Enrolled, Drawn;
     private static uint _prog, _buf;
     private static int _locCount, _locInvVp, _locDepth;
     private static bool _failed, _logged;
     private static ExtenderLog? _log;
 
-    internal static void Attach(ExtenderLog log)
-    {
-        _log = log;
-        // CX-104: kept resolved for the validator and for the /buckets triggers 0 A/B only. The population
-        // comes from SceneParts, so a bucket that does not resolve is no longer a reason to lose the feature.
-        _bucket = new EngineList(Native.Sym(SymbolMap.TriggerBucket));
-        if (_bucket.IsNull)
-            log.Info($"TriggerHighlight: {SymbolMap.TriggerBucket} did not resolve -- the engine-list A/B and "
-                   + "the validator are unavailable; the owned trigger registry is unaffected");
-    }
+    internal static void Attach(ExtenderLog log) => _log = log;
 
     /// <summary>Once per world frame, in ENGINE context and BEFORE the frame anchor: snapshot the highlighted
-    /// triggers. CX-104: the population is the AREA's triggers (<see cref="SceneParts.Triggers"/>) and not the
+    /// triggers. The population is the AREA's triggers (<see cref="Db.DbTriggers.Live"/>) and not the
     /// frame's <c>triggerbucket</c>, with NO in-view test of its own -- deliberately. This pass is a
     /// depth-reconstructed fullscreen decal, so a trigger whose prism covers no visible pixel contributes
     /// nothing and culling it saves one header in an SSBO; and the alpha filter below already narrows the
@@ -70,19 +63,13 @@ internal static unsafe class TriggerHighlight
     {
         _count = 0; _points = 0;
         if (_failed) return;
-        bool own = Buckets.Triggers.V && SceneParts.Ready;
-        if (!own && _bucket.IsNull) return;
-        ReadOnlySpan<IntPtr> triggers = SceneParts.Triggers;
-        int n = own ? triggers.Length : _bucket.Count;
-        if (own && !_bucket.IsNull)
-        {
-            if (n == 0) SceneParts.WarnEmpty(BucketValidator.KindTrigger, 0, _bucket.Count);
-            if (Buckets.Validate.V) BucketValidator.Compare(BucketValidator.KindTrigger, triggers, _bucket);
-        }
+        // No scene BSP and no bucket: the live triggers are DbTriggers' own list.
+        ReadOnlySpan<IntPtr> triggers = Db.DbTriggers.Live;
+        int n = triggers.Length;
         fixed (float* s = _stage)
             for (int i = 0; i < n && _count < MaxTriggers; i++)
             {
-                var t = new PartTrigger(own ? triggers[i] : _bucket[i]);
+                var t = new PartTrigger(triggers[i]);
                 if (t.IsNull || t.Highlighted == 0 || t.Half == 0) continue;
                 float alpha = t.HighlightColour[3];
                 if (!(alpha > 0f)) continue;
@@ -107,6 +94,7 @@ internal static unsafe class TriggerHighlight
                 _points += np;
                 _count++;
             }
+        if (_count > 0) Enrolled++;
     }
 
     /// <summary>The pass: one fullscreen triangle over the finished display-space frame, alpha-blended
@@ -131,6 +119,7 @@ internal static unsafe class TriggerHighlight
                       blendSrc: AlloyRenderer.GlSrcAlpha, blendDst: AlloyRenderer.GlOneMinusSrcAlpha).Apply();
         Gl.BindVertexArray(Vao());
         Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
+        Drawn++;
         Gl.BindVertexArray(0);
         Gl.Disable(Gl.BLEND);
         Gl.Enable(Gl.DEPTH_TEST);

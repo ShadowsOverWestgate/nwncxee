@@ -357,7 +357,7 @@ public sealed unsafe partial class CasterPass
         {
             const int movers = DynSpheres + 6;
             const float big = 12f;   // the one mover the tightness bound below is measured against
-            float* box = stackalloc float[DynSpheres * 6];
+            float* box = stackalloc float[DynSpheres * MoverBoxF];
             float* mv = stackalloc float[movers * 4];
             for (int i = 0; i < movers; i++)
             {   // a ring of creatures round the light, and a 12 m mover among them
@@ -381,7 +381,16 @@ public sealed unsafe partial class CasterPass
             }
             // ...and the fold is a fold, not a union: no sphere outgrows the 12 m mover's own (a fold into one box
             // reads 41,5 m here, a single sphere per slot 40)
-            for (int s = 0; s < DynSpheres && held; s++) held = CubeDynSphere[s * 4 + 3] <= big * MathF.Sqrt(3f) * 1.001f;
+            for (int s = 0; s < DynSpheres && held; s++) held = CubeDynSphere[s * 4 + 3] <= big * MathF.Sqrt(3f) * 1.001f + HotPad(40f);
+            // a lone mover publishes its own sphere, not its box's corner sphere
+            n = AddMoverBox(box, 0, 3f, 4f, 1f, 0.5f);
+            WriteDynSpheres(0, n, box, Vector3.Zero, 40f);
+            held &= MathF.Abs(CubeDynSphere[3] - 0.5f - HotPad(MathF.Sqrt(26f))) < 1e-5f && CubeDynSphere[4 + 3] < 0f;
+            // the pad is the shadow read's own reach: an angle, so a mover twice as far from its light gets twice the share
+            held &= MathF.Abs(HotPad(10f) - HotPad(0f) - 2f * (HotPad(5f) - HotPad(0f))) < 1e-5f && HotPad(0f) > 0f
+                    && ShaderSource.Get("cx_localshadow.glsl").Contains("const float CX_LOCAL_NORMAL_OFFSET = 1.0;")
+                    && ShaderSource.Get("cx_localshadow.glsl").Contains("const float CX_LOCAL_SLOPE_OFFSET = 0.75;")
+                    && ShaderSource.Get("cx_localshadow.glsl").Contains("const float CX_LOCAL_SLOPE_MAX = 2.0;");
             WriteDynSpheres(0, 0, box, Vector3.Zero, 40f);
             if (!held) { ok = false; log.Info("CasterPass.SelfCheck FAIL: a mover falls outside every hot-path sphere, or the fold swallows the square"); }
         }

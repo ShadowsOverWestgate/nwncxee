@@ -241,7 +241,7 @@ internal static unsafe partial class LightmapBake
             Gl.ActiveTexture(Gl.TEXTURE0);
         }
         Gl.Uniform1i(locPages, live ? _layers : 0);
-        if (locMovers >= 0) Gl.Uniform1i(locMovers, Lightmap.Movers.V ? 1 : 0);
+        if (locMovers >= 0) Gl.Uniform1i(locMovers, !Lightmap.Movers.V ? 0 : Lightmap.MoverTaps.V ? 1 : 2);
     }
 
     /// <summary>The staging loop's one call per charted draw: a slot the bake has not seen enrols -- its key
@@ -301,6 +301,11 @@ internal static unsafe partial class LightmapBake
     }
 
     /// <summary>A slot was vacated (or the table wiped): its record reads unbaked from the next upload.</summary>
+    /// <summary>CX-120 diagnostic: does this slot have a baked lightmap record? A class-1 part with none is
+    /// lit by nothing if the live loop also passes it over, which is what a black tile looks like.</summary>
+    internal static bool HasRecordForSelfCheck(int i)
+        => (uint)i < (uint)_slotRect.Length && _rec[i * RecFloats] >= 0f;
+
     internal static void Vacate(int i)
     {
         if ((uint)i >= (uint)_slotRect.Length) return;

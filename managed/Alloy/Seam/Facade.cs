@@ -1,0 +1,421 @@
+using System;
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using CX.Alloy.Db;
+using CX.Framework;
+
+namespace CX.Alloy.Seam;
+
+/// <summary>Which engine class a facade's shell mirrors.</summary>
+public enum FacadeKind : byte { Object, String, Scene, Camera }
+
+/// <summary>CX-120 / ADR 0028 section 2: the native block the game layer holds for a <see cref="SceneDb"/> record.
+/// A LAYOUT-COMPATIBLE SHELL, not a bare vtable: the game writes the SafePointer back-reference list at +0x08,
+/// reads <c>Gob</c> +0x24/+0x88/+0x90/+0xa8/+0xb4/+0x450/+0x490, reaches the <c>CAurString</c> sub-object at
+/// +0x4c0 and the <c>Camera</c>'s <c>CAurObject</c> at +8 by literal offsets, and reads <c>Scene</c>
+/// +0x130/+0x138/+0x168/+0x1b8 (CX-182). The shell keeps exactly those
+/// fields current; every vtable slot resolves the record's <see cref="DbId"/> and works on columns.</summary>
+public static unsafe partial class Facade
+{
+    internal static ExtenderLog? Log;
+
+    /// <summary>Retires that found the shell already retired -- the base half of a destructor chain. Counted
+    /// so a genuine double destroy is still visible on the period line, but not logged as a fault.</summary>
+    public static long Redundant { get; private set; }
+
+    /// <summary>Slot calls that arrived on a retired shell, and on a pointer that was never a facade. Both are
+    /// counted and both are named once per slot in cx.log: a use-after-free in game code is a line, not a
+    /// crash, for as long as the quarantine holds the block.</summary>
+    public static long PoisonCalls { get; private set; }
+
+    /// <summary>Destructor slots that found the shell already retired by the derived destructor.</summary>
+    public static long BaseDestructors { get; private set; }
+
+    /// <summary>Count a base-destructor call on a retired shell.</summary>
+    internal static void NoteBaseDestructor() => BaseDestructors++;
+
+    /// <summary>Set while the boot self-check is deliberately firing the refusal paths, so its lines cannot
+    /// be read as findings in a live log. Off everywhere else.</summary>
+    internal static bool InSelfCheck;
+    public static long AlienCalls { get; private set; }
+
+    /// <summary>The shell behind any interface pointer the game holds -- a primary pointer, a camera's
+    /// <c>CAurObject</c> at +8 or a text shell's <c>CAurString</c> at +0x4c0 -- or 0 when
+    /// <paramref name="self"/> does not carry one of our vtables. The adjustment is the Itanium offset-to-top
+    /// word written ahead of every table we build, which is why no slot needs a this-adjusting thunk.
+    /// <para>The test is EXACT, not a range: the vptr has to be one of the address points
+    /// <see cref="Build"/> recorded (<see cref="PointBit"/>). A foreign pointer whose first word merely
+    /// landed inside the block would otherwise be adjusted by whatever the word before it held and handed on
+    /// as a shell -- a wild read in the path whose job is to refuse it (review #4).</para></summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static nint Shell(nint self)
+    {
+        if (self == 0) return 0;
+        nint vptr = *(nint*)self;
+        nint off = vptr - _tableBase;
+        if ((nuint)off >= (nuint)_tableBytes || (off & 7) != 0) return 0;
+        int w = (int)(off >> 3);
+        if ((_pointBits[w >> 6] & (1UL << (w & 63))) == 0) return 0;
+        return self + ((nint*)vptr)[-2];
+    }
+
+    /// <summary>Resolve <paramref name="self"/> to its record for logical slot <paramref name="logical"/>, or
+    /// a null <see cref="DbId"/> on a retired or alien pointer -- the POISON path, which names the slot once
+    /// and counts the call. A slot that gets a null handle returns zero and touches nothing.</summary>
+    public static DbId Resolve(nint self, int logical)
+    {
+        // A NULL CAurObject*/CAurScene* is a legal argument everywhere in this API -- "no object" -- and the
+        // engine's own slots test for it rather than refusing. Counting it as a foreign pointer buried the
+        // real ones (3123 "alien" calls in a ladder run, essentially all of them null).
+        if (self == 0) return default;
+        nint shell = Shell(self);
+        if (shell == 0) { Alien(self, logical); return default; }
+        if (!SeamShell.Known(shell, out byte state, out DbId id)) { Alien(self, logical); return default; }
+        if (state != SeamShell.StateLive) { Poison(shell, logical); return default; }
+        return id;
+    }
+
+    /// <summary>The record behind a <c>CAurObject*</c> (a <c>Gob</c>-shaped shell, or a camera's +8 sub-object),
+    /// validated against the objects table.</summary>
+    public static DbId Object(nint self, int logical)
+        => GobOf(self, logical, out DbId id, out _) ? id : default;
+
+    /// <summary>The record AND the <c>Gob</c>-shaped block behind a <c>CAurObject*</c> -- the pair every
+    /// object slot needs, because a <c>Camera</c> is the one shell where neither is the block
+    /// <see cref="Shell"/> normalises to.
+    /// <para>A camera's <c>CAurObject</c> is its <c>+8</c> sub-object (<c>Camera : CAurCamera, Gob</c>), so
+    /// its record is <see cref="SceneDb.CamObj"/> and its <c>Gob</c> words start
+    /// <see cref="SeamLayout.CameraGobSub"/> on from the base -- while the one handle in the shell header is
+    /// the CAMERA row's. Resolving it as an object handle instead read, and WROTE, whatever object record
+    /// happened to sit at the camera's (index, generation): with the chase behaviour's owner being exactly
+    /// that sub-object, the camera's solved eye landed in a foreign record (CX-120).</para></summary>
+    public static bool GobOf(nint self, int logical, out DbId id, out nint gob)
+    {
+        id = default;
+        gob = 0;
+        if (self == 0) return false;
+        nint shell = Shell(self);
+        if (shell == 0) { Alien(self, logical); return false; }
+        if (!SeamShell.Known(shell, out byte state, out DbId raw)) { Alien(self, logical); return false; }
+        if (state != SeamShell.StateLive) { Poison(shell, logical); return false; }
+        if ((FacadeKind)SeamShell.Head(shell)->Kind == FacadeKind.Camera)
+        {
+            gob = shell + SeamLayout.CameraGobSub;
+            id = SceneDb.Cameras.Valid(raw) ? SceneDb.CamObj[raw.Index] : default;
+        }
+        else
+        {
+            gob = shell;
+            id = raw;
+        }
+        if (!SceneDb.Objects.Valid(id)) { Stale(self, logical); return false; }
+        return true;
+    }
+
+    /// <summary>The <c>Gob</c>-shaped block behind a <c>CAurObject*</c>, for the slot bodies that only need
+    /// the mirrored words. Identity for every kind but a camera, whose <c>Gob</c> half is its <c>+8</c>
+    /// sub-object (<see cref="GobOf"/>).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static nint GobBlock(nint self)
+    {
+        nint shell = Shell(self);
+        if (shell == 0) return 0;
+        return (FacadeKind)SeamShell.Head(shell)->Kind == FacadeKind.Camera
+             ? shell + SeamLayout.CameraGobSub : shell;
+    }
+
+    /// <summary>The record behind a <c>CAurScene*</c>.</summary>
+    public static DbId Scene(nint self, int logical)
+    {
+        DbId id = Resolve(self, logical);
+        if (id.IsNull) return default;
+        if (!SceneDb.Scenes.Valid(id)) { Stale(self, logical); return default; }
+        return id;
+    }
+
+    /// <summary>The record behind a <c>CAurCamera*</c>.</summary>
+    public static DbId Camera(nint self, int logical)
+    {
+        DbId id = Resolve(self, logical);
+        if (id.IsNull) return default;
+        if (!SceneDb.Cameras.Valid(id)) { Stale(self, logical); return default; }
+        return id;
+    }
+
+    /// <summary>The record behind a <c>CAurString*</c> (a text shell's +0x4c0 sub-object). Text objects are
+    /// object records of <see cref="ObjKind.Text"/>, so this is the objects table too.</summary>
+    public static DbId StringRecord(nint self, int logical) => Object(self, logical);
+
+    /// <inheritdoc cref="Object(nint, int)"/>
+    public static DbId ObjectId(nint self) => Object(self, SeamSlot.Unnamed);
+    /// <inheritdoc cref="Scene(nint, int)"/>
+    public static DbId SceneId(nint self) => Scene(self, SeamSlot.Unnamed);
+    /// <inheritdoc cref="Camera(nint, int)"/>
+    public static DbId CameraId(nint self) => Camera(self, SeamSlot.Unnamed);
+    /// <inheritdoc cref="StringRecord(nint, int)"/>
+    public static DbId StringId(nint self) => StringRecord(self, SeamSlot.Unnamed);
+
+    /// <summary>The shell the game holds for record <paramref name="id"/>, or 0.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static nint ObjectShell(DbId id) => SceneDb.Objects.Valid(id) ? SceneDb.ObjFacade[id.Index] : 0;
+
+    /// <summary>Mint the shell for record <paramref name="id"/>; 0 when it cannot (logged, counted).</summary>
+    public static nint Mint(FacadeKind kind, DbId id)
+    {
+        if (!_built) { Log?.Always("seam: Mint before the vtables were built -- refused"); return 0; }
+        nint shell = SeamShell.Alloc(kind, id);
+        if (shell == 0) { Log?.Always($"seam: out of memory minting a {kind} facade -- refused"); return 0; }
+        switch (kind)
+        {
+            case FacadeKind.Object:
+            case FacadeKind.String:
+                if (SceneDb.Objects.Valid(id)) SceneDb.ObjFacade[id.Index] = shell;
+                break;
+            case FacadeKind.Scene:
+                if (SceneDb.Scenes.Valid(id)) SceneDb.SceneFacade[id.Index] = shell;
+                break;
+            case FacadeKind.Camera:
+                if (SceneDb.Cameras.Valid(id)) SceneDb.CamFacade[id.Index] = shell;
+                break;
+        }
+        return shell;
+    }
+
+    /// <summary>The game destroyed the object: null its SafePointers, mark the shell retired and quarantine
+    /// it. The record itself is freed by the caller (the destructor slot or <c>RemoveAuroraObject</c>), because
+    /// what dies with it differs per kind.</summary>
+    public static void Retire(nint self)
+    {
+        nint shell = Shell(self);
+        if (shell == 0) { Alien(self, SeamSlot.Unnamed); return; }
+        if (!SeamShell.Known(shell, out byte state, out DbId id)) { Alien(self, SeamSlot.Unnamed); return; }
+        // A second retire is NOT a use-after-free. A C++ destructor chain runs the derived destructor and
+        // then the base one, and CX models those as separate vtable slots on the same block -- a StringGob
+        // reaches both StringSlots' and the Gob table's, a Camera both CameraSlots' and the Gob table's. So
+        // the second one is expected and silent; only a SLOT call on a retired shell is the real thing.
+        if (state != SeamShell.StateLive) { Redundant++; return; }
+        FacadeKind kind = (FacadeKind)SeamShell.Head(shell)->Kind;
+        NullSafePointers(shell, kind);
+        // The vptrs go to the poison twins BEFORE the record is released. Every slot is then a counted
+        // refusal, including the ones that answer from the shell's own words and never resolve a handle --
+        // a use-after-free can no longer read stale data or, worse, WRITE into a block queued for reuse.
+        *(nint*)shell = Poison(SeamLayout.PrimaryTable(kind));
+        if (kind == FacadeKind.String) *(nint*)(shell + SeamLayout.StringGobString) = Poison(SeamTable.CAurString);
+        else if (kind == FacadeKind.Camera) *(nint*)(shell + SeamLayout.CameraGobSub) = Poison(SeamTable.CameraGob);
+        switch (kind)
+        {
+            case FacadeKind.Object:
+            case FacadeKind.String:
+                if (SceneDb.Objects.Valid(id)) SceneDb.ObjFacade[id.Index] = 0;
+                break;
+            case FacadeKind.Scene:
+                if (SceneDb.Scenes.Valid(id)) SceneDb.SceneFacade[id.Index] = 0;
+                break;
+            case FacadeKind.Camera:
+                if (SceneDb.Cameras.Valid(id))
+                {
+                    // ...and the +8 sub-object's forward pointer with it: it addresses the INTERIOR of this
+                    // same block, so leaving it set is a dangling shell for every reader of ObjFacade.
+                    DbId sub = SceneDb.CamObj[id.Index];
+                    if (SceneDb.Objects.Valid(sub)) SceneDb.ObjFacade[sub.Index] = 0;
+                    SceneDb.CamFacade[id.Index] = 0;
+                }
+                break;
+        }
+        SeamShell.Retire(shell);
+    }
+
+    /// <summary>What <c>SafePointerList&lt;CAurObject&gt;::~SafePointerList</c> @0x445470 does, and nothing
+    /// more: for each back-reference in the list at the shell's +0x08, zero the SafePointer's target word
+    /// (+0x00) and set its index (+0x08) to -1, then release the array. Every entry in the list points at THIS
+    /// object (<c>SafePointer::operator=</c> @0x477d70 appends <c>this</c> to the new target's list), so the
+    /// engine's swap-removal of each entry from its own target is removing what we are about to drop; an entry
+    /// pointing somewhere else is a seam bug and says so rather than being quietly skipped.</summary>
+    private static void NullSafePointers(nint shell, FacadeKind kind)
+    {
+        int at = SeamLayout.SafeListAt(kind);
+        nint arr = *(nint*)(shell + at);
+        int count = *(int*)(shell + at + 8);
+        if (arr != 0 && count > 0)
+        {
+            nint owner = kind == FacadeKind.Camera ? shell + SeamLayout.CameraGobSub : shell;
+            for (int i = 0; i < count; i++)
+            {
+                nint sp = ((nint*)arr)[i];
+                if (sp == 0) continue;
+                nint target = *(nint*)sp;
+                if (target != owner && target != 0)
+                {
+                    Log?.Always($"seam: SafePointer 0x{sp:x} in a facade's back-ref list targets 0x{target:x}, not 0x{owner:x} -- left alone");
+                    continue;
+                }
+                *(nint*)sp = 0;
+                *(int*)(sp + 8) = -1;
+            }
+        }
+        *(nint*)(shell + at) = 0;
+        *(int*)(shell + at + 8) = 0;
+        *(int*)(shell + at + 12) = 0;
+        if (arr == 0) return;
+        // The array is the GAME's: the shell hands out capacity 0 so the first Add is the engine's own
+        // realloc(NULL), and every later one comes from the same heap. nwmain.exe statically links its CRT and
+        // exports no free, so on Windows the block is counted and left; on Linux both sides are glibc.
+        if (OperatingSystem.IsWindows()) SeamShell.NoteForeignArray();
+        else System.Runtime.InteropServices.NativeMemory.Free((void*)arr);
+    }
+
+    // ---- the mirrored words every setter keeps current ----
+
+    /// <summary>Write the object's position and orientation into both the columns and the shell words the game
+    /// reads without a vtable (<c>Gob</c> +0xa8 / +0xb4), and mark the record dirty. The one place that does
+    /// both, so a setter cannot keep half of it.
+    /// <para><b>The orientation goes in the ENGINE's order, w first</b> (<see cref="EQuat"/>, and the
+    /// <c>0x3f800000</c> <c>Gob::Gob</c> leaves at +0xb4). These two words were <c>(x,y,z,w)</c>, which
+    /// round-tripped inside CX and so looked right -- until something ELSE wrote that memory. Two things do:
+    /// <c>SeedShell</c>, and the seam's own <c>Part::GetWorld</c>, which the game calls by vtable from
+    /// <c>GuiAurAttachToObject</c> and from every cross-scene attach's <c>Control</c>. Read back swizzled, the
+    /// identity <c>(1,0,0,0)</c> became <c>Quaternion(x:1)</c> -- a 180 degree turn about X -- so every main-menu
+    /// control was mirrored about its own origin: upside-down glyphs in right-way-up lines, and panel art
+    /// turned through the GUI camera's near plane.</para></summary>
+    public static void SetXform(DbId id, nint shell, Vector3 pos, Quaternion rot)
+    {
+        SceneDb.ObjPos[id.Index] = pos;
+        SceneDb.ObjRot[id.Index] = rot;
+        if (shell != 0)
+        {
+            float* p = (float*)(shell + SeamLayout.GobPos);
+            p[0] = pos.X; p[1] = pos.Y; p[2] = pos.Z;
+            float* q = (float*)(shell + SeamLayout.GobRot);
+            q[0] = rot.W; q[1] = rot.X; q[2] = rot.Y; q[3] = rot.Z;
+        }
+        SceneDb.Touch(id, Dirty.Xform);
+    }
+
+    /// <summary>The position the shell carries -- what a <c>GetPosition</c> slot answers, and what the game's
+    /// devirtualisation guards would read inline if they took the fast path.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Vector3 ShellPos(nint shell)
+    {
+        float* p = (float*)(shell + SeamLayout.GobPos);
+        return new Vector3(p[0], p[1], p[2]);
+    }
+
+    /// <inheritdoc cref="SetXform"/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Quaternion ShellRot(nint shell)
+    {
+        float* q = (float*)(shell + SeamLayout.GobRot);
+        return new Quaternion(q[1], q[2], q[3], q[0]);
+    }
+
+    /// <summary>Copy <paramref name="name"/> into the shell's inline name array at +0x24, truncated to the
+    /// room <c>Gob::~Gob</c>'s 0x100-bounded copy proves is there. The game reads it through
+    /// <c>Gob::GetName</c>, which returns the ADDRESS of this array, so it has to be storage in the shell and
+    /// not a managed string.</summary>
+    public static void SetName(nint shell, ReadOnlySpan<char> name)
+    {
+        byte* dst = (byte*)(shell + SeamLayout.GobName);
+        int n = 0;
+        for (int i = 0; i < name.Length && n < SeamLayout.GobNameMax - 1; i++)
+        {
+            char c = name[i];
+            dst[n++] = c < 0x80 ? (byte)c : (byte)'?';
+        }
+        dst[n] = 0;
+    }
+
+    /// <summary>Copy a NUL-terminated engine string into the shell's name array, byte for byte: no transcode,
+    /// because the engine's text is a single-byte codepage and this storage is handed straight back to it.</summary>
+    public static void SetName(nint shell, byte* name)
+    {
+        byte* dst = (byte*)(shell + SeamLayout.GobName);
+        int n = 0;
+        if (name != null)
+            while (n < SeamLayout.GobNameMax - 1 && name[n] != 0) { dst[n] = name[n]; n++; }
+        dst[n] = 0;
+    }
+
+    /// <summary>The shell's name as the game would read it.</summary>
+    public static string NameOf(nint shell)
+    {
+        byte* s = (byte*)(shell + SeamLayout.GobName);
+        int n = 0;
+        while (n < SeamLayout.GobNameMax && s[n] != 0) n++;
+        return System.Text.Encoding.ASCII.GetString(s, n);
+    }
+
+    /// <summary>The scene shell the game reads at <c>Gob</c> +0x88, kept current by every attach and detach.</summary>
+    public static void SetSceneWord(nint shell, nint sceneShell) => *(nint*)(shell + SeamLayout.GobScene) = sceneShell;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static nint SceneWord(nint shell) => *(nint*)(shell + SeamLayout.GobScene);
+
+    // ---- the refusal paths ----
+
+    private static void Poison(nint shell, int logical)
+    {
+        PoisonCalls++;
+        if (InSelfCheck)
+        {
+            if (SeamShell.FirstReport(shell, logical))
+                Log?.Always($"seam: [self-check, on purpose] {SeamVtables.Name(logical)} on a retired facade returned zero");
+            return;
+        }
+        // ATTRIBUTION, not theory: who destroyed this shell, and who is touching it now. Both ends come off
+        // the native stack; one line per distinct (deleter, toucher, slot) triple, however many calls follow.
+        int by = SeamShell.Head(shell)->RetiredBy;
+        int now = SeamCallers.Here();
+        long key = ((long)by << 40) ^ ((long)now << 16) ^ (uint)logical;
+        lock (_danglers)
+        {
+            if (!_danglers.Add(key)) return;
+        }
+        string deleter = SeamCallers.Name(by), toucher = SeamCallers.Name(now);
+        Log?.Always($"seam: game-side dangling call (vanilla bug, caught) -- {deleter} destroyed \"{NameOf(shell)}\", "
+                  + $"then {toucher} called {SeamVtables.Name(logical)} on it; returned zero. The shell is held "
+                  + $"poisoned for {SeamShell.QuarantineFrames} frames, so the call reads zero instead of another "
+                  + "object's memory. Further calls of this pair are counted, not logged.");
+    }
+
+    private static readonly System.Collections.Generic.HashSet<long> _danglers = new();
+
+    /// <summary>Distinct (deleter, toucher, slot) triples seen on the dangling path.</summary>
+    public static int DanglingPairs { get { lock (_danglers) return _danglers.Count; } }
+
+    /// <summary>A shell whose RECORD is gone -- a seam bug rather than a game-side one, so it is named -- but
+    /// named like <see cref="Alien"/>: on the powers of two, with the running count. One line per CALL was a
+    /// log flood and an interpolated string in a slot body (review #14).</summary>
+    private static void Stale(nint self, int logical)
+    {
+        PoisonCalls++;
+        StaleCalls++;
+        if ((StaleCalls & (StaleCalls - 1)) == 0)
+            Log?.Always($"seam: {SeamVtables.Name(logical)} on facade 0x{self:x} whose record is gone; "
+                      + $"returned zero ({StaleCalls} so far)");
+    }
+
+    /// <summary>Slot calls that reached a live shell whose record had already been freed.</summary>
+    public static long StaleCalls { get; private set; }
+
+    private static void Alien(nint self, int logical)
+    {
+        AlienCalls++;
+        if ((AlienCalls & (AlienCalls - 1)) == 0)
+            Log?.Always(InSelfCheck
+                ? "seam: [self-check, on purpose] a foreign pointer did not resolve to a facade"
+                : $"seam: {SeamVtables.Name(logical)} called on 0x{self:x}, which is not a CX facade; returned zero ({AlienCalls} so far)");
+    }
+
+    /// <summary>The seam's period line: shells, quarantine, and every refusal counted.</summary>
+    public static string Stats()
+        => $"shells live={SeamShell.Live} quarantined={SeamShell.Quarantined} alloc={SeamShell.Allocated} reuse={SeamShell.Reused}"
+         + $" poison={PoisonCalls} stale={StaleCalls} alien={AlienCalls} redundant-retire={Redundant} base-dtor={BaseDestructors} dangling-pairs={DanglingPairs} foreign-arrays={SeamShell.ForeignArraysLeaked}";
+}
+
+/// <summary>Logical slot ids a hand-written caller needs by name. Everything else is
+/// <c>SeamVtables.Logical(table, slot)</c> at registration time and a literal in the slot body.</summary>
+public static class SeamSlot
+{
+    /// <summary>For a resolution that is not a vtable slot at all (a hooked free function, a retire).</summary>
+    public const int Unnamed = -1;
+}

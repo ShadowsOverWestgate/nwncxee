@@ -1,5 +1,6 @@
 #ifndef CX_WX_EDGE
 #define CX_WX_EDGE
+#include "cx_wx_shape.glsl"
 // The SHELTER test: how open to the falling rain a point is. Composed after the sun-shadow library, whose
 // array carries the cover layer (CasterPass.CoverLayer), into every stage that wets a surface -- the lit
 // splice, the grass cards and the procedural blades -- so all three draw ONE boundary.
@@ -26,34 +27,14 @@ uniform vec4 uWxEdge;
 /// The ceiling the tap loop is written to; <c>uWxEdge.w</c> picks how many of them actually run, so the
 /// knob costs taps and not a recompile.
 const int CX_WX_EDGE_TAPS = 12;
-/// Metres of surface the compare forgives outright, before the slope term. The cover view's depth range
-/// is 3 x coverrange, so this is fractions of a depth unit -- it is written in metres because that is
-/// what it means.
-const float CX_WX_EDGE_BIAS_M = 0.12;
-/// ...plus the cover view's own depth epsilon, matching the hard compare in cx_wx_lib.
-const float CX_WX_EDGE_EPS = 0.0015;
-/// Blobs per metre in the world-space breakup. A real eave's wet line is ragged at about the scale of
-/// the tiles that shed onto it, not at the scale of the noise a shader usually reaches for.
-const float CX_WX_EDGE_FREQ = 2.2;
-/// Cells per metre the disk's rotation is hashed on. A rotation that is constant over the whole kernel
-/// leaves the tap count's own plateaus in the ramp -- the nine visible bands under an awning that sent
-/// the cover edge to a pre-filtered map in the first place. Hashing it per world CELL breaks them into a
-/// dither that is fixed in the world, so it reads as grain on the ground and never crawls with the
-/// camera; at roughly one cover texel a cell the cell itself is under the resolution being filtered.
-const float CX_WX_EDGE_CELL = 24.0;
-/// The golden angle: a Vogel disk stays evenly spread at any tap count, so dropping to four taps
-/// thins the disk instead of clustering it.
-const float CX_WX_EDGE_GOLD = 2.399963;
-
-float CxWxEdgeHash(vec2 p) { return fract(sin(dot(p, vec2(21.98, 78.233))) * 43758.5453); }
-
-float CxWxEdgeNoise(vec2 p)
-{
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(CxWxEdgeHash(i), CxWxEdgeHash(i + vec2(1.0, 0.0)), f.x),
-               mix(CxWxEdgeHash(i + vec2(0.0, 1.0)), CxWxEdgeHash(i + vec2(1.0, 1.0)), f.x), f.y);
-}
+/// The shelter cache (Weather.Shelter): per cover texel, the shelter test already run for the surface the
+/// rain lands on there (x), and the snow drift banked against higher ground beside it (y, its uv direction
+/// in zw). Baked once per cover bake; uWxCache = 1 while it belongs to the bound cover view.
+layout(binding = 23) uniform sampler2D uWxShelter;
+uniform float uWxCache;
+/// Up-facing enough to read the cache: the bake treats every top surface as level, so a slope keeps the
+/// live disk and its rise-over-the-kernel lift.
+const float CX_WX_TOP_UP = 0.9;
 
 /// How open to the rain this point is: 1 out in the open, 0 well under a roof, a ragged world-space ramp
 /// between. A Vogel disk of hardware depth compares over a radius in METRES, so the fraction of the
@@ -84,12 +65,41 @@ float CxWetOpen(vec3 worldPos, vec3 N, float fallback)
         open += texture(uSunShadow, vec4(uv + sqrt(t) * r * vec2(cos(a), sin(a)), uCoverLayer.x, ref));
     }
     open /= float(taps);
-    // ...and the boundary is not a contour of the roof. Splash-back off the ground, a gust and a gutter's
-    // drip make it ragged, and a straight line where a wall meets the floor is the one thing that reads as
-    // a shader. The noise moves the THRESHOLD, so the ramp keeps its width and only its line wanders --
-    // and it is windowed by 4 open (1 - open), which is 1 across the transition and exactly 0 at both
-    // ends, so open ground stays fully wet and deep shelter fully dry however far the breakup is turned up.
-    float n = CxWxEdgeNoise(worldPos.xy * CX_WX_EDGE_FREQ) - 0.5;
-    return clamp(smoothstep(0.15, 0.85, open + n * uWxEdge.z * 4.0 * open * (1.0 - open)), 0.0, 1.0);
+    return CxWetOpenShape(open, worldPos.xy, uWxEdge.z);
+}
+
+/// Is this point the surface the rain lands on -- nothing in the cover view above it, by the cover map's
+/// own hardware compare? Then the cache's answer for that surface is its answer, at the uv returned. A
+/// point under a roof, beside one (the compare's bilinear footprint straddles the edge) or outside the
+/// window is not, and runs the live test.
+bool CxWxTop(vec3 worldPos, out vec2 uv)
+{
+    uv = vec2(0.0);
+    if (uWxCache < 0.5 || uCoverVp[3][3] == 0.0) return false;
+    vec4 clip = uCoverVp * vec4(worldPos + vec3(0.0, 0.0, CX_WX_EDGE_BIAS_M), 1.0);
+    vec3 ndc = clip.xyz / clip.w;
+    if (any(greaterThan(abs(ndc.xy), vec2(1.0))) || abs(ndc.z) > 1.0) return false;
+    uv = ndc.xy * 0.5 + 0.5;
+    return texture(uSunShadow, vec4(uv, uCoverLayer.x, ndc.z * 0.5 + 0.5 - CX_WX_EDGE_EPS)) >= 0.999;
+}
+
+/// <c>CxWetOpen</c> through the cache: one compare and one fetch for a level surface the rain
+/// lands on, the live disk for everything else.
+float CxWetOpenFast(vec3 worldPos, vec3 N, float fallback)
+{
+    vec2 uv;
+    if (N.z >= CX_WX_TOP_UP && CxWxTop(worldPos, uv)) return textureLod(uWxShelter, uv, 0.0).x;
+    return CxWetOpen(worldPos, N, fallback);
+}
+
+/// The snow drift the cache baked under this point: x the height (1 at the wall), yz the cover-uv direction
+/// toward the higher ground. Zero with no cache: no drift is the safe side.
+vec3 CxWxDriftAt(vec3 worldPos)
+{
+    if (uWxCache < 0.5 || uCoverVp[3][3] == 0.0) return vec3(0.0);
+    vec4 clip = uCoverVp * vec4(worldPos, 1.0);
+    vec3 ndc = clip.xyz / clip.w;
+    if (any(greaterThan(abs(ndc.xy), vec2(1.0)))) return vec3(0.0);
+    return textureLod(uWxShelter, ndc.xy * 0.5 + 0.5, 0.0).yzw;
 }
 #endif

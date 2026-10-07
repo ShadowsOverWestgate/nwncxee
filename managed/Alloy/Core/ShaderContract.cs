@@ -459,15 +459,24 @@ internal static class ShaderContract
                   && OwnedLitFsMain.Contains("frag = vec4(lit, 1.0 / max(distance(vWorld, uEyePos), 1e-3));")
                   // ...and CX-51's record: the weight the probe term took is the one Ssr swaps the screen in
                   // under -- R4 widened it to the stronger of the base weight and the water film's, at the
-                  // roughness the film's own lobe has where it dominates (both collapse to the base dry)
-                  && OwnedLitFsMain.Contains("CxReflOut(N, mix(rough, cxCoatRough, wxFilm), max(reflW, reflFilm)")
+                  // roughness the film's own lobe has where it dominates (both collapse to the base dry), less the
+                  // lit legacy env share, which is not the probe and has no screen to swap in
+                  && OwnedLitFsMain.Contains("CxReflOut(N, mix(rough, cxCoatRough, wxFilm), max(reflW * (1.0 - envMix), reflFilm)")
                   // #124/#132: the dissolve and the fog, and the order they apply in. Both are LINEAR now --
                   // #124 welded the engine's keyhole-then-encode-then-fog order and #132 unwelded it, so the
                   // whole tail is one linear expression and the encode is the resolve's. Swap the two and
                   // the world still renders, just with fog that dissolves and a border that does not darken;
                   // nothing says so in the log.
                   && KeyFogFs.Contains("float CxKeyhole(") && KeyFogFs.Contains("vec3 CxFog(")
-                  && OwnedLitFsMain.Contains("CxFog(lit * kh, vWorld, vDepth)")
+                  // CX-120: the lit stage fogs through the REVEAL form, whose fourth argument is the per-draw
+                  // fog-of-war term in the record's last spare lane. Pinned together: a stage that fogged
+                  // without it would draw every unexplored tile fully lit (vanilla hides them), and a lane
+                  // index that drifted from the C# stride would fog by whatever the neighbouring field held.
+                  && OwnedLitFsMain.Contains("CxFogReveal(lit * kh, vWorld, vDepth, d.ext2.w)")
+                  // ...and the lane is HIDDEN, not reveal: the stage must early-out on <= 0, which is what
+                  // makes an unwritten record (every engine-mode record) fog exactly as it always did.
+                  && KeyFogFs.Contains("if (hidden <= 0.0) return CxFogMix(")
+                  && KeyFogFs.Contains("float CxFogRevealFactor(") && AlloyRenderer.RevealFloat == AlloyRenderer.ExtFloat + 11
                   // #341: the fog target is direction-dependent, so the WORLD position is an argument and
                   // not a convenience -- a stage that passed the wrong point fogs toward the sky over
                   // somewhere else. And the ramp stays the area author's: the factor is still the engine's
@@ -639,7 +648,7 @@ internal static class ShaderContract
                   // FrameSnapshot.Usable, so any check of the two against each other is a tautology -- it would
                   // read as cover and catch nothing. What actually governs the water draw is _waterArmed
                   // (Usable && lightingOn && the program), which is structural and not assertable here.
-                  && AlloyCensus.OwnableBucket(SceneWalk.SampleBucket)
+                  && AlloyCensus.OwnableBucket(AlloyCensus.LateBucket)
                   // ...and the list still REFUSES: bucket 15 is the beams', drawn by Beams from its own
                   // capture and never from the part table, so a predicate that said yes to everything would
                   // be caught here rather than by a doubled draw.

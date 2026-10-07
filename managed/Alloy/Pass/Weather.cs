@@ -60,6 +60,7 @@ internal static unsafe partial class Weather
         G.Status = Describe;
         DeclareKnobs();
         DeclareCoverKnobs();
+        DeclareShelterKnobs();
         DeclareSurfaceKnobs();
         DeclareSplashKnobs();
         DeclareMapKnobs();

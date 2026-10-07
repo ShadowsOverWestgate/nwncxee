@@ -190,6 +190,25 @@ internal static unsafe class TexScan
         if (blocks > 0) { r.Mean = new Vector3(rs / (510f * blocks), gs / (510f * blocks), bs / (510f * blocks)); r.MeanOk = true; }
     }
 
+    /// <summary>The mean colour alone of a decoded raster (1, 3 or 4 bytes per texel), 0..1 in the image's
+    /// own encoding -- the value <see cref="Result.Mean"/> carries, for a texture the registry decoded.</summary>
+    internal static bool MeanOfRaster(byte* px, int w, int h, int bpp, out Vector3 mean)
+    {
+        Result r = default;
+        ScanRaw(px, (long)w * bpp, bpp, 0, 0, w, h, 0, ref r);
+        mean = r.Mean;
+        return r.MeanOk;
+    }
+
+    /// <summary>...and of a BC1/BC3 top level, from the block endpoints as <see cref="ScanDxt"/> takes it.</summary>
+    internal static bool MeanOfDxt(byte* data, int w, int h, bool dxt5, out Vector3 mean)
+    {
+        Result r = default;
+        ScanDxt(data, w, h, dxt5, 0, ref r);
+        mean = r.Mean;
+        return r.MeanOk;
+    }
+
     /// <summary>Alpha at or above this counts as opaque for <see cref="Result.Graded"/>.</summary>
     private const int OpaqueAlpha = 248;
 

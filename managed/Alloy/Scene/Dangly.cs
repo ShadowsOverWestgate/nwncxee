@@ -23,7 +23,6 @@ internal static class Dangly
             masterHelp: "Cloaks, hair, banners and other swaying parts move with gravity and wind instead of the stock spring. Off, the stock sway runs.",
             parent: "alloy.enabled");
         Enabled = G.Master!;
-        G.Status = DanglyPhysics.Describe;
 
         G.Section("Forces");
         Gravity = G.Slider("gravity", "Gravity", 0f, 20f, 0.5f, 3f,

@@ -13,7 +13,7 @@ namespace CX.Alloy;
 /// count rule will not do. A running byte tally is settled by one directory listing on first use and
 /// bumped per write; over budget, one more listing sorts by last write and deletes oldest-first. A hit
 /// touches the file's write time, so a chart read every session never ages out under one that is not.</para>
-/// <para>Worker thread only: the three refusals (version, key, truncation) are the reason the self-check
+/// <para>Worker threads only (several -- the tally takes <c>_diskGate</c>): the three refusals (version, key, truncation) are the reason the self-check
 /// round-trips the pure pair rather than the disk.</para></summary>
 internal static partial class MeshChart
 {
@@ -24,6 +24,8 @@ internal static partial class MeshChart
     private const int HeaderBytes = 4 + 4 + 8 + 4 + 4 + 4 + 4 + 2 + 2;
 
     private static long _diskBytes = -1;
+    /// <summary>The byte tally and the prune are shared by every <c>cx-chart</c> worker.</summary>
+    private static readonly object _diskGate = new();
 
     internal static string LedgerDir() => Path.Combine(Native.UserDirectory() ?? Native.DefaultUserDirectory(), "cx-charts");
     private static string LedgerFile(ulong key) => Path.Combine(LedgerDir(), $"{key:x16}.bin");
@@ -88,7 +90,7 @@ internal static partial class MeshChart
             if (why == null) { File.SetLastWriteTimeUtc(f, DateTime.UtcNow); return true; }
             j.Stale = true;   // counted in Pump: the tallies are the render thread's
             File.Delete(f);
-            _diskBytes = -1;
+            lock (_diskGate) _diskBytes = -1;
             return false;
         }
         catch (Exception e) { _log?.Info($"MeshChart: the chart cache could not be read -- {e.Message}"); return false; }
@@ -100,12 +102,15 @@ internal static partial class MeshChart
         {
             string dir = LedgerDir();
             Directory.CreateDirectory(dir);
-            if (_diskBytes < 0) _diskBytes = Tally(dir);
             byte[] blob = Serialize(j);
             File.WriteAllBytes(LedgerFile(j.Content), blob);
-            _diskBytes += blob.Length;
-            long budget = (long)Lightmap.Disk.V << 20;
-            if (_diskBytes > budget) _diskBytes = Prune(dir, budget);
+            lock (_diskGate)
+            {
+                if (_diskBytes < 0) _diskBytes = Tally(dir);
+                else _diskBytes += blob.Length;
+                long budget = (long)Lightmap.Disk.V << 20;
+                if (_diskBytes > budget) _diskBytes = Prune(dir, budget);
+            }
         }
         catch (Exception e) { _log?.Info($"MeshChart: the chart cache could not be written -- {e.Message}"); }
     }

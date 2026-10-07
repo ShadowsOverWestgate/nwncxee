@@ -31,9 +31,8 @@ public readonly record struct RadialSlot(int Index, SlotKind Kind, string Label,
 /// shape, tear the tree down. GL-free and allocation-tolerant (every caller is a cold right-click path). Offsets
 /// come from <see cref="EngineLayout"/>; the label read-back walks <c>m_pText[i]</c> (a <c>CGuiTextBubble</c>) to
 /// its <c>CAurString*</c> (ctor @0x588690 stores <c>NewCAurString(-1)</c> at +0xf8; the Windows ctor @rva 0x1fd310
-/// at +0xf0), which is the <c>StringGob</c> sub-object at +0x4c0 on both builds, and reads the wrapped lines back
-/// through the exported <c>StringGob::GetTextLineCount/GetTextLine</c> with the <c>this</c> each build's export
-/// wants (<see cref="EngineLayout.StringGobReaderAdjust"/>: the object base on Linux, the sub-object on MSVC). A
+/// at +0xf0), and reads the wrapped lines back through its vtable (<see cref="CAurString.ReadText"/>), which a DB-mode
+/// facade answers as well. A
 /// <c>CGuiTextBubble::SetText</c> tap was the alternative; read-back needs no hook and no per-bubble bookkeeping.
 /// </summary>
 internal static unsafe partial class RadialTree
@@ -45,8 +44,6 @@ internal static unsafe partial class RadialTree
     private static readonly IntPtr[] _vptr = new IntPtr[(int)RootKind.ChatWindow + 1];
     private static RadialCreateSubMenuFn _createSubMenu;
     private static RadialRecursiveAutoDeleteFn _recursiveAutoDelete;
-    private static StringGobGetTextLineCountFn _getTextLineCount;
-    private static StringGobGetTextLineFn _getTextLine;
     private static IntPtr* _eventObject;
     private static int* _ctorCounter;
     private static int* _menuDepth;
@@ -57,8 +54,6 @@ internal static unsafe partial class RadialTree
     {
         _createSubMenu = (RadialCreateSubMenuFn)SymbolMap.Resolve(SymbolMap.RadialCreateSubMenu, log);
         _recursiveAutoDelete = (RadialRecursiveAutoDeleteFn)SymbolMap.Resolve(SymbolMap.RadialRecursiveAutoDelete, log);
-        _getTextLineCount = (StringGobGetTextLineCountFn)SymbolMap.Resolve(SymbolMap.StringGobGetTextLineCount, log);
-        _getTextLine = (StringGobGetTextLineFn)SymbolMap.Resolve(SymbolMap.StringGobGetTextLine, log);
         _eventObject = (IntPtr*)SymbolMap.Resolve(SymbolMap.GuiCurrentEventObject, log);
         _menuDepth = (int*)SymbolMap.Resolve(SymbolMap.RadialMenuDepth, log);
         _ctorCounter = (int*)SymbolMap.Resolve(SymbolMap.RadialCtorCounter, log);
@@ -72,8 +67,8 @@ internal static unsafe partial class RadialTree
         Vt(RootKind.Door, SymbolMap.VtCGuiDoorMenu, log);
         Vt(RootKind.Quickbar, SymbolMap.VtCGuiQuickbarMenu, log);
         Vt(RootKind.ChatWindow, SymbolMap.VtCGuiChatWindowMenu, log);
-        return _createSubMenu != null && _recursiveAutoDelete != null && _getTextLineCount != null
-            && _getTextLine != null && _eventObject != null && _menuDepth != null;
+        return _createSubMenu != null && _recursiveAutoDelete != null
+            && _eventObject != null && _menuDepth != null;
     }
 
     private static void Vt(RootKind kind, string symbol, ExtenderLog log)
@@ -129,7 +124,7 @@ internal static unsafe partial class RadialTree
         return new RadialSlot(i, kind,
             ReadLabel(m.Text[i]),
             ReadIcon(icon),
-            icon.IsNull ? "" : ReadAur(icon.CountLabel),
+            icon.IsNull ? "" : icon.CountLabel.ReadText(MaxLabelLines),
             (m.Flags[i] & 1) != 0,
             m.Param[i],
             entry.IsSet ? entry.Obj : IntPtr.Zero,
@@ -138,28 +133,7 @@ internal static unsafe partial class RadialTree
             child);
     }
 
-    private static string ReadLabel(CGuiTextBubble bubble) => bubble.IsNull ? "" : ReadAur(bubble.AurString);
-
-    /// <summary>Rejoin a <c>CAurString</c>'s wrapped lines (the bubble label and the icon's count label are both
-    /// <c>NewCAurString</c> gobs): <c>StringGob::WrapLines</c> @0x494d80 keeps the break space (and any newline) on
-    /// the first piece, so plain concatenation restores the text SetText was given.</summary>
-    private static string ReadAur(CAurString aur)
-    {
-        if (aur.IsNull || _getTextLineCount == null || _getTextLine == null) return "";
-        StringGob gob = aur.Reader;
-        int n = _getTextLineCount(gob.Ptr);
-        if (n <= 0) return "";
-        if (n > MaxLabelLines) n = MaxLabelLines;
-        var sb = new StringBuilder();
-        for (int k = 0; k < n; k++) AppendCStr(sb, (byte*)_getTextLine(gob.Ptr, k));
-        return sb.ToString().Trim();
-    }
-
-    private static void AppendCStr(StringBuilder sb, byte* p)
-    {
-        if (p == null) return;
-        for (int k = 0; k < 4096 && p[k] != 0; k++) sb.Append((char)p[k]);
-    }
+    private static string ReadLabel(CGuiTextBubble bubble) => bubble.IsNull ? "" : bubble.AurString.ReadText(MaxLabelLines);
 
     private static string ReadIcon(CGuiIcon icon)
     {

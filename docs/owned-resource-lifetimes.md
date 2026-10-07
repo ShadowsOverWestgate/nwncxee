@@ -1,498 +1,400 @@
 # Owned-resource lifetimes
 
-What creates each thing Alloy owns, what revokes it, and what a lost GL context does to it. Written
-for #209 (M4 step 1, ADR 0016). It is a crash-prevention document: the gaps at the bottom were found
-by writing the table, not by playing.
+What creates each thing CX owns, what kills it, and what a lost GL context does to it. It is a
+crash-prevention document: the gaps at the end of each part were found by writing the table, not by playing.
 
-Line references are to the commit that introduced this file; treat them as a starting point, not as
-an address.
+**There is one scene layer.** Alloy draws the CX scene database (ADR 0028, part 1): CX produces every record
+through the Aurora seam, so it produces every lifetime edge and there is nothing to infer. Until 2026-10-07 the
+tree also carried an engine-scene path ("mode 0", `alloy.scenedb=0`) that observed engine objects and inferred
+their lifetimes; part 2 is the inventory its deletion worked from, kept as the record of why each piece went.
+`git log --grep "Engine-scene path"` has the commits; the mode-0 contract itself is in this file's history.
 
-## The two edges, and why they are not one
+Line references are to the commit that touched them; treat them as a starting point, not as an address.
 
-Alloy holds two unrelated kinds of thing, and they die for unrelated reasons.
+---
 
-**`Revoke` — the world edge.** The world underneath a table went away: the module unloaded, the part
-table was wiped, the area changed, enrollment re-ran. What dies is everything **captured from the
-engine**: part pointers, gob pointers, VDO pointers, Scene pointers, BSP roots, GL texture ids
-harvested from `AurTextureGetTID`. All of these are **bare pointers used as identity**, and the
-allocator recycles addresses — so "the pointer still compares equal" is not evidence the thing is the
-same thing. The GL objects are untouched: they belong to the context, and rebuilding a program per
-area transition would be a stall for nothing.
-
-`OwnedTextures` (#259) is the one row with **no `Revoke` slot at all**, and the reason generalises. Its
-resources are keyed on texture identity (a 64-bit hash of the resolved name at `basic+0xa8`, lower-cased,
-and the PLT schemes at `+0x48`/`+0xd4`, with the atlas cell in the low 16 bits), so a part-table
-wipe or an `alloy.enabled` toggle invalidates nothing in them. More to the point, they are populated *only* at
-the engine's upload funnel — so wiping them on an edge the engine does not rebuild across would leave
-every texture borrowed for the rest of the session, with no path back.
-
-Its two edges are both **engine funnels rather than Alloy events**. The engine's GL name is only an
-*index* onto a resource — the lookup the hot `Draw` path needs, because a material hands out a tid and
-nothing else — and it is rewritten at the two moments a tid changes meaning:
-
-* **The upload**, `RenderInterface::CreateTexture` @0x45d200 — the engine's per-cell upload, and the only
-  window in which decoded pixels exist. Alloy re-invokes it against a texture of its own, points the index
-  at the resource, and retires the previous texture for that resource. This is what makes a re-upload
-  visible immediately instead of at the next world edge (#227's structural cause).
-* **The delete**, `RenderInterface::DeleteTextures` @0x45d1d0 — the single funnel every engine texture
-  name dies through, and **the world edge for the INDEX** (ADR 0023): the tid stops meaning its resource,
-  but the resource itself goes idle and stays resident under `texcache_mb`, because the engine WILL ask
-  for the same content again and `BuildAndStoreTexture` is hooked to hand the resident texture back
-  without a read, decode or upload. Eviction is bracket-side, oldest idle first, past the budget. An **area transition** fires it and none of the world edges
-  above (#220 measured one part-table wipe in an entire session). It drops the index entry and QUEUES the
-  texture — it runs at a frame edge in the ENGINE context, where a GL delete would go to the wrong context
-  entirely, so `OwnedTextures.Drain` issues it inside the next 4.6 bracket. Same split `EnsureVao` makes
-  for its retired VAO names.
-
-If you add a table the engine hands out by GL name, these are the edges you need — not `Revoke`.
-
-**`ContextLost` — the context edge.** The 4.6 context went away. What dies is every **GL name**.
-Nothing is deleted, because the objects went with the context and the name now belongs to whatever
-the driver recycles it for. They are *dropped*, because every `EnsureX` in the renderer
-short-circuits on a non-zero handle — leaving them set is what makes the next context draw through a
-dead program. Captured world state is not this slot's business (though several passes drop both,
-which is fine: a rebuilt context re-captures anyway).
-
-Conflating them is how a pass ends up half stood-down. `PassLifecycle` (`Alloy/Core/PassRegistry.cs`)
-declares both slots per pass; `RenderPasses.cs` is the one table that fills them.
-
-### Terminality — the invariant that makes the "orphaned" rows safe
-
-**`GlContextService.Fail` sets `_disabled = true` permanently** (`Graphics/GlContextService.cs:87`).
-There is no recreation path. So context loss today is a **per-session terminal edge**: after it,
-`Enter()` returns false, the whole Alloy bracket returns at `AlloyRenderer.Frame.cs:99`, and no
-owned GL name is ever used again. That is why the rows below that say "names orphaned, nothing
-deleted" are safe rather than leaks that matter.
-
-If context recreation ever lands, **this document is the checklist**. Two consequences bite
-immediately: `EnsureVao` (`AlloyRenderer.Vao.cs:56`) *deletes* a stale non-zero VAO name before
-rebuilding, and `CasterPass.Release` deliberately keeps its GL names — both are correct only while
-the edge is terminal.
-
-One related fact, recorded because it is otherwise only in the code: after a `_progFailed` /
-`_batchUnavailable` disarm, `AlloyRenderer.EndFrame` latches `_armed = false` and returns at its
-first line forever (`AlloyRenderer.cs:988`), so it stops driving the `ContextLost` walk. Safe by the
-same terminality — the bracket is already off for the session — but it is a real "this walk has no
-caller from here on" and it should not be a surprise.
-
-### Two names that are not this
-
-`FrameSnapshot.Revoke` and `DepthResource.Revoke` are **per-frame content-freshness latches**, not
-world edges. `FrameSnapshot.Revoke()` runs at the top of every frame (`AlloyRenderer.Frame.cs:23`)
-to say "the copy in the snapshot is last frame's"; `DepthResource.Revoke()` says the prepass depth
-can no longer be trusted. Same word, different meaning, and neither is wired to the registry's
-`Revoke` walk.
+# Part 1 — the scene database (ADR 0028)
 
 ## The edges, and who fires them
 
+ADR 0028 says there are exactly three told edges plus context loss. As built there are **five** things that
+kill something, and the two extra ones are worth naming because they are the ones a reader will not expect:
+
 ```
-Part::~Part           -> DrawFunnelService.OnPartDtor  (DrawFunnelService.cs:367) per-part death notice
-                            -> SkyBox.Revoke(part)      (DrawFunnelService.cs:371)
-                            -> PartTable Die(e)         (DrawFunnelService.cs:381)
-VDO repack            -> AlloyRenderer.OnVdoRepackHook  (AlloyRenderer.cs:951) per-VDO
-                            -> Beams.OnRepack, CasterPass.OnVdoRepack
-Scene::ReloadGrass    -> GrassField.OnReloadGrass       (GrassField.cs:305)
-module unload         \
-part-table wipe        |-> AlloyRenderer.RevokeAll      (AlloyRenderer.cs:1003-1007)
-4.6 context lost      /       -> WipeHandles + PassRegistry.Global.Revoke()   (Enroll.cs:26-27)
-                              -> CasterPass.Lifecycle -> Release              (CasterPass.cs:1003-1008)
-4.6 context lost      -> PassRegistry.Global.ContextLost()                    (AlloyRenderer.cs:1003)
-table pressure        -> PartTable.OnTablePressure -> WipeTables              (PartTable.cs:453)
-Scene changed         \                                                       (SceneWalk.Reset)
-AreaLoaded send        |-> AlloyRenderer.AreaEdge  (AlloyRenderer.AreaEdge.cs) CX-19
-                              -> RevokeAll + WipeTables + OwnedTextures.AreaEdge
-                                 + InvalidateRecords, inside the lightmap-hold bracket
-scene walk sweep      -> SceneWalk.Sweep -> Die(e, "unreachable")             (SceneWalk.cs)
-gob leaves the scene  -> SceneWalk.OnGobSetScene -> ReleaseGobTrees           (SceneWalk.cs)
-                            -> Die(e, "left the scene") + NonMeshParts.Left(part)
+object destroy   CAurObject vtable slot 0/1 -> Seam/ObjectSlots.Destroy (-> ReleaseRecord)
+                   or by handle: ObjectSlots.DestroyRecord, via Db/ObjectBridge.ObjectDestroy
+                     -> PartShell.FreeAll      free the per-part CAurPart shells
+                     -> PartTree.Free          part index chunk + MeshArena.Release per part
+                     -> ModelCache.Release     the model and its two LOD siblings
+                     -> SceneDb.Objects.Free   generation++ and Dirty.Destroyed
+                     -> CallbackList.FreeAll, ObjectSlots.FreeEngineList
+                     -> Facade.Retire          null the SafePointers, null ObjFacade, quarantine the shell
+                   consumed next fold by DbFeed.Records.ObjectDied: DbRelease per seated slot,
+                   DbInputs.PartDestroyed per part, DbGrid.Remove, DbGui.Left
+scene destroy    CAurScene dtor slot -> Seam/SceneSlots.Die -> Db/DbScene.Destroy
+                     -> one object destroy per member (backwards; ObjectDied unlinks as it goes)
+                     -> SceneShell.Release (null +0x130/+0x138 FIRST, then free the mirror)
+                     -> SceneDb.Scenes.Free
+model release    ModelCache.Release -> DelRef -> Trim -> ModelCache.Evict
+                     -> ModelCache.Evicting: MeshArena.Forget, TileBuild.Forget  (+= at Attach)
+                        ...and MeshBvh.Evict and DrawRecipe.Forget, which never subscribe (see the gaps)
+                     -> MeshArena.Release queues; the GL free lands in MeshArena.Pump (render side)
+texture release  the same eviction, one hop further: DrawRecipe.Forget -> TexRegistry.Release
+                     -> the slot goes idle on the LRU -> TexRegistry.Tick's EvictPastBudget -> Retire
+                     -> the GL name goes to _graveyard -> deleted in TexRegistry.Drain (bracket)
+world edge       AlloyRenderer.EndFrame: module unload / 4.6 context lost / part table wiped
+                     -> AlloyRenderer.RevokeAll -> PassRegistry.Global.Revoke()
+                     -> TileBuild.Revoke, PartTreeLive.Revoke, ModelCache.AreaEdge, TileCompare.Revoke
+context loss     AlloyRenderer.EndFrame -> PassRegistry.Global.ContextLost()
+                     -> RenderThread.Shutdown (joined), MeshArena.ContextLost, TexRegistry.ContextLost,
+                        PltPalettes/PltColors/PltGpuCheck.ContextLost, DbFeed.ContextLost
 ```
 
-**The area edge has two shapes and one revoke list (CX-19).** Path A is a Scene pointer change, which
-`SceneWalk.Tick` sees. Path B is a server hop or an in-module transition where the engine reuses the Scene
-object (EE 1.89.8193.37 keeps the tileset in memory) — `SceneWalk` sees nothing at all, and before CX-19
-nothing else did either, so every table keyed on an identity the engine recycles (pool tokens are
-LIFO-recycled, GL buffer names are recycled, VDO *items* churn, `CAurTexture*` addresses come back) kept
-serving the previous area's data to the next area's parts. `CNWCMessage::SendPlayerToServerArea_AreaLoaded`
-@0x7fa0c0 is the edge the engine does give us; `AlloyRenderer` chains it above the lightmap hold, raises a
-flag on the game thread and runs the revoke at the next render-thread frame anchor
-(`OnRenderSinglePass`), ahead of the walk and the enrolment that refill everything it drops. The
-`[areaedge]` line names which path fired and what each table dropped.
+**The fourth edge the ADR folds into "model release" is really its own.** A texture does not die when a model
+does; it dies six hops later, two of them on a different thread, and only if the byte budget says so. The
+chain is `ModelCache.Evicting` → `DrawRecipe.Forget` (`Db/DrawRecipe.cs`) → `TexRegistry.Release` →
+idle LRU → `TexRegistry.Tick`'s `EvictPastBudget` → `Retire` → `_graveyard` →
+`TexRegistry.Drain`'s `glDeleteTextures`, inside Alloy's bracket. Any reader who expects a texture to go with
+its model will look in the wrong place; and the first hop of that chain is **not wired** (see the gaps).
 
-Two orderings are load-bearing and are stated where they live. The revoke runs **through**
-`LightmapBake.Revoke`, whose `DropHold` would forward the very send the hold is sitting on and whose
-`Reopen` clears the edge marks the static set closes against — so `BeginAreaEdge`/`EndAreaEdge` bracket the
-list, standing the drop down and re-arming the edge afterwards. And it runs **before** the enrolment rather
-than at the present: `EnrollBegin` consumes the `TableGen` edge, so a revoke fired after it would be aimed
-at slots that are already current.
+**The fifth is the world edge, which the ADR says the contract deletes.** It does not, in DB mode: the
+`PassRegistry` Revoke walk is still driven from `AlloyRenderer.EndFrame`, which is a `FramePhase.PostPresent`
+participant and runs in every mode. What it no longer has is the **area** trigger —
+`AlloyRenderer.TakeAreaEdge` is called from `OnRenderSinglePass`, a hook the seam does not install, so in DB
+mode the walk fires on a module unload, a context loss and a part-table wipe and never on an area change.
+Three DB tables are wired to it: `TileBuild.Revoke` ("the world edge: an area change drops every placement"),
+`ModelCache.AreaEdge` (the census line plus the read-ahead references) and `PartTreeLive.Revoke`. In DB mode
+none of them sees an area change.
 
-**Content-keyed tables are deliberately outside that list.** `OwnedTextures._res` keys on the resref hash
-plus the decode schemes, the bake blob cache on the bake key, and `OwnedBuffers._byToken/_byName` ride the
-engine's own `DeleteBuffer` funnel (`DeletePool` @0x4d1d80 routes every named pool through it). Each of
-those describes what it names whichever area is up, so dropping them at a transition would only cost the
-re-upload. What *is* in the list is everything keyed on an address or a slot index: the ownership table,
-the VDO slots and their chart/LOD arenas, the beam VAO slots, the draw-arg range cache, and the #284
-texture-rebuild verdicts.
+## Why a handle replaces a death notice
 
-**#256 adds a second death edge for a record, and it is not a destruction.** `Part::~Part` covers parts
-that are *freed*; the sweep covers parts that are merely *no longer in the scene* --
-`Scene::ChildRemove` @0x462cc0 and `Gob::Amputate` @0x443fa0 both unlink without freeing, so a gob that
-left the area generates no dtor at all. A record now lives exactly as long as the part is reachable from
-`Scene+0x130` / `Scene+0x188`, which is a fact the walk establishes rather than a window it infers.
+`DbId` is a 20-bit index plus a 12-bit generation, 0 = null (`Db/SceneDb.cs`, `DbId`). `DbTable.Free` bumps
+the generation **at the free**, never at reuse, so every outstanding handle to that slot is dead the moment it
+happens; `DbTable.Valid` is the one test, and it also checks the `1u << 31` allocated bit that `Alloc` sets.
+That is the whole of ADR 0028's claim that "no table keyed on a `DbId` needs a death notice to stay correct",
+and it holds: `SceneDb.SceneHighlight`, `SceneObjects`, `TileObj`, `LitObj`, `ObjAttachTo`, `CamObj` and the
+facade columns all store handles, and every reader resolves through `Valid` before it dereferences anything.
 
-**...and that edge is now TOLD, not discovered.** `Gob::SetScene` @0x43e020 is the sole writer of
-`Scene::Sequence` (two references to that global in the whole image: the bump at 0x43e0aa and
-`ManageSceneBSP`'s read at 0x47fb68), so the hook on it hears every join and every leave with the gob and
-both scenes in hand. A leave -- and an LOD rotation, for the roots the walk stops enumerating -- releases those records on the
-spot, which for the leave is the last moment the gob is certainly alive -- `Gob::~Gob` @0x444140 calls `SetScene(0)` before it destroys anything, and
-`Scene::~Scene` @0x472e40 walks every gob out the same way. A join queues the gob for a per-gob tree walk
-at the next frame anchor, validated there against `Scene+0x130` rather than by dereferencing a pointer
-that may have been freed since. `Gob::SetSubtreeEnabled` @0x43c670 is hooked beside it -- the sole dynamic writer of `part+0x34`, which
-announces nothing -- and `Scene::SpawnTile`/`DeleteTile` ask for the walk when they fire outside an area
-load. The sweep stays as the net, on the `alloy.walkaudit` cadence, and `[enum] audit misses=` counts what it
-finds that the deltas did not, split into added / swept gob / swept tile so the next unnoticed edge names
-itself.
+**It stops holding wherever a table stores a bare index instead of a handle**, and there are five of those.
+A part index, an ownership-slot number and an arena range id are all plain `int`s drawn from a recycling
+allocator with no generation beside them:
 
-`RevokeAll` runs the world walk **above** its empty-table guard. The ownership count says what *Alloy
-took*; it says nothing about what the *passes captured*. Sky is the only pass with a per-part death
-notice of its own (`DrawFunnelService.cs:371`); for beams, particles and grass this walk is the **only**
-teardown, and even sky's `Scene` pointer and drawn-generation are reachable no other way.
-
-## The table
-
-### Captured world state (`Revoke`)
-
-| Resource | Created by | Revoked by | Caller | Context loss |
-|---|---|---|---|---|
-| Ownership table `_oTri/_oGob/_oVdo/_oEntry` | `AlloyRenderer.Enroll` | `RevokeAll` | `AlloyRenderer.cs:995,1003,1005,1007` + per-part `Revoke(i)` on repack (`:951`) and identity change (`Batches.cs:234`) | via `RevokeAll` |
-| Part table (`PartTable`) | `SceneWalk.Enrol` + `SceneWalk.TryBind` (#256; #258 folded the group intern into the record) | `WipeTables` / `Die` / `SceneWalk.Sweep` / `SceneWalk.ReleaseGobTrees` ("left the scene") | `PartTable.cs`, `OnPartDtor`, `SceneWalk.cs`, the `Gob::SetScene` hook | none — CPU only |
-| VAO cache `_vVdo/_vStale` | `EnsureVao` | `RevokeAll` retires the slots | `Enroll.cs` | GL names zeroed by `AlloyRenderer.ContextLost` |
-| Draw-arg range cache `_cIdx/_cOff/_cBase` | `BuildBatches`, from the VDO item tables (`Batches.cs:1212`) | per slot by `UnstampRecord` (re-tenant, drifted keep, transient range failure); wholesale by `InvalidateRecords` | `AreaEdge` (CX-19), `Issue.WipeHandles`, `AlloyRenderer.ContextLost` | via `InvalidateRecords` |
-| Texture rebuild verdicts `OwnedTextures._rebuildTried` (#284) | `NoteUnbuilt`, keyed on the raw `CAurTexture*` | `OwnedTextures.AreaEdge` (CX-19), the census settle, `ContextLost` | `AreaEdge` | dropped with the names |
-| Bindless handle cache `_hTid` | `Issue` staging | `WipeHandles` — **only while `alloy.ownedtex=0`** (#220); armed, see the row below | `Enroll.cs:26` (release) and `:62` (enrollment) | `Issue.ForgetHandles` |
-| Water planes (`WaterBodies`) | plane measurement during enrollment | `WaterBodies.Clear` | registry `Revoke` slot | none — CPU only |
-| Sky parts (`SkyBox`) | `OnPartDraw` capture window | `SkyBox.Forget`; per-part `SkyBox.Revoke` | registry `Revoke`; `DrawFunnelService.cs:371`; scene change `SkyBox.cs:136` | none — holds no GL |
-| Sky programs (`SkyStage`) | first frame a sky material names a custom fragment stage (CX-88) | `SkyStage.Forget` | registry `ContextLost`; module change via `Programs.DropSpliced` | one GL program per distinct stage resref — **module** lifetime, because the text came off that module's resource chain |
-| Beam parts + VAO slots (`Beams`) | bucket-15 capture | `Beams.Forget` | registry `Revoke`; scene change `Beams.cs:173`; repack `:405` | `Beams.ContextLost` |
-| Particle pool + emitter slots (`EmitterSim`, CX-86) | `EmitterSim.Open` on the `emitterbucket` walk; the two `NativeMemory` arenas grow at load edges only | `EmitterSim.Reset`; per emitter `EmitterSim.Forget` from `Particles`' `~PartEmitter` hook; a slot unseen for 120 frames by `Reclaim` | registry `Revoke` and `ContextLost`; `Particles.OnEmitterDtor` | none — CPU only, but an arena move calls `Particles.Forget` because the pass holds raw `Particle*` arrays into it |
-| Tile collision grid (`BounceWorld`, CX-86) | `BounceWorld.Build` from the queue `Pump` drains at the top of the step, one tile at a time under a budget | `BounceWorld.Reset` (whole area), or `Wipe` when an arena fills | `EmitterSim.Reset`, which the registry `Revoke`/`ContextLost` call | none — CPU only |
-| Emitter table (`Particles`) | emitter-bucket capture | `Particles.Forget` | registry `Revoke`; scene change `Particles.cs:480` | `Particles.ContextLost` (also frees the native stage buffer) |
-| Grass patches + slot map (`GrassField`) | bin scatter | `GrassField.Forget` | registry `Revoke`; `Scene::ReloadGrass` `GrassField.cs:305` | `GrassField.ContextLost` |
-| Env cube freshness + BSP key (`EnvProbe`) | `EnvProbe` capture | `EnvProbe.Revoke` | registry `Revoke` | `EnvProbe.Forget` |
-| Caster set + skin records + texture-alpha verdicts (`CasterPass`) | `CasterPass.Enroll` | `Release` | `CasterPass.cs:1003,1005,1008` | routes through the same `Release` — see below |
-| Owned textures (`OwnedTextures`) | the engine's upload funnel, `RenderInterface::CreateTexture` → `Adopt`; and, with `alloy.pltcpu=0`, a GPU-PLT composite queued at `glImageBasic` → `DrainPltCopies` (#360) | a re-upload through the same funnel, or the engine's `RenderInterface::DeleteTextures` → `Retire`. **No registry `Revoke`** — see above | the two hooks (`OwnedTextures.Install`). Both only **queue** — `OwnedTextures.Drain` deletes, off `GlContextService.InBracket` | `OwnedTextures.ContextLost` drops resources, index, owned-set and queue, deletes nothing |
-| Owned vertex/index pools (`OwnedBuffers`) | the engine's upload funnel, `GLRender::UnlockPool` → `Take` (#260 — the buffer is *minted* there, into the engine's own pool descriptor) | the engine's `GLRender::DeleteBuffer`, which `DeletePool` @0x4d1d80 routes to for every named pool → `Retire`. **No registry `Revoke` deletion** — the buffer is the pool's and the engine frees it on that same edge; `OwnedBuffers.Revoke` only reports | the delete hook (`OwnedBuffers.Install`). Nothing is queued and nothing is deleted by Alloy — a second `glDeleteBuffers` on a recycled name would take out the pool that inherited it | `OwnedBuffers.ContextLost` drops both tables and the dirty list, deletes nothing |
-| Caster VAOs over those pools (`CasterPass._vVao46`) | `CasterPass.EnsureVao`, inside the shadow bracket | slots retired by `CasterPass.Release` (`_vStale`), names deleted by the next `EnsureVao` | `CasterPass.Lifecycle` — the same three edges `RevokeAll` watches, and it runs from the pass slot, ahead of the present that revokes | kept, like the pass's other GL names — see below |
-| Extra `.mtr` slots texture11+ (`MaterialExtraSlots`, #275) | `SharedMaterial::ParseField` hook records the name, `SharedMaterial::Init` hook loads it (`LoadTexture` = an ADDREF'd `AurTextureGetReference`) | `SharedMaterial::~SharedMaterial` hook: `AurTextureRelease` per still-live pointer, entry freed. **No registry `Revoke`** -- the reference lives exactly as long as the engine's own eleven do | the three hooks (`MaterialExtraSlots.Initialize`) | none -- holds no GL; the texture is the engine's |
-| Chart table `(slot, item) -> arena ranges` + both arena mirrors (`MeshChart`, #673) | `MeshChart.Offer` claims on the enrollment walk, `MeshChart.Pump` files the worker's result | `MeshChart.Revoke` clears the table and rewinds both arenas; `ForgetSlot` on a re-pointed VDO slot (`ForgetLodSlot`) | registry `Revoke`; `Enroll.cs` slot reuse | `MeshChart.ContextLost` forgets the three names, keeps the mirrors |
-| Bake rects `key -> page rect`, per-slot bake records, the static-light classification (`LightmapBake`, #674) | `LightmapBake.Enrol` from the staging loop's chart pick; a rect lands from the cache thread (`Adopt`) or the page finish; the classification on the light walk | `LightmapBake.Revoke` forgets every rect and record and rewinds the page packing (the page textures stay, re-packed from zero); `Vacate` from `FreeSlot`; the classification voids on the world edge, a registry-count change and the `ComputeStaticLighting` hook | registry `Revoke`; `Enroll.cs` slot reuse | `LightmapBake.ContextLost` forgets the pages, scratch pair, cube, PBO, programs and the record buffer, then `Revoke` |
-| Light registry `_id/_gob/_root` keyed on `PartLight*` (`LightRegistry`, CX-108) | `LightRegistry.Visit` (the `NonMeshParts` seam) and `VisitBspNode`, driven from the walk's own BSP traversal; the two area terms are picked in `Select` | `LightRegistry.Revoke` clears the table and both area terms; per light `Drop` from `WalkDone`'s sweep (left the scene), `NonMeshParts.Left` (its gob left) or `Died` (`Part::~Part`, which marks the slot FREED so a recycled address is re-recorded) | registry `Revoke`; `DrawFunnelService` -> `NonMeshParts.Died` | none -- CPU only |
-| Scene-part registry + per-class lists (`SceneParts`, CX-104) | `NonMeshParts.Visit` down a gob's part tree, plus `SceneParts.TileMesh` walking each tile's own `TileData+0x30` part list, both driven from the walk's one BSP traversal. **Not** the BSP node's per-class inventories (`SceneBSPAddPart` @0x47ca10's lists at `*(node+0x70)+0x30/+0x50/+0x70`), which would be wider and cheaper but hold dangling `Part*`: `Scene::ChildAdd` files a gob's whole tree into them through `ListSpecialPartsR` @0x462d50, nothing prunes one on death (no part dtor reaches `SceneBSPRemovePart`; `RemoveFromSceneManager` @0x462b90 only touches the global buckets), and the one unlink -- `ChildRemove` -> `UnlistSpecialParts` over the then-active tree -- is outlived by an Alloy LOD rotation | `SceneParts.Reset`; per entry the walk-generation `Sweep` (the part left the scene), `NonMeshParts.Left` (its gob left) and `Died` (`Part::~Part`, which zeroes the dense-list slot IMMEDIATELY rather than at the next walk -- a consumer reading the list in between would deref freed memory) | registry `Revoke`; `NonMeshParts.Died` | none -- CPU only |
-| Tile registry, boxes, fade-part slabs and both fade factors (`TileFadeRamp`, CX-104) | `SceneParts.TileMesh`, per tile mesh part of the walk's one BSP traversal: `NoteTile` interns the `TileData*`, `NoteTilePart` grows the box and records the `tilefade 1` surfaces. A tile the ramp has no slot for still registers its non-mesh parts -- registration never depends on this table having room | `TileFadeRamp.Reset`; per tile `EndRebuild` frees a tile the rebuild did not reach. A tile that SURVIVES a rebuild keeps its fade and reveal factors deliberately -- a placeable spawning bumps the scene epoch, and snapping every roof back to opaque there would be visible | registry `Revoke` via `SceneParts.Reset` | none -- CPU only |
-| Gob registry `_key/_raw/_rawTree/_term/_movedAt/_markAt` keyed on `Gob*` (`GobXform`, CX-103) | `GobXform.Tick`, one entry per gob in `Scene+0x130`; `Mark` inserts one for a gob a runtime names before the first `Tick` sees it | `GobXform.AreaEdge()`, and per entry `GobXform.Forget(gob)` from the `Gob::SetScene` leave notice (`SceneWalk.OnGobSetScene`) -- a gob leaving the world scene is also how one DIES, since `Gob::~Gob` @0x444140 calls `SetScene(0)` before it destroys anything, so the notice this table used to lack now exists. It is a tombstone-free table (a stamp older than the generation reads as empty), so `Forget` clears the slot and the load factor recycles it | registry `Revoke` (`AlloyRenderer.AreaEdge`) | none -- CPU only |
-| Pending LOD swaps `_pKey/_pWant/_pAt/_pCoolAt` keyed on `Gob*` (`GobLod`, CX-105) | `OnSetLod` registers one when it wants a level change; the engine calls it only for gobs it has just walked, so the key is live at insert | `GobLod.Reset()` on the area edge and on `alloy.ownlod`; per entry on commit, on the camera coming back inside the band, on the `PendingMax` timeout, and on `GobLod.Forget(gob)` from the `Gob::SetScene` leave notice -- the same notice `GobXform` gained, which is what retires a pending swap whose gob has gone rather than leaving it for the generation bump to age out. A registration is never a write to the engine, so a forgotten one needs no undo | registry `Revoke`; the knob | none -- CPU only |
-| Owned grass bin list (`GrassField.Bins`, CX-104) | `RefreshOwnedBins`, once per `PassGen`, from `Scene+0x1d0` (the scene's own bin grid) | rebuilt wholesale every pass generation -- it is a per-frame list, not a table, so a freed bin can only be read for the frame the grid still names it | — | none -- CPU only; the patch table it feeds is `GrassField.Forget`'s |
-| Bindless handle cache `_hTid/_hVal/_hRes` | `AlloyRenderer.HandleFor` | `DropHandle`, per owned name, from `OwnedTextures.Drain` before the texture is deleted | — the enrollment `WipeHandles` is now a no-op while `ownedtex` is armed (#220) | `Issue.ForgetHandles`, via `OwnedTextures.ContextLost` |
-
-### `GobXform`'s registry gets its gob notice second-hand, and was safe before it had one
-
-The two `Gob*`-keyed tables above were once the only ones on this page revoked by the area edge alone. There
-is still no `Gob::~Gob` hook, but `Gob::SetScene` @0x43e020 is hooked, and `Gob::~Gob` @0x444140 calls
-`SetScene(0)` before it destroys anything -- so the leave notice fires for a dying gob as well as a departing
-one, and both tables are now told per gob (`GobXform.Forget`, `GobLod.Forget`, from
-`SceneWalk.OnGobSetScene`). What follows is why the area edge alone was already safe, which is worth keeping:
-it is the argument that a missed notice costs nothing, and the per-gob notice is a tightening rather than the
-thing the correctness rests on.
-
-- **Nothing iterates a dead gob.** `Tick` walks `Scene+0x130`, which the engine unlinks the gob from
-  (`Scene::ChildRemove` @0x462cc0), and `DriveSkipped` walks the same list. `Moved` compares a pointer and
-  never dereferences it.
-- **The one place a gob IS dereferenced** -- `RootTerm`/`Read`/`AttachScale` under `Compose` -- is reached only
-  from a slot that passed `RouteLive`, i.e. behind `PartTable.EntryLive`. `Gob::~Gob` @0x444140 calls the
-  deleting destructor of its part tree at `gob+0x90`, so `Part::~Part` fires for every part of the ACTIVE root
-  before the gob's own memory goes; that is the notice, and it is the same one the pre-existing
-  `RouteLive` LOD read and `AlloyCensus.GobDiffuseMul` already wait on. A gob does not outlive its parts'
-  destruction. (The dtor does **not** destruct `gob+0x98`/`+0xa0`, so an inactive LOD root's parts are leaked
-  by the engine rather than freed -- their records are reclaimed by `SceneWalk.Sweep` as unreachable, and a
-  `Find` on one of them until then matches live memory.)
-- **A recycled address** is the residual: a new gob allocated where a dead one stood inherits the entry. The
-  cheap change-detection set therefore includes `gob+0x90`, which a fresh `CreateInstanceTree` makes different
-  -- so the new tenant reads MOVED and its cached term is recomputed on the frame it first appears. Without
-  that column the window was one frame, and only for a new gob whose raw position, orientation and scale base
-  were bit-identical to the dead one's.
-
-Two more pointer-keyed tables are **enrollment-scoped scratch**, listed for completeness rather than
-because they have an edge: `AlloyRenderer._mKey/_mVal` (the material→texture-sort-key intern, cleared
-at `Enroll.cs:78`) and `AlloyCensus._refGob` (the refused-gob set, cleared by `OwnScanBegin`,
-`AlloyCensus.cs:833`). Both are wiped at the top of the enrollment that fills them and are never read
-across one, so a recycled pointer has no window to be believed in. They need no `Revoke` — but they
-are the shape that does, so if either ever outlives an enrollment it joins the table above.
-
-### What is chased out of a part, and under which edge (#336)
-
-The route walk dereferences an owned `PartTriMesh*` every frame it is on screen: the alpha
-(`part+0xa0`), the tile record, the dissolve terms, and on a colour-cadence frame the `MdlNode`
-colour triples. Every one of those reads sits behind `PartTable.EntryLive`, and `EntryLive` is the
-**only** lifetime guard — `Part::~Part` → `OnPartDtor` marks the entry dead (the #221 tombstone keeps
-a recycled address from reviving it), so a pointer read after the death notice is refused, not chased.
-
-The three identity fields Alloy captures at enrolment are, per the #336 Ghidra store scan (every write
-to `[reg+0x58|0x88|0xb0]` in the binary; the full tables are on the ticket):
-
-| field | writers after construction | edge |
-|---|---|---|
-| `part+0x58` `Material*` | **none** — set in `PartTriMesh::PartTriMesh`, freed by `Part::~Part` | the death notice |
-| `part+0x88` `VertexPrimitive*` | `PartInitMaterial` @0x43de50, once, on a tree `CreateInstanceTree` created moments before (`NewCAurObject`, `SpawnPartsForTile`, `Gob::Append`); never on a drawn part; the old value is never freed by it | enrolment sees the final value |
-| `part+0xb0` texture rotation | `SetPartTextureRotate` @0x461670, once, from `SpawnPartsForTile` | enrolment sees the final value |
-
-So the per-frame compare `IdentityOk` used to run bought nothing; it is now an **audit** on the colour
-cadence (every 8 frames per slot, every frame under `/alloy poll 1`) and its hit counter is the
-`identity N` figure on the [alloy] line. A non-zero steady value there means the scan missed a writer
-(a LEA-then-store, a `memcpy` over the struct) and that writer becomes the edge to hook.
-
-What pointer identity never covered, and still does not: **material content**. `Material::Refresh`
-@0x4c7770, `Material::ReplaceTexturePLT` @0x4c7a10 and `SetMaterialParam` rewrite the material in place
-(creature re-skin, equip, texture-replace VFX — all cold); Alloy re-fetches the diffuse pointer per
-frame and re-mints handles on a changed `CAurTexture*`, which is what makes those visible. `Gob::SetLODModel`
-@0x43e6a0, the per-frame LOD swap, rotates the gob's root pointers and writes no part field.
-
-### GL objects (`ContextLost`)
-
-| Resource | Created by | Dropped by | Caller |
+| Table | Key | Guard that exists | What is left |
 |---|---|---|---|
-| `_prog46/_progLit46/_progDepth/_progDepthKey/_progWater`, `_drawBuf/_texHBuf/_boneBuf`, `_vVao46[]` | `EnsureProgram` / `EnsureTarget` / `UploadDraws` / `EnsureVao` | `AlloyRenderer.ContextLost` | registry `ContextLost` (#242: `ContextLost` also zeroes `_recCapGpu` and bumps the record epoch -- the persistent per-draw records lived in `_drawBuf`/`_texHBuf`, so a name-drop alone would leave every slot believing it was still uploaded); `_progLit46`/`_progWater` are additionally *deleted* and rebuilt by `TakeProgramRebuild` (`Programs.cs:114`) when a compile-time dial moves — the one deletion path that is neither edge |
-| `StreamRing` buffer + its persistent map + three region fences (CX-45), and the slices held in `Issue._slotRange` / `CullPass._src` | `StreamRing.Create`, the first push of a frame | `StreamRing.ContextLost` (names only; the generation bump makes every held slice stale) | registry `ContextLost` via `AlloyRenderer.ContextLost` |
-| `_passBuf` (CX-43: the `CxPass` uniform block) | `FlushPassBlock`, first send | `AlloyRenderer.ContextLost` (`PassContextLost`) | registry `ContextLost`; the staging pair is native memory kept for the session, and the next send re-mints and re-binds |
-| Water snapshot FBO + colour/depth textures | `FrameSnapshot.Ensure` | `FrameSnapshot.Forget` | registry `ContextLost` |
-| SSR history FBO + colour (mipmapped)/depth textures + R32F hi-Z pyramid + its compute program (CX-51) | `Ssr.EnsureTargets` (pyramid re-made per size), `Ssr.BuildProgram` | `Ssr.Forget` | registry `ContextLost`; registry `Revoke` drops the history (another area's frame) and keeps the names |
-| Scene-depth FBO + texture | `SceneDepth.Ensure` | `SceneDepth.Forget` | registry `ContextLost` |
-| Light SSBOs (`_bufLights/_bufCounts/_bufIndices/_bufStats`) | `AlloyLights` | `AlloyLights.Forget` | registry `ContextLost` |
-| Env cube + its FBO/depth | `EnvProbe` capture | `EnvProbe.Forget` | registry `ContextLost` |
-| Post targets, FBO, fullscreen VAO, **owned depth attachment** (#214) | `PostChain` / `PostChain.EnsureDepth` | `PostChain.Forget` | registry `ContextLost` |
-| Post stack ping-pong pair, FBO, per-stage programs (#375) | `PostStack.EnsureTargets` / `PostStack.EnsurePrograms` | `PostStack.Forget` | registry `ContextLost` |
-| SMAA edge/blend/area/search textures, FBO, sampler, edge + weight programs (#377) | `SmaaStage.Size` / `SmaaStage.Build` | `SmaaStage.Forget` (through `PostStack.Forget`) | registry `ContextLost`; `Build` also *deletes* and rebuilds the two programs when the option's preset moves |
-| SSAO raw + visibility R8 textures, FBO, visibility + blur programs (#379) | `SsaoPass.EnsureTargets` / `SsaoPass.EnsurePrograms` | `SsaoPass.Forget` | registry `ContextLost` |
-| Grass VAO/VBO/program/samplers/push texture | `GrassField.EnsureBuffers` | `GrassField.ContextLost` | registry `ContextLost` |
-| Beam program + per-VDO VAOs (`_vVao`) + element buffers | `Beams.EnsureProgram` | `Beams.ContextLost` | registry `ContextLost` |
-| Particle program/VAO/VBO/sampler + native stage buffer | `Particles.Ensure*` | `Particles.ContextLost` | registry `ContextLost` |
-| Caster depth program, FBO, depth array, persistent-mapped buffers, VAOs | `CasterPass.EnsureGl` | **nothing** — kept | see below |
-| Lightmap page pair (`sampler2DArray` x2, grown a layer at a time), scratch pair, scratch cube, readback PBO, record SSBO (`LightmapBake`, #674) | `LightmapBake.Ensure` / `AddLayer` inside the colour bracket | **nothing** — kept across areas; only the packing rewinds | `LightmapBake.ContextLost` |
-| Owned textures (`OwnedTextures`) | `OwnedTextures.Adopt`, or `OwnedTextures.Copy` for a GPU-PLT composite (#360) | `OwnedTextures.ContextLost` | registry `ContextLost` |
-| White null-texture stand-in (`OwnedTextures._white`) | `OwnedTextures.WhiteTid`, lazily, on the first draw whose diffuse resolves to GL id 0 | `OwnedTextures.ContextLost` zeroes `_white` with the rest of the names — nothing is deleted, and the next such draw re-mints it | registry `ContextLost`. Registered in `_owned` so #220's handle discipline holds; it is in no index, so no `Retire`/`Drain` path reaches it |
-| Owned pool buffers (`OwnedBuffers`) | `OwnedBuffers.Take`, in the ENGINE's context (buffers share, #70) | `OwnedBuffers.ContextLost` — names dropped, nothing deleted | registry `ContextLost` |
-| Chart vertex + element arenas and their one VAO (`MeshChart._vbo/_ebo/_vao`, #673) | `MeshChart.Pump` (upload through `COPY_WRITE_BUFFER`; the VAO once both names exist) | `MeshChart.ContextLost` — names forgotten, mirrors kept and re-sent on the next `Pump` | registry `ContextLost` |
+| `AlloyRenderer._oDbPart` ↔ `SceneDb.PartSlot` (the ownership table) | part index both ways | `DbSeat` is idempotent on `_oDbPart[held] == part`; `DbRelease` refuses unless `_oDbPart[i] == part` | told at the destroy edge, so closed |
+| `TexRegistry._depPart` (the dependents list) | bare `int part` | `MarkDependents` tests `part < MaxParts && Parts.LiveAt(part)` | a recycled index gets a spurious `Dirty.Texture` — one extra restage, benign |
+| `DbInputs._lightPart` / `_emitPart` | bare `int part` | `Light`/`Emitter` test `Parts.LiveAt(p)`; `PartDestroyed` is called from both folds | told, so closed (R1-11 fixed exactly this: "a reused part index revived a dead light") |
+| `PltColors._words` | ownership-slot number | `Stage` validates the **object** handle and `Clear`s the slot on a dead one | the flag word persists on a slot until something restages or clears it |
+| `MeshArena._ranges` range ids | recycled slot number, no generation | `Alive(r)` tests `Live`; `DrainFrees` only unmaps `_byContent` "when the key still names THIS range" | the holders (`SceneDb.PartMesh`, `DrawRecipe._range`) release before the free, so closed — but this is `VdoSig`'s shape with no sig |
 
-The owned depth texture has no `Revoke` edge: its contents are per-pass (cleared in `PostChain.Begin`, blitted back into the engine's attachment by `ResolveDepth`), so there is no world-edge state in it to invalidate. It *is* reallocated whenever the engine's attachment changes format or the target changes size, which is the same edge a resolution change or an alt-tab device reset arrives on.
+The draw path keeps one generation check as a net rather than as the mechanism:
+`AlloyRenderer.DbStage` (`Scene/AlloyRenderer.DbStage.cs`) tests `SceneDb.Objects.Valid(obj)` before it reads
+the object's columns and counts `_dbOrphan` — "DB slots staged whose object had already been freed: a feed
+bug, counted rather than drawn against object 0". A non-zero `orphaned parts` on the `dbpass:` clause of the
+`[alloy]` line means a told edge was missed, and it names itself instead of misrendering.
 
-### The geometry update path (#213, rewritten by #260)
+## Terminality — still the invariant everything else leans on
 
-There is no copy to keep in step any more. `GLRender::UnlockPool` @0x4cfc80 is the engine's sole push
-of a pool's host shadow into GL, and Alloy now **performs** that push rather than observing it: the
-hook mints the pool's GL buffer (writing the name into the descriptor at pool+0x0c, exactly where
-`UnlockPool` would have), replays the engine's own three upload branches off the usage word at
-pool+0x14, and never calls the original. So a write is on the GPU at the moment the engine commits it,
-and the ordering hazard a bracket-top refresh had — census E10's reading of #227 — does not exist.
+`GlContextService.Fail` sets `_disabled = true` permanently and clears `Available`
+(`managed/Graphics/GlContextService.cs`); `Ensure` short-circuits on `_disabled`, so `Create` is never
+retried and `Available` is never set again. Context loss is therefore a **per-session terminal edge**, exactly
+as it was before, and that is what makes the drop-only `ContextLost` handlers safe rather than leaks:
 
-- **Dangly meshes** (`PartDanglyMesh::Animate` @0x49c935) and **morph-animated nodes**
-  (`MdlNodeAnimMesh::InternalControl` @0x4996b9) commit through
-  `VertexDataObject::CommitItemDynamicData` @0x45c7d0, which tail-calls
-  `RenderInterface::UnlockPool(token, size, offset)` with **that one item's byte span** — size and
-  offset in bytes, straight into `glBufferSubData`. That is the upload; what survives of the old
-  machinery is the *signal*, `OwnedBuffers.DirtySince`, which the caster pass reads to decide a
-  re-bake and `ClearDirty` closes once a frame. `size == 0xFFFFFFFF` is the engine's "whole pool" and
-  substitutes the pool's own byte count, as it does in the engine.
-- **Grass** (`CAurTriangleList::BuildGrassPolys` @0x4b5286) commits the same way, but Alloy's grass
-  pass draws from its **own** instance VBO (`GrassField.EnsureBuffers`) and never reads the engine's.
-- **Particles** likewise: `Particles` orphans and re-fills its own `DYNAMIC_DRAW` VBO each frame
-  (`Particles.cs:1362`), so no engine pool is involved. **Beams** and the **post/fullscreen** VAOs are
-  Alloy-created too.
-- **Skinned parts** need no update path at all. The bone streams are indices and weights — static per
-  mesh — and the pose is a uniform block (`UploadBones`), so the buffer never changes.
+- `MeshArena.ContextLost` forgets `Vao`/`Vbo`/`_ebo` and zeroes the uploaded counts, deletes nothing, and
+  **keeps both CPU mirrors** so a rebuilt context would re-upload from them rather than from engine memory.
+  There is no `glDeleteBuffers` or `glDeleteVertexArrays` anywhere in `Db/MeshArena.cs`.
+- `TexRegistry.ContextLost` clears `_graveyard` without issuing the deletes, forgets every name and handle,
+  and retires the unreferenced slots (`Db/TexRegistry.Load.cs`).
+- `PltPalettes.ContextLost` is `_tex = 0; _dirty = true` — correct for a dead context, and the reason
+  `AurClearPalette` orphaning a live texture through it is a bug rather than a policy (see the gaps).
+- `DbFeed.ContextLost` resets `DbGrid` and `DbInputs` and re-marks every live part `Dirty.Created` so the next
+  fold rebuilds the side tables. The records themselves survive: they are CPU state and the game still owns
+  the objects.
+- `RenderThread.Shutdown` is the `scenedb` pass's `ContextLost` and is **joined, not signalled** — the game
+  thread may take the context back the instant it returns, so the thread must have let go first.
 
-The refresh runs at the top of **both** brackets — the shadow bake (`CasterPass`, first) and the
-colour pass (`AlloyRenderer.Frame`) — so a mover's shadow and its mesh are never a frame apart.
-A write that lands after the last refresh of a frame is one frame stale on screen, then correct.
+If context recreation ever lands, this part is the checklist, and the first thing to re-check is that
+`MeshArena.Pump` is reached at all on the far side (it lives in the world colour frame; see the gaps).
 
-### Deliberately outside the table
+## Threading: who may touch what
 
-- **`CasterPass`** is not in `PassRegistry` at all (folding the shadow pass in is #176). Its
-  `Lifecycle()` watches all three edges itself, and context loss routes through
-  `Release("4.6 context lost")` — the **world** teardown. Its GL names are deliberately kept, because
-  `Release` also fires on module unload with the context alive, and zeroing them there would rebuild
-  the program and the depth array at every area transition. Safe only while context loss is terminal.
-- **`ShadowService`** owns no table. It holds trampolines and a mode int, and its suppression is
-  derived per draw from `CasterPass.CascadesFresh` / cube membership — which `Release` and `Disarm`
-  zero (`CasterPass.cs:1080,1492`), so vanilla shadows come back by themselves.
-- **`TexProbe`** is stateless: two `glGet*` readbacks for the census triage, no cache, nothing to
-  revoke. It exists only because `Alloy/Scene/` may not touch GL (#206).
-- **Engine-owned pointers Alloy reads but never owns** — `CAurTexture*`, materials, nodes — are ADR
-  0015's subject, not this document's.
+**The game thread owns the database, by convention and by construction — nothing enforces it.** There is no
+thread-id capture, no assert and no "game thread only" check anywhere in `Alloy/Db/` or `Alloy/Seam/`. The
+invariant holds because every seam entry point is an `[UnmanagedCallersOnly]` vtable slot or a hooked engine
+function, and the game is single-threaded through the Aurora API.
 
-## What the writing-down exposed, and what was done about it
+The frame boundary is the serialisation, not a lock. `Db/SeamDraw.OnBoundary` is a `FramePhase.PrePresent`
+participant at priority 9, one ahead of `GlContextService`'s bracket, and the order per frame is:
 
-1. **The world walk sat below `RevokeAll`'s empty-table guard.** `if (_ownCount == 0) return;` came
-   before `PassRegistry.Global.Revoke()`, so a module unload arriving during a stretch where Alloy
-   owned nothing left sky, beams, particles and grass holding freed parts. Only sky has a
-   `Part::~Part` notice to catch any of it, and that one covers its part entries, not its `Scene`. This is #145/#150 with a different owner. **Fixed**: the
-   walk moved above the guard, where #147 had already put water's plane table for the same reason.
-   Water's bespoke call was deleted and it became an ordinary registry `Revoke` entry.
-2. **`EnvProbe` had no world edge at all.** Its re-bake test is `bspRoot != _bsp` — a bare pointer
-   used as an equality key — so a new area whose BSP landed on the freed one's address kept `Ready`
-   set and lit the new interior with the previous one's env map. **Fixed**: `EnvProbe.Revoke` drops
-   `Ready` and the key (and keeps the GL objects), wired to the registry, asserted in
-   `EnvProbe.SelfCheck`.
-3. **`AlloyRenderer` — the largest GL holder — had no `ContextLost` slot**, and dropped only
-   `_progWater` inline. Every pass it *calls* drops its names (#175); the pass driving the walk did
-   not. **Fixed**: `AlloyRenderer.ContextLost` drops the five programs, the FBO, the three SSBOs and
-   the VAO names, and the "draw" entry fills the slot.
-4. **`WipeHandles`'s own doc comment said "called at each enrollment and on release"** and had no
-   release caller. Harmless today (nothing can submit between a release and the next enrollment,
-   which wipes first), but the comment was a claim about a caller that did not exist. **Fixed**: it
-   is called from `RevokeAll`.
+```
+SeamDraw.OnBoundary                     game thread
+  RenderThread.StartWhenReady / SettleIfStandingDown
+  DbGui.NewFrame, DbCamera.NewFrame
+  RenderSnapshot.Publish                game thread
+     Fold = DbFeed.FoldFrame            <- THE fold, and the one place it happens
+        DrawRecipe.Pump                    (may call MeshArena.Acquire, which takes the arena lock)
+        DbFeed.TakeFrame -> FoldObjects, FoldParts
+     DbTable.TakeDirty x4
+     wait while the renderer still holds the previous frame
+     publish
+  DbFeed.CloseViews
+  if the render thread is live: it draws; else DrawSnapshot here, in try/finally
+SeamDraw.DrawSnapshot                   render thread, or the game thread on a stand-down
+  per view: SceneFeed.TickFromView, then DbGui.Draw (GUI) or SeamDraw.Pass (world)
+     Pass = AlloyRenderer.DbWorldPass -> DbOrder, DrawOwned -> BeginOwnedFrame (the 4.6 bracket)
+        MeshArena.Pump, TexRegistry.Drain, PltPalettes.Create, PltColors.Upload, the passes
+```
 
-## Engine-draw-driven lazy initializers (#284)
+`DbFeed.Present()` still exists and still works, but **nothing calls it**: it folds *and* draws, and the fold
+has to run inside `RenderSnapshot.Publish` ahead of `TakeDirty` or it sees an empty dirty list. `SeamDraw`
+says so in its own summary.
 
-`PartTriMesh::Draw` @0x4513d0 was never only a draw. Under #264 the engine's bucket walk is gone, so
-anything it used to *initialise on the way past* now has to be driven by Alloy. Two of these were
-found the bad way — something was missing on a live run and the log said why afterwards — so this is
-the list, read off the binary rather than off a bug report.
+**The snapshot carries views, not records.** `RenderSnapshot.Frame` holds a `ViewRec[]` (camera matrices,
+viewport, depth range, the scene handle, the world/GUI discriminator) and four dirty counts, and nothing else.
+The renderer reads `SceneDb`'s columns **live**, and what makes that safe is the one-frame-in-flight rule, not
+a copy. ADR 0028 section 5 describes the snapshot as carrying "changed world matrices, materials, bone
+palettes, visibility"; as built it carries none of those. `DbFeed.Records.cs`'s R1-17 remark is the
+authoritative statement of the contract and is worth reading before touching either side of it.
 
-The method: take `PartTriMesh::Draw` down and ask of each call whether it mutates state Alloy later
-reads. The vtable slots below are dumped from `_ZTV11PartTriMesh` (+0x10 for the Itanium ABI header),
-not guessed.
+**The render thread does not run, and cannot be made to run by the knob.** `RenderThread.Start` refuses
+unless `RenderThread.GuiOffThread` is set, and **nothing sets it** — the reason is in the refusal itself: a
+GUI view goes through `GuiCapture`, whose vertex buffers and layer stack the game thread also writes
+(`UiHost`'s 2D windows, the NUI flush), and `SceneFeed.TickFromView` writes `FrameInputs`, a global every pass
+reads. So `alloy.renderthread=1` logs a loud stand-down and the single-threaded path takes the frame. Every
+"render thread" row below therefore means *inside the 4.6 bracket*, which today is the game thread.
 
-That method has one blind spot, and it cost the third entry: **a skinned part never enters
-`PartTriMesh::Draw`.** `PartSkin::Draw` @0x4830b0 goes straight to `RenderSkinned`, so walking the
-tri-mesh draw could not have found the skinmesh initializer no matter how carefully it was done. The
-list is only as complete as the set of draws it was read off; there are two, and both are below.
+Three things are latent races that only arm with that thread, and all three are documented at their sites:
 
-| Engine call (from `PartTriMesh::Draw`) | Mutates state Alloy reads? | Alloy-side driver, and its cost |
+1. **`RenderSnapshot.Publish` folds before it waits.** `Fold` and `TakeDirty` run, *then* the lock is taken and
+   the publish waits for the previous frame's release. With a live render thread the fold for frame N would
+   rewrite the persistent draw records while the renderer still draws N-1. The fix is to move the wait above
+   the fold, not to add a lock.
+2. **`DrawRecipe`'s table is unsynchronised** and is read from the bracket (`AlloyRenderer.Db.cs`,
+   `DbStage.cs`, `Casters.cs`, `DbInputs.cs`) while `Intern`/`Fill`/`Pump` write it from the fold, and
+   `DbAnim.Dyn`'s `InternDynamic` writes it from the dangly solve. `MeshArena.Dyn.cs` names this as the thing
+   to fix first.
+3. **`MeshArena`'s read API is lock-free against a locked, compacting writer.** `Draw`, `Runs`, `Bounds`,
+   `RefsOf`, `Alive` read `_ranges` with no lock; `NewRange` reassigns the array under the lock and `Compact`
+   rewrites every live range's `Base`/`Off*` in place.
+
+Two things cross threads correctly today and must keep doing so: `MeshArena.Pump` (the only place frees land
+and both mirrors go up, under `_gate`, inside the bracket) and `TexRegistry.Drain` (GL only — it deletes the
+graveyard, uploads at most 8 finished jobs and publishes them; it reads no engine memory and writes no
+`SceneDb`). The texture decode worker (`cx-tex`) and the model parse worker (`cx-model`) see only value
+records copied for them at the offer, touch no engine memory and no GL, and are both background threads with
+no stop token — process lifetime, deliberately.
+
+One priority inversion worth knowing about: `MeshArena.Acquire` (from the fold, game thread) and
+`MeshArena.Forget` (from an eviction, game thread) take `_gate`, which the bracket holds for the whole of
+`Pump` including `Compact` and every upload. And `MeshSimplify.Run` — two calls per distinct mesh, from
+`CutLods` inside `Build` — runs on the game thread *while holding `_gate`*.
+
+## The tables
+
+### Records, handles and seam state
+
+| Resource | Created by | Killed by | Context loss |
+|---|---|---|---|
+| The six `DbTable`s — `Scenes` 256, `Objects` 65536, `Parts` 524288, `Cameras` 512, `Tiles` 16384, `Lights` 16384 (`Db/SceneDb.cs`) | `DbTable.Alloc`, which also marks `Dirty.Created` | `DbTable.Free`, generation++ and `Dirty.Destroyed`. Objects: `ObjectSlots.ReleaseRecord` / `TileBuild.FreeObject` / `TextObjects.Destroy`. Scenes: `DbScene.Destroy`. Cameras: `DbCamera.Destroy`. Tiles: `TileBuild.Drop`. Lights: `TileBuild.FreeLights` | none — CPU only |
+| The dirty lists (`DbTable._dirty`/`_dirtyList`) | `DbTable.Mark`, appended once per slot per frame at the first bit | `DbTable.TakeDirty`, from `RenderSnapshot.Publish` after the fold | none |
+| The ownership table's DB columns `_oDbPart`/`_oDbRecipe` and the back-reference `SceneDb.PartSlot` | `AlloyRenderer.DbSeat` (`Scene/AlloyRenderer.Db.cs`), from `DbFeed.FoldOnePart` on a dirty part | `AlloyRenderer.DbRelease`, from `ObjectDied`, `ReleaseRangeOutside` (a tree change) and the part fold's `Dirty.Destroyed` | the record epoch bump in `AlloyRenderer.ContextLost` |
+| The per-draw records in `_drawBuf`/`_texHBuf` | `AlloyRenderer.DbStage` / `StageDbPart` writes them; `Issue.UploadDraws` sends them | re-written when the part is marked dirty; the slot is unstamped by `UnstampRecord` at a reseat | `AlloyRenderer.ContextLost` zeroes the buffers **and** bumps the record epoch (#242: a name drop alone would leave every slot believing it was still uploaded) |
+| DB bone slots in the renderer's bone stage | `DbAnim.SkinObject` → `AlloyRenderer.DbAllocBone` (owner `-2`, so the engine path's two reclaimers skip it by construction) | `DbAnim.Unskin` → `DbFreeBone`, from the part going disabled/merged, a refused palette, and `DbAnim.OnRetire` walking the object's range | `_boneBuf` zeroed by `AlloyRenderer.ContextLost` |
+| The vtable block — all six tables in one `AlignedAlloc` | `Facade.Build` (`Seam/Facade.Vtables.cs`), once at boot | nothing: `Facade.DropTables` is self-check-only, and `IExtenderService` has no shutdown | n/a |
+| The `CAurPart` vtable | `PartShell.Build`, via `ObjectFns.Register`'s `AfterTablesBuilt` | nothing | n/a |
+| Facade shells — 0x4c0 object / 0x558 string / 0x518 scene / ≥0xe68 camera, each behind a `SeamHeader` | `Facade.Mint` → `SeamShell.Alloc` | `Facade.Retire` → `SeamShell.Retire` marks `StateRetired` and rings it; the `AlignedFree` only happens in the ring-eviction branch or in `SeamShell.DropAll` (self-check) | n/a — native |
+| Part shells (`CAurPart*`), one per asked-for (object, part), chained off `SceneDb.ObjSeamPartShells` | `PartShell.For` | `PartShell.FreeAll(obj)` from `ObjectSlots.ReleaseRecord` — freed immediately, `Magic` zeroed first, **not** quarantined | n/a |
+| `CallBack` records (0x30 each) and the `CExoArrayList` behind the shell's +0x460 | `CallbackList.Add` | `CallbackList.Remove` per record; `CallbackList.FreeAll(shell)` from `ObjectSlots.Destroy` | n/a |
+| The game's SafePointer back-ref array at shell +0x08, and the attachment list at +0x4a8 | the **game** reallocs them in place (the shell is handed out with capacity 0 so the first `realloc(NULL)` is the game's) | `Facade.NullSafePointers` and `ObjectSlots.FreeEngineList`: zero each target, index −1, then free on Linux. On **Windows the array is leaked and counted** (`SeamShell.NoteForeignArray`) because nwmain statically links its CRT | n/a |
+| The scene member mirror behind `Scene+0x130`/`+0x138` | `SceneShell.Flush` (`NativeMemory.Realloc`), lazily off the `GetAurSceneObjectCount` hook | `SceneShell.Release` from `DbScene.Destroy` — it nulls the shell's two words **before** freeing the array, because the shell outlives the record by its quarantine | n/a |
+| The interned native name table | `NativeNames.Of` (`Marshal.StringToCoTaskMemUTF8`, under `lock (_byName)`) | nothing, by documented design: one copy per distinct name, never freed, tens of kilobytes for the session. It is **process-wide, not per `ModelDef`**, so an entry outlives its model | n/a |
+| Text documents (`TextObjects.Docs[]`, one per object index) and their line/quad/run arrays | `TextObjects.Create` | nothing is freed: documents are **pooled by index and never released** (an explicit `ponytail:`). `TextObjects.Destroy` frees the record and `Reset` returns the doc to ctor state on reuse, re-stamping `d.Owner` with the new generation | none — CPU only |
+| `TextSlots._external` (the game's opaque cookie, keyed on the object index) | `SetExternalData` | `TextSlots.ClearExternal` at **both** create and destroy — "a recycled index must not hand the previous object's pointer to the next one's `GetExternalData`". This is the model the other index-keyed columns should follow | none |
+
+### Models and geometry
+
+| Resource | Created by | Killed by | Context loss |
+|---|---|---|---|
+| The model table (`ModelCache._table`/`_bySlot`/`_lru`) | `ModelCache.InsertModel`, from `Publish` | `ModelCache.Evict`, from `Trim` (idle bytes past `models.budget`, default 192 MiB) or `Clear` (a source change / module unload). `AreaEdge` reports the census and drops the read-ahead references; it releases nothing held | none — it owns no GL name |
+| Parsed `ModelDef`s | `MdlParser.Parse` on the `cx-model` worker | GC, once `Evict` has removed the slot and every `Evicting` subscriber has dropped its strong references | none |
+| The parse queue and jobs | `ModelCache.Start`, which lazily mints the one `cx-model` background thread | jobs by `_flight.Remove`/`_done.Dequeue`; `Clear` bumps `_sourceGen` so in-flight work publishes stale and is dropped. The thread lives for the process | none |
+| The ASCII→binary disk cache (`MdlCache`) | `MdlCache.Store`, temp file then `File.Move`; keyed on the source content hash plus a build key and length, all re-proved in `ReadHeader` | `MdlCache.Prune`, oldest mtime first past 512 MiB. Native blocks handed to the engine are freed in `OnReleaseResource` | none |
+| Arena ranges (`MeshArena._ranges`, `_byContent`, `_byMesh`) | `MeshArena.Acquire` → `Build`, `AcquireRaw`, `AcquireDynamic` | `MeshArena.Release` last-ref queues into `_pendingFree`; the kill is `DrainFrees` inside `Pump` — a render-side frame edge, "so no draw in flight holds its offsets". `Forget(ModelDef)` drops the `_byMesh` shortcuts only and **releases nothing**, counting `_heldPastEviction` for a part that outlived its model | `MeshArena.ContextLost` forgets the names, keeps the ranges and both mirrors |
+| The arena's two CPU mirrors (`Section.Mirror`, `_iMirror`) | `GrowMirror` / `AppendRun` | nothing: grow-only, `Compact` compacts the contents but never shrinks the arrays. `ResetForCheck` is off-device only | kept, deliberately |
+| Mesh LOD levels | `MeshArena.CutLods` — two `MeshSimplify.Run` calls per distinct mesh, on the game thread under `_gate`, each level kept only if it saves `MeshLod.MinSaving` | with the range | with the names |
+| Dynamic (dangly/animmesh) ranges and their native vertex buffers | `DbAnim.TakeRange` → `MeshArena.AcquireDynamic` with a per-part splitmix key so nothing dedups onto it, plus `DbAnim.DynTake`'s `NativeMemory.Alloc` (cap `MaxDynParts` 2048, refused loudly past it) | `DbAnim.DanglyForget(obj)` from `DbAnim.OnRetire` — the object-destroy edge: free both native buffers, `MeshArena.Release` the range, swap-remove from `_dynList`. The private recipe row is only retired by `DrawRecipe.Forget` | with the arena |
+| The dynamic patch queue | `MeshArena.WriteDynamic` (game thread, under `_gate`: patches positions in the mirror and recomputes the cull bounds so the sphere follows the pose) | `MeshArena.DynUpload` inside `Pump` — one `NamedBufferSubData` per dirty range, under the same lock. `_dynDirty` is a fixed 4096; overflow is counted and named as "a frozen cloak" | not cleared by `ContextLost` — frozen, inert |
+| The part index space (`PartTree._free` — 17 size-class free lists, `_cursor`, `_cap`) | `PartTree.Alloc(n)`, rounded up to a power of two; refused past `SceneDb.MaxParts` | `PartTree.Release(first)` from `PartTree.Free(obj)`, which also `MeshArena.Release`s and `DropPlacement`s every part first. No compaction, at most 2× waste (an explicit `ponytail:`) | none |
+| Draw recipes (`DrawRecipe`, max 16384), the stable half of a draw | `DrawRecipe.Intern(model, node)` → `Fill`, which takes one `MeshArena` reference and up to eight `TexRegistry` references | `DrawRecipe.Forget(ModelDef)` releases the range and each slot's `TexId` — **but its only producer, `DrawRecipe.Attach`, is never called** (see the gaps). Slots are never reused: `_n` only increments, and `Spilled` is the ceiling | the recipe is CPU state; the names it points at are the registry's |
+| Placement / resident-mesh census (`ModelCache.Census`) | `NotePlacement` from `PartTree.Write`, `CombinePlan`, `MergeInto`; `NoteResidentMeshes(+1)` in `InsertModel` | `DropPlacement` from `PartTree.Free` and the two merge paths; `(−1)` in `Evict`. An unmatched drop is `_strayDrops` plus a named line | none |
+| `MtrDef._cache` (parsed `.mtr`s, negative results memoised) | `MtrDef.Resolve`, under `lock (_cache)` | `MtrDef.Forget` — **no live caller**. Unbounded in distinct material names | none |
+| Animation bindings and resolution memos (`ModelCache.Anim`) | `Resolve`, `Bind`, `Children`, lazily | `ModelCache.Forget(ModelDef)` from `Evict`; `ClearBindings` from `Clear` | none |
+
+### Textures, PLT and text
+
+| Resource | Created by | Killed by | Context loss |
+|---|---|---|---|
+| Texture registry slots (16384, SoA, open-address `_hash`) | `TexRegistry.Alloc` from `Acquire` or `Swap`. The key is **(lower-cased resref, atlas cell)** and nothing else — not the kind (asking for the same file as `Auto` and as `Plt` used to make two slots and two uploads) and **not the PLT scheme**, which lives per object and is resolved in the shader | `TexRegistry.Retire`, from exactly three places: `Release` dropping the last reference on a *failed* slot, `EvictPastBudget` off the idle LRU head, and `ContextLost` for an unreferenced slot. **No object, scene, model or area edge touches it** — the `texreg` pass is registered with no `Revoke` on purpose | `TexRegistry.ContextLost` |
+| The registry's GL textures and bindless handles | `TexRegistry.Upload` (immutable storage, per-level sub-image) from `Finish` from `Drain`; `MintHandle` in the bracket only — a handle belongs to the share group | the name goes to `_graveyard` from `Retire`, from `Land`'s second-upload case, and from `Tick`'s stale-landing case; the `glDeleteTextures` happens in `Drain`'s first loop. The handle goes in `DropHandle` | names and handles forgotten, graveyard cleared, nothing deleted |
+| The decode worker, its queues and job buffers | `TexRegistry.StartWorker` (one `cx-tex` background thread, lazily on the first `Offer`); `Job.Data` from `PltImage.Decode` / `RasterReader.PrepareTga` / `DdsReader.Prepare` | `Recycle` frees `Job.Data` with the right allocator per kind; `Drain` uses `try { Finish } finally { Recycle }` so an upload throw cannot leak the decode buffer. The stale-upload guard is the generation alone: `Finish` returns if `(_gen[i] & 0xFFF) != j.Gen` | the queues are left; nothing draws |
+| The dependents list (`_depPart`/`_depNext`, 65536 edges) | `TexRegistry.AddDependent`, from `StageDbPart`'s bindless loop, and only while the slot is `Loading` — that is what bounds it | `MarkDependents(i)` once per slot at arrival or failure; `FreeDeps(i)` at `Retire`. Overflow is counted and said once: the part keeps the white stand-in until something else dirties it | — |
+| The PLT master palette (1.75 MiB CPU) and its RGBA8 texture | `PltPalettes.SetPalette` → `ReadTga` → `Compose` fills the CPU side on the game thread; `PltPalettes.Create` makes the texture in the bracket | `Create` itself deletes the old name before making the new one. That is the only delete | `PltPalettes.ContextLost` zeroes `_tex` and sets `_dirty`, deletes nothing |
+| Per-object PLT rows (`SceneDb.ObjPltRow`, 10 `ushort` per object) | `PltColors.SetRow` / `SetRows`, each marking `Dirty.Material` | **nothing** — see the gaps | — |
+| The PLT row GPU block (`PltColors._words` + SSBO at binding 24) | `PltColors.Stage(slot, obj)` from `StageDbPart`; the SSBO on first `Upload` | `Clear(slot)` for a record whose diffuse stops being a PLT; `Stage` validates the object handle and `Clear`s on a dead one, counting `_badObj` | `PltColors.ContextLost` drops the SSBO; the CPU words survive and go up whole |
+| Font atlases (`TextFonts`, `TextAtlas`) | `TextFontBake.Resolve` bakes a TTF with the client's own `stb_truetype` exports into an `AllocHGlobal` block; `TextAtlas.Upload` makes the GL texture and frees the staging block. A bitmap font instead borrows a **registry** name through `TexRegistry.Acquire` | **nothing.** `TextAtlas.ContextLost` exists and has no caller; the `texreg` pass's `ContextLost` covers the registry and the PLT tables and not `TextAtlas`. `TextFonts.Register` replaces a font by name without deleting the replaced atlas, and `TextAtlas`'s registry references are never released, so those slots can never go idle or be evicted | nothing happens — every `TextFont.Atlas` keeps a dead name with no re-bake |
+| Text quad/run buffers | `TextQuads.Build`, grown on the document and reused; the cache key is (stale bit, font epoch, grid generation) | nothing — they die with the pooled document, i.e. never. Invalidated, not freed, by `Stale`, a font epoch bump or a `GridGen` bump | none |
+| The markup colour ring (`TextMarkup.Stack`, `_index`) | static | nothing: process-wide mutable state, a faithful port of the engine's own leak, and written by both the draw path (`Process`) and the measure path (`Skip`) with no lock | none |
+
+### Indexes
+
+| Resource | Created by | Killed by | Context loss |
+|---|---|---|---|
+| The visible-set index (`DbGrid`: 64×64 wrapping cells of one NWN tile, a static list per cell, one mover list, one unbounded list) | `DbGrid.File` from `DbFeed.FileObject`, on `Dirty.Created`/`Xform` and retried until the sphere is real (a static filed with a zero sphere would be unbounded for the session) | `DbGrid.Remove(o)` from `ObjectDied`; `DbGrid.Reset` from `DbFeed.ContextLost`. A cell's box only ever grows, which costs a candidate and never a miss | via `DbFeed.ContextLost` |
+| The hit index (`HitGrid`) and the per-object hit columns | `HitFeed.NoteObject` seeds the columns; `HitFeed.Fold` files the grid once per frame, from `DbAnim` after the world matrices are written and before `TakeDirty` | `HitGrid.Remove(o)` inside `HitFeed.Fold`, off the `Dirty.Destroyed` mark the table already carries — "nothing on destroy", deliberately | none — CPU only |
+| Per-`MeshDef` triangle BVHs (`MeshBvh`) | built on first cast for a mesh | `MeshBvh.Evict`, subscribed to `ModelCache.Evicting` from `HitFeed.HookEviction` — lazily on first real use rather than at `Initialize`, because `ModelCache.SelfCheck` assigns `Evicting = null` partway through its own run and would drop an earlier subscription | none |
+| The tile table and its cell map (`TileBuild._byCell`, `_statics`, `SceneDb.Tile*`) | `TileBuild.SpawnTile` / `PlaceStatic`, after `SetTileset` | `TileBuild.Drop(t)` from `DeleteTile`, from `Revoke` (the registry world walk) and from `Forget(ModelDef)` (a model eviction pulls every placement standing on it). `Drop` frees the tile's statics, its lights, its object and the record | none |
+| Tile merge plans (`TileBuild._plans`, keyed on the `ModelDef`) | `TileBuild.Plan(ModelDef)` | `TileBuild.Forget(ModelDef)` only — kept across an area change on purpose, because the next area re-uses every tile model it shares with this one | none |
+| The light table (`SceneDb.Lights`, `TileLightIds` stride 8) | `TileBuild.SetTileLights` / gob lights through the same path | `TileBuild.FreeLights` from `Drop`/`FreeObject`. `TileLightIds` is explicitly **not** a contiguous run: `DbTable`'s free list is LIFO, so after the first area change two lights allocated together land out of order | none |
+| `DbInputs._lightPart` / `_emitPart` (the renderer's light and emitter lists, 4096 each) | `DbInputs.PartCreated` from the part fold's `Dirty.Created`, and `RegisterTileLight` — idempotent in both directions, because a tile whose light both streams register would otherwise be two lights at one place | `DbInputs.PartDestroyed` from the object fold's `ObjectDied`, the part fold's `Dirty.Destroyed` and `TileBuild`; swap-with-last, so a walk of the table is a walk of what is live. `DbInputs.Reset` from `DbFeed.ContextLost` | via `DbFeed.ContextLost` |
+
+## Deliberately no death edge
+
+These are session-lifetime on purpose. Listed so they are not mistaken for leaks, and so the next person who
+adds one knows the shape:
+
+- **Every `SceneDb` column array**, the `DbTable` free lists, `DbGrid`'s six index arrays, `DbGui`'s four,
+  `DbFeed`'s view/visible/retry/seated arrays, `SceneFeed`'s per-scene stamps. Fixed size, type-init, cleared
+  per record by `DbFeed.InitObject` / `DbScene.Create` / `DbCamera.Create` / `PartTree.Clear`.
+- **The two `RenderSnapshot.Frame`s.** Grown once, reused forever; `DbSceneSelfCheck` asserts that a warm
+  `Publish` allocates **zero** bytes, which is the NativeAOT rule for a hook (a collection on the game thread
+  at the publish is a stutter).
+- **`MeshArena`'s CPU mirrors and its GL buffers/VAOs**, keyed on content: an area change invalidates nothing
+  in them, which is what makes the next area re-use every mesh it shares with the last.
+- **Every `TexRegistry` slot**, for the same reason — the `texreg` pass is registered with no `Revoke` and the
+  comment says why. A texture lives for the session, not for the area.
+- **`TileBuild._plans`**, keyed on the `ModelDef` instance, so the next area re-uses every tile model it shares
+  with this one. Its edge is `Forget` on a model eviction, which is wired.
+- **The interned native name table.** One copy per distinct node/model name, never freed; tens of kilobytes for
+  the session against a lifetime problem with no other cheap answer.
+- **`TextMarkup.Stack`**, a faithful port of the engine's own process-wide colour-stack leak.
+- **`SceneDb.CamBehavior`**, a `CAurBehavior*` the game allocated: ADR 0028 section 2 says CX never frees one.
+- **The three workers** (`cx-model`, `cx-tex`, `cx-mdl`) and `SeamShell`'s vtable blocks. Background threads
+  and boot-time native blocks; `Facade.DropTables` and `SeamShell.DropAll` exist and are self-check-only,
+  because `IExtenderService` has no shutdown hook.
+
+## What writing this down exposed
+
+Each of these is a producer the contract names and the code does not have. Re-verified against the tree on
+**2026-10-02**; the behaviour consequences, and the deliberate differences that are not gaps at all, are in
+CX-184.
+
+**Closed since the first pass** (2026-10-01), and not repeated below — each was a numbered gap here and each
+now has its producer:
+
+- The part table has one allocator: `PartTree.Build` goes through `SceneDb.Parts.AllocRange` (which marks the
+  run live and `Dirty.Created`) and seeds the feed columns through `DbFeed.InitPart`, which `PartTree.Clear`
+  also calls, so a recycled chunk cannot inherit the dead tenant's recipe or renderer slot.
+- `DrawRecipe.Attach` is called (`AlloyRenderer.cs`), so a recipe retires with its model and the texture
+  budget can evict.
+- `DbScene.ObjectDied` is called from `ObjectSlots.ReleaseRecord`, `TileBuild.FreeObject`, `DbCamera.Destroy`
+  and `DbFeed`'s destroy fold — and `DbScene.Destroy` now **detaches** its members as `Scene::~Scene` does
+  rather than destroying them.
+- A scene destroy reaches the tiles: `TileBuild.NewObject` joins the scene (`DbScene.JoinNew`), and
+  `DbScene.Destroy` runs `AlloyRenderer.AreaEdge` for a world scene before the member sweep, so
+  `TileBuild.Revoke` does the tile teardown with its census and its model holds.
+- `HitFeed.NoteObject` is called by `ObjectFns` and `TileBuild`, so `MeshBvh` has a death edge and the hit
+  test answers; and the per-frame fold runs once per **frame** rather than once per scene.
+- `DbAnim`'s lifetime API has its callers: `ObjectCreated`/`ObjectRetired`/`TreeChanged` from the seam's
+  create, release and tree edges, with `ObjectDying` raising the engine's `"Dying"` event first and then
+  taking the attach children. The `DynTake` recycled-buffer overrun is gone with `DanglyForget`.
+- The quarantine clock ticks (`SeamService.Frame` on `FramePhase.PostPresent`), the window is 1800 frames
+  above the measured ~900-frame re-attach gap, and `Facade.Retire` swaps the shell's vptrs to the **poison
+  twins** — so the ~20 slots that answer from the shell's own words are counted refusals too.
+- `Gob+0x90` (the root `Part*`) is written, so the unhooked `AurEnableShadowing`/`AurDisableShadowing` reach a
+  part.
+- `SceneDb.ObjPltRow` and the material-parameter overrides go with the record (`TexSeam.ObjectDied` from
+  `ObjectSlots.ReleaseRecord`): a recycled index no longer wears the dead tenant's skin, hair and armour.
+- `TextAtlas.ContextLost` has a caller (`GuiPass`).
+- `MeshArena.Pump` runs in the frame fold, so a GUI-only frame collects finished work.
+- A compaction refreshes exactly the records that moved: `MeshArena` reports the moved ranges and
+  `AlloyRenderer.DbRangesMoved` rewrites those slots' draw arguments. Nothing re-stages.
+- `DbFeed.Retry` keeps its own retry list instead of re-marking `Dirty.Material` from inside the fold that
+  clears it.
+
+### Still open
+
+1. **`HitTest.PartName` returns 0**, so `CHitInfo+0x68` is never filled, although `NativeNames.OfPart` now
+   exists to fill it. A managed string's address is not a pointer the game may hold; the interning is the
+   missing half.
+2. **`HitGrid` is keyed on the raw object index with no generation.** `HitTest.Pass` guards with
+   `Objects.LiveAt(o)`, which catches a destroyed slot and not a recycled one. `HitGrid.Clear` has no
+   production caller.
+3. **A camera's `CAurObject` sub-record is never freed.** `FacadeParts.NewCameraObject` allocates an objects
+   row; `DbCamera.Destroy` frees only the camera row and says the sub-object is seam-obj's to free, and
+   `CameraSlots.Die` does not. Bounded by `MaxCameras`.
+4. **A text-object destroy leaves two loose ends.** `StringSlots.Destruct` → `TextSlots.Destruct` frees the
+   shell's lists and the record; it leaves `ObjKindOf[i]` reading `Text` over a freed slot and does not
+   decrement `TextObjects.Alive`. A wrong counter, not a fault.
+5. **Font atlases have no replace or re-bake edge.** `TextFonts.Register` replaces a font by name without
+   deleting the replaced atlas's GL texture, and `TextAtlas`'s per-bitmap-font registry references are never
+   released, so those slots can never go idle or be evicted. `TextFontBake.GuiScale` is the only publisher of
+   the pixel grid and its only caller is the TTF bake itself, so a GUI-scale change after a font is baked
+   neither re-bakes the atlas nor moves `GridGen`.
+6. **`AurClearPalette` orphans a live GL texture.** `PaletteFns.AurClearPalette` implements "drop the palette
+   texture" by calling `PltPalettes.ContextLost`, which zeroes `_tex` **without** deleting it — correct for a
+   dead context, a leak for a live one, because the next `Create` then has nothing to delete. Separately,
+   `PaletteFns.Pump`/`CreatePending` have no caller; the deferral works anyway because `PltPalettes.Create` is
+   called unconditionally from both bracket sites and early-returns on `!_dirty && _tex != 0`. The live
+   mechanism is not the documented one.
+7. **`DrawRecipe.Forget` does not reset `SceneDb.PartRecipe[p]`.** A part still naming a retired recipe gets
+   `Range(r) == -1`, counts `_dbNoRange` and goes back on the retry list every frame, for ever. Latent while a
+   part's range outlives its recipe only across a model eviction.
+8. **`BindLightCubes` has no DB-mode caller**, so no point light is shadowed. It runs only inside
+   `SceneInputs.FrameStart`, which is the mode-0 path; `SceneInputs.DbShadowSlot` does the focus and the bake
+   and not the bind. So `FrameInputs.AreaLightSlot` is never written in a DB frame and `LightsWithCube` reads
+   0 against mode 0's 22 on the same light set. **It is harmless to brightness** — verified in the shader
+   rather than taken on trust: `cx_lightfrag.glsl:462` adds a slotless light's full unshadowed diffuse and
+   specular — so it is not the interior-darkness defect, which is a draw-class question
+   (`DrawRecipe.ClassOf`'s conservative CUTOUT guess) and lives in
+   CX-184. The **sun** cascades have the mirror problem one level up:
+   the bake runs (813 staged draws, 4/4 cascades) and `CasterPass.CascadesFresh` gates the uniform upload on
+   a `_frameSeq` the DB pass bumps at a different point in the frame, so nothing casts.
+9. **Nothing charts the arena's ranges, so no baked lightmap page can exist in DB mode.** A rect is minted
+   from a charted draw (`BuildBatches` → `MeshChart.Range` → `LightmapBake.Enrol`) and a DB draw comes out of
+   the mesh arena, which carries no lightmap chart. `LightmapBake.Produces` says so, the loading-screen hold
+   stands down the moment the set closes with no rect source, and every DB light therefore stays **dynamic** —
+   self-retiring, because the first chart offered ends it.
+10. **The camera's keyhole byte is never set, so the DB keyhole is inert.** `DbKeyhole` is the column's writer
+    and fills the shader inputs, but `Camera+0xe50` reads 0 on the CX camera shell every pass (measured:
+    33911 passes, "0 armed / 33911 with the aperture shut"). No `Camera::` function in the decompile writes
+    it, so the writer is inlined somewhere in the game's camera update — that is the missing piece. The
+    counter line says so rather than letting it look like it works.
+11. **Two housekeeping facts about the handle scheme itself.** `DbTable.Free` masks the generation with
+    `0xFFF`, which also clears the `1u << 31` live bit — correct, and worth knowing because it means `LiveAt`
+    and `Valid` are cleared by one write. And the generation is 12 bits and wraps, so a stale `DbId` aliases
+    again after 4096 frees of the same slot; nothing counts or guards the wrap. `DbTable.Mark` takes a raw
+    index with no bounds test, so an out-of-range mark throws rather than corrupting.
+12. **`Tiles` and `Lights` dirty sets are never `TakeDirty`'d in production**, so their bits saturate for the
+    session. Bounded, not an overflow — a slot enters the list at most once per window — but a reader
+    expecting `DirtyAt` to mean "changed this frame" will be wrong on those two.
+
+---
+
+# Part 2 — What the contract deletes
+
+Everything below existed only because the engine produced the records and CX inferred their lifetimes. Under
+the scene database nothing produces them, so nothing has to be inferred. **Deleted 2026-10-07** with the
+engine-scene path; the table stays as the record of what went and why.
+
+| What goes | Where it lives | Why the contract does not need it |
 |---|---|---|
-| `IsPartRenderable` @0x450e60 | No — pure read of `part+0x96` / node `+0x118`/`+0x278`/`+0x284`. | none needed |
-| vtable +0xc8 `Mat` @0x450960 / +0x100 `MatStatic` @0x450560 | **Fixed-function GL state only** (`SetColor4f`, `SetMaterialv`, `SetBlendingMode`, `Enable/Disable`), plus the three gob modulation terms. Nothing persists on the part. | Alloy's own pass state + `AlloyCensus.GobAlphaMul`/`GobDiffuseMul`/`GobEmissiveAdd`. Per-part, but they are reads. |
-| `Material::BindAllStandardTextures` @0x4c6e30 → `CAurTexture::BindInUnit` @0x48e1e0 | **Binds, never builds.** It reads `AurTextureGetTID` and calls `AurTextureBindTIDInUnit`. It does, however, tick the texture CONTROLLER (`AurTextureGetController` + slot 0x10, under `enabletexturecontrollers`) — the procedural/animated-texture update. | Nothing drives controllers for owned parts. The particle pass still routes through `BindInUnit`; the owned colour pass does not. **Accepted, unmeasured**: NWN's controller population is Life/Wave water shaders, which Alloy replaces with its own water pass. Re-open if a procedural texture reads frozen. |
-| `Material::CheckTextureControllers` @0x4c5d20 | Only `SetControllerEnabled` under `HasBumpyShinyMap`. | none needed |
-| vtable +0x38 `VertexPrimitive::SetupArrays` | **YES — the whole VDO.** It fills `vp+VpVdo`/`vp+VpItem` and latches its verdict. Nothing else calls it, so no record ever got a VDO and the world went black. | `SceneWalk.TryBind`, ONE call per record ever (`PartTable._pSetupTried`), budget 512/frame in the steady state and unbounded on a new `Scene` (an area load is already a hitch). |
-| vtable +0x120 `TransformTextureMatrix` / +0x128 `RestoreTextureMatrix` @0x4500b0/0x4500d0 | GL texture-matrix push/pop from `part+0xb0` (the texture angle). | Alloy folds the angle into its own record. No engine state persists. |
-| `RenderBumpyShiny` @0x451200 | Lazily creates the `vswater`/`fswater` custom program into `DAT_01aab338`. Engine-only — Alloy never reads it. | none needed |
-| `RenderEnvironmentMapped` @0x451040 | Reads `gob+0x480` (a **`CAurTexture*` env-map REPLACEMENT**, not a flag), scales ambient by `gob+0x108` when `gob+0xf6` is set, falls back to `mat+0x40` then `currentscene+0x1e8`. Binds; mutates nothing. | `AlloyCensus.GobHasEnvMap` sets `AlloyCandidate.Env`; #121's IBL probe supplies the texture. |
-| `RenderFlat` @0x450eb0 | Sets the render hint and the scene's shadow-map bind, then `RenderVertexData`. | Alloy's own submission. |
-
-And one more from the *other* draw, because a skinmesh never enters `PartTriMesh::Draw` at all —
-`PartSkin::Draw` @0x4830b0 goes straight to `RenderSkinned` @0x482c70:
-
-| Engine call (from `RenderSkinned` @0x482c70) | Mutates state Alloy reads? | Alloy-side driver, and its cost |
-|---|---|---|
-| Part vtable +0xe0 `PartSkin::PostProcess` @0x483120 | **YES — the entire bind pose.** It writes the bone count `node+0x284`, the inverse bind-pose lists `+0x2f0`/`+0x300` and the 64-entry bone map `+0x320` — which is exactly and only what `SkinPose.Solve` reads. `RenderSkinned`'s *first act* is to call it, so in vanilla every skinmesh was prepared by its own first draw. | `SkinPose.NoteUnprepared` at the refusal, `SkinPose.DripPrepares` at the frame anchor: **2 calls/frame, one attempt per record** (`PartTable._pPoseTried`). See below. |
-
-### The one that was missed: the skinmesh bind pose
-
-`SkinPose` already knew this and said the wrong thing about it: "the part is handed back, the engine
-draws it once, and the next frame solves." Since #264 there **is** no engine draw, so an unprepared
-`MdlNodeSkin` was never prepared — a permanent hole, one whole creature at a time (`RevokeSkinned`
-takes the rest of the gob with the cloak).
-
-**The ABI, from the binary and not from the mangled name.** `_ZN8PartSkin11PostProcessEP4Part` mangles
-identically whether the member is static or not, so the arbiter is `_ZTV8PartSkin`: slot **+0xe0**
-(+0x10 for the Itanium header), i.e. it is a **virtual** override of `Part::PostProcess(Part*)`
-@0x436e10. `RenderSkinned` calls it as `(**(code**)(*part + 0xe0))(part, part)` — the part as *both*
-`this` and the explicit argument. That argument is the base class's recursion context: `Part::PostProcess`
-walks `part+0x38`/`+0x40` and threads it down the children unchanged. `PartSkin`'s override never reads
-`rsi` at all (disassembled — it is dead from entry), so passing the part twice is both correct and what
-the engine does. The slot must be dispatched off a vptr **proven to be `PartSkin`'s exactly**: on any
-other part the same slot is the base version, which recurses the whole subtree.
-
-**It is idempotent, and it latches itself.** Entry guard: `node+0x278` (a `MdlNodeTriMesh_PostProcess*`,
-the temporary load-time data) non-null. Tail: node `+0xa8` = `MdlNodeSkinRemoveTemporaryArrays`
-@0x437540 → `MdlNodeSkin::InternalRemoveTemporaryArrays` @0x454600 →
-`MdlNodeTriMesh::InternalRemoveTemporaryArrays` @0x4542a0, which `operator delete`s that block and
-writes **0** to `node+0x278`. So the second call returns immediately — which is why the engine could
-afford to call it on every single skinned draw, and why one attempt per record is the whole budget.
-Same shape as `SetupArrays` above.
-
-**The corollary is the residual hole**: `node+0x278 == 0` with `node+0x284 == 0` means the temporaries
-are gone and *nothing* can ever prepare that node. That is counted separately and reported as
-`PERMANENT -- no bind data left`, so a remaining missing creature is attributable rather than silent.
-
-**Alloy-side driver**: `SkinPose.Solve` notes the part at its second refusal branch (cold — a refusal,
-which in a settled area is zero; a null `MdlNode` is never noted, because `PostProcess` dereferences it
-unguarded). `SkinPose.DripPrepares` spends the queue on the frame anchor beside
-`OwnedTextures.DripRebuilds`, **with the engine's context current** — load-bearing for the same reason:
-`PostProcess` ends in `RenderInterface::RequestPool`/`LockPool`/`UnlockPool`, and running the engine's
-own pool traffic inside Alloy's 4.6 bracket would leave the engine's bind cache naming objects in the
-other context. It runs ahead of the owned draws, so a node repaired here poses the same frame, and the
-upload goes out through `UnlockPool` — #260's funnel — so the geometry lands in owned residency by
-itself.
-
-**Cost**: at most **2** `PostProcess` calls per frame, and **one attempt per record for as long as that
-record lives**. Two rather than the texture drip's four because the call is heavier — it rebuilds the
-node's vertex indices and tangent basis (`MdlNodeTriMesh::BuildVertexIndices` / `GenerateVertexData` /
-`CalculateTangentSpaceBasis`) and takes two pools. Vanilla paid all of it in one frame on the first
-draw of every new skinmesh, so this is not a new cost, only a metered one.
-
-**Guards at the drain, not at the enqueue.** A `Part*` is borrowed and its death notice is `Part::~Part`
-(#145/#221), so the record is re-proven with `PartTable.EntryLive(e, part)` immediately before the call,
-and `PartTable.Skinned(e)` — an exact `_ZTV8PartSkin` compare taken at the walk — is the type proof. The
-node is re-read cold: a sibling part sharing the `MdlNodeSkin` may have prepared it already, which
-counts as a win and costs no call. One side effect worth stating because it lands on a borrowed object:
-`PostProcess` opens with `Gob::Reset` @0x499bd0 on `part+0x50`, so repairing a live creature resets its
-gob — exactly what the engine's own first draw did.
-
-**Ledger lifecycle**: `PartTable._pPoseTried` is a record column, not a set of part pointers, so it
-clears exactly where the part underneath can have changed — a slot reclaimed by `Insert`, a re-bound
-record (`SceneWalk.Rebind`) and `WipeTables`. That is deliberately *not* the `OwnedTextures` ceiling: a
-recycled address is never denied its attempt. `WipeTables` also calls `SkinPose.Forget`, because every
-queued entry index names a record that no longer exists. CX-19 closed the gap the other way round:
-`OwnedTextures._rebuildTried` IS keyed on a recycled address, so it is now dropped whole on the area edge
-(`OwnedTextures.AreaEdge`) as well as on context loss and at the census settle.
-
-Reported on the `[alloy]` period line as `unprepared skinmeshes:`, session totals — beside the skinmesh
-pose counters it belongs with, not on `[rspshim]` where the texture drip reports.
-
-### The one that was open: the texture build
-
-**Nothing on the draw path builds a texture.** The engine builds one exactly twice:
-
-- `AurTextureGet` @0x48cc10 — `CExoArrayList<CAurTextureBasic*>::Add(&RefreshTextures, tex)` on a
-  newly created texture (creation edge);
-- `AurTextureSetLayered` @0x489bd0 — `AddUnique` on the same list when a PLT scheme changes
-  (`Gob::ReplaceTexture` → `Material::ReplaceTexturePLT` → here; the appearance edge).
-
-`AurTextureMakeCurrent` @0x48f560 (sole caller `Scene::Render`, which still runs under the shim)
-drains that list through `AurTextureBuildAndStoreAll` @0x48e680 and then sets the count to **0 —
-whether or not each build succeeded**. And `CAurTextureBasic::BuildAndStoreTexture` @0x48b320
-soft-fails: it runs `ConstructImage` @0x48a5d0 once (latched by `basic+0xe6`), and if the decoded
-image at `basic+0x58` is still null it never reaches `glImageBasic` @0x48bcf0, so the GL id at
-`basic+0x6c` stays 0. `CResPLT::OnResourceServiced` @0x1136640 only parses the file — **no retry path
-exists anywhere**. The one-shot queue can lose its race with residency, permanently.
-
-Vanilla survived it because the engine's own draw bound id 0 and drew a texture-less part nobody
-looked at twice. Under #264 an Alloy part with no diffuse id used to be *skipped*, which read live as a
-player character with no head; it now draws on the white stand-in (`OwnedTextures.WhiteTid`), which is
-what vanilla does, while the retry below still runs. The retry is therefore a repair, no longer the
-only thing standing between the part and invisibility.
-
-**Alloy-side driver**: `AlloyCensus.TryOwnCandidate` notes a live-but-idless diffuse at enrollment
-(cold, once per candidate per scan) into `OwnedTextures.NoteUnbuilt`; `OwnedTextures.DripRebuilds`
-spends it on the frame anchor where `Beams.Enroll`/`SkyBox.Enroll` already run — once a frame, before
-the Alloy bracket, **with the engine's context current**. That last part is load-bearing rather than
-convenient: `BuildAndStore` re-runs the engine's own upload (`SetActiveTexture`, `AurTextureBindTID`,
-`RenderInterface::CreateTexture`) and the engine caches what it thinks is bound, so running it inside
-Alloy's 4.6 bracket would leave that cache naming objects in the other context — #220's corruption
-with a different cause. It is the same reason `Adopt` is safe: the funnel fires where the engine
-already is.
-**Cost**: at most 4 `CAurTexture::BuildAndStore` @0x48bc80 calls per frame, and **one attempt per
-texture for the session** — `BuildAndStore` is `CAurTextureBasic::Reset` @0x4858c0 (which clears
-`+0xe6`/`+0xe7`, deletes the GL names and zeroes `+0x6c`, so the rebuild genuinely re-runs
-`ConstructImage`) plus a full decode and upload. The pointer is re-proven through `AurTex`'s vtable
-guard at the drain, never at the enqueue, because a `CAurTexture*` is borrowed. Because the rebuild
-routes through `RenderInterface::CreateTexture`, a successful retry lands in the owned table by
-itself. Reported on the `[rspshim]` period line as `unbuilt textures:`.
-
-The ledger is cleared on `ContextLost` — every engine texture is unbuilt again on the far side, so
-keeping it would refuse the whole world its single retry.
-
-**Known ceiling** (`ponytail:` in `OwnedTextures`): the ledger keys on the raw `CAurTexture*`, which
-the engine frees on an area transition, so a new texture allocated at a recycled address is denied
-its one retry — the permanence this fixes, in miniature. Upgrade path is to clear it on the first
-`Retire` batch after a world edge, where the pointer population turns over anyway. `RebuildNote`'s
-retried-vs-won split is the instrument that would show it: it stops converging.
+| The `Part::~Part` death notice and its cascade | `DrawFunnelService.OnPartDtor` (`managed/Alloy/DrawFunnelService.cs`), installed by `hooks.InstallPartDtor` in `DrawFunnelService.Initialize`; it drives `SkyBox.Revoke`, `PartTable.MarkFreed`/`Die`, `NonMeshParts.Died`, `LightRegistry` | A part record is a `DbTable` slot. `DbTable.Free` bumps the generation, so every outstanding `DbId` is dead at the free. There is no borrowed pointer to be told about. |
+| The #221 tombstone | `PartEntry.Freed` + `PartTable.MarkFreed`, `PartTable.EntryLive` (`managed/Alloy/Scene/PartTable.cs`); the same shape in `AlloyCensus.Find`, `GobLod.Insert`'s stamp | A tombstone exists to stop a **recycled address** reviving a record. A `DbId` carries a generation, so the recycled-identity class of bug cannot be expressed (`DbId`'s own summary says so). |
+| `VdoSig` and the recycled-address re-harvest | `VdoSig` (`managed/Alloy/Core/EngineRefs.cs`), `_vSig` + `SlotHolds` (`managed/Alloy/AlloyRenderer.Vao.cs`), the re-fingerprint in `VdoSlot` (`managed/Alloy/Scene/AlloyRenderer.Enroll.cs`), and `Beams`' copy of all three | There is no VDO. Geometry is a `MeshArena` range keyed on `MeshArena.ContentKey(MeshDef)` — content, not an address — and a range is handed back by `MeshArena.Release`, told. |
+| The VAO drip and the per-VDO VAOs | `AlloyRenderer.Vao.cs` in its entirety bar `BindBatchState`/`VaoName`: `Harvest`, `HarvestFailed`, `DripVao`/`DripArm`/`DripForget`/`DripRearm`, `EnsureVao`, `_vVao46`/`_vOwned`/`_vStale`, `ForgetLodVao`/`ForgetLodSlot`; `Beams._vVao` | Every DB draw comes out of the one arena: `AlloyRenderer.DbWriteColumns` writes `_oVao[i] = 0` and `_oLodBit[i] = DbArenaVaoBit`, so there is no per-record VAO to mint, retire or wait for. |
+| The enrolment walk | `EnrollBegin`/`EnrollStep`/`EnrollOne`/`EnrollFinish`/`TryEnrollDelta`/`RebuildOrder`/`VdoSlot`/`MeshCensus` and the walk-budget state (`managed/Alloy/Scene/AlloyRenderer.Enroll.cs`), driven from `OnRenderSinglePass` | `AlloyRenderer.DbSeat`/`DbRelease` write a slot's stable columns from a `(DbId part, int recipe)` pair on a dirty bit. The order is rebuilt only when `DbSetGen` moves (`AlloyRenderer.DbOrder`), which only a seat or a release bumps. |
+| `SceneWalk`'s sweep and its audit | `SceneWalk.Sweep`, `SceneWalk.Tick`, `SceneWalk.Enrol`, `SceneWalk.TryBind`, `SceneWalk.Rebind`, the `alloy.walkaudit` cadence and the `[enum] audit misses=` line (`managed/Alloy/Scene/SceneWalk.cs`) | A sweep answers "is this part still reachable?". The game says when a part dies; `DbFeed`'s `ObjectDied` releases the whole part range on that one edge. |
+| The `Gob::SetScene` leave notice | `SceneWalk.OnGobSetScene` → `SceneWalk.ReleaseGobTrees`, and its two consumers `GobXform.Forget` and `GobLod.Forget` | `DbScene.Leave`/`DbScene.ObjectDied` is the same news, told by the setter that caused it, with the handle in hand. |
+| The census refusals | `AlloyCensus.TryOwnCandidate` and the refused-gob set (`managed/Alloy/Scene/AlloyCensus.cs`), the `NOT DRAWN` clause and the `skinUnownable`/`gobParts`/`RefusedGobs` tallies on the `[alloy]` period line | Those refusals described engine states Alloy could not express (a lit part it could not own, a skin without a bind pose, a gob with one refused part). A DB part has no engine state to refuse: the remaining refusals are CX's own ceilings (`DbFeed.NoRecipe`, `MeshArena.Refuse`, `DrawRecipe.Spilled`), which are faults, not vanilla fallbacks. |
+| `OwnedTextures`' borrowed-pointer verdicts | `OwnedTextures.NoteUnbuilt`/`DripRebuilds`/`_rebuildTried` and its `AreaEdge` drop (`managed/Alloy/OwnedTextures.cs`), fed by `AlloyRenderer.Batches.cs`'s idless-diffuse branch; `SkinPose.NoteUnprepared`/`DripPrepares` on the same anchor | Both exist because the engine owned the texture and the bind pose and might never have built them. CX decodes its own textures (`TexRegistry`) and builds its own skin data from `ModelDef`, so there is nothing to retry and no ledger keyed on a `CAurTexture*`. |
+| The area edge's address-keyed revoke list | `AlloyRenderer.AreaEdge` (`managed/Alloy/AlloyRenderer.AreaEdge.cs`): `RevokeAll` + `PartTable.WipeTables` + `OwnedTextures.AreaEdge` + `GobXform.AreaEdge` + `GobLod.Reset` + `InvalidateRecords`, consumed by `TakeAreaEdge` from `OnRenderSinglePass` | Its whole subject is "identities the engine recycles across an area". Every DB table is keyed on a handle or on content, so an area change invalidates nothing in them — which is also what makes the next area re-use every mesh and texture it shares with the last. |

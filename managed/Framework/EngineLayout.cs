@@ -228,12 +228,35 @@ public static unsafe class EngineLayout
     /// <summary>MdlNode -&gt; the node name (<c>char[]</c>) <c>FindPart</c> @0x43c5b0 strcasecmp-s through
     /// <see cref="PartNodeLink"/>. #397 forensics only.</summary>
     public static readonly int MdlNodeName = Field<byte>("MdlNode", "name");
+    /// <summary>CX-112: Model -&gt; its root <c>MdlNode*</c>, which the live parse check walks to compare CX's
+    /// own tree with the engine's. <c>MaxTree::InternalDestructor</c> @0x43a7c0 is the whole function
+    /// (<c>mov rax,[this+0x50]; test; jmp [rax]</c>); Windows measured the same way on
+    /// <c>?InternalDestructor@MaxTree@@QEAAXXZ</c> rva 0x91be0, which reads <c>[rcx+0x50]</c>.</summary>
+    public static readonly int MdlParseModelRoot = Field<CX.Engine.MdlNode>("Model", "root");
+
     /// <summary>The class-kind bits <c>MdlNode::AsMdlNodeTriMesh</c> tests: the cast succeeds iff
     /// <c>(byte &amp; 0x21) == 0x21</c>. The whole function is that one test on both builds -- Linux
     /// @0x43adf0 reads it as a dword, Windows (rva 0x8c360) as a byte, same offset, same mask.</summary>
     public static readonly int MdlNodeKind = Field<byte>("MdlNode", "kind");
     /// <summary><see cref="MdlNodeKind"/>'s mask AND its expected value -- both bits must be set.</summary>
     public const int MdlNodeKindTriMesh = 0x21;
+    // ---- CX-113 (parser review A1): the two fields the engine MUTATES on a shared MdlNodeTriMesh at
+    //      RUNTIME, long after the parse. MdlCache serialises a Model through the engine's own compiler, so a
+    //      payload written after instantiation carries them -- and a later session loads that state back in.
+    //      Both are restored to their pristine values around the compile (MdlCache.Pristine). ----
+
+    /// <summary>MdlNodeTriMesh -&gt; the node's bounding radius. <c>CombineParts</c> (Linux @0x473d30, Windows
+    /// rva 0xc5f30) GROWS it on the host node of a merge: <c>host-&gt;r = max(host-&gt;r, |hostPos - mergedPos|
+    /// + merged-&gt;r)</c>. The same three instructions appear on both builds at <c>+0xd8</c>
+    /// (<c>addss xmm0,[rbx+0xd8]</c>, <c>movss xmm1,[rbx+0xd8]</c>, <c>movss [rbx+0xd8],xmm0</c>), and the
+    /// node is the MODEL's, shared by every instance of it.</summary>
+    public static readonly int MdlRadius = Field<float>("MdlNodeTriMesh", "radius");
+    /// <summary>MdlNodeTriMesh -&gt; the sticky "this node's texture is rotated" byte.
+    /// <c>SetPartTextureRotate</c> (Linux @0x461670, Windows rva 0xd34c0) writes 1 here when the part's
+    /// material <c>HasBumpyShinyMap</c>, and nothing ever writes 0 -- so the pristine value is the
+    /// constructor's zero. Identical offset on both builds (<c>mov BYTE PTR [rdi+0x2b9],0x1</c>).</summary>
+    public static readonly int MdlTextureRotate = Field<byte>("MdlNodeTriMesh", "textureRotate");
+
     /// <summary>CX-82: the mesh node's local bounding box, min then max -- what
     /// <c>WritePartHighlightVertices</c> builds its three glow quads from (Linux @0x45fe40, Windows rva
     /// 0xd4f30: the same six loads, +0xc0..+0xd4).</summary>
@@ -727,6 +750,49 @@ public static unsafe class EngineLayout
     /// <summary>CNWCArea -&gt; its <c>CNWCAmbientSound</c> (heap; <c>CNWCArea::Update</c> loads it to call
     /// <c>CNWCAmbientSound::Update</c>: Linux @0x707ad2, Windows rva 0x7e9038, the same <c>mov rcx,[rdi+0x2d8]</c>).</summary>
     public static readonly int AreaAmbientSound = Field<CX.Engine.CNWCAmbientSound>("CNWCArea", "ambientSound");
+
+    // CX-120: the area's own DAY/NIGHT light palette, cached as floats by CNWCArea::LoadArea (Linux @0x7dba70,
+    // Windows rva 0x7dba70) out of the ARE's byte colours: each `mov 0x98(%rdi),%ecx` then three
+    // movzbl/divss-by-255 stores. CNWCArea::SetAsDay @0x8064a0 hands +0x1c8 to the ambient setter (vtbl+0x58)
+    // and +0x1d4 to the diffuse one (vtbl+0x50); SetAsNight hands +0x164 and +0x170 to the same two. The
+    // Windows block is instruction-for-instruction the same at the same displacements (objdump'd at
+    // 0x1407de26b..0x1407de41d), and the branch that picks the pair is `cmpl $0x0,0xdc(%rdi)` at 0x1407de45c.
+    /// <summary>CNWCArea -&gt; the NIGHT palette's ambient colour (Vector of floats, 0..1).</summary>
+    public static readonly int AreaNightAmbient = Field<float>("CNWCArea", "nightAmbient", count: 3);
+    /// <summary>CNWCArea -&gt; the NIGHT palette's diffuse (sun/moon) colour.</summary>
+    public static readonly int AreaNightDiffuse = Field<float>("CNWCArea", "nightDiffuse", count: 3);
+    /// <summary>CNWCArea -&gt; the DAY palette's ambient colour.</summary>
+    public static readonly int AreaDayAmbient = Field<float>("CNWCArea", "dayAmbient", count: 3);
+    /// <summary>CNWCArea -&gt; the DAY palette's diffuse (sun) colour.</summary>
+    public static readonly int AreaDayDiffuse = Field<float>("CNWCArea", "dayDiffuse", count: 3);
+    /// <summary>CNWCArea -&gt; the NIGHT palette's FOG colour, and the fog AMOUNT byte beside it.
+    /// <c>SetAsNight</c> @0x806640 calls the area's own <c>SetFog</c> (vtbl+0x30) with
+    /// <c>(*(Vector*)(this+0x17c), this[0xa4])</c>, and <c>SetAsDay</c> with the +0x1e0/+0xc4 pair -- so the
+    /// amount is what "is there fog here" MEANS at the game layer, and the triple is the colour it is drawn
+    /// in. Both stored by <c>LoadArea</c>; Windows writes the same bytes at the same displacements
+    /// (<c>mov %al,0xa4(%rdi)</c> at 0x1407dc273, <c>0xc4(%rdi)</c> at 0x1407dc354).</summary>
+    public static readonly int AreaNightFog = Field<float>("CNWCArea", "nightFog", count: 3);
+    /// <inheritdoc cref="AreaNightFog"/>
+    public static readonly int AreaNightFogAmount = Field<byte>("CNWCArea", "nightFogAmount");
+    /// <summary>CNWCArea -&gt; the DAY palette's fog colour. <see cref="AreaNightFog"/>.</summary>
+    public static readonly int AreaDayFog = Field<float>("CNWCArea", "dayFog", count: 3);
+    /// <inheritdoc cref="AreaDayFog"/>
+    public static readonly int AreaDayFogAmount = Field<byte>("CNWCArea", "dayFogAmount");
+    /// <summary>CNWCArea -&gt; non-zero when the area is on its NIGHT palette. <c>SetAsDay</c> clears it,
+    /// <c>SetAsNight</c> sets it, and <c>LoadArea</c> branches on it to pick which of the two pairs to
+    /// apply.</summary>
+    public static readonly int AreaIsNight = Field<int>("CNWCArea", "isNight");
+    /// <summary>CNWCArea -&gt; the area's own <c>Scene</c>. This is the object the game writes every area-wide
+    /// render term into, and it is what makes those terms readable without a name lookup:
+    /// <c>CNWCArea::SetFog</c> @0x802380 and <c>SetFogAmount</c> @0x8026e0 both refuse outright when it is
+    /// null, <c>CNWCModule::AdjustCameraClipRange</c> @0x8d8ad0 drives its <c>GetFogRange</c>/<c>SetFogRange</c>
+    /// pair through <c>vtbl+0x88</c>/<c>+0x90</c>, and <c>LoadArea</c> hands it to the "sun" model at +0x250
+    /// (<c>sun-&gt;vtbl+0x98(scene)</c>). Same offset on Windows (the stores at 0x1407dc8f5 and
+    /// 0x1407dc972 in <c>LoadArea</c>, rva 0x7dba70).
+    /// <para>CX-120: in DB mode this is CX's own scene SHELL, because the shell is what the game was handed.
+    /// Reading the fog words off it rather than off a name lookup is what makes DB fog not depend on the
+    /// scene registry answering to "mainscene".</para></summary>
+    public static readonly int AreaScene = Field<CX.Engine.Scene>("CNWCArea", "scene");
     /// <summary>CNWCAmbientSound -&gt; the music stream handle (heap; <c>PlayMusic</c> @0x801b10 / rva 0x876990).</summary>
     public static readonly int AmbientMusic = Field<CX.Engine.CExoStreamingSoundSource>("CNWCAmbientSound", "music");
     /// <summary>CNWCAmbientSound -&gt; the ambient-bed stream handle (<c>PlayAmbientSound</c> @0x801f30 / rva 0x8761a0).</summary>
@@ -918,10 +984,19 @@ public static unsafe class EngineLayout
     /// <summary>CGuiEdit -&gt; <c>CAurString* m_pString</c>, the text object <c>CGuiEdit::GetText</c> (exported on both,
     /// Linux nm 0x592680 / Windows 0x1e93b0) reads its lines from; HandleEnter clears it through the same pointer.</summary>
     public static readonly int GuiEditString = Field<CX.Engine.CAurString>("CGuiEdit", "string");
+    /// <summary>CGuiEdit -&gt; <c>bool m_bReadOnly</c>: <c>SetReadOnly</c> (Linux nm 0x5928d0, Windows rva 0x1ec1b0) stores
+    /// its argument to +0x110 / +0xe8 and <c>HandleLMouseDown</c> (nm 0x593270, rva 0x1e9fe0) tests the same byte.</summary>
+    public static readonly int GuiEditReadOnly = Field<byte>("CGuiEdit", "readOnly");
     /// <summary>Virtual slot of <c>CAurString::SetText(const char*)</c> -- the clear HandleEnter runs on the edit's string
     /// (Linux <c>*vtbl+0xd8</c> = the <c>StringGob</c> thunk <c>_ZThn1216_N9StringGob7SetTextEPKc</c>; Windows <c>+0xd0</c>,
     /// MSVC's single-slot virtual destructor). Both read off the HandleEnter bodies.</summary>
     public static readonly int AurStringSetTextSlot = Field("CAurString", "vtbl.SetText", Expect.VtblSlot, sig: "void(IntPtr text)");
+    /// <summary>Virtual slots of <c>CAurString::GetTextLine(int)</c> / <c>GetTextLineCount()</c> (Linux 29/30, the StringGob
+    /// thunks @0x492310/@0x495ad0; Windows 28/29, <c>tools/seam/aurora-seam-vtables.tsv</c>). The virtual call is the only
+    /// read that works in DB mode, where the string is a CX facade the exported <c>StringGob</c> bodies cannot read.</summary>
+    public static readonly int AurStringGetTextLineSlot = Field("CAurString", "vtbl.GetTextLine", Expect.VtblSlot, sig: "IntPtr(int line)");
+    /// <inheritdoc cref="AurStringGetTextLineSlot"/>
+    public static readonly int AurStringGetTextLineCountSlot = Field("CAurString", "vtbl.GetTextLineCount", Expect.VtblSlot, sig: "int()");
     /// <summary>CGuiInGame -&gt; CPanelQuickBar*. #439: <c>CGuiInGame::Initialize</c> (Linux @0x772600) and its
     /// Windows twin (rva 0x6f9190, the one caller of the CPanelQuickBar ctor) both store the freshly built
     /// panel to +0x60 and then write <c>+0x28 = 1</c>.</summary>
@@ -958,6 +1033,29 @@ public static unsafe class EngineLayout
     /// <c>SetModal</c> / <c>UnSetModal</c> (Linux @0x680390 / 0x680330, Windows rva 0x1f66f0 / 0x1f7080) read it on both builds;
     /// every <c>CGuiModalPanel::Activate</c> pushes.</summary>
     public static readonly int GuiManModalCount = Field<int>("CGuiMan", "modalCount");
+    /// <summary>CGuiMan's tooltip countdown (int, microseconds; armed from +0x9c on a mouse move, fires at &lt;= 0),
+    /// the object it last fired for, and the <c>CGuiTextBubble*</c> it shows. <c>HandleGuiTimer</c> /
+    /// <c>TriggerToolTip</c> (Linux @0x57df70 / 0x57f9e0, Windows rva 0x1f5190 / 0x1f6fc0) read +0x98 and +0x68 on
+    /// both; the bubble is Linux +0x178, Windows +0x170.</summary>
+    public static readonly int GuiManTipTimer = Field<int>("CGuiMan", "tooltipTimer");
+    public static readonly int GuiManTipObject = Field<IntPtr>("CGuiMan", "tooltipObject");
+    public static readonly int GuiManTipBubble = Field<IntPtr>("CGuiMan", "tooltipBubble");
+    /// <summary>CGuiObject's model (<c>CAurObject*</c>): <c>CGuiTextBubble::FixAlignment</c> (Linux @0x588a50,
+    /// Windows rva 0x1fd480) reads it at +0x10 on both.</summary>
+    public static readonly int GuiObjectModel = Field<IntPtr>("CGuiObject", "model");
+    /// <summary>CGuiMan's keyboard-capture object: <c>CaptureKeyboard</c> (Linux nm 0x57d8f0, Windows rva 0x1f4570)
+    /// stores it to +0x50 and <c>HandleKeyPress</c> (nm 0x57e060, rva 0x1f52d0) forwards every key to it, on both.</summary>
+    public static readonly int GuiManKeyboard = Field<IntPtr>("CGuiMan", "keyboardFocus");
+    /// <summary>CGuiMan's double-click flag (int): <c>HandleLMouseDown(int)</c> (nm 0x57e9f0, rva 0x1f5300) stores its
+    /// argument to +0xb0 on both, and <c>CGuiTreeview</c>'s click handler reads it nonzero as the double click.</summary>
+    public static readonly int GuiManDoubleClick = Field<int>("CGuiMan", "doubleClick");
+    /// <summary>CGuiMan's last GUI hit point (3 floats, world space): <c>GuiObjectHitCheck</c> (nm 0x57da40, rva 0x1f4e30)
+    /// writes x,y at +0x108 and z at +0x110, and <c>CGuiEdit::HandleLMouseDown</c> hands that Vector to
+    /// <c>MoveCaretTo</c> on both builds.</summary>
+    public static readonly int GuiManHitPoint = Field<float>("CGuiMan", "hitPoint", count: 3);
+    /// <summary>CGuiMan's last hit GUI object (null when the point hit none): <c>GuiObjectHitCheck</c> stores its result
+    /// to +0x78 at the end on both builds (nm 0x57da40 / rva 0x1f4e30) and returns it from there when not asked afresh.</summary>
+    public static readonly int GuiManHitObject = Field<IntPtr>("CGuiMan", "hitObject");
 
     /// <summary>What to add to a vtable SYMBOL to reach slot 0. Itanium puts offset-to-top and the typeinfo
     /// pointer in front of the function pointers, so <c>_ZTV&lt;class&gt;</c> is two words short of the
@@ -1023,6 +1121,15 @@ public static unsafe class EngineLayout
     /// trigger that is not under the cursor and 0.25/0.35 for one that is, so an alpha of zero is how the
     /// engine draws every other trigger in the bucket invisibly.</summary>
     public static readonly int TriggerColour = Field<float>("PartTrigger", "highlightColour", count: 4);
+    /// <summary>The prism's triangles as <c>Vector</c> triples (<c>Decompose</c>'s output) and how many VERTICES
+    /// there are: <c>PartTrigger::HitCheckGeom</c> (Linux nm 0x4d9cb0, Windows rva 0xf06d0) walks +0x100 in 0x24-byte
+    /// steps while the index is below +0x108, on both builds.</summary>
+    public static readonly int TriggerTris = Field<IntPtr>("PartTrigger", "tris");
+    /// <inheritdoc cref="TriggerTris"/>
+    public static readonly int TriggerTriVerts = Field<int>("PartTrigger", "triVerts");
+    /// <summary>What a hit reports at <c>CHitInfo+0x70</c> -- <c>AurPartTriggerCreate</c>'s last argument, stored at
+    /// +0xd0 and copied by <c>HitCheckGeom</c> on both builds (the same two functions as above).</summary>
+    public static readonly int TriggerPayload = Field<IntPtr>("PartTrigger", "payload");
 
     // ---- PartLight: one more field in the +0x4 block ----
 
@@ -1463,6 +1570,25 @@ public static unsafe class EngineLayout
     /// Alloy reads the ramp, not the flag: the flag has no expression the ramp does not already carry.
     /// Same on Windows by the ctor pairing (identical stores over 0x7c..0xcb).</summary>
     public static readonly int TileFoggedByWar = Field<byte>("TileData", "foggedByWar");
+
+    // ---- CX-116: TileData's four NAMED tile parts ----
+
+    /// <summary>TileData -&gt; the <c>&lt;model&gt;ml1</c> / <c>ml2</c> light and the <c>sl1</c> / <c>sl2</c>
+    /// part. <c>ProcessTilePart</c> @0x561720 <c>strcasecmp</c>s each tile part's node name against the model
+    /// name plus the literal <c>"ml1"</c> (nm 0x12f0a88), <c>"ml2"</c> (0x12f0a90), <c>"sl1"</c> (0x12f0a94)
+    /// or <c>"sl2"</c> (0x12f0a8c) and stores, in that order, <c>part-&gt;AsPartLight()</c> at +0x0 and +0x8
+    /// and the PART itself at +0x10 and +0x18. <c>Scene::SetTileLights</c> @0x55edf0 re-colours the first
+    /// two; <c>Scene::SetSingleTileFlame</c> @0x55ef30 reads the second two for where a flame stands.
+    /// <para>Windows: inside the block <c>TileData::TileData</c> agrees on store for store on both builds
+    /// (the disagreement is confined to 0x58..0x7c, which is why <see cref="TileFade"/> is unresolved and
+    /// these are not), and the four are the first four words of the object.</para></summary>
+    public static readonly int TileMainLight1 = Field<CX.Engine.PartLight>("TileData", "mainLight1");
+    /// <inheritdoc cref="TileMainLight1"/>
+    public static readonly int TileMainLight2 = Field<CX.Engine.PartLight>("TileData", "mainLight2");
+    /// <inheritdoc cref="TileMainLight1"/>
+    public static readonly int TileSourcePart1 = Field<IntPtr>("TileData", "sourcePart1");
+    /// <inheritdoc cref="TileMainLight1"/>
+    public static readonly int TileSourcePart2 = Field<IntPtr>("TileData", "sourcePart2");
 
     // ---- CX-104 buckets: Alloy's own visibility sets, in place of the engine's per-frame buckets ----
 
@@ -2021,13 +2147,17 @@ public static unsafe class EngineLayout
     /// stride between slots is <see cref="MatSlotStride"/>, measured on the Material array.</summary>
     public static readonly int SharedSlot0 = Field("SharedMaterial", "slot0");
 
-    /// <summary>Stride between the three shader-name resref slots <see cref="SharedVsName"/> names, and the
-    /// length of each inline NUL-terminated buffer.
-    /// <para>The SharedMaterial constructor writes them at 0x188 / 0x199 / 0x1aa on BOTH builds -- 0x11
-    /// apart either way. #441 read Windows' extra stores at 0x190/0x1a1/0x1b2 as an unexplained +0x8; they
-    /// are MSVC splitting each 17-byte copy into two 8-byte stores, the same shape #441 itself identified
-    /// in the CAurTextureBasic constructor.</para></summary>
-    public static readonly int SharedNameLen = Field("SharedMaterial", "resrefStride");
+    /// <summary>CX-120: the PLT scheme rows a <c>Material</c> carries, and how many are live.
+    /// <c>Material::ReplaceTexturePLT</c> (Linux @0x5c7a10, Windows rva 0x85610) writes the count to +0x114
+    /// and each scheme integer to +0xd8 + 4i DIVIDED by the master palette's height, so a reader multiplies
+    /// back. Read by the creature parity dump only -- the renderer takes its rows from
+    /// <c>SceneDb.ObjPltRow</c> / <c>PartPltRow</c>, never from here.
+    /// <para>Windows pairs on the same function's own stores: <c>lea 0x114(%rsi)</c> for the count and
+    /// <c>movss %xmm0,0xd4(%rsi,%rdi,1)</c> with the loop index pre-advanced by 4 for the rows -- the same
+    /// two offsets as Linux.</para></summary>
+    public static readonly int MatPltRows = Field<float>("Material", "pltRows", count: 10);
+    /// <inheritdoc cref="MatPltRows"/>
+    public static readonly int MatPltRowCount = Field<int>("Material", "pltRowCount");
 
     /// <summary><c>sizeof(CRes)</c> -- what <c>CExoResMan::Get</c> passes to operator new. Both
     /// constructors' highest write is <c>0x58:8</c>, so the object is 0x60 on both.</summary>
@@ -2132,6 +2262,13 @@ public static unsafe class EngineLayout
     /// Windows rva 0x2c67d0 <c>+0x54</c>, one EXOWARNING past it), so the model-prefetch walk stops here
     /// instead of probing for the end.</summary>
     public static readonly int TileSetTileCount = Field<int>("CNWTileSet", "tileCount");
+    /// <summary>CNWTileSet -&gt; the area's HEIGHT STEP, the multiplier <c>CNWCArea::LoadArea</c> applies to a
+    /// tile record's height index in <c>CNWCTile::SetPosition</c>. A field, not a call:
+    /// <c>CNWTileSet::GetHeightTransition</c> @0x5e10c0 is <c>return *(float*)(this + 0x44)</c> and the
+    /// Windows export (rva 0x2c67c0) is <c>movss xmm0, [rcx+0x4c]</c> -- so the two offsets DIFFER by 8, the
+    /// same delta <see cref="TileSetTileCount"/> has, which is the cross-check that both were read and
+    /// neither assumed. CX-120: the CX tile build refuses every spawn until the seam names it.</summary>
+    public static readonly int TileSetHeightTransition = Field<float>("CNWTileSet", "heightTransition");
 
     /// <summary>CX-52: the 0x38-byte helper <c>GetCompressedRaster</c> leaks as the owner of a DDS it hands
     /// out (the pointer stored 8 bytes before the resource) holds its <c>CRes*</c> here --
@@ -2603,6 +2740,11 @@ public static unsafe class EngineLayout
     public static readonly int PartAnimateSlot = Field("Part", "vtbl.Animate", Expect.VtblSlot, sig: "void(float dt)");
     /// <summary>Virtual slot of <c>Part::AsPartAnimMesh()</c>.</summary>
     public static readonly int PartAsAnimMeshSlot = Field("Part", "vtbl.AsPartAnimMesh", Expect.VtblSlot, sig: "IntPtr()");
+    /// <summary>Virtual slot of <c>Part::GetWorld(Vector&amp;, Quaternion&amp;)</c> -- the ONE <c>Part</c> slot
+    /// the game layer calls through, and so the one slot CX-120's <c>PartShell</c> has to put its
+    /// implementation in. Measured with <c>tools/abi/vtable-slots.py Part</c>: Linux <c>+0x20</c> (slot 4),
+    /// Windows <c>+0x18</c> (slot 3, the collapsed destructor pair).</summary>
+    public static readonly int PartGetWorldSlot = Field("Part", "vtbl.GetWorld", Expect.VtblSlot);
     /// <summary>Virtual slot of a <c>CAurBehavior</c>'s <c>Control(float dt)</c> -- dispatched once per gob
     /// from <c>Gob::Animate</c>, BEFORE the pose and before any event (CX-106
     /// section 7). The base implementation recurses into each dependency gob's <c>Gob::Animate</c>, so an
@@ -2730,6 +2872,52 @@ public static unsafe class EngineLayout
     /// <inheritdoc cref="HitInfoMode"/>
     public const int SizeOfHitInfo = 0x80;
 
+    /// <summary>CX-118: the rest of CHitInfo, which the hit test must fill byte-identically because the game
+    /// layer reads the record the engine filled. Verified on BOTH builds by disassembling
+    /// <c>CHitInfo::ClearOutput</c> and <c>Reset</c>: Windows rva 0xc5a90 stores at +0x24, +0x48, +0x50 (-1),
+    /// +0x5c/+0x64, +0x28/+0x30, +0x34/+0x3c, +0x40, +0x58 (-1), +0x68 and +0x70, and rva 0xd3090 stores +0,
+    /// +0x18, +0x78, +0x8, +0x20 and the WORD 0x0100 at +0x7c -- the same set at the same offsets as Linux.
+    /// <para><b>Inputs</b> (the caller's, which a cast leaves untouched): <see cref="HitInfoMode"/> non-zero
+    /// stops <c>Scene::HitCheck</c> after the static pass; <see cref="HitInfoSurfaceMask"/> is a 64-bit mask
+    /// tested as <c>mask &gt;&gt; face.surface &amp; 1</c> by <c>HitCheckAABBnode</c> @0x43da50 and, for bit
+    /// 30, by <c>PartTrigger::HitCheckGeom</c>'s <c>info+0xb &amp; 0x40</c>; <see cref="HitInfoBoxOnly"/>
+    /// non-zero makes <c>PartTriMesh::HitCheckGeom</c> test the expanded box and no triangles, which is what
+    /// every mouse pick does (<c>GameCameraHitCheck</c> @0x63a270 sets it); <see cref="HitInfoRejectInside"/>
+    /// non-zero refuses a segment that starts inside a part's box; <see cref="HitInfoSkipCharacters"/> adds
+    /// classification 4 to the skip set; <see cref="HitInfoDoorAlpha"/> (1 after Reset) turns on the door
+    /// gate <c>mindooralpha &lt; Gob+0x10c</c>.</para>
+    /// <para><b>Outputs</b>: the hit point in the hit PART's own space at <see cref="HitInfoLocalPoint"/>
+    /// (written at the leaf and never transformed back up, unlike <see cref="HitInfoPoint"/>); the hit
+    /// surface as <c>1 &lt;&lt; id</c> at <see cref="HitInfoSurface"/>; the SafePointer's back-index at
+    /// <see cref="HitInfoSafeIndex"/>; the face index at <see cref="HitInfoFace"/>; the normal at
+    /// <see cref="HitInfoNormal"/>, which a <c>PartTriMesh</c> TRIANGLE hit deliberately leaves zero (the
+    /// 7-argument <c>polyhit</c> has no normal out) while the AABB walk and the box faces write one; the hit
+    /// part's name pointer at <see cref="HitInfoPartName"/>; and the trigger payload
+    /// (<c>PartTrigger+0xd0</c>) at <see cref="HitInfoTrigger"/>.</para></summary>
+    public static readonly int HitInfoSurfaceMask = Field<long>("CHitInfo", "surfaceMask");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoBoxOnly = Field<int>("CHitInfo", "boxOnly");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoLocalPoint = Field<System.Numerics.Vector3>("CHitInfo", "localPoint");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoSurface = Field<long>("CHitInfo", "surface");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoSafeIndex = Field<int>("CHitInfo", "safeIndex");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoFace = Field<int>("CHitInfo", "face");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoNormal = Field<System.Numerics.Vector3>("CHitInfo", "normal");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoPartName = Field<IntPtr>("CHitInfo", "partName");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoTrigger = Field<long>("CHitInfo", "trigger");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoRejectInside = Field<int>("CHitInfo", "rejectInside");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoSkipCharacters = Field<byte>("CHitInfo", "skipCharacters");
+    /// <inheritdoc cref="HitInfoSurfaceMask"/>
+    public static readonly int HitInfoDoorAlpha = Field<byte>("CHitInfo", "doorAlpha");
+
     // Section 2 is closed: batch 1 took the Scene walk (#436), batch 2 the passes (#441), batch 3 the
     // renderer, textures, buffers and shim (#443), and build.sh now refuses a bare hex offset under
     // managed/Alloy/. A second tested client build gets its own pinned key plus its own values below;
@@ -2813,13 +3001,6 @@ public static unsafe class EngineLayout
     /// Windows) stores <c>NewCAurString(-1)</c> there and <c>SetText</c> @0x588790 feeds it through the CAurString
     /// vtable.</summary>
     public static readonly int TextBubbleString = Field<CX.Engine.CAurString>("CGuiTextBubble", "aurString");
-    /// <summary>What to subtract from a <c>CAurString*</c> to get the <c>this</c> the exported
-    /// <c>StringGob::GetTextLineCount/GetTextLine</c> want. The sub-object sits at StringGob+0x4c0 on both builds
-    /// (<c>NewCAurString</c> @0x494050 / @rva 0x492f0 return <c>this + 0x4c0</c>), but the readers' <c>this</c>
-    /// differs: Linux (@0x4922f0/@0x495ac0) reads the object base (<c>+0x500/+0x508</c>, the <c>_ZThn1216_</c> thunks
-    /// adjust for interface callers), MSVC (@rva 0x48600/0x48610) reads <c>+0x40/+0x48</c> -- the sub-object itself,
-    /// no thunk exists.</summary>
-    public static readonly int StringGobReaderAdjust = Field("StringGob", "readerThisAdjust");
 
     // ================= CX-693: item icons (CX-162 §5) =================
     // CGuiIcon's three subclasses, each read off its ctor on BOTH builds (Linux @0x58dcb0 / @0x58d9d0 / @0x58d5c0,
@@ -3235,10 +3416,7 @@ public static unsafe class EngineLayout
     /// construction, before the panel is ever shown), and every setter goes through the CAurString vtable
     /// (<see cref="AurStringSetTextSlot"/>, the slot <c>SetCharacterData</c> calls on each build: Linux
     /// <c>*(vtbl + 0xd8)</c> at <c>label+0x90</c>, Windows <c>*(vtbl + 0xd0)</c> at the same <c>+0x90</c>).
-    /// <para>To READ the displayed text: subtract <see cref="StringGobReaderAdjust"/> from this pointer and call the
-    /// exported <see cref="SymbolMap.StringGobGetTextLine"/>(0) -- the same recipe the chat bubble already uses,
-    /// and the only one that works on both ABIs (Linux needs the <c>-0x4c0</c> StringGob base, Windows does
-    /// not).</para></summary>
+    /// <para>To READ the displayed text: <c>CAurString.ReadText</c> (the virtual line readers).</para></summary>
     public static readonly int LabelString = Field<CX.Engine.CAurString>("CGuiLabel", "string");
 
     /// <summary>Nui::Layout::Layoutable: nonzero = the parent's child loop does NOT <c>nk_layout_space_push</c> this child,
@@ -3416,6 +3594,11 @@ public static unsafe class EngineLayout
     /// <summary><c>CAurBehaviorCrossSceneAttachWithOffset</c>'s constant world offset, added to the owner's
     /// position after the snap.</summary>
     public static readonly int CrossAttachOffset = Field<System.Numerics.Vector3>("CAurBehaviorCrossSceneAttach", "offset");
+    /// <summary>CAurBehaviorCrossSceneAttach's remembered scene (<c>SafePointer&lt;CAurScene&gt;</c>) and its
+    /// StopSceneChanges latch (byte): <c>Message</c> (Linux @0x58bf30, Windows rva 0x203810) reads +0x70 and writes
+    /// +0x80 on both.</summary>
+    public static readonly int CrossAttachKeptScene = Field<IntPtr>("CAurBehaviorCrossSceneAttach", "keptScene");
+    public static readonly int CrossAttachLatch = Field<byte>("CAurBehaviorCrossSceneAttach", "latch");
 
     /// <summary>The subwindow solver's two dummy parts (top-left and bottom-right of the GUI viewport) and
     /// the <c>setPosition</c> flag <c>GuiAttachViewport</c> passes.</summary>
@@ -3700,6 +3883,76 @@ public static unsafe class EngineLayout
     /// No value reads as 0 and counts as missing, which <see cref="Require"/> refuses.</summary>
     /// <param name="sig">A <c>vtbl.*</c> row's signature, <c>"R(T name, ...)"</c> without <c>this</c>: for
     /// <c>tools/engine/views.py</c>, which emits the typed virtual call.</param>
+
+    // ---- CX-120 seam-obj: the Aurora seam shell. These are the offsets at which the SEAM places the
+    // fields the game layer reads without a vtable, and they are the engine's own, per build and per OS
+    // -- a shell whose words sat anywhere else would be a facade the game writes past the end of
+    // (CX-182, managed/Alloy/Seam/README.md). ----
+    /// <summary>SafePointerList capacity.</summary>
+    public static readonly int SeamGobSafeCap = Field<int>("Gob", "seamSafeCap");
+    /// <summary>EnableForceAnimations / IsForceAnimated.</summary>
+    public static readonly int SeamGobForceAnim = Field<byte>("Gob", "seamForceAnim");
+    /// <summary>EnableAnimations / IsAnimating.</summary>
+    public static readonly int SeamGobAnimEnabled = Field<byte>("Gob", "seamAnimEnabled");
+    /// <summary>inline char[0x40]; Gob::GetName returns its address.</summary>
+    public static readonly int SeamGobName = Field<byte>("Gob", "seamName");
+    /// <summary>TurnOnShadows / TurnOffShadows, a 16-bit store.</summary>
+    public static readonly int SeamGobShadows = Field<short>("Gob", "seamShadows");
+    /// <summary>SetRenderPersonalSpace.</summary>
+    public static readonly int SeamGobPersonalSpace = Field<byte>("Gob", "seamPersonalSpace");
+    /// <summary>callback capacity.</summary>
+    public static readonly int SeamGobCallbackCap = Field<int>("Gob", "seamCallbackCap");
+    /// <summary>ScaleObject's two channels, 0x4a0 and 0x4a4.</summary>
+    public static readonly int SeamGobScaleChannel = Field<float>("Gob", "seamScaleChannel");
+    /// <summary>CExoArrayList<Gob*> of attachments.</summary>
+    public static readonly int SeamGobAttachList = Field<IntPtr>("Gob", "seamAttachList");
+    /// <summary>attachment count.</summary>
+    public static readonly int SeamGobAttachCount = Field<int>("Gob", "seamAttachCount");
+    /// <summary>attachment capacity.</summary>
+    public static readonly int SeamGobAttachCap = Field<int>("Gob", "seamAttachCap");
+    /// <summary>GetRandomPart's cached total, -1 = stale.</summary>
+    public static readonly int SeamGobTriMeshArea = Field<float>("Gob", "seamTriMeshArea");
+    /// <summary>NewCAurObject's operator new size.</summary>
+    public static readonly int SeamGobSizeof = Field<int>("Gob", "seamSizeof");
+    /// <summary>SafePointerList array pointer.</summary>
+    public static readonly int SeamSceneSafeList = Field<IntPtr>("Scene", "seamSafeList");
+    /// <summary>SafePointerList count.</summary>
+    public static readonly int SeamSceneSafeCount = Field<int>("Scene", "seamSafeCount");
+    /// <summary>SafePointerList capacity.</summary>
+    public static readonly int SeamSceneSafeCap = Field<int>("Scene", "seamSafeCap");
+    /// <summary>CAurScene::SetAmbient.</summary>
+    public static readonly int SeamSceneAmbient = Field<System.Numerics.Vector3>("Scene", "seamAmbient");
+    /// <summary>the second vector SetAmbient writes.</summary>
+    public static readonly int SeamSceneAmbient2 = Field<System.Numerics.Vector3>("Scene", "seamAmbient2");
+    /// <summary>NewCAurScene's operator new size.</summary>
+    public static readonly int SeamSceneSizeof = Field<int>("Scene", "seamSizeof");
+    /// <summary>The <c>CAurString</c> sub-object's vptr inside a <c>StringGob</c>, 0x4c0 on BOTH images
+    /// (<c>RemoveAuroraString</c>'s <c>lea -0x4c0(%rcx)</c> on Windows, the argument minus 0x4c0 on Linux). It
+    /// is NOT the exported <c>StringGob</c> readers' this-adjust, which is 0 on Windows: wiring the shell to that
+    /// one put the CAurString vtable over the primary vptr at +0.</summary>
+    public static readonly int SeamStringGobStringSub = Field<IntPtr>("StringGob", "seamStringSub");
+    /// <summary>NewCAurString's operator new size.</summary>
+    public static readonly int SeamStringGobSizeof = Field<int>("StringGob", "seamSizeof");
+    /// <summary>the CAurObject (Gob) sub-object.</summary>
+    public static readonly int SeamCameraGobSub = Field<byte>("Camera", "seamGobSub");
+    /// <summary>Camera::Camera's operator new size -- the ONE class whose size differs per OS.</summary>
+    public static readonly int SeamCameraSizeof = Field<int>("Camera", "seamSizeof");
+
+    /// <summary>the callback function pointer.</summary>
+    public static readonly int SeamCallBackFn = Field<IntPtr>("CallBack", "seamFn");
+    /// <summary>the callback's registered user data.</summary>
+    public static readonly int SeamCallBackData = Field<IntPtr>("CallBack", "seamData");
+    /// <summary>Gob::RegisterCallBack's operator new size.</summary>
+    public static readonly int SeamCallBackSizeof = Field<int>("CallBack", "seamSizeof");
+    /// <summary>one animated float of a CAurObjectVisualTransformData.</summary>
+    public static readonly int SeamLerpFloatSizeof = Field<int>("LerpFloat", "seamSizeof");
+    /// <summary>Itanium slot 1; MSVC's single scalar-deleting destructor is slot 0.</summary>
+    public static readonly int SeamCAurBehaviorVtblDtorDeleting = Field("CAurBehavior", "vtbl.dtorDeleting", Expect.VtblSlot);
+    /// <summary>CAurBehavior::Message(char const*).</summary>
+    public static readonly int SeamCAurBehaviorVtblMessage = Field("CAurBehavior", "vtbl.Message", Expect.VtblSlot);
+    /// <summary>CAurBehavior::GetType() -> int.</summary>
+    public static readonly int SeamCAurBehaviorVtblGetType = Field("CAurBehavior", "vtbl.GetType", Expect.VtblSlot);
+
     private static int Field(string cls, string field, Expect probe = Expect.None, string? sig = null)
     {
         (int? linux, int? win) = ClientBuilds.Offset(cls, field);
@@ -3818,21 +4071,29 @@ public static unsafe class EngineLayout
     }
 
     /// <summary>Image extent of the main program, for the vtable-slot probe. From <c>/proc/self/maps</c>:
-    /// the lines whose path is the exe.</summary>
+    /// the lines whose path is the exe, plus the nameless mapping that directly follows them -- the RW segment's
+    /// <c>.bss</c> tail past its file size (nuklear's <c>nk_sdl.ogl.cmds</c> lives there), which the kernel maps
+    /// anonymously.</summary>
     private static void ImageRangeFromMaps()
     {
         string exe = File.ResolveLinkTarget("/proc/self/exe", true)?.FullName ?? "";
         if (exe.Length == 0) return;
         foreach (string line in File.ReadLines("/proc/self/maps"))
         {
-            if (!line.EndsWith(exe, StringComparison.Ordinal)) continue;
+            bool mine = line.EndsWith(exe, StringComparison.Ordinal);
+            if (!mine && (_imageHi == 0 || !IsAnonymous(line))) continue;
             int dash = line.IndexOf('-'), sp = line.IndexOf(' ');
             if (dash < 0 || sp < dash) continue;
             ulong lo = Convert.ToUInt64(line[..dash], 16), hi = Convert.ToUInt64(line[(dash + 1)..sp], 16);
+            if (!mine) { if (lo == _imageHi) _imageHi = hi; continue; }
             if (_imageLo == 0 || lo < _imageLo) _imageLo = lo;
             if (hi > _imageHi) _imageHi = hi;
         }
     }
+
+    /// <summary>A <c>/proc/self/maps</c> line with no path: address, perms, offset, device, inode, nothing else.</summary>
+    internal static bool IsAnonymous(string line)
+        => line.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length == 5;
 
     // ---- CX-109/110 ----
 
@@ -3844,6 +4105,11 @@ public static unsafe class EngineLayout
     /// (<see cref="CamViewX"/>).</summary>
     public static readonly int CameraScene = Field<CX.Engine.Scene>("Camera", "scene");
 
+    /// <summary>The whole object's size, so a CX scene shell can own one. <c>Scene::Scene</c> allocates it
+    /// with <c>operator new(0x870)</c> on BOTH OSes -- read off the Linux decompile @0x4724f0 and the Windows
+    /// <c>??0Scene@@QEAA@PEBD@Z</c> (<c>mov $0x870,%ecx</c> immediately before the ctor call), not assumed
+    /// equal.</summary>
+    public static readonly int WindManagerSize = Field<int>("WindManager", "size");
     /// <summary>WindManager -&gt; the base wind <c>Vector</c>. Zero in normal play: the Scene builds its
     /// manager with the default ctor @0x491b90, which zeroes it, and the only writer in the binary is
     /// <c>Scene::SetGlobalWind</c> @0x45f0a0 -- the <c>setglobalwind</c> console command, with no callers of
@@ -3869,6 +4135,27 @@ public static unsafe class EngineLayout
     /// <inheritdoc cref="WindBase"/></summary>
     public static readonly int WindPeriod = Field<float>("WindManager", "period");
 
+    // ---- CX-113: the engine's model/animation tables, read ONLY by the live verify (CX.Alloy.ModelVerify).
+    //      Measured on both builds: Linux from the decompilation of FindAnimation @0x497c30 and FindAnimScale
+    //      @0x499b10, Windows by disassembling their own exports (?FindAnimation@@YAPEAVAnimation@@PEAVModel@@PEBD@Z
+    //      rva 0x50f80, ?FindAnimScale@@YAMPEAVModel@@PEAVAnimation@@@Z rva 0x50ed0) -- the same +0x98 / +0xa0 /
+    //      +0xa8 / +0xcc loads appear in both, so every value below is identical on the two platforms. The name
+    //      Model's own name has no row of its own: it is MaxTree's field, which Model and Animation both derive
+    //      from (MaxTree::MaxTree @0x43a5b0 strncpy()s it to this+0x10 with a 0x3f cap, i.e. char[64]), so the
+    //      existing AnimationName row reads both. ----
+
+    /// <summary>Model -&gt; its own <c>Animation*</c> array, and how many entries it has. Grown by
+    /// <c>newanim</c> @0x447fe0 and walked by <c>FindAnimation</c>; the supermodel's are NOT in it, which is
+    /// why the lookup is a chain walk.</summary>
+    public static readonly int MdlcModelAnims = Field<IntPtr>("Model", "anims");
+    /// <inheritdoc cref="MdlcModelAnims"/>
+    public static readonly int MdlcModelAnimCount = Field<int>("Model", "animCount");
+    /// <summary>Model -&gt; its supermodel, the one reference <c>setsupermodel</c> @0x44cd20 takes and
+    /// <c>Model::InternalDestructor</c> @0x443de0 drops.</summary>
+    public static readonly int MdlcModelSuper = Field<CX.Engine.Model>("Model", "super");
+    /// <summary>Model -&gt; <c>setanimationscale</c> @0x446210's value, 1.0 unless the file sets it.
+    /// <c>FindAnimScale</c> multiplies it in for every model BELOW the one owning the animation.</summary>
+    public static readonly int MdlcModelAnimScale = Field<float>("Model", "animScale");
     /// <summary>
     /// #432: the one runnable check. Proves the three forms register and count, that the build key reads,
     /// and -- the part that matters -- that a deliberately wrong offset makes a probe FAIL rather than pass
@@ -3892,6 +4179,12 @@ public static unsafe class EngineLayout
         if (!Probe("SelfCheckProbe", (IntPtr)fake, null)) { log.Always("layout selfcheck FAIL: good probe rejected"); return; }
         _rows.Add(new Row("SelfCheckProbe", "bad", 0x40, Expect.Byte01, false));
         if (Probe("SelfCheckProbe", (IntPtr)fake, null)) { log.Always("layout selfcheck FAIL: bad probe accepted"); return; }
+
+        // The .bss tail is a nameless maps line; [heap] and the exe's own lines are not.
+        if (!IsAnonymous("01a12000-01bbb000 rw-p 00000000 00:00 0 ")
+            || IsAnonymous("5600a000-5600c000 rw-p 00000000 00:00 0                          [heap]")
+            || IsAnonymous("00400000-01a37000 r-xp 00000000 08:02 1234 /games/nwmain-linux"))
+        { log.Always("layout selfcheck FAIL: a maps line was misread -- nuklear's .bss buffers fall outside the image"); return; }
 
         _rows.RemoveRange(before, _rows.Count - before);
         UnresolvedCount = unresolvedBefore;

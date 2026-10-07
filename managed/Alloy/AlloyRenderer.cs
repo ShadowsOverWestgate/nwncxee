@@ -1,6 +1,7 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Alloy.Db;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
@@ -56,11 +57,6 @@ namespace CX.Alloy;
 public sealed unsafe partial class AlloyRenderer : IExtenderService
 {
     internal const int LogEvery = 900;
-    /// <summary>Minimum frames between enrollments. A floor on a cold path, NOT a cadence -- the trigger is
-    /// always a scene-walk delta, and a new Scene bypasses it outright. The bound it states: a part that
-    /// becomes ownable is owned within this many frames plus one budgeted walk, and is MISSING until then
-    /// (there is no engine walk behind it), so this is a visible-latency bound (#264, #329).</summary>
-    internal const int EnrollFloor = 10;
     /// <summary>Frames before the FIRST period line. The 900-frame cadence is right for steady-state cost,
     /// but it is also the only proof this pass runs at all -- and at 900 a short session (or one that ends at
     /// a module unload) produces no line, which reads as "never armed" rather than "not yet". Report once
@@ -94,6 +90,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal const int ExtFloat = 60;
     /// <summary>CX-52: ext2.z, the one lane ADR 0026 leaves spare -- <c>_recArrive</c>, the diffuse's arrival time.</summary>
     internal const int ArriveFloat = ExtFloat + 10;
+    /// <summary>CX-120: ext2.w, the last spare lane -- the tile's fog-of-war term as HIDDEN, i.e.
+    /// <c>1 - reveal</c>, so that <b>0 means explored</b>. The polarity is the whole point: a spare lane is
+    /// zero in every record nobody writes to it -- which is every record in engine mode -- and the first
+    /// version of this carried REVEAL, so an unwritten 0 read as "never seen" and the lit stage fogged the
+    /// entire world to black. Caught by looking at a live screenshot; the harness passed it.</summary>
+    internal const int RevealFloat = ExtFloat + 11;
     /// <summary>#392: where <c>prev</c>, the previous frame's model matrix, starts in the record.</summary>
     internal const int PrevFloat = 44;
     /// <summary>#242: record slots the persistent buffer can hold -- one per ownership slot, plus the sky's
@@ -132,16 +134,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>A parameter list longer than this is not a .mtr, it is a bad pointer -- refuse it rather than
     /// walk off into the heap. Real materials declare a handful.</summary>
     internal const int MaxParams = 64;
-    /// <summary>#120 texture slots the Alloy lit program binds beyond the diffuse: 1 normal, 2 specular,
-    /// 3 roughness, 4 height, 5 self-illumination (the stock map, inc_material.shd's header comment).
-    /// They resolve through <c>Material::GetTexture</c> exactly as slot 0 does -- a SharedMaterial's own
-    /// eleven slots at shared+0xd8+i*0x10 win, the Material's own three are the fallback.</summary>
-    internal const int PbrSlots = 5;
-    /// <summary>#123: texture slot 6, the flow map, whose RG channels the flowmap shader reads as a UV flow
-    /// direction (its own header says "supply your RG flow map in texture6"). Enrolled ONLY for a
-    /// <see cref="ShaderFeature.Flowmap"/> part -- slot 6 is not part of the stock vocabulary, so probing it
-    /// on every shared material would split batches over a texture nothing samples.</summary>
-    internal const int FlowSlot = 5;
     /// <summary>#146: map slot 6 of the block, the ambient-occlusion map -- a baked visibility term in .r,
     /// sampled straight onto the ambient. #275: sourced from <c>.mtr</c> <see cref="AoTexture"/> (texture11),
     /// past the engine's own vocabulary, so it can never collide with a community model's texture7; the
@@ -159,6 +151,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// Taking 64 for AO would make that stale copy render every env material shiny-and-unreflective with
     /// nothing in the log. The bit is free, the drift is not.</summary>
     internal const int AoBit = 1 << 7;
+    /// <summary>The record takes no shadow (<c>CX_SLOT_NOSHADOW</c>): an untextured blended sheet such as a door's
+    /// <c>sam</c> transition sheen. Binds nothing.</summary>
+    internal const int NoShadowBit = 1 << 8;
     /// <summary>Texture unit slot 1 binds on; the rest follow it. Units 0/1/2 are diffuse, sun cascades and
     /// the local cube array, and <see cref="EnvProbe.ProbeUnit"/> sits above all of them -- SelfCheck holds
     /// that ordering, because a samplerCube sharing a unit with a sampler2D kills every lit draw in silence.</summary>
@@ -183,23 +178,15 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <c>GLRender::ConnectShaderData</c>: one glBindAttribLocation table before every link -- 0 vPos,
     /// 1 vTcIn, 2 vColor, 7 vNormal). They say which engine VAO slot holds each stream.</summary>
     internal const uint EngPos = 0, EngUv = 1, EngNormal = 7;
-    /// <summary>#96/#128: the bone streams of a true skinmesh, at the same fixed engine locations
-    /// (<c>vIndex</c>/<c>vWeight</c> in ConnectShaderData's bind table). Both or neither -- a half-skinned
-    /// VAO is not one this pass can reason about either way.</summary>
-    internal const uint EngBoneIdx = 8, EngBoneW = 9;
     /// <summary>#137: and OUR locations for the same two streams, which the skinned vertex stages declare.
     /// Same numbers as the engine's by choice, not by necessity -- the Alloy VAO binds them itself.</summary>
     internal const uint LocBoneIdx = 8, LocBoneW = 9;
     /// <summary>Our own program's attribute locations. VAOs are ours, so the engine's locations only tell us
     /// which buffer/offset holds each stream -- we re-bind them wherever the program wants them.</summary>
     internal const uint LocPos = 0, LocUv = 1, LocNrm = 2;
-    /// <summary>PartTriMesh::TransformTextureMatrix @0x4500b0 -> Rotate({0,0,1}, part+0xb0), and
-    /// aurMatrixStack::Rotate scales by 0x3c8efa35 = pi/180 before RotateRadians: the field is DEGREES.</summary>
-    internal const float DegToRad = 0.017453292f;
 
     internal static ExtenderLog? _log;
     private static bool _armed;
-    private static RenderSinglePassFn _origRsp;
     internal static MatGetTextureFn _getTexture;
     private static uint* _primTable;
     private static byte* _mtxStacks;
@@ -230,10 +217,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         public int Oit, OitDim, OitBias, OitGob;
         public int Tex, Vp, Base, Cut, Viz, Ssao, SsaoOn, SsaoHalf, AoDirect, AoCutout,
                    SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex,   // CX-43: the rest of the receiver and the light curve ride CxPass
-                   Probe, Capture,
+                   Probe, Capture, MirrorZ,          // MirrorZ: CX-51 the planar mirror's plane
                    Weather, WeatherLook, CoverVp, CoverLayer, SnowLook, SnowLight, SnowPom, CoverEsm,
                    WxMapXf, WxMapP,                    // R2: the area wetness map's fit and look
-                   WxEdge, WxRun,                      // R5: the shelter kernel, and the run-off / shoreline terms
+                   WxEdge, WxRun, WxCache,             // R5: the shelter kernel, the run-off / shoreline terms, the shelter cache flag
                    LmPages, LmMovers,                  // #674
                    LightOcc,                           // light.hidden
                    Material;                           // ADR 0026: light.brdf / ambientdir / specaa
@@ -285,7 +272,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// above the ceiling and every one of them clamped to 23, so four screenshots of "the new view" were
     /// four screenshots of the old one, and the conclusions drawn from them were void.
     /// <see cref="FrameSnapshot.SelfCheck"/> now asserts the water stage's highest view against this.</summary>
-    internal const int LightVizMax = 46;   // 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42/45/46 = SSR trust, the reflection, the probe behind it and the mirrored draw (CX-51); 43/44 = the #674 lightmap term and its texel grid
+    internal const int LightVizMax = 51;   // 51 = the hot-light path per fragment (red tested, green ray hit); 40 = the #493 vis-ID target (IdTarget.VizMode); 41/42/45/46 = SSR trust, the reflection, the probe behind it and the mirrored draw (CX-51); 43/44 = the #674 lightmap term and its texel grid; 47..50 = CX-117's PLT forensics
     internal static int _lightViz => Renderer.Viz.V;
     /// <summary><c>/alloy aotest 1</c>: bind every lit part's own DIFFUSE texture on the AO slot and set the bit, so
     /// the whole #146 path -- mask, unit, sampler, ambient multiply -- runs end to end on stock content. The
@@ -302,6 +289,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>CX-51: the capture in progress is the mirrored draw of the planar reflection, not the probe: creatures
     /// stay in and every program writes its alpha (see <see cref="PlanarPass"/>).</summary>
     internal static bool _planar;
+    /// <summary>The planar mirror's world z while <see cref="_planar"/> is set: its draw drops what lies under it.</summary>
+    internal static float _mirrorZ;
     internal static bool Capturing => _capturing;
     /// <summary>GL_BLEND as the pass last set it, so <see cref="Issue.IssueBatches"/>' per-batch toggle starts from
     /// the truth instead of assuming.</summary>
@@ -326,20 +315,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static int _tableGen = -1, _sinceEnroll;
     private static bool _wasInModule;
 
-    /// <summary>#134: one line naming what the Alloy draw loop did with the watched part. Always returns
-    /// true, so it reads as the reason at a skip site: <c>{ Counters._skipTex++; if (W(i, "tex")) continue; }</c>.</summary>
-    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-    private static bool W(int i, string why)
-    {
-        // the watch is almost never set, and every rejected slot passes through here: test it before the slot's column
-        if (AlloyCensus._watchEntry >= 0) WSlow(i, why);
-        return true;
-    }
-    private static void WSlow(int i, string why)
-    {
-        if (AlloyCensus.WatchedEntry(_oEntry[i]) && Diag._watchDrawLeft-- > 0)
-            _log?.Info($"[dumpframe] DRAW {why} (slot {i}, capture bucket {_oBucket[i]}, cls {(AlloyClass)_oCls[i]})");
-    }
     /// <summary>The <see cref="Counters._cutBy"/> labels, by index.</summary>
     private static readonly string[] CutTerms = { "vao", "feat", "dissolve", "blend", "cull", "prim", "lit", "tex" };
     private static bool CutCensusSelfCheck(ExtenderLog log)
@@ -355,10 +330,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
             sb.Append(t == 0 ? "" : ", ").Append(CutTerms[t]).Append(' ').Append(((float)Counters._cutBy[t] / Counters._frames).ToString("F0"));
         return sb.ToString();
     }
-    /// <summary>Passes an empty enrollment may retry back-to-back after a resume before falling back to the
-    /// normal cadence (~2s at 60fps): enough for the re-record to complete, bounded so a genuinely unownable
-    /// area cannot spin the scan every pass forever.</summary>
-    internal const int EnrollDiagBudget = 8;
     /// <summary>Name a diffuse the bindless guard turned away, once per distinct resref.</summary>
     private static void TexSkipDiag(bool owned, int tid, TextureRef aur)
     {
@@ -783,7 +754,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // outlive a renderer that never armed -- /alloy is the report it drives.
         AlloyGate.Arm(log);
         PresentTarget.Attach(log);
-        HighlightGlow.Attach(log);
         TriggerHighlight.Attach(log);
         // #263: the config half of the verdict is the FIRST stand-down, ahead of every Attach and every
         // Install. Steps 4-7 replace engine paths rather than watching them -- Alloy performs the pool
@@ -792,6 +762,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // (ADR 0018's amendment to ADR 0010) is exactly what buys the two worlds never being warm at once.
         if (AlloyGate.OptedOut)
         { log.Info("AlloyRenderer: stood down (alloy.enabled=0) -- the engine owns every resource this session"); return; }
+        // CX-120: ahead of every stand-down below, because the feed's own refusals have to have a log to be loud
+        // in even in a session that arms nothing.
+        DbFeed.Attach(log);
+        // The recipe table's one lifetime edge: without this subscription nothing retires a recipe, so the
+        // model cache can never free a model and the texture cache can never evict a slot. It had no caller.
+        DrawRecipe.Attach();
+        DbEmitterChannels.Attach();   // seam-anim's emitter tracks land somewhere instead of being counted
+        DbArmPass(log);
         FrameRegistry.Global.Register(FramePhase.PostPresent, 20, EndFrame, "AlloyRenderer.endFrame", log);
         // #175: the whole pass roll-call, in one walk over one declared table. Attach is ahead of every check
         // because #129's asserts that the ownable-bucket list AGREES with whether Alloy water can draw -- and
@@ -804,7 +782,22 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #212: and the geometry deletes with them, for exactly the same reason -- the colour bracket's own
         // Drain never runs in those states, so a revoke there would hold the whole owned set for the session.
         GlContextService.InBracket = static () =>
-        { OwnedTextures.KeepPltOnCpu(); OwnedTextures.Drain(); SampleVram(); };
+        {
+            OwnedTextures.Drain(); SampleVram();
+            // CX-117: the registry's uploads and bindless mints, the master palette's upload and the
+            // per-record PLT rows -- all of them belong in this context and nowhere else, and all of them run
+            // in BOTH modes. The registry is not DB mode's alone (CX-119's bitmap font atlases acquire from it
+            // on an engine-scene session, and gating the drain left them loading for ever); the row block must
+            // be bound either way because cx_plt.glsl is part of the lit stage either way and an unbound
+            // shader-storage binding is an undefined read; and the palette upload is a no-op until something
+            // has loaded a slot. Each is two queue tests when there is nothing to do.
+            Db.TexRegistry.Drain();
+            Db.PltColors.Upload();
+            Db.PltPalettes.Create();
+            // CX-117's GPU check: idle unless alloy.pltverify armed it, and it runs in BOTH modes -- what it
+            // measures is the shipped GLSL, which does not care which scene layer produced the record.
+            if (Db.PltVerify.On) Db.PltGpuCheck.Tick();
+        };
         // #117: ahead of every stand-down -- a broken pass order is a misrender in BOTH bracket sites, so the
         // one service that happens to host the check must not be able to opt the check out.
         if (!FrameGraph.SelfCheck(log)) return;
@@ -817,19 +810,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // CX-85: the ported light-fade integrator, up here for the same reason -- pure arithmetic, wrong in
         // the same way on every client, and the shim's install is not reached without the engine symbols.
         LightFade.SelfCheck(log);
-        SelfCheckDrip(log);
         ShaderStages.SelfCheck(log);
         ShaderSource.SelfCheck(log);
         TriggerHighlight.SelfCheck(log);
-        HighlightGlow.SelfCheck(log);
         GuiCapture.SelfCheck(log);
         GuiStream.SelfCheck(log);
         NuiFlush.SelfCheck(log);
-        // #262: Alloy does the bone solve itself now, so its arithmetic is ours to be wrong about. Up here
-        // with the other unconditional checks -- a client that never arms still reports whether the maths
-        // this build ships is right, and the answer does not depend on any engine symbol.
-        _skinMathOk = SkinPose.SelfCheck();
-        log.Info(_skinMathOk ? "SkinPose.SelfCheck: passed" : "SkinPose.SelfCheck: FAILED -- skinmeshes stay engine-drawn");
         // ADR 0012: the dump is how a customizer gets a current starting point. Ahead of every stand-down
         // below, so a session that owns nothing can still produce one.
         ShaderStages.DumpIfConfigured(log);
@@ -845,10 +831,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // crash on the first world frame, not a misrender, so it joins the gating chain.
         StockConfig.Attach(log);
         if (!CutCensusSelfCheck(log) || !SortSelfCheck(log) || !CullSortSelfCheck(log) || !SplitSelfCheck(log) || !CasterBoundSelfCheck(log) || !MaterialExtSelfCheck(log) || !ChaseSelfCheck(log) || !KeyholeBoxSelfCheck(log) || !SphereRectSelfCheck(log)
-            || !AreaGrid.SelfCheck(log) || !GobLod.SelfCheck(log) || !GobXform.SelfCheck(log)
+            || !AreaGrid.SelfCheck(log)
+            || !DbSelfChecks(log)
             || !Issue.RunsSelfCheck(log) || !StreamRing.SelfCheck(log)
-            || !PartTable.RenderableSelfCheck(log)
-            || !PartTable.ItemResidentSelfCheck(log)
             || !ShaderContract.SelfCheck(log)
             || !StockConfig.SelfCheck(log)) return;
         // NOT in the chain above: those two guard what reaches the screen, and this one guards a debug dump.
@@ -856,12 +841,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         FrameDump.SelfCheck(log);
         // #128: same rule. A wrong gob offset draws a creature at the wrong alpha and a leaky refused-gob set
         // half-owns one -- both misrenders, neither of which errors.
-        if (!AlloyCensus.GobSelfCheck(log)) return;
+        if (!AlloyCensus.SelfCheck(log)) return;
         // CX-89: same rule, and the failure is worse than a misrender -- a wrong door fade freezes Gob+0x10c and
         // Gob::HitCheck then refuses the click. A failed check keeps the engine's own FadeDoors by keeping the
         // whole Alloy path down.
         if (!DoorFade.SelfCheck(log)) return;
-        if (PlaceableHold.SelfCheck(log)) PlaceableHold.Install(log, hooks);   // failed: placeables fade as vanilla
         _getTexture = EngineFn.MatGetTexture;
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         if (CycleTextures.SelfCheck(log)) CycleTextures.Attach(log, hooks);   // #331; a failed check freezes cycles, not Alloy
@@ -893,34 +877,20 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (_getTexture == null || !AurTex.Ready || _primTable == null || _mtxStacks == null)
         { log.Info("AlloyRenderer: engine symbols unresolved -- Alloy world pass unavailable"); return; }
 
-        _origRsp = hooks.InstallRenderSinglePass(&OnRenderSinglePass);
         // #336: the highlight SOURCE. Cold -- it fires on a mouseover edge or a VFX starting, never per
         // frame -- and it is the only place the channel that produced a highlight is visible.
         Highlight._origRefreshHilite = hooks.InstallRefreshHilite(&Highlight.OnRefreshHilite);
         if (Highlight._origRefreshHilite == null)
             log.Info("AlloyRenderer: RefreshHilite unhooked -- no highlight claims a source, so every"
                      + " highlight keeps the engine glow and the owned outline draws nothing");
-        // shared symbol: draw funnels + Alloy cast invalidate too (#88)
-        _repackSlot = hooks.ChainVdoRepack(&OnVdoRepackHook, RepackPriority);
         // the item-level vertex-dirty signal
         _commitSlot = hooks.ChainVdoCommitItemDynamicData(&OnCommitItemDynamicData, CommitPriority);
         if (_commitSlot == null) log.Info("AlloyRenderer: CommitItemDynamicData unhooked -- vertex-dirty stays per pool buffer");
-        // CX-19: the area edge that is NOT a Scene change (a server hop reuses the Scene object). Chained
-        // above the lightmap hold's own subscriber, which sits at 0 and may swallow the send.
-        _areaLoadedSlot = hooks.ChainSendAreaLoaded(&OnSendAreaLoaded, AreaLoadedPriority);
-        if (_areaLoadedSlot == null)
-            log.Info("AlloyRenderer: the AreaLoaded send did not resolve -- an in-module area change keeps the "
-                     + "previous area's VDO slots, charts and draw-arg ranges until the Scene pointer changes");
         // #137: the skinmesh class. Config bucket (ADR 0013): a capability gate that decides what the vertex
-        // stages are BUILT from, so it cannot move mid-session and is not a command. #262 dropped its second
-        // term -- the pose no longer comes out of GLRender::m_bones, so that symbol resolving proves nothing.
-        // A failed check disarms the class rather than posing a crowd from a transposed matrix -- the engine
-        // still draws every cloak in that case.
-        _skinning = Renderer.OwnSkin.Boot && _skinMathOk;
-        _enrollBudget = Renderer.EnrollBudget.Boot;
-        _enrollDelta = Renderer.EnrollDelta.Boot;
+        // stages are BUILT from, so it cannot move mid-session and is not a command. The pose math is
+        // DbAnim's, checked by its own self-check.
+        _skinning = Renderer.OwnSkin.Boot;
         _isEnabled = EngineFn.RiIsEnabled;
-        ResolveVaoDrip(log);
         OccludeInit(log);   // #537
         // Hook install is its own walk, and it stays HERE rather than joining Attach above: a pass that hooks
         // the engine on a client where the Alloy renderer cannot arm would be suppressing draws nothing
@@ -929,7 +899,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #215: last, and after PassRegistry -- the shim calls through hook sites every pass above it owns
         // (the beam window, the emitter suppression, the bucket gate), so they have to be installed first.
         RspShim.Install(log, hooks);
-        _armed = _origRsp != null;
+        _armed = true;
         // CX-95: after the shim, whose two funnel hooks are where a GUI scene's draws are captured.
         if (_armed && RspShim.Armed) GuiPass.Install(log, hooks);
         // CX-101: after GuiPass, so the nk_sdl_render chain reads panels (40), CX windows (20), NUI (1).
@@ -946,8 +916,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// 0/0/0/0/0, Build 2,6 -> 1,9ms. A woken worker spins up to 4ms, so on a machine with fewer than eight cores
     /// this oversubscribes; <c>/alloy threads N</c> is the dial.</summary>
     internal const int DefThreads = 6;
-    /// <summary>#329: the <c>alloy.enrollbudget</c> default -- candidates per frame, 0 = the whole walk in one frame.</summary>
-    internal const int EnrollBudgetDefault = 1500;
     /// <summary>#336: does the prepass run its keyhole sweep? See <c>/alloy prepasskey</c>.</summary>
     private static bool _prepassKey => Renderer.PrepassKey.V;
 
@@ -968,134 +936,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// numbers a hosted content stage gates on (snow, wet, rain).</summary>
     internal static void LogScriptables() => _log?.Info("AlloyRenderer: " + DescribeScriptables());
 
-    /// <summary>CX-89: the frame anchor, called straight out of <see cref="RspShim.Run"/> at the step
-    /// <c>Scene::FadeDoors</c> used to hold -- a point Alloy owns, with no engine function under it. It is
-    /// reached only on an Alloy frame, which is the only frame it ever did work on: <see cref="OnFrameAnchor"/>
-    /// needs <see cref="_inColourPass"/> and the two reads below serve Alloy's own passes, all of which idle
-    /// when the frame is the engine's.</summary>
-    internal static void FrameAnchor(IntPtr scene)
-    {
-        // #257: the frame constants, read here and only here. This is the one point in the frame that is
-        // both Alloy's own and correctly ordered -- the engine's EnableLights has advanced the area lights'
-        // fade weights, CurrentCamera holds the camera whose scene is rendering (Camera::RenderScene sets it
-        // at @0x4a822c and clears it at @0x4a8324), and nothing has drawn.
-        // ...and the re-read here is what makes the AREA terms this frame's: LightManager::EnableLights
-        // advanced their fade weights inside RSP, after SceneInputs' own earlier read.
-        if (IsWorldScene(scene))
-        {
-            FrameRead.Tick(scene);
-            SceneInputs.FrameStart(scene);
-        }
-        OnFrameAnchor(scene);
-    }
-
-    [UnmanagedCallersOnly]
-    private static void OnRenderSinglePass(IntPtr scene)
-    {
-        PassGen++;   // unconditionally: a stale generation would keep the iterator skipping parts nobody draws
-        bool world = IsWorldScene(scene);
-        // CX-19: the deferred area edge is consumed HERE -- on the render thread, ahead of the world walk
-        // and the enrolment that refill every table it drops. The send itself arrives mid-message.
-        if (world) TakeAreaEdge();
-        // #571: the stock graphics snapshot is retaken on a new world Scene (boot, every area edge), ahead of
-        // and regardless of the verdict -- the verdict reads it. A toggle the player flips off AFTER the
-        // decision froze has nothing behind it (exclusive residency), so it is the gamma precedent's Fail.
-        if (world)
-        {
-            StockConfig.OnScene(scene);
-            if (AlloyGate.Alloy && !StockConfig.EnhancedLighting)
-                AlloyGate.Fail("Enhanced Lighting was turned off in Game Options (graphics.lighting.enhanced) and Alloy has no vertex-lit path");
-        }
-        if (world && AlloyGate.Alloy)
-        {
-            // saturating, never wrapping: an unchecked ++ past int.MaxValue lands on int.MinValue and the
-            // threshold is then unreachable for 2^31 passes -- i.e. enrollment silently never runs
-            // #236: the latch enrolls as soon as the throttle opens, so the bound on ownership latency is
-            // NewCandidateGap frames from the completing walk rather than the full cadence.
-            long tEnroll = FrameZones.Now;
-            long bcn0 = FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild);   // the drips ride this slot; Enroll must not absorb them
-            // #256: the world walk FIRST -- one int load in the common case, a re-walk on the engine's own
-            // membership epoch. Enrollment is then edge-triggered on what that walk changed, which is what
-            // retires the 60-frame cadence: there is no clock here any more.
-            long tSub = FrameZones.Now;
-            SceneWalk.Tick(scene);
-            FrameZones.Add(FrameZones.Zone.EnWalk, tSub);
-            tSub = FrameZones.Now;
-            // #261: bucket 15 is not part of the world walk and never will be -- it is a per-frame,
-            // culled classification the engine builds ahead of RSP. Read here rather than enrolled on an
-            // edge, in engine context, because that is what the beam VAO harvest needs.
-            Beams.Enroll(scene);
-            Halos.Enroll(scene);
-            // #261: the sky's three gobs are not in Scene+0x130 either -- they hang off Scene+0x18/+0x38 and
-            // only Scene::RenderSkyBoxes ever walked them. Same slot, same reason as beams.
-            SkyBox.Enroll(scene);
-            FrameZones.Add(FrameZones.Zone.EnFx, tSub);
-            tSub = FrameZones.Now;
-            long drip0 = FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild);
-            // #284: the unbuilt-texture retry, and it belongs HERE and not in the 4.6 bracket.
-            // CAurTexture::BuildAndStore re-runs the engine's own upload -- SetActiveTexture, AurTextureBindTID,
-            // RenderInterface::CreateTexture -- and the engine caches what it thinks is bound. Run inside
-            // Alloy's context those binds land on Alloy's objects while the engine's cache records them,
-            // which is #220's corruption with a different cause. Engine context, once a frame, budgeted.
-            OwnedTextures.DripRebuilds();
-            // #284: and the other engine-draw-driven lazy initializer, on the same slot and for the same
-            // context reason -- PartSkin::PostProcess @0x483120 ends in RenderInterface pool traffic, and
-            // its only vanilla caller was RenderSkinned, i.e. a draw this branch no longer performs.
-            SkinPose.DripPrepares();
-            FrameZones.Add(FrameZones.Zone.EnDrip, tSub,
-                           FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild) - drip0);
-            // The FLOOR, and it is not a cadence: nothing here fires because time passed, it only delays an
-            // edge that has already happened. Enrollment is the cold path (handle wipe, full table scan,
-            // texture re-intern, VAO retire) and the walk's delta signal is unbounded by construction --
-            // #236 put a floor under the old new-candidate latch for exactly this reason and deleting the
-            // cadence took it with it. Measured live at 0,04-0,08 epoch moves per frame (a walk every 12-20
-            // frames), so at the observed rate this binds almost never; it exists for the churnier area.
-            if (_sinceEnroll < int.MaxValue) _sinceEnroll++;
-            bool due = SceneWalk.Dirty || scene != _enrollScene;
-            // #329: a walk in progress steps every frame; the floor and the edge gate only its BEGIN.
-            // CX-105 (review): a LOD swap waiting to commit bypasses the floor. It is a delta enrolment of
-            // the handful of parts one gob's alternate roots add, and the floor exists to bound the COLD full
-            // scan -- while making that swap wait ten frames is what left the gob undrawn across it.
-            if (Walking(scene) || (due && (_sinceEnroll >= EnrollFloor || scene != _enrollScene || GobLod.WantEnroll)))
-            { Enroll(scene); FrameZones.MarkEnrollFrame(); }
-            FrameZones.Add(FrameZones.Zone.Enroll, tEnroll, FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild) - bcn0);
-        }
-        // #215: THE CUTOVER. Same gate the enrollment above uses, plus the shim's own arming -- so the key
-        // being on is never enough on its own: a pass with no 4.6 context, no module, or a vanilla verdict still gets
-        // the engine's own RenderSinglePass, which is the only frame there is behind it.
-        if (world && Armed4Shim)
-        {
-            // #256: the first walk of a new Scene reaches parts whose geometry is not resident yet, so it
-            // enrols records that cannot bind until SetupArrays has run for them. The retry budget covers
-            // exactly that window -- a Scene that has enrolled NOTHING keeps asking, bounded, rather than
-            // waiting on an epoch bump that a purely resident-state change never produces.
-            // Against its OWN latch, not against _enrollScene: the enroll block above already ran under the
-            // same gate and set _enrollScene = scene, so a test on that is always false by the time it is
-            // reached and the budget would silently be per-session.
-            if (scene != _forcedScene) { _forcedScene = scene; _forcedEnrolls = 0; }
-            // #308: enrolled-count, not the slot high-water mark -- slots are stable now, so _ownCount
-            // never returns to zero once anything has enrolled. Zero ENROLLED covers both residency shapes
-            // of the race this budget bridges: no candidates yet (records not resident), and candidates
-            // that all refused transiently (the VDO drip deferring while pools lack GL names -- nothing
-            // re-dirties the walk on pool residency, so without the retry a scene sticks at zero ownership
-            // with the engine's 3D draw swallowed). A scan that accepted parts and dropped them all to the
-            // all-owned-or-none sweeps re-fires too; that waste is bounded by the same 8-scan budget.
-            // ...and the same race at PARTIAL ownership, which the zero test cannot see. An enrollment that
-            // left VDOs deferred or past the dedup table has unfinished business, but a walk only re-runs on
-            // an edge and none of those states raise one -- so a dense area settled at 910 of 1300 parts and
-            // stayed there, the holes permanent. Same budget: the re-ask is bounded per scene, so a VDO that
-            // will never harvest cannot spin the walk.
-            if ((Counters._lastEnrolled == 0 || DripPending) && _forcedEnrolls < MaxForcedEnrolls)
-            { SceneWalk.Dirty = true; _forcedEnrolls++; }
-            bool prevShim = _inColourPass;
-            _inColourPass = true;
-            RspShim.Run(scene);
-            _inColourPass = prevShim;
-            return;
-        }
-        if (_origRsp != null) _origRsp(scene);
-    }
-
     /// <summary>Is this the world Scene? A Scene's static tile BSP (<see cref="EngineLayout.SceneBspRoot"/>) is
     /// written by <c>Scene::InitBSP</c> alone (@0x46c330; <c>Scene::Scene</c> zeroes it, and every
     /// <c>SceneBSPAdd*</c> only inserts into an existing root). A GUI 3D panel's Scene -- which reaches the
@@ -1111,27 +951,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// which latch and are deliberately never cleared by a context loss (see <see cref="ContextLost"/>).</summary>
     internal static bool ArmedForFrame => _armed;
     internal static bool DrawCapable => !Programs._progFailed && !_batchUnavailable;
-
-    /// <summary>#215: may the shim replace this pass? Taking the engine's frame away and THEN refusing to
-    /// draw leaves the world as bare clear colour under the 2D UI, with nothing behind it -- so every
-    /// refusal <see cref="DrawOwned"/> can answer from state that outlives the pass is asked here first.
-    /// <para><c>PostChain.On</c> is the <c>hdr=0</c> case and <see cref="PartTable"/><c>.Active</c> the
-    /// <c>drawhooks=off</c>/<c>=stats</c> one: both are supported settings that would otherwise produce a
-    /// permanently empty world with no reason given.
-    /// <c>PartTable.Active</c> is read HERE rather than at the shim's install because DrawFunnelService
-    /// initializes after this service (discovery is alphabetical) and has not set it yet.</para>
-    /// <para>What this canNOT cover is the gamma refusal, which is re-asked per pass inside the anchor,
-    /// after that pass's engine frame is already gone. ADR 0016 scopes exactly that to step 7 (#216): every
-    /// refusal becomes frame-start-only, because there is no mid-frame fallback once the shim is in.</para></summary>
-    private static bool Armed4Shim => RspShim.Ready && AlloyGate.Alloy;   // AlloyGate.Alloy implies RspShim.Armed (#458)
-
-    /// <summary>#215: consecutive enrollments forced by an empty ownership set, and the ceiling on them.
-    /// #256: what they now wait for is RESIDENCY -- the first walk of a Scene records parts whose
-    /// VertexPrimitive has no VDO yet, and each frame's rebind pass binds a few more. Without the cap, an
-    /// area with genuinely nothing ownable would run a full table scan at frame rate forever.</summary>
-    private static int _forcedEnrolls;
-    private static IntPtr _forcedScene;
-    private const int MaxForcedEnrolls = 8;
 
     /// <summary>Inside <see cref="RspShim.Run"/>, i.e. a world colour pass that is Alloy's. The anchor draws
     /// only then: since #458 there is no Alloy drawing inside the engine's own RenderSinglePass.</summary>
@@ -1159,56 +978,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
          + "else draws the world, so those parts are NOT RENDERED AT ALL, and the spill set re-picks itself "
          + "every enrollment, so which geometry is missing changes as you watch)";
 
-    /// <summary>#132's frame anchor: the Alloy colour block, reached from <see cref="FrameAnchor"/> -- a direct
-    /// call out of <see cref="RspShim.Run"/> at the step <c>Scene::FadeDoors</c> used to hold. Every Alloy part
-    /// -- #126's transparent, fade, cap and additive classes included -- draws here, ahead of every bucket any
-    /// of them is sighted in (engine order
-    /// 0 -> [sky] -> 1 -> 7 -> 2 -> 3 -> 5 -> 8 -> 6 -> 4). That is what keeps suppression honest, and it is
-    /// also why the blending classes composite before the engine's still-vanilla dynamic geometry -- the
-    /// approximation named on <see cref="Issue.TransparentPass"/>.
-    /// <para><b>Why this step.</b> #132 anchored on <c>FadeDoors</c> because the engine's world FBO was cleared
-    /// by <c>Camera::InitializeFrameBufferResources</c> on every RSP entry, so a resolve written at literal RSP
-    /// entry was wiped. #215 replaced RSP wholesale and that clear no longer runs at all, but the STEP is still
-    /// the right one and for its other reason: it is the last point at which the per-frame bookkeeping the pass
-    /// reads (the camera latch, the light fade weights, and since CX-89 the door fade) is current and nothing
-    /// has drawn. What changed in CX-89 is only who calls it. Fog is read straight off the Scene since #257, and
-    /// CX-84 deleted the <c>Scene::DoFog</c> call that used to precede the anchor.</para></summary>
-    private static void OnFrameAnchor(IntPtr scene)
-    {
-        // #86: one gate covers the whole pass. Suppression needs no second one -- the iterator only skips a
-        // part whose OwnGen matches this pass, and nothing stamps it when the Alloy block does not run.
-        if (!AlloyGate.Alloy || _orderCount == 0) return;   // #308: live count, not the slot high-water mark
-        // #91: never paint into a foreign Scene. Only a NON-world pass counts as a foreign sighting -- a world
-        // pass that misses is the enrolled Scene having been replaced (area transition), which resolves itself
-        // within a walk or two and must not read as evidence that GUI panels reach this anchor.
-        if (scene != _enrollScene) return;
-        if (!_inColourPass) return;
-        if (_drawnPass == PassGen) return;
-        _drawnPass = PassGen;
-        // Engine context, before the bracket: harvesting a VDO's attribute formats is a read of the ENGINE's
-        // VAO (see VdoSlot), so it cannot happen on the 4.6 side.
-        for (int i = 0; i < SkyBox.Count; i++)
-        {
-            ref SkyBox.Part p = ref SkyBox.At(i);
-            p.Vao = SkyBox.Drawable(i) ? VdoSlot(p.Vdo) : -1;
-        }
-        SampleEngineSets(scene);   // CX-103: engine context, before the first record build -- which gobs moved
-        DrawOwned();
-    }
-
-    /// <summary>Solve every Alloy skinmesh's pose for THIS frame, before the bracket and after
-    /// <see cref="PostChain.Precheck"/>, so a pass that is standing down does not solve poses the engine is
-    /// about to solve again itself (#137, #262). The ENGINE owns animation state; <see cref="SkinPose"/>
-    /// READS that state and does the solve itself, and no engine draw function is entered at all.
-    /// <para>A part whose pose does not come back (its <c>MdlNodeSkin</c> is not prepared yet, or its tree
-    /// overflowed the walk) is un-owned here and now, which means it is not drawn this frame. There is no
-    /// engine draw left to repair an unprepared <c>MdlNodeSkin</c>, so the repair has an Alloy edge of its
-    /// own (<see cref="SkinPose.DripPrepares"/>, from the frame anchor); the refusal is one frame, not the
-    /// session, and a cloak seen permanently missing is a number on the period line (#264, #284).</para>
-    /// <para>The solve runs ONCE per frame at the shadow bracket (CPU half here, upload half in
-    /// <see cref="ShadowPoseUpload"/>), and the colour preamble reuses it: a bake sampling the bone block the
-    /// LAST colour build uploaded -- pose N-1 under a colour pass drawing pose N -- flips the self-shadow
-    /// compare's sign every frame on a cloak lit by its own carried torch, which is the flicker (#308).</para></summary>
+    /// <summary>Publish every skinmesh's pose for THIS frame, once, at the shadow bracket (CPU half here, upload
+    /// half in <see cref="ShadowPoseUpload"/>), and the colour preamble reuses it: a bake sampling the bone block
+    /// the LAST colour build uploaded -- pose N-1 under a colour pass drawing pose N -- flips the self-shadow
+    /// compare's sign every frame on a cloak lit by its own carried torch, which is the flicker (#308).</summary>
     internal static bool PosedByShadow;
 
     internal static void ShadowPose()
@@ -1266,32 +1039,23 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // animation state and must not make it its own history.
         bool roll = _poseRollSeq != _frameSeq;
         if (roll) { _poseRollSeq = _frameSeq; float* t = _boneStage; _boneStage = _bonePrevStage; _bonePrevStage = t; }
+        // CX-120 seam-anim: a DB palette is solved on the game thread, before this swap, so it lives in the
+        // DB stage and is copied into whichever buffer THIS frame uploads -- here, the one moment both
+        // buffers mean what their names say (Scene/AlloyRenderer.DbBones.cs).
+        DbBonePublish();
         for (int k = 0; k < _skinCount; k++)
         {
             int i = _skinOrder[k];
             int prev = _oBone[i];
             _oBone[i] = -1;
-            if (_oTri[i] == IntPtr.Zero || !_vSkin[_oVao[i]]) { FreeBoneSlot(prev); continue; }
-            // Identity first, and here it is not the usual "a stale read is acceptable" case: the solve
-            // chases this part's parent chain, child array and MdlNode, so a recycled pointer is a CHASED
-            // one. The same single-level compare BuildBatches revokes on. A failure here is not counted as
-            // an unsolved pose -- the part was already gone, and conflating the two would send the next
-            // diagnosis after a skinning bug that is really a lifetime one.
-            if (!IdentityOk(i, _oTri[i])) { FreeBoneSlot(prev); RevokeSkinned(i); continue; }
-            bool held = prev >= 0 && prev < _boneTop && _boneOwner[prev] == i;
-            int slot = held ? prev : AllocBoneSlot(i);
-            if (slot < 0 || !SkinPose.Solve(_oTri[i], _boneStage + (long)slot * BoneFloats))
-            { Counters._skinNoPose++; FreeBoneSlot(slot); RevokeSkinned(i); continue; }
-            _oBone[i] = slot;
-            // CX-26: a fresh slot's history is its own pose (the rigid `fresh` rule); a held one moved if
-            // the palette differs from last frame's.
-            var was = new Span<float>(_bonePrevStage + (long)slot * BoneFloats, BoneFloats);
-            var now = new ReadOnlySpan<float>(_boneStage + (long)slot * BoneFloats, BoneFloats);
-            if (!held) now.CopyTo(was);
-            else if (roll && !now.SequenceEqual(was)) _poseMovedAt[i] = _frameSeq;
+            // A slot's palette is a column seam-anim's pose step wrote on the game thread, so there is no part
+            // chain to chase -- the slot carries the bone base it was given. A part whose pose step has not run
+            // yet draws rigid, which is its rest pose, and `skin-nopose` on the period line says how often.
+            int given = SceneDb.PartBoneBase[_oDbPart[i]];
+            if (given < 0) { Counters._skinNoPose++; FreeBoneSlot(prev); continue; }
+            if (prev >= 0 && prev != given) FreeBoneSlot(prev);
+            _oBone[i] = given;
             Counters._skinDrawn++;
-            // #302: no separate shadow feed. The pose lands in _oBone/feat.y and the bake reads it through
-            // the same record and the same bone block the colour pass draws from.
         }
         // Reclaim orphans: a table wipe can re-tenant an ownership slot without a FreeSlot
         // (a fresh tenant starts at _oBone -1), leaving a bone slot whose owner no longer
@@ -1330,41 +1094,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         return true;
     }
 
-    /// <summary>#137: hand an unposable skinmesh back to the engine -- AND the rest of its creature with it.
-    /// <para>The handing back is in time to matter: the iterator's suppression runs at buckets 2/3, later in
-    /// the same frame, so clearing the flag here is a fallback rather than a dropped part.</para>
-    /// <para>The rest of the creature is #128's all-owned-or-none rule, which enrollment enforces through
-    /// <c>OwnRefuse</c> and this cannot: the refused-gob set is cleared at the start of every scan, so a mark
-    /// made between enrollments is wiped before the sweep reads it. Done inline instead. Without it, a crowd
-    /// past the bone budget draws bodies through the Alloy pass and their cloaks through the engine, and
-    /// re-enrolls into the same split every scan -- a mixed-renderer seam that persists rather than resolves.
-    /// O(n) per failure, and failures are the budget's edge, not the common path.</para></summary>
-    private static void RevokeSkinned(int i)
-    {
-        IntPtr gob = _oGob[i];
-        Revoke(i);
-        if (gob == IntPtr.Zero) return;
-        for (int j = 0; j < _ownCount; j++)
-            if (j != i && _oTri[j] != IntPtr.Zero && _oGob[j] == gob) Revoke(j);
-    }
-
-    /// <summary>Chain priority on Repack: invalidation order among observers doesn't matter.</summary>
-    internal const int RepackPriority = 30;
-    private static VdoRepackFn* _repackSlot;
-
-    [UnmanagedCallersOnly]
-    private static void OnVdoRepackHook(IntPtr vdo)
-    {
-        VdoRepackFn next = *_repackSlot;
-        if (next != null) next(vdo);
-        // Repack moved item indices/offsets under us: revoke every part on that VDO, re-enroll later
-        for (int i = 0; i < _ownCount; i++)
-            if (_oTri[i] != IntPtr.Zero && _oVdo[i] == vdo) Revoke(i);
-        // #130: beams keep a VAO cache of their own (their VDOs have no UV stream, so they cannot ride this
-        // one) and it holds harvested buffer ids and item offsets a repack invalidates just the same.
-        Beams.OnRepack(vdo);
-    }
-
     /// <summary>#209: this pass's own context-loss slot, which it drove inline (and incompletely) before the
     /// lifetime audit. Every GL NAME here belongs to the 4.6 context, so nothing is deleted -- the objects
     /// went with it -- the names are dropped so each Ensure rebuilds instead of short-circuiting on a
@@ -1378,10 +1107,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     {
         Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0;
         Highlight.HighlightContextLost();
-        HighlightGlow.ContextLost();
         TriggerHighlight.ContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         MotionContextLost();
+        DbFeed.ContextLost();   // R1-30: the feed's own GL-backed tables
         // #242: ...and the persistent records went with the buffers that held them. Both halves matter -- the
         // capacity so the next upload reallocates rather than writing into a dead name, and the epoch so
         // every record is rebuilt rather than assumed still on the GPU.
@@ -1391,7 +1120,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // whatever the next context recycles that number for.
         // #136: the engine-layout VAO cache goes with it. Same rule, same reason -- a container object is
         // not shared, so every name in it belonged to the context that just went.
-        for (int v = 0; v < MaxVdos; v++) { _vVao46[v] = 0; _vOwned[v] = false; ForgetEngineVao(v); ForgetLodVao(v); }
         Programs._waterFailed = false;
         // #257: and so is the target latch -- every name in it belongs to the context that just went.
         ForgetTarget();
@@ -1432,9 +1160,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         }
         if (!GlContextService.Available) { RevokeAll("4.6 context lost"); PassRegistry.Global.ContextLost(); }
         bool inModule = GameGate.InModule;
-        if (_wasInModule && !inModule) { RevokeAll("module unload"); Programs._spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); AlloyEnvMap.ModuleUnloaded(); }
+        if (_wasInModule && !inModule) { RevokeAll("module unload"); Programs._spliceStale = true; OwnedTextures.ModuleUnloaded(); StockConfig.ModuleUnloaded(); AlloyEnvMap.ModuleUnloaded(); DbFeed.ModuleEdge(_log); }
         _wasInModule = inModule;
-        if (_tableGen != PartTable.TableGen) { RevokeAll("part table wiped"); _tableGen = PartTable.TableGen; }
+        // #571: the stock graphics snapshot is retaken per world scene (boot, every area), and a toggle the player
+        // flips off after the decision froze has nothing behind it (exclusive residency): the gamma precedent's Fail.
+        if (inModule && !DbPassScene.IsNull)
+        {
+            StockConfig.OnScene((IntPtr)DbPassScene.Value);
+            if (AlloyGate.Alloy && !StockConfig.EnhancedLighting)
+                AlloyGate.Fail("Enhanced Lighting was turned off in Game Options (graphics.lighting.enhanced) and Alloy has no vertex-lit path");
+        }
 
         // the overflow counter lives in a GL buffer, so its readback has to happen inside the 4.6 bracket:
         // arm it one frame ahead of the log so the value the log prints is this period's
@@ -1442,7 +1177,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         if (Counters._frames == period - 2) _takeOverflow = true;
         if (++Counters._frames < period) return;
         Diag._loggedOnce = true;
-        MeshCensus();   // #329: off the walk, for the line below alone
         PeriodReport();
         CullPass.ResetStats();
         Counters._frames = 0; Counters._draws = 0; Counters._batches = 0; Counters._revokes = 0; Counters._enrolls = 0;
@@ -1451,7 +1185,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Counters._noDiffuseDraws = 0; Counters._skipTexNoId = 0; Counters._skipTexNoHandle = 0; Counters._skipTexNotOwned = 0;
         Counters._nullTexDraws = 0;
         Counters._skinDrawn = 0; Counters._skinNoPose = 0; Counters._boneHigh = 0;
-        SkinPose.NoBind = 0; SkinPose.Overflow = 0;
         SkyBox.ResetPeriod();
         SkyTick.ResetPeriod();
         GrassField.ResetPeriod();
@@ -1459,8 +1192,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Halos.ResetPeriod();
         Weather.ResetPeriod();
         Particles.ResetPeriod();
+        EmitterSim.ResetPeriod();
         Counters._watchSubmitted = 0;
         Counters._skipNoLight = Counters._skipIdentity = Counters._skipNoMdl = Counters._skipTex = Counters._skipRange = Counters._skipVao = 0; Counters._skipLod = 0;
+        Counters._skipForeignScene = 0;
         ResetChasePeriod();
         Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
         Counters._recWritten = 0; Counters._recStable = 0; PassBinds = 0; PassUploads = 0; PassBindsBorrowed = 0; Issue.WholeUploads = 0; Issue.WholeBytes = 0;
@@ -1471,6 +1206,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Counters._prepassDraws = 0; Counters._prepassSkipped = 0; Counters._prepassKeyed = 0; Counters._prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset();
         for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset(); _spanSum = 0; _spanN = 0;
     }
+
+    /// <summary>R1-24: the scene database's checks. They GATE the renderer: a wrong answer is the whole world
+    /// drawn wrong.</summary>
+    private static bool DbSelfChecks(ExtenderLog log)
+        => DbGrid.SelfCheck(log) & DbFeed.SelfCheck(log) & DbInputs.SelfCheck(log) & DbGui.SelfCheck(log)
+           & DbLights.SelfCheck(log) & DbSky.SelfCheck(log) & DbEmitterChannels.SelfCheck(log);
 
     /// <summary>The [alloy] period line: every number the period tallied, in one statement. Its own
     /// method so <see cref="EndFrame"/> reads as the gate, the census and the reset it is (CX-708).
@@ -1492,36 +1233,26 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         int holes = Counters._lastCandidates - Counters._lastEnrolled;
         // #325: the old single colour timer's span, opaque through additive (water = copy + draw).
         double colourMs = 0; for (int t = (int)GpuTerm.Opaque; t <= (int)GpuTerm.Additive; t++) colourMs += GpuMs((GpuTerm)t);
+        _log?.Info($"AlloyRenderer: [alloy] {DbFeed.Stats()} | {DbTableNote()} | {DbPassNote()} "
+                     + $"| {DbInputs.Stats()} | {DbGui.Stats()}");
         _log?.Info($"AlloyRenderer: [alloy] {Counters._lastEnrolled}/{Counters._lastCandidates} parts owned{CapacityNote()}" +
-                   (holes <= 0 ? "" : $" ({holes} NOT DRAWN -- nothing renders an unowned part since #264"
-                                       + $"; harvest refused VDOs: no-engine-vao {HarvestNoVao} no-elembuf {HarvestNoElem}"
-                                       + $" no-pos {HarvestNoPos} no-uv {HarvestNoUv})") +
-                   // #284: OUTSIDE the holes parenthetical on purpose. The number that says the drip worked
-                   // is the one printed on a period with no holes left at all.
-                   DripNote() + " [" + OwnedTextures.TranscodeNote() + "; " + OwnedTextures.CacheNote() + "; " + OwnedTextures.PrefetchNote() + TexStream.Note() + TexLoad.Note() + ModelLoad.Note() + MdlCache.Note() + "; " + DdsReader.Note() + "; " + RasterReader.Note() + "; " + EnrollNote() + "]" +
-                   $" on {_vdoCount} VDOs ({OwnedVaos()} on Alloy-uploaded pools, drawn by {OwnedClasses()}{UvlessNote()}) " +
+                   (holes <= 0 ? "" : $" ({holes} NOT DRAWN)") + " [" + OwnedTextures.TranscodeNote() + "; " + OwnedTextures.CacheNote() + "; " + OwnedTextures.PrefetchNote() + TexStream.Note() + TexLoad.Note() + ModelLoad.Note() + MdlCache.Note() + "; " + DdsReader.Note() + "; " + RasterReader.Note() + "]" +
+                   $" drawn by {OwnedClasses()} " +
                    $"/ {Counters._lastTextures} textures " +
                    $"({_litCount} lit, {Counters._litUnownable} lit left to the engine" +
                    // #128: what the creature class costs, split. "Creatures are still vanilla" has three
                    // different fixes behind it -- a skinning stage, an instance-state term, or nothing at all
                    // if the sweep is simply doing its job -- and only the split says which.
-                   (Counters._skinUnownable == 0 && Counters._gobParts == 0 ? "" :
-                       $", {Counters._skinUnownable} skinned parts left to the engine, {Counters._gobParts} accepted parts revoked " +
-                       $"by the per-instance sweep (out of {AlloyCensus.RefusedGobs} instances with a refused part)" +
-                       (AlloyCensus.RefusedGobOverflow ? " -- REFUSED-GOB SET OVERFLOWED, every instance dropped" : "")) +
                    // #137: and what the skinmesh class itself did. A zero everywhere with the class armed
                    // means no cloak was on screen, which is a different statement from "the pose failed" --
                    // so the failures are named, not merely absent.
                    (!_skinning ? ", skinmeshes not owned"
                       : Counters._skinDrawn == 0 && Counters._skinNoPose == 0 ? ""
                       : $", {(float)Counters._skinDrawn / Counters._frames:F1} skinmeshes posed/frame" +
-                        (Counters._skinNoPose == 0 ? "" : $", {Counters._skinNoPose} handed back unposed" +
-                            (SkinPose.NoBind == 0 ? "" : $" ({SkinPose.NoBind} node not prepared)") +
-                            (SkinPose.Overflow == 0 ? "" : $" ({SkinPose.Overflow} bone tree too deep)")) +
+                        (Counters._skinNoPose == 0 ? "" : $", {Counters._skinNoPose} drawn rigid (no pose yet)") +
                         $", {Counters._boneHigh} bone slots peak of {_boneCap}") +
                    // #284: session totals, so a creature that is STILL a hole three periods later is
                    // visible as one rather than being reset out of the line every period.
-                   SkinPose.PrepareNote() +
                    "), " +
                    $"Alloy draws {(float)Counters._draws / Counters._frames:F0}/frame in {(float)Counters._batches / Counters._frames:F0} batches " +
                    // #126: the transparency model, as numbers. Cutout should dwarf blended on NWN content;
@@ -1560,6 +1291,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // #285: every reason on this list is a HOLE -- geometry that nothing renders this frame.
                    $"NOT DRAWN this frame: unlit-pass {(float)Counters._skipNoLight / Counters._frames:F0} identity {(float)Counters._skipIdentity / Counters._frames:F0} " +
                    $"inactive-LOD {(float)Counters._skipLod / Counters._frames:F0} " +
+                   (Counters._skipForeignScene > 0
+                       ? $"other-scene {(float)Counters._skipForeignScene / Counters._frames:F0} (routine: one draw order, many scenes) "
+                       : "") +
                    $"dissolve {(float)Counters._ownDissolve / Counters._frames:F0} owned, fade {(float)Counters._ownFade / Counters._frames:F0} owned " +
                    $"fog-out {(float)Counters._skipFogTile / Counters._frames:F0} tile + {(float)Counters._skipFogGob / Counters._frames:F0} gob " +
                    $"no-mdl {(float)Counters._skipNoMdl / Counters._frames:F0} tex {(float)Counters._skipTex / Counters._frames:F0}" +
@@ -1641,10 +1375,13 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                       (_qTerm[(int)GpuTerm.PrepassFeat].Measured ? $" + cutout/displaced sweep {GpuMs(GpuTerm.PrepassFeat):F3}ms ({(float)Counters._prepassFeatDraws / Counters._frames:F0} draws)" : "") +
                       (_qTerm[(int)GpuTerm.Ao].Measured ? $" + ao {GpuMs(GpuTerm.Ao):F3}ms" : "") +
                       (!_prepassKey ? " (keyhole sweep OFF -- /alloy prepasskey 1)" : "")) +
-                   (_qSamples.Measured && Counters._lastPixels > 0
-                       ? $", shaded {_qSamples.Avg / 1e6:F2}M samples/frame over {Counters._lastPixels / 1e6f:F2}Mpx " +
-                         $"(overdraw x{_qSamples.Avg / Counters._lastPixels:F2})"
-                       : "") +
+                   // CX-120: the sample query reads 0 on the DB path while the frame visibly shades, so the
+                   // counter is not measuring this path's draws. A measured-looking zero is worse than
+                   // silence -- it reads as "nothing rasterised", which is exactly the fault we spent a day
+                   // chasing -- so the clause says it is unmeasured rather than reporting a number it has
+                   // not got. ponytail: the query bracket needs a DB-mode home; it is a diagnostic, not a
+                   // pass, so it waits behind the consumers.
+                   ", shaded (not measured)" +
                    (_qTerm[(int)GpuTerm.Opaque].Measured
                        ? $", gpu ms: opaque {GpuMs(GpuTerm.Opaque):F2}" +
                          (_qTerm[(int)GpuTerm.OpaqueKey].Measured ? $" (+ keyhole {GpuMs(GpuTerm.OpaqueKey):F2})" : "") +
@@ -1675,7 +1412,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // The coverage question -- "what is the engine still drawing, and why?" -- was only
                    // answerable from the one-shot enroll diag, which a healthy session prints once at startup
                    // and never again. It belongs where the numbers it explains are.
-                   $"; {AlloyCensus.OwnScanDiag()}" +
                    // Nothing lit means nothing samples the shadow maps -- the whole Alloy lit stage, cascades
                    // and cubes included, is dead code for the session. Loud, because it looks like working
                    // output: parts are owned, cubes render, and the frame is merely fullbright.
@@ -1726,6 +1462,12 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         /// separate a camera-dependent bail-out (keyhole, tile fade) from a content one, which is exactly the
         /// distinction a part that is Alloy head-on and vanilla at the screen edge turns on.</summary>
         internal static long _skipLod;
+        /// <summary>CX-120: parts the pass skipped because they belong to ANOTHER SCENE. Its own term, not a
+        /// share of the LOD one: the draw order is a single table over every DB slot, so a world pass routes
+        /// past every GUI panel's controls and the count is large, routine and says nothing is wrong --
+        /// where <see cref="_skipLod"/> is content state and a large one is a question. Conflating them hides
+        /// a real LOD fault inside a number that is big on every healthy frame.</summary>
+        internal static long _skipForeignScene;
         internal static long _skipNoLight, _skipIdentity, _skipNoMdl, _skipTex,
                              _skipRange, _skipVao;
         /// <summary>...and the causes behind the <c>tex</c> fallback, which are different bugs wearing one
@@ -1765,9 +1507,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         /// creature still vanilla". Counted as PARTS, which is the figure the sweep actually produces: the gob
         /// count includes instances that had nothing accepted to revoke.</summary>
         internal static int _skinUnownable, _gobParts;
-        /// <summary>#128: instanced parts this enrollment took -- placeables, doors and creatures alike. Its only
-        /// job is to say whether the shadow side needs poking, so it counts PARTS and not instances.</summary>
-        internal static int _gobOwned;
         /// <summary>#126: blended parts dropped from this enrollment because the class could not be Alloy whole.
         /// #285: dropped means NOT DRAWN -- there is no engine walk behind the class since #264.
         /// Reported: a class that never lands is the one number that separates "no transparent content here"
@@ -1817,11 +1556,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// same reason as <see cref="Counters"/> (CX-699).</summary>
     internal static class Diag
     {
-        /// <summary>#134: a small budget of watched-part draw-side lines, so following one part through the owned
-        /// loop costs a handful of log lines rather than one per frame forever.</summary>
-        internal static int _watchDrawLeft = 20;
-        internal static int _enrollDiagLeft = EnrollDiagBudget;
-        internal static bool _reportedHit;
         /// <summary>A small budget of NAMED failures. The counters say which fault; only the resref says which
         /// CONTENT, and that is what separates "one model's texture" from "a whole class of them". Budgeted
         /// rather than rate-limited: the population is what matters and it is small, so a handful of distinct
@@ -1834,9 +1568,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         internal static int _handleDiagLeft = HandleDiagBudget;
         internal static bool _ambientFallbackLogged, _loggedOnce;
     }
-
-    /// <summary>The unmatched total, split by the bucket the parts were captured in -- only the buckets that
-    /// actually contributed, so the line stays short when one class dominates.</summary>
 
     /// <summary>A per-bucket counter as "bucket:per-frame", only the buckets that contributed.</summary>
     internal static string ByBucket(long[] counts)

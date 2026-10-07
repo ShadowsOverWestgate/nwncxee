@@ -2,6 +2,11 @@
 // OSes). A managed hook may never call such a function itself: the unwind would cross a NativeAOT frame. So funchook
 // points the engine here instead, the managed callbacks run and return on either side, and the original is called
 // from this C frame, which the unwinder passes through (it has unwind tables and no handler).
+// Also the crash report's stamp, which runs where managed code cannot: inside the engine's crash handler.
+
+#define _CRT_SECURE_NO_WARNINGS
+#include <stdio.h>
+#include <string.h>
 
 /// kiwi::impl::SolverImpl::optimize(Row const&) throws InternalSolverError("The objective is unbounded.").
 /// before: NuiSolver on Windows, where optimize inlines substitute. after: NuiLayoutErrors, which reads a failed
@@ -28,4 +33,78 @@ void *cx_optimize_thunk(cx_optimize_fn before, cx_optimize_fn after)
 void cx_optimize_set_orig(cx_optimize_fn orig)
 {
     cx_optimize_orig = orig;
+}
+
+/// CrashReporter_{Linux,Windows}::ReportCrashToUser(title, text): the engine's crash handler calls it last, after the
+/// report file is closed, with text that ends "- The error report file at <path>.nwcrash.txt.". The crashed thread may
+/// be a managed one, which cannot re-enter managed code, so the extender's notice is stamped here in C: on top of the
+/// report file, and in place of the dialog's Beamdog paragraph.
+typedef void (*cx_report_fn)(void *self, const char *title, const char *text);
+static cx_report_fn cx_report_orig;
+static char cx_report_banner[1024];
+static char cx_report_text[0x2000];
+static char cx_report_buf[0x10000];
+
+/// Rewrites the report file as the banner followed by the engine's report. Gives up, leaving the file as it was,
+/// on anything unexpected: the engine's report matters more than the stamp.
+static void cx_report_stamp(const char *text)
+{
+    static const char at[] = "- The error report file at ", ext[] = ".nwcrash.txt";
+    const char *p = strstr(text, at);
+    if (!p) return;
+    p += sizeof at - 1;
+    const char *end = strstr(p, ext);
+    if (!end) return;
+    size_t n = (size_t)(end - p) + sizeof ext - 1;
+    char path[4096], old[4096 + 8];
+    if (n >= sizeof path) return;
+    memcpy(path, p, n);
+    path[n] = 0;
+    snprintf(old, sizeof old, "%s.orig", path);
+    if (rename(path, old) != 0) return;
+    FILE *in = fopen(old, "rb");
+    FILE *out = in ? fopen(path, "wb") : NULL;
+    if (!out)
+    {
+        if (in) fclose(in);
+        rename(old, path);
+        return;
+    }
+    fprintf(out, "=== NWNCX:EE\n%s\n\n", cx_report_banner);
+    size_t k;
+    while ((k = fread(cx_report_buf, 1, sizeof cx_report_buf, in)) > 0) fwrite(cx_report_buf, 1, k, out);
+    fclose(in);
+    fclose(out);
+    remove(old);
+}
+
+static void cx_report(void *self, const char *title, const char *text)
+{
+    if (!text) { cx_report_orig(self, title, text); return; }
+    cx_report_stamp(text);
+    const char *files = strstr(text, "Attach the following files:");
+    snprintf(cx_report_text, sizeof cx_report_text, "%s\n\n%s", cx_report_banner, files ? files : text);
+    cx_report_orig(self, "NWN:EE crashed with NWNCX:EE loaded", cx_report_text);
+}
+
+/// Stores the notice (copied) and returns the function to hook ReportCrashToUser with.
+void *cx_report_thunk(const char *banner)
+{
+    snprintf(cx_report_banner, sizeof cx_report_banner, "%s", banner);
+    return (void *)cx_report;
+}
+
+/// Stores the trampoline funchook returned; set before the hooks commit.
+void cx_report_set_orig(cx_report_fn orig)
+{
+    cx_report_orig = orig;
+}
+
+/// /crashplease: a real access violation in a C frame, so the engine's own handler (SIGSEGV on Linux, its unhandled
+/// exception filter on Windows) takes it exactly as it would a genuine crash. Volatile, so the store is not folded
+/// into a trap instruction the handler does not catch.
+void cx_crash(void)
+{
+    volatile int *volatile p = 0;
+    *p = 0;
 }

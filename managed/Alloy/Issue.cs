@@ -114,6 +114,7 @@ internal static unsafe class Issue
             else UploadRuns(_drawBuf, p, DrawFloats * sizeof(float));
         }
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindDraw, _drawBuf);
+        StaleMirrorRecords(cap, whole, _recDirty, _recDirtyN);
         if (_bindless) UploadHandles(cap, whole);
         if (grew) _recCapGpu = cap;
         _recDirtyN = 0; _recDirtyAll = false;
@@ -147,6 +148,7 @@ internal static unsafe class Issue
                 UploadRuns(_texHBuf, p, 8 * sizeof(ulong));
         }
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindTexH, _texHBuf);
+        StaleMirrorHandles(cap, whole, _recDirty, _recDirtyN);
         _texHDirty = false;
     }
     private static int _texHCapGpu;
@@ -334,6 +336,7 @@ internal static unsafe class Issue
                     Gl.Uniform1i(Programs._watEnvOk, FrameSnapshot.EnvOk);
                     Gl.Uniform1i(Programs._watCapture, _capturing ? 1 : 0);
                     Gl.Uniform1f(Programs._watSplash, Weather.SplashRate(_capturing));
+                    Weather.BindRipple();
                     UploadFeatureTerms(Programs._watFeat, viewport);
                     BindPass(Programs._watCubeCount, viewport, near, far);
                     // The cascade and cube binds each left their own unit current for a moment; the copy
@@ -352,6 +355,7 @@ internal static unsafe class Issue
                     Gl.Uniform1f(L.AoCutout, Ao.Cutout.V);
                     OitPass.Upload(L.Oit, L.OitDim, _oitOn);
                     Gl.Uniform1i(L.Capture, _capturing ? (_planar ? 2 : 1) : 0);
+                    Gl.Uniform1f(L.MirrorZ, _mirrorZ);
                     LightmapBake.BindForDraw(L.LmPages, L.LmMovers);
                     UploadFeatureTerms(L.Feat, viewport);
                     BindPass(L.CubeCount, viewport, near, far);
@@ -360,9 +364,12 @@ internal static unsafe class Issue
                     Gl.Uniform1i(L.SsaoHalf, SsaoPass.Half ? 1 : 0);
                     Gl.Uniform2f(L.LightOcc, Lighting.HiddenLights.V ? 1f : 0f, GlossyRough);
                     UploadMaterialModel(L.Material);
-                    Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, L.SnowLook, L.SnowLight, L.SnowPom, L.WxEdge, L.WxRun, _capturing);
+                    Weather.UploadLit(L.Weather, L.WeatherLook, L.CoverVp, L.CoverLayer, L.SnowLook, L.SnowLight, L.SnowPom, L.WxEdge, L.WxRun, L.WxCache, _capturing);
                     Weather.BindEsm(L.CoverEsm, _oitOn || lists);
                     Weather.UploadMap(L.WxMapXf, L.WxMapP, _capturing);
+                    // CX-117: the master PLT palette on its own unit. Only a DB-mode record can carry the
+                    // PLT flag cx_plt.glsl branches on, so in engine mode the declared sampler is never read.
+                    Db.PltPalettes.Bind();   // CX-117: no-op until a master palette exists, which is DB mode only
                     litBase = L.Base; litCut = L.Cut; litOitBias = L.OitBias; litOitGob = L.OitGob; boundOitBias = -1f; boundOitGob = -1;
                     litSsaoOn = L.SsaoOn; litAoDirect = L.AoDirect;
                     boundSsao = -1;

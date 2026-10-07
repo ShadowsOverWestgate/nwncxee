@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Numerics;
+using CX.Alloy.Mdl;
 using CX.Engine;
 using CX.Framework;
 using CX.Graphics;
@@ -47,7 +49,6 @@ internal static unsafe class Halos
     private const int Ring = GpuReadback.Slots;
     private const int OccGroup = 64;   // not-an-offset: local_size_x in cx_haloocc_c.glsl
 
-    private static GetLensFlareLightsFn _getFlareLights;
     private static ExtenderLog? _log;
     private static float[] _stage = new float[InitialHalos * Floats];
     /// <summary>The <c>PartLight*</c> behind each staged halo, so a ring sample can be matched back to the
@@ -82,86 +83,15 @@ internal static unsafe class Halos
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        _getFlareLights = EngineFn.GetLensFlareLights;
-        if (_getFlareLights == null) { _off = true; log.Info("Halos: GetLensFlareLights unresolved -- no halos"); return; }
-        log.Info($"Halos: armed -- flare lights drawn as procedural halos (/effects; size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2})");
+        log.Info($"Halos: armed -- flare lights from the scene database drawn as procedural halos (/effects; size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2})");
     }
 
-    /// <summary>Once per world frame, engine context: integrate each flare's occlusion fade off the sample the
-    /// probe took two frames ago, then snapshot the engine's flare-light list. Allocation-free past the first
-    /// growth.</summary>
-    internal static void Enroll(IntPtr scene)
-    {
-        _count = 0;
-        if (_off || !Effects.Halos.V || scene == IntPtr.Zero) return;
-        // CX-108: the POPULATION is Alloy's light set. `GetLensFlareLights` @0x4c1d80 only filtered the
-        // engine's near-camera candidate list by the very node test pass 1 below already applies, so what it
-        // bought was the candidate list -- and that is a LightManager read. The registry's set is the whole
-        // area, so the distance cut it had for free is made explicit in Reaches().
-        bool owned = LightRegistry.Live;
-        IntPtr* items = null;
-        int n;
-        if (owned) n = LightRegistry.Count;
-        else
-        {
-            LightManager lm = new Scene(scene).LightManager;
-            if (lm.IsNull) return;
-            byte* list = (byte*)_getFlareLights(lm.Ptr);
-            if (list == null) return;
-            items = *(IntPtr**)list;
-            n = *(int*)(list + 8);
-            if (items == null) return;
-        }
-        if (n <= 0) return;
-        if (n * Floats > _stage.Length) _stage = new float[n * Floats];
-        if (n > _stageKey.Length) _stageKey = new IntPtr[n];
-
-        // Pass 1: who is a halo this frame. The keys have to exist before the fade is integrated, because a
-        // ring sample may name a light that has since been freed and this list is what proves it has not.
-        for (int i = 0; i < n; i++)
-        {
-            var pl = new PartLight(owned ? LightRegistry.Light(i).Ptr : items[i]);
-            if (pl.IsNull) continue;
-            var nd = new MdlNodeLight(new Part(pl.Ptr).Node.Ptr);
-            if (nd.IsNull || nd.FlareCount <= 0) continue;
-            float* sizes = (float*)nd.FlareSizes;
-            if ((sizes != null ? sizes[0] : 1f) <= 0f) continue;
-            if (owned && !Reaches(pl, nd)) continue;
-            _stageKey[_count++] = pl.Ptr;
-        }
-        Occlude();
-
-        // Pass 2: the GPU's view of each, with the fade folded into the colour exactly as vanilla folds it.
-        fixed (float* stage = _stage)
-        for (int i = 0; i < _count; i++)
-        {
-            var pl = new PartLight(_stageKey[i]);
-            var nd = new MdlNodeLight(new Part(pl.Ptr).Node.Ptr);
-            float fade = _occFailed ? 1f : pl.FlareFade;
-            float* sizes = (float*)nd.FlareSizes;
-            float* shift = (float*)nd.FlareShifts;
-            float* d = stage + i * Floats;
-            Vector3 wp = pl.Pos;
-            d[0] = wp.X; d[1] = wp.Y; d[2] = wp.Z;
-            d[3] = (sizes != null ? sizes[0] : 1f) * Effects.HaloSize.V;
-            Vector3 tint = Tint(pl.Colour, shift != null ? new Vector3(shift[0], shift[1], shift[2]) : Vector3.Zero, fade);
-            d[4] = tint.X; d[5] = tint.Y; d[6] = tint.Z;
-            d[7] = nd.FlareRadius;
-        }
-    }
-
-    /// <summary>CX-108: can this flare be in view at all? The engine's flare population was its near-camera
-    /// candidate list, so a flare past the scene's far plane was never staged; Alloy's registry is area-wide,
-    /// and without this a distant lamp in open air would paint a halo through the fog.
-    /// <para>The camera is LAST frame's -- this runs before <see cref="FrameRead"/> -- which is a frame of lag
-    /// on a fade that already takes a third of a second. No camera yet keeps every flare, which is the
-    /// first-frame answer the rest of the pass expects.</para></summary>
-    private static bool Reaches(PartLight light, MdlNodeLight node)
+    private static bool Reaches(Vector3 pos, float flareRadius)
     {
         if (!FrameInputs.HasCamera || !FrameInputs.HasPerspective) return true;
-        float slack = node.FlareRadius + Effects.HaloSize.V;
+        float slack = flareRadius + Effects.HaloSize.V;
         float far = FrameInputs.CamFar + slack;
-        return (light.Pos - FrameInputs.CameraPos).LengthSquared() < far * far;
+        return (pos - FrameInputs.CameraPos).LengthSquared() < far * far;
     }
 
     /// <summary>Take the probe's last answer (<see cref="Collect"/> read it, fenced, in Alloy's context) and walk
@@ -188,12 +118,65 @@ internal static unsafe class Halos
             // ponytail: linear match, O(samples x halos) -- tens of flares per view; a key->index map if that grows
             for (int j = 0; j < _count && live < 0; j++) if (_stageKey[j] == key) live = j;
             if (live < 0) continue;
-            var pl = new PartLight(key);
             float target = MathF.Min(1f, (s - 1) / (float)VisScale);
-            float next = Step(pl.FlareFade, target, dt);
-            if (next != pl.FlareFade) _occFaded++;
-            pl.FlareFade = next;
+            float was = Fade(key), next = Step(was, target, dt);
+            if (next != was) _occFaded++;
+            SetFade(key, next);
         }
+    }
+
+    /// <summary>Each flare's occlusion fade, keyed by the light's rig id: there is no <c>PartLight+0xa0</c> to
+    /// integrate it into.</summary>
+    private static readonly Dictionary<IntPtr, float> _dbFade = new();
+
+    /// <summary>A flare's integrated occlusion fade (a light not yet measured starts at 0 and fades in, as a fresh
+    /// engine light does).</summary>
+    private static float Fade(IntPtr key) => _dbFade.TryGetValue(key, out float f) ? f : 0f;
+
+    private static void SetFade(IntPtr key, float v) => _dbFade[key] = v;
+
+    /// <summary>The halo population: every light of <paramref name="scene"/> whose node carries
+    /// flares, read off the database the way <c>DbLights</c> reads the rig. The size, shift and radius are the
+    /// same three node fields mode 0 reads off <c>MdlNodeLight</c> -- its "sizes" word (+0xc0) is the list
+    /// <c>InternalParseField</c> @0x54baf0 fills from <c>flarepositions</c>, so that is what is read here too.</summary>
+    internal static void EnrollDb(Db.DbId scene)
+    {
+        _count = 0;
+        if (_off || !Effects.Halos.V) return;
+        int lits = Db.SceneDb.Lights.High, parts = Db.DbInputs.LightCount, n = lits + parts;
+        if (n * Floats > _stage.Length) _stage = new float[n * Floats];
+        if (n > _stageKey.Length) _stageKey = new IntPtr[n];
+        fixed (float* stage = _stage)
+        {
+            for (int lit = 1; lit < lits; lit++)
+                if (Db.DbInputs.LitLight(lit, out Db.DbLight l)) StageDb(stage, in l, scene);
+            for (int k = 0; k < parts; k++)
+                if (Db.DbInputs.Light(k, out Db.DbLight l) && l.Lit < 0) StageDb(stage, in l, scene);
+        }
+        Occlude();
+        for (int i = 0; i < _count; i++)
+        {
+            float f = _occFailed ? 1f : Fade(_stageKey[i]);
+            f = f > 0f ? MathF.Min(f, 1f) : 0f;
+            _stage[i * Floats + 4] *= f; _stage[i * Floats + 5] *= f; _stage[i * Floats + 6] *= f;
+        }
+    }
+
+    private static void StageDb(float* stage, in Db.DbLight l, Db.DbId scene)
+    {
+        if (!l.Enabled || !Db.SceneDb.Objects.Valid(l.Obj) || Db.SceneDb.ObjScene[l.Obj.Index].Value != scene.Value) return;
+        LightDef? def = Db.DbInputs.LightDefOf(in l);
+        if (def == null || def.FlareTextures.Length <= 0) return;
+        float size = def.FlarePositions.Length > 0 ? def.FlarePositions[0] : 1f;
+        if (size <= 0f || !Reaches(l.Position, def.FlareRadius)) return;
+        Vector3 shift = def.FlareColors.Length > 0 ? def.FlareColors[0] : Vector3.Zero;
+        float* d = stage + _count * Floats;
+        d[0] = l.Position.X; d[1] = l.Position.Y; d[2] = l.Position.Z;
+        d[3] = size * Effects.HaloSize.V;
+        Vector3 tint = Tint(l.Colour, shift, 1f);
+        d[4] = tint.X; d[5] = tint.Y; d[6] = tint.Z;
+        d[7] = def.FlareRadius;
+        _stageKey[_count++] = l.Id;
     }
 
     /// <summary>One flare's occlusion fade after one step: it travels toward <paramref name="target"/> at

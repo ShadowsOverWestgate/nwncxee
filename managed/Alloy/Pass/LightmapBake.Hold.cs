@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using CX.Framework;
 using CX.Graphics;
 using CX.Ui;
+using CX.Alloy.Db;
 
 namespace CX.Alloy;
 
@@ -107,7 +108,7 @@ internal static unsafe partial class LightmapBake
     /// close alone and released before its first chart).</summary>
     private static bool BaselineIn
         => _loadRefused
-        || (_closed || _areaAdopted) && !_edgePending && (SetHash == 0 || _rectN > 0 && AreaUploadsIn && MeshChart.InFlight == 0 && AlloyRenderer.ChartDeferred == 0 && _toPack.Count == 0 && _pending == 0 && _bakePage < 0
+        || (_closed || _areaAdopted) && !_edgePending && (SetHash == 0 || _rectN > 0 && AreaUploadsIn && MeshChart.InFlight == 0 && _toPack.Count == 0 && _pending == 0 && _bakePage < 0
            && ClaimsIn && Drained(_frame, _quietFrom, QuietFrames, QuietSince, QuietSeconds));
 
     /// <summary>Wall clock since the last arrival; 0 until one happens under this hold.</summary>
@@ -142,6 +143,32 @@ internal static unsafe partial class LightmapBake
     /// <see cref="Drained"/> carries and for the same reason -- the count is what the exit MEANS, and the
     /// seconds are its ceiling so a stretched frame costs the hold wall clock rather than multiplying it.</summary>
     private static bool IdleOut(int presents, float since) => presents >= IdlePresents || since >= IdleSeconds;
+
+    /// <summary>CX-120: the hold is waiting for rects that cannot arrive. A rect is minted from a CHARTED draw
+    /// (<c>AlloyRenderer.BuildBatches</c> -&gt; <c>MeshChart.Range</c> -&gt; <see cref="Enrol(int,int,int)"/>), and in
+    /// DB mode nothing enrols: the draw comes out of the mesh arena, which carries no chart. So the lights
+    /// closed a static set, the set gave the bake a subject, and no receiver ever appeared -- the load screen
+    /// then sat at "0/0 pages" until the 45 s cap.
+    /// <para>This is the stand-down, not the fix: the bake produces nothing in DB mode until the arena ranges
+    /// are charted. It is counted and said once rather than being a quiet early release, because a silent one
+    /// is indistinguishable from a bake that worked.</para></summary>
+    private static bool NoRectSource
+        => _closed && SetHash != 0 && _rectN == 0 && MeshChart.Offered == 0;
+
+    /// <summary>Said once per session, loudly: an unlit world is a visible difference, not a detail.</summary>
+    private static void NoRectSourceNotice()
+    {
+        if (_saidNoRects) return;
+        _saidNoRects = true;
+        _noRectHolds++;
+        Notice.Show(_log, "CX: the lightmap bake has no receivers in scene-database mode -- the draw comes out "
+                        + "of the mesh arena, which carries no lightmap chart yet, so static lighting is not "
+                        + "baked here. The load is released rather than held; tiles are lit dynamically.");
+    }
+    private static bool _saidNoRects;
+    /// <summary>Holds released because no rect source could produce. Non-zero in DB mode is expected today.</summary>
+    internal static int NoRectHolds => _noRectHolds;
+    private static int _noRectHolds;
 
     /// <summary>Send the held message and log the hold: its length, the exit, the walk the set closed on and the
     /// census after settle (the residual check on the animated branch #659 could not exercise).</summary>
@@ -217,11 +244,12 @@ internal static unsafe partial class LightmapBake
         float s = HeldSeconds;
         if (BaselineIn) { Release(_loadRefused ? "the engine refused the area load" : SetHash == 0 ? "no static light -- nothing to bake" : _silentHold ? $"baseline in, silent -- {_areaClaimed} of {_areaBase} baseline rects claimed" : "baseline in"); return; }
         if (IdleUnderHold && IdleOut(_holdPresents, s)) { Release($"Alloy idle under the hold -- no scene yet after {_holdPresents} presents"); return; }
+        if (NoRectSource) { NoRectSourceNotice(); Release("no receiver geometry -- the bake has nothing to bake ONTO"); return; }
         if (s >= CapSeconds) { Release("cap"); return; }
         if (!Enabled) { Release("bake stood down"); return; }
         if (_silentHold) { if (s >= SilentCapSeconds) Release($"silent hold ceiling -- {_areaClaimed} of {_areaBase} baseline rects claimed"); return; }
         _skipOpen = s >= Lightmap.HoldSeconds.V;
-        int phase = _closed && MeshChart.InFlight == 0 && AlloyRenderer.ChartDeferred == 0 ? 1 : 0;
+        int phase = _closed && MeshChart.InFlight == 0 ? 1 : 0;
         int n = phase == 0 ? MeshChart.Done : PagesDone(), m = phase == 0 ? MeshChart.Offered : _layers;
         if (n != _captionN || m != _captionM || phase != _captionPhase)
         {

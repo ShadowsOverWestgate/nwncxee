@@ -55,7 +55,7 @@ internal static unsafe class InventoryNative
         SymbolMap.GetGameObject, SymbolMap.AppManager, SymbolMap.Rules, SymbolMap.GetBaseItem,
         SymbolMap.SendInvEquip, SymbolMap.SendInvUnequip, SymbolMap.SendInvRepositoryMove, SymbolMap.SendInvDrop,
         SymbolMap.SendGuiInvStatus, SymbolMap.SendGuiInvSelectPanel, SymbolMap.SendInputUseObject, SymbolMap.SendInputMergeItem,
-        SymbolMap.SendInputSplitItem, SymbolMap.ItemGetName, SymbolMap.ExoStringDtor, SymbolMap.ItemActivateRadialMenu, SymbolMap.StringGobGetTextLine, SymbolMap.StringGobGetTextLineCount,
+        SymbolMap.SendInputSplitItem, SymbolMap.ItemGetName, SymbolMap.ExoStringDtor, SymbolMap.ItemActivateRadialMenu,
         SymbolMap.GuiMan, SymbolMap.GuiObjectHitCheck, SymbolMap.GameCameraHitCheck, SymbolMap.GetGameobjectHit, SymbolMap.HitInfoReset,
         SymbolMap.SendBarterStart, SymbolMap.SendInputUseItem, SymbolMap.SendGoldTransfer,
         SymbolMap.QuickButtonSetItem, SymbolMap.ItemPlayDropSound,
@@ -470,17 +470,7 @@ internal static unsafe class InventoryNative
     private static string Label(CGuiLabel label)
     {
         if (label.IsNull) return "";
-        CAurString aur = label.String;
-        if (aur.IsNull) return "";
-        StringGob gob = aur.Reader;
-        int n = Math.Min(EngineFn.StringGobGetTextLineCount(gob.Ptr), MaxLabelLines);
-        var sb = new StringBuilder();
-        for (int k = 0; k < n; k++)
-        {
-            byte* s = (byte*)EngineFn.StringGobGetTextLine(gob.Ptr, k);
-            for (int j = 0; s != null && j < 256 && s[j] != 0; j++) sb.Append((char)s[j]);
-        }
-        return sb.ToString().Trim();
+        return label.String.ReadText(MaxLabelLines);
     }
 
     // ---- senders (this = the live CNWCMessage) ----

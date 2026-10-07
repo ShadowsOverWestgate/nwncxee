@@ -79,6 +79,10 @@ internal static unsafe partial class GrassField
     /// baking them all on one frame is a visible hitch; spread over a few frames it is not. The unbaked
     /// remainder is simply not drawn yet, which for one or two frames reads as grass fading in.</summary>
     private const int BakePerFrame = 48;
+    /// <summary>Faces the bake names once per session, with every term that decides a blade count. The two
+    /// scene paths share this function, so the lines are comparable between modes line for line.</summary>
+    private const int DumpFaces = 6;
+    private static int _dumped;
     /// <summary>A face that wants more blades than this is a bad read, not a meadow -- refuse it rather than
     /// scatter a million quads off one triangle.</summary>
     private const int MaxBladesPerFace = 4096;
@@ -275,7 +279,7 @@ internal static unsafe partial class GrassField
     {
         public int Look, Segments, Width, Probe;
         public int WxMapXf, WxMapP;   // R2: the area wetness map's fit and look
-        public int CoverVp, CoverLayer, WxEdge;   // R5: the cover map's own shelter test, shared with the lit stage
+        public int CoverVp, CoverLayer, WxEdge, WxCache;   // R5: the cover map's own shelter test, shared with the lit stage
         public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Viz, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
         public int PushTex, PushGain, PushWindow;
         public int SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex;   // CX-43: the rest of the receiver rides CxPass
@@ -382,6 +386,7 @@ internal static unsafe partial class GrassField
 
     internal static void Forget()
     {
+        ForgetDb();
         _patchCount = 0; _shadowN = 0;
         _faceCount = 0; _bladesResident = 0;
         _uploaded = 0;
@@ -453,39 +458,10 @@ internal static unsafe partial class GrassField
     /// or been freed; either way it simply stops being drawn, and no pointer of it is ever touched again.</summary>
     private static int Collect(Matrix4x4* vp)
     {
-        ReadOnlySpan<IntPtr> owned;
-        bool own = OwnedBins(vp, out owned);
-        IntPtr* bins = own ? null : (IntPtr*)_binBucket.Items;
-        int binCount = own ? owned.Length : _binBucket.Count;
-        if (binCount <= 0 || (!own && bins == null)) return 0;
-        if (Buckets.Validate.V && own) BucketValidator.Compare(BucketValidator.KindBin, owned, _binBucket);
-        int budget = BakePerFrame, seen = 0;
-        for (int b = 0; b < binCount; b++)
-        {
-            IntPtr bin = own ? owned[b] : bins[b];
-            if (bin == IntPtr.Zero) continue;
-            var tb = new CAurTriangleBin(bin);
-            IntPtr* lists = (IntPtr*)tb.Lists;
-            int listCount = tb.ListCount;
-            if (lists == null || listCount <= 0) continue;
-            for (int l = 0; l < listCount && seen < MaxPatches; l++)
-            {
-                IntPtr list = lists[l];
-                if (list == IntPtr.Zero) continue;
-                int p = Find(list);
-                if (p < 0)
-                {
-                    if (budget <= 0) continue;
-                    budget--;
-                    p = Bake(list);
-                    if (p < 0) continue;
-                }
-                _patches[p].Seen = _frame;
-                seen++;
-            }
-        }
-        seen += CollectBorder(ref budget);
-        return seen;
+        // The database's own patches: Scene::InitBins/AddFacesToBins are poisoned, so there are no engine bins to
+        // walk -- the source is the part table.
+        int budget = BakePerFrame;
+        return CollectDb(AlloyRenderer._dbPassScene, vp, ref budget);
     }
 
     /// <summary>Interned slot of a triangle list, or -1. Open addressing on the pointer; the table is sized
@@ -524,20 +500,27 @@ internal static unsafe partial class GrassField
     /// area with no grass at all, reported as a healthy "0 patches". <see cref="Stats"/> counts them.</para></summary>
     private static int Bake(IntPtr list)
     {
+        var tl = new CAurTriangleList(list);
+        float* verts = (float*)tl.Verts;
+        int* blades = (int*)tl.Blades;
+        int faces = tl.VertFloats / 9;
+        // The list's own two arrays have to agree before either is read: the blade counts are indexed by face.
+        if (verts != null && blades != null && tl.BladeCount < faces) { verts = null; }
+        return BakeFaces(list, verts, blades, faces, tl.Mat);
+    }
+
+    /// <summary>Intern and scatter one patch from world-space faces and their per-face blade counts, whatever
+    /// produced them -- an engine <c>CAurTriangleList</c> or the scene database (<see cref="BakeDb"/>).
+    /// <paramref name="key"/> is the patch's identity in the intern table.</summary>
+    private static int BakeFaces(IntPtr key, float* verts, int* blades, int faces, int mat)
+    {
         // The one refusal that CANNOT be interned: there is no slot to intern it in. Counted instead, and
         // loud in the period line -- past this point every list retries, which is the state to see.
         if (_patchCount >= MaxPatches || _faces == null) { _patchCapped = true; return -1; }
         int p = _patchCount++;
-        _patches[p] = new Patch { List = list, Seen = _frame };   // Count 0: refused until proven otherwise
-        Intern(list, p);
-        var tl = new CAurTriangleList(list);
-        float* verts = (float*)tl.Verts;
-        int floats = tl.VertFloats;
-        int* blades = (int*)tl.Blades;
-        int bladeFaces = tl.BladeCount;
-        int mat = tl.Mat;
-        int faces = floats / 9;
-        if (verts == null || blades == null || faces <= 0 || bladeFaces < faces) { _refused++; return p; }
+        _patches[p] = new Patch { List = key, Seen = _frame };   // Count 0: refused until proven otherwise
+        Intern(key, p);
+        if (verts == null || blades == null || faces <= 0) { _refused++; return p; }
         CAurGrassInfo info = GrassInfo(mat);
         if (info.IsNull || mat >= MaxGrassMaterials) { _refused++; return p; }
         float height = info.Height;
@@ -550,6 +533,16 @@ internal static unsafe partial class GrassField
         // a patch past the cap keeps its shape at a lower density
         float thin = want > MaxPatchBlades ? (float)MaxPatchBlades / want : 1f;
         if (thin < 1f) _thinned++;
+        if (_dumped < DumpFaces)
+            for (int f = 0; f < faces && _dumped < DumpFaces; f++)
+            {
+                float* v = verts + f * 9;
+                Vector3 a0 = new(v[0], v[1], v[2]), b0 = new(v[3], v[4], v[5]), c0 = new(v[6], v[7], v[8]);
+                _dumped++;
+                _log?.Always($"GrassField: [face] mat={mat} density={info.Density:F3} height={height:F2} "
+                           + $"area={Vector3.Cross(b0 - a0, c0 - a0).Length() * 0.5f:F3} blades={blades[f]} "
+                           + $"per={Grass.Density.V * BladeMul:F3} src=db");
+            }
         int first = _faceCount, total = 0;
         Vector3 min = new(float.MaxValue), max = new(float.MinValue);
         for (int f = 0; f < faces; f++)
@@ -577,7 +570,7 @@ internal static unsafe partial class GrassField
         min -= new Vector3(height, height, 0f);
         max += new Vector3(height, height, height * 1.5f);
 
-        _patches[p] = new Patch { List = list, Min = min, Max = max, Mat = mat, First = first, Count = _faceCount - first,
+        _patches[p] = new Patch { List = key, Min = min, Max = max, Mat = mat, First = first, Count = _faceCount - first,
                                   Blades = total, Seen = _frame };
         _bladesResident += total;
         _baked++;
@@ -674,81 +667,10 @@ internal static unsafe partial class GrassField
     /// Scene+0x130 makes it a fact about the area. It is the same list SceneWalk enumerates.</para></summary>
     private static bool WalkPushers(bool collect)
     {
+        // ponytail: no pusher population. It was the engine scene's gob list, which the scene database does not
+        // have; the field, the splat and the cull below are ready for a SceneDb object walk (ObjPos + ObjSphere).
         if (collect) _pushNowN = 0;
-        IntPtr scene = SceneWalk.WorldScene;
-        if (!(Grass.Push.V > 0f) || !(Grass.PushRadius.V > 0f) || scene == IntPtr.Zero) return false;
-        // The pushers are the gobs in view: a walk of EVERY gob in the scene (thousands, a part-tree
-        // walk for each inside the extent) read 0,5ms a frame with no grass on screen. The engine's own
-        // visible list is a few hundred; a pusher behind the camera pushes grass nobody sees.
-        IntPtr* gobs; int count;
-        if (!Grass.PushVis.V || !AlloyRenderer.VisibleGobs(out gobs, out count))
-        {
-            gobs = (IntPtr*)new CX.Engine.Scene(scene).Gobs;
-            count = new CX.Engine.Scene(scene).GobCount;
-            if (collect) _pushWalkedAll++;
-        }
-        if (collect) { _pushWalked += count; _pushWalkedNow = count; }
-        bool over = false;
-        bool cullOn = Grass.Cull.V;
-        float shrink = Grass.CullShrink.V, cap = Grass.CullMax.V;
-        float rTex = Grass.PushRadius.V * _pushPerUnit;
-        // The window is the gate, and it is EXACT: a gob whose reach does not touch the field contributes
-        // nothing to it, wherever the camera is pointing. The frustum is deliberately not the gate -- a
-        // creature just off-camera bends the grass it is standing in, which is the whole reason this walk
-        // reads the area's gobs rather than the engine's visible bucket (#282).
-        // What changed is WHERE the window test sits: the position (+0xa8) and the stored box (+0x160) are
-        // one cache line each and need no pointer chase, and the reach is the larger of the push radius and
-        // the box, so testing on them rejects nothing the old order kept -- it just rejects before the part
-        // tree, the MdlNode character byte and the opaque tree walk are touched.
-        for (int i = 0; gobs != null && i < count; i++)
-        {
-            IntPtr gob = gobs[i];
-            if (gob == IntPtr.Zero) { if (collect) _pushNoGeom++; continue; }
-            var gr = new GobRef(gob);
-            float* pos = gr.Position;
-            float gx = (pos[0] - _pushOriginX) * _pushPerUnit, gy = (pos[1] - _pushOriginY) * _pushPerUnit;
-            float hx = 0f, hy = 0f;
-            bool box = cullOn && Extent(gob, shrink, cap, ref hx, ref hy);
-            float reach = MathF.Max(rTex, MathF.Max(hx, hy) * _pushPerUnit);
-            if (gx < -reach || gy < -reach || gx > PushRes + reach || gy > PushRes + reach)
-            { if (collect) _pushOut++; continue; }
-            // Same guard the shadow feed used: a gob with no part tree has no geometry to stand in the
-            // grass with, so it must not dent it.
-            if (gr.PartTree == IntPtr.Zero) { if (collect) _pushNoGeom++; continue; }
-            // A creature bends grass, it does not erase it -- an erasing creature would drag a bald patch
-            // around with it. Asked only of a gob that reached the window, since it is a second deref.
-            bool cull = box && !IsCharacter(gob);
-            Pusher p = new() { X = gx, Y = gy, R = rTex,
-                               Hx = cull ? hx * _pushPerUnit : 0f, Hy = cull ? hy * _pushPerUnit : 0f };
-            // The window test is sized on the BOX, which is wider than what this gob will actually write --
-            // a creature's box widens the reach although a creature never culls, and any gob in that outer
-            // shell touches no texel at all. Listing one would inflate "N gobs displacing" and, worse, let it
-            // dirty the equality list every frame it moved, defeating the skip for a contribution of nothing.
-            // Ahead of the tree walk, since it costs no read the character test has not already made.
-            if (!SplatBounds(p.X, p.Y, p.R, out _, out _, out _, out _)
-                && !CullBounds(p.X, p.Y, p.Hx, p.Hy, out _, out _, out _, out _))
-            { if (collect) _pushIdle++; continue; }
-            // A gob with no OPAQUE geometry is not standing in the grass, it is drawn over it: target
-            // reticles, spell VFX, the ground-target decal. They neither bend nor cull.
-            if (!HasOpaque(gr.PartTree, 0)) { if (collect) _reticles++; continue; }
-            if (!collect) { WritePusher(in p); continue; }
-            _pushers++;
-            if (cull) _cullers++;
-            if (_pushNowN < MaxPushers) _pushNow[_pushNowN++] = p;
-            else if (!over)
-            {
-                over = true;
-                _pushOver++;
-                if (!_pushOverSaid)
-                {
-                    _pushOverSaid = true;
-                    _log?.Always($"GrassField: more than {MaxPushers} gobs displace the grass at once -- the push "
-                               + "field is rebuilt whole every such frame (nothing is dropped, it is just not "
-                               + "incremental). Census the area and raise MaxPushers.");
-                }
-            }
-        }
-        return over;
+        return false;
     }
 
     /// <summary>One collected pusher into the field, growing <see cref="_pushRx0"/>..<see cref="_pushRy1"/> by
@@ -1261,7 +1183,7 @@ internal static unsafe partial class GrassField
         Gl.Uniform1i(loc.GroundOn, ground ? 1 : 0);
         Gl.Uniform4f(loc.Look, Grass.Backlight.V, Grass.Sheen.V, Weather.WetShown, Weather.WetDark.V);
         Weather.UploadMap(loc.WxMapXf, loc.WxMapP, false);
-        Weather.UploadGrassEdge(loc.CoverVp, loc.CoverLayer, loc.WxEdge);
+        Weather.UploadGrassEdge(loc.CoverVp, loc.CoverLayer, loc.WxEdge, loc.WxCache);
         AlloyRenderer.BindPass(loc.CubeCount, viewport, near, far);
     }
 
@@ -1850,7 +1772,7 @@ internal static unsafe partial class GrassField
             CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"),
             CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
             WxMapXf = GlProgram.Loc(prog, "uWxMapXf"), WxMapP = GlProgram.Loc(prog, "uWxMapP"),
-            CoverVp = GlProgram.Loc(prog, "uCoverVp"), CoverLayer = GlProgram.Loc(prog, "uCoverLayer"), WxEdge = GlProgram.Loc(prog, "uWxEdge"),
+            CoverVp = GlProgram.Loc(prog, "uCoverVp"), CoverLayer = GlProgram.Loc(prog, "uCoverLayer"), WxEdge = GlProgram.Loc(prog, "uWxEdge"), WxCache = GlProgram.Loc(prog, "uWxCache"),
         };
 
     private static bool EnsureProgramTail(uint prog)
@@ -1935,7 +1857,7 @@ internal static unsafe partial class GrassField
                // the per-blade frustum/solid/snow cull, by draw
                $"{(float)_candidates / f:F0} blades past the ladder -> {(float)_drawnNear / f:F0} near + {(float)_drawnFar / f:F0} far blades + {(float)_drawnCards / f:F0} cards drawn per frame" +
                (_stat == null ? " (NO COUNT READBACK)" : "") +
-               $", {(float)_draws / _frames:F0} draws/frame, {_baked} baked" +
+               $", {(float)_draws / _frames:F0} draws/frame, {_baked} baked" + DbNote() +
                (_thinned == 0 ? "" : $", {_thinned} patches thinned to {MaxPatchBlades} blades") +
                (_slotsOver == 0 ? "" : $", {_slotsOver} MATERIAL-FRAMES PAST THE {Slots} DRAW SLOTS (not drawn)") +
                (_clipped == 0 ? "" : $", {_clipped} FRAMES OVER THE {RecordCap} RECORD CAP (far grass clipped) -- lower /grass density or far") +
@@ -1971,7 +1893,6 @@ internal static unsafe partial class GrassField
                // clearly targeting something means PartTriMesh::GetIsOpaque did not resolve and everything
                // counts as solid again.
                $", {_reticles} non-solid skipped"
-               + (SceneWalk.WorldScene == IntPtr.Zero ? " (NO WORLD SCENE -- displacement off)" : "")
-               + ", " + BinSourceNote();   // CX-104: which list the patches came from
+               + " (no pusher population -- displacement off)";
     }
 }

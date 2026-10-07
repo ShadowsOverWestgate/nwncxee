@@ -106,7 +106,7 @@ internal static class AlloyGate
     {
         if (_optedOut)
         { why = "alloy.enabled=0 in cx.cfg -- the engine renderer was asked for"; return AlloyStand.Choice; }
-        if (!PartTable.Active)
+        if (!DrawFunnelService.Armed)
         { why = "alloy.drawhooks is not batch in cx.cfg, so nothing is enrolled to draw"; return AlloyStand.Choice; }
         if (!PostChain.Configured)
         { why = "alloy.hdr=0 in cx.cfg, and the Alloy stages have no display-space variant"; return AlloyStand.Choice; }
@@ -128,6 +128,9 @@ internal static class AlloyGate
         // ownframe=0 mode, deleted as unusable -- so a shim that could not arm stands the whole path down.
         if (!RspShim.Armed)
         { why = "the RenderSinglePass shim never armed (an engine symbol or draw funnel did not resolve)"; return AlloyStand.Idle; }
+        // Alloy draws the scene database and nothing else: no seam, no world to draw (SeamService says why).
+        if (!CX.Alloy.Seam.SeamService.Db)
+        { why = "the scene seam did not install (its facade self-check or a factory failed)"; return AlloyStand.Incapable; }
         // ...and ahead of it for the OTHER reason: the capability terms below are only answerable on a warm
         // client. The 4.6 context is created from a present inside a world frame, so asking them at the main
         // menu answers "no 4.6 context on this device" every single boot -- which is what the pre-#263 chain

@@ -103,6 +103,22 @@ internal static unsafe class AlloyCamera
     /// <summary>The world view's measured state -- what the Alloy frame takes its view and projection from.</summary>
     internal static ref readonly AlloyView WorldView => ref _worldView;
 
+    /// <summary>CX-120: measure a view from the scene DATABASE's own camera record instead of from the
+    /// engine's <c>Camera::RenderScene</c>, which does not run in DB mode.
+    /// <para>This class's whole job is "turn a camera object into a view", and seam-scene has already done
+    /// exactly that arithmetic to publish the frame -- so the DB path HANDS the answer over rather than
+    /// re-deriving it from a camera record the renderer would have to read a second time. Re-deriving is how
+    /// the pass and the snapshot end up describing two different cameras one frame apart.</para>
+    /// <para>Without this the world view is never measured, <c>DrawOwned</c> refuses with "no measured world
+    /// camera" and -- because that refusal is an <c>AlloyGate.Fail</c> -- the session is over: the first DB
+    /// area rendered an empty world and said so on screen.</para></summary>
+    internal static void NoteDbView(in AlloyView v, bool world)
+    {
+        _activeView = v;
+        if (world) { _worldViews++; _worldView = v; _worldFrame = _frame; }
+        else _guiViews++;
+    }
+
     /// <summary>The state of the view rendering right now: what <see cref="GuiCapture"/> records a GUI draw's
     /// view and projection from.</summary>
     internal static ref readonly AlloyView ActiveView => ref _activeView;

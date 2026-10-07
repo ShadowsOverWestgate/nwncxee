@@ -95,8 +95,8 @@ internal static unsafe class Settle
                               out Vector3 dr, out Vector3 dl)
     {
         bool on = AnimKnobs.Settle.V && AnimKnobs.FootLock.V && !stand && !snap && dt > 0f;
-        AnimRun run = on ? Gait.Driven(gob) : default;
-        long key = run.IsNull ? 0L : (long)run.Animation.Ptr;
+        RunRef run = on ? Gait.Driven(gob) : default;
+        long key = run.IsNull ? 0L : run.AnimKey;
         if (key != 0L && s.GaitCycle > 0f)
         {
             Learn(ref s, key, run, mr.Z, ml.Z, dt);
@@ -108,7 +108,7 @@ internal static unsafe class Settle
     /// <summary>Seconds the run being blended in still has to go: the idle's own transtime at arrival, which is
     /// how long the animated ankles keep travelling toward the stance. 0 when there is no fade to read, and the
     /// settle then steps on <see cref="MaxWait"/> instead of on the fade.</summary>
-    private static float Fade(AnimRun run) =>
+    private static float Fade(RunRef run) =>
         run.IsNull || !(run.BlendTime > 0f) ? 0f : MathF.Max(0f, (1f - run.Blend) * run.BlendTime);
 
     // ---- Stops: the held feet, then the settle step ----
@@ -256,7 +256,7 @@ internal static unsafe class Settle
     /// <summary>Sets a fresh cycle's time so the stance's front foot is the planted one. The engine reuses a run
     /// of the same name with its phase untouched (locomotion-engine §4.4), so only a run still at its start is
     /// seeded -- a walk-to-run carries its phase on purpose.</summary>
-    private static void Seed(ref PoseService.Slot s, long key, AnimRun run, Vector3 mr, Vector3 ml)
+    private static void Seed(ref PoseService.Slot s, long key, RunRef run, Vector3 mr, Vector3 ml)
     {
         if (!Known(key, out float r, out float l, out bool hasR, out bool hasL) || !hasR || !hasL) return;
         if (!(run.Time <= Fresh * s.GaitCycle)) return;
@@ -272,7 +272,7 @@ internal static unsafe class Settle
 
     /// <summary>One frame of contact measurement for the playing cycle, from the same landing test the footsteps
     /// use. Only while the cycle alone poses the legs: through a crossfade the ankles are two clips at once.</summary>
-    private static void Learn(ref PoseService.Slot s, long key, AnimRun run, float hr, float hl, float dt)
+    private static void Learn(ref PoseService.Slot s, long key, RunRef run, float hr, float hl, float dt)
     {
         if (!s.Loco || run.Blend < Clear) return;
         bool r = Footfall.Landed(ref s.LandR, hr, dt);

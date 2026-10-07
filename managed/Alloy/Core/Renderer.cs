@@ -18,21 +18,33 @@ internal static class Renderer
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled;
+    /// <summary>Is Alloy drawing this session? Then it draws the CX scene database (ADR 0028): the seam is installed
+    /// and no engine <c>Scene</c>/<c>Gob</c>/<c>Part</c> exists. Off is vanilla. <c>alloy.enabled</c>'s Boot value,
+    /// frozen for the session.</summary>
+    internal static bool On => Enabled.Boot;
     internal static readonly Knob<float> Scale, Weld, Lod, GradedBlend;
-    internal static readonly Knob<string> Highlight, DrawHooks, DumpTex, SkipTex;
+    internal static readonly Knob<string> Highlight, DrawHooks, DumpTex;
+    internal static readonly Knob<bool> PltVerify;
     internal static readonly Knob<bool> TileDissolve, Bcn, Hdr, Gl46, OwnedTex, PltCpu, TexSingle, DdsRead, HandleDrop, OwnedGeom,
-                                        Spirv, VanillaBridge, HostFs, OwnSkin, EnrollDelta, DumpShaders, GlDebug, EngineZones,
+                                        Spirv, VanillaBridge, HostFs, OwnSkin, DumpShaders, GlDebug, EngineZones,
                                         NwSyncRead, Gui, Movie;
     internal static readonly Knob<int> Border, Oit, OitLayers, TexCache, Bindless, BcnDrip, TexPrefetch, TexDelete, MaxElements, RasterRead, TexStream, TexLoad, ModelLoad, MdlCache,
-                                       EnrollBudget, ClusterCap, SwapProbe, GlSync, SkipBuckets;
+                                       ClusterCap, SwapProbe, GlSync, SkipBuckets, FrameDiff, ParityDump, StaleAudit;
     internal static readonly Knob<bool> Light, Prepass, AoTest, Retest, HlDiag, Poll, PrepassKey, PrepassFeat, IdTarget,
                                         BlendDepth, GpuMeter, VisList, WashTest, DepthEqual;
     // ---- CX-103/104/105: the scene pipeline's dials ----
-    internal static readonly Knob<bool> OwnXform, XformCheck, OwnLod, BucketCheck, CullWatch, WalkDelta;
-    internal static readonly Knob<int> XformRefresh, WalkAudit;
+    internal static readonly Knob<bool> CullWatch;
     internal static readonly Knob<float> LodHyst;
     internal static readonly Knob<int> Viz, Threads, Cull, HlChan, OitViz;
-    internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap, Holes, Doors;
+    internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap, Doors;
+    // ---- CX-120 seam-scene ----
+    /// <summary>ADR 0028 section 5's render thread. Boot, and default OFF until the live harness clears it:
+    /// what it moves is Alloy's whole GL context to a second thread, and the things that still reach the
+    /// ENGINE's context on the game thread (<c>CX.Alloy.Db.RenderThread</c>'s remarks) are an ordering
+    /// question the harness has to answer, not a correctness one the build can.</summary>
+    internal static readonly Knob<bool> RenderThread;
+    /// <summary>CX-118: arm <see cref="CX.Alloy.Db.HitProbe"/>, the live hit-test instrument.</summary>
+    internal static readonly Knob<bool> HitCheck;
 
     /// <summary>The highlight mode the pass reads per frame: the stock glow, or the owned outline + fill.</summary>
     internal static bool OutlineHighlight => Highlight.V == "outline";
@@ -112,6 +124,10 @@ internal static class Renderer
                                DrawFunnelService.DrawModeBatch, tier: Tier.ChatOnly, effect: Effect.Restart);
         OwnedTex = G.Toggle("ownedtex", "ownedtex", true, Tier.ChatOnly, Effect.Restart);
         PltCpu = G.Toggle("pltcpu", "pltcpu", true, Tier.ChatOnly, Effect.Restart);
+        // CX-117: compare Alloy's whole PLT chain (file decode + master palette + scheme rows + resolve)
+        // against the engine's own CPU composite, once per PLT texture at its first build. Cold, and
+        // off by default: it reads every PLT file a second time.
+        PltVerify = G.Toggle("pltverify", "pltverify", false, Tier.ChatOnly, Effect.Restart);
         BcnDrip = G.Slider("bcndrip", "bcndrip", 1, 64, 1, 1, tier: Tier.ChatOnly, effect: Effect.Restart);
         TexPrefetch = G.Slider("texprefetch", "texprefetch", 0, 64, 1, 2, tier: Tier.ChatOnly, effect: Effect.Restart);
         TexSingle = G.Toggle("texsingle", "texsingle", true, Tier.ChatOnly, Effect.Restart);
@@ -150,15 +166,24 @@ internal static class Renderer
         VanillaBridge = G.Toggle("vanillabridge", "vanillabridge", true, Tier.ChatOnly, Effect.Restart);
         HostFs = G.Toggle("hostfs", "hostfs", true, Tier.ChatOnly, Effect.Restart);
         OwnSkin = G.Toggle("ownskin", "ownskin", true, Tier.ChatOnly, Effect.Restart);
-        EnrollBudget = G.Slider("enrollbudget", "enrollbudget", 0, 100000, 1, AlloyRenderer.EnrollBudgetDefault, tier: Tier.ChatOnly, effect: Effect.Restart);
-        EnrollDelta = G.Toggle("enrolldelta", "enrolldelta", true, Tier.ChatOnly, Effect.Restart);
         ClusterCap = G.Slider("clustercap", "clustercap", 8, 128, 1, 128, tier: Tier.ChatOnly, effect: Effect.Restart);
         GradedBlend = G.Slider("gradedblend", "gradedblend", 0f, 1f, 0.01f, 0.15f, tier: Tier.ChatOnly, effect: Effect.Restart);
         DumpTex = G.Text("dumptex", "dumptex", "", Tier.ChatOnly, Effect.Restart);
-        SkipTex = G.Text("skiptex", "skiptex", "", Tier.ChatOnly, Effect.Restart);
         DumpShaders = G.Toggle("dumpshaders", "dumpshaders", false, Tier.ChatOnly, Effect.Restart);
         GlDebug = G.Toggle("gldebug", "gldebug", false, Tier.ChatOnly, Effect.Restart);
+        RenderThread = G.Toggle("renderthread", "renderthread", false, Tier.ChatOnly, Effect.Restart);
         SwapProbe = G.Slider("swapprobe", "swapprobe", 0, 100000, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
+        // CX-120: the pass number to dump the frame's whole input set at, 0 = off. A pass NUMBER rather than a
+        // toggle because the first pass of a session is before the camera is placed, and the settled frame is
+        // the one worth comparing between the two scene layers.
+        FrameDiff = G.Slider("framediff", "framediff", 0, 100000, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
+        // CX-120: the world pass to dump every nearby creature's composition at, 0 = off. Same arming as
+        // framediff: the first pass of an area is before the body parts are grafted.
+        ParityDump = G.Slider("paritydump", "paritydump", 0, 100000, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
+        // CX-120: frames between staleness audits of the DB-mode draw records, 0 = off. A PERIOD rather than
+        // a toggle because the audit walks every live slot and diffs three GPU mirrors: once a second is a
+        // diagnostic, every frame is a different frame.
+        StaleAudit = G.Slider("staleaudit", "staleaudit", 0, 100000, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
         GlSync = G.Slider("glsync", "glsync", 0, 1, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
         SkipBuckets = G.Slider("skipbuckets", "skipbuckets", 0, 3, 1, 3, tier: Tier.ChatOnly, effect: Effect.Restart);
         EngineZones = G.Toggle("enginezones", "enginezones", true, Tier.ChatOnly, Effect.Restart);
@@ -190,37 +215,10 @@ internal static class Renderer
         WashTest = G.Toggle("washtest", "washtest", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
         OitViz = G.Slider("oitviz", "oitviz", 0, 5, 1, 0, tier: Tier.ChatOnly);
 
-        // ---- CX-103/104/105 ----
-        // CX-103: Alloy composes every world matrix. 0 reads Scene::AddPartsTreeToDrawBuckets' vp+0x18 again,
-        // which is the A/B -- and shows the fault the ticket removed, because the Fault 1 placement latch went
-        // with the chase: a gob the engine never placed draws at the area's (0,0) corner.
-        OwnXform = G.Toggle("ownxform", "ownxform", true, Tier.ChatOnly, changed: AlloyRenderer.InvalidateRecords);
-        // The one remaining read of vp+0x18: compose AND read, and count the disagreements on [alloy].
-        XformCheck = G.Toggle("xformcheck", "xformcheck", false, Tier.ChatOnly);
         // The flicker hunt's GPU half: every colour dispatch's kept total, read back fenced and never waited
         // on. Off by default -- a per-frame read of a GPU-written buffer is a real wait on Mesa.
         CullWatch = G.Toggle("cullwatch", "cullwatch", false, Tier.ChatOnly);
-        // The net under the cheap change detection while the ENGINE still animates (CX-106/CX-107 will call
-        // GobMotion.Mark instead): every gob is recomposed at least once every N frames.
-        XformRefresh = G.Slider("xformrefresh", "xformrefresh", 1, 64, 1, 8, tier: Tier.ChatOnly);
-        // CX-105: Alloy chooses each gob's LOD, with hysteresis vanilla has none of. 0 hands the choice back
-        // AND puts SceneWalk back to enumerating all three roots per gob.
-        OwnLod = G.Toggle("ownlod", "ownlod", true, Tier.ChatOnly, changed: GobLod.Reset);
         LodHyst = G.Slider("lodhyst", "lodhyst", 0f, 1f, 0.01f, 0.1f, tier: Tier.ChatOnly);
-        // CX-104: the engine draw buckets as a VALIDATOR (ADR 0018 demotes them to exactly this). Off by
-        // default now that nothing in the frame reads them -- on, it walks Scene+0x208 once per period and
-        // reports the parts the engine classified that Alloy has no record for.
-        BucketCheck = G.Toggle("bucketcheck", "bucketcheck", false, Tier.ChatOnly);
-        // A membership change costs ONE gob's tree, not the area's: Gob::SetScene is the sole writer of the
-        // engine's global epoch, so every bump can be answered per gob. 0 is the A/B -- every bump re-walks
-        // the whole scene, which is what the 9,7ms `[enum] walk=` and its hitch blame were measured on.
-        WalkDelta = G.Toggle("walkdelta", "walkdelta", true, Tier.ChatOnly);
-        // ...and the validator for it: every N frames a full walk runs anyway and `[enum] audit misses=` counts
-        // what it found that the deltas had not. It must read 0, and it is the ONLY instrument that would show
-        // an edge nobody has found yet, so the default is short enough to be a net rather than a formality (one
-        // ~5ms walk per 5s). If a long session reads 0, raise it; if it reads nonzero, the edge the split
-        // (added / swept gob / swept tile) names gets its own notice -- the cadence is not the fix. 0 = off.
-        WalkAudit = G.Slider("walkaudit", "walkaudit", 0, 7200, 60, 300, unit: "frames", tier: Tier.ChatOnly);
 
         Consts = G.Button("consts", "consts", AlloyRenderer.LogScriptables, Tier.ChatOnly);
         FrameDumpBtn = G.Button("framedump", "framedump", FrameDump.Arm, Tier.ChatOnly);
@@ -228,10 +226,17 @@ internal static class Renderer
                  help: "Hold the camera still: steps the GPU-cost settings, measures each, restores them, logs a [bench] table.");
         ShaderDump = G.Button("shaderdump", "shaderdump", ShaderStages.DumpToLog, Tier.ChatOnly);
         Snap = G.Button("snap", "snap", FrameTap.Arm, Tier.ChatOnly);
-        // CX-92: the per-instance hole dump -- which part of which creature Alloy is not drawing, and why.
-        Holes = G.Button("holes", "holes", AlloyRenderer.LogHoles, Tier.ChatOnly);
         // CX-89: every visible door's fade alpha against mindooralpha -- the instrument for "doors still
         // take a click", which no screenshot shows.
         Doors = G.Button("doors", "doors", DoorFade.Arm, Tier.ChatOnly);
+        // CX-118: chain the engine's own Scene::HitCheck to measure what a vanilla cast costs and to print
+        // the records it fills -- the live cross-check on the CHitInfo layout rows and the only number the
+        // CX cast's own benchmark can honestly be compared against.
+        HitCheck = G.Toggle("hitcheck", "hitcheck", false, Tier.ChatOnly);
+        // CX-118: re-run the pick benchmark on demand. The boot-time run is measured against a CPU still
+        // loading an area, so it reads pessimistically; this is the settled number. It REFUSES while the
+        // scene database holds records, because its fixture writes to the real tables.
+        G.Button("hitbench", "hitbench", CX.Alloy.Db.HitTestCheck.BenchArm, Tier.ChatOnly,
+                 help: "Re-measure what a CX hit-test cast costs, now, and log it next to the engine's.");
     }
 }

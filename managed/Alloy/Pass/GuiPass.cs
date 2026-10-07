@@ -48,6 +48,11 @@ internal static unsafe class GuiPass
         _screenH = (int*)Native.Sym(SymbolMap.ScreenHeight);
         if (_screenW == null || _screenH == null)
         { log.Always("GuiPass: g_nScreenWidth/Height unresolved -- the GUI stays the ENGINE's draw"); return; }
+        Db.DbGui.Install(log);
+        Db.TextFontBake.Install(log);
+        Db.TextSlots.Install(log);
+        Db.TextQuads.Install(log);
+        TextAtlas.Install(log);
         if (!GuiCapture.Install(log, hooks)) return;
         ScreenOwner.Install(log, hooks);
         _nkSlot = hooks.ChainNkSdlRender(&OnNk, NkPriority);
@@ -69,14 +74,19 @@ internal static unsafe class GuiPass
     /// <summary>The overlay views drawn after NUI, and the one-time program build.</summary>
     private static void OnPresent()
     {
-        if (GuiCapture.SlotMissed && !GameGate.InModule) { GuiCapture.SlotMissed = false; AlloyRenderer.DripRearm(); }
         if (_armed && !_progTried && GlContextService.Available && GlContextService.Enter())
         {
             _progTried = true;
             BuildProgram();
             GlContextService.Leave();
         }
-        Flush();
+        // Cold: a font's atlas lands on the frames after it is first named -- and inside ALLOY's bracket,
+        // never here. TextAtlas.Upload is 4.5 DSA (glCreateTextures/glTextureStorage2D) and its sweep is
+        // glDeleteTextures; this site runs ahead of GlContextService's bracket, i.e. in the ENGINE's 3.3 core
+        // context, which is not the context those names belong to (review #1).
+        if (TextAtlas.Due && GlContextService.Enter()) { TextAtlas.Pump(); GlContextService.Leave(); }
+        // NUI's layers wait for SeamDraw's flush, which puts them over the panels; flushed here, its frame clear
+        // erased them.
         GuiCapture.NewFrame();
         _frameColour = false;
         _seqAtFrame = PostChain.ResolveSeq;
@@ -149,6 +159,13 @@ internal static unsafe class GuiPass
         if (win && PresentTarget.Width == w && PresentTarget.Height == h) { PresentTarget.TakeBack(); Depth(fromScreen: true); }
         else if (win) Resize(w, h);
         if (!GlContextService.Enter()) return false;
+        // CX-120 (gui): on a frame with no world, THIS is the only 4.6 bracket there is -- and entering it
+        // sets GlContextService's `_worked`, which makes its own health bracket stand down for the frame. At
+        // the main menu that starved both halves of the DB GUI: the mesh arena's VAO was never built (every
+        // model part refused `no-geometry`, so the menu drew its button text and not one pixel of its art)
+        // and the texture registry's uploads never ran (every part that did draw came out white). Both are
+        // queue tests when there is nothing to do.
+        GlContextService.RunInBracketHere(); Db.MeshArena.Pump();
         Upload();
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, win ? Target() : 0u);
         Gl.Disable(Gl.FRAMEBUFFER_SRGB);
@@ -163,6 +180,9 @@ internal static unsafe class GuiPass
         Gl.Uniform1i(_locBoneStart, GuiCapture.DrawN * Vec4PerRec);
         Gl.Uniform1i(_locGamma, PostChain.GammaOff() ? 0 : 1);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindGui, _buf);
+        // CX-117's master palette, for the PLT item icons a GUI control draws. A no-op until a palette
+        // exists (DB mode only), and the unit is nothing else's.
+        Db.PltPalettes.Bind();
         Gl.ActiveTexture(Gl.TEXTURE0);
         int blend = -1, depth = -1, write = -1, cull = -1;
         uint src = 0, dst = 0, vao = uint.MaxValue;
@@ -186,7 +206,10 @@ internal static unsafe class GuiPass
             for (int di = l.First; di < l.First + l.Count; di++)
             {
                 ref GuiCapture.Draw d = ref GuiCapture.Draws[di];
-                uint v = d.Stream ? StreamVao(d.Format, d.Stride) : AlloyRenderer.GuiVao(d.Slot);
+                // CX-120: a DB draw brings its own VAO (the mesh arena's, one per vertex format). Nothing else
+                // changes: the record, the SSBO and the per-rect viewport are the captured path's.
+                uint v = d.RawVao != 0 ? d.RawVao
+                       : d.Stream ? StreamVao(d.Format, d.Stride) : 0u;
                 if (v == 0) { _noVao++; continue; }
                 if (v != vao) { Gl.BindVertexArray(v); vao = v; }
                 Toggle(Gl.BLEND, d.Blend, ref blend);
@@ -348,6 +371,7 @@ internal static unsafe class GuiPass
     /// <summary>GL names die with the context.</summary>
     internal static void ContextLost()
     {
+        TextAtlas.ContextLost();   // CX-119: every font atlas went with the context
         _prog = 0; _buf = _vtxBuf = _idxBuf = _fbo = _depth = _fboEngDepth = 0; _depthProbed = false; _bufCap = _vtxCap = _idxCap = 0;
         _streamVao.Clear(); _progTried = false;
     }

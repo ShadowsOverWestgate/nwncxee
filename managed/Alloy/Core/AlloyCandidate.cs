@@ -16,10 +16,6 @@ internal struct AlloyCandidate
     /// identity shatters every group to size 1 (PartTable's group key uses material CONTENT for the same reason).</summary>
     public IntPtr Tex0;
     public int Item, Prim;
-    /// <summary>part+0xb0 as raw bits: the texture-rotation angle in degrees, compared for change.</summary>
-    public int RotBits;
-    /// <summary>Matrix-class part (node+0x80 &amp; 0x1e): needs the model matrix at node+0x18 in its MVP.</summary>
-    public bool Mx;
     /// <summary>The engine would draw this part LIT. Ghidra <c>PartTriMesh::MatStatic</c> @0x450560 and
     /// <c>RenderFlat</c> @0x450eb0 agree on the test: lighting cap 5 on (a per-PASS state, checked at draw
     /// time, not here) and <c>mat+0x98</c> clear -- either one false and the engine sends flat white, which
@@ -46,9 +42,6 @@ internal struct AlloyCandidate
     /// colour is all-owned-or-none per instance (#107), so enrollment has to be able to name the instance a
     /// refusal belongs to and drop the rest of it with the refused part.</summary>
     public IntPtr Gob;
-    /// <summary>#336: the LOD tree this part belongs to, when its gob has alternates; the route skips the
-    /// part while <c>GobPartTree</c> names another. Zero for a part with no LOD question.</summary>
-    public IntPtr LodRoot;
     /// <summary>#126: the material's blend pair as <c>Aurora::AuroraBlendModes</c> (mat+0x90/+0x94), which
     /// the blended and additive passes translate to <c>glBlendFunc</c>. Part of the batch key: one multidraw
     /// carries one blend state.</summary>

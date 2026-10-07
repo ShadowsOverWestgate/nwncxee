@@ -98,13 +98,6 @@ internal static unsafe class AnimHierarchy
             Parts++;
             Node(node, part, tPrev, tCur, w);
             IntPtr light = p.AsPartLight().Ptr;
-            if (light != IntPtr.Zero)
-            {
-                // Whatever its static flag says, a light part in this tree pins the gob to full animation rate:
-                // its controllers are the flicker, and half-rate flicker is visible (AnimRuntime.LightHostBit).
-                IntPtr host = p.Gob.Ptr;
-                if (host != IntPtr.Zero) AnimRuntime.NoteLightHost(host);
-            }
             if (light != IntPtr.Zero && new PartLight(light).StaticLit == 0)
             {
                 IntPtr gob = p.Gob.Ptr;

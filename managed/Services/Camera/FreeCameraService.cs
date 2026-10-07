@@ -6,7 +6,6 @@ using CX.Engine;
 using CX.Framework;
 using CX.Services.Chat;
 using CX.Ui;
-using EngCamera = CX.Engine.Camera;
 
 namespace CX.Services.Camera;
 
@@ -83,7 +82,7 @@ public sealed unsafe class FreeCameraService : IExtenderService
     /// <summary>Move, turn, leash and write the pose; leave on any gate or combat. <paramref name="g"/> is this
     /// Control's verdict: a GUI panel's camera is skipped, the mode's master off is no gate here (the free camera
     /// has no master of its own, #584), every other non-Active verdict ends the free camera.</summary>
-    internal static void Frame(IntPtr cam, CameraService.Gate g, float dt)
+    internal static void Frame(in CameraService.CamSink cam, CameraService.Gate g, float dt)
     {
         if (g == CameraService.Gate.NotWorldCamera) return;
         if (g is not (CameraService.Gate.Active or CameraService.Gate.Off)) { _exitGate = g; Leave(Why.Gate); return; }
@@ -118,10 +117,8 @@ public sealed unsafe class FreeCameraService : IExtenderService
         else _leashed = false;
         _pos = want;
 
-        var c = new EngCamera(cam);
-        c.Rot = PoseRoll(_yaw, _pitch, _roll);
-        c.Pos = _pos;
-        c.ViewAngle = _fov;
+        cam.Place(_pos, PoseRoll(_yaw, _pitch, _roll));
+        cam.SetViewAngle(_fov);
     }
 
     /// <summary>The pose rolled about its own view axis: <c>qZ(yaw) * qX(pitch) * qZ(roll)</c>, Hamilton (System.Numerics'
@@ -146,8 +143,13 @@ public sealed unsafe class FreeCameraService : IExtenderService
         Active = false;
         StopLook();
         IntPtr module = CameraService.Module();
-        EngCamera cam = module == IntPtr.Zero ? default : new CNWCModule(module).Camera;
-        if (!cam.IsNull) cam.ViewAngle = _fovEntry;
+        IntPtr camPtr = module == IntPtr.Zero ? IntPtr.Zero : new CNWCModule(module).Camera.Ptr;
+        // The sink, not the engine view: in DB mode Camera+0x4c4 is republished from the record.
+        if (camPtr != IntPtr.Zero)
+        {
+            var cam = CameraService.CamSink.Of(camPtr);
+            if (cam.Ok) cam.SetViewAngle(_fovEntry);
+        }
         _up = _down = _rollL = _rollR = false; _ate = 0;
         if (_weHidUi) { IntPtr gui = Gui(); if (gui != IntPtr.Zero) new CGuiInGame(gui).GuiInGameUnToggleOff(); _weHidUi = false; }
         if (why != Why.User) _pending = why;

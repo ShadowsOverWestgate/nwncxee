@@ -189,7 +189,7 @@ internal static unsafe class NuiFlush
             offset += count;
             _cmdsDrawn++;
         }
-        GuiPass.FlushNow();
+        // The panels are recorded later, at SeamDraw's boundary, which flushes them and then these.
         if (!_live) { _live = true; _log?.Info($"NuiFlush: LIVE -- {n} nuklear draw command(s) drawn by Alloy; nk_sdl_render is not called"); }
     }
 

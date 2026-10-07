@@ -1,3 +1,4 @@
+using CX.Alloy.Db;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -135,16 +136,50 @@ public sealed unsafe partial class AlloyRenderer
         if (CasterPass.FlipCollect || (ok && !CasterPass.InList(i))) c.CastChanged = true;
     }
     internal static bool CastOk(int slot) => _castOk[slot];
+
+    /// <summary>Cold diagnostic: what a caster slot IS -- its DB object's model, flags, scene (and whether that
+    /// scene is a world one), position and the stored caster sphere. Engine slots name their texture.</summary>
+    internal static string DescribeCasterSlot(int slot)
+    {
+        CasterSphere(slot, out float cx, out float cy, out float cz, out float r);
+        string sph = $"sphere=({cx:F1},{cy:F1},{cz:F1}) r={r:F1}";
+        int part = _oDbPart[slot];
+        if (part < 0) return $"slot {slot} engine tex={SlotTexName(slot)} {sph}";
+        DbId o = SceneDb.PartObj[part];
+        if (!SceneDb.Objects.Valid(o)) return $"slot {slot} part {part} ORPHAN {sph}";
+        int i = o.Index;
+        DbId sc = SceneDb.ObjScene[i];
+        bool world = SceneDb.Scenes.Valid(sc) && SceneDb.SceneIsWorld[sc.Index];
+        return $"slot {slot} part {part} '{PartTree.NameOf(part)}' model='{SceneDb.ObjSeamModelName[i]}' flags={SceneDb.ObjFlags[i]} "
+             + $"scene={sc.Value}{(world ? "(world)" : "(NOT world)")} visible={SceneDb.ObjVisible[i]} cls={(AlloyClass)_oCls[slot]} "
+             + $"pos=({SceneDb.ObjPos[i].X:F1},{SceneDb.ObjPos[i].Y:F1},{SceneDb.ObjPos[i].Z:F1}) {sph}";
+    }
+
+    /// <summary>Cold diagnostic: is this slot's DB object in a scene that is not a world scene (a GUI panel's)?</summary>
+    internal static bool CasterNotWorld(int slot)
+    {
+        int part = _oDbPart[slot];
+        if (part < 0) return false;
+        DbId o = SceneDb.PartObj[part];
+        if (!SceneDb.Objects.Valid(o)) return true;
+        DbId sc = SceneDb.ObjScene[o.Index];
+        return !SceneDb.Scenes.Valid(sc) || !SceneDb.SceneIsWorld[sc.Index];
+    }
     /// <summary>Off-device only: the caster self-check seeds admission for its synthetic slots.</summary>
     internal static void SelfCheckCastOk(int slot, bool ok) => _castOk[slot] = ok;
     internal static int SlotEnrollGen(int slot) => _gate[slot].EnrollGen;
 
     /// <summary>The mover LEVEL for one slot, read the same way <see cref="TryCaster"/> reads it -- the
-    /// slot's most recent build was also a build that moved something.</summary>
+    /// slot's most recent build was also a build that moved something.
     /// <para>#336: ...AND that build was last frame's. The route walk no longer stamps the slots it skips
     /// (the visible set never visits them), so a slot that moved on its last build and then left the view
-    /// would otherwise read as a mover for as long as it stays out.</para></summary>
-    internal static bool SlotRecMoved(int slot) => _recMovedAt[slot] == _gate[slot].RecFrame && _gate[slot].RecFrame == _frameSeq - 1;
+    /// would otherwise read as a mover for as long as it stays out.</para>
+    /// <para>CX-120: or THIS frame's -- DB mode's fold writes a moved record at publish, ahead of the shadow
+    /// bracket, so a continuously moving object's latest build is the current frame's. Mode 0 never stamps the
+    /// current frame before the bracket, so the extra term never fires there.</para></summary>
+    internal static bool SlotRecMoved(int slot)
+        => _recMovedAt[slot] == _gate[slot].RecFrame
+           && (_gate[slot].RecFrame == _frameSeq - 1 || _gate[slot].RecFrame == _frameSeq);
     /// <summary>A dangly slot whose solve displaced it within <see cref="DanglyMoveHold"/> frames. A LEVEL:
     /// the stamp is re-read, never consumed.</summary>
     internal static bool SlotDangly(int slot) => _oDangly[slot] && _frameSeq - _oDanglyMovedAt[slot] <= DanglyMoveHold;
@@ -196,6 +231,9 @@ public sealed unsafe partial class AlloyRenderer
     {
         public IntPtr Vdo, Mat;
         public int Item, Prim, Vao;
+        /// <summary>The ownership slot these facts came from. A DB slot has no VDO, so the bake resolves its
+        /// index range from the arena draw arguments instead (<c>AlloyRenderer.DbCasterRange</c>).</summary>
+        public int Slot;
         /// <summary>World sphere: centre and radius, both from <see cref="_dCastSph"/>.</summary>
         public float Cx, Cy, Cz, R;
         /// <summary>The material's diffuse alpha is REFLECTIVITY rather than coverage (env-mapped), so its
@@ -238,8 +276,12 @@ public sealed unsafe partial class AlloyRenderer
         if (_oTri[slot] == IntPtr.Zero || _oCls[slot] > (byte)AlloyClass.Blended) return false;
         f.Blended = _oCls[slot] == (byte)AlloyClass.Blended;
         if (f.Blended && _oBone[slot] >= 0) return false;   // posed: no mask stage, see SetCastOk
+        f.Slot = slot;
         f.Vdo = _oVdo[slot]; f.Mat = _oMat[slot];
-        f.Item = _oItem[slot]; f.Prim = _oPrim[slot]; f.Vao = _oVao[slot];
+        // CX-120: the DENSE caster VAO id (see DbVaoBase), not _oVao -- a DB slot has no VDO slot, and its
+        // arena section is what the bake must group and bind by. Every engine table this value still indexes
+        // range-tests it first.
+        f.Item = _oItem[slot]; f.Prim = _oPrim[slot]; f.Vao = CasterVaoId(slot);
         f.EnvAlpha = (_oSlots[slot] & EnvSlot) != 0;
         f.Skinned = _oBone[slot] >= 0;
         // Read as a LEVEL, never as an edge: the gate row's RecFrame is stamped on every build and _recMovedAt only on a
@@ -268,6 +310,12 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>Cold, for the <c>/shadow movers</c> dump: the slot's diffuse texture name, the one label a
     /// part carries that a human can read. Borrowed pointers, resolved inside the pass slot.</summary>
+    /// <summary>CX-120: a DB slot has no Material to name a texture from; its diffuse is a registry slot.</summary>
+    internal static string SlotTexNameDb(int slot)
+        => _oDbPart[slot] >= 0
+            ? TexRegistry.ResrefOf(DrawRecipe.Tex(_oDbRecipe[slot], 0))
+            : SlotTexName(slot);
+
     internal static string SlotTexName(int slot)
         => _oTri[slot] == IntPtr.Zero ? "-" : AlloyCensus.TexName(new MaterialRef(_oMat[slot]).Texture(0).Ptr);
 
@@ -278,7 +326,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The engine wrote vertices into this VDO's position pool this frame, so every caster on it
     /// moved without its matrix moving. Resolved per VDO slot, not per caster.</summary>
     internal static bool VdoDirty(int v)
-        => (uint)v < MaxVdos && _vVdo[v] != IntPtr.Zero && OwnedBuffers.DirtySince(_vPos[v].Buf);
+        => !IsArenaVao(v) && (uint)v < MaxVdos && _vVdo[v] != IntPtr.Zero && OwnedBuffers.DirtySince(_vPos[v].Buf);
 
     /// <summary>The ITEM-level vertex-dirty signal. <see cref="VdoDirty"/> is per pool BUFFER, and the engine
     /// pools a whole area into a handful of them (GL_MAX_ELEMENTS 1048576: ~9 VDOs for 16k parts), so one
@@ -380,13 +428,32 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>Does this VDO slot carry a diffuse UV stream? A masked caster needs one to sample its cutout
     /// with; without it there is nothing to test and the caster draws solid.</summary>
-    internal static bool VdoHasUv(int v) => (uint)v < MaxVdos && _vUv[v].Present;
+    /// <summary>CX-120: the caster VAO id is DENSE across both geometry sources. An engine slot keeps its VDO
+    /// slot number (0..<see cref="MaxVdos"/>-1); a DB slot, which has no VDO at all, takes
+    /// <c>MaxVdos + </c><see cref="MeshArena.Fmt"/> -- so the caster grouping cuts the arena's static and
+    /// skinned sections apart exactly as it cuts two VDOs apart, and every engine table below can still be
+    /// indexed by the same value after one range test.</summary>
+    internal const int DbVaoBase = MaxVdos;
+
+    /// <summary>Is this caster VAO id the mesh arena's rather than a VDO slot's?</summary>
+    internal static bool IsArenaVao(int v) => v >= DbVaoBase;
+
+    /// <summary>How many distinct caster VAO ids exist: every VDO slot, then one per arena section.</summary>
+    internal const int CasterVaoIds = DbVaoBase + 2;
+
+    /// <summary>The caster VAO id for an ownership slot, from whichever source it draws out of.</summary>
+    internal static int CasterVaoId(int slot)
+        => DbSlot(slot) ? DbVaoBase + (int)MeshArena.FormatOf(DrawRecipe.Range(_oDbRecipe[slot])) : _oVao[slot];
+
+    /// <summary>The arena's vertex format always carries UVs (pos3 nrm3 uv2 ...), so a DB caster can always be
+    /// alpha-masked.</summary>
+    internal static bool VdoHasUv(int v) => IsArenaVao(v) || ((uint)v < MaxVdos && _vUv[v].Present);
 
     /// <summary>The 4.6 VAO for a VDO slot, built on demand. Shadow and colour draw in the SAME context, so
     /// there is one VAO for both -- the whole reason the caster pass no longer keeps its own cache. 0 = the
     /// harvest could not build one and this caster does not cast this frame.</summary>
     internal static uint CasterVao(int v)
-        => (uint)v < MaxVdos && EnsureVao(v) ? _vVao46[v] : 0u;
+        => IsArenaVao(v) ? MeshArena.Vao((MeshArena.Fmt)(v - DbVaoBase)) : 0u;
 
     /// <summary>#302 triage: what the bake will actually transform this slot by, beside what the engine says
     /// it is right now. The record is the shadow pass's ONE input for placement, so a disagreement here is
@@ -408,9 +475,9 @@ public sealed unsafe partial class AlloyRenderer
         // CX-103: "live" is what Alloy composes for the slot THIS instant, not what the engine's draw-bucket
         // build left at vp+0x18 -- the record is built from the composition, so that is the pair that has to
         // agree. alloy.xformcheck is where the engine's matrix is compared.
-        live = !mx || _oTri[slot] == IntPtr.Zero ? Vector3.Zero
-             : GobXform.Armed ? GobXform.Compose(_oTri[slot], _oGob[slot]).Translation
-             : _oNode[slot] == IntPtr.Zero ? Vector3.Zero : new NodeRef(_oNode[slot]).Model.Translation;
+        // CX-120 (R1-35): a DB slot's live matrix is its column -- there is nothing to compose and the
+        // _oTri below is a sentinel that would fault if this diagnostic dereferenced it.
+        live = _oDbPart[slot] >= 0 ? SceneDb.PartWorld[_oDbPart[slot]].Translation : Vector3.Zero;
     }
 
     /// <summary>The shadow pass's own copy of the buffer names it binds: the persistent per-draw records and

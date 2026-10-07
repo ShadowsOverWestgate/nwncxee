@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
+using CX.Alloy.Db;
 
 namespace CX.Alloy;
 
@@ -410,11 +411,40 @@ internal static unsafe partial class LightmapBake
     /// <summary>One master-list light, classified and -- when static -- folded into the snapshot. Called for
     /// every point light the walk admits, BEFORE its fade and cull, with the lightmap on or off (GI keys its
     /// cache on the same fingerprint). Returns the static verdict for the SSBO bit.</summary>
-    internal static bool Record(PartLight light, CNWCArea area, Vector3 pos, float adjR, Vector3 color, bool ambient, out int setIndex)
+    /// <summary>CX-120: the same bookkeeping for a light that has no <c>PartLight</c> -- a DB light, whose
+    /// identity is its own record rather than an engine pointer. The id is only ever a KEY below, so a
+    /// synthetic one serves (and unlike the engine's it is not recycled by an allocator) -- but the static
+    /// VERDICT cannot be asked of it, since <see cref="IsStatic"/> and <see cref="Settled"/> walk the engine
+    /// object behind the pointer. The database already knows the answer (a tile light's <c>LitDynamic</c>, an
+    /// object's <c>ObjStatic</c>), so it is handed in.</summary>
+    /// <summary>Can a baked page exist in this mode at all? See the <c>Produces</c> test in
+    /// <see cref="Record(PartLight,CNWCArea,Vector3,float,Vector3,bool,out int,int)"/>.</summary>
+    // CX-120: the OFFER is the edge, not the rect, and that is not a looseness -- it is what breaks a
+    // circle. A light only joins the static set once Produces says a page can exist; SetHash is that
+    // set's hash; and Enrol -- the only thing that mints a rect -- refuses while SetHash is 0. Keyed on
+    // the rect, the three wait on each other for ever and the bake never starts (measured: charts built,
+    // no rect, no page). The offer is the first moment a page is possible, and the loading-screen hold
+    // (#675) is what covers the gap between it and the first landed page.
+    internal static bool Produces => _rectN > 0 || MeshChart.Offered > 0;
+
+    internal static bool Record(IntPtr id, CNWCArea area, Vector3 pos, float adjR, Vector3 color, bool ambient,
+                               bool isStatic, out int setIndex)
+        => Record(new PartLight(id), area, pos, adjR, color, ambient, out setIndex, isStatic ? 1 : 0);
+
+    /// <param name="dbStatic">-1 asks the engine object behind <paramref name="light"/> (engine mode); 0 or 1
+    /// is a caller's own verdict and nothing dereferences the pointer (DB mode).</param>
+    internal static bool Record(PartLight light, CNWCArea area, Vector3 pos, float adjR, Vector3 color, bool ambient,
+                               out int setIndex, int dbStatic = -1)
     {
         setIndex = -1;
         ulong id = Mix(Mix(Mix(Mix(FnvOffset, Q(pos.X, 0.05f)), Q(pos.Y, 0.05f)), Q(pos.Z, 0.05f)), Q(adjR, 0.05f));
         if (ambient) { CensusDynamic++; return false; }
+        // CX-120: a STATIC light is lit from a baked page and from nowhere else -- the live loop passes over
+        // it on purpose. Calling one static where no page can ever exist is therefore the same as switching
+        // it off, and in DB mode no page can: nothing enrols, so no rect is ever minted (see
+        // LightmapBake.Hold's NoRectSource). Every light stays dynamic until the arena ranges are charted,
+        // which is what keeps the tiles lit meanwhile. Self-retiring: the first chart offered ends it.
+        if (!Produces) { CensusDynamic++; return false; }
         // in the closed set = static, with the colour it was baked under (it is in every touching key);
         // anything else after the close is dynamic, whatever it is: a light that appears after load moved
         if (_seen.ContainsKey(id)) { CensusStatic++; setIndex = SetIndexOf(light.Ptr, pos, adjR); return true; }
@@ -425,16 +455,24 @@ internal static unsafe partial class LightmapBake
             if (_seenPtr.TryGetValue(light.Ptr, out int at) && Near(_stPosR[at], pos, adjR)) { CensusStatic++; setIndex = SetIndexOf(light.Ptr, pos, adjR); return true; }
             CensusDynamic++;
             // a light the open walk already classified dynamic (animated, creature-borne) is not news
-            if (_lateLeft > 0 && !Classified(light.Ptr)) LateLight(light, pos, adjR);
+            if (dbStatic < 0 && _lateLeft > 0 && !Classified(light.Ptr)) LateLight(light, pos, adjR);
             return false;
         }
-        bool st = IsStatic(light, area, out bool animated, out bool placeable, out bool byRun);
-        if (animated) CensusAnimated++;
-        if (byRun) CensusAnimRun++;
-        if (!st) { CensusDynamic++; return false; }
-        // CX-56: a reach the engine is still ramping is not the light to bake, and the ramp IS an animation
-        // blend -- so ask the blend, not a walk counter (see Settled)
-        if (!Settled(new Part(light.Ptr).Gob.Ptr)) { CensusUnsettled++; CensusDynamic++; return false; }
+        bool placeable = false;
+        if (dbStatic >= 0)
+        {
+            if (dbStatic == 0) { CensusDynamic++; return false; }
+        }
+        else
+        {
+            bool st = IsStatic(light, area, out bool animated, out placeable, out bool byRun);
+            if (animated) CensusAnimated++;
+            if (byRun) CensusAnimRun++;
+            if (!st) { CensusDynamic++; return false; }
+            // CX-56: a reach the engine is still ramping is not the light to bake, and the ramp IS an animation
+            // blend -- so ask the blend, not a walk counter (see Settled)
+            if (!Settled(new Part(light.Ptr).Gob.Ptr)) { CensusUnsettled++; CensusDynamic++; return false; }
+        }
         CensusStatic++;
         if (placeable) CensusPlaceable++; else CensusTile++;
         if (_stN == _stPosR.Length)
@@ -588,6 +626,14 @@ internal static unsafe partial class LightmapBake
         if (!_loadArmed) return;
         bool settled = CensusUnsettled == 0;
         if (!settled && _walks < BlendCeiling) return;
+        // CX-120: and in DB mode, not before the charter has been handed something. A light's static verdict
+        // asks Produces, Produces asks whether a chart has been OFFERED, and closing before the first offer
+        // bins every light dynamic for the session (measured: "set closed at walk 1 ... dynamic=22,
+        // static 0"). The offers come from the frame fold (MeshChart.DripDb), which runs while the area
+        // loads, so this wait is short. Only while the charter can answer at all -- with no arena VAO and no
+        // master knob there is nothing to wait for, which is also the off-device fixture's lightless area --
+        // and under the same walk ceiling the settle wait uses.
+        if (MeshChart.Armed && MeshChart.Offered == 0 && _walks < BlendCeiling) return;
         _closed = true;
         ulong acc = 0;
         for (int i = 0; i < _stN; i++) acc ^= SetTerm(_stPosR[i], _stCol[i]);
@@ -610,7 +656,7 @@ internal static unsafe partial class LightmapBake
         _setN = _stN;
         SetHash = hash;
         AbortBake();
-        if (_areaChanged) { _areaChanged = false; _areaHalve = 0; _placedArea = 0; Repack(); AlloyRenderer.SweepMeshTables(); }
+        if (_areaChanged) { _areaChanged = false; _areaHalve = 0; _placedArea = 0; Repack(); }
         else if (hash == 0) Repack();
         else RekeyAll();
     }
@@ -656,6 +702,7 @@ internal static unsafe partial class LightmapBake
         static string Who(IntPtr light)
         {
             if (light == IntPtr.Zero) return "'?'";
+            if (Renderer.On) return $"db light {light:x}";   // a database light id, not a Part: nothing to dereference
             Gob gob = new Part(light).Gob;
             MdlNode node = new Part(light).Node;
             string origin = gob.IsNull ? "gob-less" : !gob.TileData.IsNull ? "tile" : _regGobs.Contains(gob.Ptr) ? "registry placeable" : "model light";

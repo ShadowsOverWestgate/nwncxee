@@ -100,6 +100,8 @@ internal static unsafe class PostChain
     /// <summary>The empty VAO the full-screen triangle draws under.</summary>
     internal static uint FullscreenVao => _vao;
     private static int _w, _h, _levels;
+    /// <summary>The colour the HDR buffer was last cleared to -- the void, for the period line.</summary>
+    private static Vector3 _lastClear;
     private static uint _progDown, _progUp, _progComposite;
     private static uint _vao;
     private static bool _progFailed;
@@ -235,7 +237,6 @@ internal static unsafe class PostChain
         // #215/#467: the default framebuffer IS the target, every frame and on purpose. Keyed on the shim
         // WINDOW rather than on its setting: with the key on but the shim branch not taken, the engine is
         // still drawing this pass and the refusal is still the right answer.
-        if (!RspShim.InWindow) return Refuse("the engine renders to the default framebuffer");
         if (viewport[0] != 0 || viewport[1] != 0) return Refuse("the engine's viewport is offset");
         if (GammaOff())   // #216 asks this at the latch too; kept for the pre-cutover and subframe passes
             return Refuse("the engine's gamma pipeline is off (GetGlobalShaderParami(0) == 0), and the "
@@ -296,6 +297,7 @@ internal static unsafe class PostChain
         // OBJECTS, never per-context state, and glClearColor is per-context: querying it here would return
         // whatever THIS context was last set to -- (0,0,0,0) until the first probe capture, and EnvProbe's
         // own clear colour ever after.
+        _lastClear = new Vector3(clearRgba[0], clearRgba[1], clearRgba[2]);
         if (Post.ClearViz.V) Gl.ClearColor(1f, 0f, 1f, 1f);
         else Gl.ClearColor(MathF.Pow(MathF.Max(clearRgba[0], 0f), AlloyLights.SrgbGamma),
                       MathF.Pow(MathF.Max(clearRgba[1], 0f), AlloyLights.SrgbGamma),
@@ -451,7 +453,7 @@ internal static unsafe class PostChain
     /// renders, just without any of #139 in it.</para></summary>
     private static bool Refuse(string why)
     {
-        if (RspShim.InWindow) AlloyGate.Fail(why);   // #263: nothing to hand this pass back to, and no restart-free way to get it
+        AlloyGate.Fail(why);   // #263: nothing to hand this pass back to, and no restart-free way to get it
         return _down.Refuse(_log, why, "the HDR target is not armed; #132: the Alloy frame stands down for those "
                                      + "passes and the engine renders them vanilla");
     }
@@ -462,7 +464,7 @@ internal static unsafe class PostChain
     {
         // #263: same argument as Refuse's -- this latches inside a frame the verdict already froze on, and
         // nothing re-reads PostChain.Failed afterwards.
-        if (RspShim.InWindow) AlloyGate.Fail(why);
+        AlloyGate.Fail(why);
         return _down.Fail(_log, why, "the HDR target cannot arm this session; the engine renders vanilla");
     }
 
@@ -591,8 +593,11 @@ internal static unsafe class PostChain
         int n = Resolves;
         Resolves = 0;
         if (!_on) return "off (config hdr=0)";
-        return n == 0 ? $"NOT RESOLVING ({(_down.Reason.Length == 0 ? "never reached the pass" : _down.Reason)})"
-                      : $"{(float)n / MathF.Max(frames, 1):F2} resolves/frame at {_w}x{_h} (scale {_scale:F2}), {_levels}-level bloom";
+        // The clear colour rides along because it IS the void: every pixel the world does not cover comes out
+        // of this buffer's clear, in both modes, and no other period line reports it.
+        string clear = $", clear=({_lastClear.X:F3},{_lastClear.Y:F3},{_lastClear.Z:F3})";
+        return n == 0 ? $"NOT RESOLVING ({(_down.Reason.Length == 0 ? "never reached the pass" : _down.Reason)}){clear}"
+                      : $"{(float)n / MathF.Max(frames, 1):F2} resolves/frame at {_w}x{_h} (scale {_scale:F2}), {_levels}-level bloom{clear}";
     }
 
     private static int LevelW(int i) => Math.Max(_w >> (i + 1), 1);

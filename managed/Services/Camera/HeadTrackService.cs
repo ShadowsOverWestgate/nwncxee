@@ -1,6 +1,9 @@
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using CX.Alloy;
+using CX.Alloy.Db;
+using CX.Alloy.Seam;
 using CX.Engine;
 using CX.Framework;
 
@@ -110,8 +113,31 @@ public sealed unsafe class HeadTrackService : IExtenderService
         IntPtr gob = Model(creature);
         if (gob == IntPtr.Zero) { _gob = IntPtr.Zero; _updateOrig(creature); return; }
         _gob = gob; _drives++;
+        if (Renderer.On) { DriveDb(gob); return; }
         _begin(gob, gob, _headNode, _headNode, MouseLook.HeadYaw.V, MouseLook.HeadPitch.V, Blend, Reach);
     }
+
+    /// <summary>The look-at slot's own body, and <c>Gob::BeginLookAtAnimate</c> called directly.</summary>
+    private const int LookAtSlot = 74;
+
+    /// <summary>The model is a scene-database facade, with no engine part tree for <c>Gob::BeginLookAtAnimate</c>
+    /// to walk and no <c>LookAtAnimation</c> for <see cref="OnControl"/> to re-aim: the database's own look-at
+    /// is begun and then aimed, with the same clamp and release.</summary>
+    private static void DriveDb(IntPtr gob)
+    {
+        DbId id = Facade.Object(gob, LookAtSlot);
+        if (id.Value == 0) return;
+        DbAnim.BeginLookAt(id, id, HeadName, HeadName, MouseLook.HeadYaw.V, MouseLook.HeadPitch.V, Blend, Reach);
+        CameraService.Rendered(out _, out float camYaw, out float camPitch, out _);
+        Vector3 dir = -CameraService.Forward(CameraService.Pose(camYaw, camPitch));
+        if (!DbAnim.LookAtMeasure(id, dir, out float want, out float pitch)) return;
+        Clamp(want, pitch, out float yaw, out pitch);
+        DbAnim.LookAtAim(id, yaw, pitch);
+        _writes++;
+    }
+
+    /// <summary><see cref="_headNode"/> as the database's lookup takes it.</summary>
+    private const string HeadName = "head_g";
 
     /// <summary>The creature's Gob, through the engine's own accessor: <c>GetModel(0xff, 1)</c> forwards to
     /// the CNWCAnimBase at +0x78, which answers <c>*(animBase + 0xc8)</c>.</summary>
@@ -161,14 +187,19 @@ public sealed unsafe class HeadTrackService : IExtenderService
         Quaternion lq = head.Rot;
         Vector3 fwd = YAxis(wq);
         if (fwd.LengthSquared() < 1e-12f) return;
-        float arcH = MouseLook.HeadYaw.V, arcV = MouseLook.HeadPitch.V;
-        float want = YawOf(RotationArc(fwd, dir) * lq);
-        float over = arcH > 0f ? MathF.Abs(want) - arcH : 0f;
-        if (over > ReleaseOver) _released = true; else if (over < ReleaseOver - ReleaseHysteresis) _released = false;
-        float yaw = _released ? 0f : Math.Clamp(want, -arcH, arcH);
-        float pitch = Math.Clamp(MathF.Asin(Math.Clamp(dir.Z, -1f, 1f)) / Deg, -arcV, arcV);
+        Clamp(YawOf(RotationArc(fwd, dir) * lq), MathF.Asin(Math.Clamp(dir.Z, -1f, 1f)) / Deg, out float yaw, out float pitch);
         Quaternion q = CameraService.Pose(yaw, pitch);
         key[0] = q.X; key[1] = q.Y; key[2] = q.Z; key[3] = q.W;
+    }
+
+    /// <summary>The mode's arcs on a wanted yaw and pitch (degrees), with the yaw's release latch.</summary>
+    private static void Clamp(float want, float wantPitch, out float yaw, out float pitch)
+    {
+        float arcH = MouseLook.HeadYaw.V, arcV = MouseLook.HeadPitch.V;
+        float over = arcH > 0f ? MathF.Abs(want) - arcH : 0f;
+        if (over > ReleaseOver) _released = true; else if (over < ReleaseOver - ReleaseHysteresis) _released = false;
+        yaw = _released ? 0f : Math.Clamp(want, -arcH, arcH);
+        pitch = Math.Clamp(wantPitch, -arcV, arcV);
     }
 
     /// <summary>A quaternion's local <b>+Y</b> axis -- the head's forward, and what the engine's

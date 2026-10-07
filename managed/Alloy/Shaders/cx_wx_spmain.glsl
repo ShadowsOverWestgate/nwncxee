@@ -80,7 +80,8 @@ void main()
     vec3 hp = CxHash3(crown * 374761393u + uint(slice) * 668265263u + 1u);
     float rad = uSplashP.z * sqrt(hp.x);          // sqrt: uniform over the disc's AREA, not its radius
     float ang = hp.y * 6.2831853;
-    vec2 xy = uSplashC.xy + vec2(cos(ang), sin(ang)) * rad;
+    // off the centre as it stood at this crown's birth, so a crown never rides along with a moving player
+    vec2 xy = uSplashC.xy - uSplashV * (age * uSplashP.y) + vec2(cos(ang), sin(ang)) * rad;
     bool ok;
     vec3 L = CxSplashLand(xy, ok);
     // no edge: the field thins by crown COUNT from three quarters of the disc out, the way the drops do --

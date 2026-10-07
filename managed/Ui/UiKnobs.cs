@@ -16,7 +16,7 @@ internal static class UiKnobs
     internal static readonly KnobGroup G;
     internal static readonly Knob<int> Font, GridPx;
     internal static readonly Knob<string> Typeface;
-    internal static readonly Knob<bool> HoverFocus, Snap, EdgeSnap;
+    internal static readonly Knob<bool> HoverFocus, Snap, EdgeSnap, TextEdit;
 
     static UiKnobs()
     {
@@ -36,6 +36,8 @@ internal static class UiKnobs
                             help: "Spacing of the grid points, in screen px.");
         EdgeSnap = G.Toggle("edgesnap", "Snap to screen edges", true,
                             help: "Dragged windows stick to the screen edge and to each other.");
+        TextEdit = G.Toggle("textedit", "Modern editing in game text boxes", true,
+                            help: "The game's own text boxes get selection (mouse drag, double-click, Shift+arrows, Ctrl+A), Ctrl+C/X/V, and Ctrl+arrow/Backspace/Delete by word. Needs the Alloy renderer.");
     }
 }
 

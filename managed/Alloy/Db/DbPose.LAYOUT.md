@@ -1,0 +1,56 @@
+# Pose buffer layouts — seam-anim produces, seam-feed uploads (CX-120)
+
+Two things a pose cannot express as a matrix, and the exact shape in which seam-anim hands them over.
+
+## 1. Bone palettes (skinned parts)
+
+- **Where:** the renderer's own bone stage, `AlloyRenderer.DbBoneStage(slot)`. It has to be that block, because
+  that is what `Issue.UploadBones` sends and what `feat.y = slot * BoneCount` indexes.
+- **Who claims a slot:** seam-anim, through `AlloyRenderer.DbAllocBone()` / `DbFreeBone(slot)`
+  (`Scene/AlloyRenderer.DbBones.cs`). A DB slot carries owner `-2`, which both engine-path reclaimers skip by
+  construction, so it is **sticky** for as long as the part holds it — which is what #308 needs, since the
+  shadow bake pairs the previous build's `feat.y` with this frame's block.
+- **Shape:** `64 * 16` floats per slot. Per bone, a **column-major affine**: rotation columns in `m[0..2]`,
+  `m[4..6]`, `m[8..10]` and the translation in `m[12..14]`, `m[15] = 1`. An unused slot is the identity, never
+  the previous part's matrices. (`SkinPose.Compose`'s two-transpose derivation is where this layout comes from;
+  `DbAnim.SelfCheck`'s skin case pins it — a transposed store passes every diagonal test and fails that one.)
+- **The handshake:** `SceneDb.PartBoneBase[p]` is the slot number, or -1 for a rigid part. seam-feed reads it
+  and names it in the record (`AlloyRenderer.Db.cs` already does). seam-anim writes it at the end of the
+  object's animate step, after the compose.
+- **Not done here:** the previous-frame palette (`_bonePrevStage`) is not written for a DB part, so a skinned
+  DB part's motion vectors are its rigid ones. seam-feed's call if that matters for TAA.
+
+## 2. Dynamic vertex positions (dangly and animmesh)
+
+**The feed needs no code for this.** A part whose vertices move gets its OWN arena range and its OWN interned
+recipe, and `SceneDb.PartRecipe[part]` points at it — so the record feed draws the solved vertices through the
+path it already has. The plumbing is `MeshArena.AcquireDynamic` / `WriteDynamic` / `DynUpload`
+(`Db/MeshArena.Dyn.cs`, a new file in the parts stream's pattern; the only edits to `MeshArena.cs` itself are
+the `partial` keyword and one `DynUpload()` call inside `Pump`, and to `DrawRecipe.cs` the `partial` keyword).
+The patch reaches the GPU from `Pump`, on the render thread, inside the same bracket and under the same lock as
+every other arena upload. The range's bound moves with the vertices, so a flapping cloak is not culled against
+a pose it no longer holds.
+
+The host-side buffer below is still the producer's own copy and is still readable, for a consumer that wants
+the positions rather than the draw.
+
+
+- **Where:** seam-anim's own per-part arena. `DbAnim.DanglyPositions(part, out count)` returns a
+  `float*` of `3 * count` **model-space** positions, or null for a part with no dynamic state.
+- **Generation:** `DbAnim.DynGeneration(part)` changes only on a frame that actually moved a vertex, so a
+  consumer that remembers the number uploads nothing for a settled cloak. A part with dynamic positions is also
+  marked `Dirty.Anim` on such a frame.
+- **Semantics:** the buffer **replaces** the mesh's rest positions for that part; everything else (normals,
+  indices, tangents) stays the arena's. Vertex order and count are the `MeshDef`'s.
+- **Lifetime:** the buffer belongs to the part record and is freed when the object retires or its tree is
+  replaced. A consumer keeps the PART index, never the pointer.
+- **Ceiling:** 2048 parts may hold one at once; past that a part draws its rest geometry, said once and counted
+  on `[dbanim]`.
+- **If nobody reads it:** seam-anim says so once, loudly ("dynamic vertex buffers are being produced but
+  seam-feed has never read one") — a cloak that does not flap is a visible difference, not an error this side
+  can fix.
+- **UVs morph too.** An animmesh with a `animtverts` pool gets a second buffer (`2 * Count` floats) hanging
+  off the position one — same vertex count, same arena range — and the publish patches the range's diffuse UV
+  lane beside its positions. A part whose node has UV frames and NO position frames still gets both buffers:
+  the positions are then the rest ones and only the UVs move, which is the load screen's smoke. Counted as
+  `uv morph(s)` on `[dbanim]`.

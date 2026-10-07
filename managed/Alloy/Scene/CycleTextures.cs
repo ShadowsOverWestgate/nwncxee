@@ -120,13 +120,6 @@ internal static unsafe class CycleTextures
         return _dirtyN;
     }
 
-    /// <summary>Did this controller step on the last <see cref="Tick"/>? Linear over the (tiny) dirty list.</summary>
-    internal static bool IsDirty(IntPtr ctl)
-    {
-        for (int i = 0; i < _dirtyN; i++) if (_dirty[i] == ctl) return true;
-        return false;
-    }
-
     private static readonly IntPtr[] _dropped = new IntPtr[Cap];
     private static int _droppedN;
     /// <summary>Controllers dropped by the last <see cref="Tick"/>; the caller un-registers its records.</summary>

@@ -89,8 +89,7 @@ internal static unsafe class Stride
     internal static void Scale(ref PoseService.Slot s, IntPtr gob, float f)
     {
         s.RateF = f;
-        var g = new Gob(gob);
-        int n = Math.Min(g.RunCount, TrackedRuns);
+        int n = Math.Min(PoseRig.RunCount(gob), TrackedRuns);
         fixed (long* run = s.RateRun)
         fixed (float* eng = s.RateEngine, wrote = s.RateWritten)
         {
@@ -100,14 +99,15 @@ internal static unsafe class Stride
             int kept = 0;
             for (int i = 0; i < n; i++)
             {
-                AnimRun r = g.Run(i);
+                RunRef r = PoseRig.Run(gob, i);
                 if (r.IsNull) continue;
                 float cur = r.Rate, baseRate = cur;
+                long id = r.Id;
                 for (int k = 0; k < TrackedRuns; k++)
-                    if (run[k] == (long)r.Ptr) { if (cur == wrote[k]) baseRate = eng[k]; break; }
+                    if (run[k] == id) { if (cur == wrote[k]) baseRate = eng[k]; break; }
                 float want = baseRate * f;
                 if (want != cur) r.Rate = want;
-                keepRun[kept] = (long)r.Ptr; keepEng[kept] = baseRate; keepWrote[kept] = want; kept++;
+                keepRun[kept] = id; keepEng[kept] = baseRate; keepWrote[kept] = want; kept++;
             }
             for (int k = 0; k < TrackedRuns; k++)
             {
@@ -118,37 +118,38 @@ internal static unsafe class Stride
         }
     }
 
-    /// <summary>Longest animation name compared when matching an attachment's run to the body's.</summary>
-    private const int MaxName = 64;
-
     /// <summary>Before an attachment animates: each of its runs takes the rate of the body's run playing the
     /// same animation (the engine's value, times <paramref name="f"/>), and with <c>anim.syncattach</c> its time
     /// and, when both fade the same way, its blend. The attachment then advances exactly as the body is about
     /// to, so the two end every frame in phase whatever put them out of it. <paramref name="b"/> is the body's
-    /// slot when <paramref name="tracked"/>, to tell the engine's rate from this module's last write.</summary>
-    internal static void Sync(IntPtr gob, IntPtr body, ref PoseService.Slot b, bool tracked, float f)
+    /// slot when <paramref name="tracked"/>, to tell the engine's rate from this module's last write.
+    /// <paramref name="lead"/> is the seconds the body has ALREADY advanced this frame (DB mode steps the body
+    /// first), taken back off the copied time so the attachment's own advance lands on the body's.</summary>
+    internal static void Sync(IntPtr gob, IntPtr body, ref PoseService.Slot b, bool tracked, float f, float lead = 0f)
     {
-        var g = new Gob(gob);
-        var bg = new Gob(body);
-        int n = g.RunCount, bn = bg.RunCount;
+        int n = PoseRig.RunCount(gob), bn = PoseRig.RunCount(body);
         if (n == 0 || bn == 0) return;
         bool phase = AnimKnobs.SyncAttach.V;
         if (!phase && f == 1f) return;
         for (int i = 0; i < n; i++)
         {
-            AnimRun r = g.Run(i);
+            RunRef r = PoseRig.Run(gob, i);
             if (r.IsNull) continue;
-            AnimRun br = Match(r, bg, bn, i);
+            RunRef br = Match(r, body, bn, i);
             if (br.IsNull) continue;
             float rate = br.Rate;
+            long id = br.Id;
             if (tracked)
                 fixed (long* run = b.RateRun)
                 fixed (float* eng = b.RateEngine, wrote = b.RateWritten)
                     for (int k = 0; k < TrackedRuns; k++)
-                        if (run[k] == (long)br.Ptr) { if (rate == wrote[k]) rate = eng[k]; break; }
+                        if (run[k] == id) { if (rate == wrote[k]) rate = eng[k]; break; }
             r.Rate = rate * f;
             if (!phase) continue;
-            r.Time = br.Time;
+            float t = br.Time - lead * r.Rate, len = br.Length;
+            // only a LOOPING run wraps: a one-shot the body started this frame reads time ~0, the lead takes it
+            // below 0, and wrapping showed the cloak the END of a turn while the body began it
+            r.Time = t < 0f && len > 0f && (r.Flags & Looping) != 0 ? t + len : MathF.Max(t, 0f);
             if (((r.Flags ^ br.Flags) & FadingOut) == 0)
             {
                 r.Blend = br.Blend;
@@ -160,36 +161,22 @@ internal static unsafe class Stride
 
     /// <summary>AnimRun flag bit: the run is fading out.</summary>
     private const uint FadingOut = 0x1;  // not-an-offset: a flag bit
+    /// <summary>AnimRun flag bit: the run loops.</summary>
+    private const uint Looping = 0x4;  // not-an-offset: a flag bit
 
     /// <summary>The body's run playing the animation <paramref name="run"/> plays, by name (the two gobs load
     /// their own <c>Animation</c> objects): the one at the same list position first, else the first by name.</summary>
-    private static AnimRun Match(AnimRun run, Gob body, int bn, int at)
+    private static RunRef Match(in RunRef run, IntPtr body, int bn, int at)
     {
-        Animation anim = run.Animation;
-        if (anim.IsNull) return default;
-        byte* name = anim.Chars;
-        AnimRun same = at < bn ? body.Run(at) : default;
-        if (SameName(same, name)) return same;
+        RunRef same = at < bn ? PoseRig.Run(body, at) : default;
+        if (run.SameName(same)) return same;
         for (int j = 0; j < bn; j++)
         {
-            AnimRun br = body.Run(j);
-            if (j != at && SameName(br, name)) return br;
+            if (j == at) continue;
+            RunRef br = PoseRig.Run(body, j);
+            if (run.SameName(br)) return br;
         }
         return default;
-    }
-
-    private static bool SameName(AnimRun run, byte* name)
-    {
-        if (run.IsNull) return false;
-        Animation anim = run.Animation;
-        if (anim.IsNull) return false;
-        byte* other = anim.Chars;
-        for (int i = 0; i < MaxName; i++)
-        {
-            if (name[i] != other[i]) return false;
-            if (name[i] == 0) return true;
-        }
-        return true;
     }
 
     /// <summary>After the engine animates, before any correction: samples the stance foot's model-space speed

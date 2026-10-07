@@ -234,6 +234,9 @@ internal static unsafe partial class OwnedTextures
     {
         KeepPltOnCpu();
         (*_origConstructImage)(tex);
+        // CX-117: on the way out the CPU composite is still in memory at +0x58 -- the one point in the frame
+        // a PLT's finished pixels can be compared against Alloy's own resolve with no GL readback at all.
+        if (Db.PltVerify.On) Db.PltVerify.Offer(tex);
     }
 
     /// <summary>#358: ...and the same hold on the reader that routes a built PLT texture around the upload
@@ -452,9 +455,6 @@ internal static unsafe partial class OwnedTextures
         HighWater();
         if (scanned) _stats[dst] = new Stat { Holes = scan.Holes, Graded = scan.Graded, Mean = scan.Mean, MeanOk = scan.MeanOk };
         else _stats.Remove(dst);
-        // A graded diffuse arriving AFTER its part enrolled was classed Cutout without it: re-walk so the
-        // class is asked again. ponytail: a full walk per such texture; a per-part dirty list if it shows in Enroll.
-        if (scanned && scan.Graded >= AlloyCensus.GradedBlend) SceneWalk.Dirty = true;
         if (AlloyCensus._dumpTex != null && AlloyCensus.TexName(tex).Contains(AlloyCensus._dumpTex, StringComparison.OrdinalIgnoreCase))
             _log?.Info($"[dumpframe] SCAN tex={AlloyCensus.TexName(tex)} cell={cell} scanned={scanned} compressed={b.CompressedSize != 0} refusedFmt={TexScan.LastRefusedFormat} holes={scan.Holes:F2} graded={scan.Graded:F2} {scan.W}x{scan.H} owned={dst}");
         if (wantBcn && scan.Rgba != null) EnqueueTranscode(key, etid, dst, bytes, scan.Rgba, scan.W, scan.H, scan.Mips);
@@ -484,16 +484,6 @@ internal static unsafe partial class OwnedTextures
         holes = 1f; graded = 0f;
         if (!TryStat(tid, out Stat st)) return false;
         holes = st.Holes; graded = st.Graded;
-        return true;
-    }
-    /// <summary>The graded-alpha fraction (see <see cref="TexScan.Result.Graded"/>) of the owned texture behind an
-    /// engine texture object. False = not scanned yet; the caller keeps its default class.</summary>
-    internal static bool TryGraded(IntPtr tex, out float graded)
-    {
-        graded = 0f;
-        // The engine's own getter: the census hands the CAurTexture wrapper, and the GL id lives on its basic.
-        if (tex == IntPtr.Zero || !TryStat(AurTex.Tid(tex), out Stat st)) return false;
-        graded = st.Graded;
         return true;
     }
     /// <summary>The mean colour of an owned name, 0..1 in the texture's own encoding.</summary>
@@ -1559,28 +1549,11 @@ internal static unsafe partial class OwnedTextures
     /// <summary>#397: fresh engine names that arrived at a funnel still indexed -- entries that outlived their
     /// texture. Expected 0; anything else names a delete path <see cref="Forget"/> does not cover.</summary>
     private static long _indexStale;
-    /// <summary>#397: which textures reach a draw without ever passing the upload funnel -- the class a stale
-    /// index entry could misdirect. First few per session, at the enrolment that noticed the borrow.</summary>
-    internal static void NoteBorrowedName(IntPtr tex, int tid)
-    {
-        if (_borrowDiagLeft <= 0) return;
-        _borrowDiagLeft--;
-        _log?.Info($"OwnedTextures: BORROWED tid {tid} = {AlloyCensus.TexName(tex)} -- never came through the upload funnel");
-    }
     private static int _borrowDiagLeft = 12;
     /// <summary>The engine just generated <paramref name="name"/> (GenTextures in glImageBasic), so an index
     /// entry on it can only be stale: drop it, count it. An OWNED name here is a refresh into our own name.</summary>
     private static void FreshName(uint name) { if (!_owned.Contains(name) && _index.Remove((int)name)) _indexStale++; }
 
-    /// <summary><see cref="Draw"/> without the borrowed-set write: false when Draw would have recorded a
-    /// borrow (a mutation, possibly an allocation), so a worker defers that part to the main thread.</summary>
-    internal static bool TryDraw(int engineTid, out int draw)
-    {
-        draw = engineTid;
-        if (!_armed || engineTid <= 0) return true;
-        if (_index.TryGetValue(engineTid, out ulong key) && _res.TryGetValue(key, out Entry e)) { draw = (int)e.Owned; return true; }
-        return false;
-    }
     /// <summary>The name an owned draw should sample for this engine texture id: Alloy's, or
     /// <paramref name="engineTid"/> itself when the table is stood down or the texture never came through the
     /// upload funnel. Hot -- called per Alloy part per frame -- and in the normal case two dictionary probes

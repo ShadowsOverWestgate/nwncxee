@@ -40,6 +40,15 @@ internal static unsafe class RadialIcons
     /// <summary>CGameObject type byte for an item (<c>CClientExoAppInternal::GetItemByGameObjectID</c> @0x63f3a0).</summary>
     private const byte GameObjTypeItem = 6;
 
+    /// <summary>CX-120: per layer of the LAST <see cref="Layers"/> walk, the master-palette rows CX resolved
+    /// the layer with, and whether it did. Scratch, not state: <see cref="Layers"/> clears it on entry and
+    /// <see cref="Draw"/> reads it immediately after, both on the UI thread, which is the same contract the
+    /// stack-allocated tid span already has.</summary>
+    private static readonly int[] _cxRows = new int[MaxLayers * PltRows];
+    private static readonly bool[] _cxPlt = new bool[MaxLayers];
+    /// <summary>Rows a PLT icon carries -- the ten the game layer can ever pass (<c>PltImage.Layers</c>).</summary>
+    internal const int PltRows = 10;
+
     private static AurTextureFindFn _find;
     private static AurTextureGetFn _get;
     private static GuiIconGetIconModelFn _getIconModel;
@@ -58,6 +67,7 @@ internal static unsafe class RadialIcons
         if (_initTried) return _ready;
         _initTried = true;
         _log = log;
+        RadialIconsPlt.Install(log);
         if (!SymbolMap.Require(log, "RadialIcons", SymbolMap.AurTextureFind, SymbolMap.AurTextureGet, SymbolMap.GetGameObject,
                                SymbolMap.AppManager, SymbolMap.VtCLayeredIcon, SymbolMap.VtCCompositeIcon, SymbolMap.VtCArmorIcon,
                                SymbolMap.GuiIconGetIconModel)) return false;
@@ -134,7 +144,7 @@ internal static unsafe class RadialIcons
         Span<int> tids = stackalloc int[MaxLayers];
         int n = Layers(icon, tids);
         float u1 = ContentFrac(cellsW), v0 = 1f - ContentFrac(cellsH);
-        for (int i = 0; i < n; i++) TextRig.DrawIconTid(tids[i], x, y, w, h, alpha, u1, v0, clip, cx, cy, cw, ch);
+        for (int i = 0; i < n; i++) DrawLayer(i, tids[i], x, y, w, h, alpha, u1, v0, clip, cx, cy, cw, ch);
     }
 
     /// <summary>Texels of one inventory cell on a stock icon sheet.</summary>
@@ -155,7 +165,7 @@ internal static unsafe class RadialIcons
         if (icon == IntPtr.Zero) return;
         Span<int> tids = stackalloc int[MaxLayers];
         int n = Layers(icon, tids);
-        for (int i = 0; i < n; i++) TextRig.DrawIconTid(tids[i], x, y, w, h, alpha);
+        for (int i = 0; i < n; i++) DrawLayer(i, tids[i], x, y, w, h, alpha);
         if (!_firstDrawLogged && n > 0 && tids[0] != 0 && ExtenderLog.Enabled)
         {
             _firstDrawLogged = true;
@@ -172,12 +182,14 @@ internal static unsafe class RadialIcons
     internal static int Layers(IntPtr icon, Span<int> tids)
     {
         Span<byte> resref = new CGuiIcon(icon).Resref;
+        Array.Clear(_cxPlt);
         switch (Classify(icon))
         {
             case IconKind.Layered:
             {
                 var layered = new CLayeredIcon(icon);
                 tids[0] = TidPlt(resref, (ushort*)layered.Scheme, layered.SchemeCount);
+                if (tids[0] == 0) tids[0] = CxPlt(resref, (ushort*)layered.Scheme, layered.SchemeCount, 0);
                 return 1;
             }
             case IconKind.Composite:
@@ -202,8 +214,12 @@ internal static unsafe class RadialIcons
                     if (name[0] == 0) continue;
                     ushort* scheme = perLayer != null ? perLayer + n * count : shared;
                     IntPtr tex = FindPlt(name, scheme, count);
-                    if (tex == IntPtr.Zero) continue;
-                    tids[n++] = AurTex.Tid(tex);
+                    int tid = tex == IntPtr.Zero ? 0 : AurTex.Tid(tex);
+                    // A find MISS is the engine's own skip for a layer it never made a texture for -- except
+                    // in DB mode, where it made none at all, so CX's own resolve is asked before skipping.
+                    if (tid == 0) tid = CxPlt(name, scheme, count, n);
+                    if (tid == 0 && tex == IntPtr.Zero) continue;
+                    tids[n++] = tid;
                 }
                 return n;
             }
@@ -243,6 +259,37 @@ internal static unsafe class RadialIcons
     }
 
     private static int TidPlt(ReadOnlySpan<byte> resref, ushort* scheme, int count) => AurTex.Tid(FindPlt(resref, scheme, count));
+
+    /// <summary>CX-120: the layer CX resolves itself when the engine has no composited texture for it -- DB
+    /// mode, where no <c>CAurTextureBasic</c> is ever built. Returns the PAIR texture's GL name and records
+    /// this item's scheme as the rows the fragment stage looks up with; 0 leaves the layer skipped exactly as
+    /// before, so mode 0 and a still-loading texture both behave as they did.</summary>
+    private static int CxPlt(ReadOnlySpan<byte> resref, ushort* scheme, int count, int layer)
+    {
+        if (scheme == null || (uint)count > MaxScheme || (uint)layer >= MaxLayers) return 0;
+        if (RadialIconsPlt.Palette == 0) return 0;
+        byte* name = stackalloc byte[ResRefLen + 1];
+        int n = CName(resref, name);
+        if (n == 0) return 0;
+        uint tex = RadialIconsPlt.Pair(System.Text.Encoding.ASCII.GetString(name, n));
+        if (tex == 0) return 0;
+        int at = layer * PltRows;
+        for (int i = 0; i < PltRows; i++) _cxRows[at + i] = i < count ? scheme[i] : 0;
+        _cxPlt[layer] = true;
+        return (int)tex;
+    }
+
+    /// <summary>One layer of a drawn icon, through CX's own PLT resolve when <see cref="CxPlt"/> supplied it.</summary>
+    private static void DrawLayer(int i, int tid, float x, float y, float w, float h, float alpha,
+                                  float u1 = 1f, float v0 = 0f,
+                                  bool clip = false, int cx = 0, int cy = 0, int cw = 0, int ch = 0)
+    {
+        if (i < MaxLayers && _cxPlt[i])
+            TextRig.DrawIconPlt(tid, RadialIconsPlt.Palette, new ReadOnlySpan<int>(_cxRows, i * PltRows, PltRows),
+                                x, y, w, h, alpha, u1, v0, clip, cx, cy, cw, ch);
+        else
+            TextRig.DrawIconTid(tid, x, y, w, h, alpha, u1, v0, clip, cx, cy, cw, ch);
+    }
 
     /// <summary>A PLT layer: <c>AurTextureFind(name, name, scheme, count, false)</c> -- the hashed (pltName, scheme)
     /// lookup, scheme widened <c>ushort -&gt; int</c> as <c>Gob::ReplaceTexture</c> @0x43eb30 widens it. Find, never get:

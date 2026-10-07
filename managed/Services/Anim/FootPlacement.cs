@@ -195,7 +195,7 @@ internal static unsafe class FootPlacement
         {
             Rays++;
             if (!SceneRay.Cast(scene, from, to, self, out Vector3 hit, out IntPtr g, statics: true)) break;
-            if (g == IntPtr.Zero || !new Gob(g).TileData.IsNull) { Tile++; off = hit.Z - refZ; SceneRay.Release(); return true; }
+            if (g == IntPtr.Zero || SceneRay.IsTile(g)) { Tile++; off = hit.Z - refZ; SceneRay.Release(); return true; }
             if (SceneRay.IsPlaceable(g)) { Placeable++; off = hit.Z - refZ; SceneRay.Release(); return true; }
             from.Z = hit.Z - SceneRay.Nudge;
         }

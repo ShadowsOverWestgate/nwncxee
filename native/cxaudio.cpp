@@ -53,6 +53,7 @@ static unsigned cxa_ld(unsigned* p) { return (unsigned)InterlockedCompareExchang
 static void cxa_st(int64_t* p, int64_t v) { InterlockedExchange64(p, v); }
 static unsigned cxa_inc(unsigned* p) { return (unsigned)InterlockedIncrement((volatile LONG*)p); }
 static int32_t cxa_inc(int32_t* p) { return (int32_t)InterlockedIncrement((volatile LONG*)p); }
+static void cxa_sleep_ms(int ms) { Sleep((DWORD)ms); }
 static double cxa_now()
 {
     LARGE_INTEGER f, c;
@@ -101,6 +102,13 @@ static void* cxa_sym(void* lib, const char* n) { return dlsym(lib, n); }
 template <class T> static T cxa_ld(T* p) { return __atomic_load_n(p, __ATOMIC_ACQUIRE); }
 template <class T> static void cxa_st(T* p, T v) { __atomic_store_n(p, v, __ATOMIC_RELEASE); }
 template <class T> static T cxa_inc(T* p) { return __atomic_add_fetch(p, 1, __ATOMIC_ACQ_REL); }
+static void cxa_sleep_ms(int ms)
+{
+    struct timespec t;
+    t.tv_sec = ms / 1000;
+    t.tv_nsec = (long)(ms % 1000) * 1000000L;
+    nanosleep(&t, NULL);
+}
 static double cxa_now()
 {
     struct timespec t;
@@ -526,6 +534,11 @@ static int g_testReq;   // the speaker test was asked for (under g_lk)
 static float g_music;   // the area music's audible level, 0..1 (under g_lk)
 static float g_rain = 1.0f;   // the reverb's wet scale while it rains (under g_lk)
 
+/// The reflection handoff (both under g_lk). An IR the render convolves is the simulator's own memory, so the
+/// render must be out of it while the scene is swapped: `freeze` stands its reflections down from the next frame,
+/// `hold` says a frame is between its snapshot and its last reflection call.
+static int g_reflFreeze, g_reflHold;
+
 /// The 3D voice PlaySourceOn3DVoice is about to start, per thread: the engine starts one on the main thread
 /// while AsyncSoundStream starts its streams, and only the former may take the pending meta.
 static thread_local int t_pending;
@@ -683,6 +696,10 @@ static int sa_init(int rate, int busCh, int binaural)
     ss.numDiffuseSamples = 32;
     ss.maxDuration = MaxDuration;
     ss.maxOrder = s.order;
+    // REFLECTION sources only -- phonon.h: "the maximum number of sources for which reflection simulations
+    // will be run at any given time". The MaxSlots direct/pathing sources added below do not count against
+    // it, so this is MaxRefl + 1 and not the 69 sources the simulator holds. Checked because the mismatch
+    // reads like an overflow and is not one.
     ss.maxNumSources = MaxRefl + 1;
     ss.numThreads = 2;
     ss.rayBatchSize = 1;
@@ -704,6 +721,9 @@ static int sa_init(int rate, int busCh, int binaural)
     }
     if (p_iplSourceCreate(s.sim, &rfs, &s.room) != IPL_STATUS_SUCCESS) { set_err("iplSourceCreate failed"); return 0; }
     p_iplSourceAdd(s.room, s.sim);
+    // ponytail: the reflection-source count and maxNumSources are the same expression three lines apart
+    // (MaxRefl + 1); a named constant would pin them, but phonon's ceiling is for REFLECTION sources only and
+    // that is the thing worth writing down, not a third spelling of the arithmetic.
     p_iplSimulatorCommit(s.sim);
     for (int i = 0; i < MaxRefl; i++) s.reflOwner[i] = -1;
     {
@@ -773,12 +793,18 @@ static void render_frame(unsigned gen, float* dst)
         }
         if (!sl.src || sl.stopped) v.playing = 0;
     }
+    // reflections are decided, and the room's IR taken, under the same lock the scene swap freezes them with:
+    // past this point no frame can pick up an IR the swap is about to reallocate
+    int reflMode = cfg.enabled && !stale && !g_reflFreeze && (cfg.reflections == 1 || cfg.reflections == 2) ? cfg.reflections : 0;
+    int roomValid = reflMode >= 1 && s.roomValid;
+    IPLReflectionEffectParams roomParams = s.roomParams;
+    g_reflHold = reflMode >= 1;
     g_lk.off();
 
     zero(&s.bus);
     if (stale || !cfg.enabled)
     {
-        for (int i = 0; i < MaxSlots; i++) g_voices[i].playing = 0;
+        for (int i = 0; i < MaxSlots; i++) { g_voices[i].playing = 0; g_voices[i].tailFrames = 0; }
     }
 
     // duplicates: the dupCap nearest copies of one sound stay, the rest fade out; copies in lockstep sum by power
@@ -811,7 +837,6 @@ static void render_frame(unsigned gen, float* dst)
     s.duck += (duckTarget - s.duck) * duckK;
 
     zero(&s.roomIn);
-    int reflMode = cfg.reflections == 1 || cfg.reflections == 2 ? cfg.reflections : 0;
     for (int i = 0; i < MaxSlots; i++)
     {
         Voice& v = g_voices[i];
@@ -955,9 +980,9 @@ static void render_frame(unsigned gen, float* dst)
     if (reflMode >= 1)
     {
         IPLAudioBuffer amb = view(s.amb, s.ambi);
-        if (s.roomValid && s.roomParams.ir)
+        if (roomValid && roomParams.ir)
         {
-            IPLReflectionEffectParams rp = s.roomParams;
+            IPLReflectionEffectParams rp = roomParams;
             rp.type = IPL_REFLECTIONEFFECTTYPE_CONVOLUTION;
             rp.numChannels = s.ambi;
             rp.irSize = (int)ceilf(cfg.duration * (float)s.rate);
@@ -1023,6 +1048,7 @@ static void render_frame(unsigned gen, float* dst)
 
     double ms = (cxa_now() - t0) * 1000.0;
     g_lk.on();
+    g_reflHold = 0;
     int live = 0;
     for (int i = 0; i < MaxSlots; i++)
     {
@@ -1442,6 +1468,53 @@ static ALCboolean ALC_APIENTRY sh_alcMakeContextCurrent(ALCcontext* ctx) noexcep
 }
 
 // ---- the simulation (CX's "CX sound sim" thread) ----
+
+/// How long a scene swap waits for the render to leave its reflection section before it goes ahead anyway.
+static const double QuiesceSeconds = 2.0;
+
+/// Takes every simulator-owned IR out of the render's hands, for a caller about to commit the simulator.
+/// iplSimulatorCommit reallocates the reflection state those IRs live in (phonon.h: it "cannot be called while
+/// any simulation is running", and the handles it hands out do not outlive it), and the render convolves them on
+/// its own thread -- so the freeze stops the next frame from picking one up, the cleared params stop every frame
+/// after it, and the wait lets the frame that may already be inside iplReflectionEffectApply finish.
+static void refl_quiesce(void)
+{
+    Sa& s = g_sa;
+    g_lk.on();
+    g_reflFreeze = 1;
+    for (int i = 0; i < MaxSlots; i++) { g_slots[i].reflIdx = -1; memset(&g_slots[i].refl, 0, sizeof g_slots[i].refl); }
+    s.roomValid = 0;
+    memset(&s.roomParams, 0, sizeof s.roomParams);
+    int held = g_reflHold;
+    g_lk.off();
+    double t0 = cxa_now();
+    while (held)
+    {
+        cxa_sleep_ms(1);
+        g_lk.on();
+        held = g_reflHold;
+        g_lk.off();
+        if (held && cxa_now() - t0 > QuiesceSeconds)
+        {
+            set_err("the sound render did not hand its reflections back for the scene swap");
+            break;
+        }
+    }
+}
+
+/// Lets the render have reflections again, on the committed scene: every effect is reset first, since each holds
+/// the partitioned state of an IR that no longer exists.
+static void refl_thaw(void)
+{
+    Sa& s = g_sa;
+    for (int i = 0; i < MaxRefl; i++) { p_iplReflectionEffectReset(s.refl[i]); s.reflOwner[i] = -1; }
+    p_iplReflectionEffectReset(s.roomRefl);
+    p_iplReflectionMixerReset(s.mixer);
+    g_lk.on();
+    g_reflFreeze = 0;
+    g_lk.off();
+}
+
 static void scene_install(float* verts, int nv, int32_t* tris, int nt, int bake, int matIdx)
 {
     Sa& s = g_sa;
@@ -1488,12 +1561,18 @@ static void scene_install(float* verts, int nv, int32_t* tris, int nt, int bake,
         }
         free(v); free(mi);
     }
-    if (scene) p_iplSimulatorSetScene(s.sim, scene);
+    // UNCONDITIONALLY, and before the release below: an area change sends an empty scene first
+    // (SoundScene's area edge calls cxa_scene(NULL, 0, NULL, 0, 1, 0)), and skipping the call there left the
+    // simulator naming a scene this function then released -- the simulator's own reference is the only thing
+    // that kept it alive, which is not an invariant to lean on.
+    refl_quiesce();
+    p_iplSimulatorSetScene(s.sim, scene);
     if (bake && s.probes) { p_iplSimulatorRemoveProbeBatch(s.sim, s.probes); p_iplProbeBatchRelease(&s.probes); }
     p_iplSimulatorCommit(s.sim);
     if (s.mesh) p_iplStaticMeshRelease(&s.mesh);
     if (s.scene) p_iplSceneRelease(&s.scene);
     s.scene = scene; s.mesh = mesh;
+    refl_thaw();
     g_lk.on();
     g_stats.sceneTris = scene ? nt : 0;
     g_sceneMat = scene ? matIdx : 0;
@@ -1521,19 +1600,29 @@ CX_EXPORT void cxa_sim_tick(void)
     if (g_pendSet) { pv = g_pendVerts; pt = g_pendTris; nv = g_pendNv; nt = g_pendNt; bake = g_pendBake; mat = g_pendMat; set = 1; g_pendVerts = NULL; g_pendTris = NULL; g_pendSet = 0; }
     if (g_bakeDone) { done = g_bakeDone; g_bakeDone = NULL; }
     g_lk.off();
+    // master off stops the feature, not just the mix: the pending scene is dropped and an installed one torn
+    // down, so no Steam Audio work (and no acoustic scene) outlives the toggle (ADR 0025)
+    if (!cfg.enabled)
+    {
+        free(pv); free(pt);
+        if (done) p_iplProbeBatchRelease(&done);
+        if (s.scene) scene_install(NULL, 0, NULL, 0, 1, 0);
+        return;
+    }
     if (set) { scene_install(pv, nv, pt, nt, bake, mat); free(pv); free(pt); }
     if (done)
     {
         if (s.scene && cfg.pathing)
         {
+            refl_quiesce();
             if (s.probes) { p_iplSimulatorRemoveProbeBatch(s.sim, s.probes); p_iplProbeBatchRelease(&s.probes); }
             s.probes = done;
             p_iplSimulatorAddProbeBatch(s.sim, s.probes);
             p_iplSimulatorCommit(s.sim);
+            refl_thaw();
         }
         else p_iplProbeBatchRelease(&done);
     }
-    if (!cfg.enabled) return;
     int haveScene = s.scene != NULL;
 
     // the nearest playing voices own the per-source reflection pool; the rest share the room
@@ -1934,7 +2023,10 @@ CX_EXPORT int32_t cxa_scene(const float* verts, int32_t nv, const int32_t* tris,
     }
     g_lk.on();
     free(g_pendVerts); free(g_pendTris);
-    g_pendVerts = v; g_pendTris = t; g_pendNv = v ? nv : 0; g_pendNt = t ? nt : 0; g_pendSet = 1; g_pendBake = bake;
+    // bake is sticky while a set waits: a send that overtakes the area edge's must not swallow the edge's
+    // probe teardown, or the new area paths through the last one's probes
+    g_pendBake = g_pendSet ? (g_pendBake || bake) : bake;
+    g_pendVerts = v; g_pendTris = t; g_pendNv = v ? nv : 0; g_pendNt = t ? nt : 0; g_pendSet = 1;
     g_pendMat = material >= 0 && material < AcMatCount ? material : 0;
     g_lk.off();
     return 1;
@@ -2043,6 +2135,17 @@ CX_EXPORT int32_t cxa_selfcheck(char* msg, int32_t len)
     CXA_EXPECT(PresetCount == 113, "113 soundeax rows");
     CXA_EXPECT(preset_row("CASTLE_LONGPASSAGE") == 29 && preset_row("CASTLE_LARGEROOM") == 30, "the 2DA's order, not the header's");
     CXA_EXPECT(preset_row("CARPETTEDHALLWAY") == 11 && g_presets[11].p.flDecayTime == 0.3f, "the 2DA's spelling reaches the header's preset");
+    // the scene swap's handoff: every simulator-owned IR leaves the render's hands, and the freeze keeps the
+    // next frame from taking one (nothing here touches Steam Audio, so it runs headless)
+    g_slots[3].reflIdx = 2;
+    g_slots[3].refl.ir = (IPLReflectionEffectIR)(uintptr_t)1;
+    g_sa.roomValid = 1;
+    g_sa.roomParams.ir = (IPLReflectionEffectIR)(uintptr_t)1;
+    g_reflHold = 0;
+    refl_quiesce();
+    CXA_EXPECT(g_reflFreeze && g_slots[3].reflIdx < 0 && !g_slots[3].refl.ir && !g_sa.roomValid && !g_sa.roomParams.ir,
+               "a scene swap takes every simulator IR out of the render's hands");
+    g_reflFreeze = 0;
     snprintf(msg, (size_t)len, "ok");
     return 1;
 }

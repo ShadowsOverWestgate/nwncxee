@@ -19,6 +19,13 @@ public static class General
     public static readonly Knob<bool> Logs;
     public static readonly Knob<bool> HookDebug;
     public static readonly Knob<int> PresentProbe, Pin;
+    /// <summary>Seconds after the first present at which this run halves the window's width; twice that is
+    /// where it puts the width back. 0 = off. A DEBUG trigger for the
+    /// engine's own re-layout path (<c>SDL_SetWindowSize</c> -&gt;
+    /// <c>SDL_WINDOWEVENT_SIZE_CHANGED</c> -&gt; <c>WinMessageHandler</c> @0x42f960 -&gt;
+    /// <c>CGuiMan::SetGuiSize</c> @0x57efc0): a GUI that mishandles a resize can only be SEEN through that
+    /// path, and the live harness runs inside a headless compositor with no window edge to drag.</summary>
+    public static readonly Knob<int> ResizeAt;
 
     public static readonly KnobGroup About;
 
@@ -36,6 +43,10 @@ public static class General
         HookDebug = G.Toggle("hookdebug", "hookdebug", false, Tier.ChatOnly, Effect.Restart);
         PresentProbe = G.Slider("presentprobe", "presentprobe", 0, 200, 1, 0, tier: Tier.ChatOnly, effect: Effect.Restart);
         Pin = G.Slider("pin", "pin", -1, 1023, 1, -1, tier: Tier.ChatOnly, effect: Effect.Restart);
+        ResizeAt = G.Slider("resizeat", "resizeat", 0, 600, 1, 0, unit: "s",
+            tier: Tier.ChatOnly, effect: Effect.Restart,
+            help: "Debug: halve the window's width this many seconds in, and restore it at twice that, through "
+                + "SDL and the engine's own panel re-layout. 0 = off.");
         CommandRegistry.Global.Gate = () => Commands.V;
 
         About = KnobGroup.Declare("about", "General", "About", header: "What this build is and where to report a problem.");

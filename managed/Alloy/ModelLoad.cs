@@ -191,6 +191,9 @@ internal static unsafe partial class ModelLoad
     private static void OfferOne(byte* name)
     {
         if (!_armed || name == null || *name == 0) return;
+        // CX-113: the same list is CX's own read-ahead, so a later ModelCache.Acquire is a hit. Behind its own
+        // knob because nothing draws from CX's models until CX-120 installs the Aurora seam.
+        if (CX.Alloy.Mdl.ModelKnobs.Prefetch.V) CX.Alloy.Mdl.ModelCache.Prefetch(Marshal.PtrToStringAnsi((IntPtr)name) ?? "");
         long key = (long)ResLocate.Key(name);
         if (_jobs.Entries.ContainsKey(key)) return;
         _offered++;
@@ -327,6 +330,7 @@ internal static unsafe partial class ModelLoad
         _drip++;
         Publish();
         Sweep();
+        CX.Alloy.Mdl.ModelCache.Pump();   // CX-113: file whatever its own parse worker finished
     }
 
     /// <summary>File everything the worker finished. Also run from <see cref="Take"/>, because the engine's

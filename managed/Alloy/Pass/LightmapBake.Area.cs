@@ -493,7 +493,7 @@ internal static unsafe partial class LightmapBake
     private static bool AreaWriteReady
         => _areaKey != 0 && !_areaWritten && Enabled && SetHash != 0 && _closed && !_edgePending
         && (!_areaAdopted || _areaSetOk) && _rectN > 0 && _pending == 0 && _toPack.Count == 0 && _bakePage < 0
-        && _refused + _pastCap == 0 && _bakeSkips == 0 && MeshChart.InFlight == 0 && AlloyRenderer.ChartDeferred == 0;
+        && _refused + _pastCap == 0 && _bakeSkips == 0 && MeshChart.InFlight == 0;
 
     /// <summary>Once a frame: drive the page readbacks a pending plan is waiting on, or -- for a visit no hold
     /// released -- write the plan once the bake has been calm for <see cref="AreaCalmFrames"/>.</summary>

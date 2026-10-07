@@ -17,37 +17,26 @@ namespace CX.Alloy;
 /// bezier weights, the gravity term, the inherited-velocity decay, the fractal's midpoint displacement);
 /// where it is an artefact of C++ in 2002 it is not (four <c>Vector</c> temporaries per particle, eleven
 /// virtual flag reads per emitter, a <c>rand()</c> the renderer shares with the game).</para>
+/// <para>CX-120: every parameter arrives in an <see cref="Emitter"/> snapshot rather than through the engine's
+/// views, so the same step runs over the engine's objects and over the scene database.</para>
 /// </summary>
 internal static unsafe partial class EmitterSim
 {
     /// <summary>Step one non-chunk emitter: the inherit basis, then its mode, then its mover.</summary>
-    private static void Advance(ref Slot slot, IntPtr em, IntPtr scene, float dt)
+    private static void Advance(ref Slot slot, ref Emitter e, IntPtr scene, float dt)
     {
-        var e = new PartEmitter(em);
-        var part = new CX.Engine.Part(em);
-        var node = new MdlNodeEmitter(part.Node.Ptr);
-        if (node.IsNull) return;
-        var gob = part.Gob;
-        int flags = node.Flags;
-
         // AnimateParticles' own opening exit: a fading Gob or tile does not step at all. Keeping it matters
         // for more than parity -- a tile mid-fade is being unloaded, and its emitter's Gob is about to go.
         // The factor is TileFadeRamp's: the engine's TileData+0xc8 has no writer once the BSP visitor stands
         // down, so a tile fogged at load would keep its flames dark after it was explored.
-        if (!gob.IsNull)
-        {
-            TileData gt = gob.TileData;
-            if (!gt.IsNull && TileFadeRamp.Explored(gt.Ptr) < 1f) { _fadeExit++; return; }
-        }
-        TileData ot = e.TileOwner;
-        if (!ot.IsNull && TileFadeRamp.Explored(ot.Ptr) < 1f) { _fadeExit++; return; }
+        if (e.Faded) { _fadeExit++; return; }
 
-        Rebase(ref e, gob, flags);
+        Rebase(ref e);
         Basis(ref e);
 
         // Room for what the parameters now ask for: a controller animates birthrate and lifespan, so an
         // emitter's population ceiling moves while it lives.
-        if (!Grow(ref slot, em, dt)) return;
+        if (!Grow(ref slot, in e, dt)) return;
 
         // ORDER, and it is the engine's: every Update ages and spins what is already alive, runs the MOVER,
         // and births only then. Spawning first would integrate a newborn over the step it was born in -- an
@@ -57,77 +46,71 @@ internal static unsafe partial class EmitterSim
         {
             case ModeFountain:
                 FountainAge(ref slot, ref e, dt);
-                Move(ref slot, em, ref e, node, flags, scene, dt);
-                FountainBirth(ref slot, em, ref e, node, flags, dt);
+                Move(ref slot, ref e, scene, dt);
+                FountainBirth(ref slot, ref e, dt);
                 break;
             case ModeExplosion:
                 ExplosionAge(ref slot, ref e, dt);
-                Move(ref slot, em, ref e, node, flags, scene, dt);
-                ExplosionBirth(ref slot, em, ref e, node, flags, scene, dt);
+                Move(ref slot, ref e, scene, dt);
+                ExplosionBirth(ref slot, ref e, scene, dt);
                 break;
             // Lightning places every particle itself and takes no mover at all.
-            case ModeLightning: Lightning(ref slot, em, ref e, node, dt); break;
+            case ModeLightning: Lightning(ref slot, ref e, dt); break;
             // Single's one birth RETURNS before the mover, so a newborn sits still for its first frame --
             // which is the same rule, expressed by the engine as an early exit rather than as an ordering.
             default:
-                if (Single(ref slot, em, ref e, node, flags, dt))
-                    Move(ref slot, em, ref e, node, flags, scene, dt);
+                if (Single(ref slot, ref e, dt))
+                    Move(ref slot, ref e, scene, dt);
                 break;
         }
     }
 
     /// <summary>The inherit basis, from <c>AnimateParticles</c>. Two distinct records move here and conflating
-    /// them is the bug this is easiest to write: <see cref="EngineLayout.EmPrevWorldPos"/> tracks the OWNER's
+    /// them is the bug this is easiest to write: <see cref="EmitMut.PrevWorldPos"/> tracks the OWNER's
     /// motion (what an <c>inherit_local</c> particle is dragged by) while
-    /// <see cref="EngineLayout.EmPrevPos"/> is the frame the particles are currently expressed in (what an
+    /// <see cref="EmitMut.PrevPos"/> is the frame the particles are currently expressed in (what an
     /// <c>inherit</c> particle is rebased THROUGH). The order is the engine's: the previous frame is recorded
     /// off the OLD transform, and only then is the transform refreshed.</summary>
-    private static void Rebase(ref PartEmitter e, CX.Engine.Gob gob, int flags)
+    private static void Rebase(ref Emitter e)
     {
+        int flags = e.Flags;
         bool local = (flags & FInheritLocal) != 0, ofPart = (flags & FInheritPart) != 0;
         Vector3 delta = Vector3.Zero;
-        if (local && !gob.IsNull && e.Seeded != 0)
+        if (local && e.HasOwner && e.M.Seeded != 0)
         {
-            delta = gob.Position - e.PrevWorldPos;
+            delta = e.OwnerPos - e.M.PrevWorldPos;
         }
-        else if (e.Seeded == 0)
+        else if (e.M.Seeded == 0)
         {
             World(ref e);
-            if (!gob.IsNull && (ofPart || local)) { e.PrevWorldPos = gob.Position; e.PrevWorldRot = gob.Rot; }
-            if (ofPart) { e.PrevWorldPos = e.Pos; e.PrevWorldRot = e.Orient; }
-            e.Seeded = 1;
+            if (e.HasOwner && (ofPart || local)) { e.M.PrevWorldPos = e.OwnerPos; e.M.PrevWorldRot = e.OwnerRot; }
+            if (ofPart) { e.M.PrevWorldPos = e.M.Pos; e.M.PrevWorldRot = e.M.Orient; }
+            e.M.Seeded = 1;
         }
-        e.PrevPos = local ? e.Pos + delta : e.Pos;
-        e.PrevRot = e.Orient;
-        if (!gob.IsNull) World(ref e);
+        e.M.PrevPos = local ? e.M.Pos + delta : e.M.Pos;
+        e.M.PrevRot = e.M.Orient;
+        if (e.HasOwner) World(ref e);
     }
 
     /// <summary><c>Part::GetWorld</c> into the emitter's own two fields, which is what the engine's
-    /// <c>vcall +0x20</c> does at three points in <c>AnimateParticles</c>.</summary>
-    private static void World(ref PartEmitter e)
+    /// <c>vcall +0x20</c> does at three points in <c>AnimateParticles</c>. The transform itself was taken once
+    /// by the snapshot -- it cannot move between those three points inside one frame.</summary>
+    private static void World(ref Emitter e)
     {
-        Vector3 p;
-        Quat q;
-        _getWorld(e.Ptr, &p, (float*)&q);
-        e.Pos = p; e.Orient = q;
+        e.M.Pos = e.WorldPos; e.M.Orient = e.WorldRot;
     }
 
     /// <summary>Rebuild the 3x3 spawn basis from the emitter's quaternion, column-major -- X axis, Y axis,
     /// Z axis, which is the frame <c>randomPosition</c> lays its rectangle in and <c>randomDirection</c>
     /// launches along.</summary>
-    private static void Basis(ref PartEmitter e)
+    private static void Basis(ref Emitter e)
     {
-        Quat o = e.Orient;
+        Quat o = e.M.Orient;
         float w = o.W, x = o.X, y = o.Y, z = o.Z;
-        Span<float> m = e.Basis;
-        m[0] = 1f - 2f * (y * y + z * z); m[1] = 2f * (x * y + z * w); m[2] = 2f * (x * z - w * y);
-        m[3] = 2f * (x * y - z * w); m[4] = 1f - 2f * (z * z + x * x); m[5] = 2f * (y * z + w * x);
-        m[6] = 2f * (x * z + w * y); m[7] = 2f * (y * z - w * x); m[8] = 1f - 2f * (x * x + y * y);
+        e.M.Bx = new Vector3(1f - 2f * (y * y + z * z), 2f * (x * y + z * w), 2f * (x * z - w * y));
+        e.M.By = new Vector3(2f * (x * y - z * w), 1f - 2f * (z * z + x * x), 2f * (y * z + w * x));
+        e.M.Bz = new Vector3(2f * (x * z + w * y), 2f * (y * z - w * x), 1f - 2f * (x * x + y * y));
     }
-
-    private static Vector3 AxisX(Span<float> m) => new(m[0], m[1], m[2]);
-    private static Vector3 AxisY(Span<float> m) => new(m[3], m[4], m[5]);
-    private static Vector3 AxisZ(Span<float> m) => new(m[6], m[7], m[8]);
 
     // ---- the four update modes -----------------------------------------------------------------------
 
@@ -135,45 +118,43 @@ internal static unsafe partial class EmitterSim
     /// -- after the mover has run -- birth this frame's share.
     /// <para>The accumulator is the whole of why a slow emitter works at all: 3 births a second at 60fps is
     /// 0.05 of a particle a frame, and the engine carries the remainder in
-    /// <see cref="EngineLayout.EmSpawnAcc"/> until it reaches one whole spacing.</para></summary>
-    private static void FountainAge(ref Slot slot, ref PartEmitter e, float dt)
+    /// <see cref="EmitMut.SpawnAcc"/> until it reaches one whole spacing.</para></summary>
+    private static void FountainAge(ref Slot slot, ref Emitter e, float dt)
     {
-        e.Birthing = (byte)(e.BirthRate > 0f ? 1 : 0);
+        e.M.Birthing = (byte)(e.BirthRate > 0f ? 1 : 0);
         Reap(ref slot, ref e, dt);
         Blur(ref slot, ref e, dt);
         Spin(ref slot, ref e, dt);
     }
 
     /// <inheritdoc cref="FountainAge"/>
-    private static void FountainBirth(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node,
-                                      int flags, float dt)
+    private static void FountainBirth(ref Slot slot, ref Emitter e, float dt)
     {
         float rate = e.BirthRate;
         int n = (int)rate;
         if (n <= 0) { _rate0++; return; }
 
-        if ((flags & FP2P) == 0)
+        if ((e.Flags & FP2P) == 0)
         {
             // Time-metered birth. The engine divides the accumulated count by n+1 and births the remainder,
             // which is the same thing as "one particle every 1/rate seconds" with the fraction carried --
             // said the second way because the first is an artefact of integer division.
-            float acc = e.SpawnAcc + dt;
+            float acc = e.M.SpawnAcc + dt;
             float spacing = 1f / rate;
-            if (acc < spacing) { e.SpawnAcc = acc; return; }
+            if (acc < spacing) { e.M.SpawnAcc = acc; return; }
             // Room, not Cap: the block already holds this emitter's standing population, and clamping the
             // BURST against the whole block let a full emitter ask for more than it had room for and lose the
             // difference with nothing said. Want sizes the block for this burst, so a loss here is real.
             int births = Room(ref slot, (int)(acc * rate));
-            for (int i = 0; i < births; i++) Spawn(ref slot, em, ref e, node, flags, dt, 1f);
-            e.SpawnAcc = 0f;
+            for (int i = 0; i < births; i++) Spawn(ref slot, ref e, dt, 1f);
+            e.M.SpawnAcc = 0f;
             return;
         }
 
         // p2p: birth along the line to the target, evenly spaced, carrying the leftover in
-        // EmP2PLeftover so a chain stays continuous across frames of different length.
-        var target = e.P2pTarget;
-        if (target.IsNull) { _p2pNoTarget++; return; }
-        Vector3 lead = e.Pos - e.PrevPos + e.P2pLeftover;
+        // P2pLeftover so a chain stays continuous across frames of different length.
+        if (!e.HasTarget) { _p2pNoTarget++; return; }
+        Vector3 lead = e.M.Pos - e.M.PrevPos + e.M.P2pLeftover;
         float len = lead.Length();
         Vector3 dir = len > 0f ? lead / len : Vector3.Zero;
         // The one burst no sizing can cover: a chain is (int)(rate x distance travelled) long and a teleport
@@ -183,37 +164,36 @@ internal static unsafe partial class EmitterSim
         for (int i = 0; i < count; i++)
         {
             int before = slot.Live;
-            Spawn(ref slot, em, ref e, node, flags, dt, 1f);
+            Spawn(ref slot, ref e, dt, 1f);
             // A birth the cap refused must not re-place the PREVIOUS particle, which is what reading
             // `Live - 1` unconditionally would do -- the chain's last link would jump instead of the new one.
             if (slot.Live == before) break;
             Particle p = At(ref slot, slot.Live - 1);
             // The FIRST particle of a chain is placed one whole span back from the emitter; every later one
             // walks forward from where the previous frame's chain ended.
-            p.Pos = slot.Live < 2 ? e.Pos - dir * len
-                                  : e.PrevPos - e.P2pLeftover + dir * ((i + 1) * step);
+            p.Pos = slot.Live < 2 ? e.M.Pos - dir * len
+                                  : e.M.PrevPos - e.M.P2pLeftover + dir * ((i + 1) * step);
         }
-        e.P2pLeftover = lead - dir * (count * step);
+        e.M.P2pLeftover = lead - dir * (count * step);
     }
 
     /// <summary><c>SingleEmitter::Update</c> @0x4b2740: exactly one particle, re-seeded at the end of its
     /// life when the node declares <c>loop</c> and frozen at age zero when it does not. Returns whether the
     /// mover should run -- false on the frame the one particle is born or removed, which is where the engine
     /// takes its own early exit.</summary>
-    private static bool Single(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node,
-                              int flags, float dt)
+    private static bool Single(ref Slot slot, ref Emitter e, float dt)
     {
         if ((int)e.BirthRate == 0)
         {
             if (slot.Live > 0) Kill(ref slot, 0);
             return false;
         }
-        if (slot.Live == 0) { Spawn(ref slot, em, ref e, node, flags, dt, 1f); return false; }
+        if (slot.Live == 0) { Spawn(ref slot, ref e, dt, 1f); return false; }
         Particle p = At(ref slot, 0);
         float life = e.Life;
         float age = p.Age + dt;
         p.Age = age;
-        if (life > 0f ? age > life && node.Loop != 0 : age < 0f) p.Age = 0f;
+        if (life > 0f ? age > life && e.Loop : age < 0f) p.Age = 0f;
         Roll(p, e.Spin, dt);
         Blur(ref slot, ref e, dt);
         return true;
@@ -224,7 +204,7 @@ internal static unsafe partial class EmitterSim
     /// <para>The latch and the byte are both the engine's and both matter. The byte is the REQUEST, written
     /// by the gob callback and cleared here -- left set, the explosion re-fires every frame. The latch is
     /// "already fired", so one detonate event cannot spawn twice.</para></summary>
-    private static void ExplosionAge(ref Slot slot, ref PartEmitter e, float dt)
+    private static void ExplosionAge(ref Slot slot, ref Emitter e, float dt)
     {
         Reap(ref slot, ref e, dt);
         Blur(ref slot, ref e, dt);
@@ -232,51 +212,63 @@ internal static unsafe partial class EmitterSim
     }
 
     /// <inheritdoc cref="ExplosionAge"/>
-    private static void ExplosionBirth(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node,
-                                       int flags, IntPtr scene, float dt)
+    private static void ExplosionBirth(ref Slot slot, ref Emitter e, IntPtr scene, float dt)
     {
         int n = (int)e.BirthRate;
-        bool asked = e.Detonate != 0;
+        bool asked = e.Detonate;
         float latch = 0f;
         if (asked)
         {
             latch = 1f;
-            if (n > 0 && e.ModeClock < 1f)
+            if (n > 0 && e.M.ModeClock < 1f)
             {
-                float gust = node.WindStrength;
-                if (gust != 0f)
-                {
-                    IntPtr wm = new CX.Engine.Scene(scene).WindManager;
-                    Vector3 at = e.Pos;
-                    if (wm != IntPtr.Zero)
-                        AurXform.Gust(wm, new AurXform.V3 { X = at.X, Y = at.Y, Z = at.Z },
-                                      gust, node.WindFalloff);
-                }
+                float gust = e.WindStrength;
+                if (gust != 0f) Gust(in e, scene, gust, e.WindFalloff);
                 n = Room(ref slot, n);
-                for (int i = 0; i < n; i++) Spawn(ref slot, em, ref e, node, flags, dt, 1f);
+                for (int i = 0; i < n; i++) Spawn(ref slot, ref e, dt, 1f);
             }
         }
-        e.ModeClock = latch;
-        e.Detonate = 0;
+        e.M.ModeClock = latch;
+        e.Detonate = false;
     }
 
+    /// <summary>A detonation's point-source gust. Engine mode pushes it into the scene's
+    /// <c>WindManager</c>, which <see cref="AlloyWind"/> hooks and therefore sees. DB mode has no engine
+    /// Scene to reach the manager through, so it goes straight into Alloy's own list -- the same list, the
+    /// same four arguments, and the strength <c>ExplosionEmitter::Update</c> @0x4b259e pins at 1.0.</summary>
+    private static void Gust(in Emitter e, IntPtr scene, float radius, float falloff)
+    {
+        if (e.Db || scene == IntPtr.Zero)
+        {
+            if (!AlloyWind.Owned) { _gustRefused++; return; }
+            Vector3 p = e.M.Pos;
+            AlloyWind.AddGust(p, radius, falloff, 1f);
+            return;
+        }
+        IntPtr wm = new CX.Engine.Scene(scene).WindManager;
+        if (wm == IntPtr.Zero) return;
+        Vector3 at = e.M.Pos;
+        AurXform.Gust(wm, new AurXform.V3 { X = at.X, Y = at.Y, Z = at.Z }, radius, falloff);
+    }
+
+    private static int _gustRefused;
+
     /// <summary><c>LightningEmitter::Update</c>: a fixed chain of <c>birthRate</c> particles from the emitter
-    /// to its target, re-fractured every <see cref="EngineLayout.EmBoltDelay"/> seconds and rigid-transformed
+    /// to its target, re-fractured every <c>boltDelay</c> seconds and rigid-transformed
     /// in between so a bolt does not crawl while its ends move.</summary>
-    private static void Lightning(ref Slot slot, IntPtr em, ref PartEmitter e, MdlNodeEmitter node, float dt)
+    private static void Lightning(ref Slot slot, ref Emitter e, float dt)
     {
         int want = (int)e.BirthRate;
-        var target = e.P2pTarget;
-        if (want <= 0 || target.IsNull)
+        if (want <= 0 || !e.HasTarget)
         {
-            if (target.IsNull && want > 0) _p2pNoTarget++;
+            if (!e.HasTarget && want > 0) _p2pNoTarget++;
             while (slot.Live > 0) Kill(ref slot, slot.Live - 1);
             return;
         }
         if (want > slot.Cap) { CapLost(want - slot.Cap); want = slot.Cap; }
-        e.ModeClock += dt;
+        e.M.ModeClock += dt;
 
-        while (slot.Live < want) Seed(ref slot, em, ref e, node);
+        while (slot.Live < want) Seed(ref slot, ref e);
         while (slot.Live > want) Kill(ref slot, slot.Live - 1);
 
         // Every particle ages, and one that has not advanced since it was placed starts from zero: the bolt's
@@ -289,38 +281,36 @@ internal static unsafe partial class EmitterSim
         }
         Blur(ref slot, ref e, dt);
 
-        AurXform.V3 t = AurXform.Position(target.Ptr);
-        Vector3 tip = new(t.X, t.Y, t.Z);
-        var bolt = new LightningEmitter(em);
-        if (e.ModeClock <= e.BoltDelay)
+        Vector3 tip = e.TargetPos;
+        if (e.M.ModeClock <= e.BoltDelay)
         {
             // Between fractals: carry the existing shape rigidly onto the new endpoints instead of
             // rebuilding it, which is what stops a live bolt from boiling.
-            Vector3 delta = tip - e.Pos;
-            Quat arc = RotationArc(Norm(bolt.LastDelta), Norm(delta));
-            Vector3 from = bolt.LastPos;
+            Vector3 delta = tip - e.M.Pos;
+            Quat arc = RotationArc(Norm(e.M.BoltLastDelta), Norm(delta));
+            Vector3 from = e.M.BoltLastPos;
             for (int i = 0; i < slot.Live; i++)
             {
                 Particle p = At(ref slot, i);
-                p.Pos = e.Pos + Rotate(arc, p.Pos - from);
+                p.Pos = e.M.Pos + Rotate(arc, p.Pos - from);
             }
-            bolt.LastDelta = delta;
-            bolt.LastPos = e.Pos;
+            e.M.BoltLastDelta = delta;
+            e.M.BoltLastPos = e.M.Pos;
             return;
         }
 
         // A fresh bolt: the near end at the emitter (jittered by the spawn rectangle), the far end at the
         // target, the middle by midpoint displacement, then one zigzag pass along it.
-        float scale = Scale(em);
+        float scale = e.Scale;
         Particle head = At(ref slot, 0);
-        if (e.SpawnX == 0f && e.SpawnY == 0f) head.Pos = e.Pos;
+        if (e.SpawnX == 0f && e.SpawnY == 0f) head.Pos = e.M.Pos;
         else RandomPosition(ref slot, ref e, head, scale);
         Particle tail = At(ref slot, slot.Live - 1);
         tail.Pos = tip;
 
         Vector3 span = head.Pos - tail.Pos;
         if (span == Vector3.Zero) return;
-        e.ModeClock = 0f;
+        e.M.ModeClock = 0f;
         Vector3 axis = Norm(span);
         Vector3 perpA = Perp(axis);
         Vector3 perpB = Vector3.Cross(axis, perpA);
@@ -330,7 +320,7 @@ internal static unsafe partial class EmitterSim
         float seg = span.Length() / slot.Live * 0.5f;
         if (slot.Live > 2 && seg >= Epsilon)
         {
-            float amp = new CX.Engine.Part(em).Scale * e.ZigZag;
+            float amp = e.PartScale * e.ZigZag;
             for (int i = 1; i < slot.Live - 1; i++)
             {
                 Vector3 d = Coin(ref slot.Rng) ? perpA : -perpA;
@@ -338,14 +328,14 @@ internal static unsafe partial class EmitterSim
                 At(ref slot, i).Pos += d * (off * amp);
             }
         }
-        bolt.LastDelta = tip - e.Pos;
-        bolt.LastPos = e.Pos;
+        e.M.BoltLastDelta = tip - e.M.Pos;
+        e.M.BoltLastPos = e.M.Pos;
     }
 
     /// <summary><c>RecursiveFractal</c>: midpoint displacement between two already-placed particles, halving
     /// the span each level. Iterative on the right half and recursive on the left, exactly as the engine's
     /// own loop-plus-call is -- which bounds the depth at log2(count).</summary>
-    private static void Fractal(ref Slot slot, ref PartEmitter e, Vector3 a, Vector3 b,
+    private static void Fractal(ref Slot slot, ref Emitter e, Vector3 a, Vector3 b,
                                 int mid, int half, float scale)
     {
         float radius = e.BoltRadius;
@@ -375,7 +365,7 @@ internal static unsafe partial class EmitterSim
     /// it as an ORDER.
     /// <para>A negative lifespan is the engine's "never die" and an age it would drive below zero is pinned
     /// at zero along with the UV clock, which is what freezes a landed splat's animation.</para></summary>
-    private static void Reap(ref Slot slot, ref PartEmitter e, float dt)
+    private static void Reap(ref Slot slot, ref Emitter e, float dt)
     {
         float life = e.Life;
         int w = 0;
@@ -394,10 +384,10 @@ internal static unsafe partial class EmitterSim
         slot.Live = w;
     }
 
-    /// <summary>Render type 6's trailing position, lerped toward the current one over
-    /// <see cref="EngineLayout.EmBlurLength"/>. Owning the vertex build already meant owning this field; the
-    /// simulation is where it belongs.</summary>
-    private static void Blur(ref Slot slot, ref PartEmitter e, float dt)
+    /// <summary>Render type 6's trailing position, lerped toward the current one over the emitter's
+    /// <c>blurLength</c>. Owning the vertex build already meant owning this field; the simulation is where it
+    /// belongs.</summary>
+    private static void Blur(ref Slot slot, ref Emitter e, float dt)
     {
         if (e.Type != 6) return;
         float len = e.BlurLength;
@@ -412,7 +402,7 @@ internal static unsafe partial class EmitterSim
 
     /// <summary>Roll, wrapped into ±2π every step so the angle never grows into a range where a float loses
     /// the precision <c>sincos</c> needs.</summary>
-    private static void Spin(ref Slot slot, ref PartEmitter e, float dt)
+    private static void Spin(ref Slot slot, ref Emitter e, float dt)
     {
         float rate = e.Spin;
         if (rate == 0f) return;

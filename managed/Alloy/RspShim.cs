@@ -1,3 +1,4 @@
+using CX.Alloy.Db;
 using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -37,7 +38,7 @@ namespace CX.Alloy;
 /// light ranges (all four reachable-but-never-issued), the stencil-shadow block, and
 /// <c>Camera::DoFrameBufferEffects</c>/<c>CopyRenderSubframe</c>. Anything only the engine drew goes with them
 /// -- on SoW that is the dynamic sky (#136). CX-82/CX-83 took the last two engine draws with them: the
-/// object glow is <see cref="Highlight"/> plus <see cref="HighlightGlow"/>, and the area-transition highlight
+/// object glow is <see cref="Highlight"/>, and the area-transition highlight
 /// is <see cref="TriggerHighlight"/>.</para>
 /// <para><b>Also dropped, and it is bookkeeping:</b> RSP's head (@0x46e6b3..0x46e6fb) rebuilds the shadow-light
 /// lists <c>Scene+0x60</c>/<c>+0x70</c> from <c>LightManager::GetShadowLights(1)</c>/<c>(0)</c>. Alloy
@@ -83,11 +84,6 @@ internal static unsafe class RspShim
     /// original during the window passes through here, whatever route it took.</summary>
     private const int BottomPriority = -100;
 
-    /// <summary>True while the shim body is running: the swallow window, and the one key every carve-out
-    /// elsewhere reads. Deliberately NOT <see cref="Enabled"/> -- with the key on but the shim branch not
-    /// taken (vanilla, no 4.6 context, a GUI scene) the engine is still drawing, and a carve-out keyed on
-    /// the setting would arm Alloy over live engine draws.</summary>
-    internal static bool InWindow;
 
     /// <summary>Did every ENGINE symbol resolve and both draw funnels hook? Necessary, not sufficient --
     /// <see cref="Run"/> is reachable only through this AND <see cref="Ready"/>. False is an
@@ -204,121 +200,6 @@ internal static unsafe class RspShim
                + "the Alloy path ([rspshim] every 900 frames; alloy.enabled=0 restores it)");
     }
 
-    /// <summary>The shim. Runs in ENGINE context, in place of <c>Scene::RenderSinglePass</c>.
-    /// <para>Order follows RSP's own, and the anchor sits where <c>FadeDoors</c> did: the whole Alloy frame
-    /// draws in that slot, which is exactly where it drew before the cutover. What follows it is bookkeeping --
-    /// #264 deleted the bucket walk that used to.</para>
-    /// <para>The default framebuffer is bound on entry and left bound on exit, so Alloy resolves straight
-    /// into the backbuffer and the engine's 2D UI composites on top of a finished frame. There
-    /// is no engine world FBO under the shim: <c>Camera::InitializeFrameBufferResources</c>,
-    /// <c>CopyRenderSubframe</c> and <c>DoFrameBufferEffects</c> all live inside RSP and go with it.</para>
-    /// <para>CX-84 deleted the two vcalls that existed only to set up the engine's post-bracket overlay draws.
-    /// <c>Scene::DoFog</c> @0x45f1b0 pushed <c>Scene+0x140..0x14c</c> into <c>GLRender::m_fog</c>, which Alloy
-    /// stopped reading at #257 and which no engine draw on an Alloy frame reads now -- the GUI scenes do not
-    /// inherit it either, since <c>Scene::RenderOnlyGobs</c> @0x4682e0 opens with its own
-    /// <c>Disable(1)/Disable(2)</c>. <c>Scene::RenderBeams</c> @0x46aba0 was kept for a state prologue its
-    /// two inheritors no longer need.</para></summary>
-    internal static void Run(IntPtr scene)
-    {
-        long t0 = Stopwatch.GetTimestamp();
-        // #238: the Alloy frame draws INSIDE this call (at the anchor step), so the shim's own
-        // number has to have it subtracted -- the published "6ms/frame in the shim" was the walk plus the
-        // whole Alloy CPU frame, which is what made the ticket's accounting look like 13ms of 150.
-        long alloy0 = FrameZones.Ticks(FrameZones.Zone.Alloy);
-        // The shadow bracket runs inside the anchor too (measured: anchor tracked Zone.Shadow tick for
-        // tick, 2026-08-31) -- net it out the same way, or the shim re-reports the whole CasterPass CPU.
-        long shadow0 = FrameZones.Ticks(FrameZones.Zone.Shadow);
-        var sc = new Scene(scene);
-        // CX-104: the non-render side effects of the engine's scene walk, when alloy.skipbuckets=3 stood it
-        // down -- the in-view byte animation gates on, the gob-picking bucket and the three LightManager
-        // steps. HERE because this is still inside the same Scene::Render the skipped walk ran in, and
-        // because everything below reads what it writes.
-        ScenePrep.Tick(scene);
-        // CX-104: Alloy's own visible-gob list, in place of the engine's `gobbucket`. HERE and not later
-        // because DoorFade and GrassField read it (AlloyRenderer.VisibleGobs) before the anchor.
-        AlloyRenderer.SampleVisibleGobs(scene);
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        // CX-83: snapshotted BEFORE the anchor, because the Alloy frame that draws the highlight runs inside
-        // it. CX-104: the population is SceneParts' own trigger registry, so the timing no longer depends on
-        // when anything fills `triggerbucket` -- which the BSP visitor, not the bucket build, ever did.
-        TriggerHighlight.Enroll();
-        // CX-85: RSP's very first step (@0x46e6a5) was LightManager::EnableLights, i.e.
-        // ControlLightsFade(+0x60, +0x40, 0), the one writer of every PartLight's fade weight at +0x90 --
-        // which FrameRead scales the two area lights at LightManager +0x98/+0xa0 by, which is why it still
-        // runs HERE, ahead of the anchor (#257). LightFade owns that integrator now, and the focuslighting
-        // write with it; g_bFullDynamicLighting gates the fade exactly as it gated the call (#235).
-        LightFade.Tick(scene, *_fullDynamicLighting != 0);
-        InWindow = true;
-        // CX-86: the particle simulation, Alloy's. DoEmitterBucket is the only caller of
-        // PartEmitter::AnimateParticles and that call walks on into the engine's own emitter DRAWS, so the
-        // replay could not survive CX-81 tier 1 -- EmitterSim.Step does the walk, the step and the
-        // back-to-front sort itself, and enrols each emitter with Particles as it goes.
-        // #261's placement is unchanged and still the reason this line is HERE: it runs BEFORE the frame
-        // anchor, so the pass draws this frame's particles rather than last frame's. It is also the one
-        // remaining route back to the engine's own walk -- emitsim.enabled=0 calls DoEmitterBucket from
-        // inside Step, which is the A/B for any effect that looks wrong.
-        long s0 = Stopwatch.GetTimestamp();
-        EmitterSim.Step(sc, scene);
-        long s1 = Stopwatch.GetTimestamp(); _stepTicks[0] += s1 - s0;
-        // #322 (review): the child brackets netted out of the ANCHOR step are sampled across the anchor
-        // vcall alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
-        // here goes negative the moment any Alloy/Shadow bracket runs outside the anchor.
-        // CX-87: the sky's SIMULATION, ours. #261 took the POPULATION off this step (SkyBox.Enroll walks the
-        // Scene's own gobs) and this takes the remaining three side effects of Scene::RenderSkyBoxes -- the
-        // cross-fade alpha, ProcessGob and the park at Scene+0x190 -- so no engine sky routine is called and
-        // no sky draw is swallowed. Stays AHEAD of the anchor, for the reason #261 moved DoEmitterBucket:
-        // Alloy's sky draws inside the anchor, and Enroll reads what this writes.
-        SkyTick.Run(scene);
-        long s2 = Stopwatch.GetTimestamp(); _stepTicks[2] += s2 - s1;
-        // #322 (review): the child brackets netted out of the ANCHOR step are sampled across the anchor
-        // call alone -- the whole-call child below stays scoped to the whole call. Charging the wider scope
-        // here goes negative the moment any Alloy/Shadow bracket runs outside the anchor.
-        long ca1 = FrameZones.Ticks(FrameZones.Zone.Alloy), cs1 = FrameZones.Ticks(FrameZones.Zone.Shadow);
-        // CX-89: the anchor is Alloy's own call now, not an after-original hook on Scene::FadeDoors -- which is
-        // not called on an Alloy frame at all. DoorFade.Tick replaces the fade it also did (same field, same
-        // rule), and it goes FIRST because the frame draws the alpha it writes.
-        // CX-110: the environment map for this frame, HERE because the lookup can build a texture and building
-        // one inside Alloy's 4.6 bracket would upload it into the wrong context. (The wind clock is NOT here:
-        // it hangs off the engine's own WindManager::updateTimer site, which runs on every world frame.)
-        AlloyEnvMap.Tick(scene);
-        TileFadeRamp.Tick(scene);   // CX-104: the tile fade the frame draws, ahead of the anchor that reads it
-        DoorFade.Tick(scene);
-        PlaceableHold.Tick(scene);  // after this frame's deletes and re-adds, before the draw that answers them
-        AlloyRenderer.FrameAnchor(scene);       // #132's anchor: the whole Alloy frame draws here
-        long anchorChild = FrameZones.Ticks(FrameZones.Zone.Alloy) - ca1
-                         + FrameZones.Ticks(FrameZones.Zone.Shadow) - cs1;
-        long s3 = Stopwatch.GetTimestamp();
-        // #264: DoBinBucket @0x474c50 reads nothing the DRAW-BUCKET build left behind, so it simply runs at
-        // RSP's own position. CX-104: it does read `binbucket`, which the BSP visitor fills and ClearBuckets
-        // zeroes -- both inside ManageSceneBSP -- so under alloy.skipbuckets=3 that list is frozen. Harmless
-        // here because GrassField's hook on this very symbol swallows the call outright on a pass Alloy drew,
-        // which is every pass the skip is taken on; the call stays for the passes Alloy did not draw, and
-        // those re-arm the walk.
-        sc.DoBinBucket();                      // grass wind + per-bin LOD distance
-        long s4 = Stopwatch.GetTimestamp(); _stepTicks[3] += s4 - s3;
-        // CX-85 moved the focuslighting write into LightFade.Tick above and the flare occlusion fade into
-        // Halos, which integrates PartLight+0xa0 off Alloy's own depth; CX-84 deleted Scene::RenderBeams.
-        long s5 = Stopwatch.GetTimestamp();
-        InWindow = false;
-        Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
-        // #456: HERE and not one line earlier -- the bracket has closed, so this is the ENGINE's context and
-        // its framebuffer 0 is the one about to be presented. The engine's 2D UI then lands on top of the
-        // owned frame instead of beside it.
-        PresentTarget.HandBack();
-        long s6 = Stopwatch.GetTimestamp(); _stepTicks[4] += s6 - s5;
-        HandBackEngineState();
-        _stepTicks[5] += Stopwatch.GetTimestamp() - s6;
-        if (!_barLogged && PostChain.Resolves > 0) Bar();
-        long child = FrameZones.Ticks(FrameZones.Zone.Alloy) - alloy0
-                   + FrameZones.Ticks(FrameZones.Zone.Shadow) - shadow0;
-        long spent = Stopwatch.GetTimestamp() - t0;
-        FrameZones.Add(FrameZones.Zone.Shim, t0, child);
-        _ticks += Math.Max(0, spent - child);
-        // The Alloy bracket runs inside the anchor call; net it out so the step reads the door fade's share.
-        _stepTicks[1] += Math.Max(0, (s3 - s2) - anchorChild);
-        _frames++;
-    }
-
     /// <summary>The engine-state hand-back at the shim's exit: <c>Scene::RenderSinglePass</c>'s own trailing
     /// block, replayed verbatim -- <c>Disable(5) Enable(1) Enable(0xb) Enable(0) Disable(2)</c>, read off the
     /// decompilation's tail -- plus the custom-program latch.
@@ -382,16 +263,7 @@ internal static unsafe class RspShim
     private static void OnVdoDraw(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
         if (GuiCapture.Open && GuiCapture.Vdo(vdo, item, prim, size, offset)) return;
-        if (InWindow)
-        {
-            _swallowed++; return;
-        }
-        // #260's tagging: outside the window the ENGINE is drawing for itself -- the UI, the menu, a GUI 3D
-        // panel -- so the pools this VDO names are the ones that question is about.
-        else OwnedBuffers.NoteEngineDraw(vdo);
-        Stray();
-        GlRenderVertexDataFn next = *_vdoSlot;
-        if (next != null) next(vdo, item, prim, size, offset);
+        _swallowed++;
     }
 
     /// <summary>The acceptance counter, at the bottom of the same chain: a call reaching here during the
@@ -399,7 +271,7 @@ internal static unsafe class RspShim
     [UnmanagedCallersOnly]
     private static void OnVdoBottom(IntPtr vdo, uint item, uint prim, uint size, uint offset)
     {
-        if (InWindow) _passed++;
+        _passed++;
         GlRenderVertexDataFn next = *_vdoBottomSlot;
         if (next != null) next(vdo, item, prim, size, offset);
     }
@@ -410,9 +282,7 @@ internal static unsafe class RspShim
     private static void OnStreamDraw(IntPtr vsdo, uint prim, uint size, uint offset)
     {
         if (GuiCapture.Open && (vsdo == IntPtr.Zero || GuiCapture.Stream(vsdo, prim, size, offset))) return;
-        if (InWindow) { _swallowed++; return; }
-        Stray();
-        if (_origStream != null) _origStream(vsdo, prim, size, offset);
+        _swallowed++;
     }
 
     /// <summary>Asserted rather than assumed, once: on the first frame Alloy actually RESOLVED, are the render

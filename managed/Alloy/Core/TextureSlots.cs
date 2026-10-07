@@ -1,3 +1,4 @@
+using CX.Alloy.Db;
 using CX.Framework;
 
 namespace CX.Alloy;
@@ -133,6 +134,12 @@ internal static class TextureSlots
     /// wants that unit for anything else.</summary>
     internal const uint HiliteDepth = SceneDepth;
 
+    /// <summary>CX-117: the master PLT palette (256x1792 RGBA8), read by the lit stage to resolve a layered
+    /// texture per instance. Past the 0..15 budget for <see cref="LocalShadowRaw"/>'s reason -- every unit
+    /// below is spent in the lit bracket -- and declared with <c>layout(binding)</c> in <c>cx_plt.glsl</c>,
+    /// so no bind-time <c>glUniform1i</c> can miss it.</summary>
+    internal const uint PltPalette = 19;
+
     /// <summary>The map samplers, in unit order from <see cref="MapBase"/>. This array IS the bind order the
     /// lit program's link-time <c>glUniform1i</c> loop walks -- there is no second copy of it.</summary>
     internal static readonly string[] MapSamplers =
@@ -204,6 +211,19 @@ internal static class TextureSlots
         check.Expect(MapBase > LocalShadow && MapBase + MapCount <= PostHdr, $"{MapBase}..{MapBase + MapCount - 1} map block overlaps its neighbours");
         check.Expect(PostHdr < PostBloom && PostBloom < Probe && Probe < SnapshotColor
           && SnapshotColor < SnapshotDepth && SnapshotDepth < SceneDepth, "the units above the map block are not distinct and ascending");
+        // CX-117: the master palette's unit and the PLT row block's binding, against the GLSL that compiled.
+        check.Expect(ShaderSource.Get("cx_plt.glsl").Contains($"layout(binding = {PltPalette}) uniform sampler2D uPltPal;"),
+          $"{PltPalette} uPltPal (PLT master palette)");
+        check.Expect(ShaderSource.Get("cx_plt.glsl").Contains($"layout(std430, binding = {PltColors.Binding}) readonly buffer CxPltBuf"),
+          $"SSBO {PltColors.Binding} CxPltBuf (PLT rows per record)");
+        check.Expect(ShaderSource.Get("cx_plt.glsl").Contains($"#define CX_PLT_WORDS    {PltColors.WordsPerRecord}")
+          && ShaderSource.Get("cx_plt.glsl").Contains($"#define CX_PLT_ROWWORDS {PltColors.RowWords}")
+          && ShaderSource.Get("cx_plt.glsl").Contains($"#define CX_PLT_LAYERS   {SceneDb.PltLayers}"),
+          "cx_plt.glsl's record layout does not match PltColors");
+        check.Expect(PltPalette != LocalShadowRaw && PltPalette != LocalShadowDynRaw && PltPalette != WetMap
+          && PltPalette != LightmapBake.UnitA && PltPalette != LightmapBake.UnitB && PltPalette != LightmapBake.UnitC,
+          $"{PltPalette} uPltPal collides with a unit above the 0..15 budget (16/17 local shadow, 18 wetness, "
+          + $"{LightmapBake.UnitA}..{LightmapBake.UnitC} the lightmap bake)");
         return check.Ok;
     }
 }

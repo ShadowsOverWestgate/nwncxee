@@ -45,9 +45,16 @@ internal static unsafe partial class Weather
     private static AlloyRenderer.LitLoc _litSplash;
     private static bool _splashFailed, _splashSaid;
     private static float _splashT;
+    /// <summary>The disc centre's smoothed xy velocity, and the centre and clock it was last measured at.</summary>
+    private static Vector2 _splashVel, _splashWasC;
+    private static float _splashWasT = -1f;
+    /// <summary>Seconds the centre velocity is smoothed over: frame pacing must not jitter every crown.</summary>
+    private const float SplashVelTau = 0.1f;
+    /// <summary>A centre step past this many m/s is a teleport or an area edge, not motion: velocity resets.</summary>
+    private const float SplashVelMax = 20f;
     private static int _splashes;
 
-    private struct SpLoc { public int View, Proj, Eye, Lit, P, C, CoverDepth, CoverVp, CoverVpInv, Tint, Alpha; }
+    private struct SpLoc { public int View, Proj, Eye, Lit, P, C, V, CoverDepth, CoverVp, CoverVpInv, Tint, Alpha; }
 
     private static void DeclareSplashKnobs()
     {
@@ -97,6 +104,8 @@ internal static unsafe partial class Weather
         // z = the height the cover ray's forward projection starts from: the fit's own centre, which is
         // what the map scatter uses for the same Newton step
         Gl.Uniform3f(l.C, centre.X, centre.Y, CasterPass.CoverCentre.Z);
+        Vector2 vel = SplashVelocity(new Vector2(centre.X, centre.Y));
+        Gl.Uniform2f(l.V, vel.X, vel.Y);
         // w = pixels per metre at unit view depth: the stage's distance FADE, never a size
         Gl.Uniform4f(l.P, _splashT, SplashLifeSec, ImpactRange.V, p11 * viewport[3] * 0.5f);
         Matrix4x4 vp = CasterPass.CoverVp;
@@ -128,12 +137,28 @@ internal static unsafe partial class Weather
         ref SpLoc l = ref _locSplash;
         l.View = GlProgram.Loc(_progSplash, "uView"); l.Proj = GlProgram.Loc(_progSplash, "uProj");
         l.Eye = GlProgram.Loc(_progSplash, "uEye"); l.Lit = GlProgram.Loc(_progSplash, "uLit");
-        l.P = GlProgram.Loc(_progSplash, "uSplashP"); l.C = GlProgram.Loc(_progSplash, "uSplashC");
+        l.P = GlProgram.Loc(_progSplash, "uSplashP"); l.C = GlProgram.Loc(_progSplash, "uSplashC"); l.V = GlProgram.Loc(_progSplash, "uSplashV");
         l.CoverDepth = GlProgram.Loc(_progSplash, "uCoverDepth");
         l.CoverVp = GlProgram.Loc(_progSplash, "uCoverVp"); l.CoverVpInv = GlProgram.Loc(_progSplash, "uCoverVpInv");
         l.Tint = GlProgram.Loc(_progSplash, "uTint"); l.Alpha = GlProgram.Loc(_progSplash, "uAlpha");
         _litSplash = Programs.LitLocs(_progSplash);
         return true;
+    }
+
+    /// <summary>Fold this frame's centre into the smoothed velocity the stage back-dates each crown's birth with.</summary>
+    private static Vector2 SplashVelocity(Vector2 c)
+    {
+        float dt = _splashT - _splashWasT;
+        if (dt < 0f) dt += SplashLifeSec * SplashWrapSlices;
+        if (_splashWasT >= 0f && dt > 1e-4f && dt < 0.5f)
+        {
+            Vector2 v = (c - _splashWasC) / dt;
+            _splashVel = v.Length() > SplashVelMax ? Vector2.Zero : Vector2.Lerp(_splashVel, v, MathF.Min(dt / SplashVelTau, 1f));
+        }
+        else if (dt >= 0.5f) _splashVel = Vector2.Zero;
+        _splashWasC = c;
+        _splashWasT = _splashT;
+        return _splashVel;
     }
 
     private static void SplashTick(float dt) => _splashT = (_splashT + dt) % (SplashLifeSec * SplashWrapSlices);
@@ -190,5 +215,15 @@ internal static unsafe partial class Weather
         check.Expect(wet > 0 && wet <= MaxCount.V && SplashWanted() == 0,
           $"full rain asks for {wet} crowns inside the {MaxCount.V} instance budget, and snow for none");
         Density = d; CurrentKind = k; Impacts.V = im;
+        Vector2 vc = _splashVel, wc = _splashWasC; float wt = _splashWasT, st = _splashT;
+        _splashWasT = -1f; _splashVel = Vector2.Zero; _splashT = 1f;
+        SplashVelocity(Vector2.Zero);
+        for (int i = 1; i <= 30; i++) { _splashT = 1f + i * 0.016f; SplashVelocity(new Vector2(3f * i * 0.016f, 0f)); }
+        check.Expect(MathF.Abs(_splashVel.X - 3f) < 0.1f && MathF.Abs(_splashVel.Y) < 1e-3f,
+          $"a centre walking 3 m/s back-dates its crowns at 3 m/s (got {_splashVel.X:F2})");
+        _splashT += 0.016f; SplashVelocity(new Vector2(100f, 0f));
+        check.Expect(_splashVel == Vector2.Zero, "a teleport resets the velocity instead of flinging the field");
+        check.Expect(v.Contains("uSplashC.xy - uSplashV * (age * uSplashP.y)"), "a crown is placed off the centre at its birth");
+        _splashVel = vc; _splashWasC = wc; _splashWasT = wt; _splashT = st;
     }
 }

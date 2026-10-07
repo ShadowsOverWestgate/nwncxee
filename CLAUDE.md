@@ -33,6 +33,9 @@ Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root (created lazily
     ./build.sh          # needs: .NET 10 SDK, clang/gcc, ld.lld, zlib, cmake
     ./run-demo.sh       # boots the framework in a stub host + proves the rot refusal (no game needed)
     ./sym.sh [-m] <pat> # search client symbols; -m = mangled (for Install)
+    tools/live/run-live.sh  # boots the REAL client headless into a playable area and grades the session
+                            # PASS/FAIL + screenshots; nothing reaches the desktop, nothing of the user's
+                            # is touched. Runbook + limits: docs/live-harness.md
 
 `build.sh` stages a runtime folder `cx-linux-x64/` (launcher + 2 `.so` + the audio runtime) and a flat zip
 of its contents -- the install is "unpack into bin/linux-x86".
@@ -98,7 +101,8 @@ Navigation:
                                  file is a cx_* resref <= 16 chars: the hak limit, so each is
                                  overridable as <resref>.shd
     docs/hook-pattern.md       example: a real hook + trampoline
-    docs/owned-resource-lifetimes.md  what creates/revokes each owned table, and Revoke vs ContextLost
+    docs/owned-resource-lifetimes.md  what creates and kills each owned table, per scene layer:
+                                      DB mode's four edges (ADR 0028) and mode 0's Revoke vs ContextLost
     docs/alloy-refusals.md     why a frame is the engine's: the frame-start verdict and its reason set
     docs/audio.md              CX-57: Steam Audio behind the engine's OpenAL -- the path, threads, what is verified
     native/bootstrap.c         the load path (+ bootstrap_win.c: the version.dll proxy, the OpenAL redirect)

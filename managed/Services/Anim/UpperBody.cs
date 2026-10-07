@@ -38,9 +38,9 @@ internal static unsafe class UpperBody
     private const float Deg = MathF.PI / 180f;
     private const float Gravity = 9.81f;
     /// <summary>Share of the physical lean angle <c>atan(a/g)</c> shown for a turn, and its cap.</summary>
-    private const float TurnGain = 0.5f, MaxRoll = 10f * Deg;
+    private const float TurnGain = 0.25f, MaxRoll = 3f * Deg;
     /// <summary>Share of <c>atan(a/g)</c> shown for speeding up and stopping, and its cap.</summary>
-    private const float AccelGain = 0.5f, MaxPitch = 8f * Deg;
+    private const float AccelGain = 0.25f, MaxPitch = 3f * Deg;
     /// <summary>Share of the climb angle leaned into, and its cap. Only while moving.</summary>
     private const float SlopeGain = 0.35f, MaxSlope = 8f * Deg;
     /// <summary>Seconds the lean takes to follow.</summary>
@@ -134,7 +134,7 @@ internal static unsafe class UpperBody
     {
         float lean = AnimKnobs.Lean.V / 100f;
         Vector2 leanT = gated || !(lean > 0f) ? Vector2.Zero
-            : LeanTarget(groundSpeed, s.YawRate, s.Cue, s.Slope, s.Moving > 0f) * lean;
+            : LeanTarget(groundSpeed, s.PathRate, s.Cue, s.Slope, s.Moving > 0f) * lean;
         float aimT = s.AimPitch, aimW = 0f;
         if (!gated && AnimKnobs.Aim.V && _aimReady && creature != IntPtr.Zero)
         {
@@ -178,11 +178,11 @@ internal static unsafe class UpperBody
     /// is not the torso's child is left alone.</summary>
     internal static void Write(IntPtr torso, IntPtr neck, Vector3 fwdH, Vector3 right, Vector2 t, Vector2 n)
     {
-        IntPtr parent = new Part(torso).Parent.Ptr;
+        IntPtr parent = PoseRig.Parent(torso);
         if (parent == IntPtr.Zero) return;
         World(parent, out _, out Quaternion qp);
         World(torso, out _, out Quaternion qt);
-        bool hasNeck = neck != IntPtr.Zero && new Part(neck).Parent.Ptr == torso;
+        bool hasNeck = neck != IntPtr.Zero && PoseRig.Parent(neck) == torso;
         Quaternion qn = Quaternion.Identity;
         if (hasNeck) World(neck, out _, out qn);
         Quaternion r = Tip(right, fwdH, t.X, t.Y);
@@ -215,7 +215,7 @@ internal static unsafe class UpperBody
 
     private static bool LookChain(in PoseService.Bones b)
         => b.Torso != IntPtr.Zero && b.Neck != IntPtr.Zero && b.Head != IntPtr.Zero
-           && new Part(b.Head).Parent.Ptr == b.Neck && new Part(b.Neck).Parent.Ptr == b.Torso;
+           && PoseRig.Parent(b.Head) == b.Neck && PoseRig.Parent(b.Neck) == b.Torso;
 
     /// <summary>The head's yaw (positive = left) and pitch (positive = up) relative to the neck, past
     /// <see cref="LookDeadzone"/>: what the engine's look-at (or an animation's big head turn) put there. False
@@ -237,7 +237,7 @@ internal static unsafe class UpperBody
     /// looks -- is unchanged. Runs before <see cref="Write"/>, which the head then follows as a child.</summary>
     internal static void ShareLook(in PoseService.Bones b, float yaw, float pitch)
     {
-        IntPtr parent = new Part(b.Torso).Parent.Ptr;
+        IntPtr parent = PoseRig.Parent(b.Torso);
         if (parent == IntPtr.Zero) return;
         World(parent, out _, out Quaternion qp);
         World(b.Torso, out _, out Quaternion qt);
@@ -279,7 +279,7 @@ internal static unsafe class UpperBody
         if (new CNWCObject(obj).Type == TypeCreature)
         {
             IntPtr g = PoseService.GobOf(obj);
-            IntPtr root = g == IntPtr.Zero ? IntPtr.Zero : new Gob(g).PartTree.Ptr;
+            IntPtr root = g == IntPtr.Zero ? IntPtr.Zero : PoseRig.Root(g);
             if (root != IntPtr.Zero) { World(root, out at, out _); return true; }
         }
         Vector3 p = new CNWCObject(obj).Position;

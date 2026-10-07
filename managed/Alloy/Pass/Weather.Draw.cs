@@ -119,6 +119,7 @@ internal static unsafe partial class Weather
         // R2: the area wetness map's own update, before the precipitation's early-out -- it has to dry after
         // the rain stops, which is exactly the frame nothing falls on.
         MapTick();
+        ShelterTick();
         bool snow = CurrentKind == Kind.Snow;
         int count = CurrentKind != Kind.None && Density > 0f ? (int)(MaxCount.V * Density * DensityScale.V * (snow ? 0.5f : 1f)) : 0;
         int drips = !snow && Cover.V && CasterPass.CoverFresh ? (int)(MaxCount.V * Drips.V * _wet) : 0;
@@ -203,10 +204,10 @@ internal static unsafe partial class Weather
         return true;
     }
 
-    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; SplashLost(); EsmLost(); MapLost(); }
+    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; SplashLost(); EsmLost(); MapLost(); ShelterLost(); }
     internal static void ResetPeriod() => _drawn = 0;
     internal static string Stats() => _off ? "weather unavailable" : !Enabled.V ? "weather off"
-        : $"weather {CurrentKind} {Density * 100f:F0}% {_count} instances, {_drips} drips{SplashStats()}{CoverStats()}{SurfaceStats()}{MapStats()}, records {AlloyRenderer.RecCreature} creature / {AlloyRenderer.RecObject} object / {AlloyRenderer.RecTile} tile";
+        : $"weather {CurrentKind} {Density * 100f:F0}% {_count} instances, {_drips} drips{SplashStats()}{CoverStats()}{SurfaceStats()}{MapStats()}{ShelterStats()}, records {AlloyRenderer.RecCreature} creature / {AlloyRenderer.RecObject} object / {AlloyRenderer.RecTile} tile";
     private static string DescribeDraw() => $" fall ({_fall.X:F2} {_fall.Y:F2} {_fall.Z:F2}) count {_count} drips {_drips}{SplashStats()}{CoverStats()}";
 
     /// <summary>One instanced quad per drop or flake; every position is a function of the instance id, the

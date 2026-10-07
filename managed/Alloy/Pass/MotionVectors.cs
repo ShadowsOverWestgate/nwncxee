@@ -32,6 +32,11 @@ internal static unsafe class MotionVectors
     private static bool _hasPrev;
     private static int _lastSeq = -1;
     private static int _runs;
+    /// <summary>The clean camera of the last frame's first run, for the period's camera-steadiness term: how many
+    /// frames the view-projection changed at all, and the largest element change.</summary>
+    private static Matrix4x4 _camLast;
+    private static int _camSeq = -1, _camMoved, _camStill;
+    private static float _camMax;
 
     /// <summary>The velocity target, 0 until the pass has run once at this size.</summary>
     internal static uint Tex => _tex;
@@ -65,6 +70,7 @@ internal static unsafe class MotionVectors
         if (!_built) EnsureProgram();
         if (_prog == 0 || !EnsureTarget(viewport[2], viewport[3])) return;
         if (!_hasPrev) { _prevVp = *vpClean; _hasPrev = true; }
+        if (frameSeq != _camSeq) NoteCamera(vpClean, frameSeq);
         if (!Matrix4x4.Invert(*vp, out Matrix4x4 inv)) return;
         Matrix4x4 prev = _prevVp;
 
@@ -129,10 +135,24 @@ internal static unsafe class MotionVectors
         _pendingSeq = -1;
     }
 
+    private static void NoteCamera(Matrix4x4* vpClean, int frameSeq)
+    {
+        if (_camSeq >= 0)
+        {
+            float m = 0f;
+            float* a = (float*)vpClean;
+            fixed (Matrix4x4* pb = &_camLast) { float* b = (float*)pb; for (int k = 0; k < 16; k++) m = MathF.Max(m, MathF.Abs(a[k] - b[k])); }
+            if (m > 1e-6f) { _camMoved++; _camMax = MathF.Max(_camMax, m); } else _camStill++;
+        }
+        _camLast = *vpClean; _camSeq = frameSeq;
+    }
+
     internal static string Stats(int frames)
     {
         int n = _runs; _runs = 0;
-        return _failed ? "motion STOOD DOWN" : n == 0 ? "motion idle" : $"motion {(float)n / MathF.Max(frames, 1):F2} runs/frame at {_w}x{_h}" + AlloyRenderer.MoverStats(frames);
+        string cam = $", camera moved {_camMoved}/{_camMoved + _camStill} frames (max element step {_camMax:G3})";
+        _camMoved = 0; _camStill = 0; _camMax = 0f;
+        return _failed ? "motion STOOD DOWN" : n == 0 ? "motion idle" : $"motion {(float)n / MathF.Max(frames, 1):F2} runs/frame at {_w}x{_h}" + cam + AlloyRenderer.MoverStats(frames);
     }
 
     private static bool EnsureTarget(int w, int h)

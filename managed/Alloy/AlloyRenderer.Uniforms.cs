@@ -201,6 +201,20 @@ public sealed unsafe partial class AlloyRenderer
                        PbTile = 3504, PbGrid = 3520, PbReach = 3532, PbFalloff = 3536, PbWrap = 3548, PbZ = 3552,
                        PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584, PbDayDim = 3588, PbRelevance = 3592,
                        PbBounds = 3600;
+    /// <summary>CX-120: the sun terms the last staged pass block carried -- the cascade count, the fourth
+    /// column of <c>uSunVp[0]</c> and the live focus. The receiver's own witness, for the <c>[sunrx]</c>
+    /// clause on <c>CasterPass</c>'s period line.</summary>
+    private static int _rxSunN;
+    private static Vector4 _rxSunVp3;
+    private static Vector3 _rxSunFocus, _rxAreaDif, _rxAreaDir;
+
+    /// <summary>The sun half of the last pass block, for the period line. Cold.</summary>
+    internal static string SunRxNote()
+        => $"rx: uSunCascades={_rxSunN} uSunVp[0].col3=({_rxSunVp3.X:F3},{_rxSunVp3.Y:F3},{_rxSunVp3.Z:F3},{_rxSunVp3.W:F3}) " +
+           $"uSunFocus=({_rxSunFocus.X:F1},{_rxSunFocus.Y:F1},{_rxSunFocus.Z:F1}) " +
+           $"uAreaDiffuse=({_rxAreaDif.X:F3},{_rxAreaDif.Y:F3},{_rxAreaDif.Z:F3}) " +
+           $"uAreaDir=({_rxAreaDir.X:F2},{_rxAreaDir.Y:F2},{_rxAreaDir.Z:F2}) binds={PassBinds} sends={PassUploads}";
+
     /// <summary>The block as staged and as last sent. Native, allocated once, so a refill allocates nothing.</summary>
     private static byte* _passStage, _passSent;
     private static uint _passBuf;
@@ -297,6 +311,14 @@ public sealed unsafe partial class AlloyRenderer
             PassVec(b, PbSunFocus, CasterPass.SunFocusLive);
             *(int*)(b + PbSunCascades) = n;
         }
+        // CX-120 (cold, read once per period by CasterPass's [sunrx] clause): what this pass block ACTUALLY
+        // carries for the sun, taken off the staged bytes rather than off the publisher -- six stores, so the
+        // witness costs nothing and cannot disagree with what the receiver samples.
+        _rxSunN = *(int*)(b + PbSunCascades);
+        _rxSunVp3 = *(Vector4*)(b + PbSunVp + 48);
+        _rxSunFocus = *(Vector3*)(b + PbSunFocus);
+        _rxAreaDif = *(Vector3*)(b + PbDiffuse);
+        _rxAreaDir = *(Vector3*)(b + PbDir);
 
         if (!_rawProbed) ProbeRawSampler();
         *(float*)(b + PbLocalFloor) = AlloyLights.ShadowFloor;

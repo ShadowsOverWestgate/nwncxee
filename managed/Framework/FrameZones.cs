@@ -48,6 +48,9 @@ public static class FrameZones
         /// sound, the camera, and whatever the loop does between them. The scene render runs FROM the AI
         /// update, so <c>Ai</c> is reported minus every renderer bracket it contains.</summary>
         Net, Res, Ai, Gui,
+        /// <summary>DB mode's frame boundary (<c>SeamDraw.OnBoundary</c>) minus the renderer brackets it contains:
+        /// the settle compose, the hit fold, the dirty fold, the snapshot publish and the GUI views.</summary>
+        Seam,
 
         /// <summary>Split marker, not a bracket.</summary>
         Nested,
@@ -182,6 +185,29 @@ public static class FrameZones
         /// <summary>Nested in <see cref="Passes"/>: the stream ring's region fence (<c>GpuRing.Acquire</c>) --
         /// the CPU waiting for the GPU to drain the frame before last. Large here means GPU-bound.</summary>
         Wait,
+        /// <summary>CX-118: hit testing against CX's scene -- every <c>HitTest.Cast</c> the frame ran, the
+        /// hover pick included. Nested in <see cref="Ai"/> (the game's input and AI step issues the picks) and
+        /// NOT subtracted from it, so the number reads as what picking cost this frame on its own. The
+        /// engine's own bill for the same work is invisible to every bracket here, which is why the
+        /// comparison against vanilla is a live A/B on <c>counthitcheckscenebspnode</c> and not a zone
+        /// difference.</summary>
+        Pick,
+        /// <summary>CX-118: filling the engine's <c>gobbucket</c> in <c>ScenePrep</c>. Nested in
+        /// <see cref="Shim"/> and not subtracted: Alloy reads nothing out of that list any more and fills it
+        /// ONLY because <c>Scene::HitCheckGob</c> @0x45f860 takes the bucket branch unconditionally on a world
+        /// scene, so this is the bill the CX hit test deletes. <c>/alloy gobbucket 0</c> is the A/B. Named for the engine global, not to be read as a sibling of <see cref="Build"/>'s bucket work.</summary>
+        GobBucket,
+        /// <summary>CX-120: nested in <see cref="Alloy"/>, DB mode only -- the fold of the scene database's
+        /// dirty lists into the renderer's records (<c>DbFeed.TakeFrame</c>). Reads about 0 in a still scene,
+        /// which is the change-driven build's whole claim.</summary>
+        DbDirty,
+        /// <summary>CX-120: nested in <see cref="Alloy"/>, DB mode only -- one view's visible-set query over
+        /// the database index (<c>DbFeed.Visible</c>). The one cost a still frame still pays.</summary>
+        DbVis,
+        /// <summary>CX-120: nested in <see cref="Alloy"/>, DB mode only -- the draw order and the area index
+        /// rebuilt after a slot-set edge (the DB equivalent of an enrolment). Reads 0 on a frame in which
+        /// nothing was created or destroyed.</summary>
+        DbOrder,
 
         Count,
     }
@@ -287,6 +313,14 @@ public static class FrameZones
     /// <summary>Close a bracket opened at <paramref name="t0"/>, optionally minus ticks a nested bracket
     /// already claimed. Never accumulates negative: a child measured across a boundary this parent did not
     /// span would otherwise credit the parent time it did not spend.</summary>
+    /// <summary>Every top-level zone's ticks this frame, for a bracket that must subtract the ones it contains.</summary>
+    public static long TopLevelTicks()
+    {
+        long s = 0;
+        for (int i = 0; i < (int)Zone.Nested; i++) s += _frame[i];
+        return s;
+    }
+
     public static void Add(Zone z, long t0, long minus = 0)
     {
         long dt = Stopwatch.GetTimestamp() - t0 - minus;
@@ -444,6 +478,38 @@ public static class FrameZones
         }
         return sb.ToString();
     }
+    /// <summary>Burn CPU on THIS thread until its own kernel tick counter has advanced by
+    /// <paramref name="ticks"/>, or <paramref name="capMs"/> of wall has gone by. For the self-check only: a
+    /// fixed WALL spin is not enough to put this thread in the table, because the counter has 10ms granularity
+    /// and a contended box hands a 20ms window less than one whole tick -- which read as an empty table and
+    /// failed a check about nothing.</summary>
+    private static void BurnCpuTicks(long ticks, int capMs)
+    {
+        long t0 = OwnTicks();
+        long cap = Stopwatch.GetTimestamp() + Stopwatch.Frequency * capMs / 1000;
+        if (t0 < 0)
+        {
+            long to = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 50; while (Stopwatch.GetTimestamp() < to) { }
+            return;
+        }
+        while (OwnTicks() - t0 < ticks && Stopwatch.GetTimestamp() < cap)
+        {
+            long to = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 200;
+            while (Stopwatch.GetTimestamp() < to) { }
+        }
+    }
+    /// <summary>utime+stime of the calling thread, in kernel ticks; -1 when /proc cannot say.</summary>
+    private static long OwnTicks()
+    {
+        try
+        {
+            string s = System.IO.File.ReadAllText("/proc/thread-self/stat");
+            string[] f = s.Substring(s.LastIndexOf(')') + 2).Split(' ');
+            return long.Parse(f[11]) + long.Parse(f[12]);
+        }
+        catch { return -1; }
+    }
+
     private static long PsiTotal(string path)
     {
         foreach (var l in System.IO.File.ReadLines(path))
@@ -567,6 +633,7 @@ public static class FrameZones
         if (_dtWorstDrew != _dtWorst) line += " || worst that RENDERED " + Row(_worstDrew, _dtWorstDrew, 1);
         line += EnrollP99();
         line += HitchLine();   // before the frame reset: the event columns average over this period's frames
+        line += $" || over {_frames} presents";
         Array.Clear(_sum, 0, N); Array.Clear(_worst, 0, N); Array.Clear(_worstDrew, 0, N);
         _dtSum = 0; _dtWorst = 0; _dtWorstDrew = 0; _frames = 0;
         return line;
@@ -649,20 +716,22 @@ public static class FrameZones
                  && _hitchMs > 25f && _hitchMs < 35f;   // the next threshold follows the NON-STALL mean: the one 20ms frame, x1,5
         if (!r) log.Info("FrameZones.SelfCheck: FAILED -- the period line or its reset drifted");
         // the scheduler column: getrusage must resolve and this thread must have run, and the hitch frame above
-        // must have been blamed on the one zone it spent (Alloy) rather than read as diffuse
-        r &= line.Contains("sched all|hitch: cpu") && line.Contains("blame: Alloy 1");
-        // the scheduler, thread and box columns are Linux-only (glibc + /proc); Windows reads them as n/a (#48)
+        // must have been blamed on the one zone it spent (Alloy) rather than read as diffuse. The scheduler,
+        // thread and box columns are Linux-only (glibc + /proc); Windows reads them as n/a (#48).
+        bool sc = line.Contains("sched all|hitch: cpu") && line.Contains("blame: Alloy 1")
+                  && (OperatingSystem.IsWindows() || _scNow[(int)Sc.Cpu] > 0);
+        if (!sc) log.Info($"FrameZones.SelfCheck: FAILED -- sched/blame columns ({line.Substring(Math.Max(0, line.IndexOf("|| blame")))})");
+        bool tb = true;
         if (!OperatingSystem.IsWindows())
         {
-            r &= _scNow[(int)Sc.Cpu] > 0;
             // the thread table: two reads (the first only primes), the second must list this thread by name
             ThreadsLine();
-            long spinTo = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 50; while (Stopwatch.GetTimestamp() < spinTo) { }   // 20ms of CPU, so this thread crosses the 5ms filter
+            BurnCpuTicks(2, 1000);
             string thr = ThreadsLine() + BoxLine();
-            r &= !thr.Contains("n/a") && thr.Contains("/c");
-            if (!r) log.Info("FrameZones.SelfCheck: FAILED -- thread/box table: " + thr);
+            tb = !thr.Contains("n/a") && thr.Contains("/c");
+            if (!tb) log.Info("FrameZones.SelfCheck: FAILED -- thread/box table: " + thr);
         }
-        if (!r) log.Info($"FrameZones.SelfCheck: FAILED -- sched/blame columns ({line.Substring(Math.Max(0, line.IndexOf("|| blame")))})");
+        r &= sc && tb;
         log.Info(ok && s && w && t && h && r ? "FrameZones.SelfCheck: passed"
                                    : "FrameZones.SelfCheck: see failures above");
     }

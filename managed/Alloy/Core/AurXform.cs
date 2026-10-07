@@ -96,12 +96,6 @@ internal static unsafe class AurXform
     /// <summary>A <c>CAurObject</c>'s rotation through its own virtual: <see cref="EngineLayout.GobGetOrientationSlot"/>.</summary>
     internal static Quat Orientation(IntPtr obj) => CallQuat(new CX.Engine.Gob(obj).GetOrientationFn, obj);
 
-    /// <summary>CX-82: <c>Gob::GetAdjustedOrientation</c> -- the stored rotation times the gob's lerped yaw/pitch/roll.</summary>
-    internal static Quat AdjustedOrientation(IntPtr gob) => CallQuat(new CX.Engine.Gob(gob).GetAdjustedOrientationFn, gob);
-
-    /// <summary>CX-82: <c>Gob::GetAdjustedPosition</c> -- the stored position plus the gob's lerped offset.</summary>
-    internal static V3 AdjustedPosition(IntPtr gob) => CallV3(new CX.Engine.Gob(gob).GetAdjustedPositionFn, gob);
-
     private static Quat CallQuat(IntPtr fn, IntPtr obj)
     {
         if (OperatingSystem.IsWindows())

@@ -1,3 +1,4 @@
+using CX.Alloy.Db;
 using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -23,8 +24,32 @@ public sealed unsafe partial class AlloyRenderer
     /// returning here really does leave the engine's own frame intact.</summary>
     private static void NoFrameBehindUs(string why)
     {
-        if (RspShim.InWindow) AlloyGate.Fail(why);
+        AlloyGate.Fail(why);
     }
+
+    /// <summary>CX-120: why this DB-mode frame drew nothing. A frame that refuses has always said so for
+    /// ONE reason at a time and only through a path that happened to log; with the whole scene layer replaced,
+    /// "the world is empty" needs the reason named on the period line rather than inferred from counters.
+    /// One string assignment on a path that is already returning.</summary>
+    internal static string DbNoDrawWhy = "";
+    private static bool _saidLitTerms;
+    private static long _dbNoDrawN;
+    private static void DbNoDraw(string why)
+    {
+        DbNoDrawWhy = why;
+        _dbNoDrawN++;
+    }
+
+    /// <summary>The DB-mode draw refusal, for the period line.</summary>
+    internal static string DbNoDrawNote()
+        => _dbNoDrawN == 0 ? "" : $" | NOT DRAWN x{_dbNoDrawN}: {DbNoDrawWhy}";
+
+    /// <summary>CX-120: the view the DB frame is drawing right now, taken from the published snapshot. Set
+    /// by <c>SeamDraw</c> around one view's pass and cleared after; <see cref="DbViewValid"/> is the gate, so
+    /// mode 0 reads exactly as it did.</summary>
+    internal static AlloyView DbView;
+    /// <inheritdoc cref="DbView"/>
+    internal static bool DbViewValid;
 
     internal static void DrawOwned()
     {
@@ -61,7 +86,7 @@ public sealed unsafe partial class AlloyRenderer
         // the same flag, so water is simply not drawn on exactly those passes (#285: a hole, not vanilla).
         FrameSnapshot.Revoke();
         if (StreamRing.Refused) _batchUnavailable = true;   // CX-45: the ring failed the renderer (AlloyGate.Fail) when it was refused
-        if (Programs._progFailed || _batchUnavailable) return false;   // EndFrame revokes + disarms; never pay the bracket for nothing
+        if (Programs._progFailed || _batchUnavailable) { DbNoDraw("program failed or multidraw unavailable"); return false; }   // EndFrame revokes + disarms; never pay the bracket for nothing
         // Checked BEFORE anything stamps OwnGen: BuildBatches marks parts as drawn, which is only honest while
         // the issue phase cannot fail. Missing entry points are the one way it could.
         if (Gl.MultiDrawElementsBaseVertex == null || Gl.BindBufferBase == null || !StreamRing.EntryPoints)
@@ -70,6 +95,7 @@ public sealed unsafe partial class AlloyRenderer
             // world goes bare with no line at all.
             _batchUnavailable = true;
             AlloyGate.Fail("glMultiDrawElementsBaseVertex, glBindBufferBase or a stream-ring entry point (buffer storage, map, bind range, fence) is missing");
+            DbNoDraw("a GL entry point is missing");
             return false;
         }
         GpuStatic.Latch();   // the static freeze's own entry points; they do not resolve before a context exists
@@ -91,7 +117,7 @@ public sealed unsafe partial class AlloyRenderer
         // allocations, so an offset would only mean drawing into their corner).
         display[0] = t.Vp0; display[1] = t.Vp1; display[2] = t.Vp2; display[3] = t.Vp3;
         viewport[0] = 0; viewport[1] = 0;
-        viewport[2] = PostChain.RenderSize(t.Vp2); viewport[3] = PostChain.RenderSize(t.Vp3);
+        viewport[2] = PostChain.RenderSize(display[2]); viewport[3] = PostChain.RenderSize(display[3]);
         bool srgb = t.Srgb;
         // #456: sized to the DEFAULT framebuffer, before any pass binds a target.
         PresentTarget.Ensure(display[2], display[3]);
@@ -99,7 +125,7 @@ public sealed unsafe partial class AlloyRenderer
         float engClearDepth = t.ClearDepth;
         // ...and the refusals that need no bracket at all, ahead of the preamble they would otherwise
         // waste -- PoseSkinned alone solves every Alloy skinmesh's pose.
-        if (!PostChain.Precheck(display)) return false;
+        if (!PostChain.Precheck(display)) { DbNoDraw("PostChain.Precheck refused (no HDR target for this viewport)"); return false; }
         // Only now: a pass about to hand the frame back would have the engine solve each of these poses
         // again on its own walk, so the solve is not worth doing for it. #262: the solve no longer enters
         // engine code at all, but it still reads engine animation state, so it stays on this side.
@@ -122,20 +148,29 @@ public sealed unsafe partial class AlloyRenderer
         // camera object's own fields rather than read back off m_aurMtxStack. view.cameraloop 0 is the A/B,
         // and AlloyCamera.Describe() prints the largest element difference against the engine's own pair.
         Matrix4x4 view, proj;
-        if (AlloyCamera.Owned)
+        // CX-120: in DB mode the view is the one the SNAPSHOT recorded for the view being drawn, not
+        // AlloyCamera.WorldView. WorldView is measured at the engine's Camera::RenderScene, which does not run
+        // in DB mode, and it is single-view by construction -- so every view, world or GUI panel, would be
+        // drawn through one camera. SeamDraw sets this for the duration of one view's pass.
+        if (DbViewValid)
+        {
+            view = DbView.View;
+            proj = DbView.Proj;
+        }
+        else if (AlloyCamera.Owned)
         {
             ref readonly AlloyView wv = ref AlloyCamera.WorldView;
             // CX-45: no quiet fallback. A pass with no measured camera would draw the world through an
             // identity view -- geometry everywhere and nothing recognisable -- so it sits the frame out.
             if (!wv.Valid)
-            { NoFrameBehindUs("Alloy has no measured world camera (Camera::RenderScene never reached a world scene)"); return false; }
+            { NoFrameBehindUs("Alloy has no measured world camera (Camera::RenderScene never reached a world scene)"); DbNoDraw("no measured world camera"); return false; }
             view = wv.View;
             proj = wv.Proj;
             // The parity instrument, at the ONE place both matrices are meant to describe the same camera.
             AlloyCamera.NoteParity();
         }
         else if (!AlloyCamera.EngineMatrices(out view, out proj))
-        { NoFrameBehindUs("m_aurMtxStack is unresolved and view.cameraloop is off"); return false; }
+        { NoFrameBehindUs("m_aurMtxStack is unresolved and view.cameraloop is off"); DbNoDraw("no matrix stack and cameraloop off"); return false; }
         // #389: the ONE site the projection is read, so the ONE site the TAA jitter goes in: an NDC offset is
         // a shear of the clip x/y by w, and in this row-vector convention w = z*M34, so the offset lands in
         // M31/M32 scaled by M34 (sign-agnostic). Every owned stage, the hosted stock text (_projMtx) and the
@@ -161,22 +196,43 @@ public sealed unsafe partial class AlloyRenderer
         SetPassFrustum((float*)&vp, perspective);   // #330: the route gate's planes, this pass's own
         // Cap 5 is the engine's own lit predicate (Ghidra MatStatic @0x450560 / RenderFlat @0x450eb0): with
         // it off every part gets flat white, so the flat variant IS vanilla for this pass.
-        bool lightingOn = _litCount > 0 && _lighting && !Programs._litFailed && perspective
-                          && (_isEnabled == null || _isEnabled(CapLighting) != 0);
+        // CX-120: the last term is the ENGINE's lighting cap (RenderInterface::IsEnabled(5)), which only the
+        // engine's own render path ever enables -- and in DB mode that path does not run, so it reads 0 and
+        // every lit part in the world was skipped as "unlit-pass". It is an input about what the ENGINE would
+        // draw, and in DB mode the engine draws nothing: Alloy's own stages decide lighting. Same shape as the
+        // RenderSinglePass window: an engine state consulted in a mode where the engine has no state.
+        // CX-120: say WHY the rig stood down, once. "unlit-pass N" names the symptom; these are the terms.
+        if (!_saidLitTerms && (!perspective || _litCount == 0 || !_lighting || Programs._litFailed))
+        {
+            _saidLitTerms = true;
+            _log?.Always($"AlloyRenderer: [db] the lighting rig stood down -- perspective={perspective} "
+                       + $"p00={p00:F4} p11={p11:F4} near={near:F3} far={far:F3} litCount={_litCount} "
+                       + $"lighting={_lighting} litFailed={Programs._litFailed} "
+                       + $"proj.M11={proj.M11:F4} proj.M22={proj.M22:F4} proj.M34={proj.M34:F4} "
+                       + $"proj.M33={proj.M33:F4} proj.M43={proj.M43:F4} fovy={AlloyCamera.WorldView.Fovy:F3} "
+                       + $"vp={AlloyCamera.WorldView.W}x{AlloyCamera.WorldView.H}. Every lit part is skipped "
+                       + "while this holds, which is an empty world.");
+        }
+        bool lightingOn = _litCount > 0 && _lighting && !Programs._litFailed && perspective;
 
         FrameZones.Add(FrameZones.Zone.Setup, tSetup, FrameZones.Ticks(FrameZones.Zone.Pose) - pose0);
         long tEnter = FrameZones.Now;
-        if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); return false; }
+        if (!GlContextService.Enter()) { NoFrameBehindUs("the 4.6 context could not be made current"); DbNoDraw("the 4.6 context could not be made current"); return false; }
         FrameZones.Add(FrameZones.Zone.Enter, tEnter);
         long tOwn = FrameZones.Now;
-        OwnedTextures.Drain();   // #211: the world edge queued deletes; this is the first context to own them
+        // #211's queued texture deletes, CX-117's registry uploads/mints, the master PLT palette and the
+        // per-record colour rows: the frame's context-bound deferred work, declared once in Arm and run here
+        // because the colour bracket is normally the frame's FIRST. Whichever bracket runs it first is the one
+        // that does it, and GlContextService's health bracket then stands down for the frame -- its own, the
+        // GUI flush's and the render thread's all route through the one entry point for that reason.
+        GlContextService.RunInBracketHere();
         OwnedBuffers.ClearDirty();   // #260: geometry uploaded itself at the engine's commit; close the window
         ClearItemCommits();
         ApplySwaps();   // #386: swapped texture names take their new handles here, in the context that owns residency
         OwnedBuffers.HighWater();    // ...and report the mark the funnel recorded, where a string is affordable
         FrameZones.Add(FrameZones.Zone.Own, tOwn);
         long tPrep = FrameZones.Now, lights0 = FrameZones.Ticks(FrameZones.Zone.Lights);
-        if (!Programs.EnsureProgram()) { GlContextService.Leave(); return false; }
+        if (!Programs.EnsureProgram()) { DbNoDraw("the world program did not build"); GlContextService.Leave(); return false; }
         BindTarget();
         // #117/#119: the lighting rig, the GL state and the batch BUILD are bracket preamble -- both
         // colour-bracket passes draw the same staged batches, and building twice would revalidate (and
@@ -221,7 +277,7 @@ public sealed unsafe partial class AlloyRenderer
         long tPostBegin = FrameZones.Now;
         bool postOk = PostChain.Begin(viewport, engClear, engClearDepth);
         FrameZones.Add(FrameZones.Zone.Post, tPostBegin);
-        if (!postOk) { GlContextService.Leave(); return false; }
+        if (!postOk) { DbNoDraw("PostChain.Begin refused"); GlContextService.Leave(); return false; }
         long tPump = FrameZones.Now;
         GpuFrameStart();
         TickCycleTextures();
@@ -230,15 +286,24 @@ public sealed unsafe partial class AlloyRenderer
         _lodScale = perspective ? p11 * viewport[3] * 0.5f : 0f;
         MeshLod.Pump();   // the one GL edge of the LOD arena: collect what the worker finished
         MeshChart.Pump(); // ...and of the chart arenas (#673)
-        DrainChartDeferred();   // #674: the offers the enrolment walk could not queue
+        CX.Alloy.Db.MeshArena.Pump();   // CX-114: the one model-space arena -- frees land and both mirrors go up
         FrameZones.Add(FrameZones.Zone.Pump, tPump);
         long tBuild = FrameZones.Now;
         int groups = BuildBatches(lightingOn);
         FrameZones.Add(FrameZones.Zone.Build, tBuild);
-        if (groups <= 0) { Gl.BindVertexArray(0); GlContextService.Leave(); return false; }
+        // CX-120: the one point both scene layers converge on with the frame's inputs final and its records
+        // staged -- so the two modes' dumps are of the same thing and can be diffed line for line.
+        FrameDiffDump();
+        CreatureParityDump();   // CX-120: the composed body, per node, in both layers' one line format
+        if (groups <= 0) { DbNoDraw("BuildBatches produced no batch"); Gl.BindVertexArray(0); GlContextService.Leave(); return false; }
         long tUp = FrameZones.Now;
         StageSky();
-        if (!Issue.UploadDraws())
+        bool drawsUp = Issue.UploadDraws();
+        Db.PltColors.Upload();   // the frame-start push ran before this frame's PLT rows were staged
+        // CX-120: with the frame's records staged AND pushed, a record that still differs from the mirror is
+        // one the dirty list never named -- the change-driven build's own bug class.
+        StaleAuditTick();
+        if (!drawsUp)
         {
             PaintStreamFailures(display);
             Gl.BindVertexArray(0); GlContextService.Leave(); return false;
@@ -1061,8 +1126,8 @@ public sealed unsafe partial class AlloyRenderer
     /// viz, keyhole) with <see cref="_planar"/> set, from the mirrored eye, winding flipped, at
     /// <c>light.ssrplanarres</c>. It reads no clustered light (the lit stage skips the loop under it, so the screen's
     /// binning is never disturbed): the lightmap, sun and ambient light the reflection.
-    /// <para>ponytail: no clip plane -- geometry below the ground mirrors up into view; the ground itself turns its
-    /// back and culls, and little else in an area sits under it. One plane, the player's; other heights trace.</para></summary>
+    /// <para>The lit stage discards what lies under the plane (<c>uMirrorZ</c>): a river bed or a sunken tile mirrored
+    /// up would roof the whole reflection. ponytail: one plane, the player's; other heights trace.</para></summary>
     private static void PlanarPass(Matrix4x4* vp, float near, float far, int* viewport)
     {
         if (_runtime == null || !Ssr.BeginPlanar(viewport[2], viewport[3], out int pw, out int ph)) return;
@@ -1075,6 +1140,7 @@ public sealed unsafe partial class AlloyRenderer
         Vector3 eye = _eyePos;
         int* pvp = stackalloc int[4] { 0, 0, pw, ph };
         _capturing = _planar = true;
+        _mirrorZ = z;
         _eyePos = new Vector3(eye.X, eye.Y, 2f * z - eye.Z);
         new PassState(depth: true, depthWrite: true, cull: true, srgb: false).Apply();
         Gl.DepthFunc(Gl.LEQUAL);

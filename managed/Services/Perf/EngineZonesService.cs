@@ -67,7 +67,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
     private static long OnBsp(IntPtr scene)
     {
         bool world = new CX.Engine.Scene(scene).BspRoot != IntPtr.Zero;
-        if (world && _skipBsp && CX.Alloy.AlloyGate.Alloy && !CX.Alloy.ScenePrep.Needed)
+        if (world && _skipBsp && CX.Alloy.AlloyGate.Alloy)
         { _bspSkipped++; return 0; }
         long t = world ? FrameZones.Now : 0;
         long r = _bsp != null ? _bsp(scene) : 0;
@@ -132,8 +132,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
         bool world = new CX.Engine.Scene(scene).BspRoot != IntPtr.Zero;
         // Under 3 the two skips travel together: the bucket build's inputs are the lists the BSP visitor
         // fills, so re-arming the walk without re-arming this would leave an A/B reading half a frame.
-        if (world && _skipBuckets && CX.Alloy.AlloyGate.Alloy
-            && (!_skipBsp || !CX.Alloy.ScenePrep.Needed)) { _bucketsSkipped++; return 0; }
+        if (world && _skipBuckets && CX.Alloy.AlloyGate.Alloy) { _bucketsSkipped++; return 0; }
         if (world && _bucketsCadence && CX.Alloy.AlloyGate.Alloy && (++_bucketsFrame % BucketsEvery) != 0) ThinTileLists();
         long t = world ? FrameZones.Now : 0;
         long r = _buckets != null ? _buckets(scene) : 0;
@@ -256,6 +255,7 @@ public sealed unsafe class EngineZonesService : IExtenderService
         => FrameZones.Ticks(FrameZones.Zone.Enroll) + FrameZones.Ticks(FrameZones.Zone.Shadow)
            + FrameZones.Ticks(FrameZones.Zone.Shim) + FrameZones.Ticks(FrameZones.Zone.Alloy)
            + FrameZones.Ticks(FrameZones.Zone.Ui) + FrameZones.Ticks(FrameZones.Zone.Present)
+           + FrameZones.Ticks(FrameZones.Zone.Seam)
            + FrameZones.Ticks(FrameZones.Zone.Bcn) + FrameZones.Ticks(FrameZones.Zone.Prebuild);   // subtracted from Enroll already; they must not land in Ai instead
 
     [UnmanagedCallersOnly]
