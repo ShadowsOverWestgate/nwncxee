@@ -35,11 +35,11 @@ public sealed partial class KnobPanel
             // A throwaway parent group and a child group under it, in a category that has nothing else: every row
             // kind, every tier, a Restart row, a link, a confirming button, an expanded swatch.
             int pressed = 0, changed = 0, wiped = 0, statusN = 0;
-            var pg = new KnobGroup("cx-panelparent", "Hotkeys", "Parent", "Enable the parent", "The parent master.", true,
+            var pg = new KnobGroup("cx-panelparent", "Controls", "Parent", "Enable the parent", "The parent master.", true,
                                    Effect.Restart, null, null, "", register: false);
-            var g = new KnobGroup("cx-panelcheck", "Hotkeys", "Panel check", "Enable the check", "The master row.", true,
+            var g = new KnobGroup("cx-panelcheck", "Controls", "Panel check", "Enable the check", "The master row.", true,
                                   Effect.Live, null, "cx-panelparent.enabled", "A header line for the note row.", register: false);
-            g.Status = () => $"Running: check — {statusN}";
+            g.PanelStatus = () => $"Running: check — {statusN}";
             g.Section("Field");
             var dens = g.Slider("density", "Density", 0f, 4f, 0.25f, 2f, help: "Blades per patch relative to the stock game, a help line long enough to wrap once at least.", changed: () => changed++);
             var far = g.Slider("far", "Distance", 0, 400, 10, 0, "m", help: "How far grass draws.");
@@ -65,9 +65,9 @@ public sealed partial class KnobPanel
             var p = new KnobPanel();
             p.ResolveParent = grp => ReferenceEquals(grp, g) ? pg.Master : null;
             // The registry is live: point the panel at the throwaway group directly (it is not enumerated).
-            p.Category = Array.IndexOf(KnobCategories, "Hotkeys");
+            p.Category = Array.IndexOf(KnobCategories, "Controls");
             p.OpenAt(1280f, 720f, FacePx, body, small);
-            p._subs = new[] { g }; p.Sub = 0; p.LayoutRows();
+            p._subs = new[] { new SubMenu(g) }; p.Sub = 0; p.LayoutRows();
             check.Expect(p.Open && MathF.Abs(p.W - 896f) < 0.5f && MathF.Abs(p.H - 540f) < 0.5f, $"70%×75% of 1280×720 ({p.W}×{p.H})");
             check.Expect(MathF.Abs(p.X - 192f) < 0.5f && MathF.Abs(p.Y - 90f) < 0.5f, "centred");
             check.Expect(p.Cats.W < p.SubCol.W && p.SubCol.W < p.List.W && MathF.Abs(p.Cats.W + p.SubCol.W + p.List.W - p.W) < 0.5f, "columns split 18/22/60 and fill the width");
@@ -135,7 +135,7 @@ public sealed partial class KnobPanel
             pg.Master!.Set(false);
             p.LayoutRows();
             Row? strip = Find(RowKind.Strip);
-            check.Expect(strip != null && p.Rows[0] == strip && strip.Help.Length >= 1 && strip.Text.StartsWith("Enable the parent is off") && strip.Text.Contains("Hotkeys » Parent (restart)"), $"an off ancestor lays the strip first, naming it and where to turn it on ({strip?.Text})");
+            check.Expect(strip != null && p.Rows[0] == strip && strip.Help.Length >= 1 && strip.Text.StartsWith("Enable the parent is off") && strip.Text.Contains("Controls » Parent (restart)"), $"an off ancestor lays the strip first, naming it and where to turn it on ({strip?.Text})");
             check.Expect(p.MasterOff && p.Greyed(R(dens)) && !p.Greyed(R(g.Master!)) && !p.Greyed(R(btn)) && !p.Greyed(R(link)), "under an off ancestor the value rows grey; master, button and link stay live");
             PressBox(R(btn));
             check.Expect(pressed == 2, "the button fires under an off ancestor");
@@ -286,10 +286,30 @@ public sealed partial class KnobPanel
             check.Expect(p.Rows[1].Help[0] == "Running: check — 3", "the status line follows the presses");
 
             // A submenu change closes the disclosure; a status-only group is its status.
-            var z = new KnobGroup("cx-panelzero", "Hotkeys", "Zero", null, null, true, Effect.Live, null, null, "", register: false);
-            z.Status = () => "line one\nline two that is long enough to wrap in the column at seven twenty by twelve eighty for sure";
-            p._subs = new[] { g, z }; p.SelectSub(1); p.LayoutRows();
+            var z = new KnobGroup("cx-panelzero", "Controls", "Zero", null, null, true, Effect.Live, null, null, "", register: false);
+            z.PanelStatus = () => "line one\nline two that is long enough to wrap in the column at seven twenty by twelve eighty for sure";
+            p._subs = new[] { new SubMenu(g), new SubMenu(z) }; p.SelectSub(1); p.LayoutRows();
             check.Expect(p.Sub == 1 && !p.AdvOpen && p.Rows.Count == 1 && p.Rows[0].Kind == RowKind.Status && p.Rows[0].Help.Length >= 3 && !p._resettable, "a zero-knob group renders its status as the whole body, no reset box");
+            // A shared submenu: each group under its heading, greyed by its own gate only; a chat-only master that is
+            // off lays a strip that turns it back on; a diagnostics-only group earns no submenu.
+            var sa = new KnobGroup("cx-sharea", "Controls", "Shared", "Enable A", "A's master.", true, Effect.Live, null, null, "", register: false, title: "Alpha");
+            var aRow = sa.Toggle("x", "A row", true, help: "A help.");
+            var sb = new KnobGroup("cx-shareb", "Controls", "Shared", "Enable B", null, false, Effect.Live, null, null, "", register: false,
+                                   masterTier: Tier.ChatOnly, title: "Bravo");
+            var bRow = sb.Toggle("y", "B row", true, help: "B help.");
+            var diag = new KnobGroup("cx-sharediag", "Controls", "Diag", null, null, true, Effect.Live, null, null, "", register: false);
+            diag.Toggle("probe", "probe", false, Tier.ChatOnly); diag.Status = () => "counters";
+            check.Expect(Shown(sa) && Shown(sb) && !Shown(diag), "a group with rows is shown; a ChatOnly-and-Status group is not");
+            p._subs = new[] { new SubMenu(sa, sb) }; p.SelectSub(0); p.LayoutRows();
+            check.Expect(Count(RowKind.Heading) == 2 && p.Rows[0].Kind == RowKind.Heading && p.Rows[0].Text == "Alpha", "a shared submenu heads each group with its title");
+            check.Expect(!p.Rows.Exists(r => r.Kind == RowKind.Knob && ReferenceEquals(r.K, sb.Master)) && !p.Greyed(R(aRow)) && p.Greyed(R(bRow)), "B's chat-only master is no row; off, it greys B's rows only");
+            Row? bStrip = Find(RowKind.Strip);
+            check.Expect(bStrip != null && bStrip.K == sb.Master && bStrip.Text.Contains("cx-shareb.enabled=0"), "an off chat-only master lays a strip naming its cfg key");
+            Show(bStrip!); Press(p.List.X + p.Pad + 2f * p.Em, p.List.ToScreen(bStrip!.Top) + bStrip.H - 0.5f * p.Em);
+            check.Expect(sb.Master!.V && Find(RowKind.Strip) == null && !p.Greyed(R(bRow)), "a press on that strip turns the master back on");
+            sa.Master!.Set(false);
+            check.Expect(p.Greyed(R(aRow)) && !p.Greyed(R(bRow)), "A's master off greys A's rows, not B's");
+            p._subs = new[] { new SubMenu(g), new SubMenu(z) };
             p.SelectSub(0); p.LayoutRows();
             check.Expect(p.Sub == 0 && Count(RowKind.Knob) == 13 && !p.AdvOpen, "back to the group: the disclosure is closed again");
 
@@ -308,13 +328,13 @@ public sealed partial class KnobPanel
             check.Expect(p.Category == 2 && p.Sub == (p.Subs.Count > 0 ? 0 : -1), "a category press selects it and its first submenu");
             check.Expect(!p.MouseDown(1f, 1f), "a press off the panel is not consumed");
             // 1080p: the same tree fits with nothing clipped, Advanced open.
-            p.Category = Array.IndexOf(KnobCategories, "Hotkeys");
-            p.OpenAt(1920f, 1080f, FacePx, body, small); p._subs = new[] { g }; p.Sub = 0; p.AdvOpen = true; p.LayoutRows();
+            p.Category = Array.IndexOf(KnobCategories, "Controls");
+            p.OpenAt(1920f, 1080f, FacePx, body, small); p._subs = new[] { new SubMenu(g) }; p.Sub = 0; p.AdvOpen = true; p.LayoutRows();
             check.Expect(MathF.Abs(p.W - 1344f) < 0.5f && MathF.Abs(p.H - 810f) < 0.5f, "70%×75% of 1920×1080");
             FitCheck("1080p");
             // Escape closes; the face is the panel's own (a different Em re-lays out, nothing reads Metrics.Scale).
             check.Expect(!p.Key(0x1B) && !p.Open, "Escape closes the panel");
-            p.OpenAt(1920f, 1080f, 30f, body, small); p._subs = new[] { g }; p.Sub = 0; p.LayoutRows();
+            p.OpenAt(1920f, 1080f, 30f, body, small); p._subs = new[] { new SubMenu(g) }; p.Sub = 0; p.LayoutRows();
             check.Expect(MathF.Abs(p.W - 1344f) < 0.5f && R(g.Master!).H >= 3.3f * 30f, "the window size is the viewport's; the rows scale with the panel face only");
 
             // Draw allocates nothing, with every semantic on: strip, status, master off, dots, amber badge, Advanced open with
@@ -347,10 +367,10 @@ public sealed partial class KnobPanel
             // List: an item row per entry and a trailing add box; the add box appends (Enter keeps adding), an item box
             // edits in place, the × or an emptied entry removes, the cfg / chat form is one | line, a press aimed at a row
             // that a commit just moved is not applied, an off master greys the items, and the draw allocates nothing.
-            var lg = new KnobGroup("cx-panellist", "Hotkeys", "List check", "Enable the list", "The list master.", true,
+            var lg = new KnobGroup("cx-panellist", "Controls", "List check", "Enable the list", "The list master.", true,
                                    Effect.Live, null, null, "", register: false);
             var lst = lg.List("items", "Shortcuts", new[] { ";a alpha" }, hint: "Add one", help: "One entry each.");
-            p.OpenAt(1280f, 720f, FacePx, body, small); p._subs = new[] { lg }; p.Sub = 0; p.LayoutRows();
+            p.OpenAt(1280f, 720f, FacePx, body, small); p._subs = new[] { new SubMenu(lg) }; p.Sub = 0; p.LayoutRows();
             Row I(int i) { foreach (Row r in p.Rows) if (r.Kind == RowKind.Item && r.Item == i) return r; throw new InvalidOperationException($"no item row {i}"); }
             void ItemBox(Row r, out float cx, out float cy) { Show(r); p.ItemRect(r, p.List.ToScreen(r.Top), out float x0, out float x1, out float y0, out float y1); cx = (x0 + x1) * 0.5f; cy = (y0 + y1) * 0.5f; }
             void PressItem(Row r) { ItemBox(r, out float cx, out float cy); Press(cx, cy); }

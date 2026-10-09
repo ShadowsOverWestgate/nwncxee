@@ -28,18 +28,22 @@ internal static unsafe partial class Particles
 
     static Particles()
     {
-        G = KnobGroup.Declare("particles", "Graphics", "Particles", master: "Enable Alloy particles",
-            masterHelp: "Spell effects, smoke and fire drawn through CX: soft edges and lighting. Off, the stock particles draw.",
-            parent: "alloy.enabled");
+        G = KnobGroup.Declare("particles", "Graphics", "Motion", master: "Particles",
+            masterHelp: "Draw spell effects, smoke and fire. Off, no particles are drawn at all -- nothing else "
+                      + "draws them any more -- so this is a cfg-only switch.",
+            masterTier: Tier.ChatOnly, order: 354, title: "Particles");
         Enabled = G.Master!;
         G.Status = Describe;
 
         Soft = G.Toggle("soft", "Soft edges", true,
-                        help: "Particles fade where they meet geometry instead of cutting through it.");
-        Lit = G.Toggle("lit", "Lit particles", true, help: "Smoke and dust take the scene's light.");
-        Shadows = G.Toggle("shadows", "Shadowed particles", true, Tier.Advanced,
-                           help: "Lit particles pay the point-light shadow taps.");
-        Sort = G.Toggle("sort", "GPU sort", true, Tier.Advanced);
+                        help: "Particles fade where they meet geometry instead of cutting through it.")
+                .Ladder(Quality.Effects, false, true, true, true);
+        Lit = G.Toggle("lit", "Lit particles", true, help: "Smoke and dust take the scene's light.")
+               .Ladder(Quality.Effects, false, true, true, true);
+        Shadows = G.Toggle("shadows", "Shadowed particles", true, Tier.ChatOnly,
+                           help: "Lit particles pay the point-light shadow taps.")
+                   .Ladder(Quality.Effects, false, false, true, true);
+        Sort = G.Toggle("sort", "GPU sort", true, Tier.ChatOnly);
         Grid = G.Toggle("grid", "grid", true, Tier.ChatOnly);
         Guard = G.Toggle("guard", "guard", true, Tier.ChatOnly);
         Batch = G.Toggle("batch", "batch", true, Tier.ChatOnly, Effect.Restart);

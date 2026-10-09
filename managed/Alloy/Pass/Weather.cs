@@ -53,9 +53,10 @@ internal static unsafe partial class Weather
 
     static Weather()
     {
-        G = KnobGroup.Declare("weather", "Graphics", "Weather", master: "Enable Alloy weather",
-            masterHelp: "Rain and snow drawn by CX: wind-leaning streaks and flakes that stop under cover, wet and snowed ground. Off, the stock weather particles draw.",
-            parent: "alloy.enabled", masterChanged: MasterChanged);
+        G = KnobGroup.Declare("weather", "Graphics", "World", master: "Weather",
+            masterHelp: "Rain and snow drawn by CX: wind-leaning streaks and flakes that stop under cover, and ground "
+                      + "that wets, puddles and snows over. Off, the game's own rain and snow sheets fall instead.",
+            masterChanged: MasterChanged, order: 342, title: "Weather");
         Enabled = G.Master!;
         G.Status = Describe;
         DeclareKnobs();
@@ -64,12 +65,12 @@ internal static unsafe partial class Weather
         DeclareSurfaceKnobs();
         DeclareSplashKnobs();
         DeclareMapKnobs();
-        G.Section("Weather types");
-        RainRows = G.Text("rainrows", "Rain rows", "1,3,6,9", Tier.Advanced,
+        G.Section("");
+        RainRows = G.Text("rainrows", "Rain rows", "1,3,6,9", Tier.ChatOnly,
                           help: "weathertypes.2da rows drawn as rain (stock: 1).", changed: ParseRows);
-        SnowRows = G.Text("snowrows", "Snow rows", "2,4,5,10", Tier.Advanced,
+        SnowRows = G.Text("snowrows", "Snow rows", "2,4,5,10", Tier.ChatOnly,
                           help: "weathertypes.2da rows drawn as snow (stock: 2).", changed: ParseRows);
-        SnowSkip = G.Text("snowskip", "Tilesets without snow cover", "", Tier.Advanced,
+        SnowSkip = G.Text("snowskip", "Tilesets without snow cover", "", Tier.ChatOnly,
                           help: "Comma-separated tileset resrefs whose own textures already carry snow: their tiles take no cover (objects and ground still do). Empty = none.",
                           changed: RecheckTileset);
         ParseRows();

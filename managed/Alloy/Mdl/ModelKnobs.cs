@@ -18,16 +18,16 @@ internal static class ModelKnobs
 
     static ModelKnobs()
     {
-        G = KnobGroup.Declare("models", "Graphics", "Model cache", parent: "alloy.enabled");
+        G = KnobGroup.Declare("models", "Graphics", "Model cache");
         G.Status = Describe;
 
-        Budget = G.Slider("budget", "Keep unused models (MiB)", 0, 2048, 32, 192, " MiB", Tier.Advanced,
+        Budget = G.Slider("budget", "Keep unused models (MiB)", 0, 2048, 32, 192, " MiB", Tier.ChatOnly,
             help: "Parsed models stay in memory after the last thing using them is gone, so walking back into "
                 + "an area -- or into a second area built from the same tileset -- costs no re-parse. This is "
                 + "how much memory that is allowed to hold. 0 frees each model the moment nothing uses it, "
                 + "which makes every return trip a fresh read.");
 
-        Prefetch = G.Toggle("prefetch", "Parse models ahead of the area load", false, Tier.Advanced,
+        Prefetch = G.Toggle("prefetch", "Parse models ahead of the area load", false, Tier.ChatOnly,
             help: "CX parses an area's tile and placeable models on its own worker as the area message "
                 + "arrives, so whatever asks for one later gets it without waiting. Nothing draws from CX's "
                 + "own models yet (that is the scene-ownership work), so until it does this only costs the "

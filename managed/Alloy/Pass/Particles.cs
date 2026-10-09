@@ -357,7 +357,7 @@ internal static unsafe partial class Particles
             || !AurTex.Ready)
         {
             _off = true;
-            log.Info("Particles: an emitter helper, a global or AurTex did not resolve -- emitters stay vanilla");
+            log.Info("Particles: an emitter helper, a global or AurTex did not resolve -- no particles are drawn");
             return;
         }
 
@@ -1219,7 +1219,7 @@ internal static unsafe partial class Particles
         _prog = GlProgram.Graphics(ShaderSource.Get("cx_part_v.glsl"),
             ShaderSource.Get("cx_part_f.glsl"), _log, "Particles");
         if (_prog == 0)
-        { _failed = true; _log?.Info("Particles: program build failed -- emitters stay vanilla"); return false; }
+        { _failed = true; _log?.Info("Particles: program build failed -- no particles are drawn"); return false; }
         _locView = GlProgram.Loc(_prog, "uView");
         _locProj = GlProgram.Loc(_prog, "uProj");
         _locEye = GlProgram.Loc(_prog, "uEye");
@@ -1473,8 +1473,8 @@ internal static unsafe partial class Particles
     /// <summary>AC 4's number: emitters owned against draws issued. Vanilla's ratio is 1:1 by construction --
     /// it depth-sorts emitters individually and cannot merge two -- so anything above 1.0 here is a
     /// draw-call reduction the engine could not have made.</summary>
-    internal static string Stats(int frames) => _off ? "particles vanilla (Alloy pass unavailable)"
-        : !Enabled.V ? "particles vanilla (/particles enabled 0)"
+    internal static string Stats(int frames) => _off ? "no particles (Alloy pass unavailable)"
+        : !Enabled.V ? "no particles (/particles enabled 0)"
         : $"particles {_tabN} emitters ({_captured} captured), {_emitters} owned in {_groups} draws"
           + (_emitters == 0 ? "" : $" ({(float)_emitters / MathF.Max(1, _groups):F1}x batched)")
           + $", {_suppressed} engine draws suppressed"

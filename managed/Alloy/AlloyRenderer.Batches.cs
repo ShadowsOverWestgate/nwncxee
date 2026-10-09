@@ -313,18 +313,22 @@ public sealed unsafe partial class AlloyRenderer
     /// read as a gob has no type -- which is how every character first painted as an object.</summary>
     /// <summary>The caster pass's read of <see cref="CreaturePart"/>: a player character is RIGID parts under
     /// bone-driven nodes (pfh0_legl004...), not a skinmesh, so nothing else names it a creature.</summary>
-    internal static bool SlotCreature(int i) => (uint)i < (uint)_oGob.Length && CreaturePart(i);
-    private static bool CreaturePart(int i)
+    internal static bool SlotCreature(int i) => SlotCreatureObj(i) >= 0;
+    private static bool CreaturePart(int i) => CreatureObj(i) >= 0;
+    /// <summary>The creature object slot <paramref name="i"/> is a part of (its <see cref="SceneDb"/> index), or
+    /// -1 when it is no creature's: what lets every part of one body be treated as one caster.</summary>
+    internal static int SlotCreatureObj(int i) => (uint)i < (uint)_oGob.Length ? CreatureObj(i) : -1;
+    private static int CreatureObj(int i)
     {
         // Up the ATTACHMENT chain: a creature's body parts, its hat and its held weapon are each their own object
         // and only the one the game called SetExternalDataType on carries the kind. Eight hops.
         DbId o = SceneDb.PartObj[_oDbPart[i]];
         for (int hop = 0; hop < 8 && SceneDb.Objects.Valid(o); hop++)
         {
-            if ((SceneDb.ObjFlags[o.Index] & ObjFlag.Creature) != 0) return true;
+            if ((SceneDb.ObjFlags[o.Index] & ObjFlag.Creature) != 0) return o.Index;
             o = SceneDb.ObjAttachTo[o.Index];
         }
-        return false;
+        return -1;
     }
 
     private static float EyeDist2(int i)

@@ -102,12 +102,12 @@ public sealed unsafe partial class AlloyRenderer
         if (_benchStep >= 0) { BenchFinish("aborted"); return; }
         _benchKnobs = new Knob[] { Shadows.Soft, Shadows.CubeDist, Lighting.BinCap, Lighting.BinReach, Lightmap.Movers,
                                    Weather.Enabled, Lighting.Ssr, Lighting.SsrPlanar, Renderer.Scale,
-                                   Shadows.Taps, Shadows.Cap, Lighting.Relevance, Lighting.MaxLit, Lighting.HiddenLights,
+                                   Shadows.Taps, Shadows.Cap, Lighting.Relevance, Lighting.LightRec, Lighting.HiddenLights,
                                    Weather.EdgeTaps, Weather.Splash, Shadows.Dist, Shadows.SunFull, Lighting.Probe, Ao.On,
                                    Weather.FilmLights, Weather.Cover, Weather.WetStrength, Weather.RunOff, Weather.Map,
                                    Weather.SnowDepth, Weather.SnowPile, Weather.Impacts, Weather.ShelterCache, Lightmap.MoverTaps,
                                    Lighting.Deferred, Lighting.DeferredTiles, Shadows.DeferredRes,
-                                   Lightmap.MoverLights, Shadows.PerPixel, Lighting.Floor, Lighting.FullModel, Renderer.Oit, Lighting.LightRec };
+                                   Lightmap.MoverLights, Shadows.PerPixel, Lighting.Floor, Lighting.FullModel, Renderer.Oit };
         _benchWas = Array.ConvertAll(_benchKnobs, k => k.FormatStored());
         _benchSteps = new (string, (int, string)[])[]
         {
@@ -137,12 +137,11 @@ public sealed unsafe partial class AlloyRenderer
             // on the faint tail, and what the frame looks like without them.
             ("light.fullmodel 0.05 (plain falloff under 5% of the brightest light)", new[] { (36, "0.05") }),
             ("light.fullmodel 0.25 (plain falloff under a quarter of the brightest)", new[] { (36, "0.25") }),
-            ("light.maxlit 64", new[] { (12, "64") }),
             ("light.hidden 0 (no mirror walk of baked statics)", new[] { (13, "0") }),
             // CX-188: the whole move, read against the lit colour terms -- off puts the point-light loop back
             // inside the lit stage and the deferred dispatch does nothing.
             ("light.deferred 0 (forward point-light loop in the lit stage)", new[] { (30, "0") }),
-            ("light.lightrec 0 (blended fragments on a deferred surface walk the lights again)", new[] { (38, "0") }),
+            ("light.lightrec 0 (blended fragments on a deferred surface walk the lights again)", new[] { (12, "0") }),
             ("light.deferredtiles 1 (deferred pass on its own per-tile cull, not the froxel lists)", new[] { (31, "1") }),
             ("lightmap.movertaps 0 (hot lights: ray test only, no light body or shadow reads)", new[] { (29, "0") }),
             // CX-188 step 4: the pair tiles and the screen-space debt they feed. 0 is the whole feature off --

@@ -16,9 +16,9 @@ internal static class QuickbarKnobs
 
     static QuickbarKnobs()
     {
-        G = KnobGroup.Declare("quickbar", "UI", "Quickbar & compass", master: "Enable the CX quickbar layout",
+        G = KnobGroup.Declare("quickbar", "Interface", "HUD", master: "Enable the CX quickbar layout",
             masterHelp: "Centres the quickbar correctly and lets it sit left or right with background bars. Off, the stock quickbar position is used.",
-            masterChanged: QuickbarService.LayoutChanged);
+            masterChanged: QuickbarService.LayoutChanged, order: 230, title: "Quickbar & compass");
         Enabled = G.Master!;
         G.Section("Quickbar");
         Align = G.Dropdown("align", "Position", new[] { (int)QbarAlign.Left, (int)QbarAlign.Center, (int)QbarAlign.Right },

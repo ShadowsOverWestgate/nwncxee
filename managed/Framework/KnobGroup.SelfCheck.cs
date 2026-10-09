@@ -6,6 +6,11 @@ namespace CX.Framework;
 
 public sealed partial class KnobGroup
 {
+    /// <summary>User rows one submenu may hold, every group in it counted: past this it is a wall of dials.</summary>
+    internal const int MaxUserRows = 14;
+    /// <summary>Words that mark a row as a developer's (an engine-path comparison, a debug aid): such a knob is ChatOnly.</summary>
+    internal static readonly string[] DevWords = { "A/B", "debug", "diagnostic", "bisect" };
+
     /// <summary>Off-device: the three constraints on a throwaway group (each must be caught), the
     /// bind/set/reset/format contract, then a walk of every LIVE declaration -- a real knob that broke one
     /// fails the suite, which is what makes <c>run-demo.sh</c> the gate.</summary>
@@ -97,12 +102,51 @@ public sealed partial class KnobGroup
         check.Expect(z.Knobs.Count == 0 && z.Command("") == "[cx-selfcheck-zero] four\nlines" && z.Command("reset") == z.Command("")
           && z.Command("nosuch 1") == z.Command(""), "a zero-knob group answers every form with its status line");
 
+        // Ladders: a preset driver moves every member to its rung; a deviation survives until the next pick.
+        var lq = new KnobGroup("cx-selfcheck-ladder", "Test", "Ladder", null, null, true, Effect.Live, null, null, "", register: false);
+        string[] tiers = { "low", "high" };
+        var preset = lq.Dropdown("preset", "Preset", tiers, "high", help: "h");
+        var area = lq.Dropdown("area", "Area", tiers, "high", help: "h").Ladder(preset, "low", "high");
+        var rung = lq.Slider("rung", "Rung", 0, 8, 1, 4, help: "h").Ladder(area, 1, 4);
+        check.Expect(rung.V == 4 && rung.Default == 4 && rung.IsDefault, "a ladder member binds to the driver's rung");
+        rung.Set(6);
+        preset.Set("low");
+        check.Expect(area.V == "low" && rung.V == 1 && rung.Default == 1 && rung.IsDefault, "a preset pick cascades: area, then its member, deviation dropped");
+        rung.Set(3); rung.Reset();
+        check.Expect(rung.V == 1, "a reset returns to the current rung, not the declared default");
+        int fired = 0; rung.Changed = () => fired++;
+        preset.Set("low");
+        check.Expect(fired == 0, "re-picking the preset already in effect fires no member's Changed");
+        rung.Set(3); preset.Set("low");
+        check.Expect(fired == 2 && rung.V == 1, "...but still drops a nested deviation under an unchanged area");
+        check.Expect(preset.Enforce("high") && area.V == "high" && rung.V == 4, "a server hold on the driver cascades");
+        preset.Release();
+        check.Expect(area.V == "low" && rung.V == 1, "...and so does its release");
+        lq.Slider("wide", "Wide", 0, 8, 1, 4, help: "h").Ladder(preset, 1, 99);
+        lq.Slider("short", "Short", 0, 8, 1, 4, help: "h").Ladder(preset, 1);
+        check.Expect(preset.Members!.Count == 1, "a ladder with an out-of-range rung, or the wrong rung count, is refused");
+
         // The live walk: every real declaration so far, against the same three constraints.
         string[] v; lock (_all) v = _violations.ToArray();
         foreach (string w in v) check.Expect(false, $"declaration refused: {w}");
         foreach (KnobGroup lg in All)
             for (int i = 0; i < lg._knobs.Count; i++)
                 check.Expect(Constraints(lg._knobs[i]), $"{lg._knobs[i].Key} breaks a registry constraint");
+        // The panel is the player's: a submenu stays short, and no panel row is developer text.
+        var userRows = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (KnobGroup lg in All)
+            foreach (Knob k in lg._knobs)
+            {
+                if (k.Tier != Tier.User && k.Tier != Tier.Advanced) continue;
+                if (k.Tier == Tier.User && k.Kind != KnobKind.Link)
+                    userRows[lg.Category + " » " + lg.Submenu] = userRows.GetValueOrDefault(lg.Category + " » " + lg.Submenu) + 1;
+                foreach (string word in DevWords)
+                    check.Expect(k.Label.IndexOf(word, StringComparison.OrdinalIgnoreCase) < 0 && k.Help.IndexOf(word, StringComparison.OrdinalIgnoreCase) < 0,
+                                 $"{k.Key} is a panel row that reads as developer text ('{word}'): make it ChatOnly");
+            }
+        foreach (var kv in userRows)
+            check.Expect(kv.Value <= MaxUserRows, $"{kv.Key} has {kv.Value} User rows (cap {MaxUserRows}): merge, or move tuning to Advanced");
+
         // The gate on the LIVE registry (spec §4.1): /settings always, every generated command only when general.commands is on.
         var live = CommandRegistry.Global;
         check.Expect(live.Knows("/settings"), "/settings dispatches regardless of general.commands");

@@ -25,25 +25,26 @@ internal static class RadialKnobs
 
     static RadialKnobs()
     {
-        G = KnobGroup.Declare("radial", "UI", "Radial menu", master: "Enable the CX radial menu", masterDefault: true,
+        G = KnobGroup.Declare("radial", "Interface", "HUD", master: "Enable the CX radial menu", masterDefault: true,
             masterHelp: "Right-click menus as a nested dropdown drawn by CX. Off, the stock radial menu runs.",
+            order: 232, title: "Radial menu",
             header: "Drag a row to reorder it, or drag a deep row onto the top list to keep it there; right-click a row for the same edits, Hide and Reset.");
         Enabled = G.Master!;
         Lock = G.Toggle("lock", "Lock the layout", false, help: "Rows cannot be dragged and right-clicking one opens no edit popup. Turn off to rearrange again.");
         Mode = G.Dropdown("mode", "Submenus", new[] { ModeCascade, ModeDrill }, ModeCascade, new[] { "Cascade beside the row", "Drill down in place" },
             help: "Cascade: a submenu opens beside its row, on hover. Drill down: it replaces the list where it is, on click, with a Back row on top -- the pointer never travels.");
-        Dwell = G.Slider("dwell", "Submenu delay", 0, 600, 10, (int)CascadeMenu.DefaultDwellMs, "ms", help: "Cascade only: how long the pointer rests on a row before its submenu opens; 0 opens it at once.");
+        Dwell = G.Slider("dwell", "Submenu delay", 0, 600, 10, (int)CascadeMenu.DefaultDwellMs, "ms", Tier.Advanced, help: "Cascade only: how long the pointer rests on a row before its submenu opens; 0 opens it at once.");
         G.Section("Look");
         Opacity = G.Slider("opacity", "Opacity", 0.2f, 1f, 0.05f, 1f, help: "The whole menu's opacity; each colour's alpha applies on top of it.");
-        Bg = G.Swatch("bg", "Background", 0x05060afau, help: "The lists' fill.");
-        Frame = G.Swatch("frame", "Frame", 0x8c8c8cffu, help: "The 1 px border around each list.");
-        Hover = G.Swatch("hover", "Highlight", 0x38669effu, help: "The hovered row and the row whose submenu is open.");
-        Text = G.Swatch("text", "Text", 0xd8dee9ffu, help: "Labels, counts and the submenu marks.");
+        Bg = G.Swatch("bg", "Background", 0x05060afau, Tier.Advanced, help: "The lists' fill.");
+        Frame = G.Swatch("frame", "Frame", 0x8c8c8cffu, Tier.Advanced, help: "The 1 px border around each list.");
+        Hover = G.Swatch("hover", "Highlight", 0x38669effu, Tier.Advanced, help: "The hovered row and the row whose submenu is open.");
+        Text = G.Swatch("text", "Text", 0xd8dee9ffu, Tier.Advanced, help: "Labels, counts and the submenu marks.");
         G.Section("Text");
-        Font = new TextStyle(G, "the menu");
+        Font = new TextStyle(G, "the menu", tier: Tier.ChatOnly);
         G.Section("Animation");
         Anim = G.Toggle("anim", "Animate", true, help: "Lists fade and slide in as they open.");
-        AnimMs = G.Slider("animms", "Animation length", 40, 400, 10, 120, "ms", help: "How long a list takes to appear.");
+        AnimMs = G.Slider("animms", "Animation length", 40, 400, 10, 120, "ms", Tier.Advanced, help: "How long a list takes to appear.");
         Layout = G.Bag("p");
     }
 }

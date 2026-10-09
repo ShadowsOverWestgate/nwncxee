@@ -63,6 +63,14 @@ internal static class Renderer
         return s + " — " + GuiPass.Stats() + "; " + NuiFlush.Stats();
     }
 
+    /// <summary>The panel's line (ADR 0030): nothing while CX draws the world, and why it does not when it
+    /// does not. Without it "I set <c>alloy.enabled=0</c>" and "this machine cannot run the renderer" read the
+    /// same -- every Graphics setting silently inert either way. Idle is the main menu, which is neither.</summary>
+    internal static string PanelStatus()
+        => AlloyGate.Alloy || AlloyGate.Stand == AlloyStand.Idle ? ""
+         : "CX is not drawing the 3D world, so nothing in Graphics applies: "
+         + (AlloyGate.Failed ? AlloyGate.CapabilityReason : AlloyGate.Reason) + ".";
+
     private static string AutoInt(int v) => v < 0 ? "auto" : v.ToString(CultureInfo.InvariantCulture);
     private static (bool, int) ParseAutoInt(string s)
         => s == "auto" ? (true, -1)
@@ -78,47 +86,48 @@ internal static class Renderer
 
     static Renderer()
     {
-        G = KnobGroup.Declare("alloy", "Graphics", "Renderer", master: "Enable the Alloy renderer",
+        Quality.Touch();
+        G = KnobGroup.Declare("alloy", "Graphics", "Quality", master: "Enable the Alloy renderer",
             masterHelp: "Draw the 3D world with CX's own OpenGL 4.6 renderer: real-time shadows, HDR, grass, post-processing. "
-                      + "Off, the game's stock renderer draws everything and every Graphics submenu below is inactive. "
+                      + "Off, the game's own renderer draws the world and nothing under Graphics applies. "
                       + "Takes effect at the next launch.",
-            masterEffect: Effect.Restart);
+            masterEffect: Effect.Restart, masterTier: Tier.ChatOnly, order: 302, title: "Display");
         Enabled = G.Master!;
         G.Status = Status;
+        G.PanelStatus = PanelStatus;
 
         Scale = G.Slider("scale", "Render scale", 0.25f, 2f, 0.05f, 1f,
                          help: "Size of the 3D frame relative to your screen. Below 1 renders fewer pixels and upscales (faster); "
                              + "above 1 supersamples (sharper, slower). The UI is never scaled.");
-        Gui = G.Toggle("gui", "Draw the interface with Alloy", true, Tier.Advanced,
-                       help: "Menus, panels, text, the minimap and the cursor are drawn by CX's renderer from what the game "
-                           + "lays out. Off, the game's own renderer draws them again.");
-        G.Section("Geometry");
         Highlight = G.Dropdown("highlight", "Selection highlight", new[] { "glow", "outline" }, "outline",
                                help: "How a selected or hovered object is marked: an outline with a light fill, or a soft glow around the object.");
-        Weld = G.Slider("weld", "Smooth-shading crease angle", 0f, 180f, 5f, 60f, "°", Tier.Advanced,
-                        help: "Faces meeting at a sharper angle than this keep a hard edge. 0 keeps every model's own normals. "
-                            + "Applies to models loaded after the change.");
-        Lod = G.Slider("lod", "Cull models smaller than", 0f, 8f, 0.5f, 1f, "px", Tier.Advanced,
-                       help: "Distant models whose projected size is under this many pixels are skipped.",
-                       changed: AlloyRenderer.InvalidateRecords);
-        Border = G.Slider("border", "Neighbouring-area ring", 5, 40, 5, 15, "tiles", Tier.Advanced, Effect.Restart,
-                          help: "Tiles drawn past the area edge so the horizon is not empty; the stock game draws 5.");
-        G.Section("Transparency");
-        Oit = G.Dropdown("oit", "Transparency", new[] { 0, 1, 2 }, 2, new[] { "sorted", "weighted", "linked lists" }, tier: Tier.Advanced,
-                         help: "How overlapping transparent surfaces are combined.", changed: AlloyRenderer.InvalidateRecords);
-        OitLayers = G.Dropdown("oitlayers", "Transparency layers per pixel", new[] { 1, 2, 3, 4, 6, 8 }, 3, tier: Tier.Advanced,
-                               effect: Effect.Restart, help: "Memory reserved for linked-list transparency; ~33 MB per layer at 1080p.");
-        G.Section("Memory");
-        TexCache = G.Dropdown("texcache", "Texture memory budget", new[] { -1, 512, 1024, 2048, 4096, 8192 }, -1, tier: Tier.Advanced,
-                              effect: Effect.Restart, format: AutoInt, parse: ParseAutoInt);
-        Bindless = G.Dropdown("bindless", "Bindless textures", new[] { -1, 1, 0 }, -1, tier: Tier.Advanced, effect: Effect.Restart,
-                              help: "Auto turns them off on Zink.", format: AutoOnOff, parse: ParseAutoOnOff);
+        Lod = G.Slider("lod", "Skip models smaller than", 0f, 8f, 0.5f, 1f, "px", Tier.Advanced,
+                       help: "Distant models whose projected size is under this many pixels are not drawn at all.",
+                       changed: AlloyRenderer.InvalidateRecords)
+               .Ladder(Quality.Detail, 2f, 1.5f, 1f, 0.5f);
         TexPreview = G.Toggle("texpreview", "Low-resolution texture previews", true, Tier.Advanced, Effect.Live,
                               help: "While an area streams in, every texture first shows a small blurred version of itself, then sharpens when the full one lands. Off: a texture shows white until it has fully loaded.");
-        Bcn = G.Toggle("bcn", "Compress textures on load", true, Tier.Advanced, Effect.Restart,
-                       help: "Re-encodes uncompressed textures as BC1/BC3: 3–4× less VRAM, a little load-time CPU.");
 
         G.Section("");
+        Gui = G.Toggle("gui", "Draw the interface with Alloy", true, Tier.ChatOnly,
+                       help: "Menus, panels, text, the minimap and the cursor are drawn by CX's renderer from what the game "
+                           + "lays out. Off, the game's own renderer draws them again.");
+        Weld = G.Slider("weld", "Smooth-shading crease angle", 0f, 180f, 5f, 60f, "°", Tier.ChatOnly,
+                        help: "Faces meeting at a sharper angle than this keep a hard edge. 0 keeps every model's own normals. "
+                            + "Applies to models loaded after the change.");
+        Border = G.Slider("border", "Neighbouring-area ring", 5, 40, 5, 15, "tiles", Tier.ChatOnly, Effect.Restart,
+                          help: "Tiles drawn past the area edge so the horizon is not empty; the stock game draws 5.");
+        Oit = G.Dropdown("oit", "Transparency", new[] { 0, 1, 2 }, 2, new[] { "sorted", "weighted", "linked lists" }, tier: Tier.ChatOnly,
+                         help: "How overlapping transparent surfaces are combined.", changed: AlloyRenderer.InvalidateRecords);
+        OitLayers = G.Dropdown("oitlayers", "Transparency layers per pixel", new[] { 1, 2, 3, 4, 6, 8 }, 3, tier: Tier.ChatOnly,
+                               effect: Effect.Restart, help: "Memory reserved for linked-list transparency; ~33 MB per layer at 1080p.");
+        TexCache = G.Dropdown("texcache", "Texture memory budget", new[] { -1, 512, 1024, 2048, 4096, 8192 }, -1, tier: Tier.ChatOnly,
+                              effect: Effect.Restart, format: AutoInt, parse: ParseAutoInt);
+        Bindless = G.Dropdown("bindless", "Bindless textures", new[] { -1, 1, 0 }, -1, tier: Tier.ChatOnly, effect: Effect.Restart,
+                              help: "Auto turns them off on Zink.", format: AutoOnOff, parse: ParseAutoOnOff);
+        Bcn = G.Toggle("bcn", "Compress textures on load", true, Tier.ChatOnly, Effect.Restart,
+                       help: "Re-encodes uncompressed textures as BC1/BC3: 3–4× less VRAM, a little load-time CPU.");
+
         Hdr = G.Toggle("hdr", "hdr", true, Tier.ChatOnly, Effect.Restart);
         Gl46 = G.Toggle("gl46", "gl46", true, Tier.ChatOnly, Effect.Restart);
         DrawHooks = G.Dropdown("drawhooks", "drawhooks", new[] { DrawFunnelService.DrawModeBatch, DrawFunnelService.DrawModeStats },

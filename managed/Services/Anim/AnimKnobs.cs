@@ -39,9 +39,11 @@ internal static class AnimKnobs
 
     static AnimKnobs()
     {
-        G = KnobGroup.Declare("anim", "Graphics", "Animation", master: "Procedural animations",
-            masterHelp: "Animation post-processing - foot adjustments, leaning, carry weight-based adjustments.",
-            header: "Client-side only.");
+        G = KnobGroup.Declare("anim", "Graphics", "Motion", master: "Procedural animations",
+            masterHelp: "Corrections on top of the game's own animation: feet that stand on the floor that is "
+                      + "drawn, strides that match the pace, leaning, body weight and hit reactions. Off, every "
+                      + "correction below reads off and characters animate exactly as the stock game plays them.",
+            header: "Client-side only.", order: 350, title: "Animation");
         Enabled = G.Master!;
         Distance = G.Slider("distance", "Detail distance", 10f, 80f, 5f, 30f, "m", tier: Tier.ChatOnly,
             help: "Characters farther than this from yours keep the engine's own animation: at that range the corrections cannot be seen, and a crowded area pays for every character in it. Cloaks stay in step at any distance.");

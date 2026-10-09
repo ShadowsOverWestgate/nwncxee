@@ -19,12 +19,13 @@ internal static class Hotkeys
 
     static Hotkeys()
     {
-        G = KnobGroup.Declare("hotkeys", "Hotkeys", "Hotkeys", master: "Enable server hotkeys",
+        G = KnobGroup.Declare("hotkeys", "Controls", "Hotkeys", order: 540, master: "Enable server hotkeys",
             masterHelp: "Lets a server bind keys to its own actions, after you approve each one. Off, no key is sent "
                       + "and no approval is asked; keys reach the game only.",
             masterChanged: OnMaster);
         Enabled = G.Master!;
         G.Status = Status;
+        G.PanelStatus = Status;
         Bind = G.Button("bind", "Bind keys on this server…", OpenServerUi,
             help: "Opens the server's own key-binding window. Greyed outside a server session.");
         Bind.Enabled = () => GameGate.InModule;
@@ -46,6 +47,8 @@ internal static class Hotkeys
         if (!Enabled.V) HotkeyConsent.Reset();
     }
 
+    /// <summary>Which keys this server may use -- the player's own question, so it is the panel's line as well as
+    /// the chat command's.</summary>
     private static string Status()
     {
         var keys = HotkeyStore.Consented;

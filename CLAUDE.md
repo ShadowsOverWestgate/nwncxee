@@ -68,7 +68,8 @@ the `cx.cfg` key and the `/<group> <knob> <value>` chat command are three views 
 Nothing else creates a knob. The panel (`/settings`, or the gear at the main menu) is the
 primary surface; chat commands are gated by `general.commands` (off by default, `/settings`
 exempt). `cx.cfg` is the one file, in the client's user directory beside `nwn.ini`; `/knobs`
-(and General → Debug info) prints every declaration. Spec: `docs/spec/unified-settings.md`.
+prints every declaration, and General → About's *Copy my settings for a bug report* puts the
+same text on the clipboard. Spec: `docs/spec/unified-settings.md`.
 
 The one exemption is `CX_MANAGED`, which the native bootstrap reads before any
 managed code exists.

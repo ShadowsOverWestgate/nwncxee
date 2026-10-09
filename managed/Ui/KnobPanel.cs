@@ -39,7 +39,7 @@ namespace CX.Ui;
 /// </summary>
 public sealed partial class KnobPanel
 {
-    public static readonly string[] KnobCategories = { "General", "UI", "Graphics", "Audio", "Camera", "Hotkeys" };
+    public static readonly string[] KnobCategories = { "General", "Interface", "Graphics", "Audio", "Controls" };
     public const string ResetText = "Reset to defaults";
     public const string AdvancedClosed = "▸ Advanced", AdvancedOpen = "▾ Advanced";
     public const string BadgeText = "↻ restart";
@@ -69,7 +69,7 @@ public sealed partial class KnobPanel
     internal Func<KnobGroup, Knob<bool>?> ResolveParent = g => g.Parent;
 
     // ---- rows ----
-    public enum RowKind { Note, Section, Knob, Status, Strip, Advanced, Channel, Item }
+    public enum RowKind { Note, Section, Knob, Status, Strip, Advanced, Channel, Item, Heading }
 
     /// <summary>One laid-out line of the knob column: a section header, a note (the group's header text), the
     /// status line, the parent-off strip, the Advanced disclosure, a control row (a knob's, or a consumer's
@@ -103,6 +103,8 @@ public sealed partial class KnobPanel
         public float CtlW;
         /// <summary>The boxed master row.</summary>
         public bool Master;
+        /// <summary>Which group of a shared submenu the row belongs to: its index into the panel's gates.</summary>
+        public int Slot;
         /// <summary>An Advanced-tier row: compact, its help behind the marker.</summary>
         public bool Adv;
         /// <summary>The <c>(?)</c> marker (an Advanced row with help) and the ↻ badge (a Restart row).</summary>
@@ -133,6 +135,7 @@ public sealed partial class KnobPanel
         public void Refresh()
         {
             if (K == null) return;
+            OffDefault = !K.IsDefault; Moved = K.BootMoved;
             switch (K)
             {
                 case Knob<bool> kb:
@@ -155,7 +158,6 @@ public sealed partial class KnobPanel
                     break;
             }
             _seeded = true; Dirty = false;
-            OffDefault = !K.IsDefault; Moved = K.BootMoved;
             if (Channel >= 0)
             {
                 Byte = (byte)(Rgba >> (8 * (3 - Channel)));
@@ -201,18 +203,29 @@ public sealed partial class KnobPanel
     public int Sub = -1;
     /// <summary>The Advanced disclosure; closes when the submenu changes.</summary>
     public bool AdvOpen;
-    private KnobGroup[] _subs = Array.Empty<KnobGroup>();
+    /// <summary>One submenu: every group of the category that names it, in <see cref="KnobGroup.Order"/>.</summary>
+    public sealed class SubMenu
+    {
+        public readonly string Name;
+        public readonly KnobGroup[] Groups;
+        public SubMenu(params KnobGroup[] groups) { Groups = groups; Name = groups.Length > 0 ? groups[0].Submenu : ""; }
+    }
+    private SubMenu[] _subs = Array.Empty<SubMenu>();
     /// <summary>The laid-out rows; the draw walks these, hit-testing reads them. A layout swaps in a fresh list
     /// (never mutates in place), so a reader on another thread iterates a stable snapshot.</summary>
     private volatile List<Row> _rows = new();
     private string _khTitle = "", _khPath = "", _statusText = "";
-    private Knob<bool>? _own;
-    private Knob<bool>[] _ancestors = Array.Empty<Knob<bool>>();
-    private bool _stripLaid, _resettable;
+    /// <summary>Per group of the submenu (a row's <see cref="Row.Slot"/>): the switches that grey its value rows --
+    /// its own master and every ancestor's. Slot 0 is the lead group's.</summary>
+    private Knob<bool>[][] _gates = Array.Empty<Knob<bool>[]>();
+    /// <summary>The switches a strip was laid for, and whether each was off at layout: a flip from chat re-lays.</summary>
+    private Knob<bool>[] _stripGates = Array.Empty<Knob<bool>>();
+    private bool[] _stripWasOff = Array.Empty<bool>();
+    private bool _resettable;
     private Knob? _expanded;
     private Row? _confirm; private long _confirmAt;
     private Row? _copied; private long _copiedAt;
-    public IReadOnlyList<KnobGroup> Subs => _subs;
+    public IReadOnlyList<SubMenu> Subs => _subs;
     public List<Row> Rows => _rows;
 
     // ---- consumer contract (rows from a Source instead of the registry) ----
@@ -339,11 +352,32 @@ public sealed partial class KnobPanel
     public void Relayout()
     {
         if (Source != null) { Source(); return; }
-        var subs = new List<KnobGroup>();
+        var groups = new List<KnobGroup>();
         foreach (KnobGroup g in KnobGroup.All)
-            if (string.Equals(g.Category, Categories[Category], StringComparison.OrdinalIgnoreCase)) subs.Add(g);
-        _subs = subs.ToArray();
+            if (string.Equals(g.Category, Categories[Category], StringComparison.OrdinalIgnoreCase) && Shown(g)) groups.Add(g);
+        var idx = new Dictionary<KnobGroup, int>();
+        for (int i = 0; i < groups.Count; i++) idx[groups[i]] = i;
+        groups.Sort((a, b) => a.Order != b.Order ? a.Order.CompareTo(b.Order) : idx[a].CompareTo(idx[b]));
+        var names = new List<string>();
+        var members = new Dictionary<string, List<KnobGroup>>(StringComparer.OrdinalIgnoreCase);
+        foreach (KnobGroup g in groups)
+        {
+            if (!members.TryGetValue(g.Submenu, out var m)) { members[g.Submenu] = m = new(); names.Add(g.Submenu); }
+            m.Add(g);
+        }
+        var subs = new SubMenu[names.Count];
+        for (int i = 0; i < subs.Length; i++) subs[i] = new SubMenu(members[names[i]].ToArray());
+        _subs = subs;
         LayoutRows();
+    }
+
+    /// <summary>A group earns a place in the panel with a User or Advanced row or a player-facing status line;
+    /// a diagnostics-only group lives in chat and <c>/knobs</c>.</summary>
+    internal static bool Shown(KnobGroup g)
+    {
+        if (g.PanelStatus != null) return true;
+        foreach (Knob k in g.Knobs) if (k.Tier == Tier.User || k.Tier == Tier.Advanced) return true;
+        return false;
     }
 
     /// <summary>A submenu change: the disclosure closes and the expanded swatch folds.</summary>
@@ -352,10 +386,11 @@ public sealed partial class KnobPanel
         Sub = s; AdvOpen = false; _expanded = null; List.Reset();
     }
 
-    /// <summary>Lay out the chosen submenu's rows for the current geometry and faces, then publish the list:
-    /// the strip when an ancestor master is off, the header note, the status line, the User rows (master boxed
-    /// first) with their sections and any expanded swatch's channels, then the Advanced disclosure and, open,
-    /// the Advanced rows with their own sections.</summary>
+    /// <summary>Lay out the chosen submenu's rows for the current geometry and faces, then publish the list. Per
+    /// group (a shared submenu heads each with its title): the strip when an ancestor -- or its own chat-only
+    /// master -- is off, the header note, the panel status line, the User rows (master boxed first) with their
+    /// sections and any expanded swatch's channels; then one Advanced disclosure and, open, every group's
+    /// Advanced rows.</summary>
     internal void LayoutRows()
     {
         if (Source != null) { Source(); return; }
@@ -368,57 +403,84 @@ public sealed partial class KnobPanel
         var rows = new List<Row>();
         float y = 0.4f * Em;
         float noteW = ListInnerW();
-        KnobGroup? g0 = Sub >= 0 ? _subs[Sub] : null;
-        _khTitle = g0?.Submenu ?? Categories[Category];
-        _khPath = g0 == null ? "" : Categories[Category] + " » " + g0.Submenu;
-        _own = g0?.Master; _resettable = false; _statusText = ""; _stripLaid = false;
-        _ancestors = Array.Empty<Knob<bool>>();
-        if (g0 == null)
+        SubMenu? sub = Sub >= 0 ? _subs[Sub] : null;
+        KnobGroup[] gs = sub?.Groups ?? Array.Empty<KnobGroup>();
+        bool shared = gs.Length > 1;
+        _khTitle = sub?.Name ?? Categories[Category];
+        _khPath = sub == null ? "" : Categories[Category] + " » " + sub.Name;
+        _resettable = false; _statusText = "";
+        var gates = new Knob<bool>[gs.Length][];
+        var stripGates = new List<Knob<bool>>();
+        var stripOff = new List<bool>();
+        if (gs.Length == 0)
             AddNote(rows, ref y, "Nothing here yet.", noteW);
-        else
+        int adv = 0;
+        for (int slot = 0; slot < gs.Length; slot++)
         {
+            KnobGroup g = gs[slot];
             var anc = new List<Knob<bool>>();
-            for (Knob<bool>? p = ResolveParent(g0); p != null && anc.Count < 8; p = ResolveParent(p.Group)) anc.Add(p);
-            _ancestors = anc.ToArray();
-            Knob<bool>? off = FirstOffAncestor();
+            for (Knob<bool>? p = ResolveParent(g); p != null && anc.Count < 8; p = ResolveParent(p.Group)) anc.Add(p);
+            var gate = new List<Knob<bool>>(anc);
+            if (g.Master != null) gate.Insert(0, g.Master);
+            gates[slot] = gate.ToArray();
+            bool headed = !shared;
+            void Head(ref float yy) { if (!headed) { AddHeading(rows, ref yy, g.Title); headed = true; } }
+            Knob<bool>? hidden = g.Master != null && g.Master.Tier != Tier.User && g.Master.Tier != Tier.Advanced ? g.Master : null;
+            Knob<bool>? off = null;
+            foreach (Knob<bool> a in anc) if (!a.V) { off = a; break; }
+            if (off == null && hidden != null && !hidden.V) off = hidden;
+            foreach (Knob<bool> sg in anc) { stripGates.Add(sg); stripOff.Add(!sg.V); }
+            if (hidden != null) { stripGates.Add(hidden); stripOff.Add(!hidden.V); }
             if (off != null)
             {
-                _stripLaid = true;
+                Head(ref y);
                 string restart = off.Effect == Effect.Restart ? " (restart)" : "";
-                AddLines(rows, ref y, RowKind.Strip,
-                         $"{off.Label} is off — these settings apply once it is enabled in {off.Group.Category} » {off.Group.Submenu}{restart}.",
-                         noteW - 1.6f * Em, 0.6f * Em + 1f * Em);
+                string text = ReferenceEquals(off, hidden)
+                    ? $"{off.Label} is off ({off.Key}=0 in cx.cfg) — click here to turn it back on{restart}."
+                    : $"{off.Label} is off — these settings apply once it is enabled in {off.Group.Category} » {off.Group.Submenu}{restart}.";
+                AddLines(rows, ref y, RowKind.Strip, text, noteW - 1.6f * Em, 0.6f * Em + 1f * Em);
+                Row st = rows[rows.Count - 1];
+                st.Slot = slot;
+                if (ReferenceEquals(off, hidden)) st.K = hidden;
             }
-            if (g0.Header.Length > 0) AddNote(rows, ref y, g0.Header, noteW);
-            _statusText = g0.Status?.Invoke() ?? "";
-            if (_statusText.Length > 0) AddLines(rows, ref y, RowKind.Status, _statusText, noteW - 0.6f * Em, 0.8f * Em);
+            string status = g.PanelStatus?.Invoke() ?? "";
+            _statusText += status + "\u0001";
+            bool userRows = false;
+            foreach (Knob k in g.Knobs) if (k.Tier == Tier.User) { userRows = true; break; }
+            if (g.Header.Length > 0 && (userRows || status.Length > 0 || !shared)) { Head(ref y); AddNote(rows, ref y, g.Header, noteW); }
+            if (status.Length > 0) { Head(ref y); AddLines(rows, ref y, RowKind.Status, status, noteW - 0.6f * Em, 0.8f * Em); }
             string section = "";
-            int adv = 0;
-            foreach (Knob k in g0.Knobs)
+            foreach (Knob k in g.Knobs)
             {
                 if (k.Tier == Tier.Advanced) { adv++; continue; }
                 if (k.Tier != Tier.User) continue;
                 if (k.Kind != KnobKind.Button && k.Kind != KnobKind.Link) _resettable = true;
+                Head(ref y);
                 AddSection(rows, ref y, k, ref section);
-                AddKnobRow(rows, ref y, k, k == g0.Master, false);
-            }
-            if (adv > 0)
-            {
-                _resettable = true;
-                rows.Add(new Row { Kind = RowKind.Advanced, Text = AdvOpen ? AdvancedOpen : AdvancedClosed, Top = y, H = 0.8f * Em + 1.2f * Em + SmallLh });
-                y += rows[rows.Count - 1].H;
-                if (AdvOpen)
-                {
-                    section = "";
-                    foreach (Knob k in g0.Knobs)
-                    {
-                        if (k.Tier != Tier.Advanced) continue;
-                        AddSection(rows, ref y, k, ref section);
-                        AddKnobRow(rows, ref y, k, false, true);
-                    }
-                }
+                AddKnobRow(rows, ref y, k, k == g.Master, false, slot);
             }
         }
+        _stripGates = stripGates.ToArray(); _stripWasOff = stripOff.ToArray();
+        if (adv > 0)
+        {
+            _resettable = true;
+            rows.Add(new Row { Kind = RowKind.Advanced, Text = AdvOpen ? AdvancedOpen : AdvancedClosed, Top = y, H = 0.8f * Em + 1.2f * Em + SmallLh });
+            y += rows[rows.Count - 1].H;
+            if (AdvOpen)
+                for (int slot = 0; slot < gs.Length; slot++)
+                {
+                    string section = "";
+                    bool headed = !shared;
+                    foreach (Knob k in gs[slot].Knobs)
+                    {
+                        if (k.Tier != Tier.Advanced) continue;
+                        if (!headed) { AddHeading(rows, ref y, gs[slot].Title); headed = true; }
+                        AddSection(rows, ref y, k, ref section);
+                        AddKnobRow(rows, ref y, k, false, true, slot);
+                    }
+                }
+        }
+        _gates = gates;
         Publish(rows, y);
     }
 
@@ -491,9 +553,16 @@ public sealed partial class KnobPanel
         y += SecH;
     }
 
-    private void AddKnobRow(List<Row> rows, ref float y, Knob k, bool master, bool adv)
+    /// <summary>A shared submenu's group title: the body face over the group's rows.</summary>
+    private void AddHeading(List<Row> rows, ref float y, string title)
     {
-        var r = new Row { Kind = RowKind.Knob, K = k, Ctl = k.Kind, Text = k.Label, Top = y, Master = master, Adv = adv };
+        rows.Add(new Row { Kind = RowKind.Heading, Text = title, Top = y, H = BodyLh + 1.4f * Em });
+        y += rows[rows.Count - 1].H;
+    }
+
+    private void AddKnobRow(List<Row> rows, ref float y, Knob k, bool master, bool adv, int slot = 0)
+    {
+        var r = new Row { Kind = RowKind.Knob, K = k, Ctl = k.Kind, Text = k.Label, Top = y, Master = master, Adv = adv, Slot = slot };
         r.HasMark = adv && k.Help.Length > 0;
         r.Restart = k.Effect == Effect.Restart && k.Kind != KnobKind.Button && k.Kind != KnobKind.Link;
         r.CtlW = ControlW(r);
@@ -509,7 +578,7 @@ public sealed partial class KnobPanel
         if (k.Kind == KnobKind.Swatch && ReferenceEquals(k, _expanded))
             for (int ch = 0; ch < 4; ch++)
             {
-                var c = new Row { Kind = RowKind.Channel, K = k, Ctl = KnobKind.Slider, Channel = ch, Text = ChannelNames[ch], Top = y, H = ChanH, CtlW = TrackW + Gap + ValueW };
+                var c = new Row { Kind = RowKind.Channel, K = k, Ctl = KnobKind.Slider, Channel = ch, Slot = slot, Text = ChannelNames[ch], Top = y, H = ChanH, CtlW = TrackW + Gap + ValueW };
                 c.Refresh();
                 y += ChanH;
                 rows.Add(c);
@@ -520,7 +589,7 @@ public sealed partial class KnobPanel
             for (int i = 0; i <= items.Count; i++)
             {
                 bool adds = i == items.Count;
-                rows.Add(new Row { Kind = RowKind.Item, K = k, Item = i, Adds = adds, Value = adds ? "" : items[i], Text = k.Hint, Top = y, H = ItemH });
+                rows.Add(new Row { Kind = RowKind.Item, K = k, Slot = slot, Item = i, Adds = adds, Value = adds ? "" : items[i], Text = k.Hint, Top = y, H = ItemH });
                 y += ItemH;
             }
         }
@@ -625,31 +694,50 @@ public sealed partial class KnobPanel
 
     // ---- master state (read per frame: fields only) ----
 
-    private Knob<bool>? FirstOffAncestor()
+    /// <summary>Group <paramref name="slot"/>'s value rows are inert: its own master or an ancestor's is off.</summary>
+    private bool SlotOff(int slot)
     {
-        for (int i = 0; i < _ancestors.Length; i++) if (!_ancestors[i].V) return _ancestors[i];
-        return null;
+        Knob<bool>[][] gates = _gates;
+        if ((uint)slot >= (uint)gates.Length) return false;
+        Knob<bool>[] g = gates[slot];
+        if (g == null) return false;
+        for (int i = 0; i < g.Length; i++) if (!g[i].V) return true;
+        return false;
     }
 
-    /// <summary>The group's value rows are inert: its own master or any ancestor's is off.</summary>
-    public bool MasterOff => (_own != null && !_own.V) || FirstOffAncestor() != null;
+    /// <summary>The lead group's value rows are inert.</summary>
+    public bool MasterOff => SlotOff(0);
+
+    /// <summary>A switch a strip was laid for flipped since the layout (from chat): the strips are stale.</summary>
+    private bool StripsStale()
+    {
+        for (int i = 0; i < _stripGates.Length; i++) if (_stripGates[i].V == _stripWasOff[i]) return true;
+        return false;
+    }
 
     /// <summary>A row drawn at <see cref="OffAlpha"/> and ignoring presses: a <see cref="Knob.Disabled"/> row
     /// always, a button whose own <see cref="KnobButton.Enabled"/> says no, else a value row (never the master,
-    /// an action or a link) while <see cref="MasterOff"/>.</summary>
+    /// an action or a link) while its group's gate is off.</summary>
     public bool Greyed(Row r)
     {
-        if (r.Kind == RowKind.Channel) return MasterOff;
-        if (r.Kind == RowKind.Item) return r.K is { Disabled: true } or { Enforced: true } || MasterOff;
+        if (r.Kind == RowKind.Channel) return SlotOff(r.Slot);
+        if (r.Kind == RowKind.Item) return r.K is { Disabled: true } or { Enforced: true } || SlotOff(r.Slot);
         if (r.Kind != RowKind.Knob || r.Master || r.K == null) return false;
         if (r.K.Disabled || r.K.Enforced) return true;
         if (r.K.Kind == KnobKind.Button) return r.K is KnobButton { Enabled: { } en } && !en();
         if (r.K.Kind == KnobKind.Link) return false;
-        return MasterOff;
+        return SlotOff(r.Slot);
     }
 
     /// <summary>A submenu holding an off-default User or Advanced row (the nav dot). Per frame: a field compare
     /// per knob, nothing allocated.</summary>
+    public static bool SubDirty(SubMenu s)
+    {
+        for (int i = 0; i < s.Groups.Length; i++) if (SubDirty(s.Groups[i])) return true;
+        return false;
+    }
+
+    /// <summary>One group's half of <see cref="SubDirty(SubMenu)"/>.</summary>
     public static bool SubDirty(KnobGroup g)
     {
         IReadOnlyList<Knob> ks = g.Knobs;
@@ -830,14 +918,15 @@ public sealed partial class KnobPanel
         }
         int s = NavAt(SubCol, _subs.Length, mx, my);
         if (s >= 0) { if (s != Sub) { SelectSub(s); Relayout(); } return true; }
-        KnobGroup? g0 = Sub >= 0 && Sub < _subs.Length ? _subs[Sub] : null;
-        if (OverReset(mx, my)) { g0?.ResetRows(); LayoutRows(); return true; }
+        SubMenu? g0 = Sub >= 0 && Sub < _subs.Length ? _subs[Sub] : null;
+        if (OverReset(mx, my)) { if (g0 != null) foreach (KnobGroup g in g0.Groups) g.ResetRows(); LayoutRows(); return true; }
         // A parent flipped from chat since the layout: the strip is stale, re-lay out before hit-testing.
-        if (g0 != null && _stripLaid != (FirstOffAncestor() != null)) LayoutRows();
+        if (g0 != null && StripsStale()) LayoutRows();
         if (moved) return true;   // a list gained or lost an item: every row under it moved since the press was aimed
         Row? r = RowAt(mx, my, out float top);
         if (r == null) return true;
         if (r.Kind == RowKind.Advanced) { AdvOpen = !AdvOpen; LayoutRows(); return true; }
+        if (r.Kind == RowKind.Strip && r.K is Knob<bool> sw) { sw.Set(true); LayoutRows(); return true; }
         if (r.Kind != RowKind.Knob && r.Kind != RowKind.Channel && r.Kind != RowKind.Item) return true;
         if (Greyed(r)) return true;
         if (r.Kind == RowKind.Item) { ItemPress(r, top, mx, my); return true; }
@@ -934,10 +1023,12 @@ public sealed partial class KnobPanel
     }
 
     /// <summary>After a press that may have changed the group's status line: re-lay out when it did.</summary>
-    private void RefreshStatus(KnobGroup? g0)
+    private void RefreshStatus(SubMenu? g0)
     {
-        if (g0?.Status == null) return;
-        if (g0.Status() != _statusText) LayoutRows();
+        if (g0 == null) return;
+        string now = "";
+        foreach (KnobGroup g in g0.Groups) now += (g.PanelStatus?.Invoke() ?? "") + "\u0001";
+        if (now != _statusText) LayoutRows();
     }
 
     /// <summary>Motion: a header drag moves the panel, a grabbed slider or thumb tracks, the open list hovers;
@@ -1012,6 +1103,9 @@ public sealed partial class KnobPanel
             case Knob<uint> ku: ku.Set(ku.Values[i]); break;
             default: r.K!.Parse(choices[i]); r.Dirty = true; break;
         }
+        // A ladder driver moved its members' defaults (and maybe a status line): every row's dot is stale.
+        if (r.K.Members != null) LayoutRows();
+        else RefreshStatus(Sub >= 0 && Sub < _subs.Length ? _subs[Sub] : null);
     }
 
     /// <summary>The slider: pointer x to a value snapped to the knob's step, applied as a set per motion. A
@@ -1228,7 +1322,7 @@ public sealed partial class KnobPanel
             Fill(b, SubCol.X + SubCol.W - 1f, SubCol.Y, SubCol.X + SubCol.W, SubCol.Y + SubCol.H, ColBorder);
             b.ClipY(SubCol.Y, SubCol.Y + SubCol.H);
             var subs = _subs;
-            for (int i = 0; i < subs.Length; i++) Nav(b, body, SubCol, i, subs[i].Submenu, i == Sub, i == _hoverSub, SubDirty(subs[i]));
+            for (int i = 0; i < subs.Length; i++) Nav(b, body, SubCol, i, subs[i].Name, i == Sub, i == _hoverSub, SubDirty(subs[i]));
             b.ClearClip();
             SubCol.Draw(b, C(Accent));
         }
@@ -1261,6 +1355,10 @@ public sealed partial class KnobPanel
             {
                 case RowKind.Section:
                     UiText.Draw(b, small, r.Text, kx + Pad, top + 1f * em + small.Ascent, Tx3, colRight);
+                    continue;
+                case RowKind.Heading:
+                    UiText.Draw(b, body, r.Text, kx + Pad, top + 1f * em + body.Ascent, Tx, colRight);
+                    Fill(b, kx + Pad, top + r.H - 0.2f * em - 1f, colRight, top + r.H - 0.2f * em, ColBorder);
                     continue;
                 case RowKind.Note:
                     for (int l = 0; l < r.Help.Length; l++)

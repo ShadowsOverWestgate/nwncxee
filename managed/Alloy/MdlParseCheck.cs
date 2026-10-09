@@ -32,7 +32,7 @@ internal static unsafe class MdlParseCheck
 
     static MdlParseCheck()
     {
-        G = KnobGroup.Declare("mdl", "Graphics", "Model parser", parent: "alloy.enabled");
+        G = KnobGroup.Declare("mdl", "Graphics", "Model parser");
         G.Status = Describe;
         Check = G.Toggle("check", "Compare CX's model parse with the engine's", false, Tier.ChatOnly,
             help: "Diagnostic: every model the engine reads is also parsed by CX on its own worker and the two "

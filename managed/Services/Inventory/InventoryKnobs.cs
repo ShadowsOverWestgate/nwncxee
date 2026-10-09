@@ -4,7 +4,8 @@ using CX.Ui;
 namespace CX.Services.Inventory;
 
 /// <summary>The <c>inventory</c> group: the master (off = the stock panel), the look, size and page count, the
-/// window's own typeface and outline (<see cref="Text"/>; its text size follows <see cref="Size"/>), and the window position as Hidden state (<see cref="Placed"/> false until the player first drags it, so a fresh install
+/// window's own typeface and outline (<see cref="Text"/>, Chat-only -- it follows the UI rows and its text size
+/// follows <see cref="Size"/>), and the window position as Hidden state (<see cref="Placed"/> false until the player first drags it, so a fresh install
 /// centres). Every row may be held by a server (<c>ServerPolicy</c>); the component-level overrides no knob exposes
 /// are documented in <c>docs/ui-policy-contract.md</c>.</summary>
 internal static class InventoryKnobs
@@ -23,9 +24,9 @@ internal static class InventoryKnobs
 
     static InventoryKnobs()
     {
-        G = KnobGroup.Declare("inventory", "UI", "Inventory", master: "Enable the CX inventory window",
+        G = KnobGroup.Declare("inventory", "Interface", "Game windows", master: "Enable the CX inventory window",
             masterHelp: "The inventory in CX's own window: the vanilla layout, sharp at any resolution, tabs or one view scrolling through every page, search. Off, the stock panel runs.",
-            masterDefault: false, masterChanged: InventoryService.MasterChanged);
+            masterDefault: false, masterChanged: InventoryService.MasterChanged, order: 242, title: "Inventory");
         Enabled = G.Master!;
         Look = G.Dropdown("look", "Look", new[] { LookNative, LookFlat }, LookNative, new[] { "Game art", "CX flat" },
                           help: "Game art draws the window with NWN's own GUI textures (a server may re-skin it); CX flat uses the settings panel's palette.");
@@ -41,7 +42,7 @@ internal static class InventoryKnobs
         DragDrop = G.Toggle("dropground", "Drag out to drop", true,
                             help: "Releasing a dragged item over the world acts as the stock panel does: on the ground it drops there, on another creature it offers a trade, on you or your associate a potion is drunk. Off: only quickbar drops leave the window.");
         G.Section("Text");
-        Text = new TextStyle(G, "the inventory", sized: false, changed: InventoryService.Relayout);
+        Text = new TextStyle(G, "the inventory", sized: false, changed: InventoryService.Relayout, tier: Tier.ChatOnly);
         X = G.Slider("x", "x", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);
         Y = G.Slider("y", "y", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);
         Placed = G.Toggle("placed", "placed", false, Tier.Hidden);

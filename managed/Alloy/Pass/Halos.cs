@@ -78,12 +78,12 @@ internal static unsafe class Halos
     private static bool _occFailed;
     private static int _occFaded;
 
-    /// <summary>The dials are <see cref="Effects"/>' <c>halos</c> / <c>halosize</c> / <c>halogain</c> /
-    /// <c>haloviz</c>: one live knob each, so a chat set is what the next launch reads.</summary>
+    /// <summary>The dials are <see cref="Effects"/>' <c>halos</c> (the brightness, and 0 is the pass off) /
+    /// <c>halosize</c> / <c>haloviz</c>: one live knob each, so a chat set is what the next launch reads.</summary>
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
-        log.Info($"Halos: armed -- flare lights from the scene database drawn as procedural halos (/effects; size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2})");
+        log.Info($"Halos: armed -- flare lights from the scene database drawn as procedural halos (/effects; size {Effects.HaloSize.V:F2} gain {Effects.Halos.V:F2})");
     }
 
     private static bool Reaches(Vector3 pos, float flareRadius)
@@ -142,7 +142,7 @@ internal static unsafe class Halos
     internal static void EnrollDb(Db.DbId scene)
     {
         _count = 0;
-        if (_off || !Effects.Halos.V) return;
+        if (_off || !Effects.HalosOn) return;
         int lits = Db.SceneDb.Lights.High, parts = Db.DbInputs.LightCount, n = lits + parts;
         if (n * Floats > _stage.Length) _stage = new float[n * Floats];
         if (n > _stageKey.Length) _stageKey = new IntPtr[n];
@@ -232,7 +232,7 @@ internal static unsafe class Halos
         Gl.UniformMatrix4fv(_locProj, 1, 0, (float*)proj);
         Gl.Uniform1i(_locViz, Effects.HaloViz.V);
         Gl.Uniform1i(_locDepth, (int)SceneDepth.Unit);
-        Gl.Uniform1f(_locGain, Effects.HaloGain.V * AlloyLights.DayDim);
+        Gl.Uniform1f(_locGain, Effects.Halos.V * AlloyLights.DayDim);
         new PassState(depth: false, depthWrite: false, blend: true,
                       blendSrc: AlloyRenderer.GlOne, blendDst: AlloyRenderer.GlOne).Apply();
         Gl.BindVertexArray(EmptyVao());
@@ -347,10 +347,10 @@ internal static unsafe class Halos
     }
 
     internal static void ResetPeriod() { _drawn = 0; _occFaded = 0; _occLate = 0; }
-    internal static string Stats() => _off ? "halos unavailable" : !Effects.Halos.V ? "halos off"
+    internal static string Stats() => _off ? "halos unavailable" : !Effects.HalosOn ? "halos off"
         : $"halos {_count} flare lights, {_drawn} drawn, {(_occFailed ? "occlusion fade OFF" : $"{_occFaded} fading")}"
           + (_occLate > 0 ? $", {_occLate} probe reads deferred (GPU behind)" : "");
-    internal static string Describe() => $"{(_off ? "UNAVAILABLE" : Effects.Halos.V ? "on" : "off")} size {Effects.HaloSize.V:F2} gain {Effects.HaloGain.V:F2} viz {Effects.HaloViz.V}";
+    internal static string Describe() => $"{(_off ? "UNAVAILABLE" : Effects.HalosOn ? "on" : "off")} size {Effects.HaloSize.V:F2} gain {Effects.Halos.V:F2} viz {Effects.HaloViz.V}";
 
     /// <summary>CX-85: the occlusion integrator, headless. It is the whole of what the port owns on the CPU
     /// side -- the probe itself has no seam -- and it fails invisibly in both directions: too slow and flares

@@ -101,9 +101,10 @@ public static partial class ShadowMath
     /// <summary>Widening on the framed half-angle: the PCF disc reads off the silhouette, and a sphere fitted
     /// exactly to the tile edge has nothing there to read.</summary>
     public const float ConeSlack = 1.15f;
-    /// <summary>The widest half-angle a pair view takes; past it the cone is no cheaper than a cube face and the
-    /// projection's corners run away. A mover this close to its light keeps the dyn page.</summary>
-    public const float ConeMaxSin = 0.7f;
+    /// <summary>The widest half-angle a pair view takes (sin; ~58 degrees): past it the projection's corners run
+    /// away. Wide enough for a whole body (a ~1.1 m sphere) to be framed down to ~1.5 m from its lamp; a mover
+    /// closer than that takes no shadow from the lamp.</summary>
+    public const float ConeMaxSin = 0.85f;
 
     /// <summary>CX-188 step 4: one (static light, mover) PAIR view -- a perspective from
     /// <paramref name="lightPos"/> framed on the sphere (<paramref name="at"/>, <paramref name="radius"/>) and

@@ -19,46 +19,45 @@ internal static class Lightmap
 
     static Lightmap()
     {
-        G = KnobGroup.Declare("lightmap", "Graphics", "Baked lighting", master: "Baked static lighting",
+        G = KnobGroup.Declare("lightmap", "Graphics", "Lighting", master: "Baked static lighting",
             masterHelp: "Static geometry -- tiles and placeables that never move -- gets its lights baked into a "
                       + "lightmap as the area loads, and the frame stops re-shading them. Off is the live light loop.",
-            masterDefault: true, parent: "alloy.enabled",
-            header: "Charts are cut per mesh as an area loads and cached on disk (cx-charts/, beside cx.cfg).");
+            masterDefault: true, masterTier: Tier.ChatOnly, order: 316, title: "Baked lighting");
         G.Status = MeshChart.Describe;
         Density = G.Slider("density", "Lightmap density", 2, 32, 1, 8, "px/m", tier: Tier.Advanced,
                            help: "Lightmap texels per metre of world. Each instance's rectangle is capped at a quarter page; a change re-bakes the area.",
                            changed: LightmapBake.RekeyAll);
-        Pages = G.Slider("pages", "Lightmap pages", 0, LightmapBake.MaxPages, 1, 0, tier: Tier.Advanced,
+        Pages = G.Slider("pages", "Lightmap pages", 0, LightmapBake.MaxPages, 1, 0, tier: Tier.ChatOnly,
                          help: "4096x4096 pages the area may hold (128 MiB each), allocated as the area needs them. 0 sizes it from the card's memory: a quarter of it in pages, at most 32. An area that would overflow the cap bakes at a lower density instead.");
         // CX-102: 192 MiB a layer over three planes, and the pages live in ONE immutable array, so a page more
         // means allocate-copy-delete. Doing that in the frame that needs it cost 86 / 458 / 573 / 733 ms for
         // 1 / 2 / 3 / 4 layers copied (2026-09-30), which is the only thing the bake ever froze the client for.
-        GrowSlice = G.Slider("growslice", "Page growth slice", 0, 8, 1, 1, "pages", tier: Tier.Advanced,
+        GrowSlice = G.Slider("growslice", "Page growth slice", 0, 8, 1, 1, "pages", tier: Tier.ChatOnly,
                              help: "Lightmap pages the client may move into a larger page array in one frame when an area needs another page. Each page is 192 MiB, so moving them all at once costs a visible freeze; 0 does exactly that, for comparison.");
-        Near = G.Slider("near", "Full-density radius", 10, 200, 5, 40, "m", tier: Tier.Advanced,
+        Near = G.Slider("near", "Full-density radius", 10, 200, 5, 40, "m", tier: Tier.ChatOnly,
                         help: "Metres from the player baked at the full density; each tier out doubles the radius and halves the density. The last tier covers the whole area and bakes first.");
-        Tiers = G.Slider("tiers", "Density tiers", 1, LightmapBake.MaxTiers, 1, 3, tier: Tier.Advanced,
+        Tiers = G.Slider("tiers", "Density tiers", 1, LightmapBake.MaxTiers, 1, 3, tier: Tier.ChatOnly,
                          help: "Density steps between the player and the far area: 1 bakes everything at the full density, 3 is full / half / quarter. A change re-bakes the area.",
                          changed: LightmapBake.RekeyAll);
-        HoldSeconds = G.Slider("hold", "Loading hold", 0, 40, 1, 20, "s",
+        HoldSeconds = G.Slider("hold", "Loading hold", 0, 40, 1, 20, "s", Tier.ChatOnly,
                                help: "Seconds the loading screen may wait for the area's baked lighting before Escape is offered to skip ahead; the bake then finishes in the background. 0 never waits.");
-        Movers = G.Toggle("movers", "Creature shadows from baked lights", true,
+        Movers = G.Toggle("movers", "Creature shadows from baked lights", true, Tier.Advanced,
                           help: "A creature standing under a baked light casts its shadow on the baked surface. Off is cheaper: baked surfaces take no shadow from creatures under static lights.");
         MoverTaps = G.Toggle("movertaps", "movertaps", true, Tier.ChatOnly,
                              help: "Diagnostic: 0 keeps creature-hot baked lights in the light loop (the ray test) but skips their light body and shadow reads, so /alloy bench splits the creature-shadow cost.");
         // CX-188 step 4: the per-mover budget. A creature under four lamps casts four shadows; the two
         // strongest are the ones anybody sees, and each costs a tile and a pixel's worth of debt.
-        MoverLights = G.Slider("moverlights", "Baked lights per creature", 0, 4, 1, 2, tier: Tier.Advanced,
+        MoverLights = G.Slider("moverlights", "Baked lights per creature", 0, 4, 1, 2, tier: Tier.ChatOnly,
                                help: "Baked lights a creature may cast a shadow from, strongest first, while deferred lighting is on. Each one gets a small shadow map of its own instead of the creature's shadow riding a whole depth cube. 0 is no creature shadows from baked lights on that path.");
-        PairSize = G.Slider("pairsize", "Creature tile size", 32, 512, 32, 128, "px", tier: Tier.Advanced,
+        PairSize = G.Slider("pairsize", "Creature tile size", 32, 512, 32, 128, "px", tier: Tier.ChatOnly,
                             effect: Effect.Restart,
                             help: "Side of one creature-and-light shadow tile. A restart knob: it sizes the atlas.");
         PairCount = G.Slider("paircount", "Creature tiles", 16, global::CX.Alloy.PairShadows.MaxPairs, 16, 256,
-                             tier: Tier.Advanced, effect: Effect.Restart,
+                             tier: Tier.ChatOnly, effect: Effect.Restart,
                              help: "Creature-and-light tiles the atlas holds. A light whose creatures do not all fit keeps its depth cube, nearest lights first. A restart knob: it sizes the atlas.");
         // 2048: one area's bake at density 10 is ~500 MiB of .lmp blobs, and a 512 MiB budget pruned the
         // live files of the area being walked (4890 of 7425 hit, live)
-        Disk = G.Slider("disk", "Chart cache size", 64, 8192, 64, 2048, "MiB", tier: Tier.Advanced,
+        Disk = G.Slider("disk", "Chart cache size", 64, 8192, 64, 2048, "MiB", tier: Tier.ChatOnly,
                         help: "Disk the chart and bake caches may hold; the oldest files go first. One area's lightmap is roughly 500 MiB.");
     }
 }

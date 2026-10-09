@@ -328,7 +328,7 @@ internal static unsafe partial class GrassField
         if (_origReload == null)
         {
             _off = true;
-            log.Info("GrassField: the grass reload hook did not install -- grass stays vanilla");
+            log.Info("GrassField: the grass reload hook did not install -- no grass draws");
             return;
         }
         log.Info($"GrassField: armed -- Alloy instanced grass, {Describe()} (/grass tunes it)");
@@ -392,7 +392,7 @@ internal static unsafe partial class GrassField
         if (*_grassEnabled == 0) return false;
         if (Gl.DrawArraysIndirect == null || Gl.DispatchCompute == null
             || Gl.MemoryBarrier == null || Gl.BindBufferBase == null)
-        { _down.Fail(_log, "no indirect-draw or compute entry point", "grass stays vanilla"); return false; }
+        { _down.Fail(_log, "no indirect-draw or compute entry point", "no grass draws"); return false; }
         if (!EnsureProgram() || !EnsureBuffers()) return false;
         return Grass.Density.V > 0f;
     }
@@ -420,7 +420,7 @@ internal static unsafe partial class GrassField
         if (*_grassEnabled == 0) return;      // the player's "Grass Mode" option: off means off, both paths
         if (Gl.DrawArraysIndirect == null || Gl.DispatchCompute == null
             || Gl.MemoryBarrier == null || Gl.BindBufferBase == null)
-        { _down.Fail(_log, "no indirect-draw or compute entry point", "grass stays vanilla"); return; }
+        { _down.Fail(_log, "no indirect-draw or compute entry point", "no grass draws"); return; }
         if (!EnsureProgram() || !EnsureBuffers()) return;
         // Density 0 means the player asked for no grass. Stamp the generation and stop: the class is still
         // OWNED (so the engine does not draw it back), and Collect never runs -- otherwise every frame would
@@ -1577,8 +1577,8 @@ internal static unsafe partial class GrassField
         Gl.CreateVertexArrays(1, &vao);
         Gl.CreateBuffers(7, b);
         for (int i = 0; i < 7; i++)
-            if (b[i] == 0) return _down.Fail(_log, "the grass buffers could not be created", "grass stays vanilla");
-        if (vao == 0) return _down.Fail(_log, "the grass buffers could not be created", "grass stays vanilla");
+            if (b[i] == 0) return _down.Fail(_log, "the grass buffers could not be created", "no grass draws");
+        if (vao == 0) return _down.Fail(_log, "the grass buffers could not be created", "no grass draws");
         uint template = b[0];
         _faceBuf = b[1]; _patchBuf = b[2]; _matBuf = b[3]; _outBuf = b[4]; _cmdBuf = b[5]; _statBuf = b[6];
         Gl.NamedBufferData(_faceBuf, (IntPtr)((long)MaxFaces * FaceFloats * sizeof(float)), null, Gl.DYNAMIC_DRAW);
@@ -1829,9 +1829,9 @@ internal static unsafe partial class GrassField
 
     internal static string Stats()
     {
-        if (_off) return "grass vanilla (Alloy pass unavailable)";
-        if (!Grass.Enabled.V) return "grass vanilla (/grass enabled 0)";
-        if (_down.Failed) return "grass VANILLA (Alloy program unavailable)";
+        if (_off) return "no grass (Alloy pass unavailable)";
+        if (!Grass.Enabled.V) return "no grass (/grass enabled 0)";
+        if (_down.Failed) return "no grass (Alloy program unavailable)";
         if (_frames == 0) return "grass idle";
         int f = Math.Max(_scatters, 1);
         return $"grass {_patchCount} patches / {_faceCount} faces / {_bladesResident} blades resident, " +

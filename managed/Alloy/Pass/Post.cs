@@ -38,8 +38,7 @@ internal static class Post
 
     static Post()
     {
-        G = KnobGroup.Declare("post", "Graphics", "Post-processing", parent: "alloy.enabled",
-            header: "The resolve is the frame: there is no off. Renderer off is off.");
+        G = KnobGroup.Declare("post", "Graphics", "Image", order: 330);
         G.Status = PostChain.Describe;
 
         G.Section("Exposure");
@@ -59,29 +58,28 @@ internal static class Post
         Threshold = G.Slider("threshold", "Bloom threshold", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced);
         Knee = G.Slider("knee", "Bloom knee", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced);
         G.Section("Tone");
-        AcesMix = G.Slider("acesmix", "ACES mix", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced, help: "Only affects ACES tone mapping.");
-        TmKnee = G.Slider("tmknee", "Shoulder knee", 0f, 1f, 0.05f, 0.8f, tier: Tier.Advanced, help: "Only affects shoulder and ACES tone mapping.");
-        Dither = G.Slider("dither", "Output dither", 0f, 2f, 0.1f, 1f, tier: Tier.Advanced);
+        AcesMix = G.Slider("acesmix", "ACES mix", 0f, 1f, 0.05f, 0.5f, tier: Tier.ChatOnly, help: "Only affects ACES tone mapping.");
+        TmKnee = G.Slider("tmknee", "Shoulder knee", 0f, 1f, 0.05f, 0.8f, tier: Tier.ChatOnly, help: "Only affects shoulder and ACES tone mapping.");
+        Dither = G.Slider("dither", "Output dither", 0f, 2f, 0.1f, 1f, tier: Tier.ChatOnly);
         G.Section("Anti-aliasing");
-        // Never 0 (a frozen history would never converge) and never above 0.5 (the raw jitter, "an earthquake").
-        TaaBlend = G.Slider("taablend", "TAA history weight", 0.02f, 0.5f, 0.01f, 0.1f, tier: Tier.Advanced);
-        Taau = G.Toggle("taau", "Temporal upsampling", true, Tier.Advanced, help: "With render scale below 1.",
-                        changed: TaaStage.Reset);
         TaaSharp = G.Slider("taasharp", "TAA sharpness", 0f, 1f, 0.05f, 0.3f, tier: Tier.Advanced,
                             help: "Undoes the softness the history blend leaves. 0 = the raw resolve.");
-        G.Section("Screen-space effects");
-        HalfRes = G.Toggle("halfres", "Half-resolution", false,
+        G.Section("");
+        // Never 0 (a frozen history would never converge) and never above 0.5 (the raw jitter, "an earthquake").
+        TaaBlend = G.Slider("taablend", "TAA history weight", 0.02f, 0.5f, 0.01f, 0.1f, tier: Tier.ChatOnly);
+        Taau = G.Toggle("taau", "Temporal upsampling", true, Tier.ChatOnly, help: "With render scale below 1.",
+                        changed: TaaStage.Reset);
+        // Never a ladder rung: it only looks clean under TAA, and a feature must look right with TAA off.
+        HalfRes = G.Toggle("halfres", "Half-resolution ambient occlusion", false, Tier.ChatOnly,
                            help: "Ambient occlusion is computed at a quarter of the pixels and upsampled. Needs temporal anti-aliasing to look clean.",
                            changed: SsaoPass.DropHistory);
-        G.Section("Stock effects");
-        Stack = G.Toggle("stack", "Game post-effects", true, Tier.Advanced,
+        Stack = G.Toggle("stack", "Game post-effects", true, Tier.ChatOnly,
                          help: "The stock framebuffer effects (gamma, sharpen, vibrance, SMAA, toon…) on the Alloy frame.");
-        FbPost = G.Toggle("fbpost", "Hosted content post", true, Tier.Advanced);
-        ToonBands = G.Slider("toonbands", "Toon bands", 1f, 32f, 1f, 1f, tier: Tier.Advanced,
+        FbPost = G.Toggle("fbpost", "Hosted content post", true, Tier.ChatOnly);
+        ToonBands = G.Slider("toonbands", "Toon bands", 1f, 32f, 1f, 1f, tier: Tier.ChatOnly,
                              help: "With the game's Toon option; 1 = no posterise.");
-        ToonInk = G.Slider("toonink", "Toon ink", 0f, 1f, 0.05f, 1f, tier: Tier.Advanced);
-        ToonEdge = G.Slider("toonedge", "Toon edge", 1f, 8f, 0.5f, 1f, tier: Tier.Advanced);
-        G.Section("");
+        ToonInk = G.Slider("toonink", "Toon ink", 0f, 1f, 0.05f, 1f, tier: Tier.ChatOnly);
+        ToonEdge = G.Slider("toonedge", "Toon edge", 1f, 8f, 0.5f, 1f, tier: Tier.ChatOnly);
         Motion = G.Toggle("motion", "motion", false, Tier.ChatOnly);
         Viz = G.Slider("viz", "viz", 0, PostChain.VizMotion, 1, 0, tier: Tier.ChatOnly);
         ClearViz = G.Toggle("clearviz", "clearviz", false, Tier.ChatOnly);

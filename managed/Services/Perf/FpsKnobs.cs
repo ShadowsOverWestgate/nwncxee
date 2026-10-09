@@ -13,11 +13,11 @@ internal static class FpsKnobs
 
     static FpsKnobs()
     {
-        G = KnobGroup.Declare("fps", "UI", "FPS overlay", master: "Show FPS and ping", masterDefault: false,
+        G = KnobGroup.Declare("fps", "Interface", "Windows & text", master: "Show FPS and ping", masterDefault: false,
             masterHelp: "Frame rate, frame time and server round-trip in the top-right corner.",
-            masterChanged: FpsOverlayService.VisibilityChanged);
+            masterChanged: FpsOverlayService.VisibilityChanged, order: 202, title: "FPS overlay");
         Enabled = G.Master!;
         G.Section("Text");
-        Text = new CX.Ui.TextStyle(G, "the readout", size: 14, changed: FpsOverlayService.FaceChanged);
+        Text = new CX.Ui.TextStyle(G, "the readout", size: 14, changed: FpsOverlayService.FaceChanged, tier: Tier.Advanced);
     }
 }

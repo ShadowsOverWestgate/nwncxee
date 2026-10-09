@@ -51,51 +51,57 @@ internal static unsafe partial class Weather
     private static void DeclareSurfaceKnobs()
     {
         G.Section("Surfaces");
-        Arrive = G.Toggle("arrive", "Arrive into settled weather", true,
-                          help: "Weather already running when you enter an area is fully soaked or snowed on arrival, instead of accumulating in front of you.");
         WetStrength = G.Slider("wet", "Wet surfaces", 0f, 1f, 0.05f, 1f,
-                               help: "Exposed ground and roofs darken and turn glossy in rain, reflecting the sky. 0 = off.");
+                               help: "Exposed ground and roofs darken and turn glossy in rain, reflecting the sky, and puddles pool in low ground. 0 = off.");
         SnowStrength = G.Slider("snow", "Snow cover", 0f, 1f, 0.05f, 1f,
-                                help: "Exposed up-facing surfaces whiten in snow. 0 = off.");
-        AccumSec = G.Slider("accum", "Soak / settle time", 5f, 600f, 5f, 60f, "s",
+                                help: "Exposed up-facing surfaces whiten in snow, with drifts banked against walls. 0 = off.");
+        AccumSec = G.Slider("accum", "Soak / settle time", 5f, 600f, 5f, 60f, "s", Tier.Advanced,
                             help: "Seconds of full-density weather to fully wet or snow the ground.");
-        DrySec = G.Slider("dry", "Dry-out time", 10f, 1800f, 10f, 180f, "s", help: "Seconds for wet ground to dry after the rain stops.");
-        MeltSec = G.Slider("melt", "Melt time", 30f, 7200f, 30f, 900f, "s", help: "Seconds for snow cover to melt after the snowfall ends.");
-        Splash = G.Slider("splash", "Puddle ripples", 0f, 1f, 0.05f, 1f,
-                          help: "Rings spread where drops hit standing water, at their own size in the world -- they shrink with distance like anything else. 0 = off.");
-        EdgeBreak = G.Slider("edgebreak", "Shelter edge breakup", 0f, 1f, 0.05f, 0.5f,
+        DrySec = G.Slider("dry", "Dry-out time", 10f, 1800f, 10f, 180f, "s", Tier.Advanced,
+                          help: "Seconds for wet ground to dry after the rain stops.");
+        MeltSec = G.Slider("melt", "Melt time", 30f, 7200f, 30f, 900f, "s", Tier.Advanced,
+                           help: "Seconds for snow cover to melt after the snowfall ends.");
+        G.Section("");
+        Arrive = G.Toggle("arrive", "Arrive into settled weather", true, Tier.ChatOnly,
+                          help: "Weather already running when you enter an area is fully soaked or snowed on arrival, instead of accumulating in front of you.");
+        Splash = G.Slider("splash", "Puddle ripples", 0f, 1f, 0.05f, 1f, tier: Tier.ChatOnly,
+                          help: "Rings spread where drops hit standing water, at their own size in the world -- they shrink with distance like anything else. 0 = off.")
+                  .Ladder(Quality.Weather, 0f, 1f, 1f, 1f);
+        EdgeBreak = G.Slider("edgebreak", "Shelter edge breakup", 0f, 1f, 0.05f, 0.5f, tier: Tier.ChatOnly,
                              help: "How ragged the line between wet and sheltered ground is. 0 draws the roof's own outline; higher lets splash-back and gusts wander it, which is what a real eave leaves.");
-        EdgeTaps = G.Slider("edgetaps", "Shelter edge taps", 1, EdgeTapsMax, 1, 8, tier: Tier.Advanced,
-                            help: "Depth compares each wet fragment makes against the cover map to find the edge. Fewer is cheaper and grainier at the boundary.");
-        RunOff = G.Slider("runoff", "Run-off on walls", 0f, 1f, 0.05f, 0.6f,
+        EdgeTaps = G.Slider("edgetaps", "Shelter edge taps", 1, EdgeTapsMax, 1, 8, tier: Tier.ChatOnly,
+                            help: "Depth compares each wet fragment makes against the cover map to find the edge. Fewer is cheaper and grainier at the boundary.")
+                    .Ladder(Quality.Weather, 3, 5, 8, EdgeTapsMax);
+        RunOff = G.Slider("runoff", "Run-off on walls", 0f, 1f, 0.05f, 0.6f, tier: Tier.ChatOnly,
                           help: "Rain running down a wall it strikes: streaks rather than an even sheen, and a darker band where the run-off collects at the foot. 0 = even.");
-        ShoreRim = G.Slider("shorerim", "Puddle rim", 0f, 1f, 0.05f, 0.7f,
+        ShoreRim = G.Slider("shorerim", "Puddle rim", 0f, 1f, 0.05f, 0.7f, tier: Tier.ChatOnly,
                             help: "Ground right at a puddle's edge is soaked through: a darker, more saturated rim around standing water. 0 = none.");
-        G.Section("Snow look");
-        SnowAlbedo = G.Slider("snowalbedo", "Snow brightness", 0.3f, 1f, 0.05f, 0.9f, help: "Albedo of settled snow. Fresh snow is near white.");
-        SnowSlope = G.Slider("snowslope", "Snow holds to", 10f, 85f, 5f, 55f, "°",
+        SnowAlbedo = G.Slider("snowalbedo", "Snow brightness", 0.3f, 1f, 0.05f, 0.9f, tier: Tier.ChatOnly,
+                              help: "Albedo of settled snow. Fresh snow is near white.");
+        SnowSlope = G.Slider("snowslope", "Snow holds to", 10f, 85f, 5f, 55f, "°", Tier.ChatOnly,
                              help: "Steepest slope snow still lies on. Higher = snow on steeper roofs and banks.");
-        SnowPile = G.Slider("snowpile", "Drift against walls", 0f, 2f, 0.1f, 1f,
+        SnowPile = G.Slider("snowpile", "Drift against walls", 0f, 2f, 0.1f, 1f, tier: Tier.ChatOnly,
                             help: "Mounds banked against walls and ledges, rising toward whatever stands higher. 0 = even cover.");
-        SnowPileWidth = G.Slider("snowpilewidth", "Drift width", 0.3f, 4f, 0.1f, 1.5f, "m",
+        SnowPileWidth = G.Slider("snowpilewidth", "Drift width", 0.3f, 4f, 0.1f, 1.5f, "m", Tier.ChatOnly,
                                  help: "How far out from a wall its drift reaches before the cover is level again.");
-        SnowVary = G.Slider("snowvary", "Ground variation", 0f, 1f, 0.05f, 0.5f,
+        SnowVary = G.Slider("snowvary", "Ground variation", 0f, 1f, 0.05f, 0.5f, tier: Tier.ChatOnly,
                             help: "Uneven depth across open ground: patches of thinner and thicker cover.");
-        SnowDepth = G.Slider("snowdepth", "Snow depth", 0f, 0.6f, 0.02f, 0.25f, "m",
+        SnowDepth = G.Slider("snowdepth", "Snow depth", 0f, 0.6f, 0.02f, 0.25f, "m", Tier.ChatOnly,
                              help: "Height of the mounds and drifts: the ground is marched as a relief so they stand up, self-occlude and lean. 0 = flat shading only.");
-        SnowSteps = G.Slider("snowsteps", "Relief steps", 4f, 24f, 1f, 10f, tier: Tier.Advanced,
-                             help: "March steps through the relief. More is smoother at grazing angles and costs more per snowed pixel.");
-        SnowBump = G.Slider("snowbump", "Mound relief", 0f, 1f, 0.05f, 0.5f,
+        SnowSteps = G.Slider("snowsteps", "Relief steps", 4f, 24f, 1f, 10f, tier: Tier.ChatOnly,
+                             help: "March steps through the relief. More is smoother at grazing angles and costs more per snowed pixel.")
+                     .Ladder(Quality.Weather, 4f, 6f, 10f, 16f);
+        SnowBump = G.Slider("snowbump", "Mound relief", 0f, 1f, 0.05f, 0.5f, tier: Tier.ChatOnly,
                             help: "Soft mounds in the cover, so it lights like drifted snow rather than paint. 0 = flat.");
-        SnowSparkle = G.Slider("snowsparkle", "Sparkle", 0f, 1f, 0.05f, 0.5f, help: "Glints on lit snow that shift as the view moves. 0 = off.");
-        SnowWrap = G.Slider("snowwrap", "Soft lighting", 0f, 1f, 0.05f, 0.4f,
+        SnowSparkle = G.Slider("snowsparkle", "Sparkle", 0f, 1f, 0.05f, 0.5f, tier: Tier.ChatOnly,
+                               help: "Glints on lit snow that shift as the view moves. 0 = off.");
+        SnowWrap = G.Slider("snowwrap", "Soft lighting", 0f, 1f, 0.05f, 0.4f, tier: Tier.ChatOnly,
                             help: "Light scatters inside snow, so the terminator wraps past the sun-facing edge. 0 = hard.");
-        SnowSky = G.Slider("snowsky", "Sky in the shade", 0f, 2f, 0.1f, 0.6f,
+        SnowSky = G.Slider("snowsky", "Sky in the shade", 0f, 2f, 0.1f, 0.6f, tier: Tier.ChatOnly,
                            help: "Shaded snow takes the sky's colour (the blue in a snow shadow). 0 = off.");
-        G.Section("Puddles");
-        PuddleThreshold = G.Slider("puddle", "Puddle threshold", 0f, 1f, 0.05f, 0.5f,
+        PuddleThreshold = G.Slider("puddle", "Puddle threshold", 0f, 1f, 0.05f, 0.5f, tier: Tier.ChatOnly,
                                    help: "Wetness at which puddles start to fill. 1 = never.");
-        PuddleEdge = G.Slider("puddleedge", "Puddle edge", 0.02f, 0.5f, 0.01f, 0.2f, tier: Tier.Advanced,
+        PuddleEdge = G.Slider("puddleedge", "Puddle edge", 0.02f, 0.5f, 0.01f, 0.2f, tier: Tier.ChatOnly,
                               help: "Softness of a puddle's shoreline, as a share of its depth.");
     }
 

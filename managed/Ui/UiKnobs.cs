@@ -2,7 +2,7 @@ using CX.Framework;
 
 namespace CX.Ui;
 
-/// <summary>The <c>ui</c> group (spec §4.2 Windows &amp; fonts): the knobs every CX window shares. <see cref="Font"/>
+/// <summary>The <c>ui</c> group (spec §4.2 Windows &amp; text): the knobs every CX window shares. <see cref="Font"/>
 /// is the text size in design px before GUI scale (was chat's <c>font</c>); <see cref="UiHostService"/> bakes
 /// the one atlas at <c>font × GUI scale</c> and sets <see cref="Metrics.Scale"/> from it, on a set and on the
 /// GUI-scale edge; every window re-lays out from the atlas epoch. <see cref="Typeface"/> (#681) picks the face
@@ -20,7 +20,7 @@ internal static class UiKnobs
 
     static UiKnobs()
     {
-        G = KnobGroup.Declare("ui", "UI", "Windows & fonts");
+        G = KnobGroup.Declare("ui", "Interface", "Windows & text", order: 200);
         int[] ladder = new int[TextRig.MaxFontPx - TextRig.MinFontPx + 1];
         for (int i = 0; i < ladder.Length; i++) ladder[i] = TextRig.MinFontPx + i;
         Font = G.Dropdown("font", "Text size", ladder, (int)Metrics.DesignFontPx, layout: true,
@@ -29,10 +29,11 @@ internal static class UiKnobs
         Typeface = G.Dropdown("typeface", "Typeface", FontRegistry.Names, FontRegistry.DefaultName, layout: true,
                               help: "The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Each element may pick its own in its Text rows. Type in the list to search.",
                               changed: UiHostService.ApplyTypeface);
-        HoverFocus = G.Toggle("hoverfocus", "Focus a window by hovering", false,
+        HoverFocus = G.Toggle("hoverfocus", "Focus a window by hovering", false, Tier.Advanced,
                               help: "A CX window takes the keyboard when the pointer rests on it, without a click.");
-        Snap = G.Toggle("snap", "Snap windows to a grid", false, help: "Dragged windows land on grid points.");
-        GridPx = G.Dropdown("gridpx", "Grid size", new[] { 25, 50, 75, 100, 150, 200 }, 50,
+        Snap = G.Toggle("snap", "Snap windows to a grid", false, Tier.Advanced,
+                        help: "Dragged windows land on grid points.");
+        GridPx = G.Dropdown("gridpx", "Grid size", new[] { 25, 50, 75, 100, 150, 200 }, 50, tier: Tier.Advanced,
                             help: "Spacing of the grid points, in screen px.");
         EdgeSnap = G.Toggle("edgesnap", "Snap to screen edges", true,
                             help: "Dragged windows stick to the screen edge and to each other.");
@@ -43,10 +44,10 @@ internal static class UiKnobs
     }
 }
 
-/// <summary>The UI category in panel order (spec §4.2): Chat, Chat shortcuts, Dialog, Nameplates, Combat text, Inventory, Quickbar &amp;
-/// compass, Radial menu, FPS overlay, NUI windows, Windows &amp; fonts. Every UI service's Initialize calls <see cref="Declare"/>, so the
-/// submenus sit in that order whatever initializes first and whether or not a feature arms. A class of its own
-/// with no static state: a static method on a group class would run that group's constructor first.</summary>
+/// <summary>Every UI group declares here, from every UI service's Initialize, so its rows exist whatever initializes
+/// first and whether or not the feature arms. The panel's order is each group's <c>order:</c> (ADR 0030), not this
+/// list; what this fixes is the declaration order, which decides <c>/knobs</c> and settles an <c>order</c> tie. A
+/// class of its own with no static state: a static method on a group class would run that group's constructor first.</summary>
 internal static class UiCategory
 {
     internal static void Declare()
@@ -58,8 +59,8 @@ internal static class UiCategory
     }
 
     /// <summary>Off-device, read-only (a set would arm the writer against the user's real file): the eleven groups
-    /// declare in panel order, the typeface row offers the registry's names, the font ladder is 6-32, and the rows the
-    /// spec re-keyed from the retired files bind under their new names with the old defaults.</summary>
+    /// declare in the fixed order above, the typeface row offers the registry's names, the font ladder is 6-32, and the
+    /// rows the spec re-keyed from the retired files bind under their new names with the old defaults.</summary>
     internal static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "UiCategory.SelfCheck");

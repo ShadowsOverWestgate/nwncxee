@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using CX.Engine;
 using CX.Framework;
 using CX.Alloy;
+using CX.Alloy.Db;
 using CX.Graphics;
 
 namespace CX.Alloy;
@@ -413,6 +414,15 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// under the <c>dynmin</c> floor: a still character is rigid parts a few decimetres across whose matrices
     /// stop, and run 17 lost its shadow to both rules (dyn pool 0/32, 0 posed casters, 4 dangly movers).</summary>
     private static readonly bool[] _liveCreature = new bool[MaxCasters];
+    /// <summary>Per live caster: the creature object it is a part of (<see cref="SceneDb"/> index), -1 for none.
+    /// Every part of one body folds into one pair-plan mover.</summary>
+    private static readonly int[] _liveObj = new int[MaxCasters];
+    /// <summary>The pair plan's per-creature fold, indexed by object: the box round this frame's dynamic parts of
+    /// that body (<see cref="_aggSeq"/> = the frame it was opened), and the bodies opened, in walk order.</summary>
+    private static readonly Vector3[] _aggLo = new Vector3[SceneDb.MaxObjects], _aggHi = new Vector3[SceneDb.MaxObjects];
+    private static readonly int[] _aggSeq = new int[SceneDb.MaxObjects];
+    private static readonly int[] _aggObj = new int[MaxCasters];
+    private static int _aggN;
     /// <summary>The entry's slot stopped casting since the collect (a tile fade, a skip): it stays in the list
     /// with a zero-count draw until it turns back on or the next collect drops it.</summary>
     private static readonly bool[] _liveOff = new bool[MaxCasters];
@@ -455,6 +465,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
         int live = _liveCount++;
         _liveSlot[live] = slot;
         _liveCx[live] = f.Cx; _liveCy[live] = f.Cy; _liveCz[live] = f.Cz; _liveR[live] = f.R;
+        _liveObj[live] = AlloyRenderer.SlotCreatureObj(slot);
+        _liveCreature[live] = _liveObj[live] >= 0;
         _liveIdxCount[live] = idxCount; _liveFirst[live] = first; _liveBaseVert[live] = baseVert;
         _liveVao[live] = f.Vao; _livePrim[live] = f.Prim; _liveItem[live] = f.Item;
         _liveTex[live] = AlloyRenderer.VdoHasUv(f.Vao) ? MaskTid(in f) : 0;
@@ -1466,15 +1478,35 @@ public sealed unsafe partial class CasterPass : IExtenderService
                                      FrameInputs.LocalLightRange[li0]);
             }
             // the same mover population the page claim walks, filtered the same way: a NaN sphere is no
-            // mover's, and a still lantern under dyn.min is not worth a tile any more than a page
+            // mover's, and a still lantern under dyn.min is not worth a tile any more than a page. A creature's
+            // parts (a player character is ~19 rigid meshes) fold into ONE mover, the box round them all: one tile
+            // per body, which the bake fills with every dynamic part inside it. Per part, a light's 16-mover list
+            // overflowed on a single character and the parts past it cast nothing.
+            _aggN = 0;
             for (int q = 0; q < _dMoverCount; q++)
             {
                 int m = _dMoverIdx[q];
                 if (!float.IsFinite(_liveCx[m] + _liveCy[m] + _liveCz[m] + _liveR[m])) continue;
                 if (!_liveCreature[m] && _liveR[m] < Shadows.DynMin.V) continue;
+                int o = _liveObj[m];
+                var lo = new Vector3(_liveCx[m] - _liveR[m], _liveCy[m] - _liveR[m], _liveCz[m] - _liveR[m]);
+                var hi = new Vector3(_liveCx[m] + _liveR[m], _liveCy[m] + _liveR[m], _liveCz[m] + _liveR[m]);
+                if (o >= 0)
+                {
+                    if (_aggSeq[o] != _frameSeq) { _aggSeq[o] = _frameSeq; _aggLo[o] = lo; _aggHi[o] = hi; if (_aggN < _aggObj.Length) _aggObj[_aggN++] = o; }
+                    else { _aggLo[o] = Vector3.Min(_aggLo[o], lo); _aggHi[o] = Vector3.Max(_aggHi[o], hi); }
+                    continue;
+                }
                 // ...with the caster's SLOT as its identity: stable while it is enrolled, which is what lets
                 // a light's run keep its order and a tile's layer key still match on the next frame.
                 PairShadows.AddMover(_liveCx[m], _liveCy[m], _liveCz[m], _liveR[m], _liveSlot[m]);
+            }
+            // a body's identity is its object, complemented so it can never equal a caster slot
+            for (int k = 0; k < _aggN; k++)
+            {
+                int o = _aggObj[k];
+                Vector3 c = (_aggLo[o] + _aggHi[o]) * 0.5f;
+                PairShadows.AddMover(c.X, c.Y, c.Z, (_aggHi[o] - _aggLo[o]).Length() * 0.5f, ~o);
             }
             PairShadows.Commit();
         }
@@ -2522,7 +2554,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 _liveSlot[live] = slot;
                 _liveCx[live] = f.Cx; _liveCy[live] = f.Cy; _liveCz[live] = f.Cz;
                 _liveR[live] = f.R;
-                _liveCreature[live] = f.Skinned || AlloyRenderer.SlotCreature(slot);
+                _liveObj[live] = AlloyRenderer.SlotCreatureObj(slot);
+                _liveCreature[live] = f.Skinned || _liveObj[live] >= 0;
                 _liveIdxCount[live] = idxCount;
                 _liveFirst[live] = first;
                 _liveBaseVert[live] = baseVert;

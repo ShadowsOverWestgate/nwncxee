@@ -48,26 +48,31 @@ internal static unsafe partial class Weather
     private static void DeclareKnobs()
     {
         G.Section("Precipitation");
-        DensityScale = G.Slider("density", "Density", 0f, 3f, 0.1f, 1f, help: "Scales how much falls at the engine's own weather density.");
-        StreakLen = G.Slider("streak", "Rain streak length", 0.1f, 2f, 0.05f, 0.35f, "m", help: "Mean length of one rain streak (each varies 0.5x-1.3x).");
-        FlakeSize = G.Slider("flake", "Snowflake size", 0.01f, 0.2f, 0.01f, 0.05f, "m", help: "Diameter of one flake.");
-        Brightness = G.Slider("bright", "Brightness", 0f, 3f, 0.1f, 0.6f, help: "Streaks and flakes take the light where they fall (sun, shadow, lamps); this scales it.");
-        Opacity = G.Slider("opacity", "Rain opacity", 0.02f, 1f, 0.02f, 0.7f,
-                           help: "How much of the scene one lit streak hides. A streak with no light on it is invisible whatever this says.");
-        Range = G.Slider("range", "Range", 6f, 40f, 1f, 20f, "m", Tier.Advanced, help: "Size of the box around the camera the field fills.");
-        RainSpeed = G.Slider("rainspeed", "Rain speed", 2f, 30f, 0.5f, 12f, "m/s", Tier.Advanced);
-        SnowSpeed = G.Slider("snowspeed", "Snow speed", 0.2f, 6f, 0.1f, 1.2f, "m/s", Tier.Advanced);
-        WindLean = G.Slider("windlean", "Wind lean", 0f, 3f, 0.05f, 0.6f, tier: Tier.Advanced,
-                            help: "How far the area wind tilts the fall. 0 falls straight down.");
-        SnowAngle = G.Slider("snowangle", "Snow settle angle", 0f, 45f, 1f, 3f, "°", Tier.Advanced,
-                             help: "Tilt of the settle direction from vertical, into the wind: how far snow reaches under an eave. Rain settles along its own fall.");
-        Backscatter = G.Slider("backscatter", "Flake glow", 0f, 2f, 0.1f, 0.5f,
-                               help: "A flake between you and a light glows, lit from behind. 0 = off.");
-        Soft = G.Slider("soft", "Contact fade", 0f, 20f, 0.5f, 6f, tier: Tier.Advanced,
-                        help: "How sharply a streak fades where it meets geometry (1/m).");
-        Drips = G.Slider("drips", "Roof drips", 0f, 1f, 0.05f, 0.25f,
+        DensityScale = G.Slider("density", "Density", 0f, 3f, 0.1f, 1f,
+                                help: "How much rain or snow falls, on top of the weather the area asks for.")
+                        .Ladder(Quality.Weather, 0.5f, 0.8f, 1f, 1.5f);
+        Drips = G.Slider("drips", "Roof drips", 0f, 1f, 0.05f, 0.25f, tier: Tier.Advanced,
                          help: "Drops fall from roof edges and overhangs while the roofs are wet, and keep falling for the dry-out time after the rain stops. 0 = off.");
-        MaxCount = G.Slider("count", "count", 500, 40000, 500, 16000, tier: Tier.ChatOnly);
+        G.Section("");
+        StreakLen = G.Slider("streak", "Rain streak length", 0.1f, 2f, 0.05f, 0.35f, "m", Tier.ChatOnly, help: "Mean length of one rain streak (each varies 0.5x-1.3x).");
+        FlakeSize = G.Slider("flake", "Snowflake size", 0.01f, 0.2f, 0.01f, 0.05f, "m", Tier.ChatOnly, help: "Diameter of one flake.");
+        Brightness = G.Slider("bright", "Brightness", 0f, 3f, 0.1f, 0.6f, tier: Tier.ChatOnly, help: "Streaks and flakes take the light where they fall (sun, shadow, lamps); this scales it.");
+        Opacity = G.Slider("opacity", "Rain opacity", 0.02f, 1f, 0.02f, 0.7f, tier: Tier.ChatOnly,
+                           help: "How much of the scene one lit streak hides. A streak with no light on it is invisible whatever this says.");
+        Range = G.Slider("range", "Range", 6f, 40f, 1f, 20f, "m", Tier.ChatOnly, help: "Size of the box around the camera the field fills.")
+                 .Ladder(Quality.Weather, 12f, 16f, 20f, 28f);
+        RainSpeed = G.Slider("rainspeed", "Rain speed", 2f, 30f, 0.5f, 12f, "m/s", Tier.ChatOnly);
+        SnowSpeed = G.Slider("snowspeed", "Snow speed", 0.2f, 6f, 0.1f, 1.2f, "m/s", Tier.ChatOnly);
+        WindLean = G.Slider("windlean", "Wind lean", 0f, 3f, 0.05f, 0.6f, tier: Tier.ChatOnly,
+                            help: "How far the area wind tilts the fall. 0 falls straight down.");
+        SnowAngle = G.Slider("snowangle", "Snow settle angle", 0f, 45f, 1f, 3f, "°", Tier.ChatOnly,
+                             help: "Tilt of the settle direction from vertical, into the wind: how far snow reaches under an eave. Rain settles along its own fall.");
+        Backscatter = G.Slider("backscatter", "Flake glow", 0f, 2f, 0.1f, 0.5f, tier: Tier.ChatOnly,
+                               help: "A flake between you and a light glows, lit from behind. 0 = off.");
+        Soft = G.Slider("soft", "Contact fade", 0f, 20f, 0.5f, 6f, tier: Tier.ChatOnly,
+                        help: "How sharply a streak fades where it meets geometry (1/m).");
+        MaxCount = G.Slider("count", "count", 500, 40000, 500, 16000, tier: Tier.ChatOnly)
+                    .Ladder(Quality.Weather, 4000, 8000, 16000, 24000);
         Viz = G.Slider("viz", "viz", 0, VizMax, 1, 0, tier: Tier.ChatOnly, help: "1 streak contact fade, 2 exposure on the world, 3 record class (red creature, green object, blue tileset), 4 the wetness map (red wet, green fill, blue standing water; black = not latched)");
     }
 

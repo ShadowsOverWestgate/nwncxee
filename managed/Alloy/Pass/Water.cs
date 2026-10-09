@@ -3,7 +3,8 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>The <c>water</c> group (spec §4.3): the storage <see cref="FrameSnapshot"/> reads. <see cref="Diag"/>
-/// is a BUDGET of readbacks the pass counts down, not a switch. Touched from
+/// is a BUDGET of readbacks the pass counts down, not a switch. The master is ChatOnly (ADR 0030): since
+/// CX-111 off means no water anywhere, which is nobody's setting. Touched from
 /// <see cref="RenderCommands.Register"/> so the group declares at Initialize on the main thread.</summary>
 internal static class Water
 {
@@ -13,9 +14,10 @@ internal static class Water
 
     static Water()
     {
-        G = KnobGroup.Declare("water", "Graphics", "Water", master: "Enable Alloy water",
-            masterHelp: "Water drawn through CX's pipeline (the stock water shader, reflections from the finished frame). Off, the stock water draws.",
-            parent: "alloy.enabled");
+        G = KnobGroup.Declare("water", "Graphics", "World", master: "Water",
+            masterHelp: "Draw water (the stock water shader, reflecting the finished frame). Off, no water is drawn "
+                      + "at all: there is no stock water pass left behind it, so this is a cfg-only switch.",
+            masterTier: Tier.ChatOnly, order: 346, title: "Water");
         Enabled = G.Master!;
         G.Status = FrameSnapshot.Describe;
         Rect = G.Toggle("rect", "rect", true, Tier.ChatOnly);

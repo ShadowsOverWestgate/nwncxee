@@ -115,7 +115,7 @@ internal static unsafe partial class Beams
         _enable = (int*)Native.Sym(SymbolMap.EnableBeams);
         _alpha = (float*)Native.Sym(SymbolMap.ProjectionAlpha);
         if (_primTable == null)
-        { _off = true; log.Info("Beams: prim table unresolved -- light beams stay vanilla"); return; }
+        { _off = true; log.Info("Beams: prim table unresolved -- no light beams draw"); return; }
         // #261: no hooks. The population is the engine's bucket 15, read at the Alloy slot.
         log.Info("Beams: armed -- bucket-15 volumes enumerated and drawn by Alloy (/effects beams toggles)");
     }
@@ -197,7 +197,7 @@ internal static unsafe partial class Beams
         _enrolled = 0; _refused = 0; _drawn = 0; _dbSkipped = 0;
     }
 
-    internal static string Stats() => Disabled ? "beams off (/effects beams 0)" : _off ? "beams vanilla (unavailable)"
+    internal static string Stats() => Disabled ? "beams off (/effects beams 0)" : _off ? "no beams (unavailable)"
         : $"beams {_count} captured from "
           + $"the scene database ({_owned} beaming parts in the scene)"
           + $", {_enrolled} enrolled, {_drawn} drawn"

@@ -30,14 +30,14 @@ internal static unsafe class PairShadows
     /// queue grown with it, and the layered flush then chunks more often.</summary>
     internal const int MaxPairs = 512;
     /// <summary>Floats per pair record, in <c>cx_pairbuf.glsl</c>'s std430 layout: mat4 vp, vec4 pr, vec4 col,
-    /// vec4 sph, vec4 ix.</summary>
-    internal const int RecFloats = 32;
+    /// vec4 sph, vec4 ix, vec4 fx.</summary>
+    internal const int RecFloats = 36;
     /// <summary><c>cx_pairbuf.glsl</c>'s SSBO binding point. SHARED with <see cref="EnvProbe"/>'s writeonly SH output,
     /// which binds it around its own dispatch and unbinds after; every pair reader rebinds through
     /// <see cref="BindAtlas"/>, so a new SH dispatch between that bind and a pair read corrupts a shadow matrix.</summary>
     internal const uint Binding = 28;
-    /// <summary>Movers one light may pair with. Past it the light keeps its page: a lamp with seventeen
-    /// creatures under it is cheaper as one cube than as seventeen tiles, and the count says so out loud.</summary>
+    /// <summary>Movers (bodies, and loose dynamic props) one light may pair with. Past it the newest go without
+    /// that light's shadow, and the count says so out loud.</summary>
     internal const int MaxPerLight = CasterPass.DynSpheres;
     /// <summary>Candidate lights one frame ranks -- the cube budget, which is every light that could have a
     /// tile at all (a pair tap needs the slot's published geometry).</summary>
@@ -110,7 +110,9 @@ internal static unsafe class PairShadows
     /// lets a light's run be emitted in an order that does not depend on the arrival order of the dynamic
     /// walk. Nothing drawn reads the order (a reader min()s the whole run), so sorting it is free stability.</summary>
     private static readonly int[] _lMoverId = new int[MaxLights * MaxPerLight];
-    /// <summary>Lights whose mover list filled: they keep their page, and the count is on the period line.</summary>
+    /// <summary>Per kept (light, mover), its <see cref="BudgetWeight"/>: the strength the tile's shadow is read at.</summary>
+    private static readonly float[] _lW = new float[MaxLights * MaxPerLight];
+    /// <summary>Movers a full light list turned away this frame (no shadow from that light), on the period line.</summary>
     private static int _planFull;
 
     private static int _gen, _upGen = -1;
@@ -144,7 +146,7 @@ internal static unsafe class PairShadows
              : $"pair tiles {p / n:F1}/frame over {s / n:F1} lights at {_tile}px "
              + $"({p * 100f / MathF.Max(f, 1) / _cap:F0}% of {_cap}, {hl / n:F1} HELD (the layer already held "
              + $"that pair), {mr / n:F1} movers ranked, {lt / n:F1} ranked nothing (every light full), "
-             + $"{o / n:F2} lights past the atlas, {rf / n:F2} unframeable, {cr / n:F2} too crowded -- those keep their page)";
+             + $"{o / n:F2} lights past the atlas, {rf / n:F2} movers too close to frame, {cr / n:F2} movers past a light's {MaxPerLight} (no shadow from it))";
     }
 
     // --- the planner, inside CasterPass's cube scan
@@ -205,9 +207,9 @@ internal static unsafe class PairShadows
 
     /// <summary>Rank this frame's candidate lights at one mover and keep the <c>lightmap.moverlights</c>
     /// strongest -- the engine's own curve times luma, which is how <c>cx_lightbuild</c> and the walk itself
-    /// rank a light's importance. Each kept (light, mover) is a pair candidate. Hot (per mover per frame) and
-    /// allocation-free: K is at most 4, so the keep is two named slots deep at the shipped default and a
-    /// four-element insertion at the ceiling.</summary>
+    /// rank a light's importance. Each kept (light, mover) is a pair candidate. A creature arrives here ONCE,
+    /// as the box round all its parts (<see cref="CasterPass"/>'s fold), so a body keeps one set of lamps. Hot
+    /// (per mover per frame) and allocation-free: K is at most 4, so the keep is a five-element insertion.</summary>
     internal static void AddMover(float cx, float cy, float cz, float r, int moverId)
     {
         if (!On || _nLights == 0 || !(r > 0f)) return;
@@ -227,56 +229,71 @@ internal static unsafe class PairShadows
     /// ranking can still land anywhere. Maintained by the one place a list grows.</summary>
     private static int _nFullLights;
 
+    /// <summary>How much stronger than the first light the budget turns away a kept light must be to cast at
+    /// full strength, as a share of that light's score. Below it the shadow thins linearly to nothing at the
+    /// cut, so a step that swaps which lamps a creature keeps fades the shadows across instead of popping them.</summary>
+    internal const float BudgetFade = 0.5f;
+
+    /// <summary>A kept pair's shadow strength, 0..1: 1 when nothing was turned away (<paramref name="cut"/> 0),
+    /// else how far <paramref name="s"/> clears the first turned-away score, over <see cref="BudgetFade"/> of it.
+    /// Zero exactly where the two scores meet, which is where the ranking swaps them.</summary>
+    internal static float BudgetWeight(float s, float cut)
+        => cut > 0f ? Math.Clamp((s - cut) / (BudgetFade * cut), 0f, 1f) : 1f;
+
     /// <summary>The ranking itself -- the one copy, so <see cref="SelfCheck"/> cannot pass against arithmetic
     /// the frame does not run. The K strongest candidates at (<paramref name="cx"/>, <paramref name="cy"/>,
-    /// <paramref name="cz"/>), descending, each taking this mover into its own list.</summary>
+    /// <paramref name="cz"/>), descending, each taking this mover into its own list with its
+    /// <see cref="BudgetWeight"/>.</summary>
     private static void Rank(float cx, float cy, float cz, float r, int K, int moverId)
     {
         Vector2 at = AlloyLights.Atten;
         if (!(at.X > 0f)) at = new Vector2(1f, 1f);
-        // the K strongest, descending. Four stack slots: K is at most 4 by the knob's own range.
-        float* sc = stackalloc float[4];
-        int* pick = stackalloc int[4];
-        int have = 0;
+        // the K strongest plus the first one turned away, descending: its score is where the fade bottoms out
+        float* sc = stackalloc float[5];
+        int* pick = stackalloc int[5];
+        int have = 0, keep = K + 1;
         for (int i = 0; i < _nLights; i++)
         {
             Vector4 pr = _lPr[i];
             float dx = cx - pr.X, dy = cy - pr.Y, dz = cz - pr.Z;
             float dd = dx * dx + dy * dy + dz * dz;
-            // the mover must be inside the light's LIT sphere, as the page claim's own test asks it
-            float reach = pr.W + r;
-            if (dd > reach * reach) continue;
             float f2 = dd / (pr.W * pr.W);
             if (f2 >= 1f) continue;
             // cx_lightbuild's Importance, term for term: the engine's curve at the mover times the light's luma
             float s = (1f - f2) / (at.X + at.Y * f2) * _lLuma[i];
             if (!(s > 0f)) continue;
             int j;
-            if (have < K) { j = have; have++; }
-            else if (s > sc[K - 1]) j = K - 1;
+            if (have < keep) { j = have; have++; }
+            else if (s > sc[keep - 1]) j = keep - 1;
             else continue;
             while (j > 0 && sc[j - 1] < s) { sc[j] = sc[j - 1]; pick[j] = pick[j - 1]; j--; }
             sc[j] = s; pick[j] = i;
         }
-        for (int j = 0; j < have; j++)
+        float cut = have > K ? sc[K] : 0f;
+        for (int j = 0; j < have && j < K; j++)
         {
+            float w = BudgetWeight(sc[j], cut);
+            if (!(w > 0f)) continue;
             int li = pick[j];
+            // A full list drops the newest, counted: keeping the page instead would shadow none of them on baked
+            // ground, which the deferred frame reads from the tiles alone (cx_pairdebt).
             if (_lN[li] >= MaxPerLight) { _planFull++; continue; }
-            // Admitted on ARRIVAL -- a full list drops the newest, exactly as before -- but INSERTED by the
-            // mover's identity, so the run's order is a function of its membership and not of the order the
-            // dynamic walk happened to visit in. Nothing drawn reads the order (a reader min()s the whole
-            // run), and a run that reorders every frame would make every layer key miss.
+            // Admitted on ARRIVAL, but INSERTED by the mover's identity, so the run's order is a function of
+            // its membership and not of the order the dynamic walk happened to visit in. Nothing drawn reads
+            // the order (a reader min()s the whole run), and a run that reorders every frame would make every
+            // layer key miss.
             int b = li * MaxPerLight, k = _lN[li]++;
             while (k > 0 && _lMoverId[b + k - 1] > moverId)
-            { _lMover[b + k] = _lMover[b + k - 1]; _lMoverId[b + k] = _lMoverId[b + k - 1]; k--; }
-            _lMover[b + k] = new Vector4(cx, cy, cz, r); _lMoverId[b + k] = moverId;
+            { _lMover[b + k] = _lMover[b + k - 1]; _lMoverId[b + k] = _lMoverId[b + k - 1]; _lW[b + k] = _lW[b + k - 1]; k--; }
+            _lMover[b + k] = new Vector4(cx, cy, cz, r); _lMoverId[b + k] = moverId; _lW[b + k] = w;
             if (_lN[li] >= MaxPerLight) _nFullLights++;
         }
     }
 
-    /// <summary>Turn the plan into this frame's pair table: per candidate light, a tile per mover it kept, ALL
-    /// OR NOTHING -- the dynamic page is the only other place that light's movers would be recorded, so one
-    /// unframeable mover leaves the whole light on its page. Emitted grouped by light (and so by cube slot),
+    /// <summary>Turn the plan into this frame's pair table: per candidate light, a tile per mover it kept and can
+    /// frame. An unframeable mover (inside the cone ceiling of its lamp) goes without that light's shadow, counted;
+    /// it does not cost the light's other movers theirs, as it did when one refusal left the whole light on its
+    /// page, which the deferred frame never reads on baked ground. Emitted grouped by light (and so by cube slot),
     /// which is the order every reader depends on. Candidates come in the cube scan's RANK order, so when the
     /// atlas fills it is the farthest lights that keep their pages. The only GL here is the atlas allocation,
     /// on the first committing frame of a session.</summary>
@@ -293,16 +310,16 @@ internal static unsafe class PairShadows
             int at = Count;
             Vector3 pos = new(_lPr[i].X, _lPr[i].Y, _lPr[i].Z);
             float far = _lFar[i];
-            bool whole = true;
-            for (int q = 0; q < boxes && whole; q++)
+            int kept = 0;
+            for (int q = 0; q < boxes; q++)
             {
                 Vector4 m = _lMover[i * MaxPerLight + q];
                 var c = new Vector3(m.X, m.Y, m.Z);
                 float dist = (c - pos).Length();
                 float near = MathF.Max(dist - m.W, CasterPass.CubeNearPlane);
                 if (!ShadowMath.PairViewProj(pos, c, m.W, near, far, out Matrix4x4 vp, out float halfSin))
-                { whole = false; break; }
-                int pi = at + q;
+                { _refused++; continue; }
+                int pi = at + kept++;
                 _vp[pi] = vp; _at[pi] = new Vector4(c, m.W);
                 _atLight[pi] = _lId[i]; _atMover[pi] = _lMoverId[i * MaxPerLight + q];
                 // the world size of one tile texel per unit of distance from the light: 2 tan(halfFov) / size
@@ -317,12 +334,13 @@ internal static unsafe class PairShadows
                     w[20] = _lCol[i].X; w[21] = _lCol[i].Y; w[22] = _lCol[i].Z; w[23] = texel;
                     w[24] = c.X; w[25] = c.Y; w[26] = c.Z; w[27] = m.W * ShadowMath.ConeSlack + pad;
                     w[28] = pi; w[29] = 1f / _tile; w[30] = _lSlot[i]; w[31] = _lSet[i];
+                    w[32] = _lW[i * MaxPerLight + q]; w[33] = w[34] = w[35] = 0f;
                 }
             }
-            if (!whole) { _refused++; continue; }
-            Count = at + boxes;
+            if (kept == 0) continue;
+            Count = at + kept;
             _base[_lSlot[i]] = at + 1;
-            _gen++; _pairs += boxes; _slots++;
+            _gen++; _pairs += kept; _slots++;
         }
         if (Count > 0) { _rec[0] = BitConverter.Int32BitsToSingle(Count); _gen++; }
     }
@@ -476,13 +494,13 @@ internal static unsafe class PairShadows
                      "a mover subtending more than the cone ceiling has none either");
         check.Expect(hs > r / (at - light).Length(), "the framed half-angle carries the disc's slack");
 
-        check.Expect(RecFloats == 32 && HeaderFloats == 4, "the record and the header are the sizes the GLSL declares");
+        check.Expect(RecFloats == 36 && HeaderFloats == 4, "the record and the header are the sizes the GLSL declares");
         check.Expect(MaxPairs <= 1024 - 64 * 6, "the atlas fits inside CasterPass's bake-view queue beside the cube faces");
         check.Expect(MaxPerLight <= CasterPass.DynSpheres,
                      "a light's mover list cannot outrun the dyn spheres its page would have held");
         string buf = ShaderSource.Get("cx_pairbuf.glsl"), lib = ShaderSource.Get("cx_pairshad.glsl");
         check.Expect(buf.Contains($"layout(std430, binding = {Binding}) readonly buffer CxPairBuf")
-                  && buf.Contains("struct CxPair { mat4 vp; vec4 pr; vec4 col; vec4 sph; vec4 ix; };"),
+                  && buf.Contains("struct CxPair { mat4 vp; vec4 pr; vec4 col; vec4 sph; vec4 ix; vec4 fx; };"),
                      "the pair table's binding and layout are the ones C# stages");
         check.Expect(lib.Contains($"layout(binding = {TextureSlots.PairMap}) uniform sampler2DArrayShadow uPairMap;"),
                      "the atlas is on the unit C# binds");
@@ -592,11 +610,33 @@ internal static unsafe class PairShadows
         // light 1, so distance alone would rank it first -- luma is what must decide, as the walk's does
         Rank(4f, 0f, 0f, 0.5f, 2, 0);
         bool ok = _lN[0] == 1 && _lN[1] == 1 && _lN[2] == 0;
-        why = ok ? "the per-mover budget keeps the two strongest lights by curve x luma"
+        why = ok ? "the per-mover budget keeps the two strongest lights by curve x luma, fades at its cut and counts what a full light turns away"
                  : $"the per-mover budget kept {_lN[0]}/{_lN[1]}/{_lN[2]} instead of 1/1/0";
+        // ...and both clear the turned-away light by more than the fade band, so neither is thinned
+        if (ok && !(_lW[0] == 1f && _lW[MaxPerLight] == 1f))
+        { ok = false; why = $"kept lights well clear of the cut were thinned to {_lW[0]:F2}/{_lW[MaxPerLight]:F2}"; }
+        // the fade: nothing at the cut, all of it past the band, monotonic between -- so a swap is continuous
+        if (ok && !(BudgetWeight(0.4f, 0.4f) == 0f && BudgetWeight(0.4f * (1f + BudgetFade), 0.4f) == 1f
+                    && BudgetWeight(0.5f, 0.4f) is > 0f and < 1f && BudgetWeight(0.1f, 0f) == 1f))
+        { ok = false; why = "the budget weight is not 0 at the cut and 1 past the fade band"; }
+        // ...and a light barely clearing the one it turned away casts a thin shadow, not a full one
+        _lN[0] = _lN[1] = _lN[2] = 0;
+        // lights 0 and 2 sit at one distance, so luma alone orders them whatever the attenuation pair is
+        _lLuma[1] = 0f; _lLuma[2] = 0.69f;
+        Rank(4f, 0f, 0f, 0.5f, 1, 0);
+        float near0 = _lN[0] == 1 ? _lW[0] : -1f;
+        if (ok && !(near0 > 0f && near0 < 1f))
+        { ok = false; why = $"a light barely over the budget's cut cast at {near0:F2} instead of thinly"; }
+        _lLuma[1] = 0.7f; _lLuma[2] = 0.4f;
+        // a full light list turns the newest away, counted, and keeps the movers it already holds
+        _lN[0] = _lN[1] = _lN[2] = 0; _nFullLights = 0; _planFull = 0;
+        for (int q = 0; q <= MaxPerLight; q++) Rank(0.5f, 0f, 0f, 0.5f, 1, q);
+        if (ok && !(_lN[0] == MaxPerLight && _planFull == 1))
+        { ok = false; why = $"a light past {MaxPerLight} movers kept {_lN[0]} and counted {_planFull}"; }
+        _planFull = 0;
         // ...and a light's run comes out in its movers' IDENTITY order whatever order they arrived in: a run
         // that reorders when the dynamic walk does would make every layer key miss (CX-188 CPU wave).
-        _lN[0] = 0;
+        _lN[0] = 0; _nFullLights = 0;
         Rank(0.5f, 0f, 0f, 0.5f, 1, 9);
         Rank(0.5f, 0f, 0f, 0.5f, 1, 4);
         if (ok && !(_lN[0] == 2 && _lMoverId[0] == 4 && _lMoverId[1] == 9))

@@ -34,7 +34,7 @@ internal static unsafe partial class Weather
     private static int _shelBakes, _ripBakes;
 
     private static void DeclareShelterKnobs()
-        => ShelterCache = G.Toggle("shelcache", "Cached shelter", true, Tier.Advanced,
+        => ShelterCache = G.Toggle("shelcache", "Cached shelter", true, Tier.ChatOnly,
                                    help: "Work out the shelter edge and the snow drift once per cover update instead of per pixel per frame. Off runs the per-pixel test everywhere (for comparing).");
 
     /// <summary>The bake's parameters now: uv per metre, the disk radius, the breakup, the drift width in uv

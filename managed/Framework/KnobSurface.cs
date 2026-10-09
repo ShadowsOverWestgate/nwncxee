@@ -5,9 +5,10 @@ using System.Text;
 namespace CX.Framework;
 
 /// <summary>
-/// <c>/knobs</c>: print what is tunable (#183). Spec §4.1: the <c>knobs</c> group (General → Debug info),
-/// zero knobs, whose status line is this report; the generated <c>/knobs</c> handler prints it, gated like
-/// every command.
+/// <c>/knobs</c>: print what is tunable (#183). Spec §4.1: the <c>knobs</c> group, zero knobs, whose diagnostic
+/// status line is this report; the generated <c>/knobs</c> handler prints it, gated like every command. No row and
+/// no <see cref="KnobGroup.PanelStatus"/>, so it is a chat surface only and has no submenu (ADR 0030); the panel
+/// reaches the same text through General » About's copy row.
 /// </summary>
 /// <remarks>
 /// The registry walk (ADR 0025: <see cref="KnobGroup.Walk"/>, one line per declared knob), then the Note

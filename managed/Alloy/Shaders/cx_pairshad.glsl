@@ -32,7 +32,8 @@ int CxPairBase(int slot)
 }
 
 /// Visibility of <paramref name="worldPos"/> through pair <paramref name="pi"/>'s tile, 0 (the mover blocks
-/// this light) .. 1. A point outside the tile is LIT: a pair's frustum is the only place its mover can shadow.
+/// this light) .. 1, thinned by the pair's budget weight (fx.x). A point outside the tile is LIT: a pair's
+/// frustum is the only place its mover can shadow.
 /// <paramref name="soft"/> adds a four-tap disc one tile texel wide -- a baked receiver has no static map to
 /// min() this against, so the lone hardware tap would show its own texel.
 float CxPairTapAt(int pi, vec3 worldPos, vec3 N, float ndlRaw, bool soft)
@@ -55,12 +56,12 @@ float CxPairTapAt(int pi, vec3 worldPos, vec3 N, float ndlRaw, bool soft)
     if (any(greaterThanEqual(abs(n), vec3(1.0)))) return 1.0;
     vec2 uv = n.xy * 0.5 + 0.5;
     float ref = n.z * 0.5 + 0.5, layer = p.ix.x;
-    if (!soft) return texture(uPairMap, vec4(uv, layer, ref));
+    if (!soft) return mix(1.0, texture(uPairMap, vec4(uv, layer, ref)), p.fx.x);
     float t = p.ix.y;
-    return 0.25 * (texture(uPairMap, vec4(uv + vec2(t, t), layer, ref))
-                 + texture(uPairMap, vec4(uv + vec2(-t, t), layer, ref))
-                 + texture(uPairMap, vec4(uv + vec2(t, -t), layer, ref))
-                 + texture(uPairMap, vec4(uv + vec2(-t, -t), layer, ref)));
+    return mix(1.0, 0.25 * (texture(uPairMap, vec4(uv + vec2(t, t), layer, ref))
+                          + texture(uPairMap, vec4(uv + vec2(-t, t), layer, ref))
+                          + texture(uPairMap, vec4(uv + vec2(t, -t), layer, ref))
+                          + texture(uPairMap, vec4(uv + vec2(-t, -t), layer, ref))), p.fx.x);
 }
 
 /// Does the sphere (<paramref name="fc"/>, <paramref name="fr"/>) meet pair <paramref name="pi"/>'s shadow

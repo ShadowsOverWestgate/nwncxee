@@ -4,8 +4,8 @@ using CX.Ui;
 namespace CX.Services.Dialog;
 
 /// <summary>The <c>dialog</c> group (spec §4.2) and the storage <see cref="DialogService"/> reads: the master
-/// (off = the stock panel from the next conversation node on; live per node, #591), the five User rows, the two Advanced fade knobs, and the window
-/// rect as Hidden state -- <see cref="X"/>/<see cref="Y"/>/<see cref="W"/> with the <see cref="Placed"/>
+/// (off = the stock panel from the next conversation node on; live per node, #591), the five User rows, the Advanced
+/// fade and <see cref="Text"/> rows, and the window rect as Hidden state -- <see cref="X"/>/<see cref="Y"/>/<see cref="W"/> with the <see cref="Placed"/>
 /// sentinel, false until the user first moves or resizes so a fresh install takes the auto layout instead of
 /// a (0,0) box. <see cref="Text"/> is the window's own size / typeface / outline. Touched from <c>DialogService.Initialize</c> so the group declares
 /// whether or not the hooks arm.</summary>
@@ -24,8 +24,9 @@ internal static class DialogKnobs
 
     static DialogKnobs()
     {
-        G = KnobGroup.Declare("dialog", "UI", "Dialog", master: "Enable the CX dialog window",
-            masterHelp: "Conversations in CX's own window: resizable, scrollable, portrait, animated. Off, the stock dialog panel runs.");
+        G = KnobGroup.Declare("dialog", "Interface", "Game windows", master: "Enable the CX dialog window",
+            masterHelp: "Conversations in CX's own window: resizable, scrollable, portrait, animated. Off, the stock dialog panel runs.",
+            order: 240, title: "Dialog");
         Enabled = G.Master!;
         Lock = G.Toggle("lock", "Lock position and size", false, help: "The window can't be dragged or resized.");
         MaxHeight = G.Slider("maxheight", "Height before scrolling", MaxHMin, MaxHMax, 10, 320, "px",
@@ -36,7 +37,7 @@ internal static class DialogKnobs
         FadeIn = G.Slider("fadein", "Fade in", 0, 500, 10, 180, "ms", Tier.Advanced);
         FadeOut = G.Slider("fadeout", "Fade out", 0, 500, 10, 140, "ms", Tier.Advanced);
         G.Section("Text");
-        Text = new TextStyle(G, "the dialog window", changed: DialogService.Relayout);
+        Text = new TextStyle(G, "the dialog window", changed: DialogService.Relayout, tier: Tier.Advanced);
         X = G.Slider("x", "x", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);
         Y = G.Slider("y", "y", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);
         W = G.Slider("w", "w", 0f, RectMax, 1f, 0f, tier: Tier.Hidden);

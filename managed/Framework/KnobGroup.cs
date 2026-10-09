@@ -30,9 +30,17 @@ public sealed partial class KnobGroup
     public IReadOnlyList<Knob> Knobs => _knobs;
     /// <summary>The group's Hidden dynamic-key bags (<see cref="Bag"/>), persisted beside its knobs.</summary>
     public IReadOnlyList<KnobBag> Bags => _bags;
-    /// <summary>The group's status line (Renderer's "Running: …"); bare <c>/&lt;group&gt;</c> prints it
-    /// instead of every row's value when set.</summary>
+    /// <summary>The group's diagnostic line: bare <c>/&lt;group&gt;</c> and <c>/knobs</c> print it instead of every
+    /// row's value when set. Never the panel's -- counters and engine state are developer text.</summary>
     public Func<string>? Status;
+    /// <summary>The line the settings panel shows atop the group's rows, written for a player ("Approved on this
+    /// server: …"). Null for almost every group; a group with no rows and no panel status has no submenu.</summary>
+    public Func<string>? PanelStatus;
+    /// <summary>Panel sort key across every group: submenus appear in the order of their lowest-ordered group,
+    /// and a shared submenu's groups in this order (ties: declaration order).</summary>
+    public int Order { get; }
+    /// <summary>The heading over this group's rows when it shares its submenu with other groups.</summary>
+    public string Title { get; }
     /// <summary>False for the SelfCheck's throwaway group: not enumerated, no command, sets arm no write.</summary>
     internal bool Registered { get; }
 
@@ -55,22 +63,27 @@ public sealed partial class KnobGroup
     /// <summary>Declare a group. <paramref name="master"/> is the label of <c>&lt;group&gt;.enabled</c>, the
     /// first row, User tier (so <paramref name="masterHelp"/> is required); <paramref name="parent"/> names
     /// another group's master by KEY (<c>"alloy.enabled"</c>) and may be declared later.</summary>
+    /// <paramref name="masterTier"/> below User keeps the switch in chat and <c>cx.cfg</c> only: a core feature a
+    /// player has no reason to turn off. Several groups may name one <paramref name="submenu"/>; each then sits
+    /// under its <paramref name="title"/> (default: the submenu), ordered by <paramref name="order"/>.</summary>
     public static KnobGroup Declare(string name, string category, string submenu, string? master = null,
                                     string? masterHelp = null, bool masterDefault = true,
                                     Effect masterEffect = Effect.Live, Action? masterChanged = null,
-                                    string? parent = null, string header = "")
-        => new(name, category, submenu, master, masterHelp, masterDefault, masterEffect, masterChanged, parent, header, register: true);
+                                    string? parent = null, string header = "", Tier masterTier = Tier.User,
+                                    int order = 0, string? title = null)
+        => new(name, category, submenu, master, masterHelp, masterDefault, masterEffect, masterChanged, parent, header,
+               register: true, masterTier, order, title);
 
     internal KnobGroup(string name, string category, string submenu, string? master, string? masterHelp,
                        bool masterDefault, Effect masterEffect, Action? masterChanged, string? parent,
-                       string header, bool register)
+                       string header, bool register, Tier masterTier = Tier.User, int order = 0, string? title = null)
     {
         Name = name.ToLowerInvariant(); Category = category; Submenu = submenu; ParentKey = parent; Header = header;
-        Registered = register;
+        Registered = register; Order = order; Title = title ?? submenu;
         if (register)
             lock (_all) _all.Add(this);
         if (master != null)
-            Master = Toggle("enabled", master, masterDefault, Tier.User, masterEffect, masterHelp, masterChanged);
+            Master = Toggle("enabled", master, masterDefault, masterTier, masterEffect, masterHelp, masterChanged);
         if (register)
             CommandRegistry.Global.Register("/" + Name,
                 $"report or set the {Submenu} knobs; /{Name} <knob> <value>, /{Name} reset", Command);
@@ -175,6 +188,9 @@ public sealed partial class KnobGroup
             }
         return k;
     }
+
+    /// <summary>A declaration this registry refuses (a ladder that does not fit): logged, and the SelfCheck fails.</summary>
+    internal void Refuse(string what) => Violation(what);
 
     private void Violation(string what)
     {

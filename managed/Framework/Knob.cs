@@ -90,6 +90,21 @@ public abstract class Knob
     /// <summary>Index of the live value in a Dropdown's <c>Values</c>, -1 when it is none of them (or the knob has no
     /// choices). Alloc-free, so the panel may read it every frame.</summary>
     public abstract int ChoiceIndex { get; }
+    /// <summary>How many choices a Dropdown has; 0 otherwise.</summary>
+    public virtual int ChoiceCount => 0;
+    /// <summary>The knobs whose default is a rung of this one's ladder (<see cref="Knob{T}.Ladder"/>): a set
+    /// moves each to the rung of the new choice. Null when nothing ladders on it.</summary>
+    internal List<Knob>? Members;
+    /// <summary>The driver picked choice <paramref name="i"/>: take that rung as the default, and set it.</summary>
+    internal virtual void Rung(int i) { }
+
+    /// <summary>Move every ladder member to the rung of this knob's current choice (a set, an enforce, a release).</summary>
+    private protected void Cascade()
+    {
+        if (Members == null) return;
+        int ci = ChoiceIndex;
+        for (int i = 0; i < Members.Count; i++) Members[i].Rung(ci);
+    }
     /// <summary>The SelfCheck's witness that <c>Boot</c> never moved: it is a public field by the spec's
     /// shape, so "immutable after a set" is checked rather than enforced.</summary>
     internal abstract bool BootIntact { get; }
@@ -112,6 +127,7 @@ public abstract class Knob
     private protected void AfterSet()
     {
         Changed?.Invoke();
+        if (!Enforced) Cascade();
         if (Persisted && Group.Registered) KnobFile.Arm();
     }
 }
@@ -128,9 +144,12 @@ public sealed class Knob<T> : Knob
     /// <summary>The live value: what the panel edits and the cfg persists. Plain field by decision (spec
     /// §1 Threading): a scalar write is atomic and no two knobs change together.</summary>
     public T V;
-    /// <summary>Bound at construction from the loaded file, never changes; Restart readers read this.</summary>
+    /// <summary>Bound at construction from the loaded file (re-bound once by <see cref="Ladder"/> when the key is unset),
+    /// never changes after; Restart readers read this.</summary>
     public T Boot;
-    public readonly T Default;
+    /// <summary>The default: fixed, or the rung of a <see cref="Ladder"/>'s driver (a quality preset). An unset
+    /// key follows it, so a preset change moves every knob the player has not touched.</summary>
+    public T Default { get; private set; }
     /// <summary>Slider range; the panel snaps to <see cref="Step"/>, chat accepts any in-range value.</summary>
     public readonly T Min, Max, Step;
     public readonly string Unit;
@@ -138,7 +157,8 @@ public sealed class Knob<T> : Knob
     public readonly string[] Choices;
     public readonly T[] Values;
 
-    private readonly T _bound;
+    private T _bound;
+    private T[]? _rungs;
     /// <summary>The player's value while <see cref="Knob.Enforced"/>; meaningless otherwise.</summary>
     private T _user = default!;
     private readonly Func<T, string> _fmt;
@@ -176,6 +196,7 @@ public sealed class Knob<T> : Knob
         Enforced = true;
         V = v;
         Changed?.Invoke();
+        Cascade();
         return true;
     }
 
@@ -185,6 +206,7 @@ public sealed class Knob<T> : Knob
         Enforced = false;
         V = _user;
         Changed?.Invoke();
+        Cascade();
     }
 
     public override string FormatStored() => _fmt(Enforced ? _user : V);
@@ -209,7 +231,7 @@ public sealed class Knob<T> : Knob
                 if (string.Equals(_fmt(Values[i]), s, StringComparison.OrdinalIgnoreCase)) { v = Values[i]; return true; }
             for (int i = 0; i < Choices.Length; i++)
                 if (string.Equals(Choices[i], s, StringComparison.OrdinalIgnoreCase)) { v = Values[i]; return true; }
-            if (Ladder && _parse(s) is (true, T raw) && InSpan(raw)) { v = raw; return true; }
+            if (NumericSteps && _parse(s) is (true, T raw) && InSpan(raw)) { v = raw; return true; }
             if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ix)
                 && ix >= 0 && ix < Values.Length) { v = Values[ix]; return true; }
             v = Default;
@@ -221,7 +243,7 @@ public sealed class Knob<T> : Knob
     }
 
     /// <summary>A numeric dropdown: the panel offers its steps, chat may name any value between them.</summary>
-    private static bool Ladder => typeof(T) == typeof(int) || typeof(T) == typeof(float);
+    private static bool NumericSteps => typeof(T) == typeof(int) || typeof(T) == typeof(float);
 
     private bool InSpan(T v)
     {
@@ -250,6 +272,44 @@ public sealed class Knob<T> : Knob
     internal override bool BootIntact => EqualityComparer<T>.Default.Equals(Boot, _bound);
     public override void Reset() => Set(Default);
     public override int ChoiceIndex => Array.IndexOf(Values, V);
+    public override int ChoiceCount => Values.Length;
+
+    /// <summary>Make the default a rung of <paramref name="driver"/>'s ladder: <c>rungs[driver.ChoiceIndex]</c>.
+    /// Declared right after the knob, before any reader: an unset key re-binds to the rung, and every later set of
+    /// the driver moves this knob to the new rung (a preset pick drops the player's deviation, as a reset does).</summary>
+    public Knob<T> Ladder(Knob driver, params T[] rungs)
+    {
+        if (driver.Kind != KnobKind.Dropdown || rungs.Length != driver.ChoiceCount)
+        { Group.Refuse($"{Key}: ladder of {rungs.Length} rungs on {driver.Key} with {driver.ChoiceCount} choices"); return this; }
+        for (int i = 0; i < rungs.Length; i++)
+            if (!RungFits(rungs[i])) { Group.Refuse($"{Key}: rung {i} ({_fmt(rungs[i])}) is not a value of this knob"); return this; }
+        _rungs = rungs;
+        (driver.Members ??= new()).Add(this);
+        int ix = driver.ChoiceIndex;
+        if ((uint)ix < (uint)rungs.Length)
+        {
+            Default = rungs[ix];
+            if (Settings.Raw(Key) is not string raw || !TryParse(raw, out _)) V = Boot = _bound = Default;
+        }
+        return this;
+    }
+
+    private bool RungFits(T v)
+    {
+        if (Kind == KnobKind.Dropdown) return Array.IndexOf(Values, v) >= 0;
+        if (Kind != KnobKind.Slider) return true;
+        var c = Comparer<T>.Default;
+        return c.Compare(v, Min) >= 0 && c.Compare(v, Max) <= 0;
+    }
+
+    internal override void Rung(int i)
+    {
+        if (_rungs == null || (uint)i >= (uint)_rungs.Length) return;
+        Default = _rungs[i];
+        // An unchanged value skips the set (and its Changed: a rebake per member), but its own members still re-rung.
+        if (!EqualityComparer<T>.Default.Equals(V, Default)) Set(Default);
+        else if (!Enforced) Cascade();
+    }
 
     public override string RangeText() => Kind switch
     {

@@ -1741,8 +1741,8 @@ internal static unsafe class SymbolMap
     /// <c>GetLightAdjustedRadius + radius</c> of the point. <c>ManageSceneBSP</c> passes
     /// <c>Scene::m_vSceneFocus</c> (<c>Scene+0x190</c>) and <c>max(45.0f, Scene+0x148 /*fog end*/)</c> -- the
     /// float is invisible in the decompilation and was read off the disassembly at 0x480093.
-    /// <para>Alloy enumerates the scene database instead, so filling this list is dead work;
-    /// it is called only for the <c>light.registry 0</c> A/B, whose fallbacks read the engine list directly.
+    /// <para>Alloy enumerates the scene database instead, so filling this list is dead work and nothing calls
+    /// this: the declaration is kept because the list's layout is what the remarks above record.
     /// </para>ABI: <c>(LightManager* /*rdi*/, Vector const* /*rsi*/, float /*xmm0*/)</c>.</summary>
     [Fn("void(LightManager this, IntPtr pos, float radius)")]
     public const string LightMgrSetupLights = "_ZN12LightManager35SetupLightsForThisPositionAndRadiusERK6Vectorf";

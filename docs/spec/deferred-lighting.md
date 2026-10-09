@@ -147,6 +147,12 @@ The debt is taken instead by **`cx_pairdebt`**, a second 16x16 compute dispatch 
 - `CasterPass` keeps a per-**creature** budget of the `lightmap.moverlights` (default 2) strongest static
   lights whose reach holds it, ranked by the engine's curve times luma -- `cx_lightbuild`'s own `Importance`.
   Only those (light, creature) **pairs** cast a creature shadow from a static light onto baked ground.
+  A creature is ONE mover: its parts (a player character is ~19 rigid meshes) fold into the box round them, so
+  a body keeps one set of lamps and one tile per lamp, which the bake fills with every dynamic part inside it.
+  A kept pair casts at `PairShadows.BudgetWeight` strength, 0 where its score meets the first light turned
+  away and 1 at half again over it, so a step that swaps the kept lights fades the shadows instead of
+  popping them. Movers past a light's `MaxPerLight`, and a mover too close to its lamp to frame
+  (`ShadowMath.ConeMaxSin`), go without that light's shadow, counted; the light's other pairs stand.
 - Each pair gets one small perspective depth tile in a 2D-array atlas (`lightmap.pairsize`,
   `lightmap.paircount`), framed on the creature's sphere and fitted to the light's reach, baked through the
   existing layered caster path over the DYNAMIC set alone. A light whose pairs all land **publishes no dynamic
@@ -256,7 +262,6 @@ sets it:
 |---|---|---|---|
 | **lights a froxel can hold** (`CX_CLUSTER_CAP`) | 128, a build constant | the froxel drops the rest and counts the overflow on the `[alloy]` line | -- (`AlloyLights.ClusterCap`) |
 | **lights a froxel KEEPS** | all of them | -- | `light.bincap` (0 = keep all; a cap keeps the N strongest per froxel and draws the cluster grid where more overlap) |
-| **lights uploaded at all** | the game's own Max Lights option | not uploaded, so invisible everywhere | `light.maxlit` |
 | **a light's binned + walked radius, as a share of its authored one** | 0.8 | not binned, and the walk's window fades it to 0 over the last 30% in f2 | `light.binreach` (a global share: a look change, not a perceptual cut) |
 | **a light's binned + walked radius, as a BRIGHTNESS** | 0.0003 display-linear | same window, per light | `light.floor` |
 | **a light's share of the pixel's brightest** | 0.01 | faded out over `[cut, full)` and skipped, per pixel, so no grid | `light.relevance` |

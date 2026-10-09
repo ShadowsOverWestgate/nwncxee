@@ -17,14 +17,15 @@ internal static unsafe partial class Weather
     private static void DeclareCoverKnobs()
     {
         G.Section("Cover");
-        Cover = G.Toggle("cover", "Shelter under roofs", true,
-                         help: "Nothing falls under a roof, an awning or a doorway: an occlusion map baked along the fall vector, like a sun shadow. Off, it rains indoors.");
-        WaterRoof = G.Toggle("waterroof", "Water sheds snow", true,
+        Cover = G.Toggle("cover", "Shelter under roofs", true, Tier.Advanced,
+                         help: "Nothing falls under a roof, an awning or a doorway, and what they shelter stays dry. Off, it rains indoors.");
+        G.Section("");
+        WaterRoof = G.Toggle("waterroof", "Water sheds snow", true, Tier.ChatOnly,
                              help: "Water surfaces count as a roof: nothing wets or snows the bed beneath them.");
-        CoverSoft = G.Slider("coversoft", "Cover edge", 0f, 4f, 0.05f, 1f, "m",
+        CoverSoft = G.Slider("coversoft", "Cover edge", 0f, 4f, 0.05f, 1f, "m", Tier.ChatOnly,
                              help: "How far a roof's shelter feathers at its edge: wind and splash make no hard line.",
                              changed: CasterPass.RefilterCover);
-        CoverRange = G.Slider("coverrange", "Cover range", 16f, 128f, 4f, 60f, "m", Tier.Advanced,
+        CoverRange = G.Slider("coverrange", "Cover range", 16f, 128f, 4f, 60f, "m", Tier.ChatOnly,
                               help: "Half-width of the cover map around the player. Resolution is the sun shadow map's (one allocation).");
     }
 

@@ -10,7 +10,7 @@ internal static class DbTiles
     internal static readonly KnobGroup G;
     static DbTiles()
     {
-        G = KnobGroup.Declare("dbtiles", "Graphics", "CX tile build", parent: "alloy.enabled");
+        G = KnobGroup.Declare("dbtiles", "Graphics", "CX tile build");
         G.Status = Describe;
 
     }

@@ -15,9 +15,10 @@ internal static class Fog
 
     static Fog()
     {
-        G = KnobGroup.Declare("fog", "Graphics", "Fog", master: "Enable Alloy fog",
-            masterHelp: "Fog that takes the sky's colour, glows toward the sun and thins with height. Off, the area author's flat fog colour draws.",
-            parent: "alloy.enabled");
+        G = KnobGroup.Declare("fog", "Graphics", "World", master: "Fog",
+            masterHelp: "Fog that takes the sky's colour, glows toward the sun and thins with height. Off, every dial "
+                      + "below reads 0 and the area author's own flat fog colour draws, as the stock game shows it.",
+            order: 344, title: "Fog");
         Enabled = G.Master!;
         G.Status = SceneFog.Describe;
 
@@ -34,11 +35,10 @@ internal static class Fog
                           help: "Fog thins with height above the floor; 0 = off.");
         Floor = G.Slider("floor", "Layer floor", 0f, 50f, 1f, 0f, "m", Tier.Advanced,
                          help: "Offset above your feet where thinning starts.");
-        Origin = G.Toggle("origin", "Measure from the player", true, Tier.Advanced,
-                          help: "Off = stock view-depth fog (zooming out pushes the fog).");
-        G.Section("Performance");
-        Cull = G.Toggle("cull", "Cull fully-fogged geometry", true, Tier.Advanced);
         G.Section("");
+        Origin = G.Toggle("origin", "Measure from the player", true, Tier.ChatOnly,
+                          help: "Off = stock view-depth fog (zooming out pushes the fog).");
+        Cull = G.Toggle("cull", "Cull fully-fogged geometry", true, Tier.ChatOnly);
         CullZ = G.Slider("cullz", "cullz", 0f, 500f, 1f, 30f, tier: Tier.ChatOnly);
     }
 }

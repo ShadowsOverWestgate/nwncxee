@@ -16,17 +16,18 @@ internal static class Lod
 
     static Lod()
     {
-        G = KnobGroup.Declare("lod", "Graphics", "Mesh detail", master: "Automatic mesh detail",
+        G = KnobGroup.Declare("lod", "Graphics", "Quality", master: "Automatic mesh detail",
             masterHelp: "Distant walls and floors are drawn from a simplified copy of their own mesh. "
                       + "Off draws every model at full detail at every distance, which is what the game does.",
-            parent: "alloy.enabled",
-            header: "Automatically reduce object details past a certain screen contribution.");
+            masterTier: Tier.ChatOnly, order: 304, title: "Model detail");
         G.Status = MeshLod.Describe;
-        Px1 = G.Slider("px1", "Full detail above", 50f, 2000f, 10f, 500f, "px",
-                       help: "A mesh wider than this on screen is drawn exactly as authored.");
-        Px2 = G.Slider("px2", "Lowest detail below", 10f, 1000f, 10f, 150f, "px",
-                       help: "Below this a mesh is drawn from its smallest copy. Between the two it takes the middle one.");
-        Bias = G.Slider("bias", "Detail bias", 0.25f, 4f, 0.05f, 1f, tier: Tier.Advanced,
+        Px1 = G.Slider("px1", "Full detail above", 50f, 2000f, 10f, 500f, "px", Tier.Advanced,
+                       help: "A mesh wider than this on screen is drawn exactly as authored.")
+               .Ladder(Quality.Detail, 800f, 650f, 500f, 300f);
+        Px2 = G.Slider("px2", "Lowest detail below", 10f, 1000f, 10f, 150f, "px", Tier.Advanced,
+                       help: "Below this a mesh is drawn from its smallest copy. Between the two it takes the middle one.")
+               .Ladder(Quality.Detail, 300f, 220f, 150f, 80f);
+        Bias = G.Slider("bias", "Detail bias", 0.25f, 4f, 0.05f, 1f, tier: Tier.ChatOnly,
                         help: "Scales both thresholds' effect: above 1 keeps detail further away, below 1 drops it sooner.");
     }
 }

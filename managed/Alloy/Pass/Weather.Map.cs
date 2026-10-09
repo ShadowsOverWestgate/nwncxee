@@ -55,22 +55,25 @@ internal static unsafe partial class Weather
 
     private static void DeclareMapKnobs()
     {
-        G.Section("Wetness map");
-        Map = G.Toggle("map", "Wetness map", true,
-                       help: "Wetness, and the puddles that pool in real low ground, are kept in an area-sized map updated on the GPU: rain soaks where it reaches, dries where it stops, and puddles fill basins and shrink from their shorelines. Off, the older per-fragment estimate draws.");
-        MapRes = G.Slider("mapres", "Map detail", 1f, 4f, 0.5f, 3f, "texels/m", Tier.Advanced,
-                          help: "Texels per metre the map is fitted at. A large area is capped, so it gets fewer.");
-        MapCadence = G.Slider("mapcadence", "Map update interval", 1, 16, 1, 4, tier: Tier.Advanced,
-                              help: "Frames between map updates. The soak and drain are integrated by wall clock, so this changes the cost and not the rates.");
-        Basin = G.Slider("basin", "Basin size", 0.5f, 4f, 0.1f, 1.5f, "m", Tier.Advanced,
+        G.Section("");
+        Map = G.Toggle("map", "Wetness map", true, Tier.ChatOnly,
+                       help: "Wetness, and the puddles that pool in real low ground, are kept in an area-sized map updated on the GPU: rain soaks where it reaches, dries where it stops, and puddles fill basins and shrink from their shorelines. Off falls back to the older per-fragment estimate, which pools nothing in real hollows.");
+        MapRes = G.Slider("mapres", "Map detail", 1f, 4f, 0.5f, 3f, "texels/m", Tier.ChatOnly,
+                          help: "Texels per metre the map is fitted at. A large area is capped, so it gets fewer.")
+                  .Ladder(Quality.Weather, 1.5f, 2f, 3f, 4f);
+        MapCadence = G.Slider("mapcadence", "Map update interval", 1, 16, 1, 4, tier: Tier.ChatOnly,
+                              help: "Frames between map updates. The soak and drain are integrated by wall clock, so this changes the cost and not the rates.")
+                      .Ladder(Quality.Weather, 8, 6, 4, 2);
+        Basin = G.Slider("basin", "Basin size", 0.5f, 4f, 0.1f, 1.5f, "m", Tier.ChatOnly,
                          help: "How far out the map looks for the low point a puddle fills toward. Small = many shallow pools, large = fewer broader ones.");
-        PuddleDepth = G.Slider("puddledepth", "Puddle depth", 0.005f, 0.12f, 0.005f, 0.03f, "m",
+        PuddleDepth = G.Slider("puddledepth", "Puddle depth", 0.005f, 0.12f, 0.005f, 0.03f, "m", Tier.ChatOnly,
                                help: "How deep standing water gets in a full basin. Deeper water floods further up its banks.");
-        FilmRough = G.Slider("filmrough", "Water film gloss", 0.1f, 0.4f, 0.01f, 0.16f,
+        FilmRough = G.Slider("filmrough", "Water film gloss", 0.1f, 0.4f, 0.01f, 0.16f, tier: Tier.ChatOnly,
                              help: "Roughness of the water film over wet ground: low is a mirror, high a matte sheen. Perceptual, so the low end is still a real lobe and not a needle.");
-        FilmLights = G.Slider("filmlights", "Film highlights", 0, 4, 1, 2,
-                              help: "Baked static lights a water film may mirror per cluster: the brightest few, evaluated on the film's own lobe. 0 = the film takes moving lights only.");
-        WetDark = G.Slider("wetdark", "Wet darkening", 0f, 2f, 0.05f, 1f,
+        FilmLights = G.Slider("filmlights", "Film highlights", 0, 4, 1, 2, tier: Tier.ChatOnly,
+                              help: "Baked static lights a water film may mirror per cluster: the brightest few, evaluated on the film's own lobe. 0 = the film takes moving lights only.")
+                      .Ladder(Quality.Weather, 0, 1, 2, 4);
+        WetDark = G.Slider("wetdark", "Wet darkening", 0f, 2f, 0.05f, 1f, tier: Tier.ChatOnly,
                            help: "How far a porous surface darkens and saturates when it soaks -- the albedo is raised to a power, so stone deepens and polished stone barely moves.");
     }
 

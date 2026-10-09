@@ -177,7 +177,7 @@ internal static unsafe partial class GrassField
         // this runs at boot against the real user's file.
         bool on0 = Grass.Enabled.V, off0 = _off;
         Grass.Enabled.V = false;
-        check.Expect(Stats().Contains("vanilla"), "with the toggle off the pass reports itself as vanilla");
+        check.Expect(Stats().StartsWith("no grass"), "with the toggle off the pass reports no grass");
         _off = true; Grass.Enabled.V = true;
         check.Expect(_off && !CastsInto(0), "arming from chat cannot clear the resolution latch");
         _off = off0; Grass.Enabled.V = on0;

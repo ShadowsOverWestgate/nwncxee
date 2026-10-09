@@ -6,7 +6,8 @@ namespace CX.Services.Nameplate;
 /// <summary>The <c>nameplate</c> group (spec §4.2) and the storage <see cref="NameplateService"/> reads on the
 /// frame: the master (off = the engine's own bubble mode back, stock names and bubbles draw; live both ways,
 /// #591), then one section per thing drawn -- both, the nameplate, the chat bubble -- each carrying its own
-/// Advanced rows and <see cref="TextStyle"/>, and the Chat-only <see cref="Probe"/> button. <see cref="Queue"/>'s
+/// Advanced rows and <see cref="TextStyle"/> (an own face per element is an enthusiast's dial, ADR 0030), the
+/// Chat-only wrap and animation numbers, and the Chat-only <see cref="Probe"/> button. <see cref="Queue"/>'s
 /// ladder ends at <see cref="PlateTable.MaxLines"/> and <see cref="Lines"/> at <see cref="PlateTable.MaxWrapped"/>:
 /// the table cannot hold more, so a higher value would report what the drain silently clamps away. Touched from
 /// <c>NameplateService.Initialize</c> so the group declares whether or not the hooks arm.</summary>
@@ -33,8 +34,9 @@ internal static class NameplateKnobs
 
     static NameplateKnobs()
     {
-        G = KnobGroup.Declare("nameplate", "UI", "Nameplates", master: "Enable CX nameplates and chat bubbles",
-            masterHelp: "Names, health and speech bubbles drawn by CX: sharper text, portraits, stacked lines. Off, the stock game's names and bubbles draw.");
+        G = KnobGroup.Declare("nameplate", "Interface", "Names & combat text", master: "Enable CX nameplates and chat bubbles",
+            masterHelp: "Names, health and speech bubbles drawn by CX: sharper text, portraits, stacked lines. Off, the stock game's names and bubbles draw.",
+            order: 220, title: "Nameplates");
         Enabled = G.Master!;
 
         G.Section("Nameplates and bubbles");
@@ -43,9 +45,9 @@ internal static class NameplateKnobs
                            help: "Names and bubbles past this distance are not drawn. 0 draws them all.");
         FadeDist = G.Slider("fadedist", "Fade band", 0f, DistMax, 1f, 10f, "m", Tier.Advanced,
                             help: "They fade out over this distance before Visible distance.");
-        Width = G.Slider("width", "Text width", WidthMin, WidthMax, 10f, 300f, "px",
+        Width = G.Slider("width", "Text width", WidthMin, WidthMax, 10f, 300f, "px", Tier.Advanced,
                          help: "The widest a name or a bubble gets before wrapping.");
-        Anim = G.Slider("anim", "Animation", 0, 1000, 10, 180, "ms", Tier.Advanced, help: "0 = they pop in.");
+        Anim = G.Slider("anim", "Animation", 0, 1000, 10, 180, "ms", Tier.ChatOnly, help: "0 = they pop in.");
 
         G.Section("Nameplates");
         Portraits = G.Toggle("portraits", "Portrait", true, help: "A portrait beside the name.");
@@ -56,7 +58,7 @@ internal static class NameplateKnobs
                                 help: "Hovering or Tab still shows the nameplate of someone talking, under their bubble. The stock game hides it until they finish.");
         ClickToTell = G.Toggle("clicktotell", "Click a name to tell", false, Tier.Advanced,
                                help: "Clicking the name starts a tell. Takes the click the world would have had.");
-        Plate = new TextStyle(G, "names", outline: 1);
+        Plate = new TextStyle(G, "names", outline: 1, tier: Tier.Advanced);
 
         G.Section("Chat bubbles");
         Speaker = G.Dropdown("speaker", "Speaker", new[] { SpeakerName | SpeakerPortrait, SpeakerName, SpeakerPortrait, 0 },
@@ -65,15 +67,15 @@ internal static class NameplateKnobs
                                  + "A nameplate shown under the bubble takes over what it already shows.");
         // ponytail: 6 lines tops, as the portrait is the engine's MEDIUM (64x100) image; a bigger one needs the LARGE fetched
         PortraitLines = G.Dropdown("portraitsize", "Portrait size", new[] { 2, 3, 4, 5, 6 }, 3,
-                                   new[] { "2 lines", "3 lines", "4 lines", "5 lines", "6 lines" },
+                                   new[] { "2 lines", "3 lines", "4 lines", "5 lines", "6 lines" }, tier: Tier.ChatOnly,
                                    help: "How tall the portrait beside a bubble is, in lines of bubble text.");
         Queue = G.Dropdown("queue", "Messages kept", new[] { 1, 2, 3, 4 }, 2,
                            help: "How many recent things someone said stack in their bubble. The stock game keeps 1.");
-        Lines = G.Slider("lines", "Lines per message", 1, PlateTable.MaxWrapped, 1, PlateTable.MaxWrapped, tier: Tier.Advanced,
+        Lines = G.Slider("lines", "Lines per message", 1, PlateTable.MaxWrapped, 1, PlateTable.MaxWrapped, tier: Tier.ChatOnly,
                          help: "A longer message is cut to this many wrapped lines.");
         ChannelStyle = G.Toggle("channelstyle", "Colour by channel", true, Tier.Advanced,
                                 help: "Shouts, whispers and emotes get their own colour and emphasis.");
-        Bubble = new TextStyle(G, "chat bubbles", prefix: "bubble", outline: 1);
+        Bubble = new TextStyle(G, "chat bubbles", prefix: "bubble", outline: 1, tier: Tier.Advanced);
         Probe = G.Button("probe", "probe", NameplateService.ArmProbe, Tier.ChatOnly);
     }
 }

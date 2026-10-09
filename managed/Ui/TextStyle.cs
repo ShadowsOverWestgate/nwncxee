@@ -33,9 +33,11 @@ public sealed class TextStyle
 
     /// <summary>Declare <c>&lt;prefix&gt;font</c>, <c>&lt;prefix&gt;typeface</c>, <c>&lt;prefix&gt;outline</c> in
     /// <paramref name="g"/>. <paramref name="what"/> names the element in the help lines; <paramref name="size"/> is
-    /// the size default (0 = as UI), <paramref name="sized"/> false leaves the size row out.</summary>
+    /// the size default (0 = as UI), <paramref name="sized"/> false leaves the size row out. <paramref name="tier"/>
+    /// carries all three rows: overriding the UI-wide rows for one element is an enthusiast's dial (ADR 0030), so an
+    /// element drawn over the world declares Advanced and a CX window that is happy following the UI rows ChatOnly.</summary>
     public TextStyle(KnobGroup g, string what, string prefix = "", int size = 0, int outline = 0, bool sized = true,
-                     Action? changed = null)
+                     Action? changed = null, Tier tier = Tier.User)
     {
         _what = what;
         if (sized)
@@ -44,12 +46,12 @@ public sealed class TextStyle
             var names = new string[ladder.Length];
             names[0] = "as UI";
             for (int i = 1; i < ladder.Length; i++) { ladder[i] = TextRig.MinFontPx + i - 1; names[i] = ladder[i].ToString(); }
-            Size = g.Dropdown(prefix + "font", "Text size", ladder, size, names, layout: true, changed: changed,
+            Size = g.Dropdown(prefix + "font", "Text size", ladder, size, names, layout: true, tier: tier, changed: changed,
                               help: $"Text size for {what}; as UI follows the UI text size.");
         }
-        Typeface = g.Dropdown(prefix + "typeface", "Typeface", FontRegistry.Names, FontRegistry.DefaultName, layout: true, changed: changed,
+        Typeface = g.Dropdown(prefix + "typeface", "Typeface", FontRegistry.Names, FontRegistry.DefaultName, layout: true, tier: tier, changed: changed,
                               help: $"Font for {what}; default follows the UI typeface. Type in the list to search.");
-        Outline = g.Dropdown(prefix + "outline", "Text outline", OutlineLevels, outline, OutlineNames, changed: changed,
+        Outline = g.Dropdown(prefix + "outline", "Text outline", OutlineLevels, outline, OutlineNames, tier: tier, changed: changed,
                              help: $"A dark edge around the letters of {what}, so they read over a bright scene.");
     }
 

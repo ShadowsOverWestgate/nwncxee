@@ -65,6 +65,8 @@ public sealed unsafe class QuickbarService : IExtenderService
             log.Always($"QuickbarService: standing down as a unit -- no anchor for {missing}" +
                        "(docs/windows-symbols.md); the quickbar rows answer instead of acting");
             QuickbarKnobs.G.Status = () => $"unavailable on this client: no anchor for {missing.Trim()}";
+            QuickbarKnobs.G.PanelStatus = static () => "This version of the game gives CX no way to reach the quickbar, "
+                                                     + "so these rows do nothing and the stock HUD is what you see.";
             return;
         }
         log.Info("QuickbarService: Reposition hook installed");

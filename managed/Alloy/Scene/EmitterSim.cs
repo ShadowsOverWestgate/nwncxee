@@ -234,7 +234,7 @@ internal static unsafe partial class EmitterSim
         }
         Armed = true;
         log.Info($"EmitterSim: armed and {(Enabled.V ? "ON" : "IDLE")} -- Scene::DoEmitterBucket replaced "
-               + "(/emitsim enabled 0 hands the walk back to the engine)");
+               + "(/emitsim enabled 0 freezes every particle; nothing else steps them)");
     }
 
     // ---- the walk ------------------------------------------------------------------------------------

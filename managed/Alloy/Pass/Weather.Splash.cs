@@ -59,9 +59,11 @@ internal static unsafe partial class Weather
     private static void DeclareSplashKnobs()
     {
         G.Section("Impacts");
-        Impacts = G.Slider("impacts", "Splash impacts", 0f, 1f, 0.05f, 0.6f,
-                           help: "Water leaps where each drop lands -- on the ground, on roofs, on ledges, wherever the rain reaches. Lit by whatever light is there, not by a reflection. 0 = off.");
-        ImpactRange = G.Slider("impactrange", "Impact range", 8f, 40f, 2f, 24f, "m", Tier.Advanced,
+        Impacts = G.Slider("impacts", "Splash impacts", 0f, 1f, 0.05f, 0.6f, tier: Tier.Advanced,
+                           help: "Water leaps where each drop lands -- on the ground, on roofs, on ledges, wherever the rain reaches. 0 = off.")
+                   .Ladder(Quality.Weather, 0f, 0.35f, 0.6f, 1f);
+        G.Section("");
+        ImpactRange = G.Slider("impactrange", "Impact range", 8f, 40f, 2f, 24f, "m", Tier.ChatOnly,
                                help: "Radius of the disc around you that splashes are placed in. Wider spreads the same number of impacts thinner.");
     }
 
