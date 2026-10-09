@@ -923,6 +923,23 @@ public sealed unsafe partial class CasterPass : IExtenderService
     internal static bool ViewStale(bool invalidate, bool keyChanged, bool hadMover, bool hasMover)
         => invalidate || keyChanged || hadMover || hasMover;
 
+    /// <summary>Does a sun bake count toward its layer's degrade window? Only when the STATIC half would have
+    /// re-baked too: a combined layer also re-bakes for every creature walking in it, and counting those kept
+    /// a far cascade combined (all 23k casters, every frame) for as long as anyone moved in a populated area.</summary>
+    internal static bool DegradeCounts(bool invalidate, bool keyChanged, bool staticEvent)
+        => invalidate || keyChanged || staticEvent;
+
+    /// <summary>Is any of the first <paramref name="n"/> live casters in <paramref name="idx"/> inside the fit?</summary>
+    private static bool AnyInFit(int[] idx, int n, Vector3 c, Vector3 dir, float radius, float margin)
+    {
+        for (int q = 0; q < n; q++)
+        {
+            int m = idx[q];
+            if (InFit(_liveCx[m] - c.X, _liveCy[m] - c.Y, _liveCz[m] - c.Z, _liveR[m], dir, radius, radius + margin)) return true;
+        }
+        return false;
+    }
+
     /// <summary>#308: the part-table-wipe blanket -- the one edge with no per-slot story, because every slot
     /// dies at once over dead pointers. Ordinary arrivals and departures need no blanket any more: a slot is
     /// never re-tenanted within the scan that vacates it, so a departure lapses in place for the vanish
@@ -1192,18 +1209,12 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // predicate can only be stale about geometry the view would have culled anyway.
             // #306: under the split, continuous motion lives in the dynamic layer and must not re-bake the
             // static one -- only STATIC-SET EVENTS (appearances, membership flips) and ghosts invalidate it.
-            bool hasMover = false;
-            int[] evtIdx = combined ? _moverIdx : _sMoverIdx;
-            int evtN = combined ? _moverCount : _sMoverCount;
-            for (int q = 0; q < evtN && !hasMover; q++)
-            {
-                int m = evtIdx[q];
-                hasMover = InFit(_liveCx[m] - c.X, _liveCy[m] - c.Y, _liveCz[m] - c.Z,
-                                 _liveR[m], dir, radius, radius + margin);
-            }
-            for (int q = 0; q < _ghostCount && !hasMover; q++)
-                hasMover = InFit(_ghostCx[q] - c.X, _ghostCy[q] - c.Y, _ghostCz[q] - c.Z,
-                                 _ghostR[q], dir, radius, radius + margin);
+            bool ghost = false;
+            for (int q = 0; q < _ghostCount && !ghost; q++)
+                ghost = InFit(_ghostCx[q] - c.X, _ghostCy[q] - c.Y, _ghostCz[q] - c.Z,
+                              _ghostR[q], dir, radius, radius + margin);
+            bool staticEvt = ghost || AnyInFit(_sMoverIdx, _sMoverCount, c, dir, radius, margin);
+            bool hasMover = combined ? ghost || AnyInFit(_moverIdx, _moverCount, c, dir, radius, margin) : staticEvt;
             bool stale = ViewStale(invalidate, keyChanged, _sunHadMover[i], hasMover);
             _sunHadMover[i] = hasMover;
             if (!stale)
@@ -1215,7 +1226,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
             else
             {
                 _sunBakedViews++; FrameZones.Count(FrameZones.Ev.SunStatic);
-                if (split) { _sunWinBaked[i]++; _sunStaticL[i]++; }
+                if (split) _sunStaticL[i]++;
+                if (split && DegradeCounts(invalidate, keyChanged, staticEvt)) _sunWinBaked[i]++;
                 ChargeBake(WhySun, invalidate, keyChanged);
                 bool viewOk = RenderView(_depthTex, _mapSize, i, &vp,
                                          dir, c, radius, margin, point: false,

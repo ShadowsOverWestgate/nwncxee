@@ -290,7 +290,7 @@ public sealed unsafe class UiHostService : IExtenderService
     private static int _gc0, _gc1, _gc2;
     private static long _alloc;
 
-    /// <summary>Present-to-present frame stats, logged once per ~900 frames: avg/max ms plus counts over the
+    /// <summary>Present-to-present frame stats, logged once per ~900 frames or 10 s: avg/max ms plus counts over the
     /// 144Hz (6.9ms) and 60Hz (16.7ms) budgets. The one number the perf work kept lacking -- cube/depth pass
     /// times exist but nothing tied them to what the player actually experiences. Hot path: one timestamp,
     /// four adds; the log line is the only cold part.</summary>
@@ -306,20 +306,22 @@ public sealed unsafe class UiHostService : IExtenderService
             float ms = dt * 1000f / System.Diagnostics.Stopwatch.Frequency;
             if (ms > 6.9f) _fsOver7++;
             if (ms > 16.7f) _fsOver17++;
-            if (_fsN >= 900 && !ExtenderLog.Enabled)
+            // or ten seconds: at 2 fps 900 frames is seven minutes, and a collapse went unlogged
+            bool period = _fsN >= 900 || _fsSum >= 10 * System.Diagnostics.Stopwatch.Frequency;
+            if (period && !ExtenderLog.Enabled)
             {
                 // silent: reset the period without building a line of it (Period() carries the ledger reset)
                 FrameZones.Period();
                 _fsSum = 0; _fsN = 0; _fsMax = 0; _fsOver7 = 0; _fsOver17 = 0;
             }
-            else if (_fsN >= 900)
+            else if (period)
             {
                 float avg = _fsSum * 1000f / System.Diagnostics.Stopwatch.Frequency / _fsN;
                 float max = _fsMax * 1000f / System.Diagnostics.Stopwatch.Frequency;
                 int gc0 = GC.CollectionCount(0), gc1 = GC.CollectionCount(1), gc2 = GC.CollectionCount(2);
                 long alloc = GC.GetTotalAllocatedBytes();
                 _log?.Info($"UiHostService: [frame] avg {avg:F2}ms ({1000f / avg:F0}fps) max {max:F1}ms, >6.9ms {_fsOver7}/{_fsN}, >16.7ms {_fsOver17}/{_fsN}"
-                         + $", gc {gc0 - _gc0}/{gc1 - _gc1}/{gc2 - _gc2} on {(alloc - _alloc) >> 10}KiB allocated" + FrameZones.BoxLine() + FrameZones.ThreadsLine());
+                         + $", gc {gc0 - _gc0}/{gc1 - _gc1}/{gc2 - _gc2} on {(alloc - _alloc) >> 10}KiB allocated" + FrameZones.BoxLine() + (CX.Alloy.AlloyRenderer.VramFreeMib > 0 ? $", vram free {CX.Alloy.AlloyRenderer.VramFreeMib}MiB" : "") + FrameZones.ThreadsLine());
                 _gc0 = gc0; _gc1 = gc1; _gc2 = gc2; _alloc = alloc;
                 // #238: NOT inside the null-conditional -- Period() carries the period reset, and `?.` skips
                 // argument evaluation, so a null log would desync it from the _fs* counters reset below

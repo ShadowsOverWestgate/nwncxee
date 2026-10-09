@@ -471,6 +471,7 @@ public static unsafe partial class DbAnim
         // Last, because a palette is composed world matrices read back: the pose, then the compose, then the
         // skin. The engine reached the same order by accident -- it solved inside the draw.
         SkinObject(obj);
+        SkinPieces(obj, 0);
     }
 
     /// <summary>Steps whose tail re-skinned from matrices that were already current -- the compose

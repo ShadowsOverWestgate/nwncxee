@@ -45,7 +45,9 @@ public sealed unsafe partial class ObjectSlots
         float* c = (float*)(shell + SeamLayout.GobColourShift);
         c[0] = colour.X; c[1] = colour.Y; c[2] = colour.Z;
         *(float*)(shell + SeamLayout.GobColourAlpha) = alpha;
-        SceneDb.ObjTint[id.Index] = new Vector4(colour.X, colour.Y, colour.Z, alpha);
+        // the pick reads the engine's alpha (a faded object is out of it); the draw, PlaceableHold's held one at 1
+        SceneDb.HitObjAlpha[id.Index] = alpha;
+        SceneDb.ObjTint[id.Index] = new Vector4(colour.X, colour.Y, colour.Z, PlaceableHold.Held(shell) ? 1f : alpha);
         Flag(id, SeamFlag.ColourShift, true);
         SceneDb.Touch(id, Dirty.Material);
         if (Renderer.HlDiag.V) Facade.Log?.Info($"[hldiag] SetColorShifting o={id.Index} ({colour.X:F2},{colour.Y:F2},{colour.Z:F2}) a={alpha:F2} propagate={propagate}");

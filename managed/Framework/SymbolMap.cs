@@ -822,6 +822,22 @@ internal static unsafe class SymbolMap
     /// buffer first) and free it with <see cref="ExoStringDtor"/>.</summary>
     [Fn("int(IntPtr twoda, int row, IntPtr column, IntPtr result)")]
     public const string C2DAGetCExoStringEntry = "_ZN4C2DA18GetCExoStringEntryEiRK10CExoStringPS0_";
+    /// <summary><c>C2DA::GetINTEntry(int row, CExoString const&amp; column, int* out)</c> @0x544590 (exported on
+    /// Windows): <c>PlayFootstep</c>'s appearance.2da reads. Nonzero = the cell held an int.</summary>
+    [Fn("int(IntPtr twoda, int row, IntPtr column, int* result)")]
+    public const string C2DAGetINTEntry = "_ZN4C2DA11GetINTEntryEiRK10CExoStringPi";
+    /// <summary><c>CNWCArea::GetSurfaceMaterial(Vector)</c> @0x703390 -- the surfacemat.2da row under a point, what
+    /// <c>PlayFootstep</c> picks its column by. Windows: CNWCArea name-exports nothing here, so rva 0x7db100, the
+    /// call Windows <c>PlayFootstep</c> (rva 0x8057c0) makes with the creature's +0x30 and a pointer to its +0x38.</summary>
+    [Fn("int(IntPtr area, VectorArg pos)")]
+    public const string AreaGetSurfaceMaterial = "_ZN8CNWCArea18GetSurfaceMaterialE6Vector";
+    /// <summary><c>CExoSound::Play3DOneShotSound(CResRef const&amp;, Vector, float, uchar group, uint delayMs, uchar
+    /// volume)</c> @0x574e00 (exported on Windows) -- a positional one-shot, how <c>PlayFootstep</c> plays a step. The
+    /// float is added to z (<c>addss xmm1, xmm2</c> before the tail call); volume 0 = the source's default.</summary>
+    [Fn("void(IntPtr sound, byte* resref, VectorArg pos, float lift, byte group, uint delay, byte volume)")]
+    public const string SoundPlay3DOneShot = "_ZN9CExoSound18Play3DOneShotSoundERK7CResRef6Vectorfhjh";
+    /// <summary><c>g_pExoSound</c> @0x18b96b8, the <c>CExoSound*</c> <c>PlayFootstep</c> plays through.</summary>
+    public const string ExoSound = "g_pExoSound";
     /// <summary>CX-55 step 2: <c>g_pRules</c> @0x18b9680, a <c>CNWRules*</c>. placeables.2da is two hops off it
     /// (<see cref="EngineLayout.RulesTwoDimArrays"/> then <see cref="EngineLayout.TwoDimPlaceables"/>) -- the
     /// same walk <c>AddPlaceableObjectStatic</c> and <c>RespawnStaticPlaceablesForTile</c> make, identical on
@@ -3059,6 +3075,10 @@ internal static unsafe class SymbolMap
         [SetText]           = Nm("?SetText@CAuroraStringWrapper@@QEAAXI@Z"),
         [ExoStringInit]     = Nm("?InitFromCharArray@CExoString@@AEAAAEAV1@PEBDI@Z"),
         [C2DAGetCExoStringEntry] = Nm("?GetCExoStringEntry@C2DA@@QEAAHHAEBVCExoString@@PEAV2@@Z"),   // CX-55 step 2
+        [C2DAGetINTEntry]   = Nm("?GetINTEntry@C2DA@@QEAAHHAEBVCExoString@@PEAH@Z"),
+        [SoundPlay3DOneShot] = Nm("?Play3DOneShotSound@CExoSound@@QEAAXAEBVCResRef@@VVector@@MEIE@Z"),
+        [ExoSound]          = Nm("?g_pExoSound@@3PEAVCExoSound@@EA"),
+        [AreaGetSurfaceMaterial] = At(),
         [Rules]             = Nm("?g_pRules@@3PEAVCNWRules@@EA"),
         [ExoStringDtor]     = Nm("??1CExoString@@QEAA@XZ"),
         [AppManager]        = Nm("?g_pAppManager@@3PEAVCAppManager@@EA"),

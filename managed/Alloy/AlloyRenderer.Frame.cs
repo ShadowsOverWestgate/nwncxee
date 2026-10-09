@@ -54,6 +54,7 @@ public sealed unsafe partial class AlloyRenderer
     internal static void DrawOwned()
     {
         long tAlloy = FrameZones.Now;
+        PlaceableHold.Tick();   // after this frame's deletes and re-adds, before the draw that answers them
         try { DrawOwnedInner(); } finally { FrameZones.Add(FrameZones.Zone.Alloy, tAlloy); }
     }
 

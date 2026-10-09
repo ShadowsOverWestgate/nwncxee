@@ -2390,6 +2390,26 @@ public static unsafe class EngineLayout
     public static readonly int RulesTwoDimArrays = Field<IntPtr>("CNWRules", "twoDimArrays");
     /// <inheritdoc cref="RulesTwoDimArrays"/>
     public static readonly int TwoDimPlaceables = Field<IntPtr>("CTwoDimArrays", "placeables");
+    /// <summary>The 2DA table -&gt; appearance.2da (+0x100), surfacemat.2da (+0x110) and footstepsounds.2da (+0x200):
+    /// the three tables <c>CNWCCreature::PlayFootstep</c> reads (Linux @0x72ff90, Windows rva 0x8057c0), the same
+    /// hops on both builds.</summary>
+    public static readonly int TwoDimAppearance = Field<IntPtr>("CTwoDimArrays", "appearance");
+    /// <inheritdoc cref="TwoDimAppearance"/>
+    public static readonly int TwoDimSurfaceMat = Field<IntPtr>("CTwoDimArrays", "surfacemat");
+    /// <inheritdoc cref="TwoDimAppearance"/>
+    public static readonly int TwoDimFootstepSounds = Field<IntPtr>("CTwoDimArrays", "footstepSounds");
+    /// <summary>CNWCObject -&gt; its <c>CNWCArea*</c>, the area <c>PlayFootstep</c> asks <c>GetSurfaceMaterial</c> (+0x30 on
+    /// both builds: a CNWCObject field, no creature shift).</summary>
+    public static readonly int ObjAreaPtr = Field<IntPtr>("CNWCObject", "areaPtr");
+    /// <summary>CNWCObject -&gt; nonzero = <c>PlayFootstep</c> returns at once, no sound and no visual (+0x108 on both
+    /// builds). Only that use is known.</summary>
+    public static readonly int ObjFootstepSkip = Field<int>("CNWCObject", "footstepSkip");
+    /// <summary>CNWCCreature -&gt; the footstepsounds.2da row override; -1 = the appearance's <c>FootstepType</c>.
+    /// <c>PlayFootstep</c>'s first read (Linux +0x3dc, Windows +0x3bc: the class's usual -0x20).</summary>
+    public static readonly int CreatureFootstepType = Field<int>("CNWCCreature", "footstepType");
+    /// <summary>CNWCCreature -&gt; 1 forces footstepsounds row 3 ("soft") whatever the type, in <c>PlayFootstep</c>
+    /// (Linux +0x258, Windows +0x238).</summary>
+    public static readonly int CreatureSoftStep = Field<int>("CNWCCreature", "softStep");
     /// <summary>#663: CNWCObject -&gt; its <c>CNWCAnimBase*</c> (<c>CNWCObject::SetPosition</c> @0x7e9180 / rva
     /// 0x766760 reads it before the anim-base vcall). Hop one of id -&gt; placeable -&gt; anim base -&gt;
     /// <see cref="AnimGob"/>; the gob's composed transform is then <see cref="NodeMatrix"/> off its parts.</summary>
@@ -2571,6 +2591,9 @@ public static unsafe class EngineLayout
     /// and EvaluateNewWayPoints hand <c>CNWCArea::TestDirectLine</c> as its 4th and 5th arguments (personal space and
     /// height, order as the engine passes them). Same on both builds (WalkPlayerToPoint rva 0x6f3650).</summary>
     public static readonly int PathfindSpaceArgs = Field<float>("CPathfindInformation", "spaceArgs", count: 2);
+    /// <summary>Pathfind block -&gt; the ushort <c>PlayFootstep</c> hands appearance.2da as the row of its
+    /// <c>FootstepType</c> and <c>SIZECATEGORY</c> reads (+0xcc on both builds; the creature's appearance).</summary>
+    public static readonly int PathfindAppearance = Field<ushort>("CPathfindInformation", "appearance");
     /// <summary>Virtual slot of <c>CNWCCreature::SetPosition(Vector)</c>: MoveCreatureToPosition calls Linux
     /// <c>vtbl+0x130</c> (@0x71cd70), Windows <c>+0x128</c> (rva 0x804840), the class's usual -8. The Vector crosses by
     /// value (SysV xmm0/xmm1, Win64 a pointer to a copy), which is <see cref="CX.Engine.VectorArg"/>.</summary>

@@ -861,6 +861,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // Gob::HitCheck then refuses the click. A failed check keeps the engine's own FadeDoors by keeping the
         // whole Alloy path down.
         if (!DoorFade.SelfCheck(log)) return;
+        if (PlaceableHold.SelfCheck(log)) PlaceableHold.Install(log, hooks);   // failed: placeables fade as vanilla
         _getTexture = EngineFn.MatGetTexture;
         _primTable = (uint*)Native.Sym(SymbolMap.PrimTypeTranslationTable);
         if (CycleTextures.SelfCheck(log)) CycleTextures.Attach(log, hooks);   // #331; a failed check freezes cycles, not Alloy

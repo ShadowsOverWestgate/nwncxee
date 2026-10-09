@@ -588,6 +588,25 @@ internal static unsafe partial class LightmapBake
         return (int)Math.Clamp(mib / 4 / PageMiB, 1, MaxPages);
     }
 
+    /// <summary>Free VRAM, MiB, a growth must leave for what streams in after it: a high-asset server's textures
+    /// arrive with each creature, long after the bake. The larger of this and an eighth of the card.</summary>
+    private const int VramReserveMiB = 1024;
+
+    /// <summary>Pages a growth may ask for against the card's FREE memory: the new arrays are allocated whole
+    /// beside the old ones. Past it the pack takes the cap's path (halved density, the fine tier dropped) instead
+    /// of overcommitting the card -- a 7 -> 9 growth on an 8 GiB card under TDN's textures took the frame to
+    /// single digits. <paramref name="freeMib"/> 0 = no memory query: the cap alone.</summary>
+    internal static int VramFit(int cap, int layers, long freeMib, long totalMib)
+    {
+        if (freeMib <= 0) return cap;
+        long fit = (freeMib - Math.Max(VramReserveMiB, totalMib / 8)) / PageMiB;
+        return (int)Math.Min(cap, Math.Max(layers, fit));
+    }
+
+    /// <summary>The page count every growth path answers to: <see cref="VramFit"/> against the card now. The
+    /// pack's density, its one-page-at-a-time overflow and an adopted plan all stop here, not at the cap.</summary>
+    private static int PageFit => VramFit(_cap, _layers, AlloyRenderer.VramFreeMib, AlloyRenderer.VramTotalMib);
+
     /// <summary>Shelf-pack the new rects, tallest first (#668: so the cap drops the smallest last), once no
     /// newcomer has arrived for the settle window: an enrolment drains over many frames, and a shelf opened
     /// per frame's trickle packed an area's 3.7 pages of rects into 8.</summary>
@@ -606,7 +625,8 @@ internal static unsafe partial class LightmapBake
         if (!FitDensity(out long demand)) return;
         // one allocation for the pages this pack needs, not one per page: growing a layer at a time copied
         // 1+2+..+12 layers of pages (10 GB of GPU copy, a transient double of the pages on the card)
-        int need = (int)Math.Min(_cap, (_placedArea + demand + PagePackTexels - 1) / PagePackTexels);
+        int need = (int)Math.Min(PageFit,
+                                 (_placedArea + demand + PagePackTexels - 1) / PagePackTexels);
         if (need > _layers && Grow(need) != Grew.Resident) return;
         _toPack.Sort((a, b) => _rects[b].H.CompareTo(_rects[a].H));
         int placedN = 0;
@@ -658,7 +678,8 @@ internal static unsafe partial class LightmapBake
             demand += Area(r);
             if (r.Tier >= Baseline) baseDemand += Area(r);
         }
-        long cap = (long)(_cap * (long)PageSize * PageSize * PackShare);
+        int fit = PageFit;
+        long cap = (long)(fit * (long)PageSize * PageSize * PackShare);
         if (_placedArea + baseDemand <= cap) return true;   // only the baseline's overflow halves the area: a fine rect evicts or drops
         demand = baseDemand;
         // the pages hold the last area's orphans (an in-module area change is no world edge, so nothing
@@ -671,11 +692,13 @@ internal static unsafe partial class LightmapBake
                     orphan += Area(_rects[ri]);
             if (orphan > 0) { _repacked = true; _placedArea = 0; Repack(); return false; }
         }
-        int halve = 0;
-        while (_placedArea + (demand >> (2 * halve)) > cap && _areaHalve + halve < MaxAreaHalve) halve++;
+        // the card's free memory, not the cap, is what is short: the placed rects keep their texels and the
+        // newcomers halve one by one in Pack (or wait past the cap) -- a repack would rebake the whole area
+        if (_placedArea > 0 && fit < _cap) return true;
+        int halve = Halves(_placedArea, demand, cap, _areaHalve);
         if (halve == 0) return true;
         _areaHalve += halve;
-        _log?.Info($"LightmapBake: {(_placedArea + demand) / 1e6:F1} Mtexels asked of {cap / 1e6:F0} across {_cap} pages -- the area bakes at 1/{1 << _areaHalve} of lightmap.density");
+        _log?.Info($"LightmapBake: {(_placedArea + demand) / 1e6:F1} Mtexels asked of {cap / 1e6:F0} across {fit} pages -- the area bakes at 1/{1 << _areaHalve} of lightmap.density");
         if (_placedArea > 0) { _placedArea = 0; Repack(); return false; }
         for (int k = 0; k < _toPack.Count; k++)
         {
@@ -688,6 +711,16 @@ internal static unsafe partial class LightmapBake
         return true;
     }
 
+    /// <summary>Halvings that fit the area under <paramref name="cap"/> texels. With rects placed, ALL of them
+    /// repack at the new density, so the placed area shrinks too -- holding it fixed ran a 5% overflow to the
+    /// floor (1/16) and rebaked the whole area at it.</summary>
+    internal static int Halves(long placed, long demand, long cap, int areaHalve)
+    {
+        int halve = 0;
+        while ((placed > 0 ? (placed + demand) >> (2 * halve) : demand >> (2 * halve)) > cap && areaHalve + halve < MaxAreaHalve) halve++;
+        return halve;
+    }
+
     private static bool Place(ref Rect r)
     {
         byte cls = r.Tier < Baseline ? ClassFine : ClassBase;
@@ -695,7 +728,7 @@ internal static unsafe partial class LightmapBake
         while (true)
         {
             if (cursor >= _cap) return false;
-            if (cursor >= _layers && !AddLayer()) return false;
+            if (cursor >= _layers && (cursor >= PageFit || !AddLayer())) return false;
             int p = cursor;
             if (_pageClass[p] != 0 && _pageClass[p] != cls) { cursor++; continue; }
             _pageClass[p] = cls;
@@ -1533,6 +1566,11 @@ internal static unsafe partial class LightmapBake
         check.Expect(PhName.Length == (int)Ph.Count, "the phase names drifted from the Ph enum, so the worst-frame clause names the wrong phase");
         check.Expect(Dominant([1L, 5L, 3L]) == 1 && Dominant([5L, 1L, 3L]) == 0 && Dominant([0L, 0L, 0L]) == 0,
           "the worst frame's phase is not its largest slice");
+        check.Expect(Halves(100, 12, 107, 0) == 1 && Halves(0, 112, 107, 0) == 1 && Halves(0, 50, 107, 0) == 0 && Halves(0, 1L << 40, 107, 2) == 2,
+                     "a 5% overflow halves the area once, not to the floor");
+        check.Expect(VramFit(10, 7, 0, 0) == 10 && VramFit(10, 7, 1024 + 9 * PageMiB, 8192) == 9
+                     && VramFit(10, 7, 900, 8192) == 7 && VramFit(10, 2, 1024 + 30 * PageMiB, 8192) == 10,
+          "a page growth is not bounded by the card's free memory (or a short card shrinks resident pages)");
         check.Expect(Lightmap.GrowSlice.Default == 1,
           "lightmap.growslice no longer defaults to a sliced migration -- a page more would freeze the frame again");
         // CX-102: Pending is NOT Refused (reading it as one killed the area-plan adopt), and a migration holds

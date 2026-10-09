@@ -54,7 +54,7 @@ internal static unsafe partial class Weather
     private const float SplashVelMax = 20f;
     private static int _splashes;
 
-    private struct SpLoc { public int View, Proj, Eye, Lit, P, C, V, CoverDepth, CoverVp, CoverVpInv, Tint, Alpha; }
+    private struct SpLoc { public int View, Proj, Eye, Lit, P, C, V, CoverDepth, CoverVp, CoverVpInv, Tint, Alpha, Rain, Foot, FootW, WxMapXf, WxMapP; }
 
     private static void DeclareSplashKnobs()
     {
@@ -83,20 +83,18 @@ internal static unsafe partial class Weather
     /// impact hides it.</summary>
     private static void DrawSplash(Matrix4x4* view, Matrix4x4* proj, int* viewport, Vector3 eye, float near, float far, bool lightingOn)
     {
-        _splashes = 0;
-        int crowns = SplashCount();
-        if (crowns <= 0)
+        _splashes = 0; _footSplashes = 0;
+        int crowns = SplashCount(), feet = FootLive(TrackNow);
+        if (crowns <= 0 && !_splashSaid && SplashWanted() > 0 && Cover.V && CasterPass.CoverFresh && CoverDepthView == 0)
         {
-            if (!_splashSaid && SplashWanted() > 0 && Cover.V && CasterPass.CoverFresh && CoverDepthView == 0)
-            {
-                _splashSaid = true;
-                _log?.Info("Weather: no plain-depth view of the cover map -- rain splashes sit out (the landing point is unreadable without it)");
-            }
-            return;
+            _splashSaid = true;
+            _log?.Info("Weather: no plain-depth view of the cover map -- rain splashes sit out (the landing point is unreadable without it)");
         }
-        if (!EnsureSplash()) return;
+        Matrix4x4 vp = default, inv = default;
+        if (crowns > 0 && Matrix4x4.Invert(CasterPass.CoverVp, out inv)) vp = CasterPass.CoverVp;
+        else crowns = 0;
+        if (crowns + feet <= 0 || !EnsureSplash()) return;
         if (!AlloyLights.TryPerspective((float*)proj, out _, out float p11, out _, out _)) return;
-        if (!Matrix4x4.Invert(CasterPass.CoverVp, out Matrix4x4 inv)) return;
         ref SpLoc l = ref _locSplash;
         Gl.UseProgram(_progSplash);
         Gl.UniformMatrix4fv(l.View, 1, 0, (float*)view);
@@ -110,13 +108,17 @@ internal static unsafe partial class Weather
         Gl.Uniform2f(l.V, vel.X, vel.Y);
         // w = pixels per metre at unit view depth: the stage's distance FADE, never a size
         Gl.Uniform4f(l.P, _splashT, SplashLifeSec, ImpactRange.V, p11 * viewport[3] * 0.5f);
-        Matrix4x4 vp = CasterPass.CoverVp;
         Gl.UniformMatrix4fv(l.CoverVp, 1, 0, (float*)&vp);
         Gl.UniformMatrix4fv(l.CoverVpInv, 1, 0, (float*)&inv);
         Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.CoverDepth);
-        Gl.BindTexture(Gl.TEXTURE_2D, CoverDepthView);
+        Gl.BindTexture(Gl.TEXTURE_2D, crowns > 0 ? CoverDepthView : 0);
         Gl.ActiveTexture(Gl.TEXTURE0);
         Gl.Uniform1i(l.CoverDepth, (int)TextureSlots.CoverDepth);
+        // the footfalls: past the rain crowns, gated per point by the wetness map (bound by UploadMap)
+        Gl.Uniform1i(l.Rain, crowns * SplashParts);
+        fixed (Vector4* f = _footLive) Gl.Uniform4fv(l.Foot, feet, (float*)f);
+        Gl.Uniform2f(l.FootW, WetShown, FootSplash.V);
+        UploadMap(l.WxMapXf, l.WxMapP, false);
         float c = Brightness.V;
         Gl.Uniform3f(l.Tint, c, c, c);
         Gl.Uniform1f(l.Alpha, MathF.Min(Opacity.V * 1.5f, 1f));
@@ -124,9 +126,10 @@ internal static unsafe partial class Weather
         Gl.Uniform1i(l.Lit, lit ? 1 : 0);
         AlloyRenderer.BindPass(_litSplash.CubeCount, viewport, near, far);
         if (lit) AlloyLights.BindForDraw();
-        Gl.DrawArraysInstancedBaseInstance(GlTriangleStrip, 0, 4, crowns * SplashParts, 0);
+        Gl.DrawArraysInstancedBaseInstance(GlTriangleStrip, 0, 4, (crowns + feet * FootCrowns) * SplashParts, 0);
         _splashes = crowns;
-        _drawn += crowns * SplashParts;
+        _footSplashes = feet;
+        _drawn += (crowns + feet * FootCrowns) * SplashParts;
     }
 
     private static bool EnsureSplash()
@@ -143,6 +146,8 @@ internal static unsafe partial class Weather
         l.CoverDepth = GlProgram.Loc(_progSplash, "uCoverDepth");
         l.CoverVp = GlProgram.Loc(_progSplash, "uCoverVp"); l.CoverVpInv = GlProgram.Loc(_progSplash, "uCoverVpInv");
         l.Tint = GlProgram.Loc(_progSplash, "uTint"); l.Alpha = GlProgram.Loc(_progSplash, "uAlpha");
+        l.Rain = GlProgram.Loc(_progSplash, "uSplashRain"); l.Foot = GlProgram.Loc(_progSplash, "uFoot"); l.FootW = GlProgram.Loc(_progSplash, "uFootW");
+        l.WxMapXf = GlProgram.Loc(_progSplash, "uWxMapXf"); l.WxMapP = GlProgram.Loc(_progSplash, "uWxMapP");
         _litSplash = Programs.LitLocs(_progSplash);
         return true;
     }
@@ -191,8 +196,10 @@ internal static unsafe partial class Weather
         check.Expect(GlslConst(v, "CX_SPLASH_RING_M") == GlslConst(RippleLib, "CX_RIPPLE_REACH_M"),
           "a splash ring and a puddle ripple are the same drop, so the same reach");
         check.Expect(v.Contains("float px = uSplashP.w / max(-cv.z, 0.05);")
-          && v.Contains("dim = smoothstep(CX_SPLASH_PX.x, CX_SPLASH_PX.y, CX_SPLASH_RING_M * CX_SPLASH_CREST * px);")
-          && v.Contains("pos = P + vec3(corner * (CX_SPLASH_RING_M * 1.15), CX_SPLASH_LIFT);")
+          && v.Contains("float life = uSplashP.y, gain = 1.0, v0k = 1.0, ringM = CX_SPLASH_RING_M;")
+          && v.Contains("ringM = CX_SPLASH_RING_M * mix(CX_FOOT_RING.x, CX_FOOT_RING.y, pool);")
+          && v.Contains("dim = smoothstep(CX_SPLASH_PX.x, CX_SPLASH_PX.y, ringM * CX_SPLASH_CREST * px);")
+          && v.Contains("pos = P + vec3(corner * (ringM * 1.15), CX_SPLASH_LIFT);")
           && v.Contains("vSeed = (0.4 + 0.6 * fract(hc.x * 7.31)) * dim;"),
           "the ring is strictly world-sized: its screen size only FADES it");
         check.Expect(v.Contains("float floorM = CX_SPLASH_MINPX / max(px, 1e-3);")

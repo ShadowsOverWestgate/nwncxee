@@ -15,6 +15,7 @@ internal static class UiKnobs
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<int> Font, GridPx;
+    internal static readonly Knob<float> ConsoleScale;
     internal static readonly Knob<string> Typeface;
     internal static readonly Knob<bool> HoverFocus, Snap, EdgeSnap, TextEdit, Streaming;
 
@@ -29,6 +30,8 @@ internal static class UiKnobs
         Typeface = G.Dropdown("typeface", "Typeface", FontRegistry.Names, FontRegistry.DefaultName, layout: true,
                               help: "The font every CX window draws with: the built-in DejaVu Sans, a font.<name> from cx.cfg, or one installed on this machine. Each element may pick its own in its Text rows. Type in the list to search.",
                               changed: UiHostService.ApplyTypeface);
+        ConsoleScale = G.Slider("consolescale", "Console text size", 1f, 3f, 0.25f, 1.5f, "x",
+                                help: "Size of the ~ console and the other text the game prints on screen, over the game's own 14px grid. Needs the Alloy renderer.");
         HoverFocus = G.Toggle("hoverfocus", "Focus a window by hovering", false, Tier.Advanced,
                               help: "A CX window takes the keyboard when the pointer rests on it, without a click.");
         Snap = G.Toggle("snap", "Snap windows to a grid", false, Tier.Advanced,

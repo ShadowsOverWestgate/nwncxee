@@ -16,6 +16,9 @@ namespace CX.Services.Anim;
 /// <para>The engine's own calls are skipped only for a creature this module is stepping: a humanoid the pose
 /// layer tracks, locomoting, within <c>anim.distance</c>. Everything else (a creature out of range or without leg
 /// bones, the idle shuffle, a fire-and-forget step) keeps the authored events.</para>
+/// <para>Every step that goes ahead is handed to <see cref="CX.Alloy.Weather.Footstep"/> first: a print in lying
+/// snow, a splash on rain-wet ground, and on wet ground open to the rain the creature's puddle sound in place of
+/// the engine's dry one.</para>
 /// </summary>
 internal static unsafe class Footfall
 {
@@ -58,7 +61,7 @@ internal static unsafe class Footfall
         if (Gait(ref s.StepR, ref s.StepL, ref s.SinceStep, mrz, mlz, dt))
         {
             _ours = true;
-            _orig(creature);
+            if (!CX.Alloy.Weather.Footstep(creature)) _orig(creature);
             _ours = false;
             Steps++;
         }
@@ -90,7 +93,7 @@ internal static unsafe class Footfall
     private static void OnPlayFootstep(IntPtr creature)
     {
         if (!_ours && PoseService.Stepping(creature, (long)(Hold * System.Diagnostics.Stopwatch.Frequency))) { Skipped++; return; }
-        _orig(creature);
+        if (_ours || !CX.Alloy.Weather.Footstep(creature)) _orig(creature);
     }
 
     /// <summary>A walk whose left foot plants 4 cm above the right: steps alternate, one per landing, evenly spaced.</summary>

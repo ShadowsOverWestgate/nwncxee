@@ -37,6 +37,19 @@ const vec2 CX_SPLASH_PX = vec2(1.0, 2.5);
 /// catches and misses it. Widening it to about a pixel and dividing the scatter by the area that added is
 /// the energy-conserving answer, and it is the DROPLETS only; the ring above never moves.
 const float CX_SPLASH_MINPX = 1.2;
+/// Crowns one footfall throws, scattered over the sole (Weather.FootCrowns).
+const int CX_FOOT_CROWNS = 4;
+/// A foot crown's life and the spread of its births, seconds (Weather.FootLifeSec / FootStaggerSec).
+const float CX_FOOT_LIFE = 0.3;
+const float CX_FOOT_STAGGER = 0.06;
+/// Metres over which a footfall's crowns scatter about the foot.
+const float CX_FOOT_SPREAD = 0.12;
+/// Droplet launch speed, as a share of a rain crown's: damp ground (x) flicks, standing water (y) throws.
+const vec2 CX_FOOT_V0 = vec2(0.9, 1.6);
+/// Ring reach, as a share of a rain drop's: a foot displaces far more water.
+const vec2 CX_FOOT_RING = vec2(1.5, 3.0);
+/// Wetness at the foot from which a crown starts to show, and at which it is full.
+const vec2 CX_FOOT_WET = vec2(0.15, 0.6);
 
 vec3 CxCoverWorld(vec2 uv, float d)
 {
@@ -70,24 +83,53 @@ vec3 CxSplashLand(vec2 xy, out bool ok)
 void main()
 {
     uint id = uint(gl_InstanceID);
+    bool foot = id >= uint(uSplashRain);
+    if (foot) id -= uint(uSplashRain);
     uint crown = id / uint(CX_SPLASH_PARTS);
     int part = int(id % uint(CX_SPLASH_PARTS));
     vec3 hc = CxHash3(crown * 2654435761u + 7u);
     float ph = uSplashP.x / uSplashP.y + hc.z;
     float slice = floor(ph);
     float age = fract(ph);
-    // the landing point is re-drawn every lifetime: one fixed point per instance would read as a sprinkler
-    vec3 hp = CxHash3(crown * 374761393u + uint(slice) * 668265263u + 1u);
-    float rad = uSplashP.z * sqrt(hp.x);          // sqrt: uniform over the disc's AREA, not its radius
-    float ang = hp.y * 6.2831853;
-    // off the centre as it stood at this crown's birth, so a crown never rides along with a moving player
-    vec2 xy = uSplashC.xy - uSplashV * (age * uSplashP.y) + vec2(cos(ang), sin(ang)) * rad;
-    bool ok;
-    vec3 L = CxSplashLand(xy, ok);
-    // no edge: the field thins by crown COUNT from three quarters of the disc out, the way the drops do --
-    // a brightness ramp on a circle reads as a ring on the ground
-    float edge = 1.0 - smoothstep(0.75, 1.0, rad / max(uSplashP.z, 1e-3));
-    bool alive = ok && fract(hp.z * 91.7) <= edge;
+    float life = uSplashP.y, gain = 1.0, v0k = 1.0, ringM = CX_SPLASH_RING_M;
+    vec3 L;
+    bool alive;
+    if (foot)
+    {
+        // a footfall: its crowns scatter over the sole a few ms apart, sized by the water standing there --
+        // a flick off damp stone, a sheet out of a puddle -- and nothing at all where the map says sheltered
+        vec4 f = uFoot[min(crown / uint(CX_FOOT_CROWNS), uint(CX_FOOT_MAX - 1))];
+        vec3 hf = CxHash3(crown * 374761393u + 11u);
+        life = CX_FOOT_LIFE;
+        age = (f.w - hf.z * CX_FOOT_STAGGER) / life;
+        slice = float(crown);
+        float fr = CX_FOOT_SPREAD * sqrt(hf.x), fa = hf.y * 6.2831853;
+        L = f.xyz + vec3(cos(fa) * fr, sin(fa) * fr, 0.0);
+        vec4 m = CxWetMap(L.xy);
+        bool mapped = CxWetMapped(m);
+        float wet = mapped ? clamp(m.x * uWxMapXf.w, 0.0, 1.0) * CxWetShelter(m, L.z) : uFootW.x;
+        float pool = mapped ? smoothstep(0.0, max(uWxMapP.y, 1e-4), CxWetDepth(m)) : 0.0;
+        v0k = mix(CX_FOOT_V0.x, CX_FOOT_V0.y, pool);
+        ringM = CX_SPLASH_RING_M * mix(CX_FOOT_RING.x, CX_FOOT_RING.y, pool);
+        gain = uFootW.y * smoothstep(CX_FOOT_WET.x, CX_FOOT_WET.y, wet);
+        alive = age >= 0.0 && age < 1.0 && gain > 0.0;
+        age = clamp(age, 0.0, 1.0);
+    }
+    else
+    {
+        // the landing point is re-drawn every lifetime: one fixed point per instance would read as a sprinkler
+        vec3 hp = CxHash3(crown * 374761393u + uint(slice) * 668265263u + 1u);
+        float rad = uSplashP.z * sqrt(hp.x);          // sqrt: uniform over the disc's AREA, not its radius
+        float ang = hp.y * 6.2831853;
+        // off the centre as it stood at this crown's birth, so a crown never rides along with a moving player
+        vec2 xy = uSplashC.xy - uSplashV * (age * uSplashP.y) + vec2(cos(ang), sin(ang)) * rad;
+        bool ok;
+        L = CxSplashLand(xy, ok);
+        // no edge: the field thins by crown COUNT from three quarters of the disc out, the way the drops do --
+        // a brightness ramp on a circle reads as a ring on the ground
+        float edge = 1.0 - smoothstep(0.75, 1.0, rad / max(uSplashP.z, 1e-3));
+        alive = ok && fract(hp.z * 91.7) <= edge;
+    }
 
     vec2 corner = vec2(float((gl_VertexID & 1) * 2 - 1), float((gl_VertexID >> 1) * 2 - 1));
     vec3 P = L, axis = vec3(0.0), side = vec3(0.0);
@@ -100,8 +142,8 @@ void main()
         float a = (float(part) - 0.5 + hc.y) * 6.2831853 / float(CX_SPLASH_DROPS);
         float theta = 0.5 + 0.45 * hd.x;          // radians off vertical: a crown leans out 29 to 54 degrees
         vec3 dir = vec3(cos(a) * sin(theta), sin(a) * sin(theta), cos(theta));
-        float v0 = mix(CX_SPLASH_V0.x, CX_SPLASH_V0.y, hd.y);
-        float t = age * uSplashP.y;
+        float v0 = mix(CX_SPLASH_V0.x, CX_SPLASH_V0.y, hd.y) * v0k;
+        float t = age * life;
         vec3 vel = dir * v0 - vec3(0.0, 0.0, CX_SPLASH_G * t);
         P = L + dir * (v0 * t) - vec3(0.0, 0.0, 0.5 * CX_SPLASH_G * t * t);
         if (P.z < L.z) alive = false;             // back in the water: the droplet is spent
@@ -122,8 +164,8 @@ void main()
     {
         // the ring: a world-XY quad over the landing point, its radius run out inside the fragment stage so
         // the quad never changes size. Strictly world-sized -- the footprint only FADES it.
-        dim = smoothstep(CX_SPLASH_PX.x, CX_SPLASH_PX.y, CX_SPLASH_RING_M * CX_SPLASH_CREST * px);
-        pos = P + vec3(corner * (CX_SPLASH_RING_M * 1.15), CX_SPLASH_LIFT);
+        dim = smoothstep(CX_SPLASH_PX.x, CX_SPLASH_PX.y, ringM * CX_SPLASH_CREST * px);
+        pos = P + vec3(corner * (ringM * 1.15), CX_SPLASH_LIFT);
     }
     else
     {
@@ -133,6 +175,7 @@ void main()
         pos = P + axis * (corner.y * l * 0.5) + side * (corner.x * w * 0.5);
     }
 
+    dim *= gain;
     vUV = corner;
     vAge = age;
     vPart = float(part);

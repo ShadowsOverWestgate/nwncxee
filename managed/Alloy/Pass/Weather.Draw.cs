@@ -128,11 +128,15 @@ internal static unsafe partial class Weather
         bool snow = CurrentKind == Kind.Snow;
         int count = CurrentKind != Kind.None && Density > 0f ? (int)(MaxCount.V * Density * DensityScale.V * (snow ? 0.5f : 1f)) : 0;
         int drips = !snow && Cover.V && CasterPass.CoverFresh ? (int)(MaxCount.V * Drips.V * _wet) : 0;
-        int splashes = SplashCount();
+        int splashes = SplashCount() + FootLive(TrackNow);
         if (count <= 0 && drips <= 0 && splashes <= 0) return;
         Tick(wind);
-        if (!SceneDepth.Take(viewport)) return;
-        SceneDepth.Bind();
+        // only the falling streaks and drips fade against the scene; a splash sits on it and reads no copy
+        if (count > 0 || drips > 0)
+        {
+            if (!SceneDepth.Take(viewport)) return;
+            SceneDepth.Bind();
+        }
         // R1: PREMULTIPLIED. The stages write the scatter already weighted by coverage and an extinction
         // proportional to it, so an unlit drop is transparent instead of a dark film over the scene.
         new PassState(depth: true, depthWrite: false, blend: true,
@@ -209,7 +213,7 @@ internal static unsafe partial class Weather
         return true;
     }
 
-    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; SplashLost(); EsmLost(); MapLost(); ShelterLost(); }
+    internal static void ContextLost() { _progRain = 0; _progSnow = 0; _vao = 0; SplashLost(); EsmLost(); MapLost(); ShelterLost(); TrackLost(); }
     internal static void ResetPeriod() => _drawn = 0;
     internal static string Stats() => _off ? "weather unavailable" : !Enabled.V ? "weather off"
         : $"weather {CurrentKind} {Density * 100f:F0}% {_count} instances, {_drips} drips{SplashStats()}{CoverStats()}{SurfaceStats()}{MapStats()}{ShelterStats()}, records {AlloyRenderer.RecCreature} creature / {AlloyRenderer.RecObject} object / {AlloyRenderer.RecTile} tile";

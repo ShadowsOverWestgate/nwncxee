@@ -21,6 +21,9 @@ public static class FontRegistry
     /// <summary>The embedded DejaVuSans under its own reserved name: always loaded, never overridable from the
     /// cfg, because it is the chrome's icon source whatever <c>default</c> is bound to (#425).</summary>
     public const string EmbeddedName = "embedded";
+    /// <summary>The system's monospace face, the console's (<see cref="SystemMonospace"/>); <c>font.monospace=</c>
+    /// in the cfg overrides it like any declared name.</summary>
+    public const string MonospaceName = "monospace";
     private const string EmbeddedResource = "DejaVuSans";
     private const string Prefix = "font.";
 
@@ -220,6 +223,20 @@ public static class FontRegistry
             log.Info(e.Refusal == null ? $"FontRegistry: {name} = {e.Source} ({e.Bytes!.Length} bytes)"
                                        : $"FontRegistry: {name} = {e.Source} REFUSED ({e.Refusal}); falls back to {DefaultName}");
         }
+        if (!_entries.ContainsKey(MonospaceName))
+        {
+            var e = new Entry { Name = MonospaceName, Source = "system monospace" };
+            string? mono = SystemMonospace();
+            if (mono == null) e.Refusal = "none found";
+            else
+            {
+                e.Source = mono;
+                try { e.Bytes = File.ReadAllBytes(mono); } catch (Exception ex) { e.Refusal = ex.GetType().Name; }
+            }
+            _entries[MonospaceName] = e;
+            log.Info(e.Refusal == null ? $"FontRegistry: {MonospaceName} = {e.Source} ({e.Bytes!.Length} bytes)"
+                                       : $"FontRegistry: {MonospaceName} REFUSED ({e.Refusal}); falls back to {DefaultName}");
+        }
         var emb = new Entry { Name = EmbeddedName, Source = "embedded " + EmbeddedResource };
         using (Stream? font = typeof(FontRegistry).Assembly.GetManifestResourceStream(EmbeddedResource))
         {
@@ -247,6 +264,34 @@ public static class FontRegistry
 
     /// <summary>The name that actually backs <paramref name="name"/>: itself when loaded, else the default.</summary>
     public static string Effective(string name) => Find(name) is { Bytes: not null } e ? e.Name : DefaultName;
+
+    /// <summary>The OS's own default monospace file: fontconfig's <c>monospace</c> alias on Linux (what a terminal
+    /// that follows the desktop uses), and on Windows -- which has no such setting -- the console hosts' defaults,
+    /// Cascadia Mono then Consolas, then Courier New. Only a single <c>.ttf</c>/<c>.otf</c>: the bake cannot open a
+    /// collection. Cold, once, from <see cref="Load"/>.</summary>
+    private static string? SystemMonospace()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            string dir = Environment.GetFolderPath(Environment.SpecialFolder.Fonts);
+            foreach (string f in new[] { "CascadiaMono.ttf", "consola.ttf", "cour.ttf" })
+                if (dir.Length > 0 && File.Exists(Path.Combine(dir, f))) return Path.Combine(dir, f);
+            return null;
+        }
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("fc-match", "-f %{file} monospace")
+            { RedirectStandardOutput = true, UseShellExecute = false };
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p == null) return null;
+            string path = p.StandardOutput.ReadToEnd().Trim();
+            if (!p.WaitForExit(2000)) { p.Kill(); return null; }
+            string ext = Path.GetExtension(path);
+            bool single = ext.Equals(".ttf", StringComparison.OrdinalIgnoreCase) || ext.Equals(".otf", StringComparison.OrdinalIgnoreCase);
+            return single && File.Exists(path) ? path : null;
+        }
+        catch (Exception) { return null; }   // no fontconfig: the console keeps the UI face
+    }
 
     private static string? Resolve(string path)
     {

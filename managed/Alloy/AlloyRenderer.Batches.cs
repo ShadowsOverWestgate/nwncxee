@@ -63,7 +63,11 @@ public sealed unsafe partial class AlloyRenderer
                 }
                 _oFading[i] = fade < 1f;
                 // #537: a faded occluder is a translucent part like any other, so it takes the blended run too.
-                float alpha = PartAlphaCached(i, tri) * fade * (1f - OccludeVerdict(i));
+                // ...and the object's own fade (CNWCObject::FadeObject through SetColorShifting): a creature or
+                // placeable the server adds or drops in perception range fades over 2 s, as vanilla's does
+                float objAlpha = DbObjAlpha(_oDbPart[i]);
+                if (objAlpha <= 0f) continue;
+                float alpha = PartAlphaCached(i, tri) * fade * (1f - OccludeVerdict(i)) * objAlpha;
                 bool dis = alpha >= 1f && Dissolves(i, tri, ref _stageCounters[0]);
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Fade, tFade, ChaseEvery);
                 if (alpha < 1f)

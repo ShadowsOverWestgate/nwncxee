@@ -78,6 +78,9 @@ public sealed unsafe class DebugStringService : IExtenderService
     private static bool _armed, _overflowed;
     /// <summary>The face px last asked of <see cref="TextRig.Face(float)"/>: a miss bakes, so it is asked once.</summary>
     private static float _askedPx;
+    /// <summary>The layer draws in the system monospace face, one glyph centred per engine cell: the console's
+    /// <c>_</c> cursor, posted at column len+2, then lands right after the line. False = the UI face's own advances.</summary>
+    private static bool _mono;
 
     public void Initialize(ExtenderLog log, HookService hooks)
     {
@@ -171,11 +174,11 @@ public sealed unsafe class DebugStringService : IExtenderService
         return true;
     }
 
-    /// <summary>The face the layer is drawn in: sized to the engine's row pitch so a module posting to
-    /// consecutive rows still gets consecutive rows, not overlapping ones.</summary>
+    /// <summary>The face the layer is drawn in: vanilla's own, <c>fnt_console</c> remapped to <c>fnt_default 14</c>
+    /// times the GUI scale -- the full 14px row pitch, as the engine draws it. 0.8 of it was unreadable.</summary>
     internal static float FacePx(float gui)
     {
-        float px = MathF.Round(CellH * gui * 0.8f);
+        float px = MathF.Round(CellH * gui);
         return px < 8f ? 8f : px > TextRig.AtlasMaxPx ? TextRig.AtlasMaxPx : px;
     }
 
@@ -196,18 +199,22 @@ public sealed unsafe class DebugStringService : IExtenderService
         }
 
         float vw = TextRig.ViewportW, vh = TextRig.ViewportH;
-        float gui = Metrics.GameUiScale;
+        float gui = Metrics.GameUiScale * UiKnobs.ConsoleScale.V;   // the whole grid scales, so rows never overlap
         if (vw <= 0f || vh <= 0f) return;
 
         float px = FacePx(gui);
-        GlyphAtlas? atlas = TextRig.BakedFace(px);
+        GlyphAtlas? atlas = TextRig.BakedFace(FontRegistry.MonospaceName, px);
         if (atlas == null && px != _askedPx)
         {
             _askedPx = px;   // cold: a miss bakes, and a refusal is asked once, not every frame
-            atlas = TextRig.Face(px);
+            _mono = FontRegistry.Effective(FontRegistry.MonospaceName) != FontRegistry.DefaultName;
+            atlas = TextRig.Face(FontRegistry.MonospaceName, px);
             if (atlas == null)
+            {
+                _mono = false;
                 _log?.Always($"[debugstrings] no {px}px face -- the posted-string layer draws in the UI face, "
                            + "so its rows will not sit on the engine's 14px pitch");
+            }
         }
         atlas ??= TextRig.Atlas;
         if (atlas == null) return;
@@ -246,12 +253,14 @@ public sealed unsafe class DebugStringService : IExtenderService
             _was[i] = p;
             for (int k = 0; k < p.Len; k++) _wasText[at + k] = _curText[at + k];
             if (!Place(p.Col, p.Row, p.Full, vw, vh, gui, out float x, out float yTop, out _)) continue;
-            float baseline = yTop + atlas.Ascent;
+            float baseline = yTop + atlas.Ascent, cellW = CellW * gui;
             for (int k = 0; k < p.Len && x < vw; k++)
             {
                 int cp = _curText[at + k];
-                if (atlas.TryGet(cp, out Glyph gl)) { _batch.Glyph(gl, x, baseline, p.R, p.G, p.B, p.A); x += gl.Advance; }
-                else x += atlas.SpaceAdvance;
+                bool has = atlas.TryGet(cp, out Glyph gl);
+                float adv = has ? gl.Advance : atlas.SpaceAdvance;
+                if (has) _batch.Glyph(gl, _mono ? x + (cellW - adv) * 0.5f : x, baseline, p.R, p.G, p.B, p.A);
+                x += _mono ? cellW : adv;
             }
         }
         _wasN = n; _wasAtlas = atlas; _wasW = vw; _wasH = vh; _wasGui = gui;

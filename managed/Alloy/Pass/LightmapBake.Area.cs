@@ -308,7 +308,7 @@ internal static unsafe partial class LightmapBake
         string? no = (SetHash != 0 || _closed) && !confirmed ? $"the live walk closed on another static set first ({SetHash:x16}, the plan has {plan.SetHash:x16}: {SetDiff(plan.SetPosR, plan.SetCol, plan.SetPosR.Length)})"
                    : _rectN != 0 ? $"{_rectN} rects were already minted"
                    : plan.Settings != AreaSettingsHash() ? "the bake settings moved between the load and the edge"
-                   : plan.Layers > _cap ? $"{plan.Layers} pages, past the {_cap} the page cap allows"
+                   : plan.Layers > PageFit ? $"{plan.Layers} pages, past the {PageFit} of {_cap} the card's free memory allows"
                    : null;
         // CX-102: the pages are asked for only once nothing else refuses the plan, and while the answer is
         // still ARMED -- a migration in flight means "ask again next frame", and consuming the answer for that

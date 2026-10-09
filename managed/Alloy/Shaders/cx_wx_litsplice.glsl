@@ -5,6 +5,7 @@
             // included.
             float wxWet = 0.0, wxSnow = 0.0, wxFilm = 0.0, wxPile = 0.0, wxFilmRough = 0.0, wxShore = 0.0;
             vec2 wxDriftDir = vec2(0.0), wxP = vWorld.xy;
+            vec3 wxTrack = vec3(0.0);
             if (uWeather.w > 3.5)
             {
                 // /weather viz 4: the map. Red the damp wetness, green the basin's level, blue the metres of
@@ -96,6 +97,9 @@
                         wxP = mix(vWorld.xy, top, s);
                         wxPile = mix(wxPile, pileTop, s);
                     }
+                    // footprints: a print packs the cover down, thinner over the sole
+                    wxTrack = CxTrack(wxP);
+                    wxSnow *= 1.0 - CX_WX_TRACK_BARE * wxTrack.x;
                 }
                 if (up > 0.5)
                 {
@@ -142,6 +146,9 @@
                     vec2 wxLean = vec2(dot(uCoverVp[0].xy, wxDriftDir), dot(uCoverVp[1].xy, wxDriftDir));
                     wxLean = length(wxLean) > 1e-5 ? normalize(wxLean) : vec2(0.0);
                     N = normalize(mix(N, Ng, wxSnow * 0.7) - vec3(wxG * uSnowLook.y * 3.0 * wxSnow, 0.0) - vec3(wxLean * wxPile * 0.8, 0.0));
+                    // ...and its walls lean into the dent (height = -depth, so the normal follows +grad), its floor greyer
+                    N = normalize(N + vec3(wxTrack.yz * (CX_WX_TRACK_DENT * wxSnow), 0.0));
+                    albedo *= 1.0 - CX_WX_TRACK_DARK * wxTrack.x * wxSnow;
                     // deeper cover brightens and rounds off: the mound reads thicker than the blanket
                     albedo = mix(albedo, vec3(uWeatherLook.y) * 1.05, clamp(wxPile, 0.0, 1.0) * 0.5);
                 }

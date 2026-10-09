@@ -93,7 +93,7 @@ internal static unsafe partial class LightmapBake
         {
             // the allocation is this frame's whole share: the copies start on the next one, so the frame that
             // asked for a page never pays for the array AND for moving the old one
-            _log?.Info($"LightmapBake: pages {_layers} -> {n}/{_cap} ({n * PageMiB} MiB): {_layers} layer(s) to migrate, {GrowSlice} a frame");
+            _log?.Info($"LightmapBake: pages {_layers} -> {n}/{_cap} ({n * PageMiB} MiB): {_layers} layer(s) to migrate, {GrowSlice} a frame; {AlloyRenderer.VramFreeMib} MiB of VRAM free before it");
             _growBusy = true; _growWindows++;
             return Grew.Pending;
         }

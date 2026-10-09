@@ -111,7 +111,10 @@ public static unsafe partial class DbAnim
         if (!SceneDb.Objects.Valid(obj)) return false;
         ModelDef? model = SceneDb.PartModel[part];
         if (model == null) return false;
-        int first = SceneDb.ObjPartFirst[obj.Index], n = SceneDb.ObjPartCount[obj.Index];
+        DbId root = isMap ? TreeRoot(obj) : obj;
+        int first = SceneDb.ObjPartFirst[root.Index], n = SceneDb.ObjPartCount[root.Index];
+        ModelDef? boneModel = !isMap ? model : n > 0 ? SceneDb.PartModel[first] : null;
+        if (boneModel == null) return false;
 
         // RenderSkinned's first act: the inverse of the skinmesh's own world transform, which is what puts the
         // gathered bones in the mesh's space. Composed, so it already carries the object's placement -- and
@@ -129,7 +132,7 @@ public static unsafe partial class DbAnim
             float* m = dst + b * 16;
             if (b >= limit) { Identity(m); continue; }
             int node = isMap ? MapNode(bones, b) : (b < bones.Length ? bones[b] : -1);
-            int bp = node < 0 ? -1 : FindPart(first, n, model, node);
+            int bp = node < 0 ? -1 : FindPart(first, n, boneModel, node);
             if (bp < 0 || (rest == null && (uint)node >= (uint)skin.BindRotation.Length)) { Identity(m); continue; }
             // bone space -> node space -> mesh space.
             Matrix4x4 bind = rest != null
@@ -140,6 +143,36 @@ public static unsafe partial class DbAnim
             Store(w, m);
         }
         return true;
+    }
+
+    /// <summary>The record whose model a compiled bone map indexes. <c>RenderSkinned</c> climbs Part+0x48 to the
+    /// TOPMOST part of the one part tree and <c>GatherBones</c> walks that root's own model, so a slot names a
+    /// node of the body skeleton for anything <c>Gob::Append</c> grafted (<see cref="SeamFlag.Composed"/>) --
+    /// TDN's 2-node body parts skinned straight to pmh0 -- and of the record itself for a separately attached
+    /// gob (a robe, a cloak), whose tree is its own. The ASCII slot list was resolved by name against its own
+    /// model already, so callers use this for the map form only.</summary>
+    private static DbId TreeRoot(DbId obj)
+    {
+        DbId root = obj;
+        for (int hop = 0; hop < 8 && (SceneDb.ObjSeamFlags[root.Index] & (uint)SeamFlag.Composed) != 0
+                          && SceneDb.Objects.Valid(SceneDb.ObjAttachTo[root.Index]); hop++)
+            root = SceneDb.ObjAttachTo[root.Index];
+        return root;
+    }
+
+    /// <summary>Re-skin the skinned pieces grafted onto <paramref name="obj"/>: their bones are ITS parts (see
+    /// <see cref="TreeRoot"/>), so their palettes are owed whenever its pose moves -- and a piece that only rides
+    /// is never <c>Moved</c> itself, which froze TDN's feet onto one bone. Composed first, so the mesh's own world
+    /// the palette inverts is this frame's.</summary>
+    private static void SkinPieces(DbId obj, int depth)
+    {
+        if (depth > 3) return;
+        for (DbId c = SceneDb.ObjSeamAppendHead[obj.Index]; !c.IsNull && SceneDb.Objects.Valid(c);
+             c = SceneDb.ObjSeamAppendNext[c.Index])
+        {
+            if (_hasSkin[c.Index]) { ComposeObject(c); SkinObject(c); }
+            SkinPieces(c, depth + 1);
+        }
     }
 
     /// <summary>How many slots a bone MAP addresses: its largest entry plus one. Meaningless for the ASCII

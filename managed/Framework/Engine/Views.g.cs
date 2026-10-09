@@ -146,6 +146,9 @@ global using unsafe AurTextureBuildAndStoreAllFn = delegate* unmanaged<void>;
 global using unsafe AreaLoadAreaFn = delegate* unmanaged<nint, nint, nint, int>;
 global using unsafe AreaAddPlaceableStaticFn = delegate* unmanaged<nint, uint, ushort, CX.Engine.VectorArg, CX.Engine.VectorArg, int>;
 global using unsafe C2DAGetCExoStringEntryFn = delegate* unmanaged<nint, int, nint, nint, int>;
+global using unsafe C2DAGetINTEntryFn = delegate* unmanaged<nint, int, nint, int*, int>;
+global using unsafe AreaGetSurfaceMaterialFn = delegate* unmanaged<nint, CX.Engine.VectorArg, int>;
+global using unsafe SoundPlay3DOneShotFn = delegate* unmanaged<nint, byte*, CX.Engine.VectorArg, float, byte, uint, byte, void>;
 global using unsafe MaterialInitializeTexturesFn = delegate* unmanaged<nint, nint, nint, nint, nint, void>;
 global using unsafe AurTextureGlImageBasicFn = delegate* unmanaged<nint, byte, int>;
 global using unsafe OperatorNewArrayFn = delegate* unmanaged<nuint, nint>;
@@ -1763,6 +1766,8 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public ref System.Numerics.Vector3 FacingTarget => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.CreatureFacingTarget);
     /// <inheritdoc cref="EngineLayout.CreatureFacingTargetB"/>
     public ref System.Numerics.Vector3 FacingTargetB => ref *(System.Numerics.Vector3*)(Ptr + EngineLayout.CreatureFacingTargetB);
+    /// <inheritdoc cref="EngineLayout.CreatureFootstepType"/>
+    public ref int FootstepType => ref *(int*)(Ptr + EngineLayout.CreatureFootstepType);
     /// <inheritdoc cref="EngineLayout.CreatureGetModelSlot"/>
     public IntPtr GetModel(byte part, int flag) => ((delegate* unmanaged<IntPtr, byte, int, IntPtr>)GetModelFn)(Ptr, part, flag);
     /// <inheritdoc cref="EngineLayout.CreatureGetModelSlot"/>
@@ -1791,6 +1796,8 @@ public readonly unsafe partial struct CNWCCreature(IntPtr ptr)
     public void SetPosition(VectorArg pos) => ((delegate* unmanaged<IntPtr, VectorArg, void>)SetPositionFn)(Ptr, pos);
     /// <inheritdoc cref="EngineLayout.CreatureSetPositionSlot"/>
     public IntPtr SetPositionFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.CreatureSetPositionSlot);
+    /// <inheritdoc cref="EngineLayout.CreatureSoftStep"/>
+    public ref int SoftStep => ref *(int*)(Ptr + EngineLayout.CreatureSoftStep);
     /// <inheritdoc cref="SymbolMap.SpawnHitVisuals"/>
     public void SpawnHitVisuals(byte flag, IntPtr attackData, VectorArg push, IntPtr text) => EngineFn.SpawnHitVisuals(Ptr, flag, attackData, push, text);
     /// <inheritdoc cref="EngineLayout.CreatureSpecialWalk"/>
@@ -1933,6 +1940,8 @@ public readonly unsafe partial struct CNWCObject(IntPtr ptr)
     public ref CNWCAnimBase AnimBase => ref *(CNWCAnimBase*)(Ptr + EngineLayout.ObjAnimBase);
     /// <inheritdoc cref="EngineLayout.ObjAnimation"/>
     public ref short Animation => ref *(short*)(Ptr + EngineLayout.ObjAnimation);
+    /// <inheritdoc cref="EngineLayout.ObjAreaPtr"/>
+    public ref IntPtr AreaPtr => ref *(IntPtr*)(Ptr + EngineLayout.ObjAreaPtr);
     /// <inheritdoc cref="EngineLayout.ObjBubble"/>
     public ref CGuiInGamePopUpBubble Bubble => ref *(CGuiInGamePopUpBubble*)(Ptr + EngineLayout.ObjBubble);
     /// <inheritdoc cref="EngineLayout.ObjFadeAlpha"/>
@@ -1943,6 +1952,8 @@ public readonly unsafe partial struct CNWCObject(IntPtr ptr)
     public ref uint FadeHoldMs => ref *(uint*)(Ptr + EngineLayout.ObjFadeHoldMs);
     /// <inheritdoc cref="EngineLayout.ObjFadeTarget"/>
     public ref byte FadeTarget => ref *(byte*)(Ptr + EngineLayout.ObjFadeTarget);
+    /// <inheritdoc cref="EngineLayout.ObjFootstepSkip"/>
+    public ref int FootstepSkip => ref *(int*)(Ptr + EngineLayout.ObjFootstepSkip);
     /// <inheritdoc cref="EngineLayout.GetPortraitSlot"/>
     public void GetPortrait(void* ret, byte size)
     {
@@ -2190,6 +2201,8 @@ public readonly unsafe partial struct CPathfindInformation(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.PathfindAppearance"/>
+    public ref ushort Appearance => ref *(ushort*)(Ptr + EngineLayout.PathfindAppearance);
     /// <inheritdoc cref="EngineLayout.PathfindSpaceArgs"/>
     public Span<float> SpaceArgs { [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)] get => new((void*)(Ptr + EngineLayout.PathfindSpaceArgs), 2); }
 }
@@ -2286,8 +2299,14 @@ public readonly unsafe partial struct CTwoDimArrays(IntPtr ptr)
     public readonly IntPtr Ptr = ptr;
     /// <summary>No object.</summary>
     public bool IsNull => Ptr == IntPtr.Zero;
+    /// <inheritdoc cref="EngineLayout.TwoDimAppearance"/>
+    public ref IntPtr Appearance => ref *(IntPtr*)(Ptr + EngineLayout.TwoDimAppearance);
+    /// <inheritdoc cref="EngineLayout.TwoDimFootstepSounds"/>
+    public ref IntPtr FootstepSounds => ref *(IntPtr*)(Ptr + EngineLayout.TwoDimFootstepSounds);
     /// <inheritdoc cref="EngineLayout.TwoDimPlaceables"/>
     public ref IntPtr Placeables => ref *(IntPtr*)(Ptr + EngineLayout.TwoDimPlaceables);
+    /// <inheritdoc cref="EngineLayout.TwoDimSurfaceMat"/>
+    public ref IntPtr Surfacemat => ref *(IntPtr*)(Ptr + EngineLayout.TwoDimSurfaceMat);
 }
 
 /// <summary>Typed view of an engine <c>CallBack*</c>.</summary>
@@ -4623,6 +4642,18 @@ public static unsafe class EngineFn
     private static bool _C2DAGetCExoStringEntryDone;
     /// <inheritdoc cref="SymbolMap.C2DAGetCExoStringEntry"/>
     public static C2DAGetCExoStringEntryFn C2DAGetCExoStringEntry => (C2DAGetCExoStringEntryFn)(_C2DAGetCExoStringEntryDone ? _C2DAGetCExoStringEntry : Resolve(ref _C2DAGetCExoStringEntry, ref _C2DAGetCExoStringEntryDone, SymbolMap.C2DAGetCExoStringEntry));
+    private static IntPtr _C2DAGetINTEntry;
+    private static bool _C2DAGetINTEntryDone;
+    /// <inheritdoc cref="SymbolMap.C2DAGetINTEntry"/>
+    public static C2DAGetINTEntryFn C2DAGetINTEntry => (C2DAGetINTEntryFn)(_C2DAGetINTEntryDone ? _C2DAGetINTEntry : Resolve(ref _C2DAGetINTEntry, ref _C2DAGetINTEntryDone, SymbolMap.C2DAGetINTEntry));
+    private static IntPtr _AreaGetSurfaceMaterial;
+    private static bool _AreaGetSurfaceMaterialDone;
+    /// <inheritdoc cref="SymbolMap.AreaGetSurfaceMaterial"/>
+    public static AreaGetSurfaceMaterialFn AreaGetSurfaceMaterial => (AreaGetSurfaceMaterialFn)(_AreaGetSurfaceMaterialDone ? _AreaGetSurfaceMaterial : Resolve(ref _AreaGetSurfaceMaterial, ref _AreaGetSurfaceMaterialDone, SymbolMap.AreaGetSurfaceMaterial));
+    private static IntPtr _SoundPlay3DOneShot;
+    private static bool _SoundPlay3DOneShotDone;
+    /// <inheritdoc cref="SymbolMap.SoundPlay3DOneShot"/>
+    public static SoundPlay3DOneShotFn SoundPlay3DOneShot => (SoundPlay3DOneShotFn)(_SoundPlay3DOneShotDone ? _SoundPlay3DOneShot : Resolve(ref _SoundPlay3DOneShot, ref _SoundPlay3DOneShotDone, SymbolMap.SoundPlay3DOneShot));
     private static IntPtr _MaterialInitializeTextures;
     private static bool _MaterialInitializeTexturesDone;
     /// <inheritdoc cref="SymbolMap.MaterialInitializeTextures"/>
@@ -6591,6 +6622,24 @@ public static unsafe class EngineHooks
     /// <summary>Chains onto <see cref="SymbolMap.C2DAGetCExoStringEntry"/>; returns the slot holding the next layer, or null.</summary>
     public static C2DAGetCExoStringEntryFn* ChainC2DAGetCExoStringEntry(this HookService h, C2DAGetCExoStringEntryFn handler, int priority) =>
         (C2DAGetCExoStringEntryFn*)h.Chain(SymbolMap.C2DAGetCExoStringEntry, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.C2DAGetINTEntry"/>; returns the original, or null.</summary>
+    public static C2DAGetINTEntryFn InstallC2DAGetINTEntry(this HookService h, C2DAGetINTEntryFn handler) =>
+        (C2DAGetINTEntryFn)h.Install(SymbolMap.C2DAGetINTEntry, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.C2DAGetINTEntry"/>; returns the slot holding the next layer, or null.</summary>
+    public static C2DAGetINTEntryFn* ChainC2DAGetINTEntry(this HookService h, C2DAGetINTEntryFn handler, int priority) =>
+        (C2DAGetINTEntryFn*)h.Chain(SymbolMap.C2DAGetINTEntry, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.AreaGetSurfaceMaterial"/>; returns the original, or null.</summary>
+    public static AreaGetSurfaceMaterialFn InstallAreaGetSurfaceMaterial(this HookService h, AreaGetSurfaceMaterialFn handler) =>
+        (AreaGetSurfaceMaterialFn)h.Install(SymbolMap.AreaGetSurfaceMaterial, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.AreaGetSurfaceMaterial"/>; returns the slot holding the next layer, or null.</summary>
+    public static AreaGetSurfaceMaterialFn* ChainAreaGetSurfaceMaterial(this HookService h, AreaGetSurfaceMaterialFn handler, int priority) =>
+        (AreaGetSurfaceMaterialFn*)h.Chain(SymbolMap.AreaGetSurfaceMaterial, (IntPtr)handler, priority);
+    /// <summary>Hooks <see cref="SymbolMap.SoundPlay3DOneShot"/>; returns the original, or null.</summary>
+    public static SoundPlay3DOneShotFn InstallSoundPlay3DOneShot(this HookService h, SoundPlay3DOneShotFn handler) =>
+        (SoundPlay3DOneShotFn)h.Install(SymbolMap.SoundPlay3DOneShot, (IntPtr)handler);
+    /// <summary>Chains onto <see cref="SymbolMap.SoundPlay3DOneShot"/>; returns the slot holding the next layer, or null.</summary>
+    public static SoundPlay3DOneShotFn* ChainSoundPlay3DOneShot(this HookService h, SoundPlay3DOneShotFn handler, int priority) =>
+        (SoundPlay3DOneShotFn*)h.Chain(SymbolMap.SoundPlay3DOneShot, (IntPtr)handler, priority);
     /// <summary>Hooks <see cref="SymbolMap.MaterialInitializeTextures"/>; returns the original, or null.</summary>
     public static MaterialInitializeTexturesFn InstallMaterialInitializeTextures(this HookService h, MaterialInitializeTexturesFn handler) =>
         (MaterialInitializeTexturesFn)h.Install(SymbolMap.MaterialInitializeTextures, (IntPtr)handler);

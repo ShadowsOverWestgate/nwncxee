@@ -340,7 +340,7 @@ public sealed unsafe partial class AlloyRenderer
         _oFading[i] = SceneDb.PartFade[part] < 1f;
         // ...and never a hidden .lod alternate: a swap restages the WHOLE range, the hidden tree included, and
         // its shadow over the shown one is two silhouettes fighting in the cascades
-        bool castOk = mayCast && !_oFading[i] && !SceneDb.LodHidden(SceneDb.PartLodTree[part], SceneDb.ObjLodShown[o]) && (_oCls[i] <= (byte)AlloyClass.Cutout
+        bool castOk = mayCast && !_oFading[i] && tint.W > 0f && !SceneDb.LodHidden(SceneDb.PartLodTree[part], SceneDb.ObjLodShown[o]) && (_oCls[i] <= (byte)AlloyClass.Cutout
                                       || (_oCls[i] == (byte)AlloyClass.Blended && _oBone[i] < 0));
         if (castOk != _castOk[i]) System.Threading.Interlocked.Increment(ref castOk ? ref _dbCastOn : ref _dbCastOff);
         SetCastOk(i, castOk, ref c);

@@ -16,8 +16,9 @@ uniform vec4 uSnowPom;         // x relief height in metres (0 = off), y march s
 uniform sampler2D uCoverEsm;   // the filtered cover map (Weather.Esm), on the snapshot-depth unit
 uniform vec4 uCoverEsmP;       // x = the variance floor in depth units squared, y = height bias in depth units, z = 1 when the map is bound
 // R5, the realism terms the splice reads: x = run-off down walls and the band at their foot,
-// y = the puddle shoreline's rim, zw spare.
+// y = the puddle shoreline's rim; zw = the footprint clock and refill rate (cx_wx_track).
 uniform vec4 uWxRun;
+#include "cx_wx_track.glsl"
 
 /// Up-facing enough to be ground rather than a wall: past this a face takes the even wetting, under it
 /// the run-off streaks.

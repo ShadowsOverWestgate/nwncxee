@@ -151,7 +151,9 @@ internal static unsafe partial class Weather
         UploadEdge(locEdge, cover);
         UploadCache(locCache, cover);
         BindTiles();
-        if (locRun >= 0) Gl.Uniform4f(locRun, on ? RunOff.V : 0f, on ? ShoreRim.V : 0f, 0f, 0f);
+        BindTracks();
+        Vector2 tk = TrackUniform(on);
+        if (locRun >= 0) Gl.Uniform4f(locRun, on ? RunOff.V : 0f, on ? ShoreRim.V : 0f, tk.X, tk.Y);
     }
 
     /// <summary>R5: the shelter kernel <c>cx_wx_edge</c>'s <c>CxWetOpen</c> runs -- uv per metre in the cover
@@ -196,9 +198,9 @@ internal static unsafe partial class Weather
                                           System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : float.NaN;
     }
 
-    private static void ResetSurface() { _wet = _snow = _puddle = 0f; _enterTicks = Stopwatch.GetTimestamp(); MapReset(); }
+    private static void ResetSurface() { _wet = _snow = _puddle = 0f; _enterTicks = Stopwatch.GetTimestamp(); MapReset(); TrackReset(); }
 
-    private static string SurfaceStats() => $" wet {_wet:F2} snow {_snow:F2} puddle {_puddle:F2}";
+    private static string SurfaceStats() => $" wet {_wet:F2} snow {_snow:F2} puddle {_puddle:F2}{TrackStats()}";
 
     /// <summary>CX-102: the ripple library is world-sized and the pixel footprint only fades it. The two
     /// halves of that are a text check on the library and a real arithmetic one on its constants -- the 2x2
@@ -280,6 +282,7 @@ internal static unsafe partial class Weather
           "stock rows 1/2 map to rain/snow, row 0 and the fog row to none");
         RippleSelfCheck(check);
         SplashSelfCheck(check);
+        TrackSelfCheck(check);
         float d = Density; Kind k = CurrentKind; bool en = Enabled.V;
         // the rates are the player's cx.cfg (weather.accum=5 reads 20x faster): pin the declared ones
         float accum = AccumSec.V, dry = DrySec.V, melt = MeltSec.V;

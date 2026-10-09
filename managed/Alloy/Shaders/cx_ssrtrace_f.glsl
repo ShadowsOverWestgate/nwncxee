@@ -132,6 +132,8 @@ void main()
     // the mirrored draw where this is the plane: exact, no holes behind figures, undersides included
     vec2 uv = (vec2(px) + 0.5) / size + (mat3(uView) * vec3(n.xy, 0.0)).xy * CX_PLANE_WARP;
     vec4 pl = uPlane.y > 0.0 ? textureLod(uPlanar, uv, sqrt(rough) * CX_PLANE_LOD) : vec4(0.0);
+    // min() hands back its other operand for a NaN on NVIDIA: the cap below would paint one CX_SSR_MAX white
+    if (any(isnan(pl)) || any(isinf(pl))) pl = vec4(0.0);
     if (uViz == 46) { frag = vec4(pl.rgb, 1.0); return; }
     float pa = clamp(pl.a, 0.0, 1.0) * smoothstep(CX_PLANE_FLAT.x, CX_PLANE_FLAT.y, n.z)
              * (1.0 - smoothstep(CX_PLANE_TOL.x, CX_PLANE_TOL.y, abs(P.z - uPlane.x)));

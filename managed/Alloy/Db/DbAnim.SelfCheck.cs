@@ -692,6 +692,77 @@ public static unsafe partial class DbAnim
         Drop(obj);
         SceneDb.Scenes.Free(scene);
         BoneTableForm(check);
+        BoneMapOfRoot(check);
+    }
+
+    /// <summary>A compiled bone map names nodes of the TREE ROOT (<see cref="TreeRoot"/>): for a piece
+    /// <c>Gob::Append</c> grafted, the body's skeleton -- TDN's head in the shin slot read its own eyelashes as
+    /// <c>torso_g</c> -- and for a separately attached gob (a robe) its own model. The piece hangs off the body's
+    /// leaf, so its own node 2 sits 2 m above the skeleton's. Then the freeze: only the BODY moves, and the
+    /// piece's staged palette must follow it -- a riding piece is never <c>Moved</c> itself.</summary>
+    private static void BoneMapOfRoot(Checker check)
+    {
+        ModelDef pm = Chain();
+        pm.Nodes[1].Kind = NodeKind.Skin;
+        pm.Nodes[1].Mesh = new MeshDef { Positions = new[] { Vector3.Zero } };
+        pm.Nodes[1].Skin = new SkinDef
+        {
+            BoneNodes = new[] { -1, -1, 0 },
+            BoneNodesAreMap = true,
+            BindRotation = new[] { Quaternion.Identity, Quaternion.Identity, Quaternion.Identity },
+            BindTranslation = new[] { Vector3.Zero, Vector3.Zero, Vector3.Zero },
+            Weights = new[] { new Vector4(1f, 0f, 0f, 0f) },
+            Bones = new[] { 0u },
+        };
+        DbId scene = SceneDb.Scenes.Alloc();
+        DbId body = Subject(Chain(), scene, out int bodyFirst);
+        DbId piece = Subject(pm, scene, out int first);
+        int pi = piece.Index, mesh = first + 1;
+        ScanTree(pi);
+        SceneDb.SetAttachTo(pi, body);
+        SceneDb.SetAttachPart(pi, bodyFirst + 2);
+        SceneDb.ObjSeamFlags[pi] |= (uint)SeamFlag.Composed;
+        SceneDb.ObjSeamAppendHead[body.Index] = piece;
+        SceneDb.ObjSeamAppendNext[pi] = default;
+        Moved(body.Index); ComposeObject(body);
+        Moved(pi); ComposeObject(piece);
+
+        Vector3 Want(int bone)
+        {
+            Matrix4x4.Invert(SceneDb.PartWorld[mesh], out Matrix4x4 inv);
+            return Vector3.Transform(SceneDb.PartWorld[bone].Translation, inv);
+        }
+        float* dst = (float*)NativeMemory.Alloc((nuint)(BoneCount * 16) * sizeof(float));
+        try
+        {
+            Vector3 want = Want(bodyFirst + 2);
+            check.Expect(SkinPalette(mesh, dst) && NearV(new Vector3(dst[12], dst[13], dst[14]), want),
+                         $"an appended piece's bone map names the BODY's node, not its own "
+                         + $"(got {dst[12]:F2},{dst[13]:F2},{dst[14]:F2}, want {want.X:F2},{want.Y:F2},{want.Z:F2})");
+            SceneDb.ObjSeamFlags[pi] &= ~(uint)SeamFlag.Composed;
+            want = Want(first + 2);
+            check.Expect(SkinPalette(mesh, dst) && NearV(new Vector3(dst[12], dst[13], dst[14]), want),
+                         "...and an ATTACHED gob's (a robe's) names its own, its tree being its own");
+            SceneDb.ObjSeamFlags[pi] |= (uint)SeamFlag.Composed;
+
+            Moved(body.Index); Finish(body);
+            SceneDb.PartPos[bodyFirst + 1] = new Vector3(1f, 2f, 1f);
+            Moved(body.Index); Finish(body);
+            int slot = SceneDb.PartBoneBase[mesh];
+            float* st = slot < 0 ? null : AlloyRenderer.DbBoneStage(slot);
+            want = Want(bodyFirst + 2);
+            check.Expect(st != null && NearV(new Vector3(st[12], st[13], st[14]), want),
+                         "a riding piece's palette follows the BODY's pose, not frozen at its first solve "
+                         + (st == null ? "(no slot)" : $"(got {st[12]:F2},{st[13]:F2},{st[14]:F2}, want {want.X:F2},{want.Y:F2},{want.Z:F2})"));
+        }
+        finally { NativeMemory.Free(dst); }
+        Unskin(mesh);
+        SceneDb.ObjSeamAppendHead[body.Index] = default;
+        SceneDb.ObjSeamFlags[pi] &= ~(uint)SeamFlag.Composed;
+        SceneDb.SetAttachTo(pi, default);
+        Drop(piece);
+        Drop(body);
+        SceneDb.Scenes.Free(scene);
     }
 
     /// <summary>The look-at EASES as the engine's generated two-key track does: one 0.05 s step covers a fifth

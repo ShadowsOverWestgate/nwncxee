@@ -64,6 +64,8 @@ internal static unsafe partial class Weather
         DeclareShelterKnobs();
         DeclareSurfaceKnobs();
         DeclareSplashKnobs();
+        DeclareTrackKnobs();
+        DeclareWetStepKnob();
         DeclareMapKnobs();
         G.Section("");
         RainRows = G.Text("rainrows", "Rain rows", "1,3,6,9", Tier.ChatOnly,
@@ -123,6 +125,7 @@ internal static unsafe partial class Weather
         if (SymbolMap.Require(log, "Weather", SymbolMap.TileSetGet))
             _tileSetSlot = hooks.ChainTileSetGet(&OnGetTileSet, TileSetPriority);
         InstallDraw(log);
+        ArmWetStep(log);
         log.Info($"Weather: armed and {(Enabled.V ? "ON" : "IDLE")} -- rain rows {RainRows.V}, snow rows {SnowRows.V}");
     }
 

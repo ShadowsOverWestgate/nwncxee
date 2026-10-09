@@ -581,6 +581,14 @@ offset	CNWMessage	length	0x40	0x40	# MsgLength
 offset	CNWMessage	cursor	0x44	0x44	# MsgCursor
 offset	CNWRules	twoDimArrays	0x130	0x130	# RulesTwoDimArrays
 offset	CTwoDimArrays	placeables	0x140	0x140	# TwoDimPlaceables
+offset	CTwoDimArrays	appearance	0x100	0x100	# TwoDimAppearance
+offset	CTwoDimArrays	surfacemat	0x110	0x110	# TwoDimSurfaceMat
+offset	CTwoDimArrays	footstepSounds	0x200	0x200	# TwoDimFootstepSounds
+offset	CNWCObject	areaPtr	0x30	0x30	# ObjAreaPtr
+offset	CNWCObject	footstepSkip	0x108	0x108	# ObjFootstepSkip
+offset	CNWCCreature	footstepType	0x3dc	0x3bc	# CreatureFootstepType
+offset	CNWCCreature	softStep	0x258	0x238	# CreatureSoftStep
+offset	CPathfindInformation	appearance	0xcc	0xcc	# PathfindAppearance
 offset	CNWCObject	animBase	0x78	0x78	# ObjAnimBase
 offset	CNWCCreature	hoveredOid	0x448	0x428	# CreatureHoveredOid
 offset	CClientExoAppInternal	cursorManager	0xc8	0xc8	# InternalCursorManager
@@ -990,6 +998,7 @@ rva	_ZN21CClientExoAppInternal23FeedbackHitCheckHostileEPP10CNWCObjectP6VectorPi
 rva	_ZN21CClientExoAppInternal26FeedbackHitCheckNonHostileEPP10CNWCObjectP6VectorPii	0x6ebcf0	# FeedbackHitCheckNonHostile
 rva	_ZN12CNWCCreature12UpdateLookAtEv	0x80fa60	# UpdateLookAt
 rva	_ZN12CNWCCreature12PlayFootstepEv	0x8057c0	# PlayFootstep
+rva	_ZN8CNWCArea18GetSurfaceMaterialE6Vector	0x7db100	# AreaGetSurfaceMaterial
 rva	_ZN12CNWCAnimBase16GetAnimationNameEt	0x961540	# AnimGetName
 rva	_ZN13CActionTarget18ActivateTargetModeEv	0x83b9e0	# ActivateTargetMode
 rva	_ZN13CActionTarget16HandleLMouseDownEv	0x83be00	# ActionTargetLMouseDown

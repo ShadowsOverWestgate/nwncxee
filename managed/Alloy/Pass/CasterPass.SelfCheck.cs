@@ -146,6 +146,8 @@ public sealed unsafe partial class CasterPass
                     && ViewStale(false, false, true, false) && ViewStale(false, false, false, true)
                     && !ViewStale(false, false, false, false)))
         { ok = false; log.Info("CasterPass.SelfCheck FAIL: the view re-bake predicate lost an invalidation source"); }
+        if (ok && !(DegradeCounts(false, false, true) && DegradeCounts(false, true, false) && !DegradeCounts(false, false, false)))
+        { ok = false; log.Info("CasterPass.SelfCheck FAIL: the sun degrade window counts a walking creature as a stale static half (far cascades stay combined)"); }
         if (ok)
         {   // #302: the vanish detector, which is the ONLY thing standing between a caster that stops casting
             // and the views it stood in keeping its shadow forever. It is a frame STAMP compared against a
