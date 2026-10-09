@@ -23,7 +23,6 @@ public static unsafe partial class DbAnim
     private static readonly float[] _lodFar = new float[SceneDb.MaxObjects];
     private static readonly byte[] _lodLevels = new byte[SceneDb.MaxObjects];
 
-    private static int* _lodEnable;
     private static float* _lodScale;
     private static bool _lodResolved;
     private static int _lodSwaps, _lodHeld, _lodSettled;
@@ -76,13 +75,15 @@ public static unsafe partial class DbAnim
     {
         if (_lodResolved) return;
         _lodResolved = true;
-        _lodEnable = (int*)Native.Sym(SymbolMap.EnableLod);
         _lodScale = (float*)Native.Sym(SymbolMap.LodScaleFactor);
-        if (_lodEnable == null || _lodScale == null)
-            _log?.Always("DbAnim: the engine's LOD globals did not resolve -- every object draws its level 0 "
-                       + "tree (more triangles, never fewer). " + SymbolMap.EnableLod + " / "
-                       + SymbolMap.LodScaleFactor);
+        if (_lodScale == null)
+            _log?.Always("DbAnim: " + SymbolMap.LodScaleFactor + " did not resolve -- .lod distances are taken at "
+                       + "scale 1, not the player's LOD scale setting");
     }
+
+    /// <summary>Load and switch <c>.lod</c> alternates. CX's own knob, not <c>g_bEnableLOD</c>: the engine's
+    /// option is a player toggle for a feature nobody wants off, so only <c>alloy.authoredlod</c> in cx.cfg stands it down.</summary>
+    internal static bool LodEnabled => Renderer.AuthoredLod.V;
 
     /// <summary>Choose the level for every object of the scene that has one. Once per animate, after the
     /// composes, so the distance is taken against the placement the frame will draw.</summary>
@@ -104,9 +105,9 @@ public static unsafe partial class DbAnim
         _lodEye = _eye;
         _lodDirtyAt = dirty;
         LodResolve();
-        if (_lodEnable == null || _lodScale == null) return;
-        bool enabled = *_lodEnable != 0;
-        float scale = *_lodScale;
+        bool enabled = LodEnabled;
+        // ponytail: the engine's scale-factor setting still sets the distances; unresolved or unset reads as 1
+        float scale = _lodScale != null && *_lodScale > 0f ? *_lodScale : 1f;
         float hyst = Renderer.LodHyst.V;
         int high = SceneDb.Objects.High;
         for (int i = 1; i < high; i++)
@@ -120,6 +121,7 @@ public static unsafe partial class DbAnim
             int want = ChooseLod(d2, _lodNear[i], _lodFar[i], cur, enabled, scale, hyst,
                                      hasAlternate: true);
             if (want > _lodLevels[i] - 1) want = _lodLevels[i] - 1;
+            if (!enabled) want = 0;   // switched off mid-session: back to the authored model, not frozen where it was
             if (want == cur) { _lodHeld++; continue; }
             SceneDb.ObjLodShown[i] = (byte)want;
             _lodSwaps++; LodGen++;
@@ -133,7 +135,7 @@ public static unsafe partial class DbAnim
     /// dominates it is the hysteresis working.</summary>
     internal static string LodPeriod()
     {
-        string s = $"{_lodSwaps} LOD swap(s), {_lodHeld} held, {_lodSettled} frame(s) skipped (nothing moved)";
+        string s = $"{_lodSwaps} LOD swap(s), {_lodHeld} held, {_lodSettled} frame(s) skipped (nothing moved), {_lodWanted} object(s) with .lod alternates";
         _lodSwaps = 0; _lodHeld = 0; _lodSettled = 0;
         return s;
     }

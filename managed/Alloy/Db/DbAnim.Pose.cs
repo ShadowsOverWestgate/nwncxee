@@ -148,8 +148,25 @@ public static unsafe partial class DbAnim
         ModelCache.AnimBinding bind = ModelCache.Bind(model, anim);
         if (bind.Bound == 0) { _unbound++; return; }
         int[] inv = Inverse(bind);
-        AnimNode[] nodes = anim.Nodes;
         float t = _rTime[s], scale = _rPosScale[s];
+        bool wrote = PoseTree(i, model, inv, anim, first, n, t, scale, w);
+        // The SHOWN .lod alternate animates too, as the engine's does: SetLODModel swaps it in at Gob+0x90/+0x68,
+        // the very pair AnimateHierarchy reads. Its own binding, by name, as a grafted piece gets.
+        ModelDef? alt = SceneDb.ObjLodShown[i] switch
+        {
+            1 => SceneDb.ObjSeamLodModel1[i], 2 => SceneDb.ObjSeamLodModel2[i], _ => null,
+        };
+        if (alt != null && !ReferenceEquals(alt, model) && ModelCache.Bind(alt, anim) is { Bound: > 0 } ab)
+            wrote |= PoseTree(i, alt, Inverse(ab), anim, first, n, t, scale, w);
+        if (wrote) Moved(i);
+        PoseComposition(model, inv, anim, obj, t, scale, w);
+    }
+
+    /// <summary>One model's parts of object <paramref name="i"/>'s range, posed through that model's binding.
+    /// True when any part was written.</summary>
+    private static bool PoseTree(int i, ModelDef model, int[] inv, AnimDef anim, int first, int n, float t, float scale, float w)
+    {
+        AnimNode[] nodes = anim.Nodes;
         bool wrote = false;
         // a STATIC object's records are restaged by what changed (the compose's world compare, the alpha and
         // self-illum compares), not by having been posed: a tile replaying a still pose restaged every part
@@ -184,8 +201,7 @@ public static unsafe partial class DbAnim
             wrote = true;
             if (!still || an.AnimMesh != null) SceneDb.Parts.Mark(p, Dirty.Anim);
         }
-        if (wrote) Moved(i);
-        PoseComposition(model, inv, anim, obj, t, scale, w);
+        return wrote;
     }
 
     /// <summary>

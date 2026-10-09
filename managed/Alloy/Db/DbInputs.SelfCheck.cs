@@ -20,6 +20,7 @@ internal static partial class DbInputs
             KindsAndLifetime(check);
             LightmapKeys(check);
             SkyAndHighlight(check);
+            FlickerChecks(check);
         }
         finally { Reset(); }
         log.Info(check.Ok ? "DbInputs.SelfCheck: passed"

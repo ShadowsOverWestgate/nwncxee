@@ -104,6 +104,7 @@ internal static partial class DbInputs
             Static = tile ? TileLitStatic(l) : ObjLitStatic(p),
             Id = tile ? LitId(l) : (IntPtr)(p + 1),
         };
+        Flicker(ref light, p);
         return true;
     }
 
@@ -139,6 +140,7 @@ internal static partial class DbInputs
             Static = TileLitStatic(lit),
             Id = LitId(lit),
         };
+        Flicker(ref light, lp);
         return true;
     }
 

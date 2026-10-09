@@ -162,7 +162,7 @@ public sealed unsafe partial class AlloyRenderer
         { Counters._skipForeignScene++; return false; }
         // CX-120: ...and the part's LOD ALTERNATE, 0 meaning "in every alternate".
         byte tree = SceneDb.PartLodTree[part];
-        if (tree != 0 && tree != SceneDb.ObjLodShown[obj.Index])
+        if (SceneDb.LodHidden(tree, SceneDb.ObjLodShown[obj.Index]))
         { Counters._skipLod++; SetCastOk(i, false); return false; }
         if (samp) FrameZones.AddSampled(FrameZones.Zone.Ident, t0, ChaseEvery);
         return true;

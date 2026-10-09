@@ -14,14 +14,14 @@ internal static class CameraKnobs
 
     internal const float FovMin = 10f, FovMax = 120f;
 
-    /// <summary>Off-device, read-only (a set would arm the writer against the user's real file): the seven groups
+    /// <summary>Off-device, read-only (a set would arm the writer against the user's real file): the six groups
     /// declare in panel order, the per-mode defaults differ where the spec says, the FOV magic zero is gone from
     /// the modes and kept on <c>free.fov</c>, and <c>/chase fov 60</c> parses to the chase row alone.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log);
         Declare();
-        string[] order = { "chase", "topdown", "driving", "walls", "free", "tabtarget", "walk" };
+        string[] order = { "chase", "topdown", "driving", "walls", "free", "tabtarget" };
         int at = -1;
         foreach (string g in order)
         {

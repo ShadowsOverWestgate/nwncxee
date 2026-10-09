@@ -30,7 +30,7 @@ internal static class Grass
                                          SnowThin, SnowFall, SnowLook, Backlight, Sheen,
                                          BladeDensity, Width, Clump, BladeLod;
     internal static readonly Knob<int> Style, Shadow, Tuft, Aniso, GViz;
-    internal static readonly Knob<bool> Cull, SoftEdge, VLight, Prepass, PushVis;
+    internal static readonly Knob<bool> Cull, SoftEdge, VLight, Prepass;
     internal static readonly KnobButton DumpMips, DumpShadow;
 
     static Grass()
@@ -101,7 +101,7 @@ internal static class Grass
         RootAo = G.Slider("rootao", "Root darkening", 0f, 1f, 0.05f, 0f, tier: Tier.ChatOnly);
         GTint = G.Slider("gtint", "Ground tint", 0f, 1f, 0.05f, 0.15f, tier: Tier.ChatOnly,
                          help: "Blade fades into the ground colour under its root.", changed: GrassField.GroundDiag);
-        Width = G.Slider("width", "Blade width", 0.02f, 0.4f, 0.01f, 0.08f, tier: Tier.ChatOnly,
+        Width = G.Slider("width", "Blade width", 0.02f, 0.4f, 0.01f, 0.05f, tier: Tier.ChatOnly,
                          help: "Procedural blade width at the root, relative to its height.");
         Clump = G.Slider("clump", "Clumping", 0f, 1f, 0.05f, 0.5f, tier: Tier.ChatOnly,
                          help: "Neighbouring procedural blades lean together and share a height, so the field grows in tufts.");
@@ -111,7 +111,6 @@ internal static class Grass
         VLight = G.Toggle("vlight", "Per-vertex lighting", true, Tier.ChatOnly, help: "Off = per-pixel (costlier).")
                   .Ladder(Quality.Grass, true, true, true, false);
         Prepass = G.Toggle("prepass", "prepass", true, Tier.ChatOnly);
-        PushVis = G.Toggle("pushvis", "pushvis", true, Tier.ChatOnly);
         GViz = G.Slider("gviz", "gviz", 0, 4, 1, 0, tier: Tier.ChatOnly, changed: GrassField.GroundDiag);
         DumpMips = G.Button("dumpmips", "dumpmips", GrassField.DumpMipsNext, Tier.ChatOnly);
         DumpShadow = G.Button("dumpshadow", "dumpshadow", GrassField.DumpShadowNext, Tier.ChatOnly);

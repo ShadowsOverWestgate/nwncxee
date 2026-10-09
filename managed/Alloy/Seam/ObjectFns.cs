@@ -79,6 +79,13 @@ public sealed unsafe class ObjectFns : ISeamProvider
         }
         string? resref = modelName == 0 ? null : Marshal.PtrToStringUTF8(modelName);
         if (string.IsNullOrEmpty(resref)) return 0;
+        // NewCAurObject @0x5412c0: with g_bEnableLOD on it reads the model's .lod first, and the file names
+        // all three levels. Read for EVERY object, as the engine does; the switch is what CX widens (DbAnim.LodChoose
+        // runs for movers too, where the engine only switches gobs its tile BSP walk reaches -- statics).
+        string? lodText = DbAnim.LodEnabled ? TexRegistry.ReadResourceText(resref, LodResType) : null;
+        ParseLod(lodText, out string lod0, out float lodNear, out string lod1, out float lodFar, out string lod2);
+        // ponytail: a .lod with no level-0 name keeps the resref (the engine would return NULL)
+        if (lod0.Length > 0) resref = lod0;
         ModelDef? model = ModelCache.Acquire(resref, out string? why);
         if (model == null && ResourcePresent(resref))
         {
@@ -126,8 +133,14 @@ public sealed unsafe class ObjectFns : ISeamProvider
         SceneDb.ObjEmissive[i] = Vector3.Zero;
         SceneDb.ObjSeamPrevPos[i] = new Vector3(SceneDb.NoPrevPos);
         SceneDb.ObjSeamLod[i] = 0;
-        SceneDb.ObjSeamLodDist1[i] = LodNoSwitch;
-        SceneDb.ObjSeamLodDist2[i] = LodNoSwitch;
+        SceneDb.ObjSeamLodDist1[i] = lodNear;
+        SceneDb.ObjSeamLodDist2[i] = lodFar;
+        ModelDef? alt1 = lod1.Length > 0 ? ModelCache.Acquire(lod1, out _) : null;
+        ModelDef? alt2 = lod2.Length > 0 ? ModelCache.Acquire(lod2, out _) : null;
+        // a level 2 with no level 1 stands in as level 1: the choice steps one level at a time
+        if (alt1 == null) (alt1, alt2) = (alt2, null);
+        SceneDb.ObjSeamLodModel1[i] = alt1;
+        SceneDb.ObjSeamLodModel2[i] = alt2;
         // Gob::Gob's own defaults: shadows on, highlight propagation on, in-view true until the first cull,
         // animations enabled. The in-view default is why a brand-new object draws on the frame it was made.
         SceneDb.ObjSeamFlags[i] = (uint)(SeamFlag.Shadows | SeamFlag.PropagateHighlight | SeamFlag.InView | SeamFlag.Animate);
@@ -137,19 +150,31 @@ public sealed unsafe class ObjectFns : ISeamProvider
         {
             SceneDb.Objects.Free(id);
             ModelCache.Release(model);
+            if (alt1 != null) ModelCache.Release(alt1);
+            if (alt2 != null) ModelCache.Release(alt2);
+            SceneDb.ObjSeamLodModel1[i] = SceneDb.ObjSeamLodModel2[i] = null;
             return 0;
         }
         SeedShell(shell);
+        *(float*)(shell + SeamLayout.GobLodDist1) = lodNear;
+        *(float*)(shell + SeamLayout.GobLodDist2) = lodFar;
         string? label = name == 0 ? null : Marshal.PtrToStringUTF8(name);
         Facade.SetName(shell, string.IsNullOrEmpty(label) ? resref : label);
 
         if (model != null) MtrFeed.Warm(model);
-        if (model != null && !PartTree.Build(id, model))
+        if (alt1 != null) MtrFeed.Warm(alt1);
+        if (alt2 != null) MtrFeed.Warm(alt2);
+        if (model != null && !PartTree.Build(id, model, new PartTree.TreeOptions { Lod1 = alt1, Lod2 = alt2 }))
             _log?.Always($"seam: the part tree of \"{resref}\" could not be built -- the object exists with no geometry");
         ObjectSlots.NoteSkinned(id);
         // The lifecycle order the integration contract fixes, and each step wants the one before it: the
         // animation runtime needs the part range, and the hit index needs the bounds the tree gave.
         DbAnim.ObjectCreated(id);
+        if (alt1 != null)
+        {
+            DbAnim.SetLodModels(id, alt1, alt2);
+            DbAnim.SetLodDistances(id, lodNear, lodFar);
+        }
         HitFeed.NoteObject(id);
         SceneDb.Touch(id, Dirty.Created | Dirty.Tree | Dirty.Xform);
 
@@ -163,6 +188,28 @@ public sealed unsafe class ObjectFns : ISeamProvider
         ObjectSlots.FireEvent(shell, EventNames.EmitterTarget, 0);
         ObjectSlots.RecomputeBounds(id, shell);
         return shell;
+    }
+
+    /// <summary>The <c>.lod</c> resource type <c>NewCAurObject</c> asks <c>CExoResMan</c> for.</summary>
+    internal const ushort LodResType = 0x81e;   // not-an-offset: a resource type id
+
+    /// <summary><c>NewCAurObject</c>'s <c>sscanf("%63s\n%f%63s\n%f%63s")</c> over a <c>.lod</c>: level-0 model,
+    /// near distance, level-1 model, far distance, level-2 model, stopping at the first field that does not
+    /// parse. What it leaves unread keeps the engine's defaults: no name, <see cref="LodNoSwitch"/>.</summary>
+    internal static void ParseLod(string? text, out string m0, out float d1, out string m1, out float d2, out string m2)
+    {
+        m0 = m1 = m2 = ""; d1 = d2 = LodNoSwitch;
+        string[] t = text?.Split((char[]?)null, 5, StringSplitOptions.RemoveEmptyEntries) ?? [];
+        static bool F(string[] t, int k, ref float d)
+        {
+            if (k >= t.Length || !float.TryParse(t[k], System.Globalization.NumberStyles.Float,
+                                                 System.Globalization.CultureInfo.InvariantCulture, out float v)) return false;
+            d = v;
+            return true;
+        }
+        static string S(string[] t, int k) => k < t.Length ? t[k].Split((char[]?)null)[0] : "";
+        if ((m0 = S(t, 0)).Length == 0 || !F(t, 1, ref d1) || (m1 = S(t, 2)).Length == 0 || !F(t, 3, ref d2)) return;
+        m2 = S(t, 4);
     }
 
     /// <summary>The LOD switch distance <c>NewCAurObject</c> pre-seeds both channels with (99999.0f) when the

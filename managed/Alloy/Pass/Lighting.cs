@@ -12,7 +12,7 @@ internal static class Lighting
     internal static readonly KnobGroup G;
     internal static readonly Knob<float> Gain, Ambient, Sun, Overbright, Sss, Wrap, WrapNdl, Hot, HotSize, Radius, Falloff,
                                          ProbeGain, BinReach, AmbientDir,
-                                         Daylight, DayLow, DayHigh, SsrRough, SsrPlanarCull, Relevance, Floor, FullModel;
+                                         Daylight, DayLow, DayHigh, Flicker, FlickerSpeed, SsrRough, SsrPlanarCull, Relevance, Floor, FullModel;
     internal static readonly Knob<int> Fadeout, ProbeSize, BinCap, SsrDetail, SsrPlanarRes;
     internal static readonly Knob<bool> Probe, ReachFade, HiddenLights, Brdf, SpecAa, Ssr, SsrPlanar,
                                         Deferred, DeferredTiles, LightRec;
@@ -32,6 +32,11 @@ internal static class Lighting
         Overbright = G.Slider("overbright", "Carried-light boost", 0f, 1f, 0.05f, 0f, tier: Tier.Advanced,
                               help: "How much of a torch's extra intensity shows at its centre instead of only as reach. "
                                   + "0 is the stock game; 0.5 makes carried lights stand out.");
+        Flicker = G.Slider("flicker", "Fire flicker", 0f, 2f, 0.05f, 1f,
+                           help: "Animated lights (torches, braziers) keep a steady reach and flicker in brightness instead of pulsing in size. "
+                               + "1 flickers as deep as the pulse was made; 0 is the stock pulse.");
+        FlickerSpeed = G.Slider("flickerspeed", "Flicker speed", 0.1f, 4f, 0.05f, 1f, tier: Tier.Advanced,
+                                help: "Rate of the flicker; 1 is a fireplace.");
         Daylight = G.Slider("daylight", "Daylight outshines lamps", 1f, 10f, 0.25f, 3f, tier: Tier.Advanced,
                             help: "How much brighter full daylight is than a lamp. Lamps and their glow fade as the day brightens "
                                 + "and come back at dusk. 1 is the stock game: a torch looks the same at noon as at midnight.");

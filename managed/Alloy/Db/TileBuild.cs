@@ -209,6 +209,25 @@ public static class TileBuild
         _gridH = h;
         _cellSize = cellSize;
         _ring = border > 0 && border < AreaBorder.Ring ? AreaBorder.Ring : border;
+        if (border > 0 && Math.Max(w, h) >= LargeArea) _ring = LargeRing;
+    }
+
+    /// <summary>An area this many tiles along its longer side keeps only <see cref="LargeRing"/> tiles of border,
+    /// trimming even the engine's own five. On a 27x24 city the 15-tile ring was 2430 of 3078 placements --
+    /// lightmap rects, casters and records for scenery past the walkable edge -- where three already fill the
+    /// view from inside a big area.
+    /// ponytail: two constants, not knobs; promote them if a builder needs a wider ring on a big map.</summary>
+    internal const int LargeArea = 20, LargeRing = 3;
+    /// <summary>Ring tiles the engine asked for past <see cref="LargeRing"/>, not placed.</summary>
+    private static int _ringSkipped;
+
+    /// <summary>Rings past the trimmed ring, by grid cell: the distance outside the area on the far axis.</summary>
+    private static bool PastRing(Vector3 pos)
+    {
+        Cell(pos, out int gx, out int gy);
+        int dx = gx < 0 ? -gx : gx >= _gridW ? gx - _gridW + 1 : 0;
+        int dy = gy < 0 ? -gy : gy >= _gridH ? gy - _gridH + 1 : 0;
+        return Math.Max(dx, dy) > _ring;
     }
 
     /// <summary>The area's tileset height step: <c>CNWTileSet::GetHeightTransition</c> @0x5e10c0, which
@@ -451,6 +470,8 @@ public static class TileBuild
     /// comparison uses, so a comparison never widens the ring.</summary>
     public static int PlaceWithRing(DbId scene, ModelDef def, Vector3 pos, int orient, int border, Quaternion? rot = null)
     {
+        // the engine's border answers 0 to the game layer either way, so a skipped ring tile is invisible to it
+        if (border != 0 && _ring < EngineRing && PastRing(pos)) { _ringSkipped++; return -1; }
         int t = Place(scene, def, pos, orient, border, rot);
         if (t < 0) return -1;
         if (_borderWindow && border != 0) ReplayOutward(scene, def, pos, orient, border, rot);
@@ -1712,6 +1733,7 @@ public static class TileBuild
     /// <c>meshes</c> (arena asks, one per distinct tile mesh) against <c>placements</c>.</summary>
     public static string Stats()
         => $"dbtiles {Placements} placements / {_plans.Count} models / {_arenaAsks} meshes, {_litRegistered} lights"
+           + (_ringSkipped > 0 ? $", border ring {_ring} ({_ringSkipped} ring tiles skipped)" : "")
            + (_fadeTicks > 0
                ? $", fade {_classified} classified and {_fadingOut} fading out, {_fading} mid-ramp / "
                  + $"{_fadingPeak} peak over {_fadeTicks} ticks (mode {_fadeMode}, plane "

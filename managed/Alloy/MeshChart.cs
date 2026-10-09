@@ -256,7 +256,7 @@ internal static unsafe partial class MeshChart
             return false;
         // The signature is the content hash and the range's hand-out generation: a recycled range index is a
         // DIFFERENT mesh under the same item, and Wanted re-charts on a signature change.
-        ulong sig = content ^ ((ulong)gen << 48);
+        ulong sig = CX.Alloy.Db.MeshArena.Sig(content, gen);
         if (!Wanted(DbSlot, range, ni, sig, out _)) return false;
         Job j = _jobs.Rent();
         j.Key = KeyOf(DbSlot, range); j.Sig = sig;
@@ -423,6 +423,18 @@ internal static unsafe partial class MeshChart
         return h;
     }
 
+    /// <summary>The ARENA identity of a charted mesh: <see cref="ContentKey"/> is translation-invariant (the
+    /// disk cache shares a chart between translated copies, which is right for UVs), but the arena range holds
+    /// ABSOLUTE positions -- keyed on the content alone, a wall segment one storey up in another tile model drew
+    /// out of the first one's range, a level too high. The origin it was rebased from goes into the key.</summary>
+    internal static ulong PlacedKey(ulong content, Vector3 origin)
+    {
+        ulong h = content;
+        foreach (float f in stackalloc float[3] { origin.X, origin.Y, origin.Z })
+        { h ^= BitConverter.SingleToUInt32Bits(f); h *= 1099511628211UL; }
+        return h;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct ChartOut
     {
@@ -551,7 +563,7 @@ internal static unsafe partial class MeshChart
             else _stage[o + 6] = _stage[o + 7] = 0f;
             _stage[o + 8] = j.ChartUv[i * 2]; _stage[o + 9] = j.ChartUv[i * 2 + 1];
         }
-        return CX.Alloy.Db.MeshArena.AcquireRaw(j.Content, CX.Alloy.Db.MeshArena.Fmt.Static, n,
+        return CX.Alloy.Db.MeshArena.AcquireRaw(PlacedKey(j.Content, j.Bmin), CX.Alloy.Db.MeshArena.Fmt.Static, n,
                                                 _stage.AsSpan(0, n * Stride),
                                                 j.Out0, j.Out0N, j.Out1, j.Out1N, j.Out2, j.Out2N,
                                                 j.Bmin, j.Bmax);
@@ -569,9 +581,16 @@ internal static unsafe partial class MeshChart
     internal static bool Range(int slot, int item, int lod, out int baseVertex, out nint off, out int count, out int level)
     {
         baseVertex = 0; off = 0; count = 0; level = 0;
-        if (Vao == 0 || !_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done || e.Refused != Refusal.None) return false;
+        if (Vao == 0 || !_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done || e.Refused != Refusal.None
+            || !Current(slot, item, in e)) return false;
         return CX.Alloy.Db.MeshArena.Runs(e.Range, lod, out baseVertex, out off, out count, out level);
     }
+
+    /// <summary>Is a DB entry's chart still of the mesh its arena range holds? The key is the range INDEX, and an
+    /// area hop recycles indices: until the new tenant is re-offered, the old entry would hand its draws the
+    /// previous tenant's charted geometry -- a whole roof drawn from another tile's mesh, lightmap on only.</summary>
+    private static bool Current(int slot, int item, in Entry e)
+        => slot != DbSlot || e.Sig == CX.Alloy.Db.MeshArena.SigOf(item);
 
     /// <summary><see cref="Range"/> through the caller's <paramref name="m"/>: one probe per (key, LOD) per
     /// table epoch instead of one per call.</summary>
@@ -595,7 +614,8 @@ internal static unsafe partial class MeshChart
     internal static bool Atlas(int slot, int item, out int w, out int h, out ulong content, out Vector3 bmin, out Vector3 bmax)
     {
         w = h = 0; content = 0; bmin = bmax = default;
-        if (!_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done || e.Refused != Refusal.None) return false;
+        if (!_table.TryGetValue(KeyOf(slot, item), out Entry e) || !e.Done || e.Refused != Refusal.None
+            || !Current(slot, item, in e)) return false;
         w = e.W; h = e.H; content = e.Content; bmin = e.Bmin; bmax = e.Bmax;
         return true;
     }

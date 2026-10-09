@@ -301,7 +301,7 @@ public static unsafe partial class DbFeed
             SceneDb.ObjScene[o] = scene;
             SceneDb.ObjFlags[o] = ObjFlag.Static;
             SceneDb.ObjSphere[o] = new Vector4(305f, 305f, 0f, 2f);
-            SceneDb.ObjLodShown[o] = 1;
+            SceneDb.ObjLodShown[o] = 0;
             DbId h0 = SceneDb.Parts.Alloc(), h1 = SceneDb.Parts.Alloc();
             int p0 = h0.Index, p1 = h1.Index;
             for (int k = 0; k < 2; k++)
@@ -315,8 +315,8 @@ public static unsafe partial class DbFeed
                 SceneDb.PartWorld[p] = Matrix4x4.Identity;
             }
             SceneDb.PartNode[p0] = 1; SceneDb.PartNode[p1] = 2;
-            SceneDb.PartLodTree[p0] = 1;   // the alternate the object shows
-            SceneDb.PartLodTree[p1] = 2;   // ...and one it does not
+            SceneDb.PartLodTree[p0] = 1;   // level 0's tree, the one the object shows
+            SceneDb.PartLodTree[p1] = 2;   // ...and level 1's, which it does not
             SceneDb.ObjPartFirst[o] = Math.Min(p0, p1);
             SceneDb.ObjPartCount[o] = Math.Abs(p1 - p0) + 1;
             TakeFrame();
@@ -338,7 +338,7 @@ public static unsafe partial class DbFeed
             SceneDb.PartEnabled[p0] = false;
             check.Expect(Visible(scene, planes, 0f) == 0, "a disabled subtree yields nothing");
             SceneDb.PartEnabled[p0] = true;
-            SceneDb.ObjLodShown[o] = 2;
+            SceneDb.ObjLodShown[o] = 1;
             check.Expect(Visible(scene, planes, 0f) == 1 && VisibleSlot(0) == SceneDb.PartSlot[p1],
                          "switching the shown alternate switches which slot is visible, with no reseat");
 

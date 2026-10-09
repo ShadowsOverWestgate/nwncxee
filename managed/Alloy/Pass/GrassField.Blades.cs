@@ -23,6 +23,8 @@ internal static unsafe partial class GrassField
     private static readonly Cls[] _cls = new Cls[MaxGrassMaterials];
     /// <summary>Root/mid/tip per cell per material, display space.</summary>
     private static readonly Vector3[] _ramp = new Vector3[MaxGrassMaterials * 12];
+    /// <summary>Per cell per material: the art's mean blade length over the card height (<see cref="GrassAtlas.Cell.Height"/>).</summary>
+    private static readonly float[] _bladeLen = new float[MaxGrassMaterials * 4];
 
     /// <summary>Every live material's BLADE cell bits this frame: none under the texture style, or without
     /// the blade program. <paramref name="cards"/> takes the complement -- does the material draw any CARD --
@@ -72,9 +74,10 @@ internal static unsafe partial class GrassField
             _ramp[m * 12 + k * 3] = cells[k].Root;
             _ramp[m * 12 + k * 3 + 1] = cells[k].Mid;
             _ramp[m * 12 + k * 3 + 2] = cells[k].Tip;
+            _bladeLen[m * 4 + k] = cells[k].Height;
         }
         string v = "";
-        for (int k = 0; k < 4; k++) v += (c.Kinds >> k & 1) != 0 ? " BLADE" : " CARD";
+        for (int k = 0; k < 4; k++) v += (c.Kinds >> k & 1) != 0 ? $" BLADE({cells[k].Height:0.00}h)" : " CARD";
         _log?.Info($"[grass] material {m} tid {tid} {w}x{h} classified:{v}");
         return c.Kinds;
     }

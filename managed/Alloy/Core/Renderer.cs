@@ -42,6 +42,9 @@ internal static class Renderer
     // ---- CX-103/104/105: the scene pipeline's dials ----
     internal static readonly Knob<bool> CullWatch;
     internal static readonly Knob<float> LodHyst;
+    /// <summary>Authored <c>.lod</c> alternates, loaded and switched for every object. On whatever the game's own
+    /// LOD option says: a cfg-only off switch for debugging, not a player choice.</summary>
+    internal static readonly Knob<bool> AuthoredLod;
     internal static readonly Knob<int> Viz, Threads, Cull, HlChan, OitViz;
     internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap;
     // ---- CX-120 seam-scene ----
@@ -241,6 +244,7 @@ internal static class Renderer
         // on. Off by default -- a per-frame read of a GPU-written buffer is a real wait on Mesa.
         CullWatch = G.Toggle("cullwatch", "cullwatch", false, Tier.ChatOnly);
         LodHyst = G.Slider("lodhyst", "lodhyst", 0f, 1f, 0.01f, 0.1f, tier: Tier.ChatOnly);
+        AuthoredLod = G.Toggle("authoredlod", "authoredlod", true, Tier.Hidden);
 
         Consts = G.Button("consts", "consts", AlloyRenderer.LogScriptables, Tier.ChatOnly);
         FrameDumpBtn = G.Button("framedump", "framedump", FrameDump.Arm, Tier.ChatOnly);

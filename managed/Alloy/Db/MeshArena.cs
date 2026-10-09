@@ -48,13 +48,17 @@ public static unsafe partial class MeshArena
     /// weights for <see cref="Fmt.Skinned"/>.</summary>
     private static readonly int[] StrideOf = { 10, 15 };
 
-    /// <summary>Vertices one format's section may hold (4M x 40 B = 160 MiB for the static one, grown on demand;
+    /// <summary>Vertices one format's section may hold (8M x 40 B = 320 MiB for the static one, grown on demand;
     /// the skinned section is far smaller in practice -- one copy per distinct creature mesh, not per creature).
-    /// 2M filled in a 27x24 city with 1654 placeables (2026-10-08) and every mesh after it drew nothing.
-    /// ponytail: a section past its ceiling refuses and counts; there is no spill to a second VBO.</summary>
-    private const int MaxVerts = 1 << 22;
-    /// <summary>Indices the shared element arena may hold (8M x 2 B = 16 MiB).</summary>
-    private const int MaxIndices = 8 << 20;
+    /// 2M filled in a 27x24 city with 1654 placeables (2026-10-08); 4M then filled on the hop INTO a ~3M-vertex
+    /// area (2026-10-09, 84 meshes refused), because the area load lands on top of the previous area's dead
+    /// ranges and only the render pump compacts. The ceiling holds two such areas at once.
+    /// ponytail: a section past its ceiling refuses and counts; there is no spill to a second VBO, and the
+    /// load does not compact mid-way -- add that if an area alone ever nears this.</summary>
+    private const int MaxVerts = 1 << 23;
+    /// <summary>Indices the shared element arena may hold (16M x 2 B = 32 MiB): scaled with
+    /// <see cref="MaxVerts"/>, since the same area hop doubles it.</summary>
+    private const int MaxIndices = 16 << 20;
     /// <summary>A mesh past this cannot be addressed by a 16-bit index. The engine's own vertex count is a
     /// <c>ushort</c> (<c>MdlNodeTriMesh+0x284</c>), so no model file reaches it.</summary>
     private const int MaxMeshVerts = 65536;
@@ -163,10 +167,12 @@ public static unsafe partial class MeshArena
         internal readonly Vector3 BMin, BMax, Center;
         internal readonly float Radius;
         internal readonly bool Live;
+        /// <summary>The tenant's identity: <see cref="Sig"/> of its content and hand-out generation.</summary>
+        internal readonly ulong Sig;
 
         internal Pub(in Range r, uint vao)
         {
-            Vao = vao; Base = r.Base; NV = r.NV;
+            Vao = vao; Base = r.Base; NV = r.NV; Sig = MeshArena.Sig(r.Content, (uint)r.Gen);
             Cnt0 = r.Cnt0; Cnt1 = r.Cnt1; Cnt2 = r.Cnt2;
             Off0 = r.Off0; Off1 = r.Off1; Off2 = r.Off2;
             BMin = r.BMin; BMax = r.BMax; Center = r.Center; Radius = r.Radius;
@@ -618,6 +624,18 @@ public static unsafe partial class MeshArena
 
     // ---------------------------------------------------------------- read (lock-free, off the snapshot)
 
+    /// <summary>Which mesh a range holds: content hash and hand-out generation, so a recycled range index is a
+    /// different signature. What <see cref="MeshChart"/> keys its charted copy on.</summary>
+    internal static ulong Sig(ulong content, uint gen) => content ^ ((ulong)gen << 48);
+
+    /// <summary>The published tenant signature of <paramref name="range"/>, 0 for none. Lock-free.</summary>
+    internal static ulong SigOf(int range)
+    {
+        Pub?[] pub = _pub;
+        Pub? r = (uint)range < (uint)pub.Length ? pub[range] : null;
+        return r != null && r.Live ? r.Sig : 0;
+    }
+
     /// <summary>What one draw needs: the VAO for the range's format, its base vertex, and the index BYTE
     /// offset and count at <paramref name="lod"/>, falling back to the finest level that exists. False means
     /// the range is gone, empty, or the arena has not been uploaded in this context yet.</summary>
@@ -709,9 +727,9 @@ public static unsafe partial class MeshArena
         lock (_gate)
         {
             bool changed = false;
-            bool compact = _iDead > MaxIndices / 2 || (_elementsFull && _iDead > 0);
+            bool compact = _iDead > MaxIndices / 4 || (_elementsFull && _iDead > 0);
             for (int f = 0; f < Formats && !compact; f++)
-                compact = _sect[f].Dead > MaxVerts / 2 || (_sect[f].Full && _sect[f].Dead > 0);
+                compact = _sect[f].Dead > MaxVerts / 4 || (_sect[f].Full && _sect[f].Dead > 0);
             if (compact) { Compact(); changed = true; }
 
             for (int f = 0; f < Formats; f++)

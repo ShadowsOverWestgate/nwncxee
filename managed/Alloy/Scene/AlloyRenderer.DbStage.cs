@@ -212,7 +212,10 @@ public sealed unsafe partial class AlloyRenderer
                     // CX-188: ...and only a handle that actually MOVED dirties the table. The unconditional flag
                     // made every frame re-upload the whole handle block -- and the caster bake reads that flag to
                     // decide whether it has to re-upload before baking (BakeHandleUploads).
-                    if (moved) _texHDirty = true;
+                    // ...and the SLOT goes on the dirty list: a partial UploadHandles sends only _recDirty's runs, and a
+                    // static part whose record did not move is on no other list -- its GPU row kept the preview handle
+                    // Land had just made non-resident, black until it left view or a whole upload swept it up.
+                    if (moved) { _texHDirty = true; MarkRecordDirty(i, ref c); }
                     if (main)   // diagnostics: shared statics, main only
                     {
                         TileTexProbe(part, recipe, hh[0]);
@@ -335,7 +338,9 @@ public sealed unsafe partial class AlloyRenderer
         // changes no pixel there. It closes the hole, not a symptom; the roofed interiors the ramp actually
         // runs in are where it would have shown.
         _oFading[i] = SceneDb.PartFade[part] < 1f;
-        bool castOk = mayCast && !_oFading[i] && (_oCls[i] <= (byte)AlloyClass.Cutout
+        // ...and never a hidden .lod alternate: a swap restages the WHOLE range, the hidden tree included, and
+        // its shadow over the shown one is two silhouettes fighting in the cascades
+        bool castOk = mayCast && !_oFading[i] && !SceneDb.LodHidden(SceneDb.PartLodTree[part], SceneDb.ObjLodShown[o]) && (_oCls[i] <= (byte)AlloyClass.Cutout
                                       || (_oCls[i] == (byte)AlloyClass.Blended && _oBone[i] < 0));
         if (castOk != _castOk[i]) System.Threading.Interlocked.Increment(ref castOk ? ref _dbCastOn : ref _dbCastOff);
         SetCastOk(i, castOk, ref c);

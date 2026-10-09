@@ -35,13 +35,18 @@ internal static class MeshSimplify
     private const long MixX = 0x9E3779B1L, MixY = 0x85EBCA77L, MixZ = 0xC2B2AE3DL;   // not-an-offset: hash mixers
     private const long Mix = unchecked((long)0x9E3779B97F4A7C15UL);   // not-an-offset: Knuth's multiplicative hash constant
 
+    /// <summary>The farthest (world units) a collapse may move a surface, whatever the mesh's size. The relative
+    /// budget alone let a 20-unit tile move a wall over a metre at level 2, flattening the recess a separate
+    /// window object sits in -- and the two then fought. Near-coplanar collapses, where the saving is, pass.</summary>
+    internal const double MaxShift = 0.02;
+
     /// <summary>Simplify <paramref name="idxCount"/> indices down towards <paramref name="targetTris"/>
     /// triangles and write the survivors to <paramref name="outIdx"/>. <paramref name="pos"/> is three floats
     /// per index VALUE (so <c>pos[3*i]</c> is what index <c>i</c> points at), <paramref name="errorLimit"/> is
     /// a fraction of the squared bounding-box diagonal past which a collapse is refused. Returns the output
     /// index count, or 0 when the mesh could not usefully be reduced.</summary>
     internal static int Run(ushort[] idx, int idxCount, float[] pos, int vertCount,
-                            int targetTris, float errorLimit, ushort[] outIdx)
+                            int targetTris, float errorLimit, ushort[] outIdx, double maxShift = MaxShift)
     {
         if (idxCount < 6 || idxCount % 3 != 0 || idxCount > MaxCorners
             || vertCount <= 0 || vertCount > MaxVerts || targetTris < 1) return 0;
@@ -61,7 +66,7 @@ internal static class MeshSimplify
         double dx = hix - lox, dy = hiy - loy, dz = hiz - loz;
         double diag2 = dx * dx + dy * dy + dz * dz;
         if (!(diag2 > 0d)) return 0;
-        double costLimit = errorLimit * diag2;
+        double costLimit = Math.Min(errorLimit * diag2, maxShift * maxShift);
 
         var q = new double[vertCount * 10];
         var locked = new bool[vertCount];
@@ -336,7 +341,7 @@ internal static class MeshSimplify
             }
         var outIdx = new ushort[tris * 3];
 
-        int got = Run(idx, n, pos, verts, tris / 2, 1f, outIdx);
+        int got = Run(idx, n, pos, verts, tris / 2, 1f, outIdx, double.MaxValue);
         check.Expect(got > 0 && got % 3 == 0, "the grid produced no simplified index run");
         check.Expect(got < n, $"the output is not smaller than the input ({got} of {n})");
         bool bad = false, degenerate = false;
@@ -355,6 +360,25 @@ internal static class MeshSimplify
         check.Expect(Run(sqIdx, 6, sq, 4, 1, 1f, outIdx) == 0, "an all-border mesh was collapsed anyway");
         // A zero error budget refuses every collapse that is not exactly free.
         check.Expect(Run(idx, n, pos, verts, 1, 0f, outIdx) == 0, "a zero error budget still collapsed a curved mesh");
+
+        // A 22-unit flat wall with a 0.3-deep recess in its middle: the relative budget alone would flatten the
+        // recess (it is 1% of the diagonal); the absolute cap must keep it, and still thin the flat rest.
+        var wall = new float[verts * 3];
+        for (int v = 0; v < verts; v++)
+        {
+            int x = v % N, y = v / N;
+            wall[v * 3] = x * 2f; wall[v * 3 + 1] = y * 2f;
+            wall[v * 3 + 2] = x >= 5 && x <= 6 && y >= 5 && y <= 6 ? -0.3f : 0f;
+        }
+        int wn = Run(idx, n, wall, verts, tris / 5, MeshLod.Error2, outIdx);
+        bool recess = false;
+        for (int i = 0; i < wn; i++) if (wall[outIdx[i] * 3 + 2] < -0.29f) recess = true;
+        check.Expect(wn > 0 && wn < n, $"the flat part of a large wall still thins ({wn} of {n})");
+        check.Expect(recess, "a large mesh keeps a 0.3-unit recess at level 2: no collapse moves a surface past MaxShift");
+        int un = Run(idx, n, wall, verts, tris / 5, MeshLod.Error2, outIdx, double.MaxValue);
+        bool kept = false;
+        for (int i = 0; i < un; i++) if (wall[outIdx[i] * 3 + 2] < -0.29f) kept = true;
+        check.Expect(un > 0 && !kept, "fixture: with no cap the same budget DOES flatten the recess (else the check above proves nothing)");
 
         log.Info(check.Ok ? "MeshSimplify.SelfCheck: passed" : "MeshSimplify.SelfCheck: FAILED");
         return check.Ok;

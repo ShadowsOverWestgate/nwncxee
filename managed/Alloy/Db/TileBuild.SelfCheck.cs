@@ -470,6 +470,25 @@ public static class TileBuildCheck
             "the outermost corner cell of the widened ring holds a tile");
         check.Expect(TileBuild.At(default, TileBuild.CellPos(-ring - 1, 0, 0)) < 0,
             "nothing is placed past the ring");
+
+        // a large area trims the ring BELOW the engine's own five: the outer engine cells are skipped, not placed
+        const int big = TileBuild.LargeArea;
+        TileBuild.ResetAll();
+        TileBuild.InitGrid(default, big, big, 1, Height);
+        TileBuild.BorderWindow(true);
+        for (int ix = -TileBuild.EngineRing; ix < big + TileBuild.EngineRing; ix++)
+            for (int iy = -TileBuild.EngineRing; iy < big + TileBuild.EngineRing; iy++)
+                if (ix < 0 || ix >= big || iy < 0 || iy >= big)
+                    TileBuild.PlaceWithRing(default, def, TileBuild.CellPos(ix, iy, 0), 0, 1);
+        TileBuild.BorderWindow(false);
+        int r = TileBuild.LargeRing;
+        check.Expect(SceneDb.Tiles.Live == (big + 2 * r) * (big + 2 * r) - big * big,
+            $"a {big}x{big} area keeps a ring of {r} ({SceneDb.Tiles.Live} tiles)");
+        check.Expect(TileBuild.At(default, TileBuild.CellPos(-r, -r, 0)) >= 0
+                     && TileBuild.At(default, TileBuild.CellPos(big + r - 1, 0, 0)) >= 0
+                     && TileBuild.At(default, TileBuild.CellPos(-r - 1, 0, 0)) < 0
+                     && TileBuild.At(default, TileBuild.CellPos(big + r, 0, 0)) < 0,
+            "the trimmed ring stops at the same distance on the near and the far side");
         TileBuild.ResetAll();
     }
 

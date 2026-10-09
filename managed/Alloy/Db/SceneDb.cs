@@ -871,8 +871,11 @@ public static class SceneDb
     /// draws nothing. Replaces the per-frame reads of <c>PartRef.Mdl</c>, <c>MdlRef.Ambient/Diffuse</c>,
     /// <c>MaterialRef.Texture/MapTexture</c>, the VDO index range and the <c>IsDangly</c> vtable probe.</summary>
     public static readonly int[] PartRecipe = Fill(new int[MaxParts], -1);
-    /// <summary>The part-tree alternate this part belongs to (0 = in every alternate).</summary>
+    /// <summary>The part-tree alternate this part belongs to: 0 = in every alternate, else LOD level + 1 (the
+    /// level-0 tree of an object that HAS alternates is 1, so it can hide). Read through <see cref="LodHidden"/>.</summary>
     public static readonly byte[] PartLodTree = new byte[MaxParts];
+    /// <summary>A part of tree <paramref name="tree"/> is skipped while its object shows LOD level <paramref name="shown"/>.</summary>
+    public static bool LodHidden(byte tree, byte shown) => tree != 0 && tree != shown + 1;
     /// <summary>The fade multiplier the tile this part stands on, or the door it belongs to, currently applies
     /// (1 = no fade). Written by the tiles stream's tile-fade ramp and by the hit stream's door fade; the feed
     /// only multiplies it in, so neither costs the draw a tile dereference.</summary>

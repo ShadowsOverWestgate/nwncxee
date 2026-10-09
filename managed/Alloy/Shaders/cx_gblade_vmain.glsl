@@ -22,7 +22,8 @@ void main()
     vLight = vec3(0.0);
     vec3 root = iPos.xyz;
     uint mat = uint(iParam.y + 0.5) >> 2u, cell = uint(iParam.y + 0.5) & 3u;
-    vColRoot = CxGrassMat(mat, 4 + int(cell) * 3).rgb;
+    vec4 rootRamp = CxGrassMat(mat, 4 + int(cell) * 3);
+    vColRoot = rootRamp.rgb;
     vColMid = CxGrassMat(mat, 5 + int(cell) * 3).rgb;
     vColTip = CxGrassMat(mat, 6 + int(cell) * 3).rgb;
     vMatDif = CxGrassMat(mat, 2).rgb;
@@ -39,7 +40,9 @@ void main()
 
     // the far ladder's survivors stand in for the blades it dropped: wider, taller
     float kv = CxGrassKeep(dist);
-    float widen = pow(kv, -uLod.z), h = iParam.x * pow(kv, -uLod.w) * (1.0 - 0.4 * uSnow.y);
+    // the art's own blade length, not the card's: a card's tallest blade reaches its top, the tuft's mean does not
+    float len = iParam.x * max(rootRamp.w, 0.2);
+    float widen = pow(kv, -uLod.z), h = len * pow(kv, -uLod.w) * (1.0 - 0.4 * uSnow.y);
     if (uGroundOn == 0) h *= iNrm.w;
     if (uCast != 0) widen *= uCastWidth;
     vec2 face = vec2(cos(iPos.w), sin(iPos.w));
@@ -75,7 +78,7 @@ void main()
     // wider when seen edge-on, so a blade never thins to a sub-pixel sliver that TAA has to rebuild
     vec3 V = normalize(uEyePos - P);
     float edgeOn = 1.0 - abs(dot(V.xy, face));
-    float width = iParam.x * uWidth * widen * pow(u, 0.7) * (1.0 + 1.5 * edgeOn * edgeOn);
+    float width = len * uWidth * widen * pow(u, 0.7) * (1.0 + 1.5 * edgeOn * edgeOn);
     P += across * side * width * 0.5;
 
     // the rounded normal: the strip's own normal tilted across its width (Tsushima's trick), so a flat blade

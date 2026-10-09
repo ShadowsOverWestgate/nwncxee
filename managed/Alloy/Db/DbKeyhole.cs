@@ -21,10 +21,11 @@ internal static unsafe class DbKeyhole
     /// behaviour CX attaches is the engine's <c>CAurBehaviorCameraFollow</c> running on a layout-compatible
     /// shell (ADR 0028 section 2), so it writes the keyhole byte, plane and cut exactly where the engine's
     /// camera carries them -- there is nothing to recompute, only somewhere to read.</para>
-    /// <para>TILE parts only, which is the database's spelling of the engine's own refusal: its rule tests
-    /// <c>part+0x50 == 0</c> (a part with no gob), and a gob part carries no world box to test anyway
-    /// (<c>ComputePartBBox</c> runs from <c>Scene::SpawnTile</c> alone). A placeable inside the keyhole is not
-    /// dissolved by vanilla either.</para></summary>
+    /// <para>TILE and STATIC parts, which is the database's spelling of the engine's own refusal: its rule
+    /// tests <c>part+0x50 == 0</c> (a part with no gob), which is what <c>Scene::SpawnTile</c> makes -- and a
+    /// STATIC placeable is spawned through that same call (the <c>Quaternion*</c> path, <c>TileBuild.PlaceStatic</c>),
+    /// so vanilla's hole takes non-interactable placeables with the roof. Tile-only here left them standing
+    /// solid in the hole. An interactable placeable is a gob and stays.</para></summary>
     internal static void Write(nint cameraShell, int[] order, int n, int[] slotPart, DbId camera)
     {
         Runtime(camera);
@@ -91,7 +92,7 @@ internal static unsafe class DbKeyhole
     private static bool Dissolves(int part, int i, byte on, float p0, float p1, float p2, float p3, float cut)
     {
         DbId obj = SceneDb.PartObj[part];
-        if (!SceneDb.Objects.Valid(obj) || (SceneDb.ObjFlags[obj.Index] & ObjFlag.Tile) == 0) return false;
+        if (!SceneDb.Objects.Valid(obj) || (SceneDb.ObjFlags[obj.Index] & (ObjFlag.Tile | ObjFlag.Static)) == 0) return false;
         float* plane = stackalloc float[4] { p0, p1, p2, p3 };
         fixed (float* b = &AlloyRenderer._oBox[i * 6])
             if (!PartTable.KeyholeDissolvesBox(b, on, plane, cut)) return false;
@@ -251,9 +252,9 @@ internal static unsafe class DbKeyhole
         if (!SceneDb.Parts.AllocRange(1, out int part))
         { SceneDb.Objects.Free(obj); log.Info("DbKeyhole.SelfCheck: FAILED -- no part slot"); return false; }
         SceneDb.PartObj[part] = obj;
-        // NOT a tile: Dissolves refuses a non-tile part before it reaches PartTable.KeyholeDissolvesBox, which
+        // NOT a tile or a static: Dissolves refuses such a part before it reaches PartTable.KeyholeDissolvesBox, which
         // is engine code there is none of off-device. That refusal is what makes the armed arm checkable.
-        SceneDb.ObjFlags[obj.Index] &= ~ObjFlag.Tile;
+        SceneDb.ObjFlags[obj.Index] &= ~(ObjFlag.Tile | ObjFlag.Static);
         var order = new[] { 0 };
         var slotPart = new[] { part };
 

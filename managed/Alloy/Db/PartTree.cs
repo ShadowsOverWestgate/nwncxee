@@ -100,6 +100,10 @@ public static class PartTree
         var plan = new List<Node>(model.Nodes.Length);
         Instance(plan, model, 0, -1, opt.ExpandReferences, 0);
         if (plan.Count == 0) return false;
+        // NewCAurObject's .lod alternates: CreateInstanceTree per model, each its own root, all in ONE range
+        int end0 = plan.Count, end1 = end0;
+        if (opt.Lod1 != null) { Instance(plan, opt.Lod1, 0, -1, opt.ExpandReferences, 0); end1 = plan.Count; }
+        if (opt.Lod2 != null) Instance(plan, opt.Lod2, 0, -1, opt.ExpandReferences, 0);
 
         if (!SceneDb.Parts.AllocRange(plan.Count, out int first))
         {
@@ -113,6 +117,9 @@ public static class PartTree
         // copy of the same geometry on the GPU (finding 5)
         bool[]? swallowed = opt.Combine ? Swallowed(model, opt.KeepSubtree) : null;
         for (int k = 0; k < plan.Count; k++) Write(obj, first + k, first, plan[k], swallowed, model);
+        if (plan.Count > end0)
+            for (int k = 0; k < plan.Count; k++)
+                SceneDb.PartLodTree[first + k] = (byte)(k < end0 ? 1 : k < end1 ? 2 : 3);
         SceneDb.ObjPartFirst[obj.Index] = first;
         SceneDb.ObjPartCount[obj.Index] = plan.Count;
         _built++;
@@ -131,7 +138,8 @@ public static class PartTree
             for (int k = 0; k < plan.Count; k++)
             {
                 int p = first + k;
-                if (SceneDb.PartKindOf[p] != PartKind.Reference) continue;
+                // ponytail: an alternate's reference nodes spawn nothing -- the child would draw at every level
+                if (SceneDb.PartKindOf[p] != PartKind.Reference || SceneDb.PartLodTree[p] > 1) continue;
                 ReferenceDef? r = NodeOf(p)?.Reference;
                 if (r != null && r.Model.Length > 0) OnReference(obj, p, r.Model);
             }
@@ -183,6 +191,9 @@ public static class PartTree
         /// <summary>The one subtree the collapse leaves under the root: the engine's
         /// <c>&lt;modelname&gt;a</c>, the animated half of a tile. Empty keeps nothing back.</summary>
         public string KeepSubtree;
+        /// <summary>The object path's <c>.lod</c> alternates (levels 1 and 2), instanced after the primary tree
+        /// in the same range and tagged in <see cref="SceneDb.PartLodTree"/>. Null: no such level.</summary>
+        public ModelDef? Lod1, Lod2;
     }
 
     // ---------------------------------------------------------------- CreateInstanceTreeR

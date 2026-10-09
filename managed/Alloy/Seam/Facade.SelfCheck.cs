@@ -2,6 +2,7 @@ using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 using CX.Alloy.Db;
+using CX.Alloy.Mdl;
 using CX.Framework;
 
 namespace CX.Alloy.Seam;
@@ -20,7 +21,62 @@ internal static unsafe class FacadeSelfCheck
         Vtables(check);
         Layout(check);
         Shells(check, log);
+        Lod(check);
         return check.Ok;
+    }
+
+    /// <summary>The <c>.lod</c> read and the part range it builds: <c>NewCAurObject</c>'s sscanf fields, its
+    /// defaults where the file stops, and the level tags <see cref="SceneDb.LodHidden"/> reads.</summary>
+    private static void Lod(Checker check)
+    {
+        ObjectFns.ParseLod("plc_tree\n20.5 plc_tree_l1\n40 plc_tree_l2\n", out string m0, out float d1, out string m1, out float d2, out string m2);
+        check.Expect(m0 == "plc_tree" && d1 == 20.5f && m1 == "plc_tree_l1" && d2 == 40f && m2 == "plc_tree_l2",
+            ".lod: level-0 model, near, level-1 model, far, level-2 model");
+        ObjectFns.ParseLod("plc_tree 20 plc_tree_l1", out m0, out d1, out m1, out d2, out m2);
+        check.Expect(m1 == "plc_tree_l1" && d1 == 20f && d2 == 99999f && m2 == "",
+            ".lod: a file that stops after level 1 keeps the engine's never-switch far distance and no level 2");
+        ObjectFns.ParseLod("plc_tree x plc_tree_l1", out m0, out d1, out m1, out _, out _);
+        check.Expect(m0 == "plc_tree" && d1 == 99999f && m1 == "",
+            ".lod: an unparsable distance stops the scan there, as sscanf does");
+        ObjectFns.ParseLod(null, out m0, out d1, out _, out _, out _);
+        check.Expect(m0 == "" && d1 == 99999f, "no .lod: no names, never switch");
+
+        static ModelDef Dummies(string name, int n)
+        {
+            var m = new ModelDef { Name = name };
+            m.Nodes = new NodeDef[n];
+            for (int k = 0; k < n; k++)
+                m.Nodes[k] = new NodeDef { Name = name + k, Index = k, Parent = k - 1, Kind = NodeKind.Dummy,
+                                           Children = k + 1 < n ? new[] { k + 1 } : System.Array.Empty<int>() };
+            return m;
+        }
+        DbId obj = SceneDb.Objects.Alloc();
+        if (obj.IsNull) { check.Expect(false, "no object slot for the LOD tree check"); return; }
+        try
+        {
+            DbFeed.InitObject(obj.Index);
+            bool built = PartTree.Build(obj, Dummies("cxtest_l0", 3),
+                new PartTree.TreeOptions { Lod1 = Dummies("cxtest_l1", 2), Lod2 = Dummies("cxtest_l2", 1) });
+            int first = SceneDb.ObjPartFirst[obj.Index], n = SceneDb.ObjPartCount[obj.Index];
+            check.Expect(built && n == 6, $"the three trees share one range (got {n} parts)");
+            if (n != 6) return;
+            check.Expect(SceneDb.PartLodTree[first] == 1 && SceneDb.PartLodTree[first + 2] == 1
+                         && SceneDb.PartLodTree[first + 3] == 2 && SceneDb.PartLodTree[first + 5] == 3,
+                "each tree is tagged level + 1");
+            check.Expect(SceneDb.PartParent[first + 3] == -1 && SceneDb.PartParent[first + 4] == first + 3,
+                "an alternate is its own root, its parents inside its own tree");
+            check.Expect(!SceneDb.LodHidden(1, 0) && SceneDb.LodHidden(2, 0) && SceneDb.LodHidden(1, 1)
+                         && !SceneDb.LodHidden(2, 1) && !SceneDb.LodHidden(0, 2),
+                "level 0 shows tree 1 only, level 1 tree 2 only, and an untagged part shows at every level");
+            PartTree.Build(obj, Dummies("cxtest_plain", 2));
+            check.Expect(SceneDb.PartLodTree[SceneDb.ObjPartFirst[obj.Index]] == 0,
+                "an object with no alternates stays untagged");
+        }
+        finally
+        {
+            PartTree.Free(obj);
+            SceneDb.Objects.Free(obj);
+        }
     }
 
     /// <summary>What <c>NewCAurObject</c> answers when the model does not load, which is two different answers.

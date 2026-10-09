@@ -14,6 +14,9 @@ internal static unsafe class GrassAtlas
     {
         public bool Blade;
         public Vector3 Root, Mid, Tip;
+        /// <summary>The art's mean blade length as a share of the card height: each covered column's top,
+        /// averaged. A card's tallest blade reaches its top; most of the tuft does not.</summary>
+        public float Height;
     }
 
     /// <summary>Alpha a texel must clear to count as blade (the prototype's <c>CUT</c>).</summary>
@@ -44,6 +47,7 @@ internal static unsafe class GrassAtlas
         // m[y*w+x] in ROOT-FIRST order
         var m = new bool[w * h];
         int n = 0, rows = 0, runs = 0, runSum = 0, foreign = 0;
+        var top = new int[w];
         Span<Vector3> band = stackalloc Vector3[3];
         Span<float> bandW = stackalloc float[3];
         for (int y = 0; y < h; y++)
@@ -58,6 +62,7 @@ internal static unsafe class GrassAtlas
                 if (on)
                 {
                     n++; any = true; run++;
+                    top[x] = y + 1;
                     var c = new Vector3(p[0], p[1], p[2]) / 255f;
                     if (Foreign(c)) foreign++;
                     int k = Math.Min(y * 3 / h, 2);
@@ -71,12 +76,15 @@ internal static unsafe class GrassAtlas
         if (n == 0) return default;
         float extent = (float)rows / h, runW = (float)runSum / runs / w, foreignShare = (float)foreign / n;
         float blob = Blob(m, w, h, Math.Max(1, w / 64));
+        long topSum = 0; int cols = 0;
+        for (int x = 0; x < w; x++) if (top[x] > 0) { topSum += top[x]; cols++; }
         var cell = new Cell
         {
             Blade = foreignShare <= ForeignMax && blob <= BlobMax && runW <= RunMax && extent >= ExtentMin,
             Root = bandW[0] > 0f ? band[0] / bandW[0] : Vector3.Zero,
             Mid = bandW[1] > 0f ? band[1] / bandW[1] : Vector3.Zero,
             Tip = bandW[2] > 0f ? band[2] / bandW[2] : Vector3.Zero,
+            Height = (float)topSum / cols / h,
         };
         // a band the art leaves empty borrows its neighbour, so a short blade's ramp does not end in black
         if (bandW[1] <= 0f) cell.Mid = cell.Root;
@@ -188,6 +196,8 @@ internal static unsafe class GrassAtlas
         check.Expect(g.Blade, "thin green blades classify BLADE, in every cell of the atlas");
         check.Expect(g.Tip.Y > g.Root.Y && g.Root.Y > 0.3f && g.Root.X < g.Root.Y, "and carry a green ramp that brightens toward the tip");
         check.Expect(Tiled(FlipRows(grass)).Blade, "an atlas stored tip-down still classifies BLADE (the root is found, not assumed)");
+        check.Expect(g.Height > 0.5f && g.Height < 0.95f && MathF.Abs(Tiled(FlipRows(grass)).Height - g.Height) < 0.02f,
+          "the blade length is the art's mean blade top (blades span 0.5..0.95), read root-first either way up");
 
         byte[] flowers = Blades(1u);
         Discs(flowers, 217, 38, 77);

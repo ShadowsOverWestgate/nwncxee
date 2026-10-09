@@ -107,6 +107,17 @@ internal static partial class MeshChart
         _table[KeyOf(-7, 1)] = new Entry { Done = true, Range = rOne };
         check.Expect(Range(ref memo, -7, 1, 2, out mb, out _, out _, out _) && mb == wantBase, "the memo re-probed inside one epoch");
         check.Expect(Range(ref memo, -7, 1, 0, out mb, out mo, out _, out _) && mb == oneBase && mo == oneOff, "a LOD change did not re-probe");
+        check.Expect(PlacedKey(0xC114, System.Numerics.Vector3.Zero) != PlacedKey(0xC114, new System.Numerics.Vector3(0f, 0f, 5f)),
+          "two translated copies of one mesh share an arena range (the second draws at the first one's height)");
+        // a DB chart is keyed by the plain range's INDEX: an entry filed for a previous tenant must not draw
+        ulong tenant = CX.Alloy.Db.MeshArena.SigOf(rOne);
+        _table[KeyOf(DbSlot, rOne)] = new Entry { Done = true, Range = rTwo, Sig = tenant };
+        check.Expect(tenant != 0 && Range(DbSlot, rOne, 0, out _, out _, out _, out _),
+          "a DB chart filed for the range's current mesh does not draw");
+        _table[KeyOf(DbSlot, rOne)] = new Entry { Done = true, Range = rTwo, Sig = tenant ^ (1UL << 48) };
+        check.Expect(!Range(DbSlot, rOne, 0, out _, out _, out _, out _),
+          "a DB chart filed for the range's PREVIOUS tenant still draws (recycled range index)");
+        _table.Remove(KeyOf(DbSlot, rOne));
         ForgetSlot(-7);
         check.Expect(!Range(ref memo, -7, 1, 0, out _, out _, out _, out _), "the memo outlived a forgotten slot");
         CX.Alloy.Db.MeshArena.Release(rTwo);

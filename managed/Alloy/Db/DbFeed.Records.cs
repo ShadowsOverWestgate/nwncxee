@@ -378,7 +378,7 @@ public static unsafe partial class DbFeed
                 // The LOD question, as a column compare: the part belongs to an alternate the object is not
                 // showing. The engine path read Gob+0x90's active tree through a pointer, per part, per pass.
                 byte tree = SceneDb.PartLodTree[p];
-                if (tree != 0 && tree != shown) continue;
+                if (SceneDb.LodHidden(tree, shown)) continue;
                 int slot = SceneDb.PartSlot[p];
                 if (slot < 0) continue;
                 _visSlot[_visSlotN++] = slot;
