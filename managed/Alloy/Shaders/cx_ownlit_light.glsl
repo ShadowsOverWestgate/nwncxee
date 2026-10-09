@@ -70,20 +70,53 @@
     // the lightmap still brings every static light, and a reflection is the last place a torch's own lobe shows
     vec3 point = vec3(0.0);
     pointSpec = vec3(0.0); lmSub = vec3(0.0);
-    if (uCapture != 2)
+#ifdef CX_DEFERRED
+    // CX-188 (ADR 0029): the walk is COMPILED OUT here, not branched over -- its registers are the whole
+    // reason the twin exists. `point` and `pointSpec` stay zero and every term downstream keeps the value
+    // that gives; what the walk would have added, the deferred compute pass adds back through the transfer
+    // weights this stage writes into the G-buffer (cx_ownlit_tail).
+    float gLmLum = 0.0;         // luminance of the UNDIMMED baked term: the lmSub.x denominator
+    vec3 gLmSpec = vec3(0.0);   // the baked term's own lobe, i.e. the whole of pointSpec in the twin
+#else
+    // CX-188: a fragment lying on a surface the deferred walk already lit (a floor decal) takes that walk's answer
+    bool fromRec = false;
+    if (uLightRecOn != 0 && uCapture == 0)
+    {
+        float owe;
+        fromRec = CxLightRecRead(texelFetch(uLightRec, ivec2(gl_FragCoord.xy), 0), vDepth, baked, point, pointSpec, owe);
+        if (fromRec) lmSub = vec3(0.0, owe, 0.0);
+        else { point = vec3(0.0); pointSpec = vec3(0.0); }
+    }
+    if (!fromRec && uCapture != 2)
         point = CxClusteredLightLm(vWorld, N, V, vDepth, onMover, rough, spec, baked ? 1.0 : 0.0, CxLmTexelWorld(chart.rec),
                                    baked ? CxLightmapMover(chart.rec, vChart) : vec4(0.0), chart.pick, pointSpec, lmSub);
+#ifdef CX_ABLATE
+    // /alloy bench's blended ladder: the stopped walk's result kept alive at a strength the target rounds away
+    point *= CX_ABL_EPS; pointSpec *= CX_ABL_EPS;
+#endif
+#endif
     vec3 lm = vec3(0.0);
     if (baked)
     {
         lm = CxLightmapLit(lmIrr, lmDir, N, normalize(vNrm));
+#ifdef CX_DEFERRED
+        // full strength: the hot-light debt is the compute pass's to take, through lmShare. The denominator
+        // is the luminance of the term BEFORE uDayDim -- which is the value the forward line below reads.
+        gLmLum = dot(lm, vec3(0.2126, 0.7152, 0.0722));
+        lm *= uDayDim;
+#else
         lm *= (1.0 - min(lmSub.x / max(dot(lm, vec3(0.2126, 0.7152, 0.0722)), 1e-5) + lmSub.y, 1.0)) * uDayDim;
+#endif
         point += lm;
         // a glossy receiver took each static light's own lobe in the loop instead, cross-faded (light.hidden)
         // ...and a film's coat took each one's own image in CxFilmStatics below, so the pages' lobe leaves it out
         float lmLobe = CxSpecLobe(N, V, lmDir, rough, spec);
-        pointSpec += lm * (1.0 - CxGlossW(rough)) * (wxFilm > 0.0 && cxCoat > 0.0 && uCapture != 2
-                     ? CxLoopSpecBase(lmLobe, N, V, lmDir) : CxLoopSpec(lmLobe, N, V, lmDir));
+        vec3 lmSpec = lm * (1.0 - CxGlossW(rough)) * (wxFilm > 0.0 && cxCoat > 0.0 && uCapture != 2
+                      ? CxLoopSpecBase(lmLobe, N, V, lmDir) : CxLoopSpec(lmLobe, N, V, lmDir));
+        pointSpec += lmSpec;
+#ifdef CX_DEFERRED
+        gLmSpec = lmSpec;
+#endif
     }
     // 43 = the lightmap term alone: the baked light on a baked surface, MAGENTA on an unbaked one.
     // 44 = the pages' texel grid over baked surfaces (chart seams and density), magenta unbaked.
@@ -110,8 +143,12 @@
     // R4: the film's own highlights from the baked statics the loop skipped -- a walk of two to four
     // lights on the coat's lobe, capped at one cube tap. The base stayed matte, so it never joined the
     // mirror path that walks the whole static list.
+    // CX-188: compiled out of the twin with the walk, for the same reason -- the compute pass adds the film's
+    // own highlights back through specT, which is the same weight pointSpec takes (both ride dirOcc).
+#ifndef CX_DEFERRED
     if (wxFilm > 0.0 && baked && cxCoat > 0.0 && uCapture != 2)
         specLight += CxFilmStatics(vWorld, N, V, vDepth, cxCoat, cxCoatRough, onMover) * dirOcc;
+#endif
     vec3 diffuse = (sun + sunSss + point) * dirOcc;
     // the 0.15 ambient floor and the sun-facing wrap are inc_lighting.shd:679 verbatim; the height
     // map's occlusion scales the AMBIENT, which is the term it is actually occluding
@@ -127,10 +164,19 @@
     //      viz 8 reads -- which no other view in the ladder can say.
     if (uViz == 34) { frag = vec4(ambient * (1.0 - spec), 1.0); return; }
     // ...and the clear coat reflects on its own lobe, on every material that declares one
+#ifdef CX_DEFERRED
+    vec3 gCoatProbe = vec3(0.0);   // d(specLight)/d(diffuse) through the coat's probe term, for Wd
+#endif
     if (cxCoat > 0.0 && uCapture != 1 && uProbeMips > 0.0)
     {
         vec2 cab = CxEnvBrdf(NoV, sqrt(cxCoatRough));
         vec3 cenv = CxProbeFetch(uProbe, vWorld, reflect(-V, N), sqrt(cxCoatRough) * (uProbeMips - 1.0));
-        specLight += (ambient + diffuse) * cenv * (cxCoat * (CX_DIELECTRIC_F0 * cab.x + cab.y)
-                     * CxSpecOcclusion(NoV, occl, cxCoatRough)) * uProbeGain;
+        // CX-188 split this out of the += so the twin can carry the factor as a transfer weight; it is the
+        // same product, parenthesised
+        vec3 cw = cenv * (cxCoat * (CX_DIELECTRIC_F0 * cab.x + cab.y)
+                  * CxSpecOcclusion(NoV, occl, cxCoatRough)) * uProbeGain;
+        specLight += (ambient + diffuse) * cw;
+#ifdef CX_DEFERRED
+        gCoatProbe = cw;
+#endif
     }

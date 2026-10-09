@@ -22,7 +22,7 @@ public readonly unsafe partial struct BSPNode
     /// <para><b>Not a liveness list.</b> It holds GOB lights as well as tile ones -- <c>Scene::ChildAdd</c>
     /// @0x461d50 routes a gob's whole tree through <c>ListSpecialPartsR</c> @0x462d50, which files every
     /// <c>AsPartLight</c> here -- and nothing prunes an entry when the part dies, so it can name freed memory.
-    /// <see cref="CX.Alloy.LightRegistry"/> cross-checks against it and never admits from it.</para></summary>
+    /// Alloy never admitted a light from it: nothing prunes it on part death, so it is a list of pointers rather than of lights.</para></summary>
     public IntPtr* Lights => Data == IntPtr.Zero ? null : *(IntPtr**)(Data + EngineLayout.BspDataLight);
 
     /// <summary>How many entries <see cref="Lights"/> holds (<see cref="EngineLayout.BspDataLightCount"/>) --

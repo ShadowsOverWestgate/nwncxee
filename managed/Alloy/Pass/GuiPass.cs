@@ -87,7 +87,6 @@ internal static unsafe class GuiPass
         if (TextAtlas.Due && GlContextService.Enter()) { TextAtlas.Pump(); GlContextService.Leave(); }
         // NUI's layers wait for SeamDraw's flush, which puts them over the panels; flushed here, its frame clear
         // erased them.
-        GuiCapture.NewFrame();
         _frameColour = false;
         _seqAtFrame = PostChain.ResolveSeq;
     }

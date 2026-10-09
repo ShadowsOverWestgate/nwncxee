@@ -26,6 +26,26 @@ internal static unsafe class Programs
     internal static bool _depthFeatFailed;
     /// <summary>The vertex source the lit / fullbright programs actually compiled with (an override wins).</summary>
     internal static string? _litVsSrc;
+    /// <summary>CX-188 bench: the fragment text the lit program compiled with, for <see cref="BlendAblate"/>.</summary>
+    internal static string? _litFsSrc;
+    /// <summary>The defines each rung of <c>/alloy bench</c>'s blended ladder adds to the lit program: (rung 1 draws
+    /// nothing at all, see <see cref="_blendSkip"/>; rung 2 its first group alone, <see cref="_blendOne"/>) no shading, then the walk stopped after its list, after its
+    /// light bodies, and whole but with no hot branch. Rung 0 is shipped.</summary>
+    private static readonly string[] BlendAblDefines = { "", "", "CX_BLEND_FLAT 1", "CX_BLEND_FLAT 1", "CX_NO_HOT 1\n#define CX_ABLATE 2",
+                                                         "CX_NO_HOT 1\n#define CX_ABLATE 4", "CX_NO_HOT 1" };
+    private static uint[]? _blendAbl;
+    private static LitLoc[]? _blendAblLoc;
+    /// <summary>The variant the blended ACCUMULATION draws with this bench step, 0 = the shipped lit program.</summary>
+    internal static uint _blendProg;
+    /// <summary>The blended ladder's rung 1: the OIT bracket opens and closes with not one draw in it.</summary>
+    internal static bool _blendSkip;
+    /// <summary>The blended ladder's rung 2: the accumulation draws its first group alone -- a one-time wait
+    /// costs the same as every group, a per-draw cost almost nothing.</summary>
+    internal static bool _blendOne;
+    internal static LitLoc _blendLoc;
+    /// <summary>The same rung's OIT-lists twin (0 = none): an oit 2 bracket draws lit batches with that program.</summary>
+    internal static uint _blendList;
+    internal static LitLoc _blendListLoc;
     /// <summary>#350: the spliced programs were built against a resource chain that is gone. Every program
     /// carrying a <c>// $VANILLA</c> region (lit, hosted lit, water, grass) is compiled ONCE from whatever
     /// the chain held at the time -- so a session that logged into SoW first kept SoW's display hooks (the
@@ -51,15 +71,20 @@ internal static unsafe class Programs
     /// per batch from the batch's class.</summary>
     internal static int _locCut = -1;
 
-    internal static LitLoc _lit, _litH, _litL;
+    internal static LitLoc _lit, _litH, _litL, _litD;
     /// <summary>The lit program WITH the OIT append block (OitPass.WithLists), or 0. Bound only for lit batches inside a
     /// linked-list bracket; every other lit draw keeps early-Z through <see cref="_progLit46"/>.</summary>
     internal static uint _progLitList;
+    /// <summary>CX-188 (ADR 0029): the DEFERRED twin -- the same final text with <c>CX_DEFERRED</c> and
+    /// <c>CX_GBUF_OUT</c> in, so the point-light walk and the film statics are compiled out and the G-buffer is
+    /// written instead. 0 = no twin, which is what stands the deferred pass down. Bound for the opaque and
+    /// cutout lit batches of the main view; every other lit draw keeps the forward loop.</summary>
+    internal static uint _progLitDef;
     /// <summary>#350: the lit program WITH the hosted content bodies, or 0 (hosting off, no hosted feature, or
     /// its build failed -- hosted materials then draw the plain lit path through <see cref="_progLit46"/>).</summary>
     internal static uint _progLitHost;
     internal static int _locViz = -1;
-    internal static int _locOit = -1, _locOitDim = -1, _locOitBias = -1, _locOitGob = -1;
+    internal static int _locOit = -1, _locOitDim = -1, _locOitGob = -1;
     /// <summary>#222: the fullbright stage's constant colour. White for every unlit draw but a fog-tinted
     /// sky part -- a GLSL uniform defaults to ZERO, so an unset one draws BLACK and every caller sets it.</summary>
     internal static int _locTint = -1;
@@ -167,8 +192,11 @@ internal static unsafe class Programs
         if (_progLit46 != 0) Gl.DeleteProgram(_progLit46);
         if (_progLitHost != 0) Gl.DeleteProgram(_progLitHost);
         if (_progLitList != 0) Gl.DeleteProgram(_progLitList);
+        if (_progLitDef != 0) Gl.DeleteProgram(_progLitDef);
         if (_progWater != 0) Gl.DeleteProgram(_progWater);
-        _progLit46 = 0; _progLitHost = 0; _progLitList = 0; _progWater = 0; OitPass.ListsArmed = false;
+        _progLit46 = 0; _progLitHost = 0; _progLitList = 0; _progLitDef = 0; _progWater = 0; OitPass.ListsArmed = false;
+        if (_blendAbl != null) foreach (uint p in _blendAbl) if (p != 0) Gl.DeleteProgram(p);
+        _blendAbl = null; _blendProg = 0; _blendList = 0;
         _litFailed = false; _waterFailed = false;
         GrassField.DropProgram();
         PostStack.DropSpliced();
@@ -200,7 +228,7 @@ internal static unsafe class Programs
             _prog46 = prog;
             _locVp = GlProgram.Loc(prog, "uVP"); _locBase = GlProgram.Loc(prog, "uDrawBase");
             _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz"); _locOit = GlProgram.Loc(prog, "uOit");
-            _locOitDim = GlProgram.Loc(prog, "uOitDim"); _locOitBias = GlProgram.Loc(prog, "uOitBias"); _locOitGob = GlProgram.Loc(prog, "uOitGob");
+            _locOitDim = GlProgram.Loc(prog, "uOitDim"); _locOitGob = GlProgram.Loc(prog, "uOitGob");
             Gl.UseProgram(prog); Gl.Uniform1i(GlProgram.Loc(prog, "uOitDepth"), (int)TextureSlots.OitDepth);
             _locCut = GlProgram.Loc(prog, "uAlphaCut");
             _locTint = GlProgram.Loc(prog, "uTint");
@@ -374,6 +402,7 @@ internal static unsafe class Programs
         }
         _progLit46 = prog;
         _lit = LitLocs(prog);
+        _litFsSrc = finalFs;
         // The OIT-lists twin: the same text that just compiled, plus the append block, bound only inside a mode-2
         // bracket. Verified on the text because a content override may carry no block at all.
         string listFs = OitPass.WithLists(finalFs);
@@ -382,6 +411,23 @@ internal static unsafe class Programs
         if (pl != 0) _litL = LitLocs(pl);
         else _log?.Info("AlloyRenderer: lit OIT-lists twin unavailable -- /alloy oit 2 resolves the weighted way");
         OitPass.ListsArmed = pl != 0;
+        // CX-188 (ADR 0029): the DEFERRED twin, from the same final text. A content override of cx_ownlit_fs
+        // (or of a library inside it) that never calls CxGbufWrite cannot be one -- there is no half-deferred
+        // frame, so the whole pass stands down with the override named.
+        string defFs = WithDeferred(finalFs);
+        _progLitDef = 0;
+        if (!defFs.Contains("CxGbufWrite(g)"))
+            _log?.Info($"AlloyRenderer: the lit fragment stage in use never calls CxGbufWrite -- a content " +
+                       $"{ShdLitFs}.shd (or a library override inside it) predates CX-188, so DEFERRED POINT LIGHTS " +
+                       "ARE OFF for the session and every light draws through the forward loop. Regenerate the " +
+                       "override from the current embedded stage to get them back.");
+        else
+        {
+            uint pd = GlProgram.Graphics(vsSrc, defFs, _log, "AlloyRenderer lit program (deferred twin)", host: false);
+            _progLitDef = pd;
+            if (pd != 0) _litD = LitLocs(pd);
+            else _log?.Info("AlloyRenderer: lit deferred twin did not build -- deferred point lights are off for the session");
+        }
         // #350: the SECOND lit program, the one with the content bodies in. Same text, hosted regions spliced
         // instead of stubbed; same contracts, because it draws the same records. Optional twice over: alloy.hostfs=0,
         // no hosted feature, or a failed build all leave it 0 and hosted materials on the plain path.
@@ -402,6 +448,50 @@ internal static unsafe class Programs
         _log?.Info("AlloyRenderer: clustered forward+ lit program ready (4.6 context)");
     }
 
+    /// <summary>CX-188: the defines that compile a lit fragment stage into the deferred twin, injected right
+    /// after its <c>#version</c> line -- the walk's call sites out (<c>CX_DEFERRED</c>), the G-buffer outputs
+    /// in (<c>CX_GBUF_OUT</c>). <c>check-shaders.py</c> injects the identical pair.</summary>
+    /// <summary>CX-188 bench: draw the blended accumulation with ladder rung <paramref name="rung"/> (1..6), or
+    /// with the shipped lit program at 0. Built on the step that first asks; false = no lit program yet or the
+    /// variant did not link, which refuses that step alone.</summary>
+    internal static bool BlendAblate(int rung)
+    {
+        _blendProg = 0; _blendList = 0;
+        _blendSkip = rung == 1;
+        _blendOne = rung == 2;
+        if (rung <= 1) return true;
+        if (_litFsSrc == null || _litVsSrc == null || rung >= BlendAblDefines.Length) return false;
+        _blendAbl ??= new uint[BlendAblDefines.Length * 2];
+        _blendAblLoc ??= new LitLoc[BlendAblDefines.Length * 2];
+        int k = rung * 2;
+        if (_blendAbl[k] == 0)
+        {
+            string fs = AblateProgram.WithDefine(_litFsSrc, BlendAblDefines[rung]);
+            _blendAbl[k] = GlProgram.Graphics(_litVsSrc, fs, _log, $"AlloyRenderer lit program (blended ablate {rung})", host: false);
+            if (_blendAbl[k] == 0) return false;
+            _blendAblLoc[k] = LitLocs(_blendAbl[k]);
+            if (_progLitList != 0)
+            {
+                _blendAbl[k + 1] = GlProgram.Graphics(_litVsSrc, OitPass.WithLists(fs), _log, $"AlloyRenderer lit program (blended ablate {rung}, OIT lists)", host: false);
+                if (_blendAbl[k + 1] == 0) return false;
+                _blendAblLoc[k + 1] = LitLocs(_blendAbl[k + 1]);
+            }
+        }
+        _blendProg = _blendAbl[k]; _blendLoc = _blendAblLoc[k];
+        _blendList = _blendAbl[k + 1]; _blendListLoc = _blendAblLoc[k + 1];
+        return true;
+    }
+
+    /// <summary>Context loss: every variant name is gone with the context.</summary>
+    internal static void ForgetBlendAblate() { _blendAbl = null; _blendProg = 0; _blendList = 0; }
+
+    internal static string WithDeferred(string fs)
+    {
+        int v = fs.IndexOf("#version", StringComparison.Ordinal);
+        if (v < 0) return fs;
+        return fs.Insert(fs.IndexOf('\n', v) + 1, "#define CX_DEFERRED 1\n#define CX_GBUF_OUT 1\n");
+    }
+
     /// <summary>Resolve one lit program's locations and bind its fixed sampler units. Called once per program
     /// at build; #350 calls it twice.</summary>
     internal static LitLoc LitLocs(uint prog)
@@ -410,7 +500,7 @@ internal static unsafe class Programs
         L.Vp = GlProgram.Loc(prog, "uVP"); L.Base = GlProgram.Loc(prog, "uDrawBase");
         L.Tex = GlProgram.Loc(prog, "uTex");
         L.Cut = GlProgram.Loc(prog, "uAlphaCut");
-        L.Viz = GlProgram.Loc(prog, "uViz"); L.Oit = GlProgram.Loc(prog, "uOit"); L.OitDim = GlProgram.Loc(prog, "uOitDim"); L.OitBias = GlProgram.Loc(prog, "uOitBias"); L.OitGob = GlProgram.Loc(prog, "uOitGob");
+        L.Viz = GlProgram.Loc(prog, "uViz"); L.Oit = GlProgram.Loc(prog, "uOit"); L.OitDim = GlProgram.Loc(prog, "uOitDim"); L.OitGob = GlProgram.Loc(prog, "uOitGob"); L.LightRecOn = GlProgram.Loc(prog, "uLightRecOn");
         L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunDynTex = GlProgram.Loc(prog, "uSunDynShadow");
         L.CubeTex = GlProgram.Loc(prog, "uLocalShadow"); L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow");
         L.CubeCount = GlProgram.Loc(prog, "uLocalCubes");

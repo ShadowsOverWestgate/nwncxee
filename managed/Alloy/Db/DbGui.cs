@@ -24,6 +24,10 @@ internal static unsafe class DbGui
     /// <summary>Which scene this object is listed under, plus one (0 = not listed). The per-SCENE membership
     /// test R1-13 needs: "already listed" has to mean "listed HERE".</summary>
     private static readonly int[] _listedIn = new int[SceneDb.MaxObjects];
+    /// <summary>CX-188: how many objects each scene's chain holds, so the length of the list
+    /// <see cref="Draw"/> walks is O(1) on the fallback path too (<c>SceneObjects</c> carries its own count).
+    /// Maintained by <see cref="Joined"/> and <see cref="Left"/>, the only two writers of the chain.</summary>
+    private static readonly int[] _sceneN = new int[SceneDb.MaxScenes];
     private static int _listed;
     private static bool _latch;
     private static long _textRuns, _refusedNoLayer, _controls;
@@ -71,7 +75,7 @@ internal static unsafe class DbGui
         _objNext[o] = -1;
         if (_sceneLast[s] < 0) _sceneFirst[s] = o; else _objNext[_sceneLast[s]] = o;
         _sceneLast[s] = o;
-        _listed++;
+        _listed++; _sceneN[s]++;
     }
 
     /// <summary>Object <paramref name="o"/> left scene <paramref name="scene"/> (it was destroyed, or moved to
@@ -94,7 +98,7 @@ internal static unsafe class DbGui
                 if (prev < 0) _sceneFirst[s] = _objNext[i]; else _objNext[prev] = _objNext[i];
                 if (_sceneLast[s] == o) _sceneLast[s] = prev;
                 _objNext[o] = -1;
-                _listed--;
+                _listed--; _sceneN[s]--;
                 return;
             }
             prev = i;
@@ -129,8 +133,20 @@ internal static unsafe class DbGui
         // A panel whose textures are still streaming is HELD, whole, until they land: vanilla painted each
         // missing one as its 1x1 white stand-in for a frame or two, the white flash on every panel open.
         // Before the depth latch, so a held scene does not consume the run's clear.
-        if (_holdId[s] != scene.Value) { _holdId[s] = scene.Value; _hold[s] = 0; }
-        if (_hold[s] < MaxHold && Streaming(members, head)) { _hold[s]++; _held++; LastWhy = 'h'; return 0; }
+        if (_holdId[s] != scene.Value)
+        { _holdId[s] = scene.Value; _hold[s] = 0; _holdLoad[s] = -1; _holdMembers[s] = -1; }
+        // The member count of the list this draw actually walks: O(1) either way.
+        int mn = members != null ? members.Count : _sceneN[s];
+        if (_hold[s] >= MaxHold || (_holdLoad[s] == TexRegistry.LoadSerial && _holdMembers[s] == mn))
+            _prescanSkipped++;
+        else if (Streaming(members, head)) { _hold[s]++; _held++; LastWhy = 'h'; return 0; }
+        // SETTLED. _hold only ever counted the frames the panel was HELD, so a panel that never streams --
+        // the HUD, open all session -- re-ran this prescan over every member and every part of every member
+        // every frame, for ever. Two things can put a part of this panel back on the wire: a texture slot
+        // entering TexState.Loading (TexRegistry.LoadSerial), and a MEMBER ARRIVING -- a scene settles on the
+        // frame it is created, while its member list is still empty or short, and its controls attach over
+        // the frames after that, onto object slots whose textures may already be loading.
+        else { _holdLoad[s] = TexRegistry.LoadSerial; _holdMembers[s] = mn; _settled++; }
 
         Span<byte> name = stackalloc byte[GuiCapture.MaxSceneName];
         int n = SceneDb.SceneNameBytes(scene, name);
@@ -247,7 +263,21 @@ internal static unsafe class DbGui
     private const int MaxHold = 30;
     private static readonly int[] _hold = new int[SceneDb.MaxScenes];
     private static readonly uint[] _holdId = new uint[SceneDb.MaxScenes];
-    private static long _held, _lPending;
+    /// <summary>CX-188: the <see cref="TexRegistry.LoadSerial"/> at which this scene's prescan last found
+    /// NOTHING waiting, or -1 for a scene handle that has not settled yet. While the serial stands still no
+    /// part of any scene can have gone back to streaming, so the prescan is skipped.
+    /// <para>Invalidation, all three wired: the serial itself (a texture slot entering
+    /// <c>TexState.Loading</c>), the scene's MEMBER COUNT (<see cref="_holdMembers"/>: a panel settles on the
+    /// frame it is created, while its list is still empty, and its controls arrive after that), and the scene
+    /// HANDLE changing (a recycled index is a different panel). What is left uncaught is one member leaving
+    /// and another joining between two draws of the same panel, where the count lands back on itself -- and a
+    /// joining control that needs a texture at all moves the serial, so the pair has to be a swap of
+    /// already-resident art. That part draws its stand-in for a frame or two, which is what
+    /// <see cref="MaxHold"/> concedes anyway.</para></summary>
+    private static readonly int[] _holdLoad = new int[SceneDb.MaxScenes];
+    /// <inheritdoc cref="_holdLoad"/>
+    private static readonly int[] _holdMembers = new int[SceneDb.MaxScenes];
+    private static long _held, _lPending, _settled, _prescanSkipped;
 
     /// <summary>Is any drawable part of this scene waiting on a texture that is still loading?</summary>
     private static bool Streaming(DbList? members, int head)
@@ -282,7 +312,8 @@ internal static unsafe class DbGui
     {
         int ov = SceneDb.PartTexId[p * 4];
         TexId id = ov != 0 ? new TexId((uint)ov) : DrawRecipe.Tex(recipe, 0);
-        return !id.IsNull && !TexRegistry.Resident(id) && TexRegistry.StateOf(id) == TexState.Loading;
+        // a preview counts as loading: the GUI waits for the full texture rather than flash a blurred icon
+        return !id.IsNull && TexRegistry.StateOf(id) == TexState.Loading;
     }
 
     /// <summary>Close the layer's dump line.</summary>
@@ -658,7 +689,7 @@ internal static unsafe class DbGui
     {
         var check = new Checker(log, "DbGui.SelfCheck");
         for (int k = 0; k < SceneDb.MaxObjects; k++) { _objNext[k] = -1; _listedIn[k] = 0; }
-        Array.Fill(_sceneFirst, -1); Array.Fill(_sceneLast, -1); _listed = 0;
+        Array.Fill(_sceneFirst, -1); Array.Fill(_sceneLast, -1); Array.Clear(_sceneN); _listed = 0;
         var scene = DbId.Make(5, 1);
         SceneDb.SceneIsWorld[scene.Index] = false;   // a panel, which is the only thing the list holds
         for (int o = 1; o <= 4; o++) Joined(o, scene);
@@ -681,8 +712,14 @@ internal static unsafe class DbGui
         for (int i = _sceneFirst[scene.Index]; i >= 0 && n < seen.Length; i = _objNext[i]) seen[n++] = i;
         check.Expect(n == 3 && seen[2] == 9,
                      "a control created after the tail left still appends at the end");
+        // CX-188: the per-scene count IS the streaming prescan's member-set edge on this path. If it drifts
+        // from the chain, a panel settles with half its controls and the rest draw their white stand-ins --
+        // or it never settles and the prescan is back to every member, every part, every frame.
+        check.Expect(_sceneN[scene.Index] == n,
+                     $"the scene's member count ({_sceneN[scene.Index]}) left the chain's length ({n})");
         Left(1, scene); Left(3, scene); Left(9, scene);
         check.Expect(_listed == 0 && _sceneFirst[scene.Index] < 0, "the list empties completely");
+        check.Expect(_sceneN[scene.Index] == 0, "...and the member count empties with it");
         log.Info(check.Ok ? "DbGui.SelfCheck: passed"
                           : "DbGui.SelfCheck: FAILED -- a GUI panel would paint its controls out of order");
         return check.Ok;
@@ -694,6 +731,7 @@ internal static unsafe class DbGui
          + (_refusedNoPass > 0 ? $" NO GUI PASS {_refusedNoPass}" : "")
          + (_bubblesRefused > 0 ? $" {_bubblesRefused} vanilla bubble view(s) refused (CX draws its own)" : "")
          + (_held > 0 ? $" {_held} draw(s) held for streaming textures" : "")
+         + $" streaming prescan: {_settled} settle(s), {_prescanSkipped} view(s) skipped it"
          + (_lPending > 0 ? $" {_lPending} part(s) skipped still streaming" : "")
          + (_notFinite > 0 ? $" {_notFinite} part(s) with a NON-FINITE matrix NOT DRAWN" : "")
          + " " + DbAnim.AttachStats()

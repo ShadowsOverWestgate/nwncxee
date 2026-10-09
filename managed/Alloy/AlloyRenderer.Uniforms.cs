@@ -200,7 +200,7 @@ public sealed unsafe partial class AlloyRenderer
                        PbProbeMips = 3468, PbDir = 3472, PbProbeGain = 3484, PbLocalPlane = 3488, PbSceneEnv = 3496,
                        PbTile = 3504, PbGrid = 3520, PbReach = 3532, PbFalloff = 3536, PbWrap = 3548, PbZ = 3552,
                        PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584, PbDayDim = 3588, PbRelevance = 3592,
-                       PbBounds = 3600;
+                       PbBounds = 3600, PbShBudget = 3604, PbLightFloor = 3608, PbFullModel = 3612;
     /// <summary>CX-120: the sun terms the last staged pass block carried -- the cascade count, the fourth
     /// column of <c>uSunVp[0]</c> and the live focus. The receiver's own witness, for the <c>[sunrx]</c>
     /// clause on <c>CasterPass</c>'s period line.</summary>
@@ -330,6 +330,16 @@ public sealed unsafe partial class AlloyRenderer
         // screen without knowing the projection. 0 (no perspective this pass) = the disc everywhere.
         float discZ = _lodScale > 0f ? AlloyLights.ShadowDiscPx / _lodScale : 0f;
         PassVec(b, PbLocalSoft, AlloyLights.ShadowSoft, AlloyLights.ShadowNearWorld, discZ, AlloyLights.ShadowCap);
+        // CX-188 budget: shadow.perpixel, the per-pixel SHADOW budget every walk and the deferred record share.
+        // A caller that fills the block itself (the lightmap bake) leaves it zero, which every reader takes as
+        // "no budget" -- the pre-budget path.
+        *(float*)(b + PbShBudget) = AlloyLights.ShadowPerPixel;
+        // CX-188 budget: light.floor, the brightness a light's REACH ends at. Zero in a block a caller filled
+        // itself (the lightmap bake, which wants every light's authored radius), which reads as no cut.
+        *(float*)(b + PbLightFloor) = AlloyLights.LightFloor;
+        // CX-188 budget: light.fullmodel, the lighting LOD's cut. Zero in a self-filled block (the bake), which
+        // reads as the full model for every light -- the bake has exactly one light and it is the hero.
+        *(float*)(b + PbFullModel) = AlloyLights.FullModel;
         if (CasterPass.CubesFresh)
         {
             int n = CasterPass.CubeCount;

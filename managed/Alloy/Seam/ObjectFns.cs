@@ -143,8 +143,6 @@ public sealed unsafe class ObjectFns : ISeamProvider
         string? label = name == 0 ? null : Marshal.PtrToStringUTF8(name);
         Facade.SetName(shell, string.IsNullOrEmpty(label) ? resref : label);
 
-        // ponytail: objects only; a tile's .mtr rides the parse-time queue (MtrFeed.Hint) and the area-edge
-        // drain, so a tile recipe interned before that drain keeps the mesh's own names. Warm in TileBuild if seen.
         if (model != null) MtrFeed.Warm(model);
         if (model != null && !PartTree.Build(id, model))
             _log?.Always($"seam: the part tree of \"{resref}\" could not be built -- the object exists with no geometry");

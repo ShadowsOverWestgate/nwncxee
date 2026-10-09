@@ -28,19 +28,25 @@ internal static class DbLights
 
     /// <summary>Gather this scene's lights into <c>FrameInputs</c>. The DB-mode replacement for
     /// <c>SceneInputs.WalkLights</c>; called once per world frame, on the game thread, before the draw.</summary>
-    internal static void Walk(DbId scene, float radiusMult, CNWCArea area)
+    /// <param name="h">CX-188: the frame's hoisted engine terms. This walk used to take a live
+    /// <c>CNWCArea</c> and dereference it in <see cref="Signature"/>, <see cref="Palette"/> and the bake's
+    /// <c>BeginWalk</c>; the area's VALUES come across instead, so the walk reads no engine memory and can
+    /// run on <c>RenderThread</c>.</param>
+    internal static void Walk(DbId scene, in FrameHoist h)
     {
-        if (Unchanged(scene, radiusMult, area)) { _reused++; return; }
+        float radiusMult = h.RadiusMult;
+        if (Unchanged(scene, radiusMult, in h)) { _reused++; return; }
         int parts = DbInputs.LightCount, lits = SceneDb.Lights.High;
         FrameInputs.BeginAreaLights(parts + lits);
         FrameInputs.ResetLocalLights(parts + lits);
         _walked = 0; _admitted = 0; _skipped = 0; _static = 0; _areaAmb = 0; _areaDif = 0; _tile = 0; _deduped = 0;
+        _skipOff = 0; _skipReach = 0; _skipMul = 0; _skipBlack = 0; _skipAnimated = 0;
         // Cleared per walk: an area pair that is no longer in the scene must stop lighting it. The SUN is
         // deliberately NOT cleared -- see AreaTerm.
         FrameInputs.HasAreaAmbient = false; FrameInputs.HasAreaDiffuse = false;
         // The bake's own walk opens with ours: it closes a STATIC set over the lights it is told about, and a
         // walk that never began leaves every light dynamic and every tile unbaked.
-        LightmapBake.BeginWalk(area);
+        LightmapBake.BeginWalkDb(h.Area, h.PlaceableLights);
 
         // The TILE lights, from SceneDb.Lights -- the authoritative set. A tile's light node is not a part in
         // most tile trees, so the part-registered enumeration below saw only the few that happened to have
@@ -51,7 +57,7 @@ internal static class DbLights
             // Same scene filter the object lights get: a GUI scene's 3D view must not be lit by the world's
             // tile lamps, and the table is one table for every scene.
             if (!SceneDb.Objects.Valid(l.Obj) || SceneDb.ObjScene[l.Obj.Index].Value != scene.Value) continue;
-            Admit(in l, scene, radiusMult, area, tile: true);
+            Admit(in l, scene, radiusMult, in h, tile: true);
         }
 
         // ...and the OBJECT lights, from the part registry. A tile light that DID become a part is in both
@@ -62,7 +68,7 @@ internal static class DbLights
             if (l.Lit >= 0) { _deduped++; continue; }
             if (SceneDb.PartObj[l.Part].IsNull) { _skipped++; continue; }
             if (SceneDb.ObjScene[SceneDb.PartObj[l.Part].Index].Value != scene.Value) continue;
-            Admit(in l, scene, radiusMult, area, tile: false);
+            Admit(in l, scene, radiusMult, in h, tile: false);
         }
 
         // The same tail the engine walk closes with: a light that left the rig has to fade rather than vanish,
@@ -83,10 +89,10 @@ internal static class DbLights
     /// often, so anything the signature does not cover costs at most that many frames of staleness rather
     /// than the life of the area. Narrow it by adding the term to the signature, not by lowering the
     /// number.</para></summary>
-    private static bool Unchanged(DbId scene, float radiusMult, CNWCArea area)
+    private static bool Unchanged(DbId scene, float radiusMult, in FrameHoist h)
     {
         if (++_sinceResync >= ResyncFrames) { _sinceResync = 0; return false; }
-        ulong sig = Signature(scene, radiusMult, area);
+        ulong sig = Signature(scene, radiusMult, in h);
         if (sig == _sig && _sigValid) return true;
         _sig = sig; _sigValid = true;
         return false;
@@ -104,18 +110,21 @@ internal static class DbLights
     /// <summary>Everything the rig is a function of, folded into one value: the scene and the global radius
     /// multiplier, the area's palette pair (the two area terms come off it), and every light record's
     /// position, colour, reach, multiplier and enabled state.</summary>
-    private static ulong Signature(DbId scene, float radiusMult, CNWCArea area)
+    private static ulong Signature(DbId scene, float radiusMult, in FrameHoist t)
     {
         ulong h = 1469598103934665603UL;
         Mix(ref h, scene.Value);
         Mix(ref h, (uint)BitConverter.SingleToInt32Bits(radiusMult));
         Mix(ref h, DbInputs.LightRev);
-        if (!area.IsNull)
+        if (t.HaveArea)
         {
-            Mix(ref h, (uint)area.IsNight);
-            Span<float> d = area.IsNight != 0 ? area.NightDiffuse : area.DayDiffuse;
-            Span<float> a = area.IsNight != 0 ? area.NightAmbient : area.DayAmbient;
-            for (int k = 0; k < 3; k++) { Mix(ref h, (uint)BitConverter.SingleToInt32Bits(d[k])); Mix(ref h, (uint)BitConverter.SingleToInt32Bits(a[k])); }
+            // CX-188: the palette PAIR used to be mixed and the day/night switch with it. The fold already
+            // picked the side, so the resolved triple carries the same change: a day/night flip moves it, and
+            // so does a scripted SetGlobalLight* on the side in use. The side NOT in use cannot change what
+            // this frame lights with, so it is not a term of the rig.
+            Mix(ref h, t.Night ? 1u : 0u);
+            Mix(ref h, (uint)BitConverter.SingleToInt32Bits(t.Diffuse.X)); Mix(ref h, (uint)BitConverter.SingleToInt32Bits(t.Diffuse.Y)); Mix(ref h, (uint)BitConverter.SingleToInt32Bits(t.Diffuse.Z));
+            Mix(ref h, (uint)BitConverter.SingleToInt32Bits(t.Ambient.X)); Mix(ref h, (uint)BitConverter.SingleToInt32Bits(t.Ambient.Y)); Mix(ref h, (uint)BitConverter.SingleToInt32Bits(t.Ambient.Z));
         }
         for (int k = 0; k < 3; k++)
         {
@@ -149,19 +158,25 @@ internal static class DbLights
     /// <summary>One light into the frame's rig: the area-pair fork, the engine's admission tests, the
     /// adjusted radius/colour pair, and the bake's static verdict. Shared by both enumerations so a tile
     /// light and an object light cannot drift apart in how they are admitted.</summary>
-    private static void Admit(in DbLight l, DbId scene, float radiusMult, CNWCArea area, bool tile)
+    private static void Admit(in DbLight l, DbId scene, float radiusMult, in FrameHoist h, bool tile)
     {
         _walked++;
         if (tile) _tile++;
-        if (!l.Enabled) { _skipped++; return; }
+        if (!l.Enabled) { _skipped++; _skipOff++; return; }
 
         float range = l.Radius, inten = l.Multiplier;
         // The two index -1 lights, picked exactly as LightManager::UpdateLights @0x4c06c0 picks them: a light
         // reaching DirectionalRange or further is the AREA pair -- kind 0 the directional diffuse (and, when
         // it reaches like one, the sun), anything else the ambient -- and the last of each wins.
-        if (range >= DirectionalRange) { AreaTerm(in l, area); return; }
+        if (range >= DirectionalRange) { AreaTerm(in l, in h); return; }
         Vector3 rgb = l.Colour;
-        if (range <= 0f || inten <= 0f || (rgb.X == 0f && rgb.Y == 0f && rgb.Z == 0f)) { _skipped++; return; }
+        if (range <= 0f || inten <= 0f || (rgb.X == 0f && rgb.Y == 0f && rgb.Z == 0f))
+        {
+            _skipped++;
+            if (range <= 0f) _skipReach++; else if (inten <= 0f) _skipMul++; else _skipBlack++;
+            if (l.Part >= 0 && SceneDb.PartLitAnim[l.Part] != 0) _skipAnimated++;
+            return;
+        }
 
         bool ambient = DbInputs.AmbientOnly(in l);
         Adjust(range, inten, radiusMult, ref rgb, out float adjR);
@@ -170,7 +185,7 @@ internal static class DbLights
         // engine objects, says whether the light holds still. A static light is what a tile is LIT BY: mode 0
         // lights tiles from the baked pages and objects dynamically, which is the split that made DB tiles
         // black while objects beside them were fine.
-        bool isStatic = LightmapBake.Record(l.Id, area, pos, adjR, rgb, ambient, l.Static, out int setIndex);
+        bool isStatic = LightmapBake.RecordDb(l.Id, pos, adjR, rgb, ambient, l.Static, out int setIndex);
         FrameInputs.RecordAreaLight(l.Id, pos, adjR, rgb, ambient, isStatic, setIndex);
         _admitted++;
         if (isStatic) _static++;
@@ -186,10 +201,10 @@ internal static class DbLights
     /// <para>The colour goes through the receiver's own gamma here (<c>AlloyLights.SrgbGamma</c>) because
     /// every consumer of <c>FrameInputs.Area*</c> expects it pre-compensated; handing it linear is a base
     /// term that looks washed out rather than merely wrong.</para></summary>
-    private static void AreaTerm(in DbLight l, CNWCArea area)
+    private static void AreaTerm(in DbLight l, in FrameHoist h)
     {
         bool isAmbient = DbInputs.AmbientOnly(in l);
-        Vector3 c = Palette(area, isAmbient, l.Colour);
+        Vector3 c = Palette(in h, isAmbient, l.Colour);
         var col = new Vector3(MathF.Pow(MathF.Max(c.X, 0f), AlloyLights.SrgbGamma),
                               MathF.Pow(MathF.Max(c.Y, 0f), AlloyLights.SrgbGamma),
                               MathF.Pow(MathF.Max(c.Z, 0f), AlloyLights.SrgbGamma));
@@ -222,17 +237,19 @@ internal static class DbLights
     /// <para>What the game last sent through that text wins (<see cref="SunColour"/>): it is the day/night
     /// blend and any scripted palette. Until the first one arrives, the ARE pair <c>LoadArea</c> cached and
     /// <c>SetAsDay</c>/<c>SetAsNight</c> picked stands in.</para></summary>
-    private static Vector3 Palette(CNWCArea area, bool ambient, Vector3 fallback)
+    private static Vector3 Palette(in FrameHoist h, bool ambient, Vector3 fallback)
     {
         if (ambient ? _sunAmbSet : _sunDifSet) return ambient ? _sunAmb : _sunDif;
-        if (area.IsNull) return fallback;
-        bool night = area.IsNight != 0;
-        Span<float> c = ambient ? (night ? area.NightAmbient : area.DayAmbient)
-                                : (night ? area.NightDiffuse : area.DayDiffuse);
-        return c[0] == 0f && c[1] == 0f && c[2] == 0f ? fallback : new Vector3(c[0], c[1], c[2]);
+        if (!h.HaveArea) return fallback;
+        Vector3 c = ambient ? h.Ambient : h.Diffuse;
+        return c == Vector3.Zero ? fallback : c;
     }
 
     private static int _areaAmb, _areaDif, _tile, _deduped, _static;
+    /// <summary>Why <see cref="Admit"/> skipped a light: hidden object, no reach, no multiplier, black, and how
+    /// many of those took the zero from an animation rather than the record (2026-10-08: a city skipped 1434 of
+    /// 1444 tile lights with no way to tell which).</summary>
+    private static int _skipOff, _skipReach, _skipMul, _skipBlack, _skipAnimated;
 
     /// <summary>The colour the game last set on the sun's ambient or diffuse part (<c>SunFns</c>, the seam's
     /// <c>controlpart</c>): the day/night blend and any scripted palette, which the ARE pair is only the
@@ -267,7 +284,8 @@ internal static class DbLights
 
     internal static string Stats()
         => $"dblights: {_reused} frames reused, {_walked} walked ({_tile} tile, {_deduped} deduped), {_admitted} admitted "
-         + $"({_static} static), {_skipped} skipped, area amb/dif {_areaAmb}/{_areaDif}"
+         + $"({_static} static), {_skipped} skipped (hidden {_skipOff}, no reach {_skipReach}, no multiplier {_skipMul}, "
+         + $"black {_skipBlack}; {_skipAnimated} of them posed by an animation), area amb/dif {_areaAmb}/{_areaDif}"
          + (FrameInputs.HasAreaAmbient ? "" : " NO AREA AMBIENT")
          + (FrameInputs.HasAreaDiffuse ? "" : " NO AREA DIFFUSE");
 
@@ -277,6 +295,9 @@ internal static class DbLights
     internal static bool SelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "DbLights.SelfCheck");
+        // CX-188: the walk takes the frame's HOISTED engine terms. The fixture's are "no area, unit radius
+        // multiplier" -- off-device there is no CNWCArea to read, which is also the main-menu state.
+        var noArea = new FrameHoist { RadiusMult = 1f };
 
         // The area light arrives as console text (CNWCArea::SetGlobalLightDiffuse's own sprintf, %f format).
         check.Expect(CX.Alloy.Seam.SunFns.Parse("sun gidy_sun_diff color 0.250000 0.500000 1.000000"u8, out bool amb, out Vector3 sc)
@@ -326,19 +347,19 @@ internal static class DbLights
         SceneDb.PartWorld[p] = Matrix4x4.CreateTranslation(3f, 4f, 5f);
         DbInputs.PartCreated(p);
 
-        Walk(scene, 1f, default);
+        Walk(scene, in noArea);
         check.Expect(FrameInputs.LightCount == 1, $"a live light of this scene is admitted ({FrameInputs.LightCount})");
         check.Expect(FrameInputs.AreaLightId[0] == (IntPtr)(p + 1),
                      "...under its part index as an identity, which no allocator recycles");
 
         // ...and another scene's is not.
         DbId other = SceneDb.Scenes.Alloc();
-        Walk(other, 1f, default);
+        Walk(other, in noArea);
         check.Expect(FrameInputs.LightCount == 0, "a light of another scene is not in this scene's rig");
 
         // An invisible object's light is off, which is what a door closing on a lit room looks like.
         SceneDb.ObjVisible[obj.Index] = false;
-        Walk(scene, 1f, default);
+        Walk(scene, in noArea);
         check.Expect(FrameInputs.LightCount == 0, "a light on an invisible object does not light");
         SceneDb.ObjVisible[obj.Index] = true;
 
@@ -354,7 +375,7 @@ internal static class DbLights
         SceneDb.LitMultiplier[lk] = 1f;
         SceneDb.LitDynamic[lk] = false;
         SceneDb.LitShadow[lk] = true;
-        Walk(scene, 1f, default);
+        Walk(scene, in noArea);
         check.Expect(FrameInputs.LightCount == 2, $"a tile light with no part is admitted ({FrameInputs.LightCount})");
         int at = FrameInputs.AreaLightId[0] == DbInputs.LitId(lk) ? 0 : 1;
         check.Expect(FrameInputs.AreaLightId[at] == DbInputs.LitId(lk), "...under its own Lit record as an identity");
@@ -368,14 +389,14 @@ internal static class DbLights
         // ...and the same light reached through a part is ONE light, not two.
         SceneDb.LitPart[lk] = p;
         DbInputs.RegisterTileLight(p, lk);
-        Walk(scene, 1f, default);
+        Walk(scene, in noArea);
         check.Expect(FrameInputs.LightCount == 1, $"a tile light that also has a part is admitted once ({FrameInputs.LightCount})");
         SceneDb.Lights.Free(lid); SceneDb.Lights.TakeDirty();
         DbInputs.RegisterTileLight(p, -1);
 
         // A destroyed light leaves the rig in the same frame, with no sweep and no tombstone.
         DbInputs.PartDestroyed(p);
-        Walk(scene, 1f, default);
+        Walk(scene, in noArea);
         check.Expect(FrameInputs.LightCount == 0, "a destroyed light is out of the rig at once");
 
         SceneDb.Parts.Free(h); SceneDb.Objects.Free(obj);

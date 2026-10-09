@@ -13,7 +13,7 @@ namespace CX.Alloy.Db;
 /// thousand, so a column over <see cref="SceneDb.MaxParts"/> would cost megabytes to answer a question about a
 /// few thousand records. The two side tables below are built from the SAME dirty fold the record feed runs, so
 /// they are change-driven in exactly the same way and cannot drift from it.</para>
-/// <para><b>What is a seam, not an answer.</b> The consumers themselves (<c>LightRegistry</c>,
+/// <para><b>What is a seam, not an answer.</b> The consumers themselves (<c>LightmapBake</c>,
 /// <c>EmitterSim</c>, <c>Particles</c>, <c>Beams</c>, <c>SkyBox</c>,
 /// <c>LightmapBake</c>) are still keyed on engine pointers. Retargeting them is theirs to do; what is here is
 /// the engine-free input they take, in the shape they take it, so that retarget is a key change and not a

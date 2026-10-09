@@ -25,3 +25,4 @@ out vec3 vLight;         // linear light at this drop or flake
 
 vec2 cxClusterXY;
 #define CX_CLUSTER_XY cxClusterXY
+#define CX_LIGHT_LITE 1   // CX-188: cx_lightfrag's slimmed walk -- not a baked receiver, one shadow tap per light

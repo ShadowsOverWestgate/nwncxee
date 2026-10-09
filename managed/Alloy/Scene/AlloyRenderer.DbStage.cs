@@ -123,74 +123,127 @@ public sealed unsafe partial class AlloyRenderer
         // ---- textures: a handle per slot, no re-fetch and no poll ----
         int slots = _oSlots[i];
         TexId diffuse = DbTexOf(part, recipe, 0);
-        // #128's own routing condition, which mode 0 reads off the engine as
-        // `Engine.HasEnvMap(material) || GobHasEnvMap(gob)`: the part is environment-mapped when the
-        // INSTANCE overrides the env map -- Gob::SetEnvironmentMap @0x43f530, which the seam stores in
-        // texture slot 3, and which is how a creature gets the appearance's ENVMAP column and an area its
-        // own -- or when the DIFFUSE declares one in its .txi (`envmaptexture`, Material::ParseField
-        // @0x5c5850). No texture is bound for it: the bit is the engine's "this is shiny 2002 content", and
-        // it is what makes the lit stage read the diffuse alpha as REFLECTIVITY (fEnvMapLevel = 1 - alpha)
-        // instead of as coverage. Without it every DB part was matte: creature armour lost the sheen the
-        // palette's alpha ramp is there to give it, and a metal weapon lost its reflection.
-        bool env = SceneDb.PartTexId[part * 4 + 3] != 0 || TexRegistry.EnvMapped(diffuse);
-        if (env != ((slots & EnvSlot) != 0))
+        // CX-188: and on a frame no texture moved, not even that. Every answer the block below derives comes
+        // from two places -- the registry's per-slot arrays (name, handle, kind, env bit, validity), which
+        // only change under TexRegistry.TableSerial, and this part's own override column, which only changes
+        // under a Dirty.Texture fold (DbTexDirty). A slot stamped with the current serial therefore holds
+        // exactly what the block would recompute, so it is served from _recTid/_dTexH instead. Measured
+        // before: 8 DbTexOf + 8 Handle + 8 TryResident per part per frame, 12,7k parts, nothing changing.
+        int tid = _recTid[i];
+        if (_recTexStamp[i] != _stageTexSerial)
         {
-            // #328: the bit rides _oSlots, which the caster pass reads as EnvAlpha -- so a record whose
-            // answer changed is unstamped and the casters re-baked, exactly as the engine path does. A
-            // recycled slot is why the clearing half exists: the env map is per instance.
-            slots = env ? slots | EnvSlot : slots & ~EnvSlot;
-            _oSlots[i] = slots;
-            UnstampRecord(i);
-            CasterGen++;
-            if (env) _dbEnv++;
-        }
-        // The GL NAME, not the registry id. `tid` is two things at once in this pipeline: the batch sort key
-        // AND what the non-bindless path actually binds (Issue: glBindTexture(GL_TEXTURE_2D, _gTex[g])).
-        // Handing it a TexId made every bind-path draw -- every unlit part, and every part at all when
-        // bindless is off -- bind a nonsense name and sample the white stand-in, which is what painted the
-        // floors and walls of the first lit DB area a flat lavender while the one bindless-lit chest in the
-        // room came out perfect.
-        TexRegistry.TryResident(diffuse, out uint diffuseName, out _);
-        int tid = (int)diffuseName;
-        // No diffuse (`bitmap null`) or one still in flight draws on the white texel, as the engine and mode 0 do
-        // (OwnedTextures.WhiteTid): handle 0 and GL name 0 sample transparent/opaque BLACK, which hid a door's sam.
-        if (tid == 0)
-        {
-            if (!main && OwnedTextures.WhiteName == 0) { c = snap; return Deferred; }
-            tid = main ? OwnedTextures.WhiteTid() : OwnedTextures.WhiteName;
-        }
-        if (_bindless)
-            fixed (ulong* th = _dTexH)
+            // #128's own routing condition, which mode 0 reads off the engine as
+            // `Engine.HasEnvMap(material) || GobHasEnvMap(gob)`: the part is environment-mapped when the
+            // INSTANCE overrides the env map -- Gob::SetEnvironmentMap @0x43f530, which the seam stores in
+            // texture slot 3, and which is how a creature gets the appearance's ENVMAP column and an area its
+            // own -- or when the DIFFUSE declares one in its .txi (`envmaptexture`, Material::ParseField
+            // @0x5c5850). No texture is bound for it: the bit is the engine's "this is shiny 2002 content", and
+            // it is what makes the lit stage read the diffuse alpha as REFLECTIVITY (fEnvMapLevel = 1 - alpha)
+            // instead of as coverage. Without it every DB part was matte: creature armour lost the sheen the
+            // palette's alpha ramp is there to give it, and a metal weapon lost its reflection.
+            bool env = SceneDb.PartTexId[part * 4 + 3] != 0 || TexRegistry.EnvMapped(diffuse);
+            if (env != ((slots & EnvSlot) != 0))
             {
-                ulong* hh = th + (long)i * 8;
-                for (int s = 0; s < 8; s++)
-                {
-                    TexId id = DbTexOf(part, recipe, s);
-                    ulong h = TexRegistry.Handle(id);
-                    // 0 is the white stand-in: the record draws it and is told when the real one lands, which
-                    // is what replaces the engine path's per-frame re-resolve of every slot of every part.
-                    if (h == 0 && !id.IsNull)
-                    {
-                        // Registering a dependent mutates the registry's own list; the main thread re-runs
-                        // this part. Steady state is every texture resident, so this is the arrival window
-                        // only -- not every frame.
-                        if (!main) { c = snap; return Deferred; }
-                        TexRegistry.AddDependent(id, part);
-                    }
-                    if (s == 0 && h == 0)
-                    {
-                        h = Handle(tid, main);
-                        if (h == 0 && !main) { c = snap; return Deferred; }
-                    }
-                    hh[s] = h;
-                }
-                _texHDirty = true;
-                if (main)   // diagnostics: shared statics, main only
-                {
-                    TileTexProbe(part, recipe, hh[0]);
-                    DbBlackProbe(part, recipe, hh[0]);
-                }
+                // #328: the bit rides _oSlots, which the caster pass reads as EnvAlpha -- so a record whose
+                // answer changed is unstamped and the casters re-baked, exactly as the engine path does. A
+                // recycled slot is why the clearing half exists: the env map is per instance.
+                slots = env ? slots | EnvSlot : slots & ~EnvSlot;
+                _oSlots[i] = slots;
+                UnstampRecord(i);
+                CasterGen++;
+                if (env) _dbEnv++;
             }
+            // The GL NAME, not the registry id. `tid` is two things at once in this pipeline: the batch sort key
+            // AND what the non-bindless path actually binds (Issue: glBindTexture(GL_TEXTURE_2D, _gTex[g])).
+            // Handing it a TexId made every bind-path draw -- every unlit part, and every part at all when
+            // bindless is off -- bind a nonsense name and sample the white stand-in, which is what painted the
+            // floors and walls of the first lit DB area a flat lavender while the one bindless-lit chest in the
+            // room came out perfect.
+            TexRegistry.TryDrawable(diffuse, out uint diffuseName, out _);
+            tid = (int)diffuseName;
+            // CX-188: is this resolve FINAL -- can its answer change without a TableSerial bump? Only a
+            // final resolve is memoised; one still waiting on an arrival is re-asked next frame, which keeps
+            // the arrival window live and leaves the skip to the steady state.
+            // A resolve that is final the OTHER way counts too, or it re-resolves for ever: a part with no
+            // diffuse at all (`bitmap null`) and one whose load FAILED both draw the white texel, and neither
+            // can improve -- Fail bumps the serial once and the slot then answers the same for the session.
+            // That is a real population, not a corner (junk material names on placeables: "2", NullTex,
+            // Standardmaterial -- docs/missing-parts-triage.md), and leaving it unsettled put every one of
+            // them back on the per-frame re-resolve the skip exists to end.
+            bool settled = (diffuseName != 0 && TexRegistry.StateOf(diffuse) != TexState.Loading) || TexRegistry.Final(diffuse);
+            // No diffuse (`bitmap null`) or one still in flight draws on the white texel, as the engine and mode 0 do
+            // (OwnedTextures.WhiteTid): handle 0 and GL name 0 sample transparent/opaque BLACK, which hid a door's sam.
+            if (tid == 0)
+            {
+                if (!main && OwnedTextures.WhiteName == 0) { c = snap; return Deferred; }
+                tid = main ? OwnedTextures.WhiteTid() : OwnedTextures.WhiteName;
+            }
+            if (_bindless)
+                fixed (ulong* th = _dTexH)
+                {
+                    ulong* hh = th + (long)i * 8;
+                    bool moved = false;
+                    for (int s = 0; s < 8; s++)
+                    {
+                        TexId id = DbTexOf(part, recipe, s);
+                        ulong h = TexRegistry.Handle(id);
+                        // 0 is the white stand-in: the record draws it and is told when the real one lands, which
+                        // is what replaces the engine path's per-frame re-resolve of every slot of every part.
+                        // ...and a slot still LOADING with a handle is drawing its preview: the full chain is on its way.
+                        if (!id.IsNull && (h == 0 || TexRegistry.StateOf(id) == TexState.Loading))
+                        {
+                            // Registering a dependent mutates the registry's own list; the main thread re-runs
+                            // this part. Steady state is every texture resident, so this is the arrival window
+                            // only -- not every frame.
+                            if (!main) { c = snap; return Deferred; }
+                            TexRegistry.AddDependent(id, part);
+                            // ...and a map slot that has FAILED is final too: AddDependent no-ops on a
+                            // non-loading slot, so nothing would ever come to repair the memo.
+                            if (!TexRegistry.Final(id)) settled = false;
+                        }
+                        if (s == 0 && h == 0)
+                        {
+                            h = Handle(tid, main);
+                            if (h == 0 && !main) { c = snap; return Deferred; }
+                            if (h == 0) settled = false;
+                        }
+                        if (hh[s] != h) { hh[s] = h; moved = true; }
+                    }
+                    // CX-188: ...and only a handle that actually MOVED dirties the table. The unconditional flag
+                    // made every frame re-upload the whole handle block -- and the caster bake reads that flag to
+                    // decide whether it has to re-upload before baking (BakeHandleUploads).
+                    if (moved) _texHDirty = true;
+                    if (main)   // diagnostics: shared statics, main only
+                    {
+                        TileTexProbe(part, recipe, hh[0]);
+                        DbBlackProbe(part, recipe, hh[0]);
+                    }
+                }
+            // CX-188: the record's own texture memos, written beside the resolve that produced them (they used to
+            // sit at the tail of the function, which is the same point in the frame -- nothing between reads them).
+            // The batch audit compares row.Tid against _recTid[i], and leaving it unwritten made every DB draw
+            // report a "diffuse tid" mismatch -- 3333 of them, a false alarm that looked exactly like the real
+            // texture fault it was sitting next to.
+            _recTid[i] = tid;
+            _recSlotMask[i] = slots;
+            for (int s = 0; s < MapSlots; s++)
+            {
+                TexRegistry.TryDrawable(DbTexOf(part, recipe, s + 1), out uint mapName, out _);
+                _recTidS[i * MapSlots + s] = (int)mapName;
+            }
+            // CX-188: the staleness is REPAIRED here and nowhere earlier -- this is the last of the three things
+            // a retire invalidates (the bindless handle block above, the bind-path tid, and these map-slot tids),
+            // and no path between the resolve and this point returns. The clear lived in the deleted engine-path
+            // StagePart, so in DB mode nothing ever cleared it: a slot a retire marked failed RouteWanted's gate
+            // open for the rest of the session, and with a tileset texture on hundreds of parts that was ~13,6k
+            // slots a frame bypassing the frustum gate entirely. (With bindless OFF there is no handle block to
+            // repair and nothing samples one; `alloy.bindless` is Effect.Restart, so it cannot flip under us.)
+            _gate[i].TexStale = false;
+            // The memo's own invalidation edges, both named on _recTexStamp: a registry write (TableSerial) and
+            // this part's override column (DbTexDirty, from the Dirty.Texture fold). A resolve that did not
+            // settle stamps 0, i.e. "ask again".
+            _recTexStamp[i] = settled ? _stageTexSerial : 0;
+        }
         // The PLT resolve is per INSTANCE: the atlas is one RG8 upload shared by every creature wearing it,
         // and the ten palette rows that colour it live on the part (a per-part scheme) or its object's record. Staged per draw slot here;
         // cleared when this slot's diffuse is not a PLT, so a slot that stops being one stops resolving.
@@ -308,16 +361,6 @@ public sealed unsafe partial class AlloyRenderer
             }
         }
         _pkDis[k] = dis ? (byte)1 : (byte)0;
-        // The record's own texture memo. The batch audit compares row.Tid against _recTid[i], and leaving it
-        // unwritten made every DB draw report a "diffuse tid" mismatch -- 3333 of them, a false alarm that
-        // looked exactly like the real texture fault it was sitting next to.
-        _recTid[i] = tid;
-        _recSlotMask[i] = slots;
-        for (int s = 0; s < MapSlots; s++)
-        {
-            TexRegistry.TryResident(DbTexOf(part, recipe, s + 1), out uint mapName, out _);
-            _recTidS[i * MapSlots + s] = (int)mapName;
-        }
         WriteBatchRow(k, i, cls, lit, dis, tid, slots, idxCount, feat);
         return Staged;
     }
@@ -438,9 +481,26 @@ public sealed unsafe partial class AlloyRenderer
             Vector3 w = Vector3.Transform(p, m);
             lo = Vector3.Min(lo, w); hi = Vector3.Max(hi, w);
         }
-        _oBox[i * 6 + 0] = lo.X; _oBox[i * 6 + 1] = lo.Y; _oBox[i * 6 + 2] = lo.Z;
-        _oBox[i * 6 + 3] = hi.X; _oBox[i * 6 + 4] = hi.Y; _oBox[i * 6 + 5] = hi.Z;
+        int o = i * 6;
+        // CX-188: the gen counts a box that MOVED, not a call. The caller gates this on `rec`, which is also
+        // true for a reveal change, a staleness re-send and the per-frame roll -- so a counter bumped per call
+        // would move on a still frame and no reader could skip on it. Six compares against six stores.
+        if (_oBox[o] != lo.X || _oBox[o + 1] != lo.Y || _oBox[o + 2] != lo.Z
+            || _oBox[o + 3] != hi.X || _oBox[o + 4] != hi.Y || _oBox[o + 5] != hi.Z)
+        {
+            _oBox[o] = lo.X; _oBox[o + 1] = lo.Y; _oBox[o + 2] = lo.Z;
+            _oBox[o + 3] = hi.X; _oBox[o + 4] = hi.Y; _oBox[o + 5] = hi.Z;
+            BoxGen++;
+        }
     }
+
+    /// <summary>CX-188: bumped wherever a slot's <see cref="_oBox"/> actually CHANGES -- which is
+    /// <see cref="DbWriteWorldBox"/> and nothing else. A reader whose answer is a function of those boxes
+    /// (<c>DbKeyhole.Write</c>'s dissolve verdict) re-derives it only when this moves.
+    /// <para>Not interlocked on purpose: the staging walk runs on the worker threads over 14k parts and this
+    /// is only ever COMPARED, never counted. Two workers incrementing from the same base still leave it
+    /// different from what a reader last saw, which is the whole question asked of it.</para></summary>
+    internal static int BoxGen;
 
     /// <summary>R1-18: this slot's batch VAO key -- the arena SECTION its range lives in, so the static and
     /// skinned formats cut apart and nothing else does.

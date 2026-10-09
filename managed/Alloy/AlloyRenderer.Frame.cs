@@ -98,7 +98,6 @@ public sealed unsafe partial class AlloyRenderer
             DbNoDraw("a GL entry point is missing");
             return false;
         }
-        GpuStatic.Latch();   // the static freeze's own entry points; they do not resolve before a context exists
 
         // #257: where the frame goes is LATCHED, not interrogated. Every frame used to open with nine
         // GL queries -- viewport, framebuffer binding, four attachment params, sRGB, and the two clear
@@ -142,7 +141,7 @@ public sealed unsafe partial class AlloyRenderer
         // row-major v*M convention: clip = v * Model * View * Proj; raw bytes read column-major by GLSL are
         // the transpose, so uVP * d.model * vec4(aPos,1) is exact -- (M*V*P)^T = (V*P)^T * M^T, which is why
         // #84 can hoist view*proj to a per-program uniform and leave only the model matrix per draw.
-        _sceneEnv = AlloyEnvMap.Present(_enrollScene);
+        _sceneEnv = AlloyEnvMap.Present();
 
         // CX-109: the view and projection are ALLOY's, built at this view's Camera::RenderScene out of the
         // camera object's own fields rather than read back off m_aurMtxStack. view.cameraloop 0 is the A/B,
@@ -432,6 +431,17 @@ public sealed unsafe partial class AlloyRenderer
                     FrameZones.Add(FrameZones.Zone.Cull, tCull2);
                     // CX-51: the reflection records ride the colour pass from here to Reflections
                     if (perspective && !_capturing) Ssr.Begin(viewport);
+                    // CX-188: ...and the G-buffer rides the opaque and cutout passes, which are the only two
+                    // the CX_DEFERRED twin draws in. A stale G0 is a lit pixel, so the clear is unconditional
+                    // for the frames the twin may draw in; the lanes are indexed by gl_FragCoord, which an
+                    // offset viewport would shear against the compute pass's own texel grid (Ssr's refusal).
+                    GBuffer.Written = false;
+                    if (lightingOn && perspective && !_capturing && Lighting.Deferred.V && _lightViz == 0
+                        && viewport[0] == 0 && viewport[1] == 0 && GBuffer.Ensure(viewport[2], viewport[3]))
+                    {
+                        GBuffer.BeginFrame();
+                        GBuffer.AttachColourPass();
+                    }
                     OpaqueOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
                     // The GPU-side cluster stats belong to the SCREEN's build. Harvested here rather
                     // than after the bracket because the probe capture rebuilds the clusters once per
@@ -459,7 +469,31 @@ public sealed unsafe partial class AlloyRenderer
                     if (!_capturing) FrameTap.Take("sky", viewport);
                     break;
                 case PassId.CutoutOwned:
+                    // CX-188: the cutout class is the last G-buffer writer; close the attachment after it
                     CutoutOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
+                    GBuffer.Detach();
+                    break;
+                case PassId.DeferredLights:
+                    // CX-188: two dispatches, timed apart -- step 3's per-pixel shadow record first, then the
+                    // light walk that reads it. The walk needs the record's barrier, so they neither reorder
+                    // nor share a bracket.
+                    if (lightingOn && perspective && !_capturing && GBuffer.Written)
+                    {
+                        GpuBegin(GpuTerm.DeferredShadow);
+                        DeferredShadows.Run(&vp, &proj, viewport, near, far);
+                        GpuEnd(GpuTerm.DeferredShadow);
+                    }
+                    GpuBegin(GpuTerm.Deferred);
+                    if (lightingOn && perspective && !_capturing && GBuffer.Written)
+                        DeferredLights.Run(&vp, &view, &proj, viewport, near, far);
+                    GpuEnd(GpuTerm.Deferred);
+                    // CX-188 step 4: the hot-light debt, right after the pass whose walk no longer takes it.
+                    // Its own term because TIME_ELAPSED cannot nest, and its own dispatch because a tile with
+                    // no creature shadow over it exits before reading one G-buffer texel.
+                    GpuBegin(GpuTerm.PairDebt);
+                    if (lightingOn && perspective && !_capturing && GBuffer.Written)
+                        PairDebt.Run(&vp, &view, &proj, viewport, near, far);
+                    GpuEnd(GpuTerm.PairDebt);
                     break;
                 case PassId.Reflections:
                     GpuBegin(GpuTerm.Ssr);
@@ -470,6 +504,8 @@ public sealed unsafe partial class AlloyRenderer
                     if (_blendOn) Gl.Enable(Gl.BLEND); else Gl.Disable(Gl.BLEND);
                     break;
                 case PassId.BlendedOwned:
+                    BlendProfile.Poll(_log);   // in the 4.6 bracket: the queries are that context's names
+                    Issue.LightRecBegin();
                     GpuBegin(GpuTerm.Blended);
                     // OIT (OitPass): the whole class in one unsorted, non-depth-writing pass into the
                     // accumulation pair, composited once -- the per-creature run loop #490 replaced. With
@@ -479,10 +515,30 @@ public sealed unsafe partial class AlloyRenderer
                     if (_gBlendEnd > _gOpaqueEnd && !_capturing && OitPass.Begin(PostChain.DepthTex, viewport))
                     {
                         Issue._oitOn = true;
-                        Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                        // /alloy bench's blended ladder: the accumulation alone draws with the step's variant
+                        uint lit = Programs._progLit46, lists = Programs._progLitList; LitLoc litL = Programs._lit, listL = Programs._litL;
+                        if (Programs._blendProg != 0) { Programs._progLit46 = Programs._blendProg; Programs._lit = Programs._blendLoc; }
+                        if (Programs._blendList != 0) { Programs._progLitList = Programs._blendList; Programs._litL = Programs._blendListLoc; }
+                        bool blendCounting = _qBlendSamples.Begin(Gl.SAMPLES_PASSED);
+                        bool primCounting = _qBlendPrims.Begin(Gl.PRIMITIVES_GENERATED);
+                        bool fragCounting = _qBlendFrags.Begin(Gl.FRAGMENT_SHADER_INVOCATIONS);
+                        Issue._drawCap = Programs._blendOne ? 1 : 0;
+                        if (!Programs._blendSkip) Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far);
+                        Issue._drawCap = 0;
+                        if (fragCounting) _qBlendFrags.End(Gl.FRAGMENT_SHADER_INVOCATIONS);
+                        if (primCounting) _qBlendPrims.End(Gl.PRIMITIVES_GENERATED);
+                        if (blendCounting) _qBlendSamples.End(Gl.SAMPLES_PASSED);
+                        _blendGroups += _gBlendEnd - _gOpaqueEnd; _blendFrames++;
+                        Programs._progLit46 = lit; Programs._lit = litL; Programs._progLitList = lists; Programs._litL = listL;
                         Issue._oitOn = false;
+                        // the class's term split four ways (TIME_ELAPSED cannot nest): Blended is the
+                        // accumulation alone, and the composite, the hosted batches and the depth sweep each own one
+                        GpuEnd(GpuTerm.Blended);
+                        GpuBegin(GpuTerm.BlendedComposite);
                         OitPass.End(viewport);
+                        GpuEnd(GpuTerm.BlendedComposite);
                         _blendOn = true;
+                        GpuBegin(GpuTerm.BlendedHosted);
                         // ...then the batches the accumulation stepped over, and only if it stepped over any:
                         // the pass knows its own count, and with no hosted (or non-SrcAlpha) batch in the
                         // blended range this was a walk of the whole range to draw nothing. The two state
@@ -495,12 +551,19 @@ public sealed unsafe partial class AlloyRenderer
                             Issue._onlyHosted = false;
                         }
                         else { Gl.DepthMask(0); Gl.Enable(Gl.BLEND); }
+                        GpuEnd(GpuTerm.BlendedHosted);
+                        GpuBegin(GpuTerm.BlendedDepth);
                         // ...and then the depth vanilla writes for this class, which the copy below and the
                         // water pass reading it both need. Last, so nothing here occluded the composite.
                         BlendedDepthSweep(_gOpaqueEnd, _gBlendEnd, &vp, viewport);
+                        GpuEnd(GpuTerm.BlendedDepth);
                     }
-                    else Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far, depthWrite: true);
-                    GpuEnd(GpuTerm.Blended);
+                    else
+                    {
+                        Issue.TransparentPass(_gOpaqueEnd, _gBlendEnd, &vp, viewport, near, far, depthWrite: true);
+                        GpuEnd(GpuTerm.Blended);
+                    }
+                    Issue.LightRecEnd();
                     break;
                 case PassId.FbCopy:
                     // Only when there is water to read it. The copy is a full-screen blit of colour
@@ -1077,12 +1140,11 @@ public sealed unsafe partial class AlloyRenderer
 
     private static void CaptureProbeInner(int groups, float far)
     {
-        IntPtr bsp = _enrollScene != IntPtr.Zero ? new Scene(_enrollScene).BspRoot : IntPtr.Zero;
         // the dome stages after the area light: a probe captured before it has only the clear for a sky
         bool domeArrived = EnvProbe.Ready && !_probeDome && _skyN > 0;
-        if (!domeArrived && !EnvProbe.Wanted(_eyePos, bsp, _frameSeq)) return;
+        if (!domeArrived && !EnvProbe.Wanted(_eyePos, _frameSeq)) return;
         if (!ProbeLightSettled()) return;
-        if (!EnvProbe.Begin(_eyePos, bsp, _frameSeq, far, ProbeClear())) return;
+        if (!EnvProbe.Begin(_eyePos, _frameSeq, far, ProbeClear())) return;
 
         long draws = Counters._draws, batches = Counters._batches;
         float buildMs = AlloyLights.LastBuildMs;   // the [alloy] line's cluster timer is the SCREEN's build

@@ -5,7 +5,6 @@ using System.Threading;
 using CX.Alloy.Db;
 using CX.Alloy.Mdl;
 using CX.Framework;
-using static CX.Alloy.TexLoadRead;
 
 namespace CX.Alloy;
 
@@ -26,8 +25,6 @@ internal static unsafe class MtrFeed
 {
     /// <summary>The <c>.mtr</c> restype.</summary>
     private const ushort MtrResType = 2072;   // not-an-offset: a resource type id
-    /// <summary>A resref is at most 16 characters.</summary>
-    private const int ResRefChars = 16;
     /// <summary>Materials resolved per pump: the game thread is doing a model read anyway, and a
     /// <c>.mtr</c> is a few hundred bytes.</summary>
     private const int Budget = 32;
@@ -41,11 +38,13 @@ internal static unsafe class MtrFeed
     private static readonly Dictionary<string, byte[]?> _bytes = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Queue<string> _want = new();
     private static readonly HashSet<string> _queued = new(StringComparer.OrdinalIgnoreCase);
-    [ThreadStatic] private static Handles? _handles;
 
     private static ExtenderLog? _log;
     private static bool _armed;
     private static int _misses, _loaded, _absent, _dropped;
+    /// <summary>Materials that exist but could not be read (2026-10-09: every NWSync .mtr, because the file-path
+    /// reader was handed an NWSync location -- 0 read, 697 absent, and an .mtr-textured tent drew white).</summary>
+    private static int _unreadable;
 
     /// <summary>Wire both halves. A client where the lookup cannot answer keeps the parser's hint unwired,
     /// which is the loud case the parse already counts.</summary>
@@ -60,6 +59,7 @@ internal static unsafe class MtrFeed
         _armed = true;
         MdlParser.MaterialHint = Hint;
         MtrDef.Bytes = Cached;
+        TileBuild.WarmMaterials = Warm;
     }
 
     /// <summary>Parse worker: the hint, or 0 and a queued read.</summary>
@@ -129,18 +129,13 @@ internal static unsafe class MtrFeed
         byte[]? data = null;
         try
         {
-            byte* nm = stackalloc byte[ResRefChars + 1];
-            int n = 0;
-            for (; n < ResRefChars && n < name.Length; n++) nm[n] = (byte)name[n];
-            nm[n] = 0;
-            if (ResLocate.Find(nm, MtrResType, out IntPtr table, out IntPtr entry))
+            data = TexRegistry.ReadResourceBytes(name, MtrResType, out string? why);
+            if (data == null && why != null)
             {
-                uint* resId = stackalloc uint[ResLocate.ResIdWords];
-                if (ResLocate.Locate(table, entry, resId, out TexLocation loc, out _, out _)
-                    && (_handles ??= new Handles()).Read(loc, out ReadOnlySpan<byte> raw, out _)
-                    && raw.Length != 0)
-                    data = raw.ToArray();
+                _unreadable++;
+                if (_unreadable <= 8) _log?.Always($"MtrFeed: '{name}'.mtr exists but was NOT READ -- {why}; its meshes draw their bitmap as a texture");
             }
+            if (data is { Length: 0 }) data = null;
         }
         catch (Exception e)
         {
@@ -189,6 +184,6 @@ internal static unsafe class MtrFeed
         if (!_armed) return "";
         lock (Gate)
             return $"[mtr] {_hint.Count} known, {_loaded} read, {_absent} absent, {_misses} asked early"
-                   + (_dropped != 0 ? $", {_dropped} dropped" : "");
+                   + (_dropped != 0 ? $", {_dropped} dropped" : "") + (_unreadable != 0 ? $", {_unreadable} UNREADABLE" : "");
     }
 }

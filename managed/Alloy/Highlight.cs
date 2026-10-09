@@ -14,8 +14,9 @@ namespace CX.Alloy;
 /// <summary>#232's second mode, CX-82's default: the OWNED highlight. Instead of replaying the engine's
 /// <c>Scene::DoHighlightGob</c> glow (three additive quads per part, cut from its bounding box), redraw the
 /// highlighted object flat: a 50%-alpha fill over its visible surface plus a thick, smooth silhouette
-/// outline. <c>alloy.highlight</c> (Renderer → Selection highlight) picks it. Whatever the outline cannot cover --
-/// an unclaimed source channel, a root with no Alloy draw records -- shows no highlight, and says so once.
+/// outline. <c>alloy.highlight</c> (Renderer → Selection highlight) picks it; <c>glow</c> sends every root to
+/// <see cref="HighlightGlow"/> instead. Whatever the outline cannot cover -- an unclaimed source channel, a
+/// root with no Alloy draw records -- goes to <see cref="HighlightGlow"/> in the same slot.
 /// <para>Runs right after <see cref="PostChain"/>'s composite: the target framebuffer holds the finished
 /// DISPLAY-space frame and <see cref="PostChain.DepthTex"/> holds the frame's depth. The pass is
 /// SCREEN-SPACE and, whatever the highlight count, exactly two draws deep: (1) ALL highlighted objects'
@@ -49,7 +50,8 @@ internal static unsafe class Highlight
 
     /// <summary>Channels the owned outline claims, as a bitmask. 3 is the VFX channel and is NOT claimed:
     /// a spell glow drawn as a crisp outline reads as a Tab highlight, which is exactly the bug. 4 is the
-    /// tab-target lock (CX-636), a Tab highlight in all but source, so it is. <c>/alloy hlchan</c>.</summary>
+    /// tab-target lock (CX-636), a Tab highlight in all but source, so it is. Everything unclaimed falls through
+    /// to <see cref="HighlightGlow"/>'s glow. <c>/alloy hlchan</c>.</summary>
     internal static int HlChannels => Renderer.HlChan.V;
     internal const int DefHlChannels = 0b10111;
 
@@ -148,7 +150,7 @@ internal static unsafe class Highlight
     private static int _hlVp, _hlBase, _hlColor, _hlCompMask, _hlCompFill, _hlCompRadius, _hlCompUnjitter;
     private static int _hlW, _hlH;
     private static uint _hlDepthAttached;
-    private static bool _hlFailed, _hlLogged, _saidDbUnhit;
+    private static bool _hlFailed, _hlLogged;
 
     internal static void HighlightContextLost()
     {
@@ -223,7 +225,8 @@ internal static unsafe class Highlight
     /// engine target is bound with the finished frame in it.
     /// <para>CX-82: it covers EVERY highlighted root, because nothing engine-side draws afterwards any more.
     /// A root whose source channel the outline claims and whose parts Alloy drew gets the mask outline; every
-    /// other root -- an unclaimed VFX channel, or no Alloy records at all -- shows nothing.</para>
+    /// other root -- an unclaimed VFX channel, or no Alloy records at all -- is staged into
+    /// <see cref="HighlightGlow"/>, which draws the engine's glow quads in the same slot.</para>
     /// <para>#391: the mask is drawn at the RENDER size (<paramref name="viewport"/>) because it depth-tests
     /// against the render-res frame depth; the composite over the finished frame runs at
     /// <paramref name="display"/>, sampling the mask bilinearly. The outline radius is in mask texels, so it
@@ -237,6 +240,7 @@ internal static unsafe class Highlight
         if (nGobs == 0) return;
         if (PostChain.DepthTex == 0) return;
         if (nGobs > MaxHlRoots) nGobs = MaxHlRoots;
+        HighlightGlow.Begin(dbScene, EyePos);
 
         // The target set for EVERY highlighted root at once: the gob plus its visible attached children
         // (weapons, shields -- exactly the set the engine glow covers), each carrying its root's index so
@@ -245,6 +249,8 @@ internal static unsafe class Highlight
         IntPtr* targets = stackalloc IntPtr[MaxHlTargets];
         byte* targetRoot = stackalloc byte[MaxHlTargets];
         byte* rootHit = stackalloc byte[MaxHlRoots];
+        IntPtr* kids = stackalloc IntPtr[MaxHlTargets];
+        byte* kidRoot = stackalloc byte[MaxHlTargets];
         // A root KEY per entry (the DB record's handle value) and its colour.
         IntPtr* arr = stackalloc IntPtr[MaxHlRoots];
         float* cols = stackalloc float[MaxHlRoots * 3];
@@ -254,6 +260,7 @@ internal static unsafe class Highlight
             arr[i] = (IntPtr)o.Value;
             cols[i * 3] = c.X; cols[i * 3 + 1] = c.Y; cols[i * 3 + 2] = c.Z;
         }
+        if (HlDiag) DiagRecords(nGobs, arr);
         int nT = 0;
         bool outline = Renderer.OutlineHighlight && EnsureHighlightPrograms();
         for (int i = 0; i < nGobs; i++)
@@ -294,16 +301,16 @@ internal static unsafe class Highlight
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, (uint)prevFbo);
         Gl.Viewport(display[0], display[1], display[2], display[3]);
 
-        // A root the outline does not claim or cannot draw shows nothing at all -- said once, not dropped quietly.
-        int hit = 0, unhit = 0;
+        // CX-82: whatever the outline could not cover -- an unclaimed source channel, or a root with no Alloy
+        // draw records at all -- is the glow's, in the slot the engine's DoHighlightGob had.
+        int hit = 0;
         for (int i = 0; i < nGobs; i++)
-            if (rootHit[i] != 0) hit++; else unhit++;
-        if (unhit > 0 && !_saidDbUnhit)
         {
-            _saidDbUnhit = true;
-            _log?.Always($"AlloyRenderer: {unhit} highlighted object(s) got NO highlight this frame -- a root "
-                       + "the outline does not claim or cannot draw shows nothing at all");
+            if (rootHit[i] != 0) { hit++; continue; }
+            var root = new DbId((uint)arr[i]);
+            HighlightGlow.Stage(root, cols + i * 3, kids, DbAttached(root, 0, kids, kidRoot, 0));
         }
+        HighlightGlow.Draw(view, proj, display);
         if (hit == 0) return;
 
         // Step 2: ONE fullscreen triangle over the finished frame -- fill + dilated outline, blended.
@@ -332,6 +339,36 @@ internal static unsafe class Highlight
         _log?.Info($"AlloyRenderer: outline highlight LIVE -- {hit}/{nGobs} root gob(s) outlined "
                  + "(screen-space mask fill + dilated outline, one pass for the set); every other "
                  + "highlighted root takes the glow");
+    }
+
+    private static long _diagKey;
+
+    /// <summary><c>/alloy hldiag 1</c>, once per change of the highlighted set: what each root's colour slots
+    /// left in the database (<c>RefreshHilite</c> calls <c>SetColorShifting</c> and <c>SetIllumination</c> with
+    /// the highlight colour) and what reached its first drawn part's record (diffuse lanes 24..26, emissive
+    /// 28..30) -- the two ends of the vanilla recolour, so a missing tint names its own break.</summary>
+    private static void DiagRecords(int n, IntPtr* roots)
+    {
+        long key = n;
+        for (int i = 0; i < n; i++) key = key * 31 + (long)roots[i];
+        if (key == _diagKey) return;
+        _diagKey = key;
+        for (int i = 0; i < n; i++)
+        {
+            var id = new DbId((uint)roots[i]);
+            if (!SceneDb.Objects.Valid(id)) continue;
+            int o = id.Index, first = SceneDb.ObjPartFirst[o], slot = -1;
+            for (int p = first; p < first + SceneDb.ObjPartCount[o] && slot < 0; p++) slot = SceneDb.PartSlot[p];
+            string rec = "no drawn part";
+            if (slot >= 0)
+                fixed (float* d = _dData)
+                {
+                    float* r = d + (long)slot * DrawFloats;
+                    rec = $"record dif=({r[24]:F2},{r[25]:F2},{r[26]:F2}) emi=({r[28]:F2},{r[29]:F2},{r[30]:F2})";
+                }
+            _log?.Info($"[hldiag] root o={o} \"{SceneDb.ObjModel[o]?.Name ?? "-"}\" tint={SceneDb.ObjTint[o]} "
+                       + $"illum={SceneDb.ObjEmissive[o]} flags={SceneDb.ObjSeamFlags[o]:x} {rec}");
+        }
     }
 
     /// <summary>One walk over the staged batches, issuing a single-draw multidraw for every record whose

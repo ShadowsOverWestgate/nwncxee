@@ -37,6 +37,9 @@ public static unsafe class Gl
     public const uint SRC_ALPHA = 0x0302, ONE_MINUS_SRC_ALPHA = 0x0303, ONE_MINUS_SRC_COLOR = 0x0301;
     public const uint COLOR_ATTACHMENT1 = 0x8CE1;
     public const uint COLOR_ATTACHMENT2 = 0x8CE2, COLOR_ATTACHMENT3 = 0x8CE3;
+    /// <summary>CX-188: the four the deferred G-buffer attaches on (<c>GBuffer.FirstAttachment</c>).</summary>
+    public const uint COLOR_ATTACHMENT4 = 0x8CE4, COLOR_ATTACHMENT5 = 0x8CE5,
+                      COLOR_ATTACHMENT6 = 0x8CE6, COLOR_ATTACHMENT7 = 0x8CE7;
     public const uint POLYGON_OFFSET_FILL = 0x8037;
     public const uint TRIANGLE_STRIP = 0x0005;
     public const uint TRIANGLES = 0x0004, FLOAT = 0x1406, UNSIGNED_BYTE = 0x1401, FALSE = 0;
@@ -193,6 +196,9 @@ public static unsafe class Gl
     public const uint SHADER_IMAGE_ACCESS_BARRIER_BIT = 0x0020, TEXTURE_FETCH_BARRIER_BIT = 0x0008, TEXTURE_UPDATE_BARRIER_BIT = 0x0100, WRITE_ONLY = 0x88B9, READ_WRITE = 0x88BA;
     /// <summary>CX-46: a compute write to a buffer the lit stage then reads as a uniform block (the probe's SH9).</summary>
     public const uint UNIFORM_BARRIER_BIT = 0x0004;
+    /// <summary>CX-188: an image store into a texture a LATER PASS renders to as an attachment -- the deferred
+    /// pass writes the HDR target, which grass and the blended class go on blending into.</summary>
+    public const uint FRAMEBUFFER_BARRIER_BIT = 0x0400;
     /// <summary>Sample counts of an existing attachment: renderbuffer (glGetRenderbufferParameteriv) and
     /// multisample texture (glGetTexLevelParameteriv on TEXTURE_2D_MULTISAMPLE).</summary>
     public const uint NUM_EXTENSIONS = 0x821D, EXTENSIONS = 0x1F03;
@@ -205,6 +211,8 @@ public static unsafe class Gl
     /// for the Alloy colour pass. Not ANY_SAMPLES_PASSED -- that one is boolean and answers a different
     /// question.</summary>
     public const uint SAMPLES_PASSED = 0x8914;
+    public const uint PRIMITIVES_GENERATED = 0x8C87;
+    public const uint FRAGMENT_SHADER_INVOCATIONS = 0x82F4;
     // #93 multidraw-indirect from persistent-mapped storage. The MAP_* bits are glBufferStorage flags AND
     // glMapBufferRange flags: the map's set must be a subset of the storage's or the map fails.
     public const uint DRAW_INDIRECT_BUFFER = 0x8F3F;
@@ -292,6 +300,9 @@ public static unsafe class Gl
     public static delegate* unmanaged<uint, int, float*, void> ClearBufferfv;
     /// <summary>glClearBufferuiv: the integer-attachment clear (a float clear on an R32UI target is undefined).</summary>
     public static delegate* unmanaged<uint, int, uint*, void> ClearBufferuiv;
+    /// <summary>glClearTexImage (GL 4.4): tex, level, format, type, data -- a NULL data fills zeros. Clears a
+    /// texture whatever framebuffer it is or is not attached to, so no draw-buffer state has to be arranged first.</summary>
+    public static delegate* unmanaged<uint, int, uint, uint, void*, void> ClearTexImage;
     public static delegate* unmanaged<uint, uint, void> BindSampler;
     public static delegate* unmanaged<uint, uint, int, void> SamplerParameteri;
     public static delegate* unmanaged<uint, uint, float, void> SamplerParameterf;
@@ -346,6 +357,9 @@ public static unsafe class Gl
     /// a NULL data fills zeros. Server-side, so no client upload into a buffer the GPU may still be reading.</summary>
     public static delegate* unmanaged<uint, uint, IntPtr, IntPtr, uint, uint, void*, void> ClearBufferSubData;
     public const uint R32UI = 0x8236, RED_INTEGER = 0x8D94;
+    /// <summary>CX-188: the G-buffer's three integer words and the upload format its clear names, plus the
+    /// shadow visibility record's key pair (<c>cx_shrec</c>: the four packed slots and the surface key).</summary>
+    public const uint RGBA32UI = 0x8D70, RGBA_INTEGER = 0x8D99, RG32UI = 0x823C;
     /// <summary>Zero the first <paramref name="bytes"/> of <paramref name="buf"/> on the GPU. A client-side
     /// BufferSubData into a buffer the previous dispatch may still read is an implicit sync the spec permits
     /// the driver to take as a stall (Khronos, Buffer Object Streaming); a clear has no such term. Unmeasured.</summary>
@@ -624,6 +638,7 @@ public static unsafe class Gl
         GenSamplers = (delegate* unmanaged<int, uint*, void>)P("glGenSamplers");
         ClearBufferfv = (delegate* unmanaged<uint, int, float*, void>)P("glClearBufferfv");
         ClearBufferuiv = (delegate* unmanaged<uint, int, uint*, void>)P("glClearBufferuiv");
+        ClearTexImage = (delegate* unmanaged<uint, int, uint, uint, void*, void>)P("glClearTexImage");
         BindSampler = (delegate* unmanaged<uint, uint, void>)P("glBindSampler");
         SamplerParameteri = (delegate* unmanaged<uint, uint, int, void>)P("glSamplerParameteri");
         SamplerParameterf = (delegate* unmanaged<uint, uint, float, void>)P("glSamplerParameterf");

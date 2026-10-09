@@ -28,6 +28,15 @@ public static unsafe partial class DbAnim
     private static bool _lodResolved;
     private static int _lodSwaps, _lodHeld, _lodSettled;
 
+    /// <summary>CX-188: bumped on every LOD swap, monotonically. A swap changes which of an object's two live
+    /// alternates the renderer draws, so it can change which seated slot the draw order carries -- and it is
+    /// not a slot-set edge (both records stay live, the swap only marks <see cref="Dirty.Tree"/>), so
+    /// <c>AlloyRenderer.DbSetGen</c> and the order COUNT can both stand still across one. A reader keyed on
+    /// the ordered set has to have this in its key (<c>DbKeyhole.Write</c>).
+    /// <para>Period-reset counters cannot serve: <see cref="_lodSwaps"/> is cleared every period, so a reader
+    /// comparing it would see its own key go backwards.</para></summary>
+    internal static int LodGen;
+
     /// <summary>How many objects have an alternate at all. Zero means the whole choice is skipped, which is
     /// also what keeps a GUI scene and the self-checks out of it.</summary>
     private static int _lodWanted;
@@ -113,7 +122,7 @@ public static unsafe partial class DbAnim
             if (want > _lodLevels[i] - 1) want = _lodLevels[i] - 1;
             if (want == cur) { _lodHeld++; continue; }
             SceneDb.ObjLodShown[i] = (byte)want;
-            _lodSwaps++;
+            _lodSwaps++; LodGen++;
             // Both alternates' records are live, so the only thing the renderer has to learn is which one to
             // draw -- an object edge, which the feed folds into its parts.
             SceneDb.Objects.Mark(i, Dirty.Tree);

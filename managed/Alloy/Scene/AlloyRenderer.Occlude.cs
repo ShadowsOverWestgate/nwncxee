@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Numerics;
+using CX.Alloy.Db;
+using CX.Alloy.Seam;
 using CX.Engine;
 using CX.Framework;
 using CX.Services.Camera;
@@ -36,12 +38,11 @@ public sealed unsafe partial class AlloyRenderer
     private static long _occLastTick;
     private static string _occWhy = "never ran";
 
-    private static IntPtr* _occCamera;
     private static IntPtr _occAppMgr;
     private static GetModuleFn _occGetModule;
 
-    /// <summary>This frame's hits: the placeable gob each ray landed on.</summary>
-    private static readonly IntPtr[] _occHitGob = new IntPtr[OccMaxHits];
+    /// <summary>This frame's hits: the placeable each ray landed on, as its database handle.</summary>
+    private static readonly uint[] _occHitObj = new uint[OccMaxHits];
     private static int _occHitN;
     // BW7: the per-slot fade and its hold are RouteGate's rows -- the route memo reads both per candidate.
     private static long _occFrames, _occCalls, _occTagged;
@@ -50,10 +51,9 @@ public sealed unsafe partial class AlloyRenderer
     {
         CameraKnobs.Declare();
         SceneRay.Init();
-        _occCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
         _occAppMgr = Native.Sym(SymbolMap.AppManager);
         _occGetModule = EngineFn.GetModule;
-        _occArmed = SceneRay.Armed && _occCamera != null && _occAppMgr != IntPtr.Zero && _occGetModule != null && _runtime != null;
+        _occArmed = SceneRay.Armed && _occAppMgr != IntPtr.Zero && _occGetModule != null && _runtime != null;
         _occWhy = _occArmed ? "armed" : "symbols unresolved";
         log.Info($"AlloyRenderer: walls.fade {(Walls.Fade.V ? "on" : "off")} ({_occWhy})");
         Walls.G.Status = () => FormattableString.Invariant(
@@ -71,16 +71,10 @@ public sealed unsafe partial class AlloyRenderer
         return app == IntPtr.Zero ? IntPtr.Zero : _occGetModule(app);
     }
 
-    /// <summary>The followed gob (the PC), ManageSceneBSP's chain as <c>SceneInputs</c> walks it.</summary>
-    private static IntPtr OccludeTargetGob()
-    {
-        var cam = new Camera(AlloyCamera.World);
-        if (cam.IsNull) return IntPtr.Zero;
-        CAurBehavior hv = cam.BehaviorHost;
-        if (hv.IsNull) return IntPtr.Zero;
-        CAurBehaviorCameraFollow behavior = hv.AsBehaviorCameraFollowFn == IntPtr.Zero ? default : hv.AsBehaviorCameraFollow();
-        return behavior.IsNull ? IntPtr.Zero : behavior.Target;
-    }
+    /// <summary>The object the world camera follows (the PC), as the shell the cast's ignore list takes: the
+    /// follow behaviour's target, which the DB world pass captured for this view. Zero for a camera that
+    /// follows nothing (a cutscene), which casts no fan.</summary>
+    private static IntPtr OccludeTargetGob() => (IntPtr)Facade.ObjectShell(new DbId(_dbCamFollow));
 
     /// <summary>The fade wants the engine's pull-in off; <see cref="CameraService.SettleCollision"/> is the
     /// one writer of the flag, so a spring-arm session ending cannot hand the pull-in back mid-fade.</summary>
@@ -122,7 +116,7 @@ public sealed unsafe partial class AlloyRenderer
                 if (SceneRay.IsPlaceable(gob))
                 {
                     int n = _occHitN++;
-                    _occHitGob[n] = gob;
+                    _occHitObj[n] = Facade.ObjectId(gob).Value;
                 }
                 from = hit + d * OccNudge;
                 if (Vector3.Dot(to - from, d) <= 0f) break;
@@ -141,9 +135,9 @@ public sealed unsafe partial class AlloyRenderer
         bool hit = false;
         if (_occHitN > 0 && _oLit[i])
         {
-            IntPtr gob = _oGob[i];
-            if (gob != IntPtr.Zero)
-                for (int n = 0; n < _occHitN && !hit; n++) hit = _occHitGob[n] == gob;
+            uint obj = DbSlot(i) ? SceneDb.PartObj[_oDbPart[i]].Value : 0u;
+            if (obj != 0)
+                for (int n = 0; n < _occHitN && !hit; n++) hit = _occHitObj[n] == obj;
         }
         if (hit) g.OccHeld = OccHold;
         else if (g.OccHeld > 0f) { g.OccHeld -= _occDt; hit = true; }

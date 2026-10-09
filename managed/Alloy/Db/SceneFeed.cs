@@ -15,10 +15,10 @@ namespace CX.Alloy.Db;
 /// <list type="table">
 /// <item><term>fog</term><description><c>Scene+0xf4/0xf8/0xfc</c> (<c>FogEnable/Start/End/Color</c>) read by
 /// <c>FrameRead.ReadFog</c> into <see cref="FrameInputs"/>, consumed by <c>SceneFog</c>,
-/// <c>AlloyRenderer.Uniforms</c>, <c>CullPass</c> and <c>LightRegistry</c>'s setup radius. ->
+/// <c>AlloyRenderer.Uniforms</c> and <c>CullPass</c>. ->
 /// <see cref="Tick"/>.</description></item>
 /// <item><term>ambient</term><description><c>Scene+0x168</c>, which <c>Scene::Render</c> hands
-/// <c>SetLightModel</c>. Alloy takes its area terms from <c>LightRegistry</c>'s index -1 lights instead, so in
+/// <c>SetLightModel</c>. Alloy takes its area terms from the database's own area light records instead, so in
 /// DB mode the ambient column is the fallback when no area light set exists -> <see cref="Ambient"/>.</description></item>
 /// <item><term>sky / skybox</term><description><c>Scene+0x1c0..</c> (<c>SkyGobs</c>, <c>SkyFadeGob</c>,
 /// <c>SkyOff</c>, <c>SkyT/Cur/Desired/Pos</c>) read by <c>Pass/SkyBox.cs</c> and <c>Scene/SkyTick.cs</c>, which
@@ -179,40 +179,29 @@ public static class SceneFeed
         return c;
     }
 
-    /// <summary>Fill <see cref="FrameInputs"/> for a DB-mode frame: the fog block and the focus, from the
-    /// scene's columns, and the camera block from the view <see cref="DbCamera.BuildView"/> computed. The
-    /// counterpart of <c>FrameRead.Tick(IntPtr scene)</c>, which does the same from the engine object -- same
-    /// fields, same meaning, so every consumer downstream is unchanged.
-    /// <para>The area light sets are NOT filled here: they come from the scene's light PARTS, which is the
-    /// light registry's walk over the DB (seam-feed), not a scene column.</para></summary>
-    internal static void Tick(DbId scene, DbId camera, in AlloyView view)
-    {
-        if (!Ok(scene)) return;
-        SceneTerms(scene);
-        if (!SceneDb.Cameras.Valid(camera) || !view.Valid) { FrameInputs.HasSceneCam = false; return; }
-        CamTerms(DbCamera.PosOf(camera), DbCamera.RotOf(camera),
-                 view.Fovy, view.Aspect, view.Near, view.Far, view.W, view.H, view.Perspective);
-    }
-
     /// <summary>The same fill from a published <c>RenderSnapshot.ViewRec</c>: the camera's state AS RECORDED,
     /// which is what the renderer must shade with. Reading the camera columns again here would hand frame N's
     /// geometry frame N+1's camera whenever the render thread is a frame behind.</summary>
-    internal static void TickFromView(DbId scene, DbId camera, in RenderSnapshot.ViewRec v)
+    /// <param name="h">CX-188: the frame's hoisted ENGINE terms. Nothing under this call reads engine
+    /// memory, which is what lets the per-view draw run on <c>RenderThread</c>.</param>
+    internal static void TickFromView(DbId scene, DbId camera, in RenderSnapshot.ViewRec v, in FrameHoist h)
     {
         // CX-120: the renderer's own view latch, from the SNAPSHOT's matrices. Fed before anything else this
         // view does, because DrawOwned refuses a frame with no measured world camera -- and that refusal is
         // terminal for the session, not for the frame.
         AlloyCamera.NoteDbView(in ViewOf(in v), v.World);
         if (!Ok(scene)) return;
-        SceneTerms(scene);
+        SceneTerms(scene, in v, in h);
         CamTerms(v.CamPos, v.CamRot, v.Fovy, v.Aspect, v.Near, v.Far, v.W, v.H, v.Perspective);
-        if (v.World) RuntimeWind(scene);
     }
 
     /// <summary>The area wind in the engine's shader block, as <c>GLRender::CheckAndUpdateUniformDirtyDataForFrame</c>
     /// @0x5d4e50 copies it (<c>*(currentscene+0x160)+0x20</c> into block <c>+0x28</c>). That copy runs only from
     /// <c>Scene::Render</c>, which DB mode never enters, so the rain fell straight down whatever the area's wind.
-    /// The game's <c>setglobalwind</c> still lands in the shell's own <c>WindManager</c> (<c>SceneFns.SeedWind</c>).</summary>
+    /// The game's <c>setglobalwind</c> still lands in the shell's own <c>WindManager</c> (<c>SceneFns.SeedWind</c>).
+    /// <para>CX-188: called at the FOLD, from <see cref="FoldWind"/>, not from the per-view draw. It reads the
+    /// engine scene's <c>WindManager</c> and WRITES the engine's shader block -- a write to engine memory,
+    /// which is the one thing a render thread may never do.</para></summary>
     private static void RuntimeWind(DbId scene)
     {
         if (AlloyRenderer.Rt.Ptr == 0) return;
@@ -221,6 +210,15 @@ public static class SceneFeed
         var wm = new WindManager(new Scene(sc).WindManager);
         if (wm.IsNull) return;
         AlloyRenderer.Rt.AreaWind = wm.BaseWind;
+    }
+
+    /// <summary>CX-188: the frame's wind, on the GAME thread. Every WORLD view of the published frame, which
+    /// is where the per-view draw used to do it -- the value lands in the engine's shader block either way, so
+    /// the last world view of the frame wins exactly as it did before.</summary>
+    internal static void FoldWind(RenderSnapshot.Frame f)
+    {
+        for (int k = 0; k < f.ViewCount; k++)
+            if (f.Views[k].World && Ok(f.Views[k].Scene)) RuntimeWind(f.Views[k].Scene);
     }
 
     /// <summary>A snapshot view record as the renderer's own <c>AlloyView</c>. Both already hold the same
@@ -239,33 +237,36 @@ public static class SceneFeed
 
     private static AlloyView _dbView;
 
-    private static void SceneTerms(DbId scene)
+    private static void SceneTerms(DbId scene, in RenderSnapshot.ViewRec v, in FrameHoist h)
     {
-        int i = scene.Index;
-        FogTerms(i);
+        FogTerms(scene.Index, in v, in h);
         // FrameInputs.Focus is NOT SceneDb.SceneFocus. It is the SHADOW MAP's centre, and mode 0 has exactly
         // one writer for it: SceneInputs.ShadowFocus, the camera-follow target. SceneFocus is the
         // Scene::SetSceneFocus column -- a different question with the same word in it. Publishing it here put
         // the cascades at the origin while the PC stood elsewhere, and it ran per VIEW, so it also overwrote
         // whatever the shadow slot had just published.
-        AreaTerms();
+        AreaTerms(in h);
     }
 
-    /// <summary>Fog, read off the scene SHELL at the engine's own offsets rather than out of a DB column.
-    /// <para>The shell is the truth for fog because the game does not set it through a <c>CAurScene</c> slot:
-    /// <c>CNWCArea::SetFog</c>/<c>SetFogAmount</c> emit <c>FuncInterp("mainscene.fog*")</c> TEXT, which
-    /// resolves the scene by name through <c>FindScene</c> and then writes the words directly. Those writes
-    /// land in the shell, and a column would not see them. <c>FrameRead.ReadFog</c> reads the same four words
-    /// off the engine's <c>Scene</c> in mode 0, so the two modes read one layout.</para>
-    /// <para>No shell (a fixture scene) falls back to the columns the slots keep.</para></summary>
-    private static void FogTerms(int i)
+    /// <summary>This view's fog into <see cref="FrameInputs"/>. CX-188: the three sources -- the AREA's own
+    /// scene, the scene SHELL's words, the scene columns -- are all engine or game-thread state, so the
+    /// choice between them is made at the fold (<see cref="FrameHoist.FoldFog"/>) and all that happens here
+    /// is the copy into the frame's inputs. The ordering argument that picked the area first is that
+    /// function's and is written there.</summary>
+    private static void FogTerms(int i, in RenderSnapshot.ViewRec v, in FrameHoist h)
     {
-        _fogPath = 0;
-        FogRead(i);
-        FogNote(i);
+        _fogPath = v.Fog.Path;
+        FrameInputs.FogOn = v.Fog.On;
+        if (v.Fog.On)
+        {
+            FrameInputs.FogStart = v.Fog.Start;
+            FrameInputs.FogEnd = v.Fog.End;
+            FrameInputs.FogColor = v.Fog.Colour;
+        }
+        FogNote(i, in h);
     }
 
-    /// <summary>Which source <see cref="FogRead"/> took: 1 the area, 2 the scene columns, 3 the scene shell.</summary>
+    /// <summary>Which source the fold took: 1 the area, 2 the scene columns, 3 the scene shell.</summary>
     private static int _fogPath;
     private static int _fogSaidPath = -1;
     private static bool _fogSaidOn;
@@ -276,7 +277,7 @@ public static class SceneFeed
     /// <summary>One line whenever the fog the frame will draw changes -- path, switch, colour, range, the
     /// area's day/night state and the engine's clear colour -- so a wrong fog in a player's session names its
     /// source from cx.log. Cold: a still scene compares four values and writes nothing.</summary>
-    private static void FogNote(int i)
+    private static void FogNote(int i, in FrameHoist h)
     {
         bool on = FrameInputs.FogOn;
         Vector3 col = FrameInputs.FogColor;
@@ -285,81 +286,15 @@ public static class SceneFeed
         if (_fogPath == _fogSaidPath && on == _fogSaidOn && col == _fogSaidCol && end == _fogSaidEnd
             && haveSky == _fogSaidSky) return;
         _fogSaidPath = _fogPath; _fogSaidOn = on; _fogSaidCol = col; _fogSaidEnd = end; _fogSaidSky = haveSky;
-        CNWCArea a = SceneInputs.CurrentArea();
         float[] clr = ScreenOwner.ClearRgba;
-        string area = a.IsNull ? "no area"
-            : $"area night={a.IsNight} day=({a.DayFog[0]:F3},{a.DayFog[1]:F3},{a.DayFog[2]:F3}) "
-            + $"nightfog=({a.NightFog[0]:F3},{a.NightFog[1]:F3},{a.NightFog[2]:F3}) scene={(a.Scene.IsNull ? "null" : "set")}";
+        // CX-188: the area's terms as the FOLD read them, not a fresh walk. This line runs inside the draw,
+        // which may be the render thread, where CurrentArea() is a read of the game thread's memory.
+        string area = !h.HaveArea ? "no area"
+            : $"area night={h.Night} fog=({h.FogColour.X:F3},{h.FogColour.Y:F3},{h.FogColour.Z:F3}) "
+            + $"scene={(h.HaveAreaScene ? "set" : "null")} range={h.AreaFogStart:F1}/{h.AreaFogEnd:F1}";
         _log?.Always($"SceneFeed: fog scene={i} path={_fogPath} on={on} col=({col.X:F3},{col.Y:F3},{col.Z:F3}) "
                    + $"start={FrameInputs.FogStart:F1} end={end:F1} | {area} | clear=({clr[0]:F3},{clr[1]:F3},{clr[2]:F3})"
                    + (haveSky ? $" | sky term ({sky.X:F3},{sky.Y:F3},{sky.Z:F3}) mix={SceneFog.SkyMix:F2}" : " | sky term OFF"));
-    }
-
-    private static void FogRead(int i)
-    {
-        // CX-120: the AREA's own scene first. The game writes the fog words into whatever object sits at
-        // CNWCArea+0x248 -- that is the pointer SetFog/SetFogAmount refuse without and the one LoadArea hands
-        // the sun model -- so reading them there needs no name lookup, and in particular does not depend on
-        // FindScene answering to "mainscene". The scene facade below stays as the fallback for a view whose
-        // scene is not the area's (a GUI panel's), where the area has nothing to say.
-        CNWCArea cur = SceneInputs.CurrentArea();
-        // The area pointer is null at the main menu and between modules, and `.Scene` is a raw load off it:
-        // asking an absent area for its scene reads address 0x248 and takes the process with it.
-        Scene area = cur.IsNull ? default : cur.Scene;
-        if (!area.IsNull && AreaFog(cur, out Vector3 col))
-        {
-            _fogPath = 1;
-            FrameInputs.FogOn = true;
-            // The RANGE is already right on the area's own scene: CNWCModule::AdjustCameraClipRange @0x8d8ad0
-            // drives SetFogRange through its vtable, and a vtable call reaches a CX shell. Measured live: a DB
-            // shell carries mode 0's 30/45 before anything here runs.
-            FrameInputs.FogStart = area.FogStart;
-            FrameInputs.FogEnd = area.FogEnd;
-            FrameInputs.FogColor = col;
-            return;
-        }
-        nint shell = SceneDb.SceneFacade[i];
-        if (shell == 0)
-        {
-            _fogPath = 2;
-            FrameInputs.FogOn = SceneDb.SceneFogOn[i];
-            if (!FrameInputs.FogOn) return;
-            FrameInputs.FogStart = SceneDb.SceneFogNear[i];
-            FrameInputs.FogEnd = SceneDb.SceneFogFar[i];
-            FrameInputs.FogColor = SceneDb.SceneFogColor[i];
-            return;
-        }
-        _fogPath = 3;
-        var sc = new Scene(shell);
-        bool on = sc.FogEnable != 0;
-        FrameInputs.FogOn = on;
-        if (!on) return;
-        FrameInputs.FogStart = sc.FogStart;
-        FrameInputs.FogEnd = sc.FogEnd;
-        FrameInputs.FogColor = sc.FogColor;
-    }
-
-    /// <summary>Is there fog in this area, and in what colour -- asked of the AREA rather than of its scene.
-    /// <para>The ENABLE word on the scene is the one area term that does not reach a CX shell: the game turns
-    /// fog on as console TEXT (<c>LoadArea</c> emits <c>FuncInterp("mainscene.fog 1")</c>, and
-    /// <c>SetFog</c>/<c>SetFogAmount</c> emit <c>mainscene.fogcolor %f %f %f</c>), which resolves the scene by
-    /// NAME. Measured: a DB shell has the right fog RANGE (that one arrives through a vtable call) and
-    /// <c>fogEnable = 0</c>, so the by-name path is not landing. The game layer's own answer needs no lookup
-    /// -- <c>SetAsDay</c>/<c>SetAsNight</c> call the area's <c>SetFog</c> with the palette's fog triple and
-    /// its amount byte -- so that is what is read here.</para>
-    /// <para><c>ponytail:</c> the ceiling is a script that changes fog mid-area through the same TEXT path;
-    /// it would move the scene's words and not these. The upgrade is making the by-name lookup answer, which
-    /// is <c>FindScene</c>'s business, not this function's.</para></summary>
-    private static bool AreaFog(CNWCArea a, out Vector3 colour)
-    {
-        bool night = a.IsNight != 0;
-        Span<float> c = night ? a.NightFog : a.DayFog;
-        colour = new Vector3(c[0], c[1], c[2]);
-        // ON, unconditionally, because that is what loading an area does: LoadArea emits
-        // FuncInterp("mainscene.fog 1") with no test beyond "the sun model was created". The amount byte is
-        // not the switch -- SetAsDay/SetAsNight pass it to SetFog ALONGSIDE this triple, and it reads 0 on an
-        // area whose mode-0 frame fogs -- so it is not consulted here.
-        return true;
     }
 
     /// <summary>The area's own flags, from the one place vanilla learns them. <c>SceneIsWorld</c> is NOT this
@@ -369,32 +304,24 @@ public static class SceneFeed
     /// construction rather than by coincidence.
     /// <para>Latched on the area POINTER rather than asked per view: the walk is three guarded derefs and the
     /// answer only changes at an area edge.</para></summary>
-    private static void AreaTerms()
+    private static void AreaTerms(in FrameHoist h)
     {
-        CNWCArea a = SceneInputs.CurrentArea();
-        // CX-120: read EVERY frame rather than latch on the pointer. The area is allocated before LoadArea
-        // fills it, so a latch taken on the first frame that sees the pointer reads a zero Flags word and
-        // calls every interior exterior for the life of the area -- which is what DB mode did. Mode 0 latches
-        // too, but only from its stage 3, after the area is up. Three guarded derefs is not worth a latch.
-        bool interior = !a.IsNull && (a.Flags & InteriorFlag) != 0;
-        _extent = a.IsNull ? default
-            : new Vector2(a.TileWidth * AreaBorder.TileSize, a.TileHeight * AreaBorder.TileSize);
-        if (a.Ptr != _areaPtr || interior != _interior)
+        // CX-188: the flags and the extent come off the FOLD, which read them every frame on the game thread
+        // -- read EVERY frame rather than latched on the pointer, because the area is allocated before
+        // LoadArea fills it and a latch taken on the first frame that sees the pointer reads a zero Flags
+        // word and calls every interior exterior for the life of the area (which is what DB mode did).
+        if (h.Area != _areaPtr || h.Interior != _interior)
         {
-            _areaPtr = a.Ptr; _interior = interior;
+            _areaPtr = h.Area; _interior = h.Interior;
             _log?.Info($"SceneFeed: area is {(_interior ? "INTERIOR -- no sun shadows" : "exterior -- sun shadows on")}");
         }
-        FrameInputs.Interior = interior;
-        FrameInputs.AreaPtr = a.Ptr;
-        FrameInputs.AreaExtent = _extent;
+        FrameInputs.Interior = h.Interior;
+        FrameInputs.AreaPtr = h.Area;
+        FrameInputs.AreaExtent = h.Extent;
     }
-
-    /// <summary><c>CNWCArea</c> flags bit 0: the area is interior/underground, so it has no sun.</summary>
-    private const uint InteriorFlag = 1;
 
     private static IntPtr _areaPtr;
     private static bool _interior;
-    private static Vector2 _extent;
 
     private static void CamTerms(Vector3 pos, Quaternion rot, float fovy, float aspect, float near, float far,
                                  int w, int h, bool perspective)

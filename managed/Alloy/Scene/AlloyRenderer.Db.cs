@@ -237,8 +237,11 @@ public sealed unsafe partial class AlloyRenderer
             // when the diffuse's .txi lands, which is after the slot took its columns.
             float wasCos = _oCos[i], wasSin = _oSin[i];
             DbWriteTexRot(i, SceneDb.PartObj[_oDbPart[i]].Index, recipe, DrawRecipe.Flags(recipe));
-            if (_oCls[i] == cls && _oCos[i] == wasCos && _oSin[i] == wasSin) continue;
-            _oCls[i] = cls;
+            // ...and the .txi's blend pair and fullbright flag, which an offer that waited reads late.
+            bool lit = (DrawRecipe.Flags(recipe) & RecipeFlag.Lit) != 0 && _lighting;
+            if (_oCls[i] == cls && _oCos[i] == wasCos && _oSin[i] == wasSin
+                && _oDst[i] == DrawRecipe.Dst(recipe) && _oLit[i] == lit) continue;
+            _oCls[i] = cls; _oLit[i] = lit;
             _oSrc[i] = (byte)DrawRecipe.Src(recipe); _oDst[i] = (byte)DrawRecipe.Dst(recipe);
             // The slot moves between passes, so its staged record and batch row are both stale.
             UnstampRecord(i);
@@ -430,7 +433,7 @@ public sealed unsafe partial class AlloyRenderer
         name = 0; holes = 0f; graded = 0f;
         if (!DbSlot(slot)) return false;
         TexId id = DrawRecipe.Tex(_oDbRecipe[slot], 0);
-        if (!TexRegistry.TryResident(id, out uint gl, out _)) return false;
+        if (!TexRegistry.TryDrawable(id, out uint gl, out _)) return false;
         name = (int)gl;
         switch (TexRegistry.Coverage(id))
         {

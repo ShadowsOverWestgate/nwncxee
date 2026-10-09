@@ -5,11 +5,13 @@ uniform sampler2D uOitDepth;
 // atomic in a fragment stage is a side effect, and the driver then runs every fragment before the depth
 // test -- even down a dead uOit branch -- which costs the opaque pass its early-Z (measured 5x on NVIDIA).
 #ifdef CX_OIT_LISTS
+// ...so the twin forces the GL depth test (the scene depth, attached read-only) ahead of the shader: a hidden
+// fragment is rejected before it runs, and the append and its atomics never see it
+layout(early_fragment_tests) in;
 layout(std430, binding = 22) buffer CxOitHeads { uint uOitCount; uint uOitHead[]; };
 layout(std430, binding = 23) writeonly buffer CxOitNodes { uvec4 uOitNode[]; };
 #endif
 uniform ivec2 uOitDim;   // (head-table stride in pixels, node capacity)
-uniform float uOitBias;  // a wash batch's polygon offset, which gl_FragCoord.z need not carry
 uniform int uOitGob;     // the batch's object id (1..255, 0 = none): one object composites as ONE layer
 vec4 CxOitOut(vec4 c)
 {
@@ -19,9 +21,6 @@ vec4 CxOitOut(vec4 c)
 #ifdef CX_OIT_LISTS
     if (uOit == 2)
     {
-        // mode 2 draws with the GL depth test OFF and no depth attached: this compare is the test,
-        // for the pair too, so the depth texture is never sampled while it is also an attachment
-        if (gl_FragCoord.z - uOitBias > texelFetch(uOitDepth, px, 0).r) discard;
         uint i = atomicAdd(uOitCount, 1u) + 1u;   // 1-based: 0 is the empty head after the clear
         if (i <= uint(uOitDim.y))
         {

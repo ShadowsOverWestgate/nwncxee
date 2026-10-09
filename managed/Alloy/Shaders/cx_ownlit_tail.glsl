@@ -13,6 +13,11 @@
     vec3 reflFilm = vec3(0.0);
     // the share of the reflection that is lit legacy env content, not the probe: the screen march leaves it alone
     float envMix = 0.0;
+#ifdef CX_DEFERRED
+    // CX-188: the legacy env pattern, 0 wherever that branch does not run -- the rest of d(env)/d(diffuse)
+    // (envMix, the grey level, reflW) is already in scope at the G-buffer write below
+    float gEnvPat = 0.0;
+#endif
     if (uCapture != 1)
     {
         vec3 R = reflect(-V, N);
@@ -34,6 +39,9 @@
                 float pat = m > 1e-5 ? min(dot(env, vec3(0.2126, 0.7152, 0.0722)) / m, CX_ENV_PAT_MAX) : 1.0;
                 envMix = min(envLevel * CX_ENV_SPEC_SCALE, 1.0);
                 env = mix(env, (ambient + diffuse) * pat * CX_ENV_GREY_LIN, envMix);
+#ifdef CX_DEFERRED
+                gEnvPat = pat;
+#endif
             }
             specLight += env * reflW;
         }
@@ -102,5 +110,47 @@
     // R4: where the water film dominates, the record carries the FILM's roughness and the film's weight --
     // the screen march must trace the mirror the film is, not the matte bed the base roughness describes.
     CxReflOut(N, mix(rough, cxCoatRough, wxFilm), max(reflW * (1.0 - envMix), reflFilm) * (kh * (1.0 - CxFogFactor(vWorld, vDepth))));
+#ifdef CX_DEFERRED
+    // CX-188 (ADR 0029): the record the deferred compute pass lights from, written on the uCapture == 0 path
+    // alone (the capture and the mirror returned above). It goes LAST because the transfer weights carry the
+    // whole rest of the composition -- everything the walk's two results would have been multiplied by on
+    // their way to this pixel. docs/spec/deferred-lighting.md's Lane semantics table is the contract.
+    {
+        CxGbuf g;
+        g.flags = CX_GB_DEFERRED
+                | (baked ? CX_GB_BAKED : 0u)
+                | (onMover > 0.0 ? CX_GB_ONMOVER : 0u)
+                | (wxFilm > 0.0 && baked && cxCoat > 0.0 ? CX_GB_FILM : 0u)
+                | (cxRecvShadow == 0.0 ? CX_GB_NOSHADOW : 0u);
+        g.N = N; g.rough = rough; g.spec = spec; g.fresnel = cxFresnel;
+        g.coat = cxCoat; g.coatRough = cxCoatRough; g.sheenRough = cxSheenRough;
+        g.sheen = cxSheen; g.f0 = cxF0; g.specScale = cxSpecScale;
+        // the ghost divide, applied to specLight just above: vanilla pre-divides the specular by the alpha it
+        // is about to be blended by, so everything reaching the pixel THROUGH specLight carries it
+        float ghost = partA < 1.0 && partA > 0.001 ? max(partA, 0.1) : 1.0;
+        // the fog mixes in display space, so (1 - factor) is its linear transmittance only approximately
+        // (the spec's Known deviations, and the approximation CxReflOut above already takes). The REVEAL
+        // factor, not the plain one: on an unexplored tile that ramp is the one the pixel actually took.
+        float thru = kh * (1.0 - CxFogRevealFactor(vWorld, vDepth, d.ext2.w));
+        // P: pointSpec and the film statics both enter specLight times dirOcc, and specLight reaches the
+        // pixel through the ghost divide and nothing else.
+        g.specT = dirOcc * thru / ghost;
+        // Wd: `point` enters `diffuse` times dirOcc, and `diffuse` reaches the pixel three ways -- through
+        // the albedo multiply (`total`'s matDiffuse x kd x coatT x wxTransmit), and as ARRIVING light in the
+        // two terms that read it so: the coat's probe reflection and the legacy env pattern, both of which
+        // land in specLight and therefore take the ghost divide too.
+        g.diffT = dirOcc * thru * (albedo * (matDiffuse * (kd * coatT * wxTransmit))
+                                   + (gCoatProbe + reflW * (CX_ENV_GREY_LIN * (gEnvPat * envMix))) / ghost);
+        g.lmLum = gLmLum;
+        g.lmTexel = CxLmTexelWorld(chart.rec);
+        g.lmMover = baked ? CxLightmapMover(chart.rec, vChart) : vec4(0.0);
+        g.lmPick = chart.pick;
+        g.viewDepth = 1.0 / gl_FragCoord.w;
+        // L: the baked term's whole contribution -- its diffuse rode `point` into Wd, its lobe rode
+        // `pointSpec` into P. The twin left `lm` undebited, so this is exactly what the debt scales back.
+        g.lmShare = g.diffT * lm + g.specT * gLmSpec;
+        CxGbufWrite(g);
+    }
+#endif
     frag = CxOitOut(vec4(CxDisplayOverlays(CxFogReveal(lit * kh, vWorld, vDepth, d.ext2.w)), coverage * d.rot.w));
 }

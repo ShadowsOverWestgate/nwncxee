@@ -2,10 +2,10 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-109/CX-110's three A/Bs, in one group (ADR 0025: one declaration is the panel row, the
+/// <summary>CX-109/CX-110's two A/Bs, in one group (ADR 0025: one declaration is the panel row, the
 /// <c>cx.cfg</c> key and the <c>/view &lt;knob&gt; &lt;value&gt;</c> chat form). Each hands one step of the
 /// per-frame scene pipeline back to the engine, which is how a live session proves Alloy's own answer before
-/// the engine's is deleted. All three default ON -- the point of the tier is ownership.
+/// the engine's is deleted. Both default ON -- the point of the tier is ownership.
 /// <para>Advanced tier, not User: nothing here changes how the game looks when it is working. What it changes
 /// is which code computed the numbers.</para></summary>
 internal static class ViewKnobs
@@ -16,8 +16,6 @@ internal static class ViewKnobs
     internal static readonly Knob<bool> CameraLoop;
     /// <summary>CX-110: Alloy runs its own wind clock, noise field and point-source list.</summary>
     internal static readonly Knob<bool> Wind;
-    /// <summary>CX-110: Alloy resolves the area's environment map and its fallback itself.</summary>
-    internal static readonly Knob<bool> EnvMap;
 
     static ViewKnobs()
     {
@@ -36,11 +34,6 @@ internal static class ViewKnobs
             help: "The wind that moves grass, cloaks and particles is CX's own clock and noise field. Off, the "
                 + "engine's WindManager answers instead -- the A/B for wind that gusts too hard, too often or "
                 + "not at all.");
-
-        G.Section("Reflections");
-        EnvMap = G.Toggle("envmap", "CX picks the environment map", true, Tier.Advanced,
-            help: "The reflection texture shiny surfaces and water sample is chosen by CX from the area's "
-                + "tileset. Off, the engine's own choice is used -- the A/B for a wrong or missing reflection.");
     }
 
     /// <summary>Force the static constructor on the main thread at Initialize, the way every other group is

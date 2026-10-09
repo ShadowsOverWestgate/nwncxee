@@ -37,9 +37,15 @@ internal static class SeamDraw
     private static Action<DbId, DbId>? _perView;
     private static bool _saidReasserted, _saidOrder;
 
-    /// <summary>The renderer's per-view draw in DB mode: run Alloy's pass chain for one view of one scene.
-    /// Set by the renderer when DB mode arms.</summary>
-    internal static Action<DbId, DbId>? Pass;
+    /// <summary>The renderer's per-view draw in DB mode: run Alloy's pass chain for one view of one scene,
+    /// with the frame's hoisted engine terms. Set by the renderer when DB mode arms.
+    /// <para>CX-188: a delegate TYPE rather than <c>Action</c> because the hoist crosses by <c>in</c>
+    /// reference -- the point of the struct is that the renderer reads values the game thread folded, and a
+    /// boxing copy per view would be a per-frame allocation on a hot path.</para></summary>
+    internal static DbViewPass? Pass;
+
+    /// <summary><see cref="Pass"/>'s signature.</summary>
+    internal delegate void DbViewPass(DbId scene, DbId camera, in FrameHoist hoist);
 
     /// <summary>Register the boundary. Called from the seam's boot, after the knobs are declared.</summary>
     internal static void Install(ExtenderLog log)
@@ -54,8 +60,20 @@ internal static class SeamDraw
         // dirty lists, which is the only order that works: a fold after TakeDirty sees an empty list and
         // writes nothing, so the frame would publish and draw records nobody rebuilt.
         // The trigger highlight's snapshot too: it reads the engine's PartTriggers, which only the game thread may.
-        RenderSnapshot.Fold = _ => { DbAnim.Settle(); DbFeed.FoldFrame(); TriggerHighlight.Enroll(); };
+        // CX-188: SceneFeed.FoldWind with them -- it READS the engine scene's WindManager and WRITES the
+        // engine's own shader block, and a write to engine memory is the one thing a render thread may never do.
+        RenderSnapshot.Fold = f =>
+        {
+            long t = FrameZones.Now;
+            DbAnim.Settle(); DbFeed.FoldFrame(); TriggerHighlight.Enroll(); SceneFeed.FoldWind(f);
+            FrameZones.Add(FrameZones.Zone.DbFold, t);
+        };
         FrameRegistry.Global.Register(FramePhase.PrePresent, 9, OnBoundary, "SeamDraw.frame", log);
+        // CX-188: the file that BUILDS the order is the one that may assert it. OnBoundary fences the render
+        // thread first (RenderSnapshot.AwaitDrained), so every PrePresent participant after this one, the
+        // hand-back and the present run with the renderer parked; and the 2D UI roll-call now runs in BOTH
+        // arms of the boundary, after the world frame it composites over in each.
+        RenderThread.UiOrderSettled = true;
         log.Info("SeamDraw: DB-mode frame boundary armed -- the CX scene database's frame runs at the present, "
                + "one priority ahead of the 4.6 bracket");
     }
@@ -98,13 +116,33 @@ internal static class SeamDraw
         // A stand-down raised on the render thread is not finished until that thread has dropped the context.
         // Blocking here is the handshake: the game thread must not take the context back early.
         RenderThread.SettleIfStandingDown();
+        // Latched ONCE, at the top: Live decides where the 2D UI goes relative to the publish, and a value
+        // that changed mid-boundary would draw it twice or not at all.
+        bool live = RenderThread.Live;
+        if (live)
+        {
+            // THE FENCE, and then the game thread's exclusive half of the frame. Past this point the render
+            // thread is parked in RenderSnapshot.Take with nothing to draw, so framebuffer 0, the engine's GL
+            // state and the engine's own context are this thread's -- which is what every PrePresent
+            // participant after this one (GlContextService 10, LightmapBake.Hold 20, FrameTap 30,
+            // DebugStringService 60), UiHostService's hand-back and ScreenOwner's present already assume.
+            RenderSnapshot.AwaitDrained();
+            // ...and the 2D UI goes HERE, over the world frame the renderer just finished. It cannot go after
+            // the publish below, because the publish is what wakes the renderer: chat drawn there would land
+            // in framebuffer 0 while the next world frame was being resolved into it.
+            // The world it sits on is frame N-1's, not N's -- that IS the pipeline, and it is the same one
+            // frame of latency the snapshot protocol is built around. The alternative is no second thread.
+            CX.Ui.UiHostService.DrawWindowsForDbFrame();
+        }
         // The GUI depth latch is per RUN of GUI views, not per view, exactly as the engine's own
         // DAT_019aa3a4 is -- so it resets once a frame, here, and not inside the per-view draw.
         DbGui.NewFrame();
         DbCamera.NewFrame();   // latch every camera's previous position, once, as the engine does
+        long tPub = FrameZones.Now, fold0 = FrameZones.Ticks(FrameZones.Zone.DbFold);
         RenderSnapshot.Frame f = RenderSnapshot.Publish();   // Fold runs inside, ahead of TakeDirty
+        FrameZones.Add(FrameZones.Zone.Publish, tPub, FrameZones.Ticks(FrameZones.Zone.DbFold) - fold0);
         DbFeed.CloseViews();
-        if (RenderThread.Live) return;                       // the render thread draws it and releases it
+        if (live) return;                                    // the render thread draws it and releases it
         // try/finally, not optimism: Publish waits while a frame is still held, so a throw that skipped the
         // Release would block the GAME thread forever on the next present -- a frozen client, which leaves no
         // core and is the hardest failure in this codebase to diagnose (nativeaot-hang-forensics).
@@ -115,6 +153,9 @@ internal static class SeamDraw
             // the game asked for. In mode 0 it is drawn during the engine's GUI render, before the world
             // frame; in DB mode the whole frame runs here at PrePresent, so drawing it at its usual site put
             // it UNDER the world and it disappeared the moment the world started drawing.
+            // CX-188: the same rule, the other side of the publish -- see the `live` arm above. The ONE
+            // invariant both arms keep is "the 2D UI is drawn after the world frame it composites over"; what
+            // the knob changes is which frame that is, because a pipelined draw is not finished yet.
             CX.Ui.UiHostService.DrawWindowsForDbFrame();
             RenderSnapshot.Release();
         }
@@ -142,7 +183,7 @@ internal static class SeamDraw
         {
             ref RenderSnapshot.ViewRec v = ref f.Views[k];
             DbGui.LastWhy = 'W'; DbGui.LastIssued = 0;
-            PerViewWithState(v.Scene, v.Camera, in v);
+            PerViewWithState(v.Scene, v.Camera, in v, in f.Hoist);
             if (!say || k >= RenderSnapshot.MaxViews) continue;
             _why[k] = DbGui.LastWhy; _issued[k] = DbGui.LastIssued;
             sig = (sig ^ v.Scene.Value) * 1099511628211;
@@ -155,7 +196,12 @@ internal static class SeamDraw
         // frame's nk flush, i.e. before that frame's world pass composited the whole display over it. The
         // panels were drawn every frame and overwritten every frame. Flushing at the end of the view list is
         // also order-proof: whether the world view comes first or last, the GUI lands on top of it.
-        if (Renderer.On) { GuiCapture.Lead(nui); GuiPass.FlushNow(); }
+        if (Renderer.On)
+        {
+            long tFlush = FrameZones.Now;
+            GuiCapture.Lead(nui); GuiPass.FlushNow();
+            FrameZones.Add(FrameZones.Zone.GuiFlush, tFlush);
+        }
     }
 
     /// <summary>One view, as <see cref="DbFeed.Draw"/>. Reached on the single-threaded path, where the
@@ -167,7 +213,7 @@ internal static class SeamDraw
             for (int k = 0; k < f.ViewCount; k++)
                 if (f.Views[k].Scene == scene && f.Views[k].Camera == camera)
                 {
-                    PerViewWithState(scene, camera, in f.Views[k]);
+                    PerViewWithState(scene, camera, in f.Views[k], in f.Hoist);
                     return;
                 }
         // The feed asked for a view the snapshot does not carry, which can only mean the camera's own view
@@ -190,10 +236,11 @@ internal static class SeamDraw
     /// the SNAPSHOT's matrices, not from a fresh read of the camera record: the game thread may already have
     /// moved the camera for frame N+1, and a pass that re-derived its own view would then draw frame N's
     /// geometry through frame N+1's camera.</summary>
-    private static void PerViewWithState(DbId scene, DbId camera, in RenderSnapshot.ViewRec v)
+    private static void PerViewWithState(DbId scene, DbId camera, in RenderSnapshot.ViewRec v,
+                                         in FrameHoist h)
     {
         _views++;
-        SceneFeed.TickFromView(scene, camera, in v);
+        SceneFeed.TickFromView(scene, camera, in v, in h);
         // THE view for this pass: the snapshot's, not AlloyCamera.WorldView (which is measured at an engine
         // hook that does not run in DB mode, and is one camera for the whole frame regardless). Set around
         // the pass and cleared in a finally, so a throw cannot leave a GUI panel's ortho camera latched for
@@ -206,12 +253,12 @@ internal static class SeamDraw
             Perspective = v.Perspective, Valid = true,
         };
         AlloyRenderer.DbViewValid = true;
-        try { DrawView(scene, camera, in v); }
+        try { DrawView(scene, camera, in v, in h); }
         finally { AlloyRenderer.DbViewValid = false; }
     }
 
     /// <summary>One view's draw, with <see cref="AlloyRenderer.DbView"/> already latched.</summary>
-    private static void DrawView(DbId scene, DbId camera, in RenderSnapshot.ViewRec v)
+    private static void DrawView(DbId scene, DbId camera, in RenderSnapshot.ViewRec v, in FrameHoist h)
     {
         if (!v.World)
         {
@@ -224,12 +271,13 @@ internal static class SeamDraw
             // re-entrant per view -- every BeginOwnedFrame clears the HDR target and ends by compositing the
             // WHOLE display -- so running it once per panel made the last panel's empty composite overwrite
             // the world (the black frames in .scratch/live/gui2 and gui3).
+            long tGui = FrameZones.Now;
             _guiText += DbGui.Draw(scene, in v, (uint)Environment.TickCount);
+            FrameZones.Add(FrameZones.Zone.DbGuiDraw, tGui);
             return;
         }
-        Action<DbId, DbId>? pass = Pass;
-        if (pass == null) { Refuse(); return; }
-        pass(scene, camera);
+        if (Pass == null) { Refuse(); return; }
+        Pass(scene, camera, in h);
     }
 
     private static long _guiViews, _guiText;

@@ -94,7 +94,7 @@ Practical requirements, none of which the extender can check for you:
 A build failure of any kind rebuilds the embedded stage and says so in the log, so a bad
 module costs a log line rather than the frame.
 
-## The thirty-three stages
+## The overridable stages
 
 These are the stage resrefs. The libraries they include are listed by the dump; see
 [Libraries](#libraries).
@@ -110,6 +110,9 @@ These are the stage resrefs. The libraries they include are listed by the dump; 
 | `cx_grass_vs` | vertex | Instanced grass blades, wind animation. |
 | `cx_grass_fs` | fragment | Grass shading. |
 | `cx_cluster_cs` | compute | Builds the light cluster grid the lit and water stages read. |
+| `cx_deferred_cs` | compute | CX-188 (ADR 0029): the deferred point-light pass. One invocation per render pixel: reads the G-buffer the lit stage's `CX_DEFERRED` twin wrote (`cx_gbuf`), reconstructs the pixel's world position from the frame depth, walks the lights through the SAME `cx_lightfrag` the forward loop is, and adds the result into the HDR target. 16x16 groups, and `light.deferredtiles` picks its light list: the froxel table every forward stage reads (the default), or this group's own depth-bounded cull. |
+| `cx_defshadow_cs` | compute | CX-188 step 3 (ADR 0029): the shadow record. Per pixel of the G-buffer (half resolution under `shadow.deferredres`), the four strongest shadowed lights' visibility, filtered once, which `cx_deferred_cs` reads back instead of tapping a cube per light. A record that fails to link stands `light.deferred` down for the session. |
+| `cx_pairdebt` | compute | CX-188 step 4 (ADR 0029): the hot-light debt. The deferred stage has the walk's hot branch compiled out, so this dispatch is where a creature's shadow comes back out of the baked term: each 16x16 tile culls this frame's (static light, creature) pair tiles against its own view-space box, and the pixels of a tile that holds one evaluate the tile and subtract `lmShare * min(lmSub.x / lmLum + lmSub.y, 1)`. `lightmap.moverlights 0` is its A/B. |
 | `cx_cast_vs` | vertex | Shadow-map depth bake: projects casters into a cascade or cube face. |
 | `cx_cast_fs` | fragment | The caster pass's fragment stage. Depth-only, and deliberately inert. |
 | `cx_post_vs` | vertex | Fullscreen triangle shared by the whole post chain. |
@@ -314,9 +317,33 @@ vec4(aPos, 1.0);` under `invariant gl_Position;` -- no depth prepass
 
 If you want the prepass back, keep the expression.
 
+### Pass block — the shared scene terms
+
+**Applies to:** `cx_pass`, the library every Alloy lighting stage includes for the `CxPass`
+uniform block.
+
+**Rejects:** a copy whose member list is not the embedded one, member for member and in
+order — and, from the C# side, a block whose std140 offsets no longer match the ones
+`AlloyRenderer`'s `Pb*` constants stage. The block is a byte layout filled once per pass, so a
+member added, removed or moved in an override reads every term after it out of its
+neighbour's bytes: a silent frame, not a link error. `ShaderContract.PassCheck` computes the
+layout from the GLSL itself, so reformatting and comment changes are free and a reorder is not.
+
+The block grows at the end, never in the middle. CX-188's budget work added the last three
+lanes, and a copy taken before it is missing all three:
+
+| lane | what it carries |
+|---|---|
+| `uShBudget` | `shadow.perpixel` — lights a PIXEL may shadow at all; the rest light it unshadowed. 0 = no budget, which is also the pre-budget ranking (`-f2`) in every walk that reads it. |
+| `uLightFloor` | `light.floor` — the absolute display-linear brightness a light's reach ends at, as against `light.binreach`'s share of the authored radius. 0 = the authored radius. |
+| `uFullModel` | `light.fullmodel` — the share of the pixel's brightest light above which a light keeps the near-field core, the source-sized lobe and the subsurface leak. 0 = every light keeps all three. |
+
+A caller that fills the block itself (the lightmap bake) leaves all three zero, which is why
+zero has to mean "as before" in each of them.
+
 ### Not guarded
 
-`cx_post_vs`, `cx_grass_vs` and `cx_cluster_cs` carry no guard.
+`cx_post_vs`, `cx_grass_vs`, `cx_cluster_cs`, `cx_deferred_cs`, `cx_defshadow_cs` and `cx_pairdebt` carry no guard.
 
 The first two read no per-draw record and write no colour; an interface break in them
 fails the **link**, which the build-failure fallback already refuses with a log line.
@@ -325,6 +352,24 @@ stride open-coded on both sides rather than as a struct — the counting guard c
 it, and a text match on the indexing arithmetic would forbid restyling. It is stated here
 rather than guessed at: an override of the cluster build that gets the stride wrong will
 fail silently.
+
+`cx_deferred_cs` is the same case from the other end: it reads `uLights` and the cluster
+table through the shared `cx_lightfrag` library rather than restating either, so what an
+override of it can get wrong is the lane decode (`cx_gbuf`, a library of its own) or the
+arithmetic that turns the walk's result into the pixel. Neither is a text match away. The
+guard that does exist is the knob: `light.deferred 0` puts the whole frame back on the
+forward loop, which is the A/B to reach for when an override of this stage looks wrong.
+
+`cx_pairdebt` is the same case again, and the same two A/Bs bound it: `lightmap.moverlights 0`
+takes the pass out of the frame entirely (and with it the pair tiles the caster pass bakes),
+and `light.deferred 0` puts the hot-light debt back inside the forward light loop, where it
+is computed per fragment per light instead. An override that gets the subtraction wrong
+shows as creature shadows that are too dark, too light or in the wrong place on baked ground
+-- never as a missing draw.
+
+`cx_defshadow_cs` is bounded by the same knob: an override that writes a wrong record shows as
+point-light shadows in the wrong place on deferred pixels only, and `light.deferred 0` takes the
+forward loop's own taps instead. One that fails to link stands `light.deferred` down for the session.
 
 ## Where this is enforced
 

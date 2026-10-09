@@ -309,10 +309,13 @@ internal static unsafe class AlloyLights
         // The subsurface term is the stock one or it is nothing: the energy factor is inc_lighting.shd's
         // fEnergyPreservation / (1 + w) and the wrap rides the MAPPED normal (stock: the vertex normal, which washes out normal maps).
         check.Expect(MathF.Abs(SssK(0.38f) - 0.6262f) < 1e-3f, "SssK(0.38) is 2/(2+PI*0.38) = 0.626");
-        check.Expect(FragmentLib.Contains("c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y)"), "the point loop carries the subsurface term on the MAPPED normal");
+        // CX-188 budget: cxLod is light.fullmodel's per-light weight, 1 at every caller but the walk's faint tail
+        check.Expect(FragmentLib.Contains("c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y * cxLod)"), "the point loop carries the subsurface term on the MAPPED normal");
         check.Expect(FragmentLib.Contains("if (mirror) { spec += spc; continue; }")
           && FragmentLib.Contains("if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)") && FragmentLib.Contains("if (l > mLum) { mLum = l; mSlot = slot; mNdl = ndlRaw; mSpc = spc; }")
-          && AlloyRenderer.OwnedLitFsMain.Contains("pointSpec += lm * (1.0 - CxGlossW(rough)) * (wxFilm")
+          // CX-188 named the term `lmSpec`: the deferred twin carries that same value into lmShare
+          && AlloyRenderer.OwnedLitFsMain.Contains("vec3 lmSpec = lm * (1.0 - CxGlossW(rough)) * (wxFilm")
+          && AlloyRenderer.OwnedLitFsMain.Contains("pointSpec += lmSpec;")
           && AlloyRenderer.OwnedLitFsMain.Contains("float lmLobe = CxSpecLobe(N, V, lmDir, rough, spec);"),
           "a glossy lobe carries its light's shadow whatever the cap says, in the pages' place too");
         check.Expect(AlloyRenderer.OwnedLitFsMain.Contains("max(dot(N, uAreaDir) + uSss.x, 0.0) * uSss.y"), "...and so does the sun");
@@ -342,7 +345,7 @@ internal static unsafe class AlloyLights
         check.Expect(FragmentLib.Contains("float CxSrcSpread(float dist) { return uWrap <= 0.0 ? 0.0 : uWrap * uFalloff.y * 0.5 / max(dist, 1e-3); }")
           && FragmentLib.Contains("float ap = min(rough + spread, 1.0);")
           && FragmentLib.Contains("float den = 1.0 - NdotH * NdotH * (1.0 - ap * ap);")
-          && FragmentLib.Contains("float spread = CxSrcSpread(sqrt(f2) * pr.w);")
+          && FragmentLib.Contains("float spread = CxSrcSpread(sqrt(f2) * pr.w) * cxLod;")
           && FragmentLib.Contains("d *= 1.0 / mix(NdotL, 1.0, CxSmithK(rough));"),
           "the lobe widens by the source sphere in the DENOMINATOR alone, with the surface's own Smith k");
         check.Expect(AlloyRenderer.MaterialLib.Contains("float ap = min(a + spread, 1.0);")
@@ -402,7 +405,11 @@ internal static unsafe class AlloyLights
           && build.Contains("return fade / (at.x + at.y * f2) * dot(col, vec3(0.299, 0.587, 0.114));")
           && FragmentLib.Contains("return fade / (at.x + at.y * f2) * dot(uLights[li * 2u + 1u].rgb, vec3(0.299, 0.587, 0.114));")
           && build.Contains("if (u <= uRel.x * floorI && (uv < floorV || uv <= 0.0)) entry |= FLAG_CULL;")
-          && FragmentLib.Contains("for (uint k = CxClusterLive(cl), e = CxClusterColdCand(cl); k < e; k++) relMax")
+          && FragmentLib.Contains("for (uint k = CxListLive(cl), e = CxListColdCand(cl); k < e; k++) relMax")
+          // CX-188: ...and the walk's list source still resolves to the froxel table for every forward program,
+          // so the generalisation cannot quietly detach the path these pins are about
+          && FragmentLib.Contains("uint CxListLive(uint cl) { return CxClusterLive(cl); }")
+          && FragmentLib.Contains("uint CxListColdCand(uint cl) { return CxClusterColdCand(cl); }")
           && FragmentLib.Contains("if (uBounds > 0.5) return min(uClCount[cl * 3u + 2u] >> 16u, CX_CLUSTER_CAP);"),
           "the build bounds the lit stage's own importance curve, and a fragment of the built view searches the candidates it names");
         int missed = 0, overCut = 0, culled = 0;
@@ -446,6 +453,100 @@ internal static unsafe class AlloyLights
         }
         check.Expect(culled > 100 && missed == 0 && overCut == 0,
           $"a culled light ({culled} sampled) is under the cut at every point of its froxel ({overCut} not) and the candidates hold the brightest ({missed} missed)");
+
+        // CX-188 budget (light.floor): the per-light perceptual reach cut, the skip rule behind a shorter binned
+        // and walked radius. One solved expression, transcribed into the walk and into the build; the pins hold
+        // the two texts together and the sweep holds the two claims the skip rests on -- that the cut is exactly
+        // where the curve meets the floor (so the window's fade reaches 0 with the light, and there is no ring),
+        // and that the build's deliberately looser copy can never bin FEWER lights than the walk lights.
+        check.Expect(FragmentLib.Contains("return clamp((lum - uLightFloor * at.x) / max(lum + uLightFloor * at.y, 1e-8), 0.0, 1.0);")
+          && build.Contains("return clamp((lum - uLightFloor.x * at.x) / max(lum + uLightFloor.x * at.y, 1e-8), 0.0, 1.0);")
+          && build.Contains("float lum = uLightFloor.y * dot(max(c, c * c * c), vec3(0.2126, 0.7152, 0.0722));")
+          && FragmentLib.Contains("float rw = min(uReach > 0.0 ? uReach * uReach : 1e30, CxReachCut(c));")
+          // ...and a zero window is a refusal, not a 0/0 in the fade (a light already under the floor)
+          && FragmentLib.Contains("if (rw <= 0.0) return false;")
+          && build.Contains("float ReachR(vec4 pr, vec3 col) { return pr.w * min(uReach, sqrt(ReachCut(col))); }"),
+          "light.floor's reach cut is one expression, in the walk and in the cluster build");
+        int ringed = 0, narrower = 0;
+        for (int t = 0; t < 400; t++)
+        {
+            float fl = 1e-5f + rng.NextSingle() * 0.01f;
+            var at = new Vector2(0.2f + rng.NextSingle() * 2f, 0.2f + rng.NextSingle() * 2f);
+            // ...and OVERBRIGHT channels among them: above 1 a channel linearises UP, so the plain sRGB value
+            // is not an upper bound on the walk's luma and max(c, c^3) is what the build takes instead.
+            float hi = t % 3 == 0 ? 3f : 1f;
+            var srgb = new Vector3(rng.NextSingle() * hi, rng.NextSingle() * hi, rng.NextSingle() * hi);
+            float lumS = 0.2126f * MathF.Max(srgb.X, srgb.X * srgb.X * srgb.X)
+                       + 0.7152f * MathF.Max(srgb.Y, srgb.Y * srgb.Y * srgb.Y)
+                       + 0.0722f * MathF.Max(srgb.Z, srgb.Z * srgb.Z * srgb.Z);
+            float lumL = 0.2126f * MathF.Pow(srgb.X, 2.2f) + 0.7152f * MathF.Pow(srgb.Y, 2.2f)
+                       + 0.0722f * MathF.Pow(srgb.Z, 2.2f);
+            float cutW = Math.Clamp((lumL - fl * at.X) / MathF.Max(lumL + fl * at.Y, 1e-8f), 0f, 1f);
+            float cutB = Math.Clamp((lumS - fl * at.X) / MathF.Max(lumS + fl * at.Y, 1e-8f), 0f, 1f);
+            if (cutB < cutW - 1e-5f) narrower++;
+            if (cutW > 0f && cutW < 1f && MathF.Abs(lumL * (1f - cutW) / (at.X + at.Y * cutW) - fl) > fl * 1e-3f) ringed++;
+        }
+        check.Expect(ringed == 0 && narrower == 0,
+          $"light.floor cuts exactly where the curve meets the floor ({ringed} off) and the build's copy is never "
+          + $"the narrower of the two, overbright colours included ({narrower} narrower)");
+
+        // CX-188 budget: the deferred shadow budget's DISSOLVE, which is the skip rule's continuity proof.
+        // Membership is a step -- the Kth strongest light at a pixel keeps its shadow, the (K+1)th does not --
+        // and the pre-budget path hid that step behind a hardware tap for the (K+1)th. What hides it now is the
+        // per-lane weight the record folds into its own visibilities: a lane fades to unshadowed as its score
+        // falls to the best score that did NOT fit, so the light leaving the record had already dissolved.
+        // The sweep drives one light's score straight through every other's and asserts the weight vector moves
+        // continuously; the control is the same sweep under hard membership, which must jump, or the test is
+        // asserting nothing.
+        string shrec = ShaderSource.Get("cx_shrec.glsl");
+        string defsh = ShaderSource.Get("cx_shpick.glsl");
+        // the literal, not a formatted mirror: a float formatted under the user's own culture writes "2,0" here
+        check.Expect(shrec.Contains("const float CX_SH_FADE = 2.0;") && DeferredShadows.RecordFade == 2f
+          && shrec.Contains("return drop > 0.0 ? smoothstep(vec4(drop), vec4(drop * CX_SH_FADE), rank) : vec4(1.0);")
+          && defsh.Contains("kw = CxShFade(kf, rDrop);")
+          && defsh.Contains("return rDrop > 0.0 ? mix(vec4(1.0), vis, kw) : vis;")
+          && defsh.Contains("? max(kN >= 4 ? k5 : kN == 3 ? kf.w : kN == 2 ? kf.z : kN == 1 ? kf.y : kf.x, 0.0)")
+          && FragmentLib.Contains("return uShBudget > 0.0 ? att * dot(cLin, vec3(0.2126, 0.7152, 0.0722)) : -f2;"),
+          "the shadow budget's edge dissolves inside the record, over the band C# mirrors here");
+        static float Smooth(float a, float b, float x)
+        { float t = Math.Clamp((x - a) / MathF.Max(b - a, 1e-8f), 0f, 1f); return t * t * (3f - 2f * t); }
+        const int Lights = 6, Steps = 20000;
+        int kMax = DeferredShadows.RecordLights;
+        float band = DeferredShadows.RecordFade, worstStep = 0f, worstHard = 0f;
+        Span<float> rk = stackalloc float[Lights];
+        Span<int> ord = stackalloc int[Lights];
+        Span<float> was = stackalloc float[Lights], now = stackalloc float[Lights];
+        Span<float> wasH = stackalloc float[Lights], nowH = stackalloc float[Lights];
+        for (int t = 0; t < 20; t++)
+        {
+            // the still lights sit well clear of zero, so the dissolve band is never degenerate
+            for (int i = 1; i < Lights; i++) rk[i] = 0.5f + rng.NextSingle() * 0.5f;
+            was.Clear(); wasH.Clear();
+            for (int st = 0; st <= Steps; st++)
+            {
+                rk[0] = 2f * st / Steps;   // the sweeper, straight through every other light's score
+                for (int i = 0; i < Lights; i++) ord[i] = i;
+                for (int i = 1; i < Lights; i++)
+                { int j = i; while (j > 0 && rk[ord[j - 1]] < rk[ord[j]]) { (ord[j - 1], ord[j]) = (ord[j], ord[j - 1]); j--; } }
+                float rDrop = rk[ord[kMax]];   // the best score that did not fit
+                now.Clear(); nowH.Clear();
+                for (int i = 0; i < kMax; i++)
+                {
+                    now[ord[i]] = rDrop > 0f ? Smooth(rDrop, rDrop * band, rk[ord[i]]) : 1f;
+                    nowH[ord[i]] = 1f;
+                }
+                if (st > 0)
+                    for (int i = 0; i < Lights; i++)
+                    {
+                        worstStep = MathF.Max(worstStep, MathF.Abs(now[i] - was[i]));
+                        worstHard = MathF.Max(worstHard, MathF.Abs(nowH[i] - wasH[i]));
+                    }
+                now.CopyTo(was); nowH.CopyTo(wasH);
+            }
+        }
+        check.Expect(worstStep < 0.01f && worstHard > 0.9f,
+          $"a light crossing the shadow budget's edge dissolves continuously (worst step {worstStep:F4}) where "
+          + $"hard membership switches outright ({worstHard:F2})");
         log.Info(check.Ok ? "AlloyLights.SelfCheck: passed" : "AlloyLights.SelfCheck: FAILED");
         return check.Ok;
     }
@@ -467,7 +568,7 @@ internal static unsafe class AlloyLights
     private static int _moversGen = -1;
     private static bool _failed;
     private static int _locView = -1, _locProjXY = -1, _locZ = -1, _locCount = -1, _locGrid = -1, _locReach = -1, _locBinCap = -1, _locBinAtten = -1, _locReflK = -1;
-    private static int _locDynPage = -1, _locHot = -1, _locRel = -1, _locPad = -1, _locTally = -1;
+    private static int _locDynPage = -1, _locHot = -1, _locRel = -1, _locPad = -1, _locTally = -1, _locFloor = -1;
     /// <summary>light.relevance as this frame's <see cref="Upload"/> read it. The build's bounds and the lit
     /// stage's <c>uRelevance</c> must cut at the SAME value, or the culled tail could hold a light the lit
     /// stage would have kept.</summary>
@@ -505,6 +606,10 @@ internal static unsafe class AlloyLights
 
     /// <summary>True once the rig is usable: compute + SSBO entry points resolved and the program linked.</summary>
     internal static bool Ready => _prog != 0 && !_failed;
+
+    /// <summary>CX-188: records the light SSBO holds this frame -- the <c>uLightCount</c> any pass that culls
+    /// <c>uLights</c> for itself (the deferred pass's per-tile list) has to walk.</summary>
+    internal static int UploadedLights => _uploaded;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -638,6 +743,10 @@ internal static unsafe class AlloyLights
         bool boundsOk = vpW >= GridX && vpH >= GridY;
         _builtW = vpW; _builtH = vpH; _builtNear = near; _builtFar = far;
         Gl.Uniform2f(_locRel, boundsOk ? _rel : 0f, ReachUniform);
+        // CX-188 budget: light.floor and the master gain, so the build's per-light reach cut is the lit stage's
+        // -- conservatively: cx_lightbuild's ReachCut takes the sRGB luma and skips uDayDim, both of which make
+        // its lum LARGER than the walk's, so the build can only ever bin a light the walk then windows out.
+        Gl.Uniform2f(_locFloor, LightFloor, _gain);
         Gl.Uniform2f(_locPad, 2f / Math.Max(vpW, 1), 2f / Math.Max(vpH, 1));
         Gl.Uniform1i(_locTally, tally && _tallyFrame ? 1 : 0);
         UploadMovers();
@@ -671,6 +780,10 @@ internal static unsafe class AlloyLights
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindCounts, _bufCounts);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindIndices, _bufIndices);
         UploadMovers();
+        // CX-188 step 4: the pair table and the tile atlas. Here rather than at one pass's bind, because
+        // CxPairVis is reachable from every program that lights (cx_localshadow includes it) and the table's
+        // own uPairN is the gate that keeps a frame with no pairs from reading either.
+        PairShadows.BindAtlas();
     }
 
     /// <summary>The mover spheres, once per rewrite, bound where both the cluster build and the lit stage read them.</summary>
@@ -734,6 +847,16 @@ internal static unsafe class AlloyLights
     internal static float ShadowSource => _srcRadius;
     /// <summary>#336: cube-shadow taps a fragment may pay, in cluster order; 0 = every shadowing light.</summary>
     internal static float ShadowCap => Shadows.Cap.V;
+    /// <summary>CX-188 budget: <c>shadow.perpixel</c> -- how many lights a PIXEL may shadow at all (uShBudget).
+    /// Every light past the budget lights the pixel unshadowed; 0 = no budget, the pre-budget path.</summary>
+    internal static float ShadowPerPixel => Shadows.PerPixel.V;
+    /// <summary>CX-188 budget: <c>light.floor</c> -- the absolute display-linear brightness a light's reach ends
+    /// at (uLightFloor), as against <see cref="BinReach"/>'s share of its authored radius. 0 = no cut.</summary>
+    internal static float LightFloor => Lighting.Floor.V;
+    /// <summary>CX-188 budget: <c>light.fullmodel</c> -- the share of a pixel's brightest light above which a
+    /// light keeps the near-field core, the source-sized lobe and the subsurface leak (uFullModel). 0 = every
+    /// light keeps all three, which is the pre-LOD body term for term.</summary>
+    internal static float FullModel => Lighting.FullModel.V;
     /// <summary><c>shadow.cubedist</c>: the view depth past which a fragment reads no cube (uLocalPcss.w; 0 = none).</summary>
     internal static float ShadowDist => Shadows.CubeDist.V;
     /// <summary>EXPERIMENT: the fraction of a light's adjusted radius the cluster build bins it by. The
@@ -819,6 +942,7 @@ internal static unsafe class AlloyLights
         _locDynPage = GlProgram.Loc(prog, "uDynPage"); _locHot = GlProgram.Loc(prog, "uHot");
         _locReflK = GlProgram.Loc(prog, "uReflK");
         _locRel = GlProgram.Loc(prog, "uRel"); _locPad = GlProgram.Loc(prog, "uPad"); _locTally = GlProgram.Loc(prog, "uTally");
+        _locFloor = GlProgram.Loc(prog, "uLightFloor");
 
         uint b;
         Gl.CreateBuffers(1, &b); _bufLights = b;

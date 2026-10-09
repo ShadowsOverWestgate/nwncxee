@@ -17,7 +17,7 @@ namespace CX.Alloy;
 /// other caller in the binary (ADR 0016, "RenderSinglePass is not draw-only"). Skipping it outright freezes all
 /// particle simulation, grass wind and bin LOD. CX-89 took the door fade off that list (<see cref="DoorFade"/>)
 /// and CX-85 the light-side three -- the fade weights, the flare occlusion fade and the <c>focuslighting</c>
-/// global are <see cref="LightFade"/>'s and <see cref="Halos"/>' -- so neither <c>Scene::FadeDoors</c> nor any
+/// global are <see cref="Halos"/>' -- so neither <c>Scene::FadeDoors</c> nor any
 /// engine light code runs on an Alloy frame.</para>
 /// <para><b>It does not walk the buckets.</b> Discovery is <see cref="SceneWalk"/>'s and visibility is
 /// <see cref="CullPass"/>'s, so the frame is built from Alloy's own state end to end (ADR 0018, #264). What
@@ -38,7 +38,7 @@ namespace CX.Alloy;
 /// light ranges (all four reachable-but-never-issued), the stencil-shadow block, and
 /// <c>Camera::DoFrameBufferEffects</c>/<c>CopyRenderSubframe</c>. Anything only the engine drew goes with them
 /// -- on SoW that is the dynamic sky (#136). CX-82/CX-83 took the last two engine draws with them: the
-/// object glow is <see cref="Highlight"/>, and the area-transition highlight
+/// object glow is <see cref="Highlight"/> plus <see cref="HighlightGlow"/>, and the area-transition highlight
 /// is <see cref="TriggerHighlight"/>.</para>
 /// <para><b>Also dropped, and it is bookkeeping:</b> RSP's head (@0x46e6b3..0x46e6fb) rebuilds the shadow-light
 /// lists <c>Scene+0x60</c>/<c>+0x70</c> from <c>LightManager::GetShadowLights(1)</c>/<c>(0)</c>. Alloy
@@ -150,10 +150,9 @@ internal static unsafe class RspShim
     {
         _log = log;
         if (!_checkOk) return;   // SelfCheck runs unconditionally, early in AlloyRenderer.Initialize
-        // CX-85: the light fade, the flare occlusion and the focuslighting write are Alloy's now; the shim
-        // resolves the fade port's symbols here so a gap shows up in the one refusal line below.
-        LightFade.Resolve(log);
-        DoorFade.Resolve(log);   // CX-89: the shim stopped calling Scene::FadeDoors, so this has to be able to run
+        // The engine's frame delta: every ported integrator steps on it, so a gap shows up in the one
+        // refusal line below.
+        FrameDelta.Resolve(log);
         _fullDynamicLighting = (int*)Native.Sym(SymbolMap.FullDynamicLighting);
         // #237: the state hand-back's two entry points. Deliberately NOT in the `missing` list below -- a shim
         // that cannot restore five enable bits is still a shim that draws the frame, and standing the cutover
@@ -166,8 +165,8 @@ internal static unsafe class RspShim
         // CX-87 dropped Scene::RenderSkyBoxes from this list with the call: the owned tick needs
         // Gob::ProcessGob instead, and SkyTick stands ITSELF down when that is missing rather than taking the
         // whole cutover with it -- stale sky visibility flags are not a reason to give the engine the frame.
-        string? missing = LightFade.Missing
-                        ?? (_fullDynamicLighting == null ? SymbolMap.FullDynamicLighting : DoorFade.Missing)
+        string? missing = FrameDelta.Missing
+                        ?? (_fullDynamicLighting == null ? SymbolMap.FullDynamicLighting : null)
                         // CX-86: unlike the sky, the particle simulation CANNOT stand itself down -- the only
                         // thing behind it is Scene::DoEmitterBucket, whose draws are the engine's, so the
                         // choice is an owned simulation or a vanilla frame.
@@ -337,7 +336,7 @@ internal static unsafe class RspShim
                  + OwnedTextures.RebuildNote()
                  // CX-85: the ported light tick has no other visible surface. `moved` counting down to a
                  // handful once an area settles, and `focus` tracking day/night, is what says it is running.
-                 + $"; {LightFade.Describe()}");
+                 + $"; {FrameDelta.Describe()}");
         _lastRefBuf = OwnedBuffers.Borrowed; _lastRefTex = OwnedTextures.Borrowed;
         _swallowed = 0; _passed = 0; _ticks = 0; _frames = 0;
         Array.Clear(_stepTicks);

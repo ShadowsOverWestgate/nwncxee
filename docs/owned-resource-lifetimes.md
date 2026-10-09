@@ -129,16 +129,20 @@ participant at priority 9, one ahead of `GlContextService`'s bracket, and the or
 ```
 SeamDraw.OnBoundary                     game thread
   RenderThread.StartWhenReady / SettleIfStandingDown
+  with a render thread live:
+     RenderSnapshot.AwaitDrained        <- THE FENCE: the renderer has released the previous frame
+     UiHostService.DrawWindowsForDbFrame   (the 2D UI, over the world frame it just finished)
   DbGui.NewFrame, DbCamera.NewFrame
   RenderSnapshot.Publish                game thread
-     Fold = DbFeed.FoldFrame            <- THE fold, and the one place it happens
+     FrameHoist.Fold + FoldFog          <- the frame's ENGINE reads, FIRST and here only
+     Fold = DbAnim.Settle, DbFeed.FoldFrame, TriggerHighlight.Enroll, SceneFeed.FoldWind
         DrawRecipe.Pump                    (may call MeshArena.Acquire, which takes the arena lock)
         DbFeed.TakeFrame -> FoldObjects, FoldParts
      DbTable.TakeDirty x4
-     wait while the renderer still holds the previous frame
+     wait while the renderer still holds the previous frame   (a no-op after the fence)
      publish
   DbFeed.CloseViews
-  if the render thread is live: it draws; else DrawSnapshot here, in try/finally
+  if the render thread is live: it draws; else DrawSnapshot here, then the 2D UI, in try/finally
 SeamDraw.DrawSnapshot                   render thread, or the game thread on a stand-down
   per view: SceneFeed.TickFromView, then DbGui.Draw (GUI) or SeamDraw.Pass (world)
      Pass = AlloyRenderer.DbWorldPass -> DbOrder, DrawOwned -> BeginOwnedFrame (the 4.6 bracket)
@@ -156,23 +160,29 @@ a copy. ADR 0028 section 5 describes the snapshot as carrying "changed world mat
 palettes, visibility"; as built it carries none of those. `DbFeed.Records.cs`'s R1-17 remark is the
 authoritative statement of the contract and is worth reading before touching either side of it.
 
-**The render thread does not run, and cannot be made to run by the knob.** `RenderThread.Start` refuses
-unless `RenderThread.GuiOffThread` is set, and **nothing sets it** — the reason is in the refusal itself: a
-GUI view goes through `GuiCapture`, whose vertex buffers and layer stack the game thread also writes
-(`UiHost`'s 2D windows, the NUI flush), and `SceneFeed.TickFromView` writes `FrameInputs`, a global every pass
-reads. So `alloy.renderthread=1` logs a loud stand-down and the single-threaded path takes the frame. Every
-"render thread" row below therefore means *inside the 4.6 bracket*, which today is the game thread.
+**The render thread still does not run, and the knob still cannot make it (CX-188).** `RenderThread.Start`
+refuses while any of five preconditions is unset — `GuiBuffersOwned`, `TextDocsPublished`, `UiOrderSettled`,
+`FrameInputsPublished`, `ScreenHandoffSettled` — and names every unmet one. (There is no `GuiOffThread`; a
+single flag would let whoever met one arm the others' races.) CX-188 met `TextDocsPublished` and
+`UiOrderSettled`; the two structural ones left are `GuiCapture`'s single static bank, which `NuiFlush` writes
+on the game thread while the renderer appends and resets it, and framebuffer 0, which has two writers in the
+window the fence cannot cover. `FrameInputsPublished` is the audited ledger of engine reads still inside the
+draw. `RenderThread.cs` carries all of it with each fix named. So `alloy.renderthread=1` logs a loud stand-down
+and the single-threaded path takes the frame. Every "render thread" row below therefore means *inside the 4.6
+bracket*, which today is the game thread.
 
-Three things are latent races that only arm with that thread, and all three are documented at their sites:
+Of the three latent races that only arm with that thread, two are closed by the fence, which runs ahead of the
+fold; the third stands:
 
-1. **`RenderSnapshot.Publish` folds before it waits.** `Fold` and `TakeDirty` run, *then* the lock is taken and
-   the publish waits for the previous frame's release. With a live render thread the fold for frame N would
-   rewrite the persistent draw records while the renderer still draws N-1. The fix is to move the wait above
-   the fold, not to add a lock.
-2. **`DrawRecipe`'s table is unsynchronised** and is read from the bracket (`AlloyRenderer.Db.cs`,
-   `DbStage.cs`, `Casters.cs`, `DbInputs.cs`) while `Intern`/`Fill`/`Pump` write it from the fold, and
-   `DbAnim.Dyn`'s `InternDynamic` writes it from the dangly solve. `MeshArena.Dyn.cs` names this as the thing
-   to fix first.
+1. ~~**`RenderSnapshot.Publish` folds before it waits.**~~ `RenderSnapshot.AwaitDrained` is called first in
+   `SeamDraw.OnBoundary`, so the fold for frame N runs with the renderer already parked instead of rewriting
+   the persistent draw records while it still draws N-1. This is the "move the wait above the fold" fix, not a
+   lock.
+2. ~~**`DrawRecipe`'s table is unsynchronised.**~~ Its writers (`Intern`/`Fill`/`Pump` in the fold, and
+   `DbAnim.Dyn`'s `InternDynamic` in the dangly solve, which runs from `DbAnim.Settle` inside the fold) are
+   now inside the fence, and the 4.6 bracket that reads the table (`AlloyRenderer.Db.cs`, `DbStage.cs`,
+   `Casters.cs`, `DbInputs.cs`) runs outside it. The two spans are disjoint by construction. A writer added
+   OUTSIDE the fold would re-open this, which is what `MeshArena.Dyn.cs` is really warning about.
 3. **`MeshArena`'s read API is lock-free against a locked, compacting writer.** `Draw`, `Runs`, `Bounds`,
    `RefsOf`, `Alive` read `_ranges` with no lock; `NewRange` reassigns the array under the lock and `Compact`
    rewrites every live range's `Base`/`Off*` in place.
@@ -349,10 +359,11 @@ now has its producer:
 7. **`DrawRecipe.Forget` does not reset `SceneDb.PartRecipe[p]`.** A part still naming a retired recipe gets
    `Range(r) == -1`, counts `_dbNoRange` and goes back on the retry list every frame, for ever. Latent while a
    part's range outlives its recipe only across a model eviction.
-8. **`BindLightCubes` has no DB-mode caller**, so no point light is shadowed. It runs only inside
-   `SceneInputs.FrameStart`, which is the mode-0 path; `SceneInputs.DbShadowSlot` does the focus and the bake
-   and not the bind. So `FrameInputs.AreaLightSlot` is never written in a DB frame and `LightsWithCube` reads
-   0 against mode 0's 22 on the same light set. **It is harmless to brightness** — verified in the shader
+8. **`BindLightCubes` had no DB-mode caller** for a while, so no point light was shadowed: it ran only
+   inside `SceneInputs.FrameStart`, the engine-walk path, and `SceneInputs.DbShadowSlot` did the focus and the
+   bake and not the bind — `FrameInputs.AreaLightSlot` was never written in a DB frame and `LightsWithCube`
+   read 0 against 22 on the same light set. `DbShadowSlot` binds now, and CX-188 deleted `FrameStart`
+   outright. **A slotless light was harmless to brightness** — verified in the shader
    rather than taken on trust: `cx_lightfrag.glsl:462` adds a slotless light's full unshadowed diffuse and
    specular — so it is not the interior-darkness defect, which is a draw-class question
    (`DrawRecipe.ClassOf`'s conservative CUTOUT guess) and lives in
@@ -388,7 +399,7 @@ engine-scene path; the table stays as the record of what went and why.
 
 | What goes | Where it lives | Why the contract does not need it |
 |---|---|---|
-| The `Part::~Part` death notice and its cascade | `DrawFunnelService.OnPartDtor` (`managed/Alloy/DrawFunnelService.cs`), installed by `hooks.InstallPartDtor` in `DrawFunnelService.Initialize`; it drives `SkyBox.Revoke`, `PartTable.MarkFreed`/`Die`, `NonMeshParts.Died`, `LightRegistry` | A part record is a `DbTable` slot. `DbTable.Free` bumps the generation, so every outstanding `DbId` is dead at the free. There is no borrowed pointer to be told about. |
+| The `Part::~Part` death notice and its cascade | `DrawFunnelService.OnPartDtor` (`managed/Alloy/DrawFunnelService.cs`), installed by `hooks.InstallPartDtor` in `DrawFunnelService.Initialize`; it drives `SkyBox.Revoke`, `PartTable.MarkFreed`/`Die`, `NonMeshParts.Died` | A part record is a `DbTable` slot. `DbTable.Free` bumps the generation, so every outstanding `DbId` is dead at the free. There is no borrowed pointer to be told about. |
 | The #221 tombstone | `PartEntry.Freed` + `PartTable.MarkFreed`, `PartTable.EntryLive` (`managed/Alloy/Scene/PartTable.cs`); the same shape in `AlloyCensus.Find`, `GobLod.Insert`'s stamp | A tombstone exists to stop a **recycled address** reviving a record. A `DbId` carries a generation, so the recycled-identity class of bug cannot be expressed (`DbId`'s own summary says so). |
 | `VdoSig` and the recycled-address re-harvest | `VdoSig` (`managed/Alloy/Core/EngineRefs.cs`), `_vSig` + `SlotHolds` (`managed/Alloy/AlloyRenderer.Vao.cs`), the re-fingerprint in `VdoSlot` (`managed/Alloy/Scene/AlloyRenderer.Enroll.cs`), and `Beams`' copy of all three | There is no VDO. Geometry is a `MeshArena` range keyed on `MeshArena.ContentKey(MeshDef)` — content, not an address — and a range is handed back by `MeshArena.Release`, told. |
 | The VAO drip and the per-VDO VAOs | `AlloyRenderer.Vao.cs` in its entirety bar `BindBatchState`/`VaoName`: `Harvest`, `HarvestFailed`, `DripVao`/`DripArm`/`DripForget`/`DripRearm`, `EnsureVao`, `_vVao46`/`_vOwned`/`_vStale`, `ForgetLodVao`/`ForgetLodSlot`; `Beams._vVao` | Every DB draw comes out of the one arena: `AlloyRenderer.DbWriteColumns` writes `_oVao[i] = 0` and `_oLodBit[i] = DbArenaVaoBit`, so there is no per-record VAO to mint, retire or wait for. |

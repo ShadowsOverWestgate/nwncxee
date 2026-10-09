@@ -1,71 +1,30 @@
 using System;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using CX.Engine;
-using CX.Framework;
-using CX.Services.Anim;
 
 namespace CX.Alloy;
 
 /// <summary>
-/// CX-106: the leaf of the owned animation runtime -- one <c>NewController</c> track sampled at an animation
-/// time, and the blend of that sample into the part field the controller names. Ports
-/// <c>NewController::GetKeyIndexAndAlpha</c> @0x4980e0, <c>GetFloatValue</c> @0x498480,
-/// <c>GetVectorValue</c> @0x498620 (its outlined body @0x498180), <c>GetQuaternionValue</c> @0x498640,
-/// <c>slerp</c> @0x5b6500 and <c>NewController::Control</c> @0x498f20.
+/// CX-106: the two pieces of the engine's key sampler the scene database still runs on --
+/// <c>NewController::GetKeyIndexAndAlpha</c> @0x4980e0 and <c>slerp</c> @0x5b6500.
+/// <para>CX-188: the SAMPLERS are gone. <c>Float</c>/<c>Vector</c>/<c>Turn</c>/<c>Control</c> read a
+/// <c>NewController</c> record off a live <c>MdlNode</c> and blended the result into a <c>Part</c> field, and
+/// their only callers were <c>AnimHierarchy.Control</c> -- itself unreachable, the engine part-tree walk --
+/// and <c>EmitterSim.Keyed</c>, a self-recursive orphan. <c>DbAnim.Pose</c> samples the database's own
+/// <c>ControllerTrack</c> arrays and calls the two below.</para>
 /// </summary>
 /// <remarks>
-/// <para><b>The one intentional divergence is the key SEARCH.</b> The engine scans key times from index 1
-/// upward on every sample, so a 40-key track costs 40 compares per part per controller per run per frame.
-/// This binary-searches instead. The result is identical by construction -- both answer "the smallest index
-/// whose key time is at or after <c>t</c>" -- and <c>AnimRuntime.SelfCheck</c> proves it against a transcription
-/// of the engine's own loop over random tracks. A cursor would have been cheaper still and is wrong:
+/// <para><b>The key SEARCH is an intentional divergence.</b> The engine scans key times from index 1 upward
+/// on every sample, so a 40-key track costs 40 compares per part per controller per run per frame. This
+/// binary-searches instead. The result is identical by construction -- both answer "the smallest index whose
+/// key time is at or after <c>t</c>" -- and <c>AnimMathCheck</c> proves it against a transcription of the
+/// engine's own loop over random tracks. A cursor would have been cheaper still and is wrong:
 /// <c>NewController</c> records live on the <c>MdlNode</c>, which every instance of a model shares, so there
 /// is no per-instance place to keep one.</para>
-/// <para><b>Bezier tracks are handed to the engine's own getter.</b> The scalar Bezier path pairs its control
-/// points differently from the vector one (<c>d[k]+d[k+3]</c>, value plus value) and its past-the-end branch
-/// passes the raw time where every other branch passes the segment alpha and reads one key past the array --
-/// both look like upstream bugs (CX-106 section 8). Transcribing them into a second
-/// implementation buys nothing and can only drift, so a Bezier track costs one call into the engine and is
-/// counted on the period line.</para>
-/// <para>Allocation-free: every sample is stack locals over the engine's own float pool.</para>
+/// <para>Allocation-free.</para>
 /// </remarks>
 internal static unsafe class AnimKeys
 {
-    /// <summary>The <see cref="EngineLayout.NewControllerFormat"/> low nibble: the track's value width.</summary>
-    private const byte Scalar = 1, Vector3Keys = 3, Rotation = 4;
-    /// <summary>...and its high nibble, set on a Bezier-authored track.</summary>
-    private const byte Bezier = 0x10;   // not-an-offset: the format byte's high nibble
-
-    private static CtrlGetFloatFn _engineFloat;
-    private static CtrlGetVectorFn _engineVector;
-    /// <summary>The engine's <c>position_scale_factor</c>, or a local 1.0 before the symbol resolves -- so a
-    /// SelfCheck can sample a position track off-device without a special case in the sampler.</summary>
-    private static float* _posScale = Local(1f);
-    private static int _bezier;
-
-    private static float* Local(float v)
-    {
-        float* p = (float*)System.Runtime.InteropServices.NativeMemory.Alloc(sizeof(float));
-        *p = v;
-        return p;
-    }
-
-    /// <summary>What a position track is being multiplied by right now: the running <c>AnimRun</c>'s
-    /// <see cref="EngineLayout.AnimRunPosScale"/> once the runtime is live.</summary>
-    internal static float Scale => *_posScale;
-
-    /// <summary>Resolve the two engine leaves the owned path still needs (the Bezier getters and the
-    /// position-scale global). False = the runtime must not arm.</summary>
-    internal static bool Attach()
-    {
-        _engineFloat = EngineFn.CtrlGetFloat;
-        _engineVector = EngineFn.CtrlGetVector;
-        float* scale = (float*)Native.Sym(SymbolMap.PositionScaleFactor);
-        if (scale != null) _posScale = scale;
-        return _engineFloat != null && _engineVector != null && scale != null;
-    }
-
     /// <summary>
     /// <c>NewController::GetKeyIndexAndAlpha</c>: <paramref name="idx"/> is 0 at or before the first key,
     /// <paramref name="n"/> past the last, and otherwise the index whose key time first reaches
@@ -98,91 +57,6 @@ internal static unsafe class AnimKeys
         alpha = (t - t0) / (times[lo] - t0);
     }
 
-    /// <summary>A scalar track's value at <paramref name="t"/>. False = not a scalar track (nothing written).</summary>
-    internal static bool Float(IntPtr ctrl, IntPtr node, float t, out float v)
-    {
-        v = 0f;
-        var c = new NewController(ctrl);
-        byte fmt = c.Format;
-        if ((fmt & 0xf) != Scalar) return false;
-        float* d = (float*)new MdlNode(node).ControllerData;
-        if (d == null) return false;
-        if ((fmt & 0xf0) == Bezier)
-        {
-            _bezier++;
-            fixed (float* p = &v) return _engineFloat(ctrl, t, node, p) != 0;
-        }
-        int n = (ushort)c.KeyCount, vb = c.ValueKey;
-        Key(d + c.TimeKey, n, t, out int idx, out float a);
-        v = idx == 0 ? d[vb]
-          : idx == n ? d[vb + idx - 1]
-          : (1f - a) * d[vb + idx - 1] + a * d[vb + idx];
-        return true;
-    }
-
-    /// <summary>A vector track's value at <paramref name="t"/>, times <c>position_scale_factor</c> when the
-    /// track is the part's POSITION (the engine's one use of that global). False = not a vector track.</summary>
-    internal static bool Vector(IntPtr ctrl, IntPtr node, float t, out Vector3 v)
-    {
-        v = default;
-        var c = new NewController(ctrl);
-        byte fmt = c.Format;
-        if ((fmt & 0xf) != Vector3Keys) return false;
-        float* d = (float*)new MdlNode(node).ControllerData;
-        if (d == null) return false;
-        if ((fmt & 0xf0) == Bezier)
-        {
-            _bezier++;
-            fixed (Vector3* p = &v) return _engineVector(ctrl, t, node, p) != 0;
-        }
-        if (KeyCurveService.OwnedVector(ctrl, node, t, out v)) return true;
-        int n = (ushort)c.KeyCount;
-        ushort vb = c.ValueKey;
-        float s = c.Id == EngineLayout.PartPos ? *_posScale : 1f;
-        Key(d + c.TimeKey, n, t, out int idx, out float a);
-        if (idx == 0)
-        {
-            // 16-bit index arithmetic, exactly as the engine's: a pool over 65535 floats wraps on both.
-            v = new Vector3(d[vb], d[(ushort)(vb + 1)], d[(ushort)(vb + 2)]) * s;
-            return true;
-        }
-        ushort k = (ushort)(vb + 3 * idx - 3);
-        if (idx == n)
-        {
-            v = new Vector3(d[k], d[(ushort)(k + 1)], d[(ushort)(k + 2)]) * s;
-            return true;
-        }
-        float u = 1f - a;
-        v = new Vector3(d[(ushort)(k + 3)] * a + d[k] * u,
-                        d[(ushort)(k + 4)] * a + d[(ushort)(k + 1)] * u,
-                        d[(ushort)(k + 5)] * a + d[(ushort)(k + 2)] * u) * s;
-        return true;
-    }
-
-    /// <summary>A rotation track's value at <paramref name="t"/>. The keys are stored <c>(x, y, z, w)</c>
-    /// while the part's quaternion is <c>(w, x, y, z)</c>; there is no Bezier form for rotations.</summary>
-    internal static bool Turn(IntPtr ctrl, IntPtr node, float t, out Quat q)
-    {
-        q = new Quat { W = 1f };
-        var c = new NewController(ctrl);
-        if ((c.Format & 0xf) != Rotation) return false;
-        float* d = (float*)new MdlNode(node).ControllerData;
-        if (d == null) return false;
-        if (KeyCurveService.OwnedRotation(ctrl, node, t, out q)) return true;
-        int n = (ushort)c.KeyCount;
-        ushort vb = c.ValueKey;
-        Key(d + c.TimeKey, n, t, out int idx, out float a);
-        if (idx == 0) { q = At(d, vb); return true; }
-        int k = vb - 4 + idx * 4;
-        if (idx == n) { q = At(d, k); return true; }
-        q = Slerp(At(d, k), At(d, k + 4), a);
-        return true;
-    }
-
-    /// <summary>One rotation key: four floats stored x, y, z, w.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static Quat At(float* d, int i) => new() { X = d[i], Y = d[i + 1], Z = d[i + 2], W = d[i + 3] };
-
     /// <summary>
     /// <c>slerp(Quaternion a, Quaternion const&amp; b, float w)</c> @0x5b6500, transcribed. Shortest arc by
     /// negating <paramref name="a"/> (never <paramref name="b"/>), the two exact escapes the engine has --
@@ -207,46 +81,4 @@ internal static unsafe class AnimKeys
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static float Dot(Quat a, Quat b) => a.W * b.W + a.X * b.X + a.Y * b.Y + a.Z * b.Z;
-
-    /// <summary>
-    /// <c>NewController::Control</c>: sample the track and blend it into the part field the controller's id
-    /// names, by <paramref name="w"/>. This blend IS the crossfade and the overlay: a weight of 1 writes the
-    /// key outright, a weight below 1 blends it over whatever the previous run of this frame left there, and
-    /// nothing else in the engine holds a pose.
-    /// </summary>
-    internal static void Control(IntPtr ctrl, IntPtr part, IntPtr node, float t, float w)
-    {
-        var c = new NewController(ctrl);
-        int off = c.Id;
-        switch (c.Format & 0xf)
-        {
-            case Scalar:
-            {
-                if (!Float(ctrl, node, t, out float v)) return;
-                float* f = (float*)(part + off);
-                float next = w * v + (1f - w) * *f;
-                *f = next;
-                return;
-            }
-            case Vector3Keys:
-            {
-                // The out value is pre-zeroed, so a getter that writes nothing blends toward the origin --
-                // the engine's behaviour, and the reason `Vector` returning false still falls through here.
-                Vector(ctrl, node, t, out Vector3 v);
-                float* f = (float*)(part + off);
-                float u = 1f - w;
-                f[2] = v.Z * w + f[2] * u;
-                f[1] = v.Y * w + f[1] * u;
-                f[0] = w * v.X + u * f[0];
-                return;
-            }
-            case Rotation:
-            {
-                Turn(ctrl, node, t, out Quat q);
-                Quat* f = (Quat*)(part + off);
-                *f = Slerp(*f, q, w);
-                return;
-            }
-        }
-    }
 }

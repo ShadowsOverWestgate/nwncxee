@@ -138,6 +138,9 @@ internal static unsafe partial class TexRegistry
     /// <summary>1 while the slot's sampler CLAMPS rather than repeats (a <c>.txi clamp</c>); staged into the
     /// PLT flag word, because <c>cx_plt.glsl</c> does its own addressing and cannot see a sampler.</summary>
     private static readonly bool[] _clamp = new bool[MaxSlots];
+    /// <summary>The slot's name and handle are its PREVIEW (the mip tail from 64 px down, <see cref="LandPreview"/>):
+    /// drawable, but the slot is still <see cref="TexState.Loading"/> and the full chain replaces it in <see cref="Land"/>.</summary>
+    private static readonly bool[] _preview = new bool[MaxSlots];
     /// <summary>Left the name index at a module edge while still referenced (<see cref="ModuleEdge"/>): no acquire
     /// finds it, and its last release retires it instead of leaving it idle.</summary>
     private static readonly bool[] _detached = new bool[MaxSlots];
@@ -148,6 +151,16 @@ internal static unsafe partial class TexRegistry
     /// ever, nothing logged.</summary>
     private static readonly byte[] _pend = new byte[MaxSlots];
     private const byte PendNone = 0, PendWaiting = 1, PendFlight = 2;
+
+    /// <summary>CX-188: bumped (under <see cref="_lock"/>) wherever a slot ENTERS
+    /// <see cref="TexState.Loading"/> -- an acquire that seats a new slot, an acquire that re-offers a
+    /// name-less one, an idle slot taken back with nothing uploaded, and the context reload. It is the only
+    /// edge that can make a settled set of parts start streaming again, which is what lets a reader latch
+    /// "nothing of mine is waiting" instead of re-scanning every frame (<c>DbGui</c>'s panel prescan).
+    /// <para>A reader off the game thread may see the previous value for a frame -- an <c>int</c> read is
+    /// atomic, so the cost is one extra scan or one frame's delay, never a wrong answer.</para></summary>
+    internal static int LoadSerial = 1;
+
     /// <summary>Head of this slot's dependent-part edge list, -1 for none. Kept only while the slot is
     /// <see cref="TexState.Loading"/>: once it has arrived (or failed) there is nothing left to tell.</summary>
     private static readonly int[] _depHead = new int[MaxSlots];
@@ -300,16 +313,23 @@ internal static unsafe partial class TexRegistry
                 {
                     IdleUnlink(hit);
                     _idleBytes -= _bytes[hit]; _residentBytes += _bytes[hit];
-                    _state[hit] = _name[hit] != 0 ? TexState.Resident : TexState.Loading;
+                    _state[hit] = _name[hit] != 0 && !_preview[hit] ? TexState.Resident : TexState.Loading;
+                    if (_state[hit] == TexState.Loading) LoadSerial++;
                     // Going idle dropped the bindless handle and nothing else re-mints it: a re-equipped
                     // armour drew handle 0 -- black, untextured -- until the slot was evicted and reloaded.
                     if (_name[hit] != 0 && _handle[hit] == 0 && !_samplerWish[hit])
                     { _samplerWish[hit] = true; _samplerQ.Enqueue(hit); }
+                    TableSerial++;
                 }
                 // The Release-during-a-load fix: a slot with no name and nothing in flight is not loading,
                 // whatever its state says, so re-asking for it has to re-offer it.
-                if (_name[hit] == 0 && _state[hit] != TexState.Failed && _pend[hit] == PendNone)
-                { _state[hit] = TexState.Loading; offer = true; }
+                if ((_name[hit] == 0 || _preview[hit]) && _state[hit] != TexState.Failed && _pend[hit] == PendNone)
+                { _state[hit] = TexState.Loading; offer = true; LoadSerial++; TableSerial++; }
+                // CX-188 (review): NOT on the plain cache hit. A hit changes nothing a record reads -- the
+                // name, handle, kind and env bit are all where they were -- and callers acquire every frame
+                // (EmitterSim's per-emitter texture, the text atlas, the radial's PLT), so bumping here busted
+                // every slot's texture memo on every frame and the skip bought nothing. Only the two branches
+                // above move state: the idle resurrection and the re-offer.
                 return TexId.Make(hit, _gen[hit] & 0xFFF);
             }
             int i;
@@ -324,10 +344,12 @@ internal static unsafe partial class TexRegistry
                 return default;
             }
             _key[i] = key; _state[i] = TexState.Loading; _kind[i] = kind; _refs[i] = 1;
-            _name[i] = 0; _handle[i] = 0; _bytes[i] = 0;
+            LoadSerial++;
+            _name[i] = 0; _handle[i] = 0; _bytes[i] = 0; _preview[i] = false;
             _resref[i] = resref; _cell[i] = cell; _depHead[i] = -1; _pend[i] = PendNone; _clamp[i] = false;
             _cov[i] = TexCoverage.Unknown; _bumpyShiny[i] = false; _envMap[i] = false; _meanOk[i] = false;
-            CoverageSerial++;
+            _txiBlend[i] = 0; _txiDecal[i] = false; _cycle[i] = null;
+            CoverageSerial++; TableSerial++;
             _nearest[i] = false; _mipmap[i] = true; _samplerWish[i] = false;
             _idleNext[i] = _idlePrev[i] = -1;
             if (free >= 0) _hash[free] = i;
@@ -417,10 +439,21 @@ internal static unsafe partial class TexRegistry
     /// retire. <see cref="DrawRecipe.Reclassify"/> re-asks its classes only when this moved.</summary>
     internal static int CoverageSerial;
 
+    /// <summary>CX-188: bumped (under <see cref="_lock"/>) wherever ANY answer a record feed reads off a slot
+    /// can change -- its GL name, its bindless handle, its kind, its env-map bit, or its validity. The
+    /// renderer stamps it per ownership slot (<c>_recTexStamp</c>) and skips re-resolving a part's eight
+    /// texture slots on a frame it did not move, so a write that forgets to bump it leaves records sampling a
+    /// dead handle: the complete writer set is Acquire, Retire, Land, Fail, DropHandle, the kind discovery in
+    /// Begin, the idle re-acquire and ContextLost. Starts at 1 so a never-stamped slot (0) always disagrees.
+    /// <para>Deliberately coarser than per slot: a texture event is rare (a transcode drip, an area load) and
+    /// one full re-resolve pass per event is cheaper than a per-slot dependency table to maintain.</para></summary>
+    internal static int TableSerial = 1;
+
     private static void Retire(int i)
     {
         DropHandle(i);
         if (_name[i] != 0) { _graveyard.Enqueue(_name[i]); _name[i] = 0; }
+        _preview[i] = false;
         if (_state[i] == TexState.Idle) { IdleUnlink(i); _idleBytes -= _bytes[i]; }
         else _residentBytes -= _bytes[i];
         if (!_detached[i]) Unhash(i);
@@ -432,7 +465,8 @@ internal static unsafe partial class TexRegistry
         _bytes[i] = 0; _resref[i] = null; _refs[i] = 0; _pend[i] = PendNone; _cov[i] = TexCoverage.Unknown;
         _bumpyShiny[i] = false;
         _envMap[i] = false;
-        CoverageSerial++;
+        _txiBlend[i] = 0; _txiDecal[i] = false; _cycle[i] = null;
+        CoverageSerial++; TableSerial++;
         _freeNext[i] = _freeHead; _freeHead = i;
         _live--;
         _evicted++;
@@ -522,6 +556,16 @@ internal static unsafe partial class TexRegistry
     /// by handle wants both (CX-119's bitmap font atlases do).</summary>
     internal static bool TryResident(TexId id, out uint name, out ulong handle)
     {
+        if (Valid(id) && _name[id.Index] != 0 && !_preview[id.Index])
+        { name = _name[id.Index]; handle = _handle[id.Index]; return true; }
+        name = 0; handle = 0; return false;
+    }
+
+    /// <summary>As <see cref="TryResident"/>, and a PREVIEW answers too: for a consumer that re-resolves every frame
+    /// or is told on arrival (a world part, an emitter, a caster mask, the sky), never for one that keeps the name --
+    /// the preview's is deleted when the full chain lands.</summary>
+    internal static bool TryDrawable(TexId id, out uint name, out ulong handle)
+    {
         if (Valid(id) && _name[id.Index] != 0)
         { name = _name[id.Index]; handle = _handle[id.Index]; return true; }
         name = 0; handle = 0; return false;
@@ -529,11 +573,20 @@ internal static unsafe partial class TexRegistry
 
     /// <summary>Has this slot's texture arrived?</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static bool Resident(TexId id) => Valid(id) && _name[id.Index] != 0;
+    internal static bool Resident(TexId id) => Valid(id) && _name[id.Index] != 0 && !_preview[id.Index];
 
     /// <summary>What the slot turned out to be. <see cref="TexKind.Plt"/> is what tells a record feed to stage
     /// the per-instance palette rows (<see cref="PltColors.Stage"/>) instead of clearing them.</summary>
     internal static TexKind KindOf(TexId id) => Valid(id) ? _kind[id.Index] : TexKind.Plain;
+
+    /// <summary>CX-188: is this slot's answer FINAL -- will it stay what it is until something bumps
+    /// <see cref="TableSerial"/>? True for a slot that can never become resident on its own: a null id (the
+    /// caller declares no texture) and a FAILED load, which keeps the white stand-in as an explicit state for
+    /// the rest of the session (CX-45). A slot still LOADING is not final: its arrival is what a memo keyed on
+    /// the serial is waiting for. The renderer's per-slot texture memo is the caller -- without the failed and
+    /// null cases a texture-less part (a junk material name on a placeable) would re-resolve every frame for
+    /// ever, which is the whole cost the memo removes.</summary>
+    internal static bool Final(TexId id) => id.IsNull || StateOf(id) == TexState.Failed;
     internal static TexState StateOf(TexId id) => Valid(id) ? _state[id.Index] : TexState.Free;
     /// <summary>Does this slot's sampler clamp rather than repeat? Staged into the PLT flag word.</summary>
     internal static bool Clamps(TexId id) => Valid(id) && _clamp[id.Index];
@@ -594,6 +647,13 @@ internal static unsafe partial class TexRegistry
     /// environment-mapped branch, where the diffuse alpha is REFLECTIVITY rather than coverage.</summary>
     internal static bool EnvMapped(TexId id) => Valid(id) && _envMap[id.Index];
     /// <summary>The slot's resref, for a log or a diagnostic line.</summary>
+    /// <summary>The resref resident under GL texture <paramref name="name"/>, "" if none: a linear scan, for a diagnostic.</summary>
+    internal static string ResrefOfGl(uint name)
+    {
+        if (name != 0) for (int i = 0; i < MaxSlots; i++) if (_name[i] == name) return _resref[i] ?? "";
+        return "";
+    }
+
     internal static string ResrefOf(TexId id) => Valid(id) ? _resref[id.Index] ?? "" : "";
 
     // ---- dependents: arrival dirties the records that drew the stand-in ----
@@ -671,6 +731,7 @@ internal static unsafe partial class TexRegistry
         => $"texreg: {_live} textures ({_residentBytes / (1 << 20)} MiB held, {_idleBytes / (1 << 20)} MiB idle"
          + $", {_peakBytes / (1 << 20)} MiB peak), {_acquires} acquires ({_hits} shared), {_uploads} uploaded"
          + $", {_mints} handles, {_marks} arrival marks, {_evicted} evicted, {_reloads} reloaded"
+         + $", {_previews} previews first ({Workers} decode workers), {CycleNote()}"
          + (_failed == 0 ? "" : $", {_failed} FAILED (white stand-in)")
          + (_full == 0 ? "" : $", {_full} REFUSED (table full)")
          + (_samplerAsks == 0 ? "" : $", {_samplerDone}/{_samplerAsks} sampler change(s) applied")

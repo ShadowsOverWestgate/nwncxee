@@ -461,8 +461,22 @@ def check_material(g):
 # resref, the depth-only ones (no resref) by the class and constant they were reached by. #339 took the
 # tessellation out with the custom water shader: water is a plain vertex/fragment pair again, like every
 # other class here.
+def ablate(src, n):
+    """CX.Alloy.AblateProgram's own splice: `#define CX_ABLATE n` immediately after the #version line. The
+    ablation variants are built only by an `/alloy bench` step, so this is the one place a rung that stopped
+    compiling is caught before someone runs the bench and loses that rung of the ladder."""
+    return src.replace("#version 460 core\n", f"#version 460 core\n#define CX_ABLATE {n}\n", 1)
+
+
+# CX-188: each ablated pass's ladder length -- the rungs AblateProgram can be asked for, which is what
+# AlloyRenderer.Bench's own step list walks. Rung 0 is the shipped program, a program in its own right below.
+ABLATIONS = {"cx_deferred_cs": 12, "cx_defshadow_cs": 2, "cx_pairdebt": 2}
+
+
 def programs(g):
     return {
+        **{f"{stage} (ablate {n})": (ablate(g[stage], n),)
+           for stage, rungs in ABLATIONS.items() for n in range(1, rungs + 1)},
         "fullbright": (g["cx_own_vs"], g["cx_own_fs"]),
         "depth prepass": (g["cx_depth_v"], g["cx_depth_f"]),
         "keyhole depth prepass": (g["cx_depthkey_v"], g["cx_depthkey_f"]),
@@ -470,6 +484,13 @@ def programs(g):
         "caster depth (alpha-tested)": (g["cx_castmask_v"], g["cx_castmask_f"]),
         "clustered lit": (g["cx_ownlit_vs"], g["cx_ownlit_fs"]),
         "clustered lit (OIT lists)": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_OIT_LISTS 1\n", 1)),
+        # CX-188: the deferred twin -- the same two defines Programs.WithDeferred injects, in the same place
+        "clustered lit (deferred twin)": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_DEFERRED 1\n#define CX_GBUF_OUT 1\n", 1)),
+        # CX-188: /alloy bench's blended ladder -- Programs.BlendAblate's defines, in the same place
+        **{f"clustered lit (blended ablate {n}{tw})": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", f"#version 460 core\n{lx}{d}", 1))
+           for tw, lx in (("", ""), (", OIT lists", "#define CX_OIT_LISTS 1\n"))
+           for n, d in ((3, "#define CX_BLEND_FLAT 1\n"), (4, "#define CX_NO_HOT 1\n#define CX_ABLATE 2\n"),
+                        (5, "#define CX_NO_HOT 1\n#define CX_ABLATE 4\n"), (6, "#define CX_NO_HOT 1\n"))},
         "post bloom downsample": (g["cx_post_vs"], g["cx_bloomdn_fs"]),
         "post bloom upsample": (g["cx_post_vs"], g["cx_bloomup_fs"]),
         "post resolve": (g["cx_post_vs"], g["cx_resolve_fs"]),
@@ -500,8 +521,16 @@ def programs(g):
         "grass blades": (g["cx_gblade_vs"], g["cx_gblade_fs"]),
         "grass blade depth": (g["cx_gblade_vs"], g["cx_gblade_df"]),
         "clustered light build": (g["cx_cluster_cs"],),
+        "deferred lights": (g["cx_deferred_cs"],),
+        # CX-188: the film's own dispatch (DeferredLights._progFilm), and the "every light" escapes' variant
+        # (DeferredLights.SelectEscape): the walk's in-loop hardware tap
+        "deferred lights (film pass)": (g["cx_deferred_cs"].replace("#version 460 core\n", "#version 460 core\n#define CX_FILM_PASS 1\n", 1),),
+        "deferred lights (in-loop taps)": (g["cx_deferred_cs"].replace("#version 460 core\n", "#version 460 core\n#define CX_SH_INLOOP 1\n", 1),),
+        "deferred shadow record": (g["cx_defshadow_cs"],),
+        "pair debt": (g["cx_pairdebt"],),
         "gui": (g["cx_gui_v"], g["cx_gui_f"]),
         "trigger highlight": (g["cx_fullscreen_v"], g["cx_hilitetrig_f"]),
+        "highlight glow": (g["cx_hiliteglow_v"], g["cx_hiliteglow_f"]),
         "halo occlusion probe": (g["cx_haloocc_c"],),
         "oit resolve": (g["cx_fullscreen_v"], g["cx_oitresolve_f"]),
         "oit clear": (g["cx_fullscreen_v"], g["cx_oitclear_f"]),
@@ -527,7 +556,9 @@ SIDE_EFFECTS = re.compile(r"\b(atomic\w*|imageStore|imageAtomic\w*|gl_FragDepth)
 def check_early_z(progs):
     """A fragment-stage side effect (SSBO/image store or atomic, gl_FragDepth) costs the program its early-Z,
     so it may reach ONLY the OIT-lists twin: every other stage an opaque draw uses must preprocess clean.
-    (The fullbright stage takes the block at RUNTIME through OitPass.WithLists -- a deliberate exception.)"""
+    (The fullbright stage takes the block at RUNTIME through OitPass.WithLists -- a deliberate exception.)
+    CX-188's deferred twin is checked here too: it draws the OPAQUE and CUTOUT classes, so early-Z is the
+    whole point of it, and its four G-buffer outputs are plain fragment outputs, not side effects."""
     with tempfile.TemporaryDirectory() as tmp:
         def effects(name):
             src = progs[name][1]
@@ -537,7 +568,8 @@ def check_early_z(progs):
             r = subprocess.run(["glslangValidator", "-E", p], capture_output=True, text=True)
             return sorted({m.group(0).split("(")[0].strip() for m in SIDE_EFFECTS.finditer(r.stdout)})
         bad = 0
-        for name, want in (("clustered lit", False), ("clustered lit (OIT lists)", True), ("owned water", False), ("grass blades", False)):
+        for name, want in (("clustered lit", False), ("clustered lit (OIT lists)", True),
+                           ("clustered lit (deferred twin)", False), ("owned water", False), ("grass blades", False)):
             got = effects(name)
             ok = bool(got) == want
             print(f"early-z: {name}: {'ok' if ok else 'FAILED'} ({'side effects: ' + ', '.join(got) if got else 'no side effects'})")

@@ -199,13 +199,11 @@ internal static unsafe partial class EmitterSim
     {
         Quat rebase = QMul(e.M.Orient, Conj(e.M.PrevRot));
         bool wind = (e.Flags & FWind) != 0;
-        bool bounce = (e.Flags & FBounce) != 0 && Bouncing.V && !e.Db;
         float grav = e.Gravity * Gravity * dt;
         for (int i = 0; i < slot.Live; i++)
         {
             Particle p = At(ref slot, i);
             if (p.Splat != 0) continue;
-            Vector3 was = p.Pos;
             Vector3 start = Carry(ref e, p, rebase);
             float decay = p.InhDecay;
             Vector3 pos = start + p.Vel * dt + p.InhVel * (decay * dt);
@@ -214,7 +212,6 @@ internal static unsafe partial class EmitterSim
             p.Vel = new Vector3(v.X, v.Y, v.Z + grav);
             p.InhDecay = MathF.Abs((1f - dt) * decay);
             p.Pos = pos;
-            if (bounce) Reflect(in e, p, was, dt);
         }
     }
 
@@ -232,14 +229,12 @@ internal static unsafe partial class EmitterSim
 
         Quat rebase = QMul(e.M.Orient, Conj(e.M.PrevRot));
         bool wind = (e.Flags & FWind) != 0;
-        bool bounce = (e.Flags & FBounce) != 0 && Bouncing.V && !e.Db;
         float life = e.Life, comb = e.CombineTime;
         float grav = e.Gravity * Gravity * dt;
         for (int i = 0; i < slot.Live; i++)
         {
             Particle p = At(ref slot, i);
             if (p.Splat != 0) continue;
-            Vector3 was = p.Pos;
             Vector3 start = Carry(ref e, p, rebase);
             Vector3 ball = start + p.Vel * dt;
             if (wind) ball += Wind(in e, scene, ball, dt);
@@ -253,7 +248,6 @@ internal static unsafe partial class EmitterSim
             p.Vel = new Vector3(v.X, v.Y, v.Z + grav);
             p.InhDecay = MathF.Abs((1f - dt) * decay);
             p.Pos = curve * k + ball * (1f - k) + p.InhVel * (decay * dt);
-            if (bounce) Reflect(in e, p, was, dt);
         }
     }
 
@@ -267,7 +261,6 @@ internal static unsafe partial class EmitterSim
 
         Quat rebase = QMul(e.M.Orient, Conj(e.M.PrevRot));
         bool wind = (e.Flags & FWind) != 0;
-        bool bounce = (e.Flags & FBounce) != 0 && Bouncing.V && !e.Db;
         float dead = e.DeadSpace, dead2 = dead * dead;
         float keep = MathF.Pow(e.P2pDrag, dt), accel = e.P2pGrav;
         float life = e.Life, grav = e.Gravity * Gravity * dt;
@@ -275,7 +268,6 @@ internal static unsafe partial class EmitterSim
         {
             Particle p = At(ref slot, i);
             if (p.Splat != 0) continue;
-            Vector3 was = p.Pos;
             Vector3 start = Carry(ref e, p, rebase);
             Vector3 ball = start + p.Vel * dt;
             if (wind) ball += Wind(in e, scene, ball, dt);
@@ -297,72 +289,19 @@ internal static unsafe partial class EmitterSim
             p.Vel = new Vector3(v.X, v.Y, v.Z + grav);
             p.InhDecay = MathF.Abs((1f - dt) * decay);
             p.Pos = ball + p.InhVel * (decay * dt);
-            if (bounce) Reflect(in e, p, was, dt);
         }
     }
 
-    /// <summary>The bounce, ported from <c>moveParticleStandard</c>'s body @0x4afa90 (the two p2p movers
-    /// carry the same block). <paramref name="was"/> is where the particle was before this step -- the
-    /// engine sweeps from there, not from the rebased start, and captures it at the TOP of its loop.
-    /// <para>Three engine terms that look arbitrary and are not. <b>0.75 on every component</b> is a fixed
-    /// loss the engine applies before restitution. <b>Restitution and the frame-rate factor land on Z only</b>
-    /// -- the tangential components keep the flat 0.75 -- so a low-<c>bounce</c> emitter slides rather than
-    /// stopping. <b>The factor is <c>clamp(0.033 / dt, 0.5, 1)</c></b>: one at 60 and 30fps, damping the
-    /// bounce below that, which is what stops a stuttering frame from launching debris.</para>
-    /// <para>Geometry is <see cref="BounceWorld"/>'s: up-facing tile faces, no walls and no placeables. See
-    /// its class doc for why, and <c>emitsim.bounce=0</c> for the A/B. In DB mode there is no engine tile
-    /// geometry to build the set from, so the bounce stands down -- see the <c>[emitsim]</c> line.</para>
-    /// </summary>
-    private static void Reflect(in Emitter e, Particle p, Vector3 was, float dt)
-    {
-        Vector3 now = p.Pos;
-        if (was == now) return;
-        if (!BounceWorld.Hit(was, now, out float t, out Vector3 n)) return;
-        _bounced++;
-        p.Pos = was + (now - was) * t;
-        Land(e.Bounce, p, n, dt);
-    }
+    // CX-188: the BOUNCE is gone -- Reflect, Land and the engine's three bounce literals. BounceWorld,
+    // the collision set it tested against, was built by a Pump nothing called, so Hit never found a face;
+    // and the gate above was `!e.Db`, which is false for every emitter in the database. Particle tile-bounce
+    // is explicitly ABSENT: sparks and debris fall through the ground. The replacement is a hit test against
+    // the database's own tile geometry (HitTest), not a revival of the engine-tile face set.
 
-    /// <summary>The arithmetic half of <see cref="Reflect"/>, split out so the SelfCheck drives THIS rather
-    /// than a copy of it: the contact point is already in <paramref name="p"/> and the geometry is done.
-    /// <paramref name="co"/> is the emitter's restitution.</summary>
-    internal static void Land(float co, Particle p, Vector3 n, float dt)
-    {
-        bool land;
-        if (co == 0f) { p.Vel = Vector3.Zero; land = true; }
-        else
-        {
-            float f = DtRef / dt;
-            float k = f <= 1f ? MathF.Max(MinBounceScale, f) : 1f;
-            Vector3 v = p.Vel;
-            Vector3 r = v - 2f * Vector3.Dot(n, v) * n;
-            v = new Vector3(r.X * BounceLoss, r.Y * BounceLoss, r.Z * BounceLoss * co * k);
-            p.Vel = v;
-            land = v.LengthSquared() < LandSpeed2;
-        }
-        if (!land) return;
-        // Landed: the quad stops billboarding and lies in the contact plane, which is what the splat byte and
-        // the contact normal together mean to the vertex build.
-        p.Splat = 1;
-        p.Quat = RotationArc(new Vector3(0f, 0f, 1f), n);
-        p.Pos += n * LandLift;
-        p.SplatNormal = n;
-    }
-
-    /// <summary>The engine's own bounce literals, from the disassembly around 0x4afe00: the flat loss every
-    /// component takes, the reference step the frame-rate factor is measured against and its floor, the
-    /// squared speed below which a particle lands, and how far off the face it is lifted when it does.
-    /// </summary>
-    private const float BounceLoss = 0.75f, DtRef = 0.033f, MinBounceScale = 0.5f,
-                        LandSpeed2 = 0.5f, LandLift = 0.02f;
-
-    /// <summary>The wind displacement at a point. Engine mode asks <see cref="AurXform.Wind"/>, which is
-    /// <see cref="AlloyWind"/>'s own field or <c>Scene::GetWindVector</c> behind <c>view.wind</c>. DB mode has
-    /// no engine Scene, so it asks Alloy's field directly -- and when that is not armed the emitter feels no
-    /// wind at all, which is counted rather than assumed.</summary>
+    /// <summary>The wind displacement at a point. There is no engine Scene, so it asks Alloy's own field --
+    /// and when that is not armed the emitter feels no wind at all, which is counted rather than assumed.</summary>
     private static Vector3 Wind(in Emitter e, IntPtr scene, Vector3 at, float dt)
     {
-        if (e.Db || scene == IntPtr.Zero)
         {
             if (AlloyWind.Owned) return AlloyWind.Wind(at, dt);
             _windRefused++;

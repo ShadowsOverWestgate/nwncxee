@@ -295,6 +295,7 @@ public static class TileBuild
     {
         ModelDef? def = ModelCache.Acquire(model);
         if (def == null) { _refusedModel++; Refuse($"no model '{model}'"); return -1; }
+        WarmMaterials?.Invoke(def);
         int t = -1;
         if (rot != null) { StaticObject = PlaceStatic(scene, def, pos, rot.Value); t = StaticObject.IsNull ? -1 : StaticTile; }
         else { StaticObject = default; t = PlaceWithRing(scene, def, pos, orient, border, null); }
@@ -315,6 +316,12 @@ public static class TileBuild
         DbId o = SceneDb.TileObj[t];
         return SceneDb.Objects.Valid(o) ? o : default;
     }
+
+    /// <summary>Reads the <c>.mtr</c>s a spawned model's meshes name before its part tree is built, so a
+    /// bitmap that names a material resolves to it rather than to a missing texture of that name (white, for the
+    /// session: a city's static tents, 2026-10-09). Set by the resource layer (<c>MtrFeed</c>), as
+    /// <see cref="MtrDef.Bytes"/> is; null draws the mesh's own names.</summary>
+    public static Action<ModelDef>? WarmMaterials;
 
     /// <summary>The object the last <see cref="SpawnTile"/> made when it was a STATIC placeable (a non-null
     /// <c>Quaternion*</c>), else null. The seam has to hand the game layer a <c>CAurObject*</c> for it, which
@@ -581,8 +588,11 @@ public static class TileBuild
     /// re-load re-dirtying every tile.</summary>
     public static void SetTileLights(DbId scene, Vector3 pos, Vector3 c1, Vector3 c2)
     {
+        _palCalls++;
+        if (c1 == Vector3.Zero) _palBlack1++;
+        if (c2 == Vector3.Zero) _palBlack2++;
         int t = At(scene, pos);
-        if (t < 0) return;
+        if (t < 0) { _tileLightMiss++; return; }
         bool moved = false;
         for (int c = 0; c < SceneDb.TileLightCount[t]; c++)
         {
@@ -972,6 +982,12 @@ public static class TileBuild
     public static int FadingPeak => _fadingPeak;
 
     private static int _fadeTicks, _fading, _fadingPeak, _veiled, _fadeMode, _classified, _fadingOut, _fadeBoxSpill;
+    /// <summary><see cref="SetTileLights"/> calls whose cell held no tile: a palette the area never applied.</summary>
+    private static int _tileLightMiss;
+    /// <summary><see cref="SetTileLights"/> calls, and how many handed main light 1 / 2 black (lightcolor.2da
+    /// row 0): a black main light is the area's choice, not a lost palette. Since boot, these four: the area
+    /// edge that resets the other tallies fires AFTER <c>LoadArea</c>'s tile loop, which is when they count.</summary>
+    private static int _palCalls, _palBlack1, _palBlack2;
     private static int _modelsWithAabb, _modelsNoAabb, _aabbParts, _partsMade, _aabbWanted, _aabbFreed, _droppedReal, _realPlaced;
     /// <summary>CX-118: walkmesh objects made from a <c>.wok</c>, placements whose tile model already carried
     /// an <c>aabb</c> node (so no <c>.wok</c> is loaded), and the three outcomes that make no object -- no
@@ -1568,18 +1584,12 @@ public static class TileBuild
 
     // ---- light registration ----
 
-    /// <summary>File the tile's lights into <see cref="SceneDb.Lights"/> AS THE TILE IS BUILT -- which is what
-    /// deletes <c>LightRegistry</c>'s own BSP light pass. That pass
-    /// (<c>LightRegistry.NoteBspNode</c>/<c>BspScanBegin</c>) exists only because
-    /// <c>CollapsePartTree</c> clears every tile part's child list, so no part-tree walk can reach a tile
+    /// <summary>File the tile's lights into <see cref="SceneDb.Lights"/> AS THE TILE IS BUILT -- which is
+    /// what deleted <c>LightRegistry</c>'s own BSP light pass. That pass existed only because
+    /// <c>CollapsePartTree</c> clears every tile part's child list, so no part-tree walk could reach a tile
     /// light and the lights had to be recovered from the tile's own part list during the BSP traversal.
-    /// <para>That pass is NOT deleted yet, and saying so would be false: <c>LightRegistry.BspScanBegin</c>,
-    /// <c>NoteBspNode</c> and <c>BspScanEnd</c> still exist and <c>SceneWalk</c> still calls them. It cannot
-    /// go while engine mode exists, because in engine mode it is the only thing that reaches a tile light. It
-    /// goes with <c>SceneWalk</c> itself, which CX-120 removes along with the engine-scene Alloy path.
-    /// <c>ponytail:</c> the ceiling is "the engine scene still exists"; the upgrade path is CX-120's
-    /// deletion of <c>SceneWalk</c>, at which point the pass has no caller and the registry reads this
-    /// table instead.</para></summary>
+    /// CX-188 deleted the registry outright: <c>SceneWalk</c>, its one feed, went with the engine-scene
+    /// Alloy path, so nothing ever admitted a light to it.</summary>
     private static void RegisterLights(DbId tile, DbId obj, MergePlan plan, in Matrix4x4 place, int[]? into)
     {
         if (into != null) Array.Fill(into, -1);
@@ -1734,6 +1744,8 @@ public static class TileBuild
         if (_outOfOrder > 0) s += $", {_outOfOrder} NODES OUT OF ORDER";
         if (_flamesNoSl > 0) s += $", {_flamesNoSl} flames with no sl node (vanilla skips these too)";
         if (_fadeBoxSpill > 0) s += $", {_fadeBoxSpill} TILEFADE PARTS PAST THE FADE TABLE";
+        if (_tileLightMiss > 0) s += $", {_tileLightMiss} TILE PALETTES FOR A CELL WITH NO TILE (their main lights keep the model's colour)";
+        s += $", tile palettes {_palCalls} (main1 black {_palBlack1}, main2 black {_palBlack2})";
         s += $", wok {_wokMade} made + {_wokInModel} already in the model"
            + (_wokEmpty > 0 ? $" + {_wokEmpty} empty by design" : "")
            + (_wokMissing + _wokNoNode > 0 ? $" / {_wokMissing} MISSING + {_wokNoNode} with no aabb node" : "")

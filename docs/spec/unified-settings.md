@@ -532,7 +532,6 @@ Renderer itself.
 | alloy.highlight | outlinehl (quickbar) | Selection highlight | D | glow / outline · glow | U | L | Geometry | How a selected or hovered object is marked: the stock glow, or an outline with a light fill. |
 | alloy.weld | /draw weld | Smooth-shading crease angle | S | 0–180 ° step 5 · 60 | A | L | Geometry | Faces meeting at a sharper angle than this keep a hard edge. 0 keeps every model's own normals. Applies to models loaded after the change. |
 | alloy.lod | /draw lod | Cull models smaller than | S | 0–8 px step 0.5 · 1.0 | A | L | Geometry | Distant models whose projected size is under this many pixels are skipped. |
-| alloy.tiledissolve | /draw gobkey | Dissolve tile props hiding the camera | T | on | A | L | Geometry | Off = only walls dissolve, as in the stock game. |
 | alloy.border | border | Neighbouring-area ring | S | 5–40 tiles step 5 · 15 | A | R | Geometry | Tiles drawn past the area edge so the horizon is not empty; the stock game draws 5. |
 | alloy.oit | /draw oit | Transparency | D | sorted / weighted / linked lists · linked lists | A | L | Transparency | How overlapping transparent surfaces are combined. |
 | alloy.oitlayers | oitlayers | Transparency layers per pixel | D | 1 / 2 / 3 / 4 / 6 / 8 · 3 | A | R | Transparency | Memory reserved for linked-list transparency; ~33 MB per layer at 1080p. |
@@ -554,8 +553,6 @@ Renderer itself.
 | light.ambient | ambient | Ambient light | S | 0–4 step 0.05 · 1.00 | U | L | Lights | Scales the area's ambient fill. 1 is the area author's value. |
 | light.sun | sun | Sun and moon | S | 0–4 step 0.05 · 1.00 | U | L | Lights | Scales the area's directional light. 1 is the area author's value. |
 | light.overbright | overbright | Carried-light boost | S | 0–1 step 0.05 · 0 | U | L | Lights | How much of a torch's extra intensity shows at its centre instead of only as reach. 0 is the stock game; 0.5 makes carried lights stand out. |
-| light.flicker | — | Fire flicker | S | 0–2 step 0.05 · 1.00 | U | L | Lights | Animated lights (torches, braziers) keep a steady reach and flicker in brightness instead of pulsing in size. 1 flickers as deep as the pulse was made; 0 is the stock pulse. |
-| light.flickerspeed | — | Flicker speed | S | 0.1–4 step 0.05 · 1.00 | A | L | Lights | Rate of the flicker; 1 is a fireplace. |
 | light.sss | sss | Soft skin lighting | S | 0–1 step 0.05 · 0.25 | U | L | Lights | Light wrapping past the shadow line on characters. 0 is flat; the stock game uses 0.38 at shader quality above medium. |
 | light.wrap | wrap | Sphere-light wrap | S | 0–4 · 1 | A | L | Lights | Near lights soften the shadow line on low-poly models; 0 = point lights. |
 | light.wrapndl | wrapndl | Diffuse wrap | S | 0–2 · 1 | A | L | Lights | Distance-independent softening of every terminator. |
@@ -586,7 +583,7 @@ Renderer itself.
 | shadow.size | csm_size | Sun shadow resolution | D | 512 / 1024 / 2048 / 4096 · 2048 | U | R | Sun | Per-cascade map size. |
 | shadow.cubes | cube_count | Shadow-casting lights | S | 0–64 step 4 · 32 | U | R | Point lights | How many nearby lights cast shadows at once. Lower on a small card. |
 | shadow.cubesize | cube_size | Point-light shadow resolution | D | 128 / 256 / 512 / 1024 / 2048 · 512 | U | R | Point lights | |
-| shadow.cubedist | — | Point-light shadow distance | S | 0–200 step 5 · 40 m | U | L | Point lights | A light farther than this from you casts no shadow, and no fragment farther than this from the camera reads one; shadows fade out over the last quarter. 0 = every light in the budget, at any distance. |
+| shadow.cubedist | — | Point-light shadow distance | S | 0–200 step 5 · 30 m | U | L | Point lights | A light farther than this from you casts no shadow, and no fragment farther than this from the camera reads one; shadows fade out over the last quarter. 0 = every light in the budget, at any distance. |
 | shadow.soft | /light shadowsoft | Shadow softness | S | 0–4 step 0.25 · 1.5 | U | L | Point lights | Blur radius of point-light shadows. 0 is hard-edged and cheapest. |
 | shadow.dynsize | cube_dyn_size | Moving-caster resolution | D | 64 / 128 / 256 / 512 · 256 | A | R | Point lights | |
 | shadow.dyncount | cube_dyn_count | Moving-caster pool | S | 0–64 · 16 | A | R | Point lights | 0 = no separate pool. |
@@ -608,7 +605,7 @@ Renderer itself.
 | shadow.sunfull | /shadow sunfull | Full-rate sun cascades | S | 0–4 · 2 | A | L | Performance | |
 | shadow.sunlatch | /shadow sunlatch | Cascade re-latches per frame | S | 0–4 · 1 | A | L | Performance | |
 | shadow.dynranks | /shadow dynranks | Mover pages | S | 0–64 · 64 | A | L | Performance | |
-| shadow.mode / casters / stage / lightcull / gather / receiver / rebake / split / layered / refreshall / dynevents / itemdirty / flipcollect / maskh / diag / lightdiag / torchdiag / trace | noshadows, casters, shadowstage, /shadow … | — | as today | as today | C | mode/casters/stage R, rest L | | bisects |
+| shadow.casters / stage / gather / receiver / rebake / split / layered / refreshall / dynevents / itemdirty / flipcollect / maskh / trace | noshadows, casters, shadowstage, /shadow … | — | as today | as today | C | casters/stage R, rest L | | bisects |
 | shadow.movers | /shadow movers | — | B | | C | — | | |
 
 **Grass** — group `grass`.
@@ -648,8 +645,6 @@ Renderer itself.
 | grass.backlight | new (CX-24) | Backlit glow | S | 0–2 · 0.5 | A | L | Look | How much low sun shines through the grass when you look toward it. |
 | grass.sheen | new (CX-24) | Sheen | S | 0–1 · 0.1 | A | L | Look | Specular glint on the grass. |
 | grass.vlight | vlight | Per-vertex lighting | T | on | A | L | Look | Off = per-pixel (costlier). |
-| grass.border | bordergrass | Grass past the area edge | T | on | A | R | Field | |
-| grass.bordertex | bordergrasstex | Border grass textures | X | "grass" | A | R | Field | Comma-separated texture names. |
 | grass.prepass / pushvis / gviz / dumpmips / dumpshadow | same | — | as today | | C | L | | |
 
 **Water** — group `water`.

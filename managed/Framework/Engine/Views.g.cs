@@ -990,6 +990,8 @@ public readonly unsafe partial struct CClientExoAppInternal(IntPtr ptr)
     public ref CClientOptions ClientOptions => ref *(CClientOptions*)(Ptr + EngineLayout.InternalClientOptions);
     /// <inheritdoc cref="EngineLayout.InternalCursorManager"/>
     public ref CCachedMouseCursorManager CursorManager => ref *(CCachedMouseCursorManager*)(Ptr + EngineLayout.InternalCursorManager);
+    /// <inheritdoc cref="EngineLayout.InternalCutsceneMode"/>
+    public ref int CutsceneMode => ref *(int*)(Ptr + EngineLayout.InternalCutsceneMode);
     /// <inheritdoc cref="EngineLayout.InternalDriveChanged"/>
     public ref int DriveChanged => ref *(int*)(Ptr + EngineLayout.InternalDriveChanged);
     /// <inheritdoc cref="EngineLayout.InternalDriveKeys"/>
@@ -3155,8 +3157,6 @@ public readonly unsafe ref partial struct Part(IntPtr ptr)
     public void Animate(float dt) => ((delegate* unmanaged<IntPtr, float, void>)AnimateFn)(Ptr, dt);
     /// <inheritdoc cref="EngineLayout.PartAnimateSlot"/>
     public IntPtr AnimateFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.PartAnimateSlot);
-    /// <inheritdoc cref="EngineLayout.PartAnimateGate"/>
-    public ref int AnimateGate => ref *(int*)(Ptr + EngineLayout.PartAnimateGate);
     /// <inheritdoc cref="EngineLayout.PartAsAnimMeshSlot"/>
     public IntPtr AsPartAnimMesh() => ((delegate* unmanaged<IntPtr, IntPtr>)AsPartAnimMeshFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.PartAsAnimMeshSlot"/>
@@ -3169,10 +3169,6 @@ public readonly unsafe ref partial struct Part(IntPtr ptr)
     public PartEmitter AsPartEmitter() => new PartEmitter(((delegate* unmanaged<IntPtr, IntPtr>)AsPartEmitterFn)(Ptr));
     /// <inheritdoc cref="EngineLayout.PartAsEmitterSlot"/>
     public IntPtr AsPartEmitterFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.PartAsEmitterSlot);
-    /// <inheritdoc cref="EngineLayout.PartAsLightSlot"/>
-    public PartLight AsPartLight() => new PartLight(((delegate* unmanaged<IntPtr, IntPtr>)AsPartLightFn)(Ptr));
-    /// <inheritdoc cref="EngineLayout.PartAsLightSlot"/>
-    public IntPtr AsPartLightFn => *(IntPtr*)(*(IntPtr*)Ptr + EngineLayout.PartAsLightSlot);
     /// <inheritdoc cref="EngineLayout.PartAsSkinSlot"/>
     public IntPtr AsPartSkin() => ((delegate* unmanaged<IntPtr, IntPtr>)AsPartSkinFn)(Ptr);
     /// <inheritdoc cref="EngineLayout.PartAsSkinSlot"/>

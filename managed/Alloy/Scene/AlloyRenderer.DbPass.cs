@@ -45,7 +45,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>One world view. The scene and camera are the view the game asked for; the frame inputs the
     /// passes read were filled by the seam from the SNAPSHOT's matrices before this was called, so nothing
     /// here re-derives a camera.</summary>
-    private static void DbWorldPass(DbId scene, DbId camera)
+    private static void DbWorldPass(DbId scene, DbId camera, in Db.FrameHoist h)
     {
         if (!AlloyGate.Alloy) return;
         _dbPasses++;
@@ -93,9 +93,15 @@ public sealed unsafe partial class AlloyRenderer
         // part; DB mode reads SceneDb.PartDissolve, and until now nothing wrote it -- so the inn's roof never
         // opened and the PC sat under it. Order: after DbOrder (it walks the order) and before the stage that
         // reads the column into the record.
+        long tKeyhole = FrameZones.Now;
         DbKeyhole.Write(SceneDb.Cameras.Valid(camera) ? SceneDb.CamFacade[camera.Index] : 0, _order, _orderCount, _oDbPart, camera);
+        FrameZones.Add(FrameZones.Zone.Keyhole, tKeyhole);
         long tLights = FrameZones.Now;
-        DbLights.Walk(scene, SceneInputs.LatchAtten(), SceneInputs.CurrentArea());
+        // CX-188: the radius multiplier and the area's palette come off the frame's HOIST, read on the game
+        // thread at the publish. They used to be SceneInputs.LatchAtten() (an engine call) and
+        // SceneInputs.CurrentArea() (a walk of g_pAppManager -> module -> area, dereferenced again inside
+        // Admit and the bake) -- reads of memory the game thread simulates, done from whichever thread draws.
+        DbLights.Walk(scene, in h);
         FrameZones.Add(FrameZones.Zone.Lwalk, tLights);
         // CX-120: the shadow half of the frame anchor. Mode 0 reaches it through RspShim -> FrameAnchor ->
         // SceneInputs.FrameStart, and RspShim is the engine's RenderSinglePass, which does not run here -- so

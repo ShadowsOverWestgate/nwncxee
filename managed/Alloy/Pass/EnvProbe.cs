@@ -91,7 +91,6 @@ internal static unsafe class EnvProbe
     /// idles rather than un-arming and a re-enable captures at the next edge.</summary>
     private static bool _on => Lighting.Probe.V;
     private static readonly StandDown _down = new("EnvProbe");
-    private static IntPtr _bsp;
     private static int _lastFrame = -MinFrames;
     private static ExtenderLog? _log;
     private static float _far = 500f;
@@ -141,10 +140,9 @@ internal static unsafe class EnvProbe
                          && sh.Contains($"layout(std430, binding = {ShOutBinding}) writeonly buffer"),
                          "the SH9 block's two bindings match the C# side");
 
-            Tex = 9; Ready = true; _bsp = (IntPtr)0x1234;
+            Tex = 9; Ready = true;
             Revoke();
-            check.Expect(!Ready && _bsp == IntPtr.Zero,
-              "the world edge drops the cube's freshness AND its BSP key -- a recycled BSP address must not read as the same area");
+            check.Expect(!Ready, "the world edge drops the cube's freshness, so a new area recaptures");
             check.Expect(Tex == 9, "...and keeps the GL objects: they belong to the context, not to the world");
             Tex = 0;
 
@@ -160,24 +158,23 @@ internal static unsafe class EnvProbe
     }
 
     /// <summary>Is a capture due? True only on the edges that change what the probe should contain: never
-    /// captured, a different area (the Scene's static tile BSP root is per-area -- <c>Scene::InitBSP</c>
-    /// builds one per area load), or the player has walked <see cref="MoveDist"/> out of the last one. The
-    /// frame floor sits in front of all three.</summary>
-    internal static bool Wanted(Vector3 eye, IntPtr bspRoot, int frame)
+    /// captured (a new area: the world edge's <see cref="Revoke"/> drops <see cref="Ready"/>), or the player
+    /// has walked <see cref="MoveDist"/> out of the last one. The frame floor sits in front of both.</summary>
+    internal static bool Wanted(Vector3 eye, int frame)
     {
         if (!_on || _down.Failed || Gl.ClearColor == null) return false;
         if (frame - _lastFrame < MinFrames) return false;
-        return !Ready || bspRoot != _bsp || Vector3.DistanceSquared(eye, Origin) > MoveDist * MoveDist;
+        return !Ready || Vector3.DistanceSquared(eye, Origin) > MoveDist * MoveDist;
     }
 
     /// <summary>Open a capture: build the cube if needed and latch what this one is of. The caller then draws
     /// each face between <see cref="Face"/> and closes with <see cref="End"/>.
     /// <para><see cref="Ready"/> drops for the duration: the lit stage must not sample a cube that is
     /// currently an FBO attachment, and the capture draws through that same stage.</para></summary>
-    internal static bool Begin(Vector3 eye, IntPtr bspRoot, int frame, float far, Vector3 clear)
+    internal static bool Begin(Vector3 eye, int frame, float far, Vector3 clear)
     {
         if (!Ensure()) return false;
-        Origin = eye; _bsp = bspRoot; _lastFrame = frame;
+        Origin = eye; _lastFrame = frame;
         _far = far > FaceNear * 4f ? far : FaceNear * 4f;
         Ready = false;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
@@ -225,7 +222,7 @@ internal static unsafe class EnvProbe
         if (Gl.GetTextureImage != null) Gl.GetTextureImage(Tex, Mips - 1, Gl.RGBA, Gl.FLOAT, 24 * sizeof(float), px);
         Ready = Finite(new ReadOnlySpan<float>(px, 24));
         _log?.Info($"EnvProbe: captured area probe #{Captures} at ({Origin.X:F0},{Origin.Y:F0},{Origin.Z:F0}) " +
-                   $"-- {Size}px x 6 faces, {Mips} mips, area bsp 0x{(ulong)_bsp:x}; " +
+                   $"-- {Size}px x 6 faces, {Mips} mips; " +
                    $"up ({px[16]:F2},{px[17]:F2},{px[18]:F2}) down ({px[20]:F2},{px[21]:F2},{px[22]:F2})");
         if (!Ready && _poisoned++ == 0)
             _log?.Always($"EnvProbe: capture #{Captures} holds NaN/Inf -- NOT PUBLISHED, the area has no ambient " +
@@ -253,15 +250,10 @@ internal static unsafe class EnvProbe
         Revoke();   // a cube built by a dead context is stale for the world reason too
     }
 
-    /// <summary>#209: the world edge. The cube describes an area that has gone away, and <see cref="_bsp"/>
-    /// -- the only thing that would ask for a re-bake -- is a BARE POINTER used as an equality key. The
-    /// allocator recycles those, so a new area landing on the old BSP address kept <see cref="Ready"/> set
-    /// and lit the new interior with the previous one's env map. The GL objects survive: they are the
-    /// context's, not the world's, and the next capture reuses them.</summary>
-    internal static void Revoke()
-    {
-        Ready = false; _bsp = IntPtr.Zero;
-    }
+    /// <summary>#209: the world edge. The cube describes an area that has gone away, and this is the only thing
+    /// that asks for a new one. The GL objects survive: they are the context's, not the world's, and the next
+    /// capture reuses them.</summary>
+    internal static void Revoke() => Ready = false;
 
     /// <summary>The view the probe is captured with, for the light-cluster build: the FACE's view, not the
     /// player camera's. Reusing the main pass's clusters would light every face with the froxels binned for

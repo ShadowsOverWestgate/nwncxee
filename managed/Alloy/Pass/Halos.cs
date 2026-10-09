@@ -106,7 +106,7 @@ internal static unsafe class Halos
         if (_occFailed || _count == 0) return;
         int have = _readyN;
         if (have <= 0) return;
-        float dt = LightFade.Delta(FlareDtFloor);
+        float dt = FrameDelta.Delta(FlareDtFloor);
         if (dt <= 0f) return;
         _occFaded = 0;
         for (int i = 0; i < have; i++)

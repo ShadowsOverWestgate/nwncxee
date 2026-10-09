@@ -48,6 +48,7 @@ public sealed unsafe partial class ObjectSlots
         SceneDb.ObjTint[id.Index] = new Vector4(colour.X, colour.Y, colour.Z, alpha);
         Flag(id, SeamFlag.ColourShift, true);
         SceneDb.Touch(id, Dirty.Material);
+        if (Renderer.HlDiag.V) Facade.Log?.Info($"[hldiag] SetColorShifting o={id.Index} ({colour.X:F2},{colour.Y:F2},{colour.Z:F2}) a={alpha:F2} propagate={propagate}");
         if (propagate != 0) FireEvent(self, EventNames.PropagateColorShift, 0);
     }
 
@@ -63,6 +64,7 @@ public sealed unsafe partial class ObjectSlots
         SceneDb.ObjEmissive[id.Index] = colour.V;
         Flag(id, SeamFlag.Illuminated, true);
         SceneDb.Touch(id, Dirty.Material);
+        if (Renderer.HlDiag.V) Facade.Log?.Info($"[hldiag] SetIllumination o={id.Index} ({colour.X:F2},{colour.Y:F2},{colour.Z:F2}) propagate={propagate}");
         if (propagate != 0) FireEvent(self, EventNames.PropagateIllumination, 0);
     }
 

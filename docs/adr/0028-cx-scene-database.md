@@ -231,23 +231,33 @@ recenter and pitch limits `CameraService` layers on the chase camera have no DB 
 animation runtime, the behaviour dispatch and the transform step run there — all as decided, and all enforced
 by convention: there is no thread check, no assert and no lock over any `SceneDb` column. Three amendments:
 
-- **The render thread does not run, and the reasons are now three named facts.** `RenderThread.Start` refuses
-  while any of `GuiBuffersOwned`, `TextDocsPublished` or `UiOrderSettled` is unset, and the refusal names
-  *every* unmet one — a single flag would let whoever met one silently arm the others' races. `GuiCapture`'s
-  buffers and cursors are still written by game-thread producers; `TextQuads.Build` rewrites a document while
-  `TextQuads.Issue` walks it through unchecked pointer arithmetic (an out-of-bounds read, not an artifact);
-  and `UiHost`'s 2D draw runs in the engine context at the present. Nothing sets any of the three, so
-  `alloy.renderthread=1` stands down loudly and the single-threaded snapshot path takes every frame — the
-  fallback section 5 keeps is, today, the only path. The `FrameInputs` race that was the fourth reason is
-  closed: it is a `Frame` instance pair, game-thread current and render-side published, copied at the
-  boundary.
+- **The render thread does not run, and the reasons are now FIVE named facts — two of them left (CX-188).**
+  `RenderThread.Start` refuses while any of `GuiBuffersOwned`, `TextDocsPublished`, `UiOrderSettled`,
+  `FrameInputsPublished` or `ScreenHandoffSettled` is unset, and the refusal names *every* unmet one — a
+  single flag would let whoever met one silently arm the others' races. CX-188 closed `TextDocsPublished`
+  (`TextQuads` publishes a whole list into the slot nothing is holding, and had done so before the ticket
+  looked: "nothing sets any of them" was stale) and `UiOrderSettled` (see the fence below), and split the
+  framebuffer-0 question out of `GuiBuffersOwned` as `ScreenHandoffSettled`. The two that remain are the two
+  the fence cannot cover, because they live in the publish-to-next-fence window where the two threads
+  genuinely overlap: `GuiCapture`'s one static bank, written by `NuiFlush` on the game thread at
+  `nk_sdl_render` while the renderer appends panels and resets it; and framebuffer 0, which the renderer
+  resolves into while the game thread runs `CGuiMan::UpdateAndRender`. Each names its own fix in
+  `RenderThread.cs` — a NUI bank ping-ponged off the snapshot frame, and `PresentTarget` turned on for `Live`.
+  So `alloy.renderthread=1` still stands down loudly and the single-threaded snapshot path takes every frame.
+  The `FrameInputs` *global* race that was once counted here is not the problem: nothing on the game thread
+  writes `FrameInputs` in this mode. What `FrameInputsPublished` now holds is the ENGINE reads inside the
+  draw, and `RenderThread.cs` carries the audited ledger of what CX-188 hoisted into `FrameHoist` and what is
+  left (seven engine writes or engine-list walks, plus about forty small-value reads).
 - **The snapshot carries views, not records.** `RenderSnapshot.Frame` holds the per-view camera state and four
   dirty counts; the renderer reads `SceneDb`'s columns live, and the one-frame-in-flight rule is what makes
   that safe (`DbFeed.Records.cs`'s R1-17 block is the authoritative statement). Section 5's list of what the
   snapshot carries describes a copy that does not exist.
-- **`RenderSnapshot.Publish` folds before it waits.** With a live render thread the fold for frame N would
-  rewrite the draw records while the renderer still drew N-1. Moving the wait above the fold is a
-  precondition for starting that thread, alongside the `GuiCapture` and `FrameInputs` races.
+- **`RenderSnapshot.Publish` folded before it waited — CX-188 FIXED this**, in the way this bullet asked for.
+  `RenderSnapshot.AwaitDrained` is the fence, and `SeamDraw.OnBoundary` calls it *first*, ahead of the fold,
+  so with a live render thread the fold for frame N runs with the renderer already parked instead of rewriting
+  the draw records while it still drew N-1. The same move closes the `DrawRecipe` table race recorded beside
+  it: `Intern`/`Fill`/`Pump` and `DbAnim.Dyn`'s `InternDynamic` run inside the fold, i.e. inside the fence,
+  and the 4.6 bracket that reads the table runs outside it, so the two spans are disjoint by construction.
 
 **Dangly solve and skin palettes stayed on the game thread**, against section 5: the dangly solve is inline on
 the part walk (as the engine's is) and the skin palette is written at the end of `DbAnim.Finish`, because the
@@ -317,8 +327,9 @@ whole trail is CX-185. And the tile **walkmesh** is loaded from its own `.wok`
 1. **The bracket itself** — `GlContextService` creates the 4.6 core context on the engine's drawable and runs
    two switches a frame with a fence each way. Everything below is why it cannot collapse to one context.
 2. **CX's own 2D UI** — `UiHostService.DrawWindows` → `UiHost.DrawFrame` and `TextRig`, drawn in the engine's
-   context at the present (in DB mode *after* the DB frame's view list), followed by `HandBack`'s
-   `ResetRenderStates` resync. This is also the `UiOrderSettled` precondition.
+   context at the present (in DB mode *after* the world frame it composites over), followed by `HandBack`'s
+   `ResetRenderStates` resync. CX-188 ORDERED this rather than moved it: it runs on the game thread inside the
+   fence, in both arms of the boundary, and `UiOrderSettled` is now met.
 3. **The present** — `ScreenOwner.Present`, and `PresentTarget`'s blit of the composited texture into the real
    default framebuffer, which the engine context must do.
 4. **`OwnedBuffers.OnUnlockPool`** — deliberately: it runs wherever the engine was, buffers are share-listed,

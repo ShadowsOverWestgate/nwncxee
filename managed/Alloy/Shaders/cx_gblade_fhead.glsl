@@ -1,5 +1,6 @@
 #version 460 core
 #define CX_FS 1
+#define CX_LIGHT_LITE 1   // CX-188: cx_lightfrag's slimmed walk -- not a baked receiver, one shadow tap per light
 // CX-24: the blade fragment head. Opaque, and no discard anywhere in the stage: early-Z does the work the
 // card path's depth prepass does.
 in vec3 vLight;

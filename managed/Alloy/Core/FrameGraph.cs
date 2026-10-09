@@ -41,6 +41,10 @@ internal enum PassId
     /// after <c>RenderSkyBoxes</c>; unblended it would be correct on either side of the sky, and this side
     /// costs only the sky pixels the foliage then covers.</summary>
     CutoutOwned,
+    /// <summary>CX-188 (ADR 0029): the deferred point lights (<see cref="DeferredLights"/>) -- one compute pass that
+    /// reads the G-buffer the opaque and cutout passes wrote and adds the point lights into the HDR target. After
+    /// both writers and BEFORE grass, whose root blend copies the lit frame under each blade.</summary>
+    DeferredLights,
     /// <summary>#127: Alloy grass -- GPU-instanced blades over the engine's own bin geometry, replacing
     /// <c>Scene::DoBinBucket</c> outright. A cutout class: alpha discard, depth write ON, GL_BLEND OFF, so
     /// no grass fragment is ever partially transparent AND depth-writing and #106's punch-through cannot
@@ -165,6 +169,7 @@ internal static class FrameGraph
         (PassId.OpaqueOwned,     Bracket.Colour),
         (PassId.SkyOwned,        Bracket.Colour),
         (PassId.CutoutOwned,     Bracket.Colour),
+        (PassId.DeferredLights,  Bracket.Colour),
         (PassId.GrassOwned,      Bracket.Colour),
         (PassId.Reflections,     Bracket.Colour),
         (PassId.BlendedOwned,    Bracket.Colour),

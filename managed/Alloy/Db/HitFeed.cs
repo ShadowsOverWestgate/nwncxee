@@ -106,11 +106,6 @@ public static class HitFeed
         SceneDb.HitPartTrigger[p] = payload;
     }
 
-    /// <summary>Once per frame, after the transform step: fold the objects table's dirty list into the bounds
-    /// columns and the index. Only the records that changed are visited (ADR 0028 §4), so a still scene costs
-    /// this nothing.
-    /// <para>It does NOT consume the dirty list -- the renderer's own fold does that -- so it must run before
-    /// whatever calls <c>TakeDirty</c>.</para></summary>
     /// <summary>What a CAST calls first. The engine issues casts DURING an area load -- the creature update
     /// that follows <c>CNWCArea::LoadArea</c> in the same message batch runs
     /// <c>CNWCCreature::ComputeZValue</c>, whose floor probe is a <c>Scene::HitCheck</c> -- and vanilla has no
@@ -133,19 +128,29 @@ public static class HitFeed
     /// <inheritdoc cref="Sync"/>
     public static long SyncFolds { get; private set; }
 
-    /// <summary>Per object, the dirty take, compose count and dirty bits its last refresh saw: the list only
-    /// grows within a frame and every growth triggers a fold, so without these each append re-refreshed every
-    /// entry before it (~14k refreshes a frame for ~48 dirty objects).</summary>
-    private static readonly int[] _foldTake = new int[SceneDb.MaxObjects];
+    /// <summary>Per object, the <see cref="DbTable.MarkClock"/> and compose count its last refresh saw: the
+    /// list only grows within a frame and every growth triggers a fold, so without these each append
+    /// re-refreshed every entry before it (~14k refreshes a frame for ~48 dirty objects).
+    /// <para>CX-188: the mark CLOCK, not the dirty take plus the dirty bits it used to compare. Those two
+    /// could not see a re-mark that added no new bit and drove no compose (a text box set twice) -- which is
+    /// the whole reason the frame boundary used to re-refresh every dirty entry unconditionally, 798
+    /// <see cref="HitBounds.Refresh"/> calls a frame in a still scene. The clock moves on EVERY
+    /// <see cref="DbTable.Mark"/>, so the exact case the full fold existed for is now one compare, and there
+    /// is no full fold.</para>
+    /// <para>Invalidation: none to wire -- the clock is monotonic, so a later mark is strictly greater, and a
+    /// recycled slot's <see cref="Dirty.Created"/> mark at alloc is itself such a mark.</para></summary>
+    private static readonly long[] _foldMark = new long[SceneDb.MaxObjects];
     private static readonly int[] _foldCompose = new int[SceneDb.MaxObjects];
-    private static readonly Dirty[] _foldBits = new Dirty[SceneDb.MaxObjects];
     /// <summary>Dirty entries a fold stepped over because nothing changed since their last refresh.</summary>
     public static long FoldSkipped;
 
-    public static void Fold() => Fold(full: false);
-
-    /// <summary><paramref name="full"/> refreshes every dirty entry regardless of its stamp (the frame boundary).</summary>
-    public static void Fold(bool full)
+    /// <summary>Once per frame, after the transform step, and from <see cref="Sync"/> on the cast path: fold
+    /// the objects table's dirty list into the bounds columns and the index. Only the records that CHANGED
+    /// since their last refresh are visited (ADR 0028 §4, and <see cref="_foldMark"/> for what "changed"
+    /// means here), so a still scene costs this nothing.
+    /// <para>It does NOT consume the dirty list -- the renderer's own fold does that -- so it must run before
+    /// whatever calls <c>TakeDirty</c>.</para></summary>
+    public static void Fold()
     {
         Folds++;
         _foldedAt = SceneDb.Objects.DirtyMark;
@@ -161,10 +166,12 @@ public static class HitFeed
         {
             int o = SceneDb.Objects.DirtyIndex(k);
             Dirty d = SceneDb.Objects.DirtyAt(o);
-            int take = SceneDb.Objects.DirtyTakes, serial = DbAnim.ComposeCount[o];
-            if (!full && _foldTake[o] == take && _foldCompose[o] == serial && (d & ~_foldBits[o]) == 0)
-            { FoldSkipped++; continue; }
-            _foldTake[o] = take; _foldCompose[o] = serial; _foldBits[o] = d;
+            long mark = SceneDb.Objects.MarkAt(o);
+            int serial = DbAnim.ComposeCount[o];
+            // The compose count as well as the mark: a getter's on-demand compose moves the matrices this
+            // reads without marking the record at all.
+            if (_foldMark[o] == mark && _foldCompose[o] == serial) { FoldSkipped++; continue; }
+            _foldMark[o] = mark; _foldCompose[o] = serial;
             // Destroyed and Created can BOTH be set on one slot: a free and an alloc between two
             // TakeDirty points OR into one dirty entry (DbTable.Mark ORs, one list entry per slot), and
             // an AREA CHANGE is exactly that -- the old area's tiles are freed and the new area's are

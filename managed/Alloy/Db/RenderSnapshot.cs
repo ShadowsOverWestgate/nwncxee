@@ -43,6 +43,10 @@ public static class RenderSnapshot
         /// engine forks <c>Scene::Render</c> on, and the one that decides which pass chain runs.</summary>
         public bool World;
         public bool Perspective;
+        /// <summary>CX-188: this view's fog, resolved on the GAME thread at the fold. Per view and not per
+        /// frame because the area's fog answers for the area's scene and a GUI panel's scene is not it; see
+        /// <see cref="FrameHoist.FoldFog"/>.</summary>
+        public FrameHoist.ViewFog Fog;
     }
 
     /// <summary>One frame's worth. Two of these ping-pong.</summary>
@@ -55,6 +59,9 @@ public static class RenderSnapshot
         public long Index;
         /// <summary>Dirty object/part/scene/camera counts this frame folded, for the period line.</summary>
         public int DirtyObjects, DirtyParts, DirtyScenes, DirtyCameras;
+        /// <summary>CX-188: every ENGINE read the draw used to do, done once on the game thread at the fold
+        /// and carried across by value. See <see cref="FrameHoist"/>.</summary>
+        public FrameHoist Hoist;
 
         public void Reset(long index)
         {
@@ -153,6 +160,12 @@ public static class RenderSnapshot
         f.DirtyParts = SceneDb.Parts.DirtyCount;
         f.DirtyScenes = SceneDb.Scenes.DirtyCount;
         f.DirtyCameras = SceneDb.Cameras.DirtyCount;
+        // CX-188: the frame's ENGINE reads, FIRST -- before seam-feed's fold, which is where the records the
+        // renderer draws are written, and before anything hands the frame across. Every read below is of
+        // memory the game thread owns, so this is the only moment in the frame at which it may happen.
+        FrameHoist.Fold(ref f.Hoist);
+        for (int k = 0; k < f.ViewCount; k++)
+            FrameHoist.FoldFog(f.Views[k].Scene, in f.Hoist, out f.Views[k].Fog);
         Fold?.Invoke(f);
         SceneDb.Objects.TakeDirty();
         SceneDb.Parts.TakeDirty();
@@ -238,6 +251,31 @@ public static class RenderSnapshot
         {
             _stopping = false;
             _published = null;
+        }
+    }
+
+    /// <summary>CX-188: <b>THE FENCE.</b> Block until the renderer holds no frame -- it has finished the one
+    /// it was handed and released it. Game thread, once per frame, at the top of the frame boundary.
+    /// <para>This is the whole of the two threads' mutual exclusion, and it is why the game thread may touch
+    /// framebuffer 0, the engine's GL state and the engine's own context at all with a render thread live:
+    /// from the moment this returns until the next <see cref="Publish"/>, the render thread is parked inside
+    /// <see cref="Take"/> with nothing to draw. The present and the 2D UI go in that gap.</para>
+    /// <para>It is not a new wait. <see cref="Publish"/> already waited for exactly this, at exactly this
+    /// point in the frame, because latency is bounded at one frame either way; hoisting it out of the publish
+    /// only makes the gap it opens NAMED, so the UI and the present can be ordered inside it rather than
+    /// racing it. On the single-threaded path nothing is ever published-but-unreleased here, so it returns
+    /// without touching the monitor and the frame is byte-identical.</para></summary>
+    internal static void AwaitDrained()
+    {
+        lock (_gate)
+        {
+            while (_published != null && !_stopping)
+            {
+                _waits++;
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                Monitor.Wait(_gate);
+                _waitTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+            }
         }
     }
 

@@ -18,6 +18,8 @@ uniform vec2 uZ;
 uniform ivec3 uGrid;
 uniform int uLightCount;
 uniform float uReach;
+// CX-188 budget: x = light.floor, y = the lit stage's master gain (uFalloff.x) -- the two terms of ReachCut
+uniform vec2 uLightFloor;
 uniform int uBinCap;
 uniform vec2 uAtten;
 // per cube slot: its dyn page plus one (0 = no mover near the light), as the lit stage's uLocalDynPage
@@ -73,6 +75,27 @@ bool HotReach(int slot, vec3 l, vec3 fc, float fr)
     }
     return false;
 }
+
+// CX-188 budget: cx_lightfrag's CxReachCut -- the f2 at which this light's own brightness falls under
+// light.floor, and so where its binned radius ends. CONSERVATIVE on purpose: the build must never drop a light
+// the walk would light, while a light it bins that the walk then windows out costs one list entry and nothing
+// else. Two things make `lum` here an upper bound on the walk's:
+//  - max(c, c*c*c) per channel, which is >= the walk's c^2.2 for EVERY c >= 0 (c >= c^2.2 below 1, c^3 >= c^2.2
+//    above it). The plain sRGB value alone is not the bound: an overbright channel above 1 linearises UP, and
+//    this pass must not have to trust that the walk already divided the colour down.
+//  - uDayDim is not in it, and uDayDim is at most 1 (it is 1/the daylight ratio).
+// 1e30 = no cut, so `min(uReach, sqrt(...))` is exactly uReach when the floor is off.
+float ReachCut(vec3 col)
+{
+    if (uLightFloor.x <= 0.0) return 1e30;
+    vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
+    vec3 c = max(col, vec3(0.0));
+    float lum = uLightFloor.y * dot(max(c, c * c * c), vec3(0.2126, 0.7152, 0.0722));
+    return clamp((lum - uLightFloor.x * at.x) / max(lum + uLightFloor.x * at.y, 1e-8), 0.0, 1.0);
+}
+/// The radius this build bins light `pr` by: the smaller of light.binreach's share of the authored radius and
+/// light.floor's perceptual cut.
+float ReachR(vec4 pr, vec3 col) { return pr.w * min(uReach, sqrt(ReachCut(col))); }
 
 // cx_lightfrag's CxLightImportance at squared distance dd: non-increasing in dd, so the nearest point of a
 // box bounds it from above over the box and the farthest point from below.
@@ -160,7 +183,7 @@ void Build(uint id, out uint binned, out uint keptOut, out uint candOut, out boo
         for (int i = 0; i < uLightCount; i++)
         {
             vec4 pr = uLights[i * 2];
-            float r = pr.w * uReach;
+            float r = ReachR(pr, uLights[i * 2 + 1].rgb);
             vec3 e = (uView * vec4(pr.xyz, 1.0)).xyz;
             vec3 dv = e - clamp(e, lo, hi);
             if (dot(dv, dv) > r * r) continue;
@@ -195,7 +218,7 @@ void Build(uint id, out uint binned, out uint keptOut, out uint candOut, out boo
     for (int i = 0; i < uLightCount; i++)
     {
         vec4 pr = uLights[i * 2];
-        float r = pr.w * uReach;
+        float r = ReachR(pr, uLights[i * 2 + 1].rgb);
         vec3 e = (uView * vec4(pr.xyz, 1.0)).xyz;
         vec3 dv = e - clamp(e, lo, hi);
         float dd = dot(dv, dv);

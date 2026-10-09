@@ -3,10 +3,9 @@ using CX.Framework;
 namespace CX.Alloy;
 
 /// <summary>The <c>shadow</c> group (spec §4.3 Shadows), and the storage the shadow path reads:
-/// <see cref="SceneInputs"/> (the feed, the focus, the diagnostics), <see cref="CasterPass"/> (the bake and
-/// its cadence), <see cref="AlloyLights"/> (the receiver's softness terms, respelled from <c>/light</c>),
-/// <see cref="AlloyRenderer"/> (the sun bias, from <c>/draw</c>) and
-/// <see cref="ShadowService"/> (the stencil suppression mode). <see cref="Enabled"/> collapses the
+/// <see cref="SceneInputs"/> (the focus), <see cref="CasterPass"/> (the bake and
+/// its cadence), <see cref="AlloyLights"/> (the receiver's softness terms, respelled from <c>/light</c>) and
+/// <see cref="AlloyRenderer"/> (the sun bias, from <c>/draw</c>). <see cref="Enabled"/> collapses the
 /// <c>shadows</c> key and the feed's own flag; the allocation-sizing rows are Restart and read through
 /// <c>Boot</c>. Touched from <see cref="RenderCommands.Register"/> so it declares on the main thread.
 /// <para><c>dyncount</c> defaults to the cube budget rather than the spec's 16: that is today's effective
@@ -16,11 +15,11 @@ internal static class Shadows
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled, SunDyn, Casters, Gather, Receiver, Rebake, Split, Layered, RefreshAll, DynSrc,
-                                        DynEvents, ItemDirty, FlipCollect, MaskH, Diag, LightDiag, TorchDiag, Trace;
+                                        DynEvents, ItemDirty, FlipCollect, MaskH, Trace;
     internal static readonly Knob<float> Dist, Soft, Floor, DiscPx, Near, CsmBias, MaskHoles, MaskGraded, FocusDist, DynMin, CubeDist;
     internal static readonly Knob<int> Cascades, Size, Cubes, CubeSize, DynSize, DynCount, Cap, Fade, FadeSlots,
                                        Mask, MaskDither, StaticCap, DynHold, DynFull, SunFull, SunLatch, DynRanks,
-                                       Mode, Stage, LightCull, Taps;
+                                       Stage, Taps, DeferredRes, PerPixel;
     internal static readonly KnobButton Movers;
 
     static Shadows()
@@ -44,7 +43,7 @@ internal static class Shadows
                          help: "How many nearby lights cast shadows at once. Lower on a small card.");
         CubeSize = G.Dropdown("cubesize", "Point-light shadow resolution", new[] { 128, 256, 512, 1024, 2048 }, 512, effect: Effect.Restart,
                               help: "Per-face size of each light's shadow cube.");
-        CubeDist = G.Slider("cubedist", "Point-light shadow distance", 0f, 200f, 5f, 40f, "m",
+        CubeDist = G.Slider("cubedist", "Point-light shadow distance", 0f, 200f, 5f, 30f, "m",
                             help: "A light farther than this from you casts no shadow, and no fragment farther than this from the camera "
                                 + "reads one; shadows fade out over the last quarter. 0 = every light in the budget, at any distance.");
         Soft = G.Slider("soft", "Shadow softness", 0f, 16f, 0.25f, 4f,
@@ -63,7 +62,29 @@ internal static class Shadows
                           help: "Below this screen radius the blur stands down. 0 = never (consistent softness at every distance).");
         Taps = G.Slider("taps", "Shadow blur taps", 0, 16, 1, 8, tier: Tier.Advanced,
                         help: "Disc taps per shadowing light. 0 = no blur.");
-        Cap = G.Slider("cap", "Shadow taps per pixel", 0, 2, 1, 2, tier: Tier.Advanced, help: "0 = every light, each at a single hardware tap.");
+        Cap = G.Slider("cap", "Softened shadows per pixel", 0, 2, 1, 2, tier: Tier.Advanced,
+                       help: "How many of a pixel's shadowed lights get the soft, contact-hardened filter; the rest take a "
+                           + "single hardware tap. 0 = every light one hardware tap, and it stands the per-pixel budget "
+                           + "and the deferred shadow record down with it.");
+        // CX-188 budget: the per-pixel SHADOW BUDGET -- how many of a pixel's lights cast a shadow AT ALL. The
+        // rest light it unshadowed, which is what the forward cap's evicted candidates already did; what this
+        // ends is the deferred walk's hardware tap for a pixel's fifth-and-later shadowed light (measured ~1.1M
+        // of them a frame on the test area). Default = the record's own size, so the shipped look is the
+        // record's verdict for the four it holds and nothing beyond it.
+        PerPixel = G.Slider("perpixel", "Shadowed lights per pixel", 0, DeferredShadows.RecordLights, 1,
+                            DeferredShadows.RecordLights, tier: Tier.Advanced,
+                            help: "How many lights may cast a shadow on one pixel. The strongest ones at that pixel win; the "
+                                + "rest light it without a shadow, which is far cheaper where many lamps overlap. 0 = no limit.");
+        // CX-188 step 3 (ADR 0029): the deferred path evaluates each pixel's shadows once into a visibility
+        // record, so it -- and only it -- can take that record at half resolution and upsample it with a
+        // depth- and normal-aware filter. Half by default: the record is the expensive half of the deferred
+        // frame, and the upsample mixes the four disc rotations the pass interleaves across a 2x2 block of
+        // record texels, so half resolution integrates sixteen tap positions a pixel where full takes four.
+        DeferredRes = G.Dropdown("deferredres", "Deferred shadow resolution", new[] { 1, 2 }, 2,
+                                 new[] { "full", "half" }, tier: Tier.Advanced,
+                                 help: "Point-light shadows on solid surfaces are worked out once per pixel, or once per "
+                                     + "2x2 block and blurred back up along surfaces. Half is much cheaper and slightly softer; "
+                                     + "full keeps every shadow edge exactly where the pixel puts it.");
         Near = G.Slider("near", "Self-shadow skip", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced,
                         help: "Carried lights don't shadow their bearer inside this radius.");
         G.Section("Sun");
@@ -90,10 +111,8 @@ internal static class Shadows
                             changed: CasterPass.ShadowInvalidate);
 
         G.Section("");
-        Mode = G.Slider("mode", "mode", 0, ShadowService.ModeAuto, 1, ShadowService.ModeAuto, tier: Tier.ChatOnly, effect: Effect.Restart);
         Casters = G.Toggle("casters", "casters", true, Tier.ChatOnly, Effect.Restart);
-        Stage = G.Slider("stage", "stage", 1, 4, 1, 4, tier: Tier.ChatOnly, effect: Effect.Restart);
-        LightCull = G.Slider("lightcull", "lightcull", 0, 2, 1, 1, tier: Tier.ChatOnly);
+        Stage = G.Slider("stage", "stage", 2, 4, 1, 4, tier: Tier.ChatOnly, effect: Effect.Restart);
         Gather = G.Toggle("gather", "gather", true, Tier.ChatOnly);
         Receiver = G.Toggle("receiver", "receiver", true, Tier.ChatOnly);
         Rebake = G.Toggle("rebake", "rebake", true, Tier.ChatOnly);
@@ -105,9 +124,6 @@ internal static class Shadows
         ItemDirty = G.Toggle("itemdirty", "itemdirty", true, Tier.ChatOnly, changed: CasterPass.ShadowInvalidate);
         FlipCollect = G.Toggle("flipcollect", "flipcollect", false, Tier.ChatOnly);
         MaskH = G.Toggle("maskh", "maskh", true, Tier.ChatOnly, changed: CasterPass.ListChanged);
-        Diag = G.Toggle("diag", "diag", false, Tier.ChatOnly);
-        LightDiag = G.Toggle("lightdiag", "lightdiag", false, Tier.ChatOnly);
-        TorchDiag = G.Toggle("torchdiag", "torchdiag", false, Tier.ChatOnly);
         Trace = G.Toggle("trace", "trace", false, Tier.ChatOnly);
         Movers = G.Button("movers", "movers", CasterPass.DumpMoversNext, Tier.ChatOnly);
     }

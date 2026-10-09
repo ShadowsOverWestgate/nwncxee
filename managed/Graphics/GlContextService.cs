@@ -368,6 +368,14 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <see cref="Leave"/> before returning to engine code.</summary>
     public static bool Enter()
     {
+        // CX-188: the thread that HOLDS the context has it current for the whole session, so its bracket is
+        // already open and there is nothing to switch. Said true so every pass site -- BeginOwnedFrame, the
+        // GUI flush, the atlas pump -- works unchanged on the render thread; without it Enter refuses on
+        // _heldElsewhere and the GUI reads "a flush could not enter the 4.6 context" on every frame.
+        // Does NOT touch Inside: that flag is the GAME thread's bracket, read by MakeCurrentHere and
+        // ReserveForOtherThread to refuse the hand-over mid-bracket, and setting it from here would make a
+        // stand-down's re-reservation refuse for ever.
+        if (HeldHere) { _heldHereDepth++; return true; }
         if (!Available || _heldElsewhere) return false;
         // Latch the probe pixel here, in the ENGINE context, where the viewport is the window.
         if (_swapProbe > 0 && GameGate.InModule)
@@ -437,6 +445,32 @@ public sealed unsafe class GlContextService : IExtenderService
 
     public static void Leave()
     {
+        // CX-188: the holder thread's bracket never closes -- its context stays current until the session or
+        // the stand-down ends. Switching back to the ENGINE context from here would hand the game thread's
+        // context to the render thread, which is the GLX BadAccess (and therefore the process exit) this
+        // whole hand-over is written around.
+        if (HeldHere)
+        {
+            if (_heldHereDepth > 0) _heldHereDepth--;
+            // Errors still drain: an error raised inside a pass must not be attributed to the next one.
+            _err46 += Gl.DrainErrors();
+            // What this early return deliberately does NOT do, each because the holder path never did the
+            // other half of it:
+            //   Inside   -- never set true here (see Enter), so there is nothing to clear, and clearing it
+            //               would be a write to the GAME thread's flag from this thread.
+            //   _span    -- Enter never called Begin, so _stamped cannot be this thread's and End would close
+            //               a span somebody else opened.
+            //   _probe   -- the swap probe reads framebuffer 0 on both sides of a context SWITCH, and there
+            //               is no switch here.
+            // ponytail: the cost is that [gl46]'s gpu-span -- the one discriminator for "GPU-bound or not"
+            // -- reads n/a for the whole session with a render thread live, because the only Begin/End pair
+            // is on the path this return skips. The upgrade is a GpuStamp owned by the render thread, and
+            // what it needs first is for _span's Rotate/Reset (OnFrame and the status line, both the game
+            // thread, and the status line is OUTSIDE the frame fence) to stop being able to run while this
+            // thread is mid-span. Not stamped from here blind: a half-rotated stamp reports a GPU time that
+            // is a measurement of nothing.
+            return;
+        }
         Inside = false;
         _err46 += Gl.DrainErrors();
         if (_stamped) _span.End();
@@ -580,6 +614,9 @@ public sealed unsafe class GlContextService : IExtenderService
         if (!Available || Inside) return false;
         if (MakeCur(Context) == 0) { _switchFails++; return false; }
         Gl.DrainErrors();
+        // Before _heldElsewhere, so a reader that sees the latch also sees who holds it.
+        _holderTid = Environment.CurrentManagedThreadId;
+        _heldHereDepth = 0;
         // Latch BEFORE returning: from here the game thread's Enter must refuse, or its MakeCurrent would
         // target a context current on this thread and GLX answers BadAccess -- which Xlib's default handler
         // turns into process exit, not an error code.
@@ -596,6 +633,23 @@ public sealed unsafe class GlContextService : IExtenderService
     /// <summary>True while another thread owns the 4.6 context. The frame owner asks before it assumes the
     /// bracket ran.</summary>
     public static bool HeldElsewhere => _heldElsewhere;
+
+    /// <summary>The managed thread id of the thread the 4.6 context is current on, or 0 while the game
+    /// thread's per-frame bracket owns it. Written by that thread in <see cref="MakeCurrentHere"/> and
+    /// cleared in <see cref="ReleaseCurrentHere"/>; volatile because the game thread reads it every frame.</summary>
+    private static volatile int _holderTid;
+
+    /// <summary>Is the 4.6 context current on THIS thread for the session -- i.e. am I the render thread?
+    /// <see cref="Enter"/>/<see cref="Leave"/> become no-ops here, which is what lets every pass site run
+    /// unchanged on either thread.</summary>
+    public static bool HeldHere => _holderTid != 0 && _holderTid == Environment.CurrentManagedThreadId;
+
+    /// <summary>Open brackets on the holder thread. Reported, not enforced: an unbalanced pair is a bug in a
+    /// pass and a count that never returns to zero names it, where a no-op Enter/Leave otherwise hides it.</summary>
+    private static int _heldHereDepth;
+
+    /// <summary>Brackets the holder thread currently has open (0 = balanced).</summary>
+    internal static int HeldHereDepth => _heldHereDepth;
 
     /// <summary>Claim the context for a thread that is about to take it, from the GAME thread, before that
     /// thread runs. Without this there is a window between "the render thread was started" and "it called
@@ -617,6 +671,11 @@ public sealed unsafe class GlContextService : IExtenderService
     public static void ReleaseCurrentHere()
     {
         if (!Available) return;
+        _holderTid = 0;
+        // With the holder gone the count has no owner, and a stand-down that left it non-zero would put
+        // "N UNBALANCED 4.6 brackets" on /alloy for the rest of the session -- a counter reporting a thread
+        // that no longer exists. Cleared beside the id that gave it meaning.
+        _heldHereDepth = 0;
         MakeCur(IntPtr.Zero);
         // Cleared LAST: the game thread may Enter the moment this is false, and it must not do so until the
         // context is genuinely free.

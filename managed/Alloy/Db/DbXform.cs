@@ -22,9 +22,35 @@ namespace CX.Alloy.Db;
 /// the change set is exact rather than inferred.</para></summary>
 public static unsafe partial class DbAnim
 {
-    /// <summary>The compose generation: bumped once per FRAME (at <see cref="Settle"/>) so a per-object stamp says "already composed this
-    /// pass" without clearing an array.</summary>
+    /// <summary>The compose generation: a per-object stamp says "already composed under this generation"
+    /// without clearing an array.
+    /// <para>CX-188: nothing in a live frame bumps it any more. It used to be bumped once per frame at
+    /// <see cref="Settle"/>, and that single increment defeated the whole dedup: the boundary re-walks the
+    /// WHOLE dirty list, so every object on it (~977 of ~1,000, for the ~94 that had moved) recomposed its
+    /// entire part range, measured as 10,6k part composes a frame in a STILL scene. Staleness is the
+    /// authority, and it is exact -- <see cref="Stale"/> for the object's own placement and
+    /// <see cref="_partClock"/> for a part pose written under it. The generation stays because it is the one
+    /// way to force a whole pass (the self-checks do, and a recycled slot's zero stamp still reads as
+    /// "never composed").</para></summary>
     private static int _poseGen = 1;
+    /// <summary>Per object: <see cref="DbTable.MarkClock"/> of the parts table as its last compose left it.
+    /// A part whose <see cref="DbTable.MarkAt"/> is past this was marked AFTER that compose, so its local pose
+    /// may not be in the composed matrices -- the one change <see cref="Stale"/> cannot see, because it reads
+    /// the object's placement and a part pose is not in it (<c>SetPartPosition</c>, the look-at's head track,
+    /// <c>PoseRig</c>'s bone writes).
+    /// <para>Invalidation: there is none to wire. The stamp is taken from a monotonic clock at the end of each
+    /// compose, so every later mark is strictly greater; a recycled part slot is marked
+    /// <see cref="Dirty.Created"/> at alloc, which is itself a mark past any earlier stamp, and
+    /// <see cref="OnCreate"/> resets an object's stamp to -1 so its first compose honours everything.</para></summary>
+    private static readonly long[] _partClock = Unstamped();
+
+    /// <inheritdoc cref="_partClock"/>
+    private static long[] Unstamped()
+    {
+        var a = new long[SceneDb.MaxObjects];
+        Array.Fill(a, -1L);
+        return a;
+    }
     /// <summary>How far into <see cref="DbTable.DirtyCount"/> the last compose got. The dirty list is
     /// seam-feed's to consume at the present boundary, so this only READS it -- and an on-demand compose after
     /// a setter walks the tail rather than the whole list.</summary>
@@ -64,7 +90,17 @@ public static unsafe partial class DbAnim
             if (!pt.LiveAt(p)) continue;
             if ((pt.DirtyAt(p) & (Dirty.Xform | Dirty.Anim | Dirty.Tree)) == 0) continue;
             DbId o = SceneDb.PartObj[p];
-            if (SceneDb.Objects.Valid(o)) ComposeIndex(o.Index);
+            if (!SceneDb.Objects.Valid(o)) continue;
+            // CX-188: the mark has to be NEWER than the object's last compose. The walk restarts from 0 at the
+            // boundary (a part behind the cursor can be re-marked), so without this test every object holding
+            // any dirty part recomposed once a frame -- and most of those marks were folded in long before, or
+            // were written BY the compose itself (the static restage mark below).
+            if (pt.MarkAt(p) <= _partClock[o.Index]) continue;
+            // The mark is the signal ComposeIndex's own staleness test cannot read, so say it in the one
+            // language that test speaks. Exactly one compose per object: it re-stamps _partClock, and this
+            // object's other newly marked parts are then older than the stamp.
+            _flags[o.Index] |= ObjAnim.Moved;
+            ComposeIndex(o.Index);
         }
         _partDirtyUpTo = pn;
     }
@@ -155,6 +191,9 @@ public static unsafe partial class DbAnim
             }
             _composedParts += n;
         }
+        // AFTER the part walk, so the restage marks it just made (and any other mark taken during this
+        // compose) count as folded in rather than as a reason to compose again next pass.
+        _partClock[i] = SceneDb.Parts.MarkClock;
         // LAST, with this object's parts current: the attached children ride them, and the compose visits only
         // what changed -- a child is not marked by its parent's move. DbXform.Attach.cs.
         PlaceChildren(i);

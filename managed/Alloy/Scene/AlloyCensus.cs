@@ -67,11 +67,6 @@ internal static unsafe partial class AlloyCensus
     /// <summary>The engine's late draw bucket: <c>sample_framebuffer 1</c> parts.</summary>
     internal const int LateBucket = 5;
 
-    /// <summary>The bit in <see cref="EngineLayout.NodeOwnerFlags"/> that arms a second alpha multiply by
-    /// <see cref="EngineLayout.GobFadeAlpha"/> -- Ghidra <c>PartTriMesh::Mat</c>:
-    /// <c>if ((*(*(gob+0x68)+0x8e) &amp; 8) != 0)</c>.</summary>
-    internal const int GobOwnerFadeBit = 8;
-
     /// <summary>Distinct unrecognised custom-shader names the diag names. A handful is a report; the whole
     /// set would be a wall, and past a handful the answer is "port more features", not "list them all".</summary>
     internal const int MaxUnknown = 6;

@@ -90,6 +90,19 @@ internal static class DbEmitterChannels
         return b < 0 ? rest : _value[b * Channels + ch];
     }
 
+    /// <summary>CX-188: this part's block index, or -1 when no animation has ever written it. The fill reads
+    /// about thirty channels per emitter per frame and <see cref="Value"/> re-asked this question for every
+    /// one of them (3,0% of the game thread, with <see cref="ChannelOf"/> beside it); asked once, the whole
+    /// unanimated case is the node's rest keys and this table is not touched at all.</summary>
+    internal static int BlockOf(int part)
+        => (uint)part < SceneDb.MaxParts ? _blockOf[part] - 1 : -1;
+
+    /// <summary>One channel of a block <see cref="BlockOf"/> handed back, by channel INDEX -- the caller
+    /// resolved the controller id once, so this is the array read with nothing in front of it. Out of range
+    /// reads default, which is what a block cannot hold.</summary>
+    internal static Vector4 At(int b, int ch)
+        => (uint)b < (uint)_blockN && (uint)ch < (uint)Channels ? _value[b * Channels + ch] : default;
+
     private static int BlockFor(int part)
     {
         if ((uint)part >= SceneDb.MaxParts) return -1;

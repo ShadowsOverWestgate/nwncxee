@@ -183,7 +183,7 @@ internal static unsafe partial class LightmapBake
         _log?.Info($"LightmapBake: hold released after {s:F1} s ({why}) -- first bake at {(first < 0 ? "never" : $"{first:F1} s")}, "
                  + $"{_landed} rects landed ({_landedHits} cached) / {_pending} pending, pages {_layers}, set {(_closed ? $"closed at walk {_walks}" : "OPEN")} "
                  + $"SetHash {SetHash:x16}, "
-                 + $"charts {MeshChart.Done}/{MeshChart.Offered}, {_sharedEnrols} enrols shared a standing rect; census at the close static={_closeStatic} (tile {_closeTile}, placeable {_closePlaceable}) animated={_closeAnimated} (anim-driven {_closeAnimRun}) dynamic={_closeDynamic}, now static {CensusStatic} dynamic {CensusDynamic}"
+                 + $"charts {MeshChart.Done}/{MeshChart.Offered}, {_sharedEnrols} enrols shared a standing rect; census at the close static={_closeStatic} dynamic={_closeDynamic}, now static {CensusStatic} dynamic {CensusDynamic}"
                  + stages + AreaStats());
         // CX-54 step 0: the key sample is chosen over the whole area, so it is emitted here, not on the first rect.
         FlushKeySample();
@@ -377,7 +377,6 @@ internal static unsafe partial class LightmapBake
         _walks = BlendCeiling; EndWalk();
         check.Expect(_closed, "the blend wait has no ceiling: one stuck blend would hold the loading screen to its cap");
         _log = live;
-        check.Expect(Settled(IntPtr.Zero), "a gob-less light (a tile's own node) animates nothing and must count as settled");
         _clsArea = IntPtr.Zero; Reopen(); _loadArmed = false; CensusUnsettled = 0; SetHash = 0; _quietFrom = int.MinValue;
         if (check.Ok) log.Info($"LightmapBake.HoldSelfCheck: passed (cap {CapSeconds:F0} s, drain {QuietFrames} frames or {QuietSeconds:F2} s, idle {IdlePresents} presents or {IdleSeconds:F0} s)");
         return check.Ok;

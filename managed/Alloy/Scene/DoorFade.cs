@@ -6,17 +6,18 @@ using CX.Framework;
 
 namespace CX.Alloy;
 
-/// <summary>CX-89: the door fade, Alloy's. A behaviour port of <c>Scene::FadeDoors</c> @0x467990, which was
-/// both the fade and #132's frame anchor; the anchor is now a direct call out of <see cref="RspShim.Run"/> and
-/// the engine function is not called on an Alloy frame at all.
-/// <para><b>Why it is not optional.</b> The fade's output is <c>Gob+0x10c</c>
-/// (<see cref="EngineLayout.GobFadeAlpha"/>) and <c>Gob::HitCheck</c> @0x4381d0 reads the same field: its
-/// guard is <c>hitInfo+0x7d == 0 || (*(gob+0x68)+0x8e &amp; 8) == 0 || mindooralpha &lt; *(float*)(gob+0x10c)</c>,
-/// so a door sitting AT <c>mindooralpha</c> is not hit-tested -- freezing the integrator makes doors
-/// unclickable without changing a pixel. Hit testing stays the engine's until tier 4 (CX-118), so this writes
-/// the engine's field rather than a shadow copy, and Alloy's own draw folds the same field through
-/// <see cref="AlloyCensus.GobAlphaMul"/>.</para>
-/// <para>GL-free, allocation-free: one pass over <c>gobbucket</c> with the arithmetic in registers.</para>
+/// <summary>CX-89: the door fade, Alloy's. A behaviour port of <c>Scene::FadeDoors</c> @0x467990's
+/// arithmetic -- the integrator, the clamp and the face test -- driven per door by <c>HitFeed</c> through
+/// <see cref="StepDb"/>.
+/// <para><b>Why it is not optional.</b> The fade gates the PICK as well as the picture:
+/// <c>Gob::HitCheck</c> @0x4381d0 refuses a door whose alpha sits at <c>mindooralpha</c>, so a frozen
+/// integrator makes doors unclickable without changing a pixel. <see cref="StepDb"/> is the one writer of
+/// both columns for exactly that reason.</para>
+/// <para>CX-188: the engine-memory pass is gone. <see cref="Tick"/> walked <c>AlloyRenderer.VisibleGobs</c>
+/// and wrote <c>Gob+0x10c</c> on each door, and it had no caller -- the slot it held was
+/// <c>RspShim.Run</c>'s, which does not run when CX owns the scene graph. The <c>/alloy doors</c> report went
+/// with it: it printed that same engine walk.</para>
+/// <para>GL-free, allocation-free.</para>
 /// </summary>
 internal static unsafe class DoorFade
 {
@@ -26,93 +27,6 @@ internal static unsafe class DoorFade
     /// <summary>How far the entered face's outward normal must lean toward the scene focus before the door is
     /// driven opaque -- the 0.1f at 0x12eeeac, compared as <c>0.1 &lt; dot</c>.</summary>
     private const float OpaqueDot = 0.1f;
-    /// <summary>Sanity ceiling on the <c>gobbucket</c> count, mirroring the chase's own
-    /// (<c>AlloyRenderer.VisLoadCap</c>): a list this long is a bad read, not a busy area.</summary>
-    private const int MaxGobs = 1 << 13;
-
-    /// <summary>CX-104: frames the visible set was unreadable and the whole scene's gobs were stepped. Zero is
-    /// the expected value; a rate here means the renderer's own visibility answer is not standing up.</summary>
-    private static long _visAllFrames;
-    private static float* _minAlpha;
-    private static float* _deltaT;
-    private static IntPtr* _currentCamera;
-    private static ExtenderLog? _log;
-    private static bool _cappedLogged;
-    /// <summary><c>/alloy doors</c> was asked for; the next <see cref="Tick"/> writes the report.</summary>
-    private static bool _armed;
-
-    /// <summary>The engine symbol that did not resolve, or null. Non-null stands the whole Alloy path down
-    /// (<see cref="RspShim.Install"/>): a shim that has stopped calling <c>Scene::FadeDoors</c> and cannot run
-    /// this in its place would freeze every door's alpha, and with it every door's clickability.</summary>
-    internal static string? Missing { get; private set; }
-
-    internal static void Resolve(ExtenderLog log)
-    {
-        _log = log;
-        _minAlpha = (float*)Native.Sym(SymbolMap.MinDoorAlpha);
-        _deltaT = (float*)Native.Sym(SymbolMap.DeltaT);
-        _currentCamera = (IntPtr*)Native.Sym(SymbolMap.CurrentCamera);
-        // CX-104: gobbucket is no longer on this list -- the population comes from AlloyRenderer.VisibleGobs,
-        // which answers for itself, so an unresolved bucket global is no longer a reason to stand the whole
-        // Alloy path down over the door fade.
-        Missing = _minAlpha == null ? SymbolMap.MinDoorAlpha
-                : _deltaT == null ? SymbolMap.DeltaT
-                : _currentCamera == null ? SymbolMap.CurrentCamera : null;
-    }
-
-    /// <summary>Step every visible door's fade, once per Alloy frame, BEFORE the frame draws -- the slot
-    /// <c>Scene::FadeDoors</c> held. The population is Alloy's own visible-gob set
-    /// (<see cref="AlloyRenderer.VisibleGobs"/>), so a door out of view keeps its alpha exactly as vanilla left
-    /// it. CX-104: that accessor is the one visibility answer every pass shares -- reading the
-    /// <c>gobbucket</c> global here as well meant two readers could disagree about which frame's list they
-    /// were on, and a Tick at the top of <see cref="RspShim.Run"/> reads a list the anchor has not sampled
-    /// yet. Runs in engine context and touches no GL.</summary>
-    internal static void Tick(IntPtr scene)
-    {
-        if (Missing != null || scene == IntPtr.Zero) return;
-        if (_armed) { _armed = false; LogDoors(scene); }
-        // A set the renderer could not read is not a licence to freeze every door: without it there is no
-        // in-view answer at all, and a frozen alpha is a door that cannot be clicked (see the class remarks).
-        // So the whole scene's gobs are stepped instead -- the same population, minus the cull.
-        if (!AlloyRenderer.VisibleGobs(out IntPtr* items, out int n))
-        {
-            var all = new Scene(scene);
-            items = (IntPtr*)all.Gobs;
-            n = all.GobCount;
-            _visAllFrames++;
-        }
-        if (n <= 0 || items == null) return;
-        if (n > MaxGobs)
-        {
-            if (!_cappedLogged)
-            {
-                _cappedLogged = true;
-                _log?.Always($"DoorFade: the visible-gob set read {n} entries (cap {MaxGobs}) -- the door fade "
-                         + "sits out this frame; doors will neither fade nor refuse clicks, and this list is "
-                         + "not sane");
-            }
-            return;
-        }
-        var cam = new Camera(AlloyCamera.World);
-        if (cam.IsNull) return;
-        Vector3 camPos = cam.Pos;
-        // Scene+0x190 is the SCENE FOCUS (Scene::SetSceneFocus @0x477890 is its only writer; the sky parks
-        // its domes there too, which is why the row is named skyPos). It is the point the door must not hide.
-        Vector3 focus = new Scene(scene).SkyPos;
-        float step = *_deltaT / FadeSeconds;
-        float floor = *_minAlpha;
-        for (int i = 0; i < n; i++)
-        {
-            IntPtr p = items[i];
-            if (p == IntPtr.Zero) continue;
-            var g = new Gob(p);
-            Model node = g.Node;
-            if (node.IsNull || (node.OwnerFlags & AlloyCensus.GobOwnerFadeBit) == 0) continue;
-            bool opaque = Opaque(g.BoundsMin, g.BoundsMax, g.Position, g.Rot, camPos, focus);
-            g.FadeAlpha = Clamp(g.FadeAlpha + (opaque ? step : -step), floor);
-        }
-    }
-
     /// <summary>The engine's clamp, in its order: ceiling at 1 first, then the <c>mindooralpha</c> floor, so a
     /// floor above 1 wins. Both branches of the original land here.</summary>
     internal static float Clamp(float alpha, float floor) => MathF.Max(floor, MathF.Min(1f, alpha));
@@ -213,55 +127,6 @@ internal static unsafe class DoorFade
         return (axis == 0 || (hit.X >= min.X && hit.X <= max.X))
             && (axis == 1 || (hit.Y >= min.Y && hit.Y <= max.Y))
             && (axis == 2 || (hit.Z >= min.Z && hit.Z <= max.Z));
-    }
-
-    /// <summary>The <c>/alloy doors</c> button. The report needs <c>CurrentCamera</c>, which only
-    /// <c>Camera::RenderScene</c> @0x5a7920 sets (and clears on the way out), so a chat command arms it and the
-    /// next <see cref="Tick"/> writes it from inside the render.</summary>
-    internal static void Arm()
-    {
-        if (Missing != null) { _log?.Info($"DoorFade: {Missing} unresolved -- no fade, and the Alloy path is down"); return; }
-        _armed = true;
-        _log?.Info("DoorFade: report armed -- written at the next Alloy world frame");
-    }
-
-    /// <summary>The <c>/alloy doors</c> report: every visible door's alpha against <c>mindooralpha</c> and
-    /// the verdict driving it. A door printed <c>UNCLICKABLE</c> is one <c>Gob::HitCheck</c> will refuse, so
-    /// this is how the fade is checked by CLICKING rather than by looking.</summary>
-    private static void LogDoors(IntPtr scene)
-    {
-        ExtenderLog? log = _log;
-        if (log == null) return;
-        if (!AlloyRenderer.VisibleGobs(out IntPtr* items, out int n))
-        {
-            var sc = new Scene(scene);
-            items = (IntPtr*)sc.Gobs;
-            n = sc.GobCount;
-        }
-        if (n <= 0 || n > MaxGobs || items == null) { log.Info($"DoorFade: visible-gob count {n} -- nothing to report"); return; }
-        var cam = new Camera(AlloyCamera.World);
-        if (cam.IsNull) { log.Info("DoorFade: no CurrentCamera -- outside a scene render"); return; }
-        Vector3 camPos = cam.Pos;
-        Vector3 focus = new Scene(scene).SkyPos;
-        float floor = *_minAlpha;
-        int doors = 0, stuck = 0;
-        for (int i = 0; i < n; i++)
-        {
-            IntPtr p = items[i];
-            if (p == IntPtr.Zero) continue;
-            var g = new Gob(p);
-            Model node = g.Node;
-            if (node.IsNull || (node.OwnerFlags & AlloyCensus.GobOwnerFadeBit) == 0) continue;
-            doors++;
-            float a = g.FadeAlpha;
-            bool clickable = a > floor;
-            if (!clickable) stuck++;
-            log.Info($"DoorFade: door {doors} gob={p:x} alpha={a:0.000} mindooralpha={floor:0.000} "
-                   + $"target={(Opaque(g.BoundsMin, g.BoundsMax, g.Position, g.Rot, camPos, focus) ? "opaque" : "faded")}"
-                   + (clickable ? "" : " UNCLICKABLE (Gob::HitCheck skips a door at the floor)"));
-        }
-        log.Info($"DoorFade: {doors} door gob(s) in view, {stuck} at the floor; DeltaT={*_deltaT:0.0000}s, "
-               + $"full fade {FadeSeconds:0.00}s, {_visAllFrames} frame(s) stepped over the whole scene");
     }
 
     /// <summary>Off-device (run-demo.sh): the fade integrator, the clamp and the face test. All three fail

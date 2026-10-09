@@ -5,9 +5,9 @@ using CX.Framework;
 namespace CX.Alloy.Db;
 
 /// <summary>CX-120 seam-feed: <b>the sky's roles, from the scene database.</b> The DB-mode counterpart of
-/// <c>SkyBox.Roles</c> -- the one part of the sky that is STATE rather than geometry, and the part the engine
+/// the deleted <c>SkyBox.Roles</c> -- the one part of the sky that is STATE rather than geometry, and the part the engine
 /// kept in six fields off <c>Scene+0x18..+0x4c</c> that no longer exist.
-/// <para>The branch structure is <c>SkyBox.Roles</c>'s, term for term, because it is the engine's: the off
+/// <para>The branch structure is <c>Scene::RenderSkyBoxes</c>'s, term for term: the off
 /// byte, "no current sky", the fade epsilon on the desired one, and a null cross-fade object. Miss one and the
 /// pass paints a sky into an interior -- which is why this is a self-checked function and not four inline
 /// tests at the call site.</para>
@@ -18,7 +18,7 @@ namespace CX.Alloy.Db;
 internal static class DbSky
 {
     /// <summary>One sky role: which object draws, at what alpha, with which blend pair. The same shape
-    /// <c>SkyBox.Role</c> has, keyed on a database handle instead of a <c>Gob*</c>.</summary>
+    /// the deleted <c>SkyBox.Role</c> had, keyed on a database handle instead of a <c>Gob*</c>.</summary>
     internal struct Role
     {
         public DbId Obj;

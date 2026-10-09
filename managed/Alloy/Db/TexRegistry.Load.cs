@@ -36,6 +36,13 @@ internal static unsafe partial class TexRegistry
     /// <summary>Uploads per bracket. An upload is a driver allocation plus a copy, so a whole area's arrival
     /// is spread over frames rather than spent in one.</summary>
     private const int UploadsPerFrame = 8;
+    /// <summary>The preview's largest side: the first mip at or under it, and the levels below. A 64 px BC3 level
+    /// is 4 KB, so a whole area's previews upload in a few frames.</summary>
+    internal const int PreviewSide = 64;
+    /// <summary>Fast-queue uploads per bracket, and the bytes they may spend: previews are tiny, but a small texture
+    /// decoded whole on the fast queue (a TGA, a PLT) is not.</summary>
+    private const int FastUploadsPerFrame = 64;
+    private const long FastBytesPerFrame = 8L << 20;
 
     private sealed class Job
     {
@@ -71,6 +78,16 @@ internal static unsafe partial class TexRegistry
         public bool EnvMapTxi;
         public long Bytes;
         public string? Why;
+        /// <summary>Came off the fast queue: a preview pass, which a texture needing no preview finishes whole.</summary>
+        public bool Fast;
+        /// <summary><see cref="Data"/> is a preview tail (native, from <see cref="TryTail"/>) rather than the full chain.</summary>
+        public bool Tail;
+        /// <summary>The <c>.txi</c> grid and flipbook (<see cref="TxiMaterial"/>); <see cref="Pixels"/> is the whole
+        /// image once <see cref="CutGrid"/> made the upload one cell of it.</summary>
+        public int GridX = 1, GridY = 1, FullW;
+        public bool Cycle;
+        public float Fps = 1f;
+        public byte[]? Pixels;
     }
 
     /// <summary>The <c>.txi</c> keyword the water class is decided on, as the engine reads it:
@@ -128,9 +145,14 @@ internal static unsafe partial class TexRegistry
     /// <summary>What the bracket publishes back to the game thread: the slot it uploaded for, the generation
     /// it uploaded against, and either a name and handle or the reason there is none.</summary>
     private readonly record struct Landed(int Slot, uint Gen, uint Name, ulong Handle, long Bytes,
-                                         TexCoverage Cov, bool BumpyShiny, bool EnvMap, string? Why);
+                                         TexCoverage Cov, bool BumpyShiny, bool EnvMap, string? Why, bool Preview = false);
 
     private static readonly Queue<Job> _in = new(), _out = new();
+    /// <summary>The fast queue: every new load's first pass, ahead of every full one (<see cref="Job.Fast"/>).
+    /// Not bounded by <see cref="MaxPending"/> -- what it holds is a preview's few KB.</summary>
+    private static readonly Queue<Job> _inFast = new(), _outFast = new();
+    private static int _fastPending;
+    private static long _previews;
     private static readonly Stack<Job> _pool = new();
     private static readonly Queue<int> _waiting = new();
     private static readonly Queue<Landed> _landed = new();
@@ -139,12 +161,17 @@ internal static unsafe partial class TexRegistry
     private static readonly Queue<int> _reminted = new();
     private static readonly object _gate = new();
     private static int _pending;
+
+    /// <summary>Textures on their way in: being read and decoded, or queued behind <see cref="MaxPending"/>.
+    /// The streaming bar's texture term; 0 once an area has settled.</summary>
+    internal static int InFlight { get { lock (_gate) return _pending + _waiting.Count + _fastPending; } }
     private static bool _worker;
-    private static readonly Handles _handles = new();
+    /// <summary>Per worker: the file handles each one keeps open.</summary>
+    [ThreadStatic] private static Handles? _handles;
     /// <summary>The worker's one decode buffer for the coverage scan, grown to the largest level 0 it has
     /// met. Worker-thread only, like <see cref="_handles"/>: a managed array per texture would put
     /// large-object allocations on it, and NativeAOT's GC stops the main thread for those.</summary>
-    private static byte[] _covScratch = Array.Empty<byte>();
+    [ThreadStatic] private static byte[]? _covScratch;
 
     /// <summary>Offer slot <paramref name="i"/>'s load, or queue it for a later <see cref="Tick"/>. Game
     /// thread; takes no table lock, because <see cref="_pend"/> is the only column it writes and only the game
@@ -154,20 +181,26 @@ internal static unsafe partial class TexRegistry
         if (_pend[i] != PendNone) return;   // already queued or in flight: one offer per load, ever
         if (!ResLocate.Ready && !ResLocate.Attach(out string? why))
         { Fail(i, $"the resource manager is not attached ({why ?? "no reason given"})"); return; }
-        bool room;
-        lock (_gate) room = _pending < MaxPending;
-        if (!room) { _pend[i] = PendWaiting; lock (_gate) _waiting.Enqueue(i); return; }
-        Offer(i);
+        bool fast = !_preview[i] && Renderer.TexPreview.V;
+        if (!fast)
+        {
+            bool room;
+            lock (_gate) room = _pending < MaxPending;
+            if (!room) { _pend[i] = PendWaiting; lock (_gate) _waiting.Enqueue(i); return; }
+        }
+        Offer(i, fast);
     }
 
-    private static void Offer(int i)
+    private static void Offer(int i, bool fast)
     {
         string resref = _resref[i] ?? "";
         Job j = Rent();
         j.Slot = i; j.Gen = _gen[i] & 0xFFF; j.Resref = resref; j.Kind = _kind[i];
-        j.Data = null; j.Why = null; j.W = j.H = j.Levels = 0; j.Bytes = 0; j.Channels = 0;
+        j.Data = null; j.Why = null; j.W = j.H = j.Levels = 0; j.Bytes = 0; j.Channels = 0; j.Fast = fast; j.Tail = false;
         string? txi = _kind[i] != TexKind.Plt ? ReadResourceText(resref, TextFontLoad.ResTxi) : null;
         TxiSampler(i, txi);
+        j.Pixels = null; j.FullW = 0;
+        TxiMaterial(i, txi, j);
         j.Compressed = false; j.GenMips = false; j.Clamp = _clamp[i]; j.Cov = TexCoverage.Unknown; j.MeanOk = false;
         j.Nearest = _nearest[i]; j.Mip = _mipmap[i];
         // The material .txi is its OWN resource for most shipped textures -- ttf01_water01 has one, and the
@@ -183,11 +216,16 @@ internal static unsafe partial class TexRegistry
         // takes the pair decode and the shader resolve, anything else the ordinary one. The slot KEY does not
         // carry the kind, so this cannot split one file across two slots.
         j.Kind = found;
-        lock (_lock) _kind[i] = found;
+        lock (_lock) { _kind[i] = found; TableSerial++; }
         j.ResId0 = resId[0]; j.ResId1 = resId[1]; j.ResId2 = resId[2]; j.ResId3 = resId[3];
         _pend[i] = PendFlight;
         StartWorker();
-        lock (_gate) { _pending++; _in.Enqueue(j); Monitor.Pulse(_gate); }
+        lock (_gate)
+        {
+            if (fast) { _fastPending++; _inFast.Enqueue(j); }
+            else { _pending++; _in.Enqueue(j); }
+            Monitor.Pulse(_gate);
+        }
     }
 
     /// <summary>The sampler words <c>CAurTextureBasic::ParseField</c> @0x5881e0 reads from the texture's own
@@ -253,28 +291,38 @@ internal static unsafe partial class TexRegistry
     {
         if (j.Data != null)
         {
-            if (j.Kind == TexKind.Plain && j.Compressed) DdsReader.FreePrepared(j.Data);
+            if (j.Tail) NativeMemory.Free(j.Data);
+            else if (j.Kind == TexKind.Plain && j.Compressed) DdsReader.FreePrepared(j.Data);
             else NativeMemory.Free(j.Data);
             j.Data = null;
         }
         lock (_gate) _pool.Push(j);
     }
 
+    /// <summary>Decode workers: a quarter of the cores, 1..4. Each keeps its own file handles, scratch and NWSync
+    /// connection, and nothing else a worker touches is shared.</summary>
+    private static int Workers => Math.Clamp(Environment.ProcessorCount / 4, 1, 4);
+
     private static void StartWorker()
     {
         if (_worker) return;
         _worker = true;
-        new Thread(static () =>
-        {
-            while (true)
+        for (int w = 0; w < Workers; w++)
+            new Thread(static () =>
             {
-                Job j;
-                lock (_gate) { while (_in.Count == 0) Monitor.Wait(_gate); j = _in.Dequeue(); }
-                try { Work(j); }
-                catch (Exception e) { j.Why = $"{e.GetType().Name}: {e.Message}"; }
-                lock (_gate) _out.Enqueue(j);
-            }
-        }) { IsBackground = true, Name = "cx-tex" }.Start();
+                while (true)
+                {
+                    Job j;
+                    lock (_gate)
+                    {
+                        while (_inFast.Count == 0 && _in.Count == 0) Monitor.Wait(_gate);
+                        j = _inFast.Count > 0 ? _inFast.Dequeue() : _in.Dequeue();
+                    }
+                    try { Work(j); }
+                    catch (Exception e) { j.Why = $"{e.GetType().Name}: {e.Message}"; }
+                    lock (_gate) (j.Fast ? _outFast : _out).Enqueue(j);
+                }
+            }) { IsBackground = true, Name = w == 0 ? "cx-tex" : $"cx-tex-{w}" }.Start();
     }
 
     /// <summary>The worker: read and decode. No GL, no engine memory -- everything it reads was copied for it
@@ -286,7 +334,7 @@ internal static unsafe partial class TexRegistry
     private static void Work(Job j)
     {
         if (j.Loc.Kind == KindNwSync) { NwSyncWork(j); return; }
-        if (!_handles.Read(j.Loc, out ReadOnlySpan<byte> raw, out string? why)) { j.Why = why ?? "the read failed"; return; }
+        if (!(_handles ??= new Handles()).Read(j.Loc, out ReadOnlySpan<byte> raw, out string? why)) { j.Why = why ?? "the read failed"; return; }
         Decode(j, raw);
     }
 
@@ -308,6 +356,7 @@ internal static unsafe partial class TexRegistry
     {
         j.BumpyShiny = j.BumpyShinyTxi || TxiNamesBumpyShiny(raw);
         j.EnvMap = j.EnvMapTxi || TxiNamesEnvMap(raw);
+        if (j.Fast && j.Kind != TexKind.Plt && j.Loc.ResType != TgaResType && j.GridX * j.GridY <= 1 && TryTail(j, raw)) return;
         if (j.Kind == TexKind.Plt)
         {
             byte* rg = PltImage.Decode(raw, out int w, out int h, out int levels, out string? pw);
@@ -349,6 +398,7 @@ internal static unsafe partial class TexRegistry
             j.Bytes = r.Bytes;
             j.Cov = TexCoverageOf.OfRaster(new ReadOnlySpan<byte>(px, r.Bytes), r.W, r.H, r.Px);
             j.MeanOk = TexScan.MeanOfRaster(px, r.W, r.H, r.Px, out j.Mean);
+            CutGrid(j);
             return;
         }
         byte* chain = DdsReader.Prepare(raw, out DdsReader.Info info, out string? dw);
@@ -359,18 +409,65 @@ internal static unsafe partial class TexRegistry
         j.Data = chain; j.Dds = info; j.W = info.W; j.H = info.H; j.Levels = info.Levels;
         j.Channels = info.Channels; j.GlFmt = fmt; j.Compressed = true; j.GenMips = false;
         j.Bytes = info.ChainBytes;
+        byte[] sc = _covScratch ?? Array.Empty<byte>();
         j.Cov = TexCoverageOf.OfBcn(new ReadOnlySpan<byte>(chain, DdsReader.LevelSize(info.W, info.H, info.Channels)),
-                                    info.W, info.H, info.Format, ref _covScratch);
+                                    info.W, info.H, info.Format, ref sc);
+        _covScratch = sc;
         if (info.Format is DdsReader.Fmt.Bc1 or DdsReader.Fmt.Bc3)
             j.MeanOk = TexScan.MeanOfDxt(chain, info.W, info.H, info.Format == DdsReader.Fmt.Bc3, out j.Mean);
+    }
+
+    /// <summary>The fast pass's preview: the DDS's own mips from the first one at or under <see cref="PreviewSide"/>
+    /// down, copied straight out of the file -- no full-chain copy, no full-size coverage scan, which are most of a
+    /// decode. False (the fast job then decodes the whole texture) for one that is already that small, one whose
+    /// tail the file does not carry, or anything the full decode would refuse and name.</summary>
+    private static bool TryTail(Job j, ReadOnlySpan<byte> raw)
+    {
+        if (!DdsReader.Parse(raw, out DdsReader.Info info, out _) || info.Faces != 1) return false;
+        uint fmt = DdsReader.GlFormat(info.Format);
+        if (fmt == 0 || !TailLevel(info.W, info.H, info.Channels, out int first, out int w0, out int h0, out long skip)) return false;
+        if (first >= info.Present) return false;
+        int levels = info.Present - first;
+        long bytes = 0;
+        for (int l = 0, w = w0, h = h0; l < levels; l++, w = Math.Max(1, w >> 1), h = Math.Max(1, h >> 1))
+            bytes += DdsReader.LevelSize(w, h, info.Channels);
+        byte* data = (byte*)NativeMemory.Alloc((nuint)bytes);
+        raw.Slice(info.DataOffset + (int)skip, (int)bytes).CopyTo(new Span<byte>(data, (int)bytes));
+        j.Data = data; j.Tail = true; j.Dds = info; j.W = w0; j.H = h0; j.Levels = levels;
+        j.Channels = info.Channels; j.GlFmt = fmt; j.Compressed = true; j.GenMips = false; j.Bytes = bytes;
+        byte[] sc = _covScratch ?? Array.Empty<byte>();
+        j.Cov = TexCoverageOf.OfBcn(new ReadOnlySpan<byte>(data, DdsReader.LevelSize(w0, h0, info.Channels)), w0, h0, info.Format, ref sc);
+        _covScratch = sc;
+        return true;
+    }
+
+    /// <summary>Where a <paramref name="w"/>x<paramref name="h"/> chain's preview starts: the level index, its size,
+    /// and the bytes of the levels above it. False when level 0 is already within <see cref="PreviewSide"/>.</summary>
+    internal static bool TailLevel(int w, int h, int channels, out int level, out int lw, out int lh, out long skip)
+    {
+        level = 0; lw = w; lh = h; skip = 0;
+        if (Math.Max(w, h) <= PreviewSide) return false;
+        while (Math.Max(lw, lh) > PreviewSide)
+        {
+            skip += DdsReader.LevelSize(lw, lh, channels);
+            lw = Math.Max(1, lw >> 1); lh = Math.Max(1, lh >> 1); level++;
+        }
+        return true;
     }
 
     /// <summary>One small text resource (a <c>.txi</c>), read through the same location record and file
     /// handles a texture is. Game thread -- it reads the engine's resource tables -- and cold: the caller
     /// caches by name. Null when there is no such resource, which the caller reports.</summary>
     internal static string? ReadResourceText(string resref, ushort resType)
+        => ReadResourceBytes(resref, resType, out _) is byte[] b ? System.Text.Encoding.ASCII.GetString(b) : null;
+
+    /// <summary>The bytes behind <see cref="ReadResourceText"/>, from a BIF, a hak, a loose file or NWSync; null
+    /// with <paramref name="why"/> set when there is none or it cannot be read (null <paramref name="why"/>: no
+    /// such resource). Game thread, cold.</summary>
+    internal static byte[]? ReadResourceBytes(string resref, ushort resType, out string? why)
     {
-        if (!ResLocate.Ready && !ResLocate.Attach(out _)) return null;
+        why = null;
+        if (!ResLocate.Ready && !ResLocate.Attach(out why)) return null;
         Span<byte> name = stackalloc byte[ShaderResource.ResRefBytes + 1];
         ResRef(resref, name);
         uint* resId = stackalloc uint[ResLocate.ResIdWords];
@@ -378,22 +475,26 @@ internal static unsafe partial class TexRegistry
         fixed (byte* p = name)
         {
             if (!ResLocate.Find(p, resType, out IntPtr table, out IntPtr entry)) return null;
-            if (!ResLocate.Locate(table, entry, resId, out loc, out _, out _)) return null;
+            if (!ResLocate.Locate(table, entry, resId, out loc, out why, out ResLocate.Source src))
+            {
+                why ??= src == ResLocate.Source.Resident ? "the engine holds it resident" : "cannot locate";
+                return null;
+            }
         }
         if (loc.Kind == KindNwSync)
         {
-            if (!NwSyncReader.Armed) return null;
+            if (!NwSyncReader.Armed) { why = "the NWSync reader is not armed"; return null; }
             Span<byte> res = stackalloc byte[loc.Path.Length];
             System.Text.Encoding.ASCII.GetBytes(loc.Path, res);
-            if (!NwSyncReader.TryRead(res, loc.ResType, out byte* blob, out int size)) return null;
-            try { return System.Text.Encoding.ASCII.GetString(blob, size); }
+            if (!NwSyncReader.TryRead(res, loc.ResType, out byte* blob, out int size)) { why = "NWSync read failed"; return null; }
+            try { return new ReadOnlySpan<byte>(blob, size).ToArray(); }
             finally { NativeMemory.Free(blob); }
         }
         // The worker's handles belong to the worker; a game-thread read takes its own, which is what the
         // engine's own CExoFile-per-resource did.
         using var h = new Handles();
-        if (!h.Read(loc, out ReadOnlySpan<byte> raw, out _)) return null;
-        return System.Text.Encoding.ASCII.GetString(raw);
+        if (!h.Read(loc, out ReadOnlySpan<byte> raw, out why)) return null;
+        return raw.ToArray();
     }
 
     /// <summary>Levels of the geometric chain down to 1x1.</summary>
@@ -421,6 +522,14 @@ internal static unsafe partial class TexRegistry
             lock (_lock) { if (_graveyard.Count == 0) break; dead = _graveyard.Dequeue(); }
             if (dead != 0 && Gl.DeleteTextures != null) Gl.DeleteTextures(1, &dead);
         }
+        long fastBytes = 0;
+        for (int n = 0; n < FastUploadsPerFrame && fastBytes < FastBytesPerFrame; n++)
+        {
+            Job j;
+            lock (_gate) { if (_outFast.Count == 0) break; j = _outFast.Dequeue(); _fastPending--; }
+            fastBytes += j.Bytes;
+            try { Finish(j); } finally { Recycle(j); }
+        }
         for (int n = 0; n < UploadsPerFrame; n++)
         {
             Job j;
@@ -428,6 +537,7 @@ internal static unsafe partial class TexRegistry
             try { Finish(j); } finally { Recycle(j); }
         }
         ApplySamplerWishes();
+        StepCycles();
         // ...and AGAIN: ApplySamplerWishes drops and re-mints handles of its own, and leaving those to the
         // next frame's drain is a whole frame of records pointing at a handle this one just retired.
         ZeroDyingHandles();
@@ -465,7 +575,7 @@ internal static unsafe partial class TexRegistry
             ulong fresh;
             lock (_lock) { DropHandle(i); }
             fresh = MintHandle(name, _resref[i] ?? "");
-            lock (_lock) { _handle[i] = fresh; _samplerDone++; if (fresh != 0) _mints++; }
+            lock (_lock) { _handle[i] = fresh; _samplerDone++; TableSerial++; if (fresh != 0) _mints++; }
             lock (_gate) _reminted.Enqueue(i);
         }
     }
@@ -495,8 +605,9 @@ internal static unsafe partial class TexRegistry
         if (j.Why != null) { Publish(new Landed(i, j.Gen, 0, 0, 0, TexCoverage.Unknown, false, false, j.Why)); return; }
         uint name = Upload(j, out string? why);
         if (name == 0) { Publish(new Landed(i, j.Gen, 0, 0, 0, TexCoverage.Unknown, false, false, why ?? "the driver refused the upload")); return; }
-        lock (_lock) if ((_gen[i] & 0xFFF) == j.Gen) { _mean[i] = j.Mean; _meanOk[i] = j.MeanOk; }
-        Publish(new Landed(i, j.Gen, name, MintHandle(name, j.Resref), j.Bytes, j.Cov, j.BumpyShiny, j.EnvMap, null));
+        if (!j.Tail) lock (_lock) if ((_gen[i] & 0xFFF) == j.Gen) { _mean[i] = j.Mean; _meanOk[i] = j.MeanOk; }
+        FileCycle(j);
+        Publish(new Landed(i, j.Gen, name, MintHandle(name, j.Resref), j.Bytes, j.Cov, j.BumpyShiny, j.EnvMap, null, j.Tail));
     }
 
     private static void Publish(in Landed l) { lock (_gate) _landed.Enqueue(l); }
@@ -532,6 +643,7 @@ internal static unsafe partial class TexRegistry
             }
             _pend[l.Slot] = PendNone;
             if (l.Why != null) Fail(l.Slot, l.Why);
+            else if (l.Preview) { LandPreview(TexId.Make(l.Slot, l.Gen), l.Name, l.Handle, l.Cov); Enqueue(l.Slot); }
             else Land(TexId.Make(l.Slot, l.Gen), l.Name, l.Bytes, l.Handle, l.Cov, l.BumpyShiny, l.EnvMap);
         }
         while (true)
@@ -605,7 +717,10 @@ internal static unsafe partial class TexRegistry
         }
         else
         {
+            int svRow = 0;
+            if (j.Pixels != null) { Gl.GetIntegerv(Gl.UNPACK_ROW_LENGTH, &svRow); Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, j.FullW); }
             Gl.TextureSubImage2D(dst, 0, 0, 0, j.W, j.H, j.PixFmt, j.PixType, j.Data);
+            if (j.Pixels != null) Gl.PixelStorei(Gl.UNPACK_ROW_LENGTH, svRow);
             if (j.GenMips && Gl.GenerateTextureMipmap != null) Gl.GenerateTextureMipmap(dst);
         }
         uint err = Gl.GetError();
@@ -628,10 +743,19 @@ internal static unsafe partial class TexRegistry
         {
             if (!Valid(id)) return;
             int i = id.Index;
-            if (_name[i] != 0) { _graveyard.Enqueue(name); return; }   // a second upload for one slot: keep the first
+            if (_name[i] != 0)
+            {
+                if (!_preview[i]) { _graveyard.Enqueue(name); return; }   // a second upload for one slot: keep the first
+                DropHandle(i);
+                _graveyard.Enqueue(_name[i]);
+                _name[i] = 0;
+                _preview[i] = false;
+            }
+            // Released while it loaded: Release already filed it on the idle list, and filing it twice links it to itself.
+            if (_state[i] == TexState.Idle) { IdleUnlink(i); _idleBytes -= _bytes[i]; }
             _cov[i] = cov;
             _bumpyShiny[i] = bumpyShiny;
-            CoverageSerial++;
+            CoverageSerial++; TableSerial++;
             if (bumpyShiny) _bumpyShinySeen++;
             _envMap[i] = envMap;
             if (envMap) _envMapSeen++;
@@ -648,6 +772,38 @@ internal static unsafe partial class TexRegistry
         }
     }
 
+    /// <summary>A preview arrived: the slot draws it -- name, handle and the preview's coverage verdict, so a cutout
+    /// leaf is cut out from the first frame -- while it stays <see cref="TexState.Loading"/>, and every part that
+    /// was waiting is marked. They register again while it loads, so the full chain's <see cref="Land"/> reaches
+    /// them too. Game thread, GL-free apart from the handle a released slot gives back.</summary>
+    internal static void LandPreview(TexId id, uint name, ulong handle, TexCoverage cov)
+    {
+        lock (_lock)
+        {
+            if (!Valid(id)) { _graveyard.Enqueue(name); DropValue(handle); return; }
+            int i = id.Index;
+            if (_name[i] != 0) { _graveyard.Enqueue(name); DropValue(handle); return; }   // the full chain beat it
+            if (_refs[i] <= 0) { DropValue(handle); handle = 0; }   // idle: no handle, as Release leaves one
+            _name[i] = name;
+            _handle[i] = handle;
+            _preview[i] = true;
+            if (_cov[i] == TexCoverage.Unknown && cov != TexCoverage.Unknown) { _cov[i] = cov; CoverageSerial++; }
+            TableSerial++;
+            if (handle != 0) _mints++;
+            _previews++;
+            MarkDependents(i);
+        }
+    }
+
+    /// <summary>A minted handle no slot keeps: non-resident now, and zeroed out of the records at the next bracket.
+    /// Caller holds <see cref="_lock"/>.</summary>
+    private static void DropValue(ulong handle)
+    {
+        if (handle == 0) return;
+        if (Gl.MakeTextureHandleNonResidentARB != null) Gl.MakeTextureHandleNonResidentARB(handle);
+        _dyingHandles.Enqueue(handle);
+    }
+
     /// <summary>The load failed. Loud once per resref, counted after that, and the slot keeps the white
     /// stand-in as an explicit state -- never a quiet hole (CX-45). Game thread.</summary>
     internal static void Fail(int i, string why)
@@ -657,6 +813,7 @@ internal static unsafe partial class TexRegistry
         {
             _state[i] = TexState.Failed;
             _pend[i] = PendNone;
+            TableSerial++;
             _failed++;
             name = _resref[i] ?? "?"; kind = _kind[i];
             MarkDependents(i);
@@ -701,6 +858,7 @@ internal static unsafe partial class TexRegistry
         if (Gl.MakeTextureHandleNonResidentARB != null) Gl.MakeTextureHandleNonResidentARB(_handle[i]);
         _dyingHandles.Enqueue(_handle[i]);
         _handle[i] = 0;
+        TableSerial++;
     }
 
     // ---- budget ----
@@ -747,12 +905,15 @@ internal static unsafe partial class TexRegistry
                 if (_state[i] == TexState.Free) continue;
                 _handle[i] = 0;
                 _name[i] = 0;
+                _preview[i] = false;
+                TableSerial++;
                 if (_refs[i] <= 0) { Retire(i); continue; }   // Retire owns the byte accounting; do not pre-subtract
                 _residentBytes -= _bytes[i];
                 _bytes[i] = 0;
                 // _cov is NOT cleared: it is a property of the content, the reload derives the same verdict,
                 // and clearing it would make every draw re-classify as blended for the frames in between.
                 _state[i] = TexState.Loading;
+                LoadSerial++;
                 _pend[i] = PendWaiting;
                 lock (_gate) _waiting.Enqueue(i);   // lock order is always _lock -> _gate, never the reverse
                 _reloads++;

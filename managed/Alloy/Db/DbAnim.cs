@@ -23,6 +23,10 @@ internal enum ObjAnim : uint
     Seated = 1 << 4,
     /// <summary>Something wrote this object's pose or placement since the last compose.</summary>
     Moved = 1 << 5,
+    /// <summary>The composed matrices are current but the SKIN palette taken from them is not: the pose layer's
+    /// compose ran inside the step and nothing has moved the object since. <see cref="DbAnim.Finish"/> consumes
+    /// it. Set and cleared in the same step, so it needs no lifecycle edge beyond <c>OnCreate</c>'s reset.</summary>
+    SkinDue = 1 << 6,
 }
 
 /// <summary>The engine's <c>AnimRun+0xc</c> flag bits, as <c>Gob::PlayAnimation</c> @0x49a750 and
@@ -164,10 +168,12 @@ public static unsafe partial class DbAnim
     public static void Animate(DbId scene, float dt)
     {
         if (!SceneDb.Scenes.Valid(scene)) return;
+        long t0 = FrameZones.Now, hit0 = FrameZones.Ticks(FrameZones.Zone.HitFoldAi);
         _frame++;
         // No _poseGen bump: Animate runs once per SCENE (~8 a frame), and a bump here recomposed every dirty
         // object at each one (24k part composes a frame for ~94 that stepped). A step marks Moved, which
-        // Stale() honours under any generation; Settle bumps once per frame.
+        // Stale() honours under any generation. CX-188: nothing bumps it in a live frame any more -- Settle's
+        // once-a-frame bump was the same mistake one level up (see DbXform._poseGen).
         // Each frame re-walks its whole dirty list once; inside the frame the tail cursor makes a getter's
         // compose O(what has changed since the last one).
         _dirtyUpTo = 0;
@@ -197,9 +203,14 @@ public static unsafe partial class DbAnim
         if (dirtyNow != _foldedAt)
         {
             _foldedAt = dirtyNow;
+            long tHit = FrameZones.Now;
             HitFeed.Fold();
+            FrameZones.Add(FrameZones.Zone.HitFoldAi, tHit);
         }
         else _foldSkipped++;
+        // Net of the fold, which has its own bracket in the same (Ai) zone: counting it in both would make the
+        // two nested numbers add up to more than the Animate slot actually costs.
+        FrameZones.Add(FrameZones.Zone.Anim, t0, FrameZones.Ticks(FrameZones.Zone.HitFoldAi) - hit0);
     }
 
     /// <summary>Compose world matrices for the dirty objects of <paramref name="scene"/> (also called on demand
@@ -212,15 +223,23 @@ public static unsafe partial class DbAnim
     /// leave the list uncomposed and keep its slot's previous tenant's world matrix.</summary>
     public static void Settle()
     {
+        long t = FrameZones.Now, hit0 = FrameZones.Ticks(FrameZones.Zone.HitFold);
         // The WHOLE list, as Animate walks it: an object already on it, behind the cursor, that moved again is
         // not re-appended, so a tail walk would miss it. The compose stamp and staleness test keep this cheap.
-        _poseGen++;
+        // CX-188: and NO _poseGen bump. The walk is a compare per entry; a bump made it a COMPOSE per entry,
+        // which is 977 objects / 10,6k parts a frame recomposed for the ~94 that moved. See DbXform._poseGen.
         _dirtyUpTo = 0;
         _partDirtyUpTo = 0;
         ComposePending();
         _foldedAt = SceneDb.Objects.DirtyMark;
-        // Full: a re-mark that added no bit and no compose (a text box set twice) is caught once a frame here.
-        HitFeed.Fold(full: true);
+        // CX-188: an ORDINARY fold. It used to be Fold(full: true) because a re-mark that added no bit and
+        // drove no compose (a text box set twice) got past the fold's stamp -- and paying 798 HitBounds
+        // refreshes a frame to catch it was the wrong trade. HitFeed compares the table's mark clock now,
+        // which sees that re-mark directly.
+        long tHit = FrameZones.Now;
+        HitFeed.Fold();
+        FrameZones.Add(FrameZones.Zone.HitFold, tHit);
+        FrameZones.Add(FrameZones.Zone.Settle, t, FrameZones.Ticks(FrameZones.Zone.HitFold) - hit0);
     }
 
     /// <summary>One object advanced outside any scene walk (<c>CAurObject::AnimateExternal</c> @0x53a560).
@@ -230,12 +249,14 @@ public static unsafe partial class DbAnim
     private static void AnimateOneExternal(DbId obj, float dt)
     {
         if (!SceneDb.Objects.Valid(obj)) return;
+        long t0 = FrameZones.Now;
         // The engine's AnimateExternal bumps the scene's counter either side of the Gob::Animate call, which
         // is exactly "let this one object step again". Forcing its own stamp says that without giving every
         // OTHER object a second step this frame.
         _animAt[obj.Index] = 0;
         StepObject(obj, dt, 0);
         ComposePending();
+        FrameZones.Add(FrameZones.Zone.Anim, t0);
     }
 
     // ================= one object =================
@@ -277,10 +298,16 @@ public static unsafe partial class DbAnim
         if (!LookAtStep(obj, dt)) return false;
         if (layer && SceneDb.Objects.Valid(obj))
         {
-            // the compose clears the moved bit Finish keys the final compose and the skin on
+            // The compose clears the moved bit Finish keys the final compose and the skin on. CX-188: the two
+            // are keyed SEPARATELY. A creature whose pose layer corrected nothing still needs the skin --
+            // its palette is read back out of the matrices this compose just wrote -- but it does NOT need
+            // those matrices composed a second time, and re-asserting Moved to reach the skin recomposed
+            // every creature's whole part tree twice a frame (ComposeIndex + SnapAttached, 5.4% of the game
+            // thread measured, of which half was this).
             bool moved = (_flags[i] & ObjAnim.Moved) != 0;
             ComposeObject(obj);
-            if (PoseAfter(obj, dt) || moved) Moved(i);
+            if (PoseAfter(obj, dt)) Moved(i);
+            else if (moved) _flags[i] |= ObjAnim.SkinDue;
         }
         Finish(obj);
         return true;
@@ -368,18 +395,35 @@ public static unsafe partial class DbAnim
     }
 
     /// <summary>
-    /// The gate the engine has and this does NOT: <c>Gob::Animate</c> refuses an object outside the view
-    /// volume (unless <c>AnimateOffScreen</c> or the model's owner flag exempts it), so vanilla's off-screen
-    /// creatures freeze their animation time.
-    /// <para>No column answers it. <see cref="SceneDb.ObjVisible"/> is the GAME's enable/disable -- what the
-    /// draw and the hit test gate on -- not a cull result, so gating on it would freeze a deliberately hidden
-    /// object's pose and resume it stale when the game shows it again: a correctness bug traded for a saving,
-    /// which is the wrong way round. So every object whose own gate and its scene's gate are open advances, on
-    /// screen or not.</para>
-    /// <para>ponytail: the saving comes back the moment seam-feed stamps the objects its visible-set query
-    /// yielded (a per-object frame number beside <see cref="SceneDb.ObjSphere"/>); the gate would then read
-    /// "drawn within the last frame or two", which is what the engine's test means. The other half of the same
-    /// answer is CX-105's animation-rate LOD, which is not ported to DB mode either.</para>
+    /// The gate the engine has and this does NOT. Verified in the dump (CX-188), because the saving is the
+    /// single largest one left in this file: <c>Gob::Animate</c> @0x59d8c0 returns immediately -- before the
+    /// run-time advance, before the <c>"start"</c>/<c>"loop"</c> events, before <c>AnimateHierarchy</c>
+    /// @0x599990 -- when the gob has a model root, <c>Gob::IsInViewVolume</c> @0x544780 is false, and the
+    /// model's classification byte does not say <i>effect</i>. So in vanilla an off-screen creature, tile or
+    /// door freezes its animation CLOCK and fires no animation events; only wind and the look-at control
+    /// survive, and only effect-classified models keep animating. <c>PartDanglyMesh::Animate</c> @0x59bbb0
+    /// has no test of its own -- the whole <c>Part::Animate</c> @0x59ad00 recursion is downstream of that
+    /// gate -- and a node light is pushed from inside the hierarchy walk
+    /// (<c>AnimateStaticLight</c> @0x57d820), so a held torch freezes with it.
+    /// <para><b>What blocks the port is the flag's PRODUCER, not the gate.</b> <c>Gob+0x1b</c> is written by
+    /// <c>ManageSceneBSP</c> @0x57fa80, which runs only from <c>Scene::Render</c> @0x5762d0: it clears every
+    /// gob, traverses the tile BSP against the view volume, and re-enables what is inside (caching the squared
+    /// camera distance in <c>Gob+0x140</c> for <c>Gob::SetLODModel</c> @0x53e6a0). The gate therefore reads
+    /// LAST FRAME's render result. DB mode replaced that render, and its own per-frame verdict
+    /// (<c>AlloyRenderer.RouteWanted</c> / <c>SphereInPass</c>) is per ownership SLOT, is reached one phase
+    /// AFTER this, and leaves no per-object stamp behind.</para>
+    /// <para><see cref="SceneDb.ObjVisible"/> does not answer it either: that is the GAME's enable/disable --
+    /// what the draw and the hit test gate on -- not a cull result, so gating on it would freeze a
+    /// deliberately hidden object's pose and resume it stale when the game shows it again. So every object
+    /// whose own gate and its scene's gate are open advances, on screen or not.</para>
+    /// <para>ponytail: the saving needs a per-object frame stamp written where the route gate accepts a slot
+    /// (<c>SceneDb.PartObj</c> of the accepted slot, beside <see cref="SceneDb.ObjSphere"/>), after which this
+    /// gate reads "routed within the last frame or two". Three consumers then have to be answered, each of
+    /// which reads a pose with NO frustum of its own and so would see a frozen one: <c>HitBounds.Refresh</c>
+    /// (folded from inside <see cref="Animate"/> itself, and <c>HitTest.Cast</c> hits any object),
+    /// <c>DbLights.Walk</c> (every light part's world matrix, for a light that may spill into view), and the
+    /// skinned branch of <c>CasterPass.Admit</c> (an unconditional shadow mover every frame). The other half
+    /// of the same answer is CX-105's animation-rate LOD, which is not ported to DB mode either.</para>
     /// </summary>
     private static void VisibilityGateNotPorted() { }
 
@@ -417,12 +461,22 @@ public static unsafe partial class DbAnim
     {
         int i = obj.Index;
         PartWalk(obj);
-        if ((_flags[i] & ObjAnim.Moved) == 0) return;
-        ComposeObject(obj);
+        ObjAnim f = _flags[i];
+        if ((f & (ObjAnim.Moved | ObjAnim.SkinDue)) == 0) return;
+        // Only when the matrices are actually out of date: ObjAnim.SkinDue says they are current and only the
+        // palette is owed (CX-188, the double compose).
+        if ((f & ObjAnim.Moved) != 0) ComposeObject(obj);
+        else _skinOnly++;
+        _flags[i] &= ~ObjAnim.SkinDue;
         // Last, because a palette is composed world matrices read back: the pose, then the compose, then the
         // skin. The engine reached the same order by accident -- it solved inside the draw.
         SkinObject(obj);
     }
+
+    /// <summary>Steps whose tail re-skinned from matrices that were already current -- the compose
+    /// <see cref="ObjAnim.SkinDue"/> replaced. On the period line because a drop to zero would mean the
+    /// separation stopped working and the double compose is back.</summary>
+    private static int _skinOnly;
 
     /// <summary>Note that this object's placement or pose changed, for the change-driven compose and for
     /// seam-feed's record rewrite.</summary>
@@ -459,6 +513,7 @@ public static unsafe partial class DbAnim
         ClearQueue(i);
         _animAt[i] = 0;
         _composeAt[i] = 0;
+        _partClock[i] = -1;
         _behavior[i] = 0;
         _behaveRan[i] = false;
         _dispSaid[i] = 0;
@@ -599,6 +654,7 @@ public static unsafe partial class DbAnim
                  + $"{_runs} run(s), {_posed} part pose(s) over {_controllers} controller(s), "
                  + $"{_crossfades} crossfade step(s), {_dropped} run(s) dropped, {_lookAts} look-at step(s), "
                  + $"{_morphs} animmesh morph(s), {_bezier} bezier sample(s), {_idle} idle record(s) skipped, "
+                 + $"{_skinOnly} skin-only tail(s) (compose already current), "
                  + $"{_foldSkipped} redundant hit fold(s) skipped"
                  + $" | compose {cObj} object(s)/{cParts} part(s)"
                  + $" | events: {EventPeriod()} | behaviours: {BehaviorPeriod()} | skin: {SkinPeriod()}"
@@ -620,7 +676,7 @@ public static unsafe partial class DbAnim
         _gusts = 0;
         _objects = _skipped = _runs = _crossfades = _dropped = _lookAts = _posed = _controllers = 0;
         _unbound = _queueFull = _noBlock = _bezier = _morphs = _traced = 0;
-        _uvMorphs = _offChannel = _dynFull = _lookAtNoHead = _idle = _foldSkipped = _reanchored = 0;
+        _uvMorphs = _offChannel = _dynFull = _lookAtNoHead = _idle = _foldSkipped = _reanchored = _skinOnly = 0;
         _danglyParts = _danglyVerts = 0;
         _periodDt = 0f; _periodCalls = 0;
         _fired = _starts = _loops = _dones = _cbFull = 0;

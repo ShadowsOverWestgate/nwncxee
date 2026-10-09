@@ -264,7 +264,6 @@ internal static unsafe partial class Particles
     private static EmitterGetGobAlphaFn _gobAlpha;
     private static EmitterIsSplatFn _isSplat;
     private static EmitterIsTintedFn _isTinted;
-    private static IntPtr* _currentScene;
 
     /// <summary><see cref="_off"/> is the RESOLUTION latch -- a helper, a global or a hook that did not
     /// come up, so this client cannot run the Alloy pass at all. It is not the user toggle
@@ -299,7 +298,7 @@ internal static unsafe partial class Particles
     private static int _idxCap;
 
     private static int _frame;
-    private static int _captured, _declined, _emitters, _groups, _foreign, _suppressed, _overflow;
+    private static int _captured, _declined, _emitters, _groups, _suppressed, _overflow;
     /// <summary>#261's own numbers: record blocks re-sent this period, blocks the hash said were unchanged,
     /// and times the block allocator ran out and started over (which costs one frame of vanilla emitters).</summary>
     private static int _blockUploads, _blockSkips, _recResets;
@@ -338,10 +337,6 @@ internal static unsafe partial class Particles
         "Aligned_to_World_Z", "Aligned_to_Particle_Dir", "Motion_Blur",
     };
 
-    /// <summary>The Scene the capture belongs to, so an area transition drops the table rather than reading
-    /// particle arrays whose emitters the unload freed.</summary>
-    private static IntPtr _scene;
-
     internal static void Install(ExtenderLog log, HookService hooks)
     {
         _log = log;
@@ -356,11 +351,9 @@ internal static unsafe partial class Particles
         _gobAlpha = EngineFn.EmitterGetGobAlpha;
         _isSplat = EngineFn.EmitterIsSplat;
         _isTinted = EngineFn.EmitterIsTinted;
-        EmitterLighting.Resolve();
-        _currentScene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
 
         if (_getTexture == null || _bindInUnit == null || _tileAlpha == null || _gobAlpha == null || _isSplat == null
-            || _isTinted == null || !EmitterLighting.Ready || _currentScene == null
+            || _isTinted == null
             || !AurTex.Ready)
         {
             _off = true;
@@ -378,14 +371,10 @@ internal static unsafe partial class Particles
     /// </summary>
     internal static void Enroll(IntPtr em, int part, uint dbTex, IntPtr scene, IntPtr* parts, int count)
     {
-        if (_off || !Enabled.V || parts == null || count <= 0) return;
-        if (part < 0)
-        {
-            if (em == IntPtr.Zero) return;
-            if (!AlloyRenderer.IsWorldScene(scene)) { _foreign++; return; }
-            if (scene != _scene) Forget();
-            _scene = scene;
-        }
+        // CX-188: `part` is always a database part index. The engine arm this used to carry (an engine
+        // PartEmitter*, its Scene checked for the world BSP and the table dropped on an area change) had no
+        // caller: EmitterSim's only Enroll passes slot.Part, and nothing fills a snapshot from a PartEmitter.
+        if (_off || !Enabled.V || parts == null || count <= 0 || part < 0) return;
         Capture(em, part, dbTex, parts, count);
     }
 
@@ -705,37 +694,12 @@ internal static unsafe partial class Particles
         if (count < 1 || e.Life == 0f) { _decEmpty++; return false; }
         if (slot.Parts == null) { _decEmpty++; return false; }
 
-        if (e.Db)
-        {
-            // CX-120: the texture is a TexRegistry GL name, resolved by the simulation when it took the
-            // emitter's slot. Zero means the atlas has not landed yet -- the registry marks its dependents
-            // dirty at arrival, so the emitter draws from the frame it does.
-            if (slot.DbTex == 0) { _decTex++; return false; }
-            tex = (int)slot.DbTex;
-            texObj = (IntPtr)slot.DbTex;
-        }
-        else
-        {
-            IntPtr node = new CX.Engine.Part(slot.Ptr).Node.Ptr;
-            if (node == IntPtr.Zero) { _decEmpty++; return false; }
-            IntPtr mat = new PartEmitter(slot.Ptr).Material.Ptr;
-            if (mat == IntPtr.Zero) { _decEmpty++; return false; }
-            // A material naming its own program is not this shader's to draw -- and unlike world geometry,
-            // where an unported shader costs a small shading difference on one part, a particle effect
-            // authored around a custom fragment stage IS that stage. Per-emitter fallback makes refusing free.
-            if (AlloyCensus.HasUnportedShader(mat)) { _decShader++; return false; }
-            texObj = (IntPtr)_getTexture(mat, 0);
-            // AurTex's vtable check is the LIVENESS gate and nothing more here: the id it hands back belongs
-            // to the object the Material is holding, which is not necessarily the object the engine draws
-            // with. It still answers "is this pointer safe to call into", which is the question that matters
-            // before handing it to BindInUnit.
-            // #211 survivor: the ENGINE id, on purpose. The particle draw binds through the engine's
-            // CAurTexture::BindInUnit with the texture OBJECT (see the bind in Draw), so an owned copy is not
-            // reachable from there -- copying one would be VRAM nothing samples. Particles keep the borrowed
-            // pointer behind AurTex's vtable guard, which is what they had before #211.
-            tex = AurTex.Tid(texObj);
-            if (tex == 0) { _decTex++; return false; }
-        }
+        // CX-120: the texture is a TexRegistry GL name, resolved by the simulation when it took the
+        // emitter's slot. Zero means the atlas has not landed yet -- the registry marks its dependents
+        // dirty at arrival, so the emitter draws from the frame it does.
+        if (slot.DbTex == 0) { _decTex++; return false; }
+        tex = (int)slot.DbTex;
+        texObj = (IntPtr)slot.DbTex;
 
         cls = e.Blend == 1 ? ClsPunch : e.Blend == 0 ? ClsBlend : ClsAdd;
         cull = !e.NoCull ? 1 : 0;
@@ -887,28 +851,11 @@ internal static unsafe partial class Particles
 
         // colour, optionally run through the scene lighting at the emitter's position first
         Vector3 cStart = emv.ColorStart, cEnd = emv.ColorEnd;
-        // CX-120: the CPU tint samples the ENGINE's light list at the emitter's origin. DB mode has no such
-        // list to sample (the owned registry's tint is the engine path's), so a `m_isTinted` emitter draws
-        // its declared colour there -- counted, not assumed.
-        if (tinted && emv.Db) { tinted = false; _dbNoTint++; }
-        if (tinted)
-        {
-            Vector3 p3 = emv.M.Pos;
-            EmitterLighting.V3 wp = new() { X = p3.X, Y = p3.Y, Z = p3.Z };
-            IntPtr scene = *_currentScene;
-            // CX-108: the registry's tint takes no manager; only the light.registry 0 path reads Scene+0x158.
-            bool owned = LightRegistry.Live;
-            IntPtr lights = owned || scene == IntPtr.Zero ? IntPtr.Zero : new CX.Engine.Scene(scene).LightManager.Ptr;
-            // The engine does not null-check the list because at its call site there always is one. Ours
-            // runs a pass later, where an area transition can have taken it -- and the scan walks it
-            // unconditionally, so a null would be a wild read rather than a black tint.
-            if (owned || lights != IntPtr.Zero)
-            {
-                EmitterLighting.V3 t = EmitterLighting.At(wp, lights, IntPtr.Zero);
-                cStart = new Vector3(cStart.X * t.X, cStart.Y * t.Y, cStart.Z * t.Z);
-                cEnd = new Vector3(cEnd.X * t.X, cEnd.Y * t.Y, cEnd.Z * t.Z);
-            }
-        }
+        // CX-188: a `m_isTinted` emitter draws its declared colour. The CPU tint sampled the ENGINE's
+        // light list at the emitter's origin, and the database has no such list to sample -- every emitter
+        // here is a database emitter (nothing fills a snapshot from a PartEmitter any more), so the engine
+        // arm was dead. Counted, not assumed.
+        if (tinted) { tinted = false; _dbNoTint++; }
         cStart = Vector3.Clamp(cStart, Vector3.Zero, Vector3.One) * ByteScale;
         cEnd = Vector3.Clamp(cEnd, Vector3.Zero, Vector3.One) * ByteScale;
         bool lerpColor = cStart != cEnd;
@@ -1477,7 +1424,7 @@ internal static unsafe partial class Particles
     /// program per area would be a stall for nothing.</summary>
     internal static void Forget()
     {
-        _tabN = 0; _orderN = 0; _orderGen = -1; _scene = IntPtr.Zero;
+        _tabN = 0; _orderN = 0; _orderGen = -1;
         // The table went, so every block it named went with it. Not a reset: nothing is left to re-bump.
         _recTop = 0;
     }
@@ -1513,7 +1460,7 @@ internal static unsafe partial class Particles
 
     internal static void ResetPeriod()
     {
-        _captured = 0; _declined = 0; _emitters = 0; _groups = 0; _foreign = 0; _suppressed = 0;
+        _captured = 0; _declined = 0; _emitters = 0; _groups = 0; _suppressed = 0;
         _decFade = 0; _decEmpty = 0; _decShader = 0; _decTex = 0; _decFull = 0;
         _reclaimed = 0; _overflow = 0; _softPasses = 0; _emissive = 0; _litGroups = 0;
         for (int i = 0; i < 7; i++) _cType[i] = 0;
@@ -1547,7 +1494,6 @@ internal static unsafe partial class Particles
                + (_sortSkipped == 0 ? "" : $", {_sortSkipped} sort-skipped (over {SortCap})"))
           + (_recResets == 0 ? "" : $", {_recResets} BLOCK-ALLOCATOR RESETS (see EnsureBlock)")
           + (_overflow == 0 ? "" : $", {_overflow} passes OVERFLOWED (group or record cap)")
-          + (_foreign == 0 ? "" : $", {_foreign} foreign-Scene calls skipped")
           + (_dbNoTint == 0 ? "" : $", {_dbNoTint} tinted emitters drawn UNTINTED (DB mode has no engine light list)")
           + Census();
 

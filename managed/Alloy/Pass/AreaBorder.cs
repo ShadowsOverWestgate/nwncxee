@@ -12,12 +12,13 @@ namespace CX.Alloy;
 /// (<c>cx.cfg</c>, default 15). Sound because the edge model is chosen per row/column from the nearest real
 /// tile's corner and edge types, so every tile along a strip's outward axis is the same model at the same
 /// height -- the ring is widened, not re-derived.
-/// <para>Three hooks carry it: <c>Scene::InitBSP</c> widens the tile BSP to match (its leaves CLAMP, so a
-/// tile past the border would overwrite an edge leaf's data), <c>SpawnTile</c> replays outward inside a
-/// LoadBorder/ReloadBorder window, and <c>DeleteTile</c> replays the same window's deletes onto the outer
-/// tiles that exist. Outside the window (a real tile from <c>CNWCTile::LoadModel</c>) nothing changes.</para>
-/// <para>The engine's "shadowed" border tint is deliberately not reproduced. Grass on the ring is
-/// <see cref="GrassField.BorderSpawn"/>'s, fed from here at every spawn.</para></summary>
+/// <para>CX-188: what is left here is the WINDOW. <c>CNWCArea::LoadBorder</c>/<c>ReloadBorder</c> are game-layer
+/// calls and still run, and <see cref="CX.Alloy.Db.TileBuild.BorderWindow"/> is what tells the database's own
+/// tile build that the spawns inside them are ring tiles -- <see cref="Ring"/> is the ring it widens to
+/// (<c>TileBuild.cs</c>). The engine-side half went: <c>Scene::InitBSP</c>, <c>SpawnTile</c> and
+/// <c>DeleteTile</c> are vtable slots the seam FILLS (<c>SceneSlots</c>), so the engine bodies those three
+/// hooks chained never run, and the outward replay and the border-face grass they fed never happened.</para>
+/// <para>The engine's "shadowed" border tint is deliberately not reproduced.</para></summary>
 internal static unsafe class AreaBorder
 {
     /// <summary>The engine's own ring: LoadBorder walks <c>-5..-1</c> past each near edge and <c>dim..dim+4</c>
@@ -33,18 +34,9 @@ internal static unsafe class AreaBorder
     /// <summary>The CNWCArea whose LoadBorder/ReloadBorder is on the stack, else zero: the only window in
     /// which a SpawnTile or DeleteTile is a ring tile.</summary>
     private static IntPtr _area;
-    private static int _spawned, _replayed, _deleted, _areas;
+    private static int _areas;
     private static AreaLoadBorderFn _origLoad;
     private static AreaReloadBorderFn _origReload;
-    private static SceneInitBspFn _origInitBsp;
-    /// <summary>CHAINED, not installed (#88): <see cref="CX.Alloy.SceneWalk"/> watches the same two symbols for
-    /// the scene-membership notice a tile gives no other way, and funchook silently orphans the first of two
-    /// Installs on one target. This layer sits BELOW that one, so the border replays below reach the engine
-    /// directly instead of re-entering it.</summary>
-    private const int TilePriority = 50;
-    private static SceneSpawnTileFn* _origSpawn;
-    private static SceneDeleteTileFn* _origDelete;
-    private static SceneBspGetTileDataFn _tileData;
 
     internal static int Ring => _ring;
 
@@ -54,17 +46,11 @@ internal static unsafe class AreaBorder
         // Restart knob: Boot -- the ring is binned at area load from what this session started with.
         _ring = Renderer.Border.Boot;
         if (_ring == EngineRing) { log.Info("AreaBorder: alloy.border=5 is the engine's own ring -- nothing to widen"); return; }
-        _tileData = EngineFn.SceneBspGetTileData;
         _origLoad = hooks.InstallAreaLoadBorder(&OnLoadBorder);
         _origReload = hooks.InstallAreaReloadBorder(&OnReloadBorder);
-        _origInitBsp = hooks.InstallSceneInitBsp(&OnInitBsp);
-        _origSpawn = hooks.ChainSceneSpawnTile(&OnSpawnTile, TilePriority);
-        _origDelete = hooks.ChainSceneDeleteTile(&OnDeleteTile, TilePriority);
-        if (_tileData == null || _origLoad == null || _origReload == null || _origInitBsp == null
-            || _origSpawn == null || _origDelete == null)
+        if (_origLoad == null || _origReload == null)
         {
-            // A partial install could widen the BSP without the ring or the ring without the BSP; neither is
-            // safe, so the window never opens and InitBSP passes its argument through.
+            // No window means no way to tell a ring spawn from a real tile, so the ring stays the engine's.
             _ring = EngineRing;
             log.Info("AreaBorder: a border hook did not install -- the ring stays the engine's");
             return;
@@ -76,7 +62,6 @@ internal static unsafe class AreaBorder
     private static int OnLoadBorder(IntPtr area, IntPtr screen, float progress)
     {
         _areas++;
-        GrassField.BorderClear();
         _area = area;
         CX.Alloy.Db.TileBuild.BorderWindow(true);   // CX-116: the same window widens the DB ring
         int r = _origLoad(area, screen, progress);
@@ -95,65 +80,10 @@ internal static unsafe class AreaBorder
         _area = IntPtr.Zero;
     }
 
-    [UnmanagedCallersOnly]
-    private static void OnInitBsp(IntPtr scene, int w, int h, int border, byte flag, float cell)
-    {
-        if (border > 0 && border < _ring) border = _ring;
-        _origInitBsp(scene, w, h, border, flag, cell);
-    }
-
-    [UnmanagedCallersOnly]
-    private static IntPtr OnSpawnTile(IntPtr scene, byte* model, Vector3* pos, int orient, int border, IntPtr quat)
-    {
-        IntPtr gob = (*_origSpawn)(scene, model, pos, orient, border, quat);
-        if (_area == IntPtr.Zero || border == 0) return gob;
-        _spawned++;
-        Vector3 p = *pos;
-        GrassField.BorderSpawn(scene, p);
-        Steps(p, out int sx, out int sy);
-        int extra = _ring - EngineRing;
-        for (int i = 0; i <= (sx != 0 ? extra : 0); i++)
-            for (int j = 0; j <= (sy != 0 ? extra : 0); j++)
-            {
-                if (i == 0 && j == 0) continue;
-                Vector3 q = new(p.X + sx * i * TileSize, p.Y + sy * j * TileSize, p.Z);
-                (*_origSpawn)(scene, model, &q, orient, border, quat);
-                GrassField.BorderSpawn(scene, q);
-                _replayed++;
-            }
-        return gob;
-    }
-
-    [UnmanagedCallersOnly]
-    private static void OnDeleteTile(IntPtr scene, Vector3* pos)
-    {
-        if (_area != IntPtr.Zero)
-        {
-            Vector3 p = *pos;
-            GrassField.BorderDrop(p);
-            Steps(p, out int sx, out int sy);
-            int extra = _ring - EngineRing;
-            for (int i = 0; i <= (sx != 0 ? extra : 0); i++)
-                for (int j = 0; j <= (sy != 0 ? extra : 0); j++)
-                {
-                    if (i == 0 && j == 0) continue;
-                    Vector3 q = new(p.X + sx * i * TileSize, p.Y + sy * j * TileSize, p.Z);
-                    GrassField.BorderDrop(q);
-                    if (_tileData(scene, &q) == IntPtr.Zero) continue;
-                    (*_origDelete)(scene, &q);
-                    _deleted++;
-                }
-        }
-        (*_origDelete)(scene, pos);
-    }
-
     /// <summary>The outward axes a ring tile replays along: -1/+1 on x when it sits on the engine ring's
     /// outermost west/east column, likewise on y, else 0. Only the outermost tile of a strip replays, and a
     /// corner tile replays along both -- which is what makes every outer cell the replay of exactly ONE
-    /// engine tile (its clamp onto the engine ring). Grid width and height come off the live area.</summary>
-    private static void Steps(Vector3 p, out int sx, out int sy)
-        => Steps(p, new CNWCArea(_area).TileWidth, new CNWCArea(_area).TileHeight, out sx, out sy);
-
+    /// engine tile (its clamp onto the engine ring). The database's tile build asks it per spawn.</summary>
     internal static void Steps(Vector3 p, int w, int h, out int sx, out int sy)
     {
         int ix = (int)MathF.Floor((p.X - TileHalf) / TileSize + 0.5f);
@@ -162,8 +92,7 @@ internal static unsafe class AreaBorder
         sy = iy == -EngineRing ? -1 : iy == h + EngineRing - 1 ? 1 : 0;
     }
 
-    internal static string Describe()
-        => $"ring {_ring} ({_spawned} engine tiles, {_replayed} replayed, {_deleted} outer deletes, {_areas} areas)";
+    internal static string Describe() => $"ring {_ring} ({_areas} areas)";
 
     internal static string Stats() => _ring == EngineRing ? "" : $"border {Describe()}";
 

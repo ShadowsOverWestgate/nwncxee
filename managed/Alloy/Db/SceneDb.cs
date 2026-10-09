@@ -99,6 +99,8 @@ public sealed class DbTable
     private Dirty[] _dirty;
     private int[] _dirtyList;
     private int _dirtyN;
+    private long[] _markAt;
+    private long _markClock;
 
     public DbTable(int capacity)
     {
@@ -106,6 +108,7 @@ public sealed class DbTable
         _freeNext = new int[capacity];
         _dirty = new Dirty[capacity];
         _dirtyList = new int[capacity];
+        _markAt = new long[capacity];
     }
 
     public int Capacity => _gen.Length;
@@ -277,7 +280,24 @@ public sealed class DbTable
     {
         if (_dirty[i] == Dirty.None) _dirtyList[_dirtyN++] = i;
         _dirty[i] |= d;
+        _markAt[i] = ++_markClock;
     }
+
+    /// <summary>CX-188: a monotonic stamp per MARK, so "was this slot marked since I last looked at it" is one
+    /// compare. Neither of the two things a reader already has can answer that: the dirty BITS do not change
+    /// when an already-set bit is re-OR'd, and the list does not grow (<see cref="Mark"/> appends a slot once
+    /// per take), so <see cref="DirtyMark"/> does not move either. A reader stamps
+    /// <see cref="MarkClock"/> when it folds a slot in and re-folds it when <see cref="MarkAt"/> passes that.
+    /// <para>The clock is the TABLE's, not the slot's: it only ever has to be compared, never counted, and one
+    /// counter makes a reader's stamp valid against every slot of the table.</para>
+    /// <para>GAME THREAD ONLY, as every write to these tables is (ADR 0028 section 5): the increment inside
+    /// <see cref="Mark"/> is a plain <c>++</c>, not interlocked, and every reader of it -- the transform step's
+    /// part loop, <c>HitFeed.Fold</c> -- runs on that thread as well. A render-thread reader would need its
+    /// own answer, not this one.</para></summary>
+    public long MarkClock => _markClock;
+    /// <inheritdoc cref="MarkClock"/>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public long MarkAt(int i) => _markAt[i];
 
     public Dirty DirtyAt(int i) => _dirty[i];
     public int DirtyCount => _dirtyN;
@@ -772,7 +792,7 @@ public static class SceneDb
 
     // ---- CX-116 lights: the DB light set, opened for tile lights; gob lights join it the same way ----
 
-    /// <summary>Light records held at once. Sized from <c>LightRegistry.Capacity</c>, which was itself sized
+    /// <summary>Light records held at once. Sized from the deleted <c>LightRegistry</c>'s capacity, which was itself sized
     /// from a 32x32 area at the 2,4 lights per tile a lamp-lit city tileset measures.</summary>
     public const int MaxLights = 1 << 14;
     public static readonly DbTable Lights = new(MaxLights);

@@ -23,8 +23,8 @@ namespace CX.Alloy;
 /// <para><b>CX-39.</b> The offsets are gone from this file: every read below goes through the generated
 /// view in <see cref="CX.Engine"/> (<c>tools/engine/views.py</c> from <see cref="EngineLayout"/>'s rows),
 /// which is the same single load. What stays here is what a generated view cannot say -- the null-guarded
-/// chases, the concepts the engine has no class for (<see cref="PartRef.IsInstance"/>,
-/// <see cref="GobRef.OwnerFades"/>), and the verbs that call native code.</para></summary>
+/// chases, the concepts the engine has no class for (<see cref="PartRef.IsInstance"/>), and the verbs that
+/// call native code.</para></summary>
 internal readonly unsafe ref struct PartRef
 {
     private readonly IntPtr _p;
@@ -160,10 +160,6 @@ internal readonly unsafe ref struct GobRef
     internal float* Colour => (float*)Unsafe.AsPointer(ref View.Colour);
     internal float* Emissive => (float*)Unsafe.AsPointer(ref View.Emissive);
     internal IntPtr EnvOverride => View.EnvOverride;
-    /// <summary>Bit 3 of the OWNER's flag byte, which is what arms the second alpha multiply. Named for what
-    /// it decides rather than where it sits, because the owner is a gob and the byte is not on the gob whose
-    /// alpha it gates -- it is a <c>Model</c>, which is why this one read goes through that view.</summary>
-    internal bool OwnerFades => (new Model(_p).OwnerFlags & AlloyCensus.GobOwnerFadeBit) != 0;
 }
 
 internal readonly unsafe ref struct NodeRef

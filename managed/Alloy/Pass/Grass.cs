@@ -4,7 +4,7 @@ namespace CX.Alloy;
 
 /// <summary>The <c>grass</c> group (spec §4.3), and the storage <see cref="GrassField"/> reads: one
 /// declaration per dial, bound from <c>cx.cfg</c> on first touch, set by <c>/grass</c> or the panel. The
-/// Restart pair (<see cref="Border"/>, <see cref="BorderTex"/>) is read through <c>Boot</c>. Touched from
+/// Restart rows are read through <c>Boot</c>. Touched from
 /// <see cref="RenderCommands.Register"/> so the group declares at Initialize, on the main thread, whether or
 /// not the pass arms.
 /// <para>Why the defaults: <c>windspeed</c> is a dial rather than a derivation -- uTimeOfDay is the engine's
@@ -30,8 +30,7 @@ internal static class Grass
                                          SnowThin, SnowFall, SnowLook, Backlight, Sheen,
                                          BladeDensity, Width, Clump, BladeLod;
     internal static readonly Knob<int> Style, Shadow, Tuft, Aniso, GViz;
-    internal static readonly Knob<bool> Cull, SoftEdge, VLight, Border, Prepass, PushVis;
-    internal static readonly Knob<string> BorderTex;
+    internal static readonly Knob<bool> Cull, SoftEdge, VLight, Prepass, PushVis;
     internal static readonly KnobButton DumpMips, DumpShadow;
 
     static Grass()
@@ -108,9 +107,6 @@ internal static class Grass
         Sheen = G.Slider("sheen", "Sheen", 0f, 1f, 0.05f, 0.1f, tier: Tier.Advanced, help: "Specular glint on the grass.");
         VLight = G.Toggle("vlight", "Per-vertex lighting", true, Tier.Advanced, help: "Off = per-pixel (costlier).");
         G.Section("Field");
-        Border = G.Toggle("border", "Grass past the area edge", true, Tier.Advanced, Effect.Restart);
-        BorderTex = G.Text("bordertex", "Border grass textures", "grass", Tier.Advanced, Effect.Restart,
-                           help: "Comma-separated texture names.");
         G.Section("");
         Prepass = G.Toggle("prepass", "prepass", true, Tier.ChatOnly);
         PushVis = G.Toggle("pushvis", "pushvis", true, Tier.ChatOnly);

@@ -333,6 +333,18 @@ tickets). Terms crystallised while charting the native chatbox reimplementation.
 - **Ambient occlusion pass** — screen-space visibility (GTAO) computed from the depth prepass BEFORE the
   colour pass and read by the lit stage as a scale on its ambient term, beside the material's AO map
   (ADR 0021, #379). A lighting input, not a post stage: vanilla's SSAO darkens the finished frame.
+- **G-buffer** — the four render-size targets the colour pass writes beside the colour (draw buffers 4–7,
+  opaque and cutout of the main view only) so the deferred pass can add the point lights per pixel instead
+  of per fragment per light (ADR 0029). It holds what the light walk reads off the surface plus the
+  **transfer weights**; a pixel no twin covered reads back "not mine" and is left alone by construction.
+- **Deferred twin** — the lit fragment stage compiled to skip the point-light walk and write the
+  **G-buffer** instead. Not a second shader: the same stage, one `#define` apart, so the loop's registers
+  are compiled out rather than branched over. A frame is all-twin or all-forward, never half.
+- **Transfer weight** — a G-buffer lane holding the derivative of the finished pixel with respect to one of
+  the light walk's results (its diffuse, its specular, the baked term's share), so the deferred pass adds an
+  exact linear correction and every nonlinear composition — the env pattern, the coat probe, the ghost
+  divide, keyhole, fog — stays in the lit stage. A lane says what the surface *does with one more unit of
+  point light*, not what the surface is.
 - **Post stack** — the ordered display-space stages that run after the resolve, where the engine ran
   `Camera::DoFrameBufferEffects` (ADR 0020, #375; the aa stage = SMAA, #377). Each stage reads the previous output and hands
   display space on; the last one writes the engine's target and carries the frame's one dither. A

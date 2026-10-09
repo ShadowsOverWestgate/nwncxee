@@ -130,8 +130,8 @@ whether they still vanish.
   so a gob part has no engine bbox, `_oR` comes from `MeshRadius` (max vertex distance from the node
   origin) and `WriteSphere` centres it on the node's world translation. That pair bounds the mesh; a
   failed read leaves `_oR` at 0, which is `NeverCull`, not a tight sphere.
-- **The GPU static freeze.** `StaticAtEnroll` refuses every part with a non-tile gob, so no creature part
-  is ever frozen (`gpu.static`).
+- **The scenery predicate.** `StaticAtEnroll` refuses every part with a non-tile gob, so no creature part
+  is ever offered to the mesh charter. (The `gpu.static` freeze this used to name is gone -- CX-188.)
 
 - **Texture / the #284 rebuild ledger.** In the 2026-09-16 session the only textures that ever reached
   `[unbuilt]` were `"2"`, `NullTex` and `Standardmaterial` -- junk material names on placeables, the #317

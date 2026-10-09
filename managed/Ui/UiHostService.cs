@@ -256,6 +256,10 @@ public sealed unsafe class UiHostService : IExtenderService
     /// while a movie plays, so the normal site never reaches a movie frame.</para></summary>
     private static void DrawWindows()
     {
+        // CX-188: the roll-call's head and tail are their own zone. Zone.Ui is the DRAW only, so the gate,
+        // the scale sync, the font re-bake, the viewport query and the engine hand-back were unmeasured --
+        // inside the Seam residual in DB mode and inside `other` in mode 0.
+        long tEdge = FrameZones.Now, ui0 = FrameZones.Ticks(FrameZones.Zone.Ui);
         RefreshGate();
         SyncUiScale(); ApplyFont();   // #593: every frame, not only in game -- the menu gear and panel honour the UI scale
         TextRig.SampleViewport();     // CX-709: the frame's one GL_VIEWPORT query; every draw below reads the pair
@@ -264,6 +268,7 @@ public sealed unsafe class UiHostService : IExtenderService
             UiHost.DrawFrame();                   // draw every registered window in z-order (content-owned)
         FrameZones.Add(FrameZones.Zone.Ui, tUi);
         HandBack();
+        FrameZones.Add(FrameZones.Zone.UiEdge, tEdge, FrameZones.Ticks(FrameZones.Zone.Ui) - ui0);
     }
 
     /// <summary>#210 (G1): the hand-back resync after raw GL in the ENGINE's context, which went past GLRender's

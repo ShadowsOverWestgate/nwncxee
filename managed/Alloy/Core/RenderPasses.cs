@@ -78,23 +78,10 @@ internal static class RenderPasses
             Name = "lightmap",
             Attach = LightmapBake.Attach,
             Install = LightmapBake.Install,
-            SelfCheck = l => { LightmapBake.SelfCheck(l); LightmapBake.HoldSelfCheck(l); LightmapBake.LightsSelfCheck(l); LightmapBake.AreaSelfCheck(l); BakeCache.SelfCheck(l); },
+            SelfCheck = l => { LightmapBake.SelfCheck(l); LightmapBake.HoldSelfCheck(l); LightmapBake.AreaSelfCheck(l); BakeCache.SelfCheck(l); },
             Revoke = LightmapBake.Revoke,
             ContextLost = LightmapBake.ContextLost,
             Stats = LightmapBake.Stats,
-        }, log);
-
-        // CX-108: not a draw pass -- Alloy's light registry, which every lighting consumer enumerates instead
-        // of LightManager's per-frame lists. Registered BEFORE "lightmap" is not necessary (the bake is fed by
-        // the light walk, not by this table directly), but its Revoke is: every pointer in it names parts of
-        // the area that just went, and the two area terms are re-picked on the new area's first walk.
-        r.Register(new PassLifecycle
-        {
-            Name = "lightreg",
-            Attach = LightRegistry.Attach,
-            SelfCheck = LightRegistry.SelfCheck,
-            Revoke = LightRegistry.Revoke,
-            Stats = LightRegistry.Stats,
         }, log);
 
         // #129: FrameSnapshot first, because FrameGraph's own check asserts that the ownable-bucket list AGREES
@@ -123,13 +110,12 @@ internal static class RenderPasses
         {
             Name = "sky",
             // CX-88 gave the sky GL objects again -- one program per custom fragment stage the content names
-            // -- so it owns a ContextLost edge as well as a Revoke one. CX-87 added the simulation tick.
+            // -- so it owns a ContextLost edge as well as a Revoke one.
             Attach = SkyStage.Attach,
-            Install = (l, _) => SkyTick.Install(l),
-            SelfCheck = l => { SkyBox.SelfCheck(l); SkyTick.SelfCheck(l); SkyStage.SelfCheck(l); },
+            SelfCheck = l => SkyStage.SelfCheck(l),
             ContextLost = SkyStage.Forget,
             Revoke = SkyBox.Forget,
-            Stats = _ => SkyBox.Stats() + " | " + SkyTick.Stats(),
+            Stats = _ => SkyBox.Stats(),
         }, log);
         r.Register(new PassLifecycle
         {
@@ -265,6 +251,45 @@ internal static class RenderPasses
             ContextLost = IdTarget.Forget,
             Stats = IdTarget.Stats,
         }, log);
+        // CX-188: the G-buffer and the deferred point-light pass; both hold frame-sized GL objects.
+        r.Register(new PassLifecycle
+        {
+            Name = "gbuffer",
+            Attach = GBuffer.Attach,
+            ContextLost = GBuffer.Forget,
+            Stats = GBuffer.Stats,
+        }, log);
+        r.Register(new PassLifecycle
+        {
+            Name = "deferred",
+            Attach = DeferredLights.Attach,
+            ContextLost = DeferredLights.Forget,
+            Stats = DeferredLights.Stats,
+        }, log);
+        // CX-188 step 3: the per-pixel shadow visibility record -- a frame-sized texture pair, so it goes with
+        // the context too.
+        r.Register(new PassLifecycle
+        {
+            Name = "defshadow",
+            Attach = DeferredShadows.Attach,
+            ContextLost = DeferredShadows.Forget,
+            Stats = DeferredShadows.Stats,
+        }, log);
+        r.Register(new PassLifecycle
+        {
+            Name = "pairtiles",
+            Attach = PairShadows.Attach,
+            SelfCheck = l => PairShadows.SelfCheck(l),
+            ContextLost = PairShadows.Forget,
+            Stats = PairShadows.Stats,
+        }, log);
+        r.Register(new PassLifecycle
+        {
+            Name = "pairdebt",
+            Attach = PairDebt.Attach,
+            ContextLost = PairDebt.Forget,
+            Stats = PairDebt.Stats,
+        }, log);
         r.Register(new PassLifecycle
         {
             Name = "oit",
@@ -377,17 +402,15 @@ internal static class RenderPasses
         }, log);
 
         // CX-116: not a draw pass -- the DB-side tile build. Registered here for the same reason buckets is:
-        // what it needs IS a pass lifecycle (a log, the live comparison's engine hook, off-device checks, the
-        // world edge and a line on the period report).
+        // what it needs IS a pass lifecycle (a log, off-device checks, the world edge and a line on the
+        // period report).
         r.Register(new PassLifecycle
         {
             Name = "dbtiles",
             Attach = CX.Alloy.Db.TileBuild.Attach,
-            Install = CX.Alloy.Db.TileCompare.Install,
             SelfCheck = l => CX.Alloy.Db.TileBuildCheck.SelfCheck(l),
-            Revoke = () => { CX.Alloy.Db.TileCompare.Revoke(); CX.Alloy.Db.TileBuild.Revoke(); },
-            Stats = _ => CX.Alloy.Db.TileBuild.Stats() + CX.Alloy.Db.DbLightSet.StatsClause()
-                       + " | " + CX.Alloy.Db.TileCompare.Note(),
+            Revoke = CX.Alloy.Db.TileBuild.Revoke,
+            Stats = _ => CX.Alloy.Db.TileBuild.Stats() + CX.Alloy.Db.DbLightSet.StatsClause(),
         }, log);
 
         // CX-117: not a draw pass either -- CX's own texture table, the master PLT palette and the

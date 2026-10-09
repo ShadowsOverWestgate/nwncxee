@@ -1,5 +1,6 @@
 #version 460 core
 #define CX_FS 1   // #642: gl_FragCoord is in reach for the shadow lib's dither
+#define CX_LIGHT_LITE 1   // CX-188: cx_lightfrag's slimmed walk -- not a baked receiver, one shadow tap per light
 in vec4 vColor;
 in vec2 vUv;
 in float vViewZ;

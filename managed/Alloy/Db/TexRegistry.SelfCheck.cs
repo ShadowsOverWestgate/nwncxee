@@ -14,7 +14,7 @@ internal static unsafe partial class TexRegistry
     internal static bool SelfCheck(ExtenderLog log)
     {
         bool ok = PltCheck(log) & PaletteCheck(log) & RegistryCheck(log) & PltColors.SelfCheck(log)
-                & TexCoverageOf.SelfCheck(log) & TxiCheck(log);
+                & TexCoverageOf.SelfCheck(log) & TxiCheck(log) & TxiSelfCheck(new Checker(log, "TexRegistry.TxiSelfCheck"));
         log.Info(ok ? "TexRegistry.SelfCheck: passed" : "TexRegistry.SelfCheck: FAILED");
         return ok;
     }
@@ -316,6 +316,21 @@ internal static unsafe partial class TexRegistry
             "a nameless, idle, not-in-flight slot was not re-offered -- that is the forever-white bug");
         Release(d3); Release(d2);
 
+        // CX-188: LoadSerial is the ONE edge DbGui's panel prescan latches against, so every path that puts a
+        // slot into Loading has to move it. If it stops moving, a settled panel never re-scans and a part that
+        // went back on the wire draws its white stand-in until something else disturbs the scene.
+        int load0 = LoadSerial;
+        TexId ls = Alloc("cx_selfcheck_loadserial", TexKind.Auto, 0, out _);
+        Expect(LoadSerial != load0, "a newly seated slot did not move LoadSerial -- a settled DbGui panel "
+                                  + "would never re-scan for a texture that went back on the wire");
+        load0 = LoadSerial;
+        _pend[ls.Index] = PendFlight;
+        Release(ls);                                        // idle, nameless, "in flight"
+        _pend[ls.Index] = PendNone;
+        Alloc("cx_selfcheck_loadserial", TexKind.Auto, 0, out _);
+        Expect(LoadSerial != load0, "a RE-OFFERED slot did not move LoadSerial");
+        Release(ls);
+
         // the module edge: a held slot leaves the index, so the next module's acquire of the same name reads afresh,
         // and the held one retires at its last release instead of idling with the previous module's pixels
         TexId m1 = Insert("cx_selfcheck_m", TexKind.Auto);
@@ -348,6 +363,69 @@ internal static unsafe partial class TexRegistry
         Expect(_dyingHandles.Count == 0 && _handlesDropped == droppedBefore + dyingBefore + 2,
             $"the bracket's drain left {_dyingHandles.Count} queued and counted "
           + $"{_handlesDropped - droppedBefore} drops -- the records keep the dead handles until it empties");
+
+        // CX-188: every edge that can change what a record samples moves TableSerial. The renderer stamps it
+        // per slot and skips re-resolving a part's textures while it holds still, so a missing bump IS a
+        // record left sampling a dead handle -- which is why this asserts the bump on each edge rather than
+        // trusting the writers to remember.
+        int serial0 = TableSerial;
+        TexId t1 = Insert("cx_selfcheck_t", TexKind.Plain);
+        Expect(TableSerial != serial0, "an acquire did not move TableSerial");
+        // CX-188: and the memo's FINALITY predicate, on the three states that reach it. A loading slot is
+        // not final -- its arrival is what the memo waits for -- and getting that backwards freezes the white
+        // stand-in on every part waiting for a texture; a null id and a failed load ARE final, and getting
+        // THAT backwards re-resolves every texture-less part every frame for ever.
+        Expect(Final(default), "a null texture id is not final, so a part with no diffuse re-resolves for ever");
+        Expect(!Final(t1), "a LOADING slot is final, so its arrival would never repair the record");
+        serial0 = TableSerial;
+        Land(t1, 4242u, 16);
+        Expect(TableSerial != serial0, "an arrival did not move TableSerial");
+        Expect(!Final(t1), "a RESIDENT slot is final -- only a null id and a failed load are");
+        serial0 = TableSerial;
+        _handle[t1.Index] = 0xC0FFEE03u;   // not-an-offset: a stand-in handle value, never dereferenced
+        DropHandle(t1.Index);
+        Expect(TableSerial != serial0, "a dropped handle did not move TableSerial");
+        serial0 = TableSerial;
+        Fail(t1.Index, "the self-check's own failure");
+        Expect(TableSerial != serial0, "a failed load did not move TableSerial");
+        Expect(Final(t1), "a FAILED slot is not final, so every part on it re-resolves for ever");
+        serial0 = TableSerial;
+        Retire(t1.Index);
+        Expect(TableSerial != serial0, "a retire did not move TableSerial");
+
+        // Progressive streaming: a preview draws while the slot keeps LOADING, so the part waiting on it is told
+        // twice -- once for the preview, once for the full chain that replaces it.
+        long svPreviews = _previews;
+        TexId pv = Insert("cx_selfcheck_pv", TexKind.Plain);
+        int pp = SceneDb.Parts.Alloc().Index;
+        SceneDb.Parts.TakeDirty();
+        AddDependent(pv, pp);
+        int graveBefore = _graveyard.Count;
+        LandPreview(pv, 0xA1u, 0, TexCoverage.Cutout);
+        Expect(TryDrawable(pv, out uint pn, out _) && pn == 0xA1u && StateOf(pv) == TexState.Loading,
+            "a preview did not draw while its slot kept loading");
+        Expect(!TryResident(pv, out _, out _) && !Resident(pv),
+            "a preview answered RESIDENT -- a consumer that keeps the name (a font atlas) would hold one that dies");
+        Expect((SceneDb.Parts.DirtyAt(pp) & Dirty.Texture) != 0, "a preview did not tell the part waiting on it");
+        Expect(Coverage(pv) == TexCoverage.Cutout, "the preview's coverage verdict was not taken -- a leaf draws as a quad");
+        Expect(!Final(pv), "a previewed slot reads final, so the full chain would never reach its records");
+        SceneDb.Parts.TakeDirty();
+        AddDependent(pv, pp);
+        Land(pv, 0xA2u, 64, 0);
+        Expect(TryResident(pv, out pn, out _) && pn == 0xA2u && StateOf(pv) == TexState.Resident && !_preview[pv.Index],
+            "the full chain did not replace the preview");
+        Expect(_graveyard.Count == graveBefore + 1, "the preview's GL name was not retired");
+        Expect((SceneDb.Parts.DirtyAt(pp) & Dirty.Texture) != 0, "the full chain did not reach a part drawing the preview");
+        SceneDb.Parts.TakeDirty();
+        SceneDb.Parts.Free(SceneDb.Parts.IdAt(pp));
+        SceneDb.Parts.TakeDirty();
+        Retire(pv.Index);
+        _previews = svPreviews;
+        // ...and the tail starts at the first level within PreviewSide, past exactly the bytes above it.
+        Expect(TailLevel(256, 128, 4, out int tl, out int tw, out int th, out long tskip) && tl == 2 && tw == 64 && th == 32
+               && tskip == DdsReader.LevelSize(256, 128, 4) + DdsReader.LevelSize(128, 64, 4),
+            $"a 256x128 chain's preview starts at level {tl} ({tw}x{th}, {tskip} bytes in)");
+        Expect(!TailLevel(64, 64, 4, out _, out _, out _, out _), "a texture already within PreviewSide asked for a preview");
 
         // a handle to an evicted slot resolves to nothing: the whole reason no holder needs a death notice
         Retire(a.Index);

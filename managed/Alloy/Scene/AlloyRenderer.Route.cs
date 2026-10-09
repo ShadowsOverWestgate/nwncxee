@@ -33,12 +33,6 @@ namespace CX.Alloy;
 /// <c>VertexPrimitive+0x18</c> left in Alloy.</para></summary>
 public sealed unsafe partial class AlloyRenderer
 {
-    /// <summary>The keyhole camera key (<see cref="PartTable.KeyholeCameraMoved"/>) and the generation it
-    /// last changed on. A slot's verdict is current while <see cref="_camGen"/> matches.</summary>
-    private static readonly ulong[] _camKey = new ulong[PartTable.CamKeyholeWords + 1];
-    private static int _camGen = 1;
-    private static readonly int[] _disGen = new int[MaxOwned];
-    private static readonly bool[] _disVerdict = new bool[MaxOwned];
 
     /// <summary>The part's TileData (part+0x98, spawn-time), so the fade question is answered without
     /// dereferencing the part. #546: a tile GOB part (window, vine) carries no part+0x98; its gob's
@@ -65,29 +59,21 @@ public sealed unsafe partial class AlloyRenderer
     private static bool _fullPoll => Renderer.Poll.V;
     /// <summary>Period counters: matrices recomposed vs served from their own record, the keyhole cache's two
     /// halves, and the route gate's two.</summary>
-    private static long _mxChased, _mxCached, _disAsked, _disCached;
-    private static long _pollMissDis;
-    private static long _routeIn, _routeOut, _disBoxed, _pollMissBox, _pollMissAlpha;
+    private static long _mxChased, _mxCached, _disAsked;
+    private static long _routeIn, _routeOut, _pollMissAlpha;
+    /// <summary>CX-188: route verdicts forced open by <see cref="RouteGate.TexStale"/> this period --
+    /// the population that bypasses the frustum gate because a retired owned texture name has to be
+    /// re-resolved. One per marked slot per retire event; a still frame must read ~0.</summary>
+    private static long _routeStale;
     /// <summary>Why a part was refused the dissolve, per frame. The three gates ahead of the aperture test,
     /// counted apart because "the keyhole stops at that window" is always one of them and the census is the
     /// only thing that says which.</summary>
-    private static long _disNoLit, _disNoFeat, _disGobUnpierced;
+    private static long _disNoLit, _disNoFeat;
 
-    /// <summary>Whether a TILE gob's parts may dissolve at all. <c>/alloy tiledissolve 0</c> is the vanilla A/B:
-    /// off is the engine's own rule, where the aperture stops at every gob. See <see cref="Dissolves"/>.</summary>
-    internal static bool GobKeyhole => Renderer.TileDissolve.V;
     /// <summary>#336: the part's world box at enrolment (six floats), for the dissolve verdict AND for
     /// <see cref="AreaGrid"/>'s filing -- it is the same box, populated by <c>ComputePartBBox</c> @0x561370 for
     /// tile geometry and six zeros for everything hanging off a gob.</summary>
     internal static readonly float[] _oBox = new float[MaxOwned * 6];
-    /// <summary>#336: the camera's keyhole state, read once per pass at the top of the route walk: the on
-    /// byte, the aperture plane, the height cut; <c>_khCam</c> false = no camera or no engine verdict armed,
-    /// and the engine call stands in.</summary>
-    private static readonly float[] _khPlane = new float[4];
-    private static byte _khOn;
-    private static float _khCut;
-    private static bool _khCam;
-
     /// <summary>Off-device: the box verdict against the decompiled rule. A plane z = 5 facing up (0,0,1,-5):
     /// a box below it dissolves (its lowest corner is under the plane), a box above it does not, the height
     /// cut refuses a box whose top is under it, and keyhole-off refuses everything. A verdict that picks the
@@ -105,25 +91,6 @@ public sealed unsafe partial class AlloyRenderer
                   && !PartTable.KeyholeDissolvesBox(below, 0, pl, -10f);
         if (!ok) log.Info("AlloyRenderer.KeyholeBoxSelfCheck: FAILED -- the cached-box dissolve verdict disagrees with the decompiled rule");
         return ok;
-    }
-
-    /// <summary>No keyhole camera this pass: the aperture is CLEARED rather than left at last frame's. Every
-    /// per-part read of it is already behind <see cref="_khCam"/>, but <see cref="PrepareRouteMemo"/> asks
-    /// <see cref="_khOn"/> on its own, and a stale non-zero byte there disarmed the route memo for the rest of
-    /// the session with nothing on the line to say why. Pure in the four fields, which is how the self-check
-    /// exercises it without a camera to lose.</summary>
-    private static void ClearKeyholeCamera()
-    { _khCam = false; _khOn = 0; _khCut = 0f; Array.Clear(_khPlane); }
-
-    private static void ReadKeyholeCamera()
-    {
-        IntPtr cam = PartTable.KeyholeArmed ? PartTable.CurrentCamera : IntPtr.Zero;
-        if (cam == IntPtr.Zero) { ClearKeyholeCamera(); return; }
-        _khCam = true;
-        var c = new Camera(cam);
-        _khOn = c.KeyholeState;
-        c.KeyholePlane.CopyTo(_khPlane);
-        _khCut = c.KeyholeCut;
     }
 
     // ================= the visible set =================
@@ -209,7 +176,6 @@ public sealed unsafe partial class AlloyRenderer
     /// and rebuild the set if it is due.</summary>
     private static void PrepareVisible()
     {
-        ReadKeyholeCamera();
         _visFull = !_visList || !_passFrustumOk;
         if (_visFull) { _texStalePending = false; return; }   // this pass walks every slot anyway
         // CX-104 (review): a cold path has marked slots tex-stale, and RouteWanted can only re-resolve the
@@ -469,7 +435,14 @@ public sealed unsafe partial class AlloyRenderer
                 float* b = ob + (long)first * 6;
                 float* sp = sph + (long)first * 4;
                 int held = Array.IndexOf(_vis, first, 0, _visEnd[AlloyClasses.Count - 1]);
+                // CX-188: the one question the line never asked. A query reaches a slot only through the cell
+                // it was FILED under and tests that cell's union box, so a box that moved after the filing
+                // (DbWriteWorldBox runs on every record rewrite; the grid is built once per enrolment) is
+                // invisible to every query. "filed 123 now 456" or "union no" says that is what happened;
+                // "filed 123 now 123 union yes" says it is not, and the loss is downstream of the cell test.
+                bool stillFiled = AreaGrid.StillFiled(first, ob + (long)first * 6, out int cellWas, out int cellNow, out bool covered);
                 where = $" first miss slot {first} cls {_oCls[first]} rank {_orderRank[first]} gob {(_oGob[first] != IntPtr.Zero ? "yes" : "no")} "
+                      + $"grid {(stillFiled ? "agrees" : "STALE")} (filed cell {cellWas}, box now in {cellNow}, cell union covers it: {(covered ? "yes" : "NO")}) "
                       + $"{(held >= 0 ? $"IN the set at {held} but outside its class cut" : "absent from the set")} "
                       + $"box ({b[0]:F1},{b[1]:F1},{b[2]:F1})-({b[3]:F1},{b[4]:F1},{b[5]:F1}) "
                       + $"sphere ({sp[0]:F1},{sp[1]:F1},{sp[2]:F1} r{sp[3]:F1})";
@@ -585,8 +558,7 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>BW7: every per-slot record stamp the route gate reads, in ONE row. They were eight separate
     /// columns, seven of them on the gate's own path, touched at a scattered ownership index for every visited
     /// candidate -- seven cache lines per slot where the whole question fits in one -- and after BW1 and BW6
-    /// that gate IS what the walk costs: the live median visits 23,063 candidates to route 5,650, and a
-    /// replayed frozen slot asks nothing else (<see cref="RouteMemo"/>).
+    /// that gate IS what the walk costs: the live median visits 23,063 candidates to route 5,650.
     /// <para>Padded to a 32-byte STRIDE, so a row spans at most two lines and two consecutive rows share one
     /// -- not an alignment guarantee: a managed array is 8-byte aligned, so where the first row lands is the
     /// runtime's business and only the stride is ours. It also narrows the false sharing the parallel stage
@@ -595,8 +567,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>Writers, all of which must keep the row whole: the record build (<c>StagePart</c>: every stamp),
     /// <see cref="UnstampRecord"/> and <see cref="UnstampChase"/> (a re-tenanted or drifted slot),
     /// the enrolment (<see cref="EnrollGen"/>), the texture retire/swap scans in
-    /// <see cref="NoteOwnedNameRetired"/> and friends (<see cref="TexStale"/>), the static freeze
-    /// (<see cref="FrozenAt"/>) and the wall-fade verdict (<see cref="OccFade"/>).</para></summary>
+    /// <see cref="NoteOwnedNameRetired"/> and friends (<see cref="TexStale"/>) and the wall-fade verdict
+    /// (<see cref="OccFade"/>).</para></summary>
     [StructLayout(LayoutKind.Sequential, Size = GateRowBytes)]
     private struct RouteGate
     {
@@ -617,14 +589,6 @@ public sealed unsafe partial class AlloyRenderer
         /// <para><c>_enrollGen</c> starts at 1 so a record never built (stamp 0) disagrees with every real
         /// enrollment.</para></summary>
         public int RecEnroll, EnrollGen;
-        /// <summary>BW1: the frame this slot was last FROZEN by the static path (<see cref="StaticFrozen"/>),
-        /// i.e. the frame Alloy last decided nothing about it can move. Stamped where the freeze happens, which
-        /// is after the route walk -- so it is last frame's answer, which is exactly what a memo needs.
-        /// <para>-1, not 0: frames 0 and 1 would otherwise read as "frozen last frame" for every slot. Nothing
-        /// could come of it (no slot has a record to serve that early, which the memo also tests), but a gate
-        /// that is only right because a second gate catches it is not a gate. <see cref="ResetGate"/> is what
-        /// seeds it, since a struct array cannot carry a non-zero default.</para></summary>
-        public int FrozenAt;
         /// <summary>#537: how far toward the floor the part is faded, 0 = not at all. Zero is the row's
         /// default, so a fresh slot needs no seeding and a re-tenanted one is cleared in
         /// <see cref="UnstampChase"/>.</summary>
@@ -634,7 +598,9 @@ public sealed unsafe partial class AlloyRenderer
         /// <summary>The record's owned texture name RETIRED under it (the transcode drip swapping a raw upload
         /// for its compressed copy): the engine pointer is unchanged, so the pointer compare alone would keep
         /// the record sampling a handle the drain has since dropped. Routed and re-resolved regardless of the
-        /// frustum, then cleared. Set by <see cref="NoteOwnedNameRetired"/> from a walk over the record tids --
+        /// frustum, then cleared where the three memos it invalidates are rewritten -- the bindless handle
+        /// block, the bind-path tid and the map-slot tids, i.e. <c>StageDbPart</c>'s tail. Set by
+        /// <see cref="NoteOwnedNameRetired"/> from a walk over the record tids --
         /// per slot on purpose: a global generation re-staged the whole world on every drip frame (Restage
         /// 5,7ms in hitch frames against 0,8 mean, measured).</summary>
         public bool TexStale;
@@ -645,11 +611,8 @@ public sealed unsafe partial class AlloyRenderer
     /// line in <see cref="ChaseSelfCheck"/> takes over.
     /// not-an-offset: a size, not an engine layout.</summary>
     private const int GateRowBytes = 32;
-    /// <summary>The gate row per ownership slot. <see cref="ResetGate"/> seeds the one field whose default is
-    /// not zero.</summary>
-    private static readonly RouteGate[] _gate = ResetGate(new RouteGate[MaxOwned]);
-    private static RouteGate[] ResetGate(RouteGate[] a)
-    { for (int i = 0; i < a.Length; i++) a[i].FrozenAt = -1; return a; }
+    /// <summary>The gate row per ownership slot. Every field's default is zero, so nothing seeds it.</summary>
+    private static readonly RouteGate[] _gate = new RouteGate[MaxOwned];
 
     /// <summary>#330 / CX-103: should this pass touch the slot at all? A record only needs rewriting when
     /// (a) there is none to serve (stale epoch, new tenant, a retired texture name), or (b) the part is in this
@@ -663,8 +626,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <para>BW7: the four record terms are one <see cref="RouteGate"/> row, so the gate is one cache line at a
     /// scattered <c>i</c> rather than four (<see cref="_gate"/> names the whole move and what it measured).</para>
     /// <para>BW5, decided against and recorded here rather than left as a marker: the walk STAYS serial (ADR
-    /// 0022). Three numbers settle it. (1) What is left to parallelise is the full-path minority -- with BW1
-    /// replaying 15 of every 16 frozen gobless slots and BW6 trimming the candidates to the boxes actually in
+    /// 0022). Three numbers settle it. (1) What is left to parallelise is the full-path minority -- with BW6
+    /// trimming the candidates to the boxes actually in
     /// view, the live median (5,650 routed of 23,063 visited, <c>Scan</c> p50 1,90 ms on the mean-frame row
     /// and 2,3 ms on the hitch row, over 238 periods) derives to ~1,3k slots still
     /// deriving a verdict and ~7k paying this gate: the gate, not the derivation, is the remaining cost, and
@@ -683,7 +646,11 @@ public sealed unsafe partial class AlloyRenderer
         if (_fullPoll || !_passFrustumOk) return true;
         // BW7: one address, one bounds check, one line -- the four record terms are one row.
         ref RouteGate g = ref _gate[i];
-        if (g.RecGen != _recEpoch || g.RecEnroll != g.EnrollGen || g.TexStale) return true;
+        if (g.RecGen != _recEpoch || g.RecEnroll != g.EnrollGen) return true;
+        // CX-188: counted, not folded into the line above -- this term fails the gate OPEN regardless of the
+        // frustum, and until the stage started clearing it (DbStage, beside the tid memos) it never went back
+        // down. A still frame must read ~0 here; a drip frame reads the parts the retired name sat on, once.
+        if (g.TexStale) { _routeStale++; return true; }
         // #336: no stamp on the rejected slot -- the shadow side reads "moved on its LAST build, and that
         // build was last frame" (SlotRecMoved), so an unvisited slot reads still on its own.
         if (!SphereInPass(i, sph)) { _routeOut++; return false; }
@@ -691,241 +658,26 @@ public sealed unsafe partial class AlloyRenderer
         return true;
     }
 
-    // ================= BW1: the frozen slot's route verdict =================
-
     // ================= the visible gobs =================
-
-    /// <summary>CX-104: the gobs the world view is about to render, from Alloy's own enumeration
-    /// (<c>Scene+0x130</c>, every gob in the AREA) culled by distance against the camera's far plane. Valid from
-    /// the top of <see cref="RspShim.Run"/>, which is what its callers need -- <c>DoorFade</c> integrates a
-    /// door's fade before the anchor and <c>GrassField</c> pushes grass from the gobs standing in it.
-    /// <para>This REPLACES <c>gobbucket</c>, and it is a superset of it: the engine's list is frustum-culled and
-    /// this one is not, because neither caller wants a camera-facing answer (a creature just off-camera bends
-    /// the grass it is standing in, and a door behind you still has to stay clickable). The distance cull is
-    /// there to keep the list the few hundred entries the callers were sized for rather than the area's whole
-    /// population.</para></summary>
-    internal static bool VisibleGobs(out IntPtr* items, out int n)
-    {
-        items = null; n = 0;
-        if (_visGobN <= 0) return false;
-        items = _visGobs;
-        n = _visGobN;
-        return true;
-    }
-
-    /// <summary>Capacity of the visible-gob list. Past it the list is truncated and the count says so on the
-    /// period line; a caller that walks a short list pushes less grass, never the wrong grass.</summary>
-    private const int MaxVisGobs = 4096;
-    /// <summary>NATIVE, not a managed array: the callers take the raw pointer and walk it, exactly as they
-    /// walked the engine's own list, so it may not move under them.</summary>
-    private static readonly IntPtr* _visGobs =
-        (IntPtr*)System.Runtime.InteropServices.NativeMemory.AllocZeroed(MaxVisGobs, (nuint)sizeof(IntPtr));
-    private static int _visGobN, _visGobAll;
-    private static bool _visGobTrunc;
-    /// <summary>GS1: the scene <see cref="VisibleGobsFrom"/> declared the list filled FOR, or Zero. The frame's
-    /// one gob sweep (<see cref="ScenePrep"/>'s in-view pass) cuts this list in passing, so the sampler below
-    /// has nothing left to walk. Keyed on the scene rather than latched as a bool so a headless check cannot
-    /// leave a real frame believing its list was filled -- Zero is never consumed.</summary>
-    private static IntPtr _visGobFilled;
-    /// <summary>One frame in this many re-walks the array and compares, because the fused verdict is only as
-    /// good as the claim that nothing between the two sweeps moves a gob. A power of two.</summary>
-    private const int VisGobAuditEvery = 64;
-    private static int _visGobAuditTick;
-    private static long _visGobAudits, _visGobAuditMiss;
-    private static bool _visGobAuditSaid;
-    /// <summary>Audits skipped because the list was truncated, and whether that has been said once.</summary>
-    private static long _visGobTruncSkips;
-    private static bool _visGobTruncSaid;
-
-    /// <summary>GS1: the far-plane test the list is cut on, for ONE gob. <see cref="ScenePrep"/>'s in-view
-    /// sweep applies it as it goes -- it has the gob in cache for its own frustum test -- and
-    /// <see cref="SampleVisibleGobs"/> applies the same one on a frame that sweep did not run. ONE
-    /// implementation, so the two cannot drift, and <see cref="AuditVisibleGobs"/> says so on a cadence.
-    /// <para><b>No scale factor, and that is the answer to !790's open question, not an omission.</b>
-    /// <see cref="EngineLayout.GobCentre"/> and <see cref="EngineLayout.GobRadius"/> are ALREADY scaled:
-    /// <c>Gob::GetMinimumSphere</c> @0x5370a0 is their only writer after the constructor (the ctor leaves radius
-    /// 1 and the centre 0, <c>src/Gob.c:2651,2809</c>), and it ends with two separate <c>vtbl+0x2d8</c>
-    /// (<c>GetAdjustedScale</c>) calls -- one multiplying the centre triple <c>+0x17c/+0x180/+0x184</c>, one
-    /// multiplying the radius <c>+0x178</c> (<c>src/Gob.c:2371-2376</c>). So the two fields this reads are the
-    /// gob's sphere WITH its visual transform in it, and multiplying again would make it <c>s^2</c>. A sphere
-    /// that grows as the square is not a tighter cull, it is a different bug.</para>
-    /// <para>The position and orientation stay the RAW fields, which is what this test was written against
-    /// (the BSP visitor @0x481000 measures its LOD distance from those).</para>
-    /// <para><paramref name="far"/> at or below zero means "no camera answer", which admits every gob --
-    /// exactly what the standalone walk did with no <c>CurrentCamera</c>.</para></summary>
-    internal static bool GobWithinFar(IntPtr gob, in Vector3 eye, float far)
-    {
-        if (!(far > 0f)) return true;
-        var g = new Gob(gob);
-        // The centre the engine's own BSP visitor @0x481000 measures the LOD distance from: the gob's
-        // position plus its bbox centre offset through its orientation. Both terms carry the gob's scale
-        // already -- see the summary; this is the engine's own sphere, read, not rebuilt.
-        Vector3 c = g.Position + Vector3.Transform(g.Centre, (Quaternion)g.Rot);
-        return (c - eye).Length() - g.Radius <= far;
-    }
-
-    /// <summary>GS1: the frame's gob sweep is about to offer this list's members, out of
-    /// <paramref name="all"/> gobs in <paramref name="scene"/>. Must be followed by
-    /// <see cref="OfferVisibleGob"/> in scene order, which is what lets the audit compare positionally.</summary>
-    internal static void VisibleGobsFrom(IntPtr scene, int all)
-    {
-        _visGobN = 0; _visGobAll = all; _visGobTrunc = false; _visGobFilled = scene;
-    }
-
-    /// <summary>GS1: one gob that passed <see cref="GobWithinFar"/>, in scene order.</summary>
-    internal static void OfferVisibleGob(IntPtr gob)
-    {
-        if (_visGobN >= MaxVisGobs) { _visGobTrunc = true; return; }
-        _visGobs[_visGobN++] = gob;
-    }
-
-    /// <summary>GS1: has the frame's gob sweep declared this list filled for <paramref name="scene"/>? The
-    /// self-check's question; <see cref="SampleVisibleGobs"/> asks the same one and CONSUMES the answer.</summary>
-    internal static bool VisibleGobsFilledFor(IntPtr scene) => _visGobFilled == scene && scene != IntPtr.Zero;
-
-    /// <summary>Once per world frame, at the TOP of <see cref="RspShim.Run"/> (engine context): rebuild the
-    /// visible-gob list. Allocation-free; one sphere test per gob in the area.
-    /// <para>GS1: on the armed path there is nothing to do -- <see cref="ScenePrep"/>'s in-view sweep, one
-    /// call earlier over the same array, cut the list as it went, and this walk over 728 gobs (a quaternion
-    /// rotate and four field loads each) was the same answer a second time. It still runs whenever that sweep
-    /// did not: <c>alloy.skipbuckets</c> below 3, a <c>/buckets</c> A/B or a validator re-arming the engine's
-    /// own walk, an unresolved symbol, or no <c>CurrentCamera</c> at the top of the frame.</para></summary>
-    internal static void SampleVisibleGobs(IntPtr scene)
-    {
-        bool fused = VisibleGobsFilledFor(scene);
-        _visGobFilled = IntPtr.Zero;
-        if (fused) { AuditVisibleGobs(scene); return; }
-        _visGobN = 0; _visGobAll = 0; _visGobTrunc = false;
-        WalkVisibleGobs(scene, audit: false);
-    }
-
-    /// <summary>The standalone walk. <paramref name="audit"/> false FILLS the list; true re-derives every
-    /// verdict live and compares against the list the fused sweep left -- positionally, because both emit in
-    /// scene order, so a pointer-for-pointer match over the same length is the whole equivalence.</summary>
-    private static void WalkVisibleGobs(IntPtr scene, bool audit)
-    {
-        if (scene == IntPtr.Zero || !IsWorldScene(scene)) return;
-        var sc = new Scene(scene);
-        IntPtr* gobs = (IntPtr*)sc.Gobs;
-        int count = sc.GobCount;
-        if (gobs == null || count <= 0) return;
-        var cam = new Camera(AlloyCamera.World);
-        bool haveCam = !cam.IsNull;
-        Vector3 eye = haveCam ? cam.Pos : default;
-        float far = haveCam ? cam.Far : 0f;
-        if (!audit) _visGobAll = count;
-        int k = 0;
-        bool miss = audit && count != _visGobAll;
-        for (int i = 0; i < count && !miss; i++)
-        {
-            IntPtr gob = gobs[i];
-            if (gob == IntPtr.Zero) continue;
-            if (!GobWithinFar(gob, eye, far)) continue;
-            if (!audit) { OfferVisibleGob(gob); continue; }
-            if (k >= _visGobN || _visGobs[k] != gob) miss = true; else k++;
-        }
-        if (!audit) return;
-        _visGobAudits++;
-        if (!miss && k == _visGobN) return;
-        _visGobAuditMiss++;
-        if (_visGobAuditSaid) return;
-        _visGobAuditSaid = true;
-        _log?.Always($"AlloyRenderer: [visgobs] the fused visible-gob list ({_visGobN} of {_visGobAll}) is not "
-                   + $"what a live re-walk finds ({k} matched of {count} gob(s)) -- the gob array or a gob's "
-                   + "placement changed between ScenePrep's in-view sweep and this call, INSIDE one "
-                   + "Scene::Render, so DoorFade and GrassField are reading a list for a scene that has moved "
-                   + "under them");
-    }
-
-    /// <summary>One frame in <see cref="VisGobAuditEvery"/>: the fused list, re-derived. Skipped on a truncated
-    /// list, which is not a set the positional compare can speak about -- and said once when that happens,
-    /// because a chronically truncated area is one the fusion is never audited in at all, which is exactly the
-    /// kind of silence CX-45 forbids.
-    /// <para><b>What it can and cannot catch.</b> It re-walks <c>Scene+0x130</c> and re-derives every verdict at
-    /// the sampler's own position in the frame, so it catches the array changing length, a gob appearing or
-    /// disappearing, and a placement moving far enough to cross the far plane -- which is the whole of what the
-    /// fusion assumes does not happen between the two points. It cannot see a change that happened and was
-    /// undone in between, and it says nothing about the 63 frames it did not run on.</para></summary>
-    private static void AuditVisibleGobs(IntPtr scene)
-    {
-        if ((++_visGobAuditTick & (VisGobAuditEvery - 1)) != 0) return;
-        if (_visGobTrunc)
-        {
-            _visGobTruncSkips++;
-            if (!_visGobTruncSaid)
-            {
-                _visGobTruncSaid = true;
-                _log?.Always($"AlloyRenderer: [visgobs] the visible-gob list is TRUNCATED at {MaxVisGobs} of "
-                           + $"{_visGobAll} gob(s), so the fused sweep cannot be audited here -- while this area "
-                           + "stays this crowded the list DoorFade and GrassField read is unchecked (the skip "
-                           + "count is on the [alloy] line)");
-            }
-            return;
-        }
-        WalkVisibleGobs(scene, audit: true);
-    }
 
     // ================= per-slot state the route reads =================
 
-    /// <summary>#124/#327/#330: does the camera keyhole dissolve this part this frame -- lit, a feature that
-    /// keyholes, and the engine's aperture test says so. The engine call is paid once per slot per camera
-    /// change; while the keyhole camera words hold still the verdict is served from the slot.</summary>
-    /// <para>#336: ...and for a still gobless part -- the tile geometry that is most of the routed set -- the
-    /// verdict is computed from the box captured at enrolment and the camera state read once per pass, so a
-    /// walking camera (which changes the key every frame) costs no engine call and no part touch. A
-    /// matrix-class part may move its box and keeps the engine call. <c>/alloy poll 1</c> asks the engine too
-    /// and counts a disagreement.</para>
-    /// <para>The engine refuses every gob part (the decompile's <c>part+0x50 == 0</c>) and so did this, which
-    /// is why vanilla's aperture punches a wall and leaves its windows floating in the hole.
-    /// <c>Scene::SpawnTile</c> @0x574470 splits a tile in TWO: <c>SpawnPartsForTile</c> hands back a Gob for
-    /// the parts that need their own identity -- the window that lights up at night, the vine that danglies --
-    /// and a plain part list for the static remainder. So a tileset window IS a gob part.
-    /// <see cref="EngineLayout.GobTileData"/> identifies that half positively, and it dissolves with the wall
-    /// it belongs to. <c>/alloy tiledissolve 0</c> is the vanilla A/B.</para>
+    /// <summary>Does the camera keyhole dissolve this part this frame -- lit, a feature that keyholes, and
+    /// the dissolve column says so?
+    /// <para>CX-120: the verdict is a column the dissolve step writes (<c>DbKeyhole</c>), not a question
+    /// asked of the engine's camera per part per pass. The feature and lit gates still apply -- they are the
+    /// record's own content, and a bit that reaches a stage compiled KEYHOLING 0 does nothing.</para>
+    /// <para>CX-188: the engine arm is gone. It read <c>Camera::GetCanKeyholeDissolve</c> @0x4a6f70, or
+    /// reproduced it from a box cached at enrolment, against the aperture <c>ReadKeyholeCamera</c> sampled
+    /// per pass off <c>AlloyCamera.World</c> -- and that latch is set at the world view's
+    /// <c>Camera::RenderScene</c>, which <c>CameraSlots.RenderScene</c> replaces, so it read zero on every DB
+    /// frame and the whole arm answered "no dissolve" whatever the camera was doing.</para></summary>
     private static bool Dissolves(int i, IntPtr tri, ref StageCounters c)
     {
-        // CX-120: the keyhole verdict is a column the dissolve step writes, not a question asked of the
-        // engine's camera per part per pass. The feature and lit gates still apply -- they are the record's
-        // own content, and a bit that reaches a stage compiled KEYHOLING 0 does nothing.
-        if (_oDbPart[i] >= 0)
-        {
-            if (ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])) { c.DisNoFeat++; return false; }
-            if (!_oLit[i]) { c.DisNoLit++; return false; }
-            c.DisAsked++;
-            return SceneDb.PartDissolve[_oDbPart[i]] < 1f;
-        }
-        // Gate order is the census order: each counter must read "parts that would have dissolved but for
-        // THIS", so the cheap content refusals come first and the lit one last.
         if (ShaderFeatures.NoKeyholing((int)_oFeat[i * 4])) { c.DisNoFeat++; return false; }
-        IntPtr gob = _oGob[i];
-        if (gob != IntPtr.Zero && !(GobKeyhole && _oTileGob[i])) { c.DisGobUnpierced++; return false; }
-        // Vanilla's unlit fragment stages all compile KEYHOLING 0, and so does Alloy's (ShaderContract
-        // asserts it), so the bit would reach a stage that cannot use it.
         if (!_oLit[i]) { c.DisNoLit++; return false; }
-        if (gob != IntPtr.Zero)
-        {
-            // A gob part carries NO bbox to test against: PartTriMesh's ctor @0x53cb50 zeroes +0x64..+0x78
-            // and ComputePartBBox @0x561370 -- the only thing that fills them -- runs from Scene::SpawnTile
-            // alone, so tile geometry has a world box and a placeable has six zeros. That is also why the
-            // engine's own test refuses gob parts outright. Nothing is lost by skipping it: the CPU verdict
-            // is an ENABLE bit and CxKeyhole owns the whole shape of the hole.
-            return _khCam && _khOn != 0;
-        }
-        bool cached = _disGen[i] == _camGen;
-        if (cached && !_fullPoll) { c.DisCached++; return _disVerdict[i]; }
-        bool live;
-        if (!_oMx[i] && _khCam)
-        {
-            fixed (float* bx = _oBox) fixed (float* pl = _khPlane)
-                live = PartTable.KeyholeDissolvesBox(bx + (long)i * 6, _khOn, pl, _khCut);
-            c.DisBoxed++;
-            if (_fullPoll && PartTable.KeyholeDissolves(tri) != live) c.PollMissBox++;
-        }
-        else live = PartTable.KeyholeDissolves(tri);
         c.DisAsked++;
-        if (cached && live != _disVerdict[i]) c.PollMissDis++;
-        _disVerdict[i] = live; _disGen[i] = _camGen;
-        return live;
+        return SceneDb.PartDissolve[_oDbPart[i]] < 1f;
     }
 
     /// <summary>CX-104: the tile fade factor this part draws at -- the camera-occlusion ramp times the
@@ -957,55 +709,43 @@ public sealed unsafe partial class AlloyRenderer
 
     /// <summary>A re-tenanted slot's caches describe the previous tenant.</summary>
     private static void UnstampChase(int i)
-    { _disGen[i] = 0; _gate[i].OccFade = 0f; _gate[i].OccHeld = 0f; _gate[i].FrozenAt = -1; }
+    { _gate[i].OccFade = 0f; _gate[i].OccHeld = 0f; }
 
     /// <summary>The [alloy] line's clause.</summary>
     private static string ChaseNote()
     {
-        long mxAll = _mxChased + _mxCached, disAll = _disAsked + _disCached;
+        long mxAll = _mxChased + _mxCached;
         long frames = Math.Max(1, Counters._frames);
         string s = $"route {(float)_routeIn / frames:F0}/frame, {(float)_routeOut / frames:F0} off-frustum untouched"
+                 + $" ({(float)_routeStale / frames:F1}/frame forced by a retired texture name)"
+                 + $"; texture memo: the registry serial moved on {_texSerialMoves} of {frames} frames"
                  + (_visList ? $", visible set rebuilt {_visRebuilds} of {frames} frames from "
                              + $"{AreaGrid.Occupied} cells ({AreaGrid.Filed} indexed, {AreaGrid.Unboxed} unboxed ({_unboxedEmpty} never filled), "
                              + $"{_dynN} on gobs, {_visIndexed / Math.Max(1, _visRebuilds)}/rebuild, {_visTrimmed / Math.Max(1, _visRebuilds)} cell-only candidates trimmed/rebuild)"
                              : ", visible set OFF") + VisAuditNote()
                  + $"; matrices {(float)_mxChased / frames:F0}/frame composed of {(float)mxAll / frames:F0}"
-                 + $", keyhole {(float)_disAsked / frames:F0}/frame asked of {(float)disAll / frames:F0}"
-                 + $", keyhole {(float)_disBoxed / frames:F0}/frame from the cached box"
-                 // BW1: every census below counts the slots the walk RE-DERIVED -- a replayed slot asks none of
-                 // these questions, so `replayed frozen` above is the population they do not cover.
-                 + $"; of the re-derived: dissolve refused {(float)_disNoLit / frames:F0} unlit + "
-                 + $"{(float)_disNoFeat / frames:F0} nokeyhole-feature"
-                 + $" + {(float)_disGobUnpierced / frames:F0} gob/frame"
-                 + $"; gobs in view {_visGobN}/{_visGobAll}" + (_visGobTrunc ? " TRUNCATED" : "")
-                 // GS1: the list is cut inside ScenePrep's in-view sweep now; this is the cadenced re-walk
-                 // that holds that fusion to account, and its miss count must read 0.
-                 + (_visGobAudits == 0 ? "" : $" ({_visGobAuditMiss} of {_visGobAudits} audit(s) disagree)")
-                 + (_visGobTruncSkips == 0 ? "" : $" ({_visGobTruncSkips} audit(s) skipped, list truncated)")
+                 // CX-188: "asked" was the ENGINE ask, from a path that no longer exists. In DB mode the
+                 // verdict is a column (SceneDb.PartDissolve, written by the dissolve step), so this counts
+                 // the parts whose verdict was READ.
+                 + $", keyhole {(float)_disAsked / frames:F0}/frame read from the dissolve column"
+                 // CX-188: the counts below are of the slots this pass ROUTED -- the gate rejects the rest
+                 // before any of these questions is asked, and `route N/frame` above is that population.
+                 // ("replayed frozen", which this used to point at, went with the static freeze.)
+                 + $"; of the routed: dissolve refused {(float)_disNoLit / frames:F0} unlit + "
+                 + $"{(float)_disNoFeat / frames:F0} nokeyhole-feature/frame"
                  + BatchAuditNote()
-                 + (_fullPoll ? $"; POLL AUDIT misses (must be 0): keyhole {_pollMissDis} box {_pollMissBox} "
-                              + $"alpha {_pollMissAlpha}" : "");
+                 + (_fullPoll ? $"; POLL AUDIT misses (must be 0): alpha {_pollMissAlpha}" : "");
         return s;
     }
 
     private static void ResetChasePeriod()
     {
-        _mxChased = _mxCached = _disAsked = _disCached = 0;
-        _routeIn = _routeOut = 0; _visRebuilds = 0; _visIndexed = 0;
-        _pollMissDis = 0; _pollMissBox = 0; _pollMissAlpha = 0; _disBoxed = 0;
+        _mxChased = _mxCached = _disAsked = 0;
+        _routeIn = _routeOut = 0; _routeStale = 0; _texSerialMoves = 0; _visRebuilds = 0; _visIndexed = 0;
+        _pollMissAlpha = 0;
         _visTrimmed = 0; _visBoxOnly = 0; _visSlices = 0;
-        _visGobAudits = 0; _visGobAuditMiss = 0; _visGobTruncSkips = 0;
         ResetBatchAuditPeriod();
-        _disNoLit = _disNoFeat = _disGobUnpierced = 0;
-    }
-
-    /// <summary>Once per world frame at the frame anchor, engine context, after the engine's own scene work and
-    /// before the first record build: take the frame's scene state. CX-103 replaced three engine-set samples
-    /// with one -- which gobs moved -- and CX-105 turns an LOD swap into the re-walk it needs.</summary>
-    private static void SampleEngineSets(IntPtr scene)
-    {
-        fixed (ulong* key = _camKey)
-            if (PartTable.KeyholeCameraMoved(PartTable.CurrentCamera, key)) _camGen++;
+        _disNoLit = _disNoFeat = 0;
     }
 
     /// <summary>S1-6d, off-device: one cycle of <see cref="AuditSlice"/> visits every index of the table exactly
@@ -1042,18 +782,6 @@ public sealed unsafe partial class AlloyRenderer
     internal static bool ChaseSelfCheck(ExtenderLog log)
     {
         var check = new Checker(log, "AlloyRenderer.ChaseSelfCheck");
-        ulong* key = stackalloc ulong[PartTable.CamKeyholeWords + 1];
-        int camBytes = EngineLayout.CamKeyholeState + PartTable.CamKeyholeWords * 8;
-        byte* cam = stackalloc byte[camBytes];
-        new Span<byte>(cam, camBytes).Clear();
-        new Span<ulong>(key, PartTable.CamKeyholeWords + 1).Clear();
-        check.Expect(PartTable.KeyholeCameraMoved((IntPtr)cam, key) && !PartTable.KeyholeCameraMoved((IntPtr)cam, key),
-          "the camera key moves once for a new camera and then holds");
-        cam[camBytes - 4] = 1;   // the +0xe64 height cut, last word of the span
-        check.Expect(PartTable.KeyholeCameraMoved((IntPtr)cam, key), "a change in the last keyhole word is seen");
-        check.Expect(PartTable.KeyholeCameraMoved(IntPtr.Zero, key) && !PartTable.KeyholeCameraMoved(IntPtr.Zero, key),
-          "losing the camera moves the key once");
-
         // CX-104: the radix sort restores enrollment order, and the class cut follows it. Four slots handed
         // to the sort in cell order must come back in rank order and split into two contiguous class runs --
         // a sort that lost the order would cut a batch per cell, and a cut that read the wrong class run
@@ -1089,22 +817,6 @@ public sealed unsafe partial class AlloyRenderer
         if (sizeof(RouteGate) != GateRowBytes)
             log.Always($"AlloyRenderer: the route gate row is {sizeof(RouteGate)} bytes, not {GateRowBytes} -- "
                      + "the gate costs a second cache line per visited slot again (BW7)");
-        // ...and the aperture the memo arms on is cleared when the camera goes, rather than held at its last
-        // value -- which disarmed the memo permanently and said nothing. The CLEAR is asserted, not the read:
-        // this check gates the whole renderer (a false verdict stands Alloy down), so it may not depend on
-        // there being no live camera at whatever point in service order it runs.
-        byte khWas = _khOn; float cutWas = _khCut; bool camWas = _khCam;
-        float[] planeWas = (float[])_khPlane.Clone();
-        _khCam = true; _khOn = 1; _khCut = 5f; _khPlane[2] = 1f; _khPlane[3] = -5f;
-        ClearKeyholeCamera();
-        check.Expect(!_khCam && _khOn == 0 && _khCut == 0f && _khPlane[2] == 0f && _khPlane[3] == 0f,
-                     "losing the keyhole camera leaves a stale aperture, which disarms the route memo for good");
-        _khOn = khWas; _khCut = cutWas; _khCam = camWas;
-        Array.Copy(planeWas, _khPlane, _khPlane.Length);
-
-        check.Expect(ResetGate(new RouteGate[2])[1].FrozenAt == -1,
-                     "a fresh gate row's FrozenAt is not seeded, so an unfrozen slot reads as frozen on frame 1");
-
         // S1-6d: the rolling audit's whole claim is that a cycle of slices covers the table exactly as the
         // whole-table walk did. Checked on a count that is NOT a multiple of the slice count, which is where an
         // off-by-one leaves a tail of slots no frame ever audits -- the flicker hunt going quiet about them.

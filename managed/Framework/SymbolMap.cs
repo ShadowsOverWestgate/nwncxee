@@ -930,15 +930,6 @@ internal static unsafe class SymbolMap
     /// <c>focuslighting</c> write the shim has to replicate. ABI: <c>(Gob* /*rdi*/, List* /*rsi*/)</c>.</summary>
     [Fn("void(IntPtr gob, IntPtr list)")]
     public const string GobCollectLights = "_ZN3Gob13CollectLightsER4ListIP9PartLightE";
-    /// <summary>#215: <c>Scene::m_pFocusObject</c> @0x19ab960 -- the Gob whose lighting
-    /// <c>focuslighting</c> describes. Data symbol; read only.</summary>
-    public const string SceneFocusObject = "_ZN5Scene14m_pFocusObjectE";
-    /// <summary>#215: the <c>focuslighting</c> global @0x19ab748 -- three floats.
-    /// <c>Scene::RenderSinglePass</c> is its ONLY writer (the two stores at 0x46ec3d and 0x46fe64 are the
-    /// same block with and without the Tracy scope), and the exported
-    /// <c>Scene::GetLightingValueAtFocus</c> @0x462aa0 reads it -- so the mutate-only shim owes it a write.
-    /// Data symbol; the shim writes it exactly where RSP did.</summary>
-    public const string FocusLighting = "focuslighting";
     /// <summary>#235: <c>g_bFullDynamicLighting</c> @0x19ab8a4 -- the int that decides which of
     /// <c>LightManager</c>'s two enable walks <c>Scene::RenderSinglePass</c> runs. Non-zero on this client
     /// (FRAGMENT_LIGHTING=1), so <c>EnableLights</c> is the live arm and <c>EnableLightsDynamicOnly</c> is
@@ -1708,7 +1699,7 @@ internal static unsafe class SymbolMap
     /// the decompiler drops the colour's third channel and the two constants are 1.0f and 10.0f).
     /// <para>Called rather than transcribed: it is a pure leaf of two other pure leaves, it issues no draw and
     /// touches no engine state, and re-deriving it would put a second copy of the overbright curve in the
-    /// repo. <see cref="LightFade"/> owns the integrator that uses it.</para>
+    /// repo. CX-85's <c>LightFade</c> owned the integrator that used it.</para>
     /// ABI: <c>(PartLight* /*rdi*/) -&gt; float /*xmm0*/</c>.</summary>
     [Fn("float(IntPtr light)")]
     public const string GetLightFadeSpeed = "_Z17GetLightFadeSpeedPK9PartLight";
@@ -1723,7 +1714,7 @@ internal static unsafe class SymbolMap
     public const string GetIsLightInViewVolume = "_Z22GetIsLightInViewVolumePK9PartLight";
     /// <summary>CX-85: <c>LightManager::GetMaxLights()</c> @0x4c15d0 -- <c>min(m_nMaxLights, 128)</c>, the cap
     /// on how many lights may be lit at once and so on how far down the per-frame list
-    /// <see cref="LightFade"/> fades IN. Static, no <c>this</c>.</summary>
+    /// CX-85's <c>LightFade</c> faded IN. Static, no <c>this</c>.</summary>
     [Fn("int()")]
     public const string LightMgrGetMaxLights = "_ZN12LightManager12GetMaxLightsEv";
 
@@ -1750,7 +1741,7 @@ internal static unsafe class SymbolMap
     /// <c>GetLightAdjustedRadius + radius</c> of the point. <c>ManageSceneBSP</c> passes
     /// <c>Scene::m_vSceneFocus</c> (<c>Scene+0x190</c>) and <c>max(45.0f, Scene+0x148 /*fog end*/)</c> -- the
     /// float is invisible in the decompilation and was read off the disassembly at 0x480093.
-    /// <para><see cref="CX.Alloy.LightRegistry"/> reproduces this list, so on a live registry it is dead work;
+    /// <para>Alloy enumerates the scene database instead, so filling this list is dead work;
     /// it is called only for the <c>light.registry 0</c> A/B, whose fallbacks read the engine list directly.
     /// </para>ABI: <c>(LightManager* /*rdi*/, Vector const* /*rsi*/, float /*xmm0*/)</c>.</summary>
     [Fn("void(LightManager this, IntPtr pos, float radius)")]
@@ -1764,15 +1755,6 @@ internal static unsafe class SymbolMap
     /// ABI: <c>(LightManager* /*rdi*/, Vector const* /*rsi*/)</c>.</summary>
     [Fn("void(LightManager this, IntPtr pos)")]
     public const string LightMgrPrioritizeLights = "_ZN12LightManager16PrioritizeLightsERK6Vector";
-    /// <summary>CX-85: <c>CAurInternal::m_nHeadLightEnabled</c> @0x18aa03c -- a SHORT (2 bytes on both builds).
-    /// Non-zero costs <see cref="LightFade"/> two light slots and adds the two headlight colours to the focus
-    /// lighting, exactly as <c>ControlLightsFade</c> @0x4c2050 and <c>GetEmitterLighting</c> @0x4c1970 do.</summary>
-    public const string HeadLightEnabled = "_ZN12CAurInternal19m_nHeadLightEnabledE";
-    /// <summary>CX-85: the two headlight colours (<c>Vector</c>, 12 bytes each) <c>GetEmitterLighting</c>
-    /// @0x4c1970 adds to the focus lighting while the headlight is on.</summary>
-    public const string HeadlightAmbient = "headlightambient";
-    /// <inheritdoc cref="HeadlightAmbient"/>
-    public const string HeadlightDiffuse = "headlightdiffuse";
     /// <summary>GLRender::m_nCurrentMatrix @0x19e30d0 -- the selected matrix-stack index; saved/restored around
     /// the pass so we leave the engine's active matrix mode as we found it. Data symbol (read/write int).</summary>
     public const string MCurrentMatrix = "_ZN8GLRender16m_nCurrentMatrixE";
@@ -1968,32 +1950,6 @@ internal static unsafe class SymbolMap
     /// reimplemented because the growth path is the engine's allocator.</summary>
     [Fn("void(IntPtr list, IntPtr safePointer)")]
     public const string SafePointerAdd = "_ZN13CExoArrayListIP11SafePointerI10CAurObjectEE3AddES3_";
-    /// <summary>DATA: <c>AnimRun::m_pTraceRun</c> @0x19ac168, with <c>m_AnimFlags</c> @0x19ac170 and
-    /// <c>m_AnimLength</c> @0x19ac164 -- the three globals a flag-0x100 run publishes for the duration of
-    /// its pose, and the only thing that arms <see cref="CtrlReportKeys"/>.</summary>
-    public const string AnimTraceRun = "_ZN7AnimRun11m_pTraceRunE";
-    /// <inheritdoc cref="AnimTraceRun"/>
-    public const string AnimTraceFlags = "_ZN7AnimRun11m_AnimFlagsE";
-    /// <inheritdoc cref="AnimTraceRun"/>
-    public const string AnimTraceLength = "_ZN7AnimRun12m_AnimLengthE";
-    /// <summary>The seven <c>MdlNode*Control</c> thunks a node constructor installs at
-    /// <see cref="EngineLayout.MdlNodeControl"/>. They are the node's CLASS, as the animation runtime sees
-    /// it: <see cref="CX.Alloy.AnimHierarchy"/> compares the field against these addresses and hands a node
-    /// it does not recognise straight back to its own pointer.</summary>
-    public const string MdlNodeControlFn = "_Z14MdlNodeControlPvP4Partfff";
-    /// <inheritdoc cref="MdlNodeControlFn"/>
-    public const string MdlNodeAnimMeshControlFn = "_Z22MdlNodeAnimMeshControlPvP4Partfff";
-    /// <inheritdoc cref="MdlNodeControlFn"/>
-    public const string MdlNodeCameraControlFn = "_Z20MdlNodeCameraControlPvP4Partfff";
-    /// <inheritdoc cref="MdlNodeControlFn"/>
-    public const string MdlNodeEmitterControlFn = "_Z21MdlNodeEmitterControlPvP4Partfff";
-    /// <inheritdoc cref="MdlNodeControlFn"/>
-    public const string MdlNodeLightControlFn = "_Z19MdlNodeLightControlPvP4Partfff";
-    /// <inheritdoc cref="MdlNodeControlFn"/>
-    public const string MdlNodeReferenceControlFn = "_Z23MdlNodeReferenceControlPvP4Partfff";
-    /// <inheritdoc cref="MdlNodeControlFn"/>
-    public const string MdlNodeTriMeshControlFn = "_Z21MdlNodeTriMeshControlPvP4Partfff";
-
     /// <summary><c>CNWCAnimBase::GetAnimationName(ushort)</c> @0x9ccd80 -- a creature's anim id to its animation name
     /// (vtable +0x60), then <c>GetAnimationReplace</c>. <c>SetAnimation</c>, <c>GetAnimationLength</c> and
     /// <c>GetAnimationTime</c> all resolve through it, so an id swapped here swaps the length and pacing too. Returns
@@ -2009,11 +1965,6 @@ internal static unsafe class SymbolMap
     /// so no sret order (CX-158 §3.1).</summary>
     [Fn("void(CNWCCreature this, byte flag, IntPtr attackData, VectorArg push, IntPtr text)")]
     public const string SpawnHitVisuals = "_ZN12CNWCCreature15SpawnHitVisualsEhP20CNWCCombatAttackData6Vector10CExoString";
-
-    /// <summary><c>LightManager::m_pOnlyGob</c> (@0x19acdb8, in .dynsym) -- non-null while a single gob is
-    /// being previewed in isolation. <c>Scene::DoFog</c> @0x45f1b0 reads it: with a gob set, the fog colour
-    /// it pushes is black rather than the area's, which #257 replicates when it reads the fog block direct.</summary>
-    public const string LightManagerOnlyGob = "_ZN12LightManager10m_pOnlyGobE";
 
     /// <summary>Camera::GetCanKeyholeDissolve(PartTriMesh*) @ (member) -- returns whether a caster keyhole-
     /// dissolves (the camera-relative aperture around the PC). Hooked to return 0 during the depth pass so
@@ -3198,16 +3149,6 @@ internal static unsafe class SymbolMap
         [AnimRunListRemove]         = Nm("?Remove@?$CExoArrayList@PEAVAnimRun@@@@QEAAXPEAVAnimRun@@@Z"),
         [AnimRunListDelIndex]       = Nm("?DelIndex@?$CExoArrayList@PEAVAnimRun@@@@QEAAXH@Z"),
         [SafePointerAdd]            = Nm("?Add@?$CExoArrayList@PEAV?$SafePointer@VCAurObject@@@@@@QEAAXPEAV?$SafePointer@VCAurObject@@@@@Z"),
-        [AnimTraceRun]              = Nm("?m_pTraceRun@AnimRun@@2PEAV1@EA"),
-        [AnimTraceFlags]            = Nm("?m_AnimFlags@AnimRun@@2HA"),
-        [AnimTraceLength]           = Nm("?m_AnimLength@AnimRun@@2MA"),
-        [MdlNodeControlFn]          = Nm("?MdlNodeControl@@YAXPEAXPEAVPart@@MMM@Z"),
-        [MdlNodeAnimMeshControlFn]  = Nm("?MdlNodeAnimMeshControl@@YAXPEAXPEAVPart@@MMM@Z"),
-        [MdlNodeCameraControlFn]    = Nm("?MdlNodeCameraControl@@YAXPEAXPEAVPart@@MMM@Z"),
-        [MdlNodeEmitterControlFn]   = Nm("?MdlNodeEmitterControl@@YAXPEAXPEAVPart@@MMM@Z"),
-        [MdlNodeLightControlFn]     = Nm("?MdlNodeLightControl@@YAXPEAXPEAVPart@@MMM@Z"),
-        [MdlNodeReferenceControlFn] = Nm("?MdlNodeReferenceControl@@YAXPEAXPEAVPart@@MMM@Z"),
-        [MdlNodeTriMeshControlFn]   = Nm("?MdlNodeTriMeshControl@@YAXPEAXPEAVPart@@MMM@Z"),
         // auto-target: CActionTarget is client-side (not name-exported on Windows). Both anchored by the
         // 'AcTg' GetGuiObjType tag cluster and confirmed by decompile -- ActivateTargetMode is the same
         // CaptureMouse/CaptureKeyboard/RegisterUpdate/RegisterActionTargetGUI body, HandleLMouseDown the
@@ -3448,7 +3389,6 @@ internal static unsafe class SymbolMap
         [FadingOutBucket] = Nm("?fadingoutbucket@@3V?$List@PEAVTileData@@@@A"),
         [FbEffectsMask] = Nm("?m_nFramebufferEffectsEnabled@Camera@@1IA"),
         [FlagCurrentTransformDirty] = Nm("?FlagCurrentTransformDirty@GLRender@@CAXXZ"),
-        [FocusLighting] = Nm("?focuslighting@@3VVector@@A"),
         [ForceDialogVisible] = LinuxOnly("empty body on both builds; nothing to skip"),
         [FullDynamicLighting] = Nm("?g_bFullDynamicLighting@@3HA"),
         [GetCanKeyholeDissolve] = Nm("?GetCanKeyholeDissolve@Camera@@QEAA_NPEBVPartTriMesh@@@Z"),
@@ -3519,13 +3459,9 @@ internal static unsafe class SymbolMap
         [GrassNearRadius] = Nm("?m_fNearRadiusSquared@CAurTriangleBin@@2MA"),
         [GuiUpdateAndRender] = Nm("?UpdateAndRender@CGuiMan@@QEAAXM@Z"),
         [HideCompass] = At(),
-        [HeadLightEnabled] = Nm("?m_nHeadLightEnabled@CAurInternal@@0FA"),
-        [HeadlightAmbient] = Nm("?headlightambient@@3VVector@@A"),
-        [HeadlightDiffuse] = Nm("?headlightdiffuse@@3VVector@@A"),
         [LightAreaAmbient] = Nm("?m_lightAreaAmbient@GLRender@@0VVector@@A"),
         [LightAreaDiffuse] = Nm("?m_lightAreaDiffuse@GLRender@@0VVector@@A"),
         [LightAreaDiffuseDir] = Nm("?m_lightAreaDiffuseDirection@GLRender@@0VVector@@A"),
-        [LightManagerOnlyGob] = Nm("?m_pOnlyGob@LightManager@@0PEAVGob@@EA"),
         [LightMgrGetMaxLights] = Nm("?GetMaxLights@LightManager@@SAHXZ"),
         [LightMgrPrioritizeLights] = Nm("?PrioritizeLights@LightManager@@UEAAXAEBVVector@@@Z"),
         [LightMgrSetupLights] = Nm("?SetupLightsForThisPositionAndRadius@LightManager@@UEAAXAEBVVector@@M@Z"),
@@ -3643,7 +3579,6 @@ internal static unsafe class SymbolMap
         [RiSetModelMatrix] = Nm("?SetModelMatrix@RenderInterface@@SAXAEBVMatrix4x4@@@Z"),
         [SceneBspGetTileData] = Nm("?SceneBSPGetTileData@@YAPEAVTileData@@PEAVScene@@AEBVVector@@@Z"),
         [SceneDeleteTile] = Nm("?DeleteTile@Scene@@UEAAXAEBVVector@@@Z"),
-        [SceneFocusObject] = Nm("?m_pFocusObject@Scene@@0V?$SafePointer@VCAurObject@@@@A"),
         [SceneGetWindVector] = Nm("?GetWindVector@Scene@@QEAA?AVVector@@AEBV2@M@Z"),
         [SceneHitCheck] = Nm("?HitCheck@Scene@@UEAAHVVector@@0PEAV2@PEAVCHitInfo@@@Z"),
         [HitInfoReset] = Nm("?Reset@CHitInfo@@QEAAXH_JH@Z"),

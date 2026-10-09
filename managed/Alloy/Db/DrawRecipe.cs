@@ -104,7 +104,7 @@ internal static partial class DrawRecipe
     {
         NodeDef nd = model.Nodes[node];
         MeshDef? m = nd.Mesh;
-        if (m == null || nd.Skin != null || nd.Controllers.Length != 0 || nd.Parent < 0) return false;
+        if (m == null || nd.Skin != null || Keyed(nd) || nd.Parent < 0) return false;
         int[] kids = model.Nodes[nd.Parent].Children;
         if (kids.Length > TwinMaxFanOut) return false;
         bool later = false;
@@ -114,10 +114,18 @@ internal static partial class DrawRecipe
             if (!later || (uint)k >= (uint)model.Nodes.Length) continue;
             NodeDef t = model.Nodes[k];
             MeshDef? tm = t.Mesh;
-            if (tm == null || !tm.Render || tm.Indices.Length == 0 || t.Skin != null || t.Controllers.Length != 0) continue;
+            if (tm == null || !tm.Render || tm.Indices.Length == 0 || t.Skin != null || Keyed(t)) continue;
             if (t.Position != nd.Position || t.Orientation != nd.Orientation || t.Scale != nd.Scale) continue;
             if (tm.Positions.AsSpan().SequenceEqual(m.Positions) && tm.Indices.AsSpan().SequenceEqual(m.Indices)) return true;
         }
+        return false;
+    }
+
+    /// <summary>Does a track with more than one key drive <paramref name="n"/>? A compiled binary gives every node a
+    /// one-key position and orientation track (its rest pose, already in <see cref="NodeDef.Position"/>), which is no animation.</summary>
+    private static bool Keyed(NodeDef n)
+    {
+        foreach (ControllerTrack c in n.Controllers) if (c.Times.Length > 1) return true;
         return false;
     }
 
@@ -283,14 +291,29 @@ internal static partial class DrawRecipe
             MeshDef? mesh = _mesh[r];
             if (mesh == null) continue;
             bool additive = mesh.RenderHint.Equals("additive", StringComparison.OrdinalIgnoreCase);
-            byte want = (byte)ClassOf(r, additive, mesh.TransparencyHint > 0);
+            byte wasCls = _cls[r], wasDst = _dst[r];
             RecipeFlag wasFlags = _flags[r];
+            TxiWords(r, additive, mesh.TransparencyHint > 0);
             if (TexRegistry.BumpyShiny(new TexId(_texId[r * TexSlots]))) _flags[r] |= RecipeFlag.RotateTexture;
-            if (want == _cls[r] && _flags[r] == wasFlags) continue;
-            if (want != _cls[r]) { _cls[r] = want; Reclassified++; }
+            if (_cls[r] == wasCls && _flags[r] == wasFlags && _dst[r] == wasDst) continue;
+            if (_cls[r] != wasCls) Reclassified++;
             moved++;
         }
         return moved;
+    }
+
+    /// <summary>The diffuse <c>.txi</c>'s material words over the model's own (<c>Material::ParseField</c> @0x5c5850):
+    /// <c>blending additive</c> is the (SRC_ALPHA, ONE) pair and so the additive class -- no depth write, no shadow --
+    /// and <c>decal 1</c> is the fullbright flag. Known once the diffuse's acquire offered it, so <see cref="Fill"/>
+    /// asks after its texture loop and <see cref="Reclassify"/> again for an offer that waited.</summary>
+    private static void TxiWords(int r, bool hintAdditive, bool declared)
+    {
+        var d = new TexId(_texId[r * TexSlots]);
+        bool additive = hintAdditive || TexRegistry.TxiAdditive(d);
+        _dst[r] = additive ? BlendOne : BlendInvSrcAlpha;
+        if (hintAdditive || TexRegistry.TxiDecal(d)) _flags[r] &= ~RecipeFlag.Lit;
+        else _flags[r] |= RecipeFlag.Lit;
+        _cls[r] = (byte)ClassOf(r, additive, declared);
     }
 
     private static int _classSerial = -1;
@@ -398,6 +421,7 @@ internal static partial class DrawRecipe
         // own `rotatetexture` on for good. Re-asked in Reclassify because the diffuse's .txi is not read
         // until the texture lands, which is after the recipe is interned.
         if (TexRegistry.BumpyShiny(new TexId(_texId[r * TexSlots]))) _flags[r] |= RecipeFlag.RotateTexture;
+        TxiWords(r, additive, declared);
         _cos[r] = 1f; _sin[r] = 0f;
         // A compiled mesh's bmin/bmax is the compiler's word, and community compilers get it wrong; the draw
         // culls on this box, so it is grown over the vertices the arena actually draws.

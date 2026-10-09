@@ -35,6 +35,13 @@ internal static unsafe class AreaGrid
     /// <summary>Per slot: the next slot in its cell's list. Sized by the ownership table, like every other
     /// per-slot column, and written only by <see cref="Add"/>.</summary>
     private static readonly int[] _next = new int[AlloyRenderer.MaxOwned];
+    /// <summary>CX-188 (diagnostic): the cell each slot was FILED under, -1 for never. The index is built
+    /// from <c>_oBox</c> once per enrolment and <c>_oBox</c> has a second writer (<c>DbWriteWorldBox</c>, from
+    /// every record rewrite), so a box that moved after its filing leaves the grid describing where the part
+    /// WAS -- and a cell whose union no longer covers it drops it from every query, which is a
+    /// <c>[vischeck]</c> miss. This is what lets the miss log say so instead of leaving it to inference.</summary>
+    private static readonly int[] _cellOf = ResetCells(new int[AlloyRenderer.MaxOwned]);
+    private static int[] ResetCells(int[] a) { for (int i = 0; i < a.Length; i++) a[i] = -1; return a; }
     private static int _filed, _occupied;
 
     /// <summary>Slots with no world box of their own: always visible, exactly as their <c>NeverCull</c> sphere
@@ -51,6 +58,7 @@ internal static unsafe class AreaGrid
     internal static void Begin()
     {
         for (int c = 0; c < Cells; c++) _head[c] = -1;
+        for (int i = 0; i < _cellOf.Length; i++) _cellOf[i] = -1;
         _filed = 0; _unboxedN = 0; _occupied = 0;
     }
 
@@ -72,6 +80,7 @@ internal static unsafe class AreaGrid
         }
         _next[slot] = _head[cell];
         _head[cell] = slot;
+        _cellOf[slot] = cell;
         _filed++;
     }
 
@@ -106,6 +115,27 @@ internal static unsafe class AreaGrid
                 for (int i = head; i >= 0 && n < into.Length; i = _next[i]) into[n++] = i;
             }
         return n;
+    }
+
+    /// <summary>CX-188 (diagnostic): does the grid still describe where <paramref name="slot"/>'s box is?
+    /// A query can only yield a slot through the cell it was filed under, and it tests that cell's UNION box
+    /// -- so a slot whose box has since left its cell's union is invisible to every query, whatever the
+    /// per-candidate trim would say. Reports the filed cell, the cell the box would be filed under now, and
+    /// whether the union still covers it. Off the hot path: asked only when the audit has already found a
+    /// miss.</summary>
+    internal static bool StillFiled(int slot, float* box, out int filed, out int now, out bool covered)
+    {
+        filed = (uint)slot < (uint)_cellOf.Length ? _cellOf[slot] : -1;
+        now = Cell(box[0], box[1]);
+        covered = false;
+        if (filed < 0) return false;
+        fixed (float* b = _box)
+        {
+            float* u = b + filed * 6;
+            covered = box[0] >= u[0] && box[1] >= u[1] && box[2] >= u[2]
+                   && box[3] <= u[3] && box[4] <= u[4] && box[5] <= u[5];
+        }
+        return filed == now && covered;
     }
 
     /// <summary>The standard n-vertex box test: for each plane, the box corner FARTHEST along the plane normal.
@@ -160,6 +190,21 @@ internal static unsafe class AreaGrid
         planes[0] = 1f; planes[3] = -1e9f;
         n = Query(planes, 0f, into, 0);
         check.Expect(n == 1 && into[0] == 2, "a frustum that reaches nothing still yields the unboundable slots");
+
+        // CX-188: and the filing's own staleness test, which is what the [vischeck] miss log now reports.
+        // A query reaches a slot ONLY through the cell it was filed under, so a box that moved after the
+        // filing is invisible to every query -- the property this asserts is that the test says so.
+        check.Expect(StillFiled(0, near, out int cellWas, out int cellNow, out bool covered)
+                     && cellWas == cellNow && covered, "a slot whose box has not moved reads as stale");
+        float* moved = stackalloc float[6] { 300f, 300f, 0f, 301f, 301f, 1f };   // the far cell, not slot 0's
+        check.Expect(!StillFiled(0, moved, out cellWas, out cellNow, out covered)
+                     && cellWas != cellNow && !covered,
+                     "a slot whose box left its filed cell reads as agreeing with the grid");
+        float* grown = stackalloc float[6] { 0f, 0f, 0f, 40f, 1f, 1f };          // same cell, past its union
+        check.Expect(!StillFiled(0, grown, out cellWas, out cellNow, out covered) && !covered,
+                     "a box that outgrew its cell's union reads as covered by it");
+        check.Expect(!StillFiled(7, near, out cellWas, out _, out _) && cellWas < 0,
+                     "an unfiled slot claims a cell");
 
         Begin();
         log.Info(check.Ok ? "AreaGrid.SelfCheck: passed"

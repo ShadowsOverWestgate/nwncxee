@@ -17,10 +17,6 @@ namespace CX.Alloy;
 /// </summary>
 internal static unsafe class Ssr
 {
-    /// <summary>The frame FBO's draw buffers while the records attach: colour, OIT's reveal slot (NONE here), the two
-    /// records -- indexed by fragment output location.</summary>
-    private const int RecordBuffers = 4;
-
     private static uint _fbo, _col, _hiz, _recN, _recW, _out, _progHiZ, _progTrace, _progComp;
     private static int _w, _h, _levels, _locLevel, _locNf;
     private static int _tProj, _tInvProj, _tView, _tInvView, _tNf, _tSsr, _tViz, _tPlane, _tColShift, _cCap, _cViz;
@@ -48,6 +44,10 @@ internal static unsafe class Ssr
     private static ReadOnlySpan<float> Steps => [160f, 96f, 48f];
 
     internal static bool On => Lighting.Ssr.V && !_down.Failed;
+
+    /// <summary>CX-188: the record pair is attached to the frame FBO, so <see cref="GBuffer.ApplyDrawBuffers"/>
+    /// routes draw buffers 2..3 at it. The two classes share that list and neither writes it alone.</summary>
+    internal static bool RecordsArmed => _armed;
 
     internal static void Attach(ExtenderLog log) => _log = log;
 
@@ -84,8 +84,9 @@ internal static unsafe class Ssr
         if (!EnsureTargets(viewport[2], viewport[3], Math.Min(Lighting.SsrDetail.V, 1))) { Gl.BindFramebuffer(Gl.FRAMEBUFFER, PostChain.Fbo); return; }
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, Gl.TEXTURE_2D, _recN, 0);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT3, Gl.TEXTURE_2D, _recW, 0);
-        uint* bufs = stackalloc uint[RecordBuffers] { Gl.COLOR_ATTACHMENT0, Gl.NONE, Gl.COLOR_ATTACHMENT2, Gl.COLOR_ATTACHMENT3 };
-        Gl.DrawBuffers(RecordBuffers, bufs);
+        // armed BEFORE the list is composed: CX-188's G-buffer shares it, and the composer reads this flag
+        _armed = true;
+        GBuffer.ApplyDrawBuffers();
         float* zero = stackalloc float[4];
         // draw-buffer INDEX 2, not the attachment enum; a zero view depth there is "no record", so the weight needs none
         Gl.ClearBufferfv(Gl.COLOR, 2, zero);
@@ -101,31 +102,21 @@ internal static unsafe class Ssr
             }
             _checked = true;
         }
-        _armed = true;
     }
 
-    /// <summary>Around the sky: it writes no record, so its fragments stop paying for the two attachments; the
-    /// cleared record under it already reads "none". The frame target must be bound.</summary>
-    internal static void Pause()
-    {
-        if (!_armed) return;
-        uint buf = Gl.COLOR_ATTACHMENT0;
-        Gl.DrawBuffers(1, &buf);
-    }
+    /// <summary>Around the sky: it writes no record and (CX-188) no G-buffer either, so its fragments stop
+    /// paying for either attachment; the cleared record and G0 under it already read "none". Unconditional --
+    /// the G-buffer may be armed on a frame Ssr is not. The frame target must be bound.</summary>
+    internal static void Pause() => GBuffer.ApplyDrawBuffers(suspend: true);
 
-    internal static void Resume()
-    {
-        if (!_armed) return;
-        uint* bufs = stackalloc uint[RecordBuffers] { Gl.COLOR_ATTACHMENT0, Gl.NONE, Gl.COLOR_ATTACHMENT2, Gl.COLOR_ATTACHMENT3 };
-        Gl.DrawBuffers(RecordBuffers, bufs);
-    }
+    internal static void Resume() => GBuffer.ApplyDrawBuffers();
 
     /// <summary>Detach the records and restore the frame target's single draw buffer. Every frame that reached
     /// <see cref="Begin"/> must come here: the draw-buffer state is the FBO's and outlives the frame.</summary>
     private static void End()
     {
-        uint buf = Gl.COLOR_ATTACHMENT0;
-        Gl.DrawBuffers(1, &buf);
+        _armed = false;
+        GBuffer.ApplyDrawBuffers();
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT2, Gl.TEXTURE_2D, 0, 0);
         Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.COLOR_ATTACHMENT3, Gl.TEXTURE_2D, 0, 0);
     }

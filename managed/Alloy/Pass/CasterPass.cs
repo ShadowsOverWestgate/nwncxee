@@ -307,6 +307,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// Boot = every cube.</summary>
     private static int _dynRanks => Shadows.DynRanks.V;
     private static long _cubeDynBakedFaces;
+    /// <summary>CX-188 step 4: pair tiles this period's frames baked, for the period line's clause.</summary>
+    private static long _pairBakedTiles;
     /// <summary>Slot is in COMBINED mode: it has movers but no pool page (pool exhausted), so it bakes both
     /// halves into the static array every frame -- the per-slot fallback to pre-split behaviour. A mode
     /// change re-keys the slot, or a mover baked in while combined would outlive the mode.</summary>
@@ -792,7 +794,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// <c>own 4.6 bracket N.NNN ms/frame</c>.
     /// <para><b>Why the bake has a bracket of its own, and not the colour pass's.</b> The windows on BOTH
     /// sides of it are the ENGINE's context by requirement. Before: <c>RspShim</c>'s
-    /// <see cref="AlloyEnvMap.Tick"/> may BUILD an engine texture, and building one inside Alloy's 4.6
+    /// env-map tick (gone: the env map is the texture registry's now) could BUILD an engine texture, and building one inside Alloy's 4.6
     /// bracket uploads it into the wrong context. After: <c>AlloyRenderer.OnFrameAnchor</c> harvests each sky
     /// part's VAO through <c>VdoSlot</c> -- a read of the engine's own vertex-array state -- and then runs
     /// <c>SampleEngineSets</c>, both commented engine-context-only. So the bake cannot simply extend into the
@@ -814,6 +816,12 @@ public sealed unsafe partial class CasterPass : IExtenderService
     internal static float LastShadowMs;
     /// <summary>The period's average bake GPU time, for the [alloy] gpu total.</summary>
     internal static double ShadowGpuMs => _qShadow.Measured ? _qShadow.Avg / 1e6 : 0.0;
+    /// <summary>The same meter's running totals, for a caller taking its OWN window rather than the period's
+    /// -- <c>/alloy bench</c>, whose steps are far shorter than a period line. The bake is the one GPU cost
+    /// that is not a <see cref="AlloyRenderer.GpuTerm"/>, and <c>lightmap.movers</c> moves it (the pair
+    /// tiles), so a bench step blind to it cannot split what that knob removes.</summary>
+    internal static ulong ShadowGpuSum => _qShadow.Sum;
+    internal static int ShadowGpuN => _qShadow.N;
     /// <summary>#151: GPU time of the whole shadow bracket. The CPU stopwatch only sees submission, and the
     /// live logs had ~12ms of frame time no CPU timer accounted for -- this query is what convicts or clears
     /// the pass, and it is the number #187's regression is read off.</summary>
@@ -1080,6 +1088,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             _layerFlushFails++;
             CascadeCount = 0; CubeCount = 0; CoverRelease();
             Array.Clear(SunDynMask); Array.Clear(CubeDynPage);
+            PairShadows.Stand();   // the pair tiles never landed either: no light may be read as paired this frame
             _invalidate = true; _sunScanned = false; _cubeScanned = false;
         }
         else if (_gStaged && _fbo != 0)
@@ -1425,6 +1434,51 @@ public sealed unsafe partial class CasterPass : IExtenderService
         int warmBudget = 1;
         float* dynBox = stackalloc float[DynSpheres * MoverBoxF];
         CubeDynSphereGen++;
+
+        // #322 review's visibility verdict, hoisted: ONE SphereInCameraFrustum per ranked light, read below
+        // where it used to be called inline. The hoist is what lets the pair plan (CX-188 step 4) ask the same
+        // question -- a hidden light must not be paired, for the same reason it must not hold a pool page.
+        bool* culled = stackalloc bool[MaxCubes];
+        for (int rank = 0; rank < have; rank++)
+        {
+            culled[rank] = false;
+            int slot0 = slotOf[rank];
+            if (slot0 < 0 || !cull) continue;
+            int li0 = order[rank];
+            culled[rank] = !ShadowMath.SphereInCameraFrustum(FrameInputs.LocalLightPos[li0],
+                                                            FrameInputs.LocalLightRange[li0] * ShadowMath.FrustumCullSlack,
+                                                            camPos, camPos + camFwd, FrameInputs.CamFovy,
+                                                            FrameInputs.CamAspect, FrameInputs.CamNear, camFar);
+        }
+        // CX-188 step 4: the PER-MOVER light budget. The candidate lights come in rank order (so the atlas
+        // fills from the nearest), every dynamic mover then ranks them at its own position and keeps the
+        // lightmap.moverlights strongest, and Commit turns the survivors into pair tiles grouped by slot.
+        // Off unless the deferred pass is live, and then a paired light publishes no pool page below.
+        PairShadows.Begin(_frameSeq);
+        if (PairShadows.On && split)
+        {
+            for (int rank = 0; rank < have; rank++)
+            {
+                int slot0 = slotOf[rank];
+                if (slot0 < 0 || culled[rank] || rank >= _dynRanks) continue;
+                int li0 = order[rank];
+                PairShadows.AddLight(slot0, FrameInputs.LocalLightId[li0], FrameInputs.LocalLightPos[li0],
+                                     FrameInputs.LocalLightRange[li0]);
+            }
+            // the same mover population the page claim walks, filtered the same way: a NaN sphere is no
+            // mover's, and a still lantern under dyn.min is not worth a tile any more than a page
+            for (int q = 0; q < _dMoverCount; q++)
+            {
+                int m = _dMoverIdx[q];
+                if (!float.IsFinite(_liveCx[m] + _liveCy[m] + _liveCz[m] + _liveR[m])) continue;
+                if (!_liveCreature[m] && _liveR[m] < Shadows.DynMin.V) continue;
+                // ...with the caster's SLOT as its identity: stable while it is enrolled, which is what lets
+                // a light's run keep its order and a tile's layer key still match on the next frame.
+                PairShadows.AddMover(_liveCx[m], _liveCy[m], _liveCz[m], _liveR[m], _liveSlot[m]);
+            }
+            PairShadows.Commit();
+        }
+
         for (int rank = 0; rank < have; rank++)
         {
             int slot = slotOf[rank];
@@ -1447,12 +1501,12 @@ public sealed unsafe partial class CasterPass : IExtenderService
             // #322 review: the visibility verdict, BEFORE any page claim. Hidden lights must not hold pool
             // pages (they never bake them, so holding one only starves a visible light into the combined
             // fallback -- a six-face re-bake every mover frame), and their split mode must not flap.
-            bool off = false, culled = false;
-            if (cull && !ShadowMath.SphereInCameraFrustum(pos, far * ShadowMath.FrustumCullSlack,
-                                                          camPos, camPos + camFwd, FrameInputs.CamFovy,
-                                                          FrameInputs.CamAspect, FrameInputs.CamNear, camFar))
+            // ...the verdict itself taken in the hoisted pre-loop above, so the pair plan and this share one
+            // answer to "is this light visible" (two divergent ones starve a light the other keeps).
+            bool off = false, culledHere = false;
+            if (culled[rank])
             {
-                off = culled = true;
+                off = culledHere = true;
                 if (_cubeBaked[slot] || warmBudget <= 0) _cubeOffSlots++;
                 else { warmBudget--; off = false; }   // the warm-up drain: bake this hidden slot after all
             }
@@ -1469,7 +1523,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 if (_cubeKeyId[slot] == id) { _cubeMovedPrev[slot] = _cubeMovedAt[slot]; _cubeMovedAt[slot] = _frameSeq; }
             }
             // The gap term at dynhold 0 would be unsatisfiable (two stamps are never equal): 1 is the floor.
-            bool roam = split && !culled && rank < _dynRanks && _frameSeq - _cubeMovedAt[slot] <= _dynHold
+            bool roam = split && !culledHere && rank < _dynRanks && _frameSeq - _cubeMovedAt[slot] <= _dynHold
                         && _cubeMovedAt[slot] - _cubeMovedPrev[slot] <= Math.Max(_dynHold, 1);
             // #305: is a DYNAMIC caster inside this light's reach? That is what claims (and keeps) a pool
             // page -- and, when the pool is dry, what forces the combined fallback below.
@@ -1490,6 +1544,13 @@ public sealed unsafe partial class CasterPass : IExtenderService
                     boxes = AddMoverBox(dynBox, boxes, _liveCx[m], _liveCy[m], _liveCz[m], _liveR[m]);
                 }
             WriteDynSpheres(slot, roam ? 0 : boxes, dynBox, pos, far);
+            // CX-188 step 4: a light the pair plan claimed needs NO pool page -- its movers are in tiles of
+            // their own, and the lane published below says so with a negative. A ROAMING light keeps its page:
+            // the pair views were framed on its movers from a position the roamer's own motion invalidates, and
+            // a roamer's static faces are cleared, so min() has nothing else to compose with.
+            int pairBase = PairShadows.Pairs(slot);
+            if (pairBase >= 0 && (off || roam)) { PairShadows.Drop(slot); pairBase = -1; }
+            if (pairBase >= 0) hasDyn = false;
             int page = _dynPageOf[slot];
             if (off && page >= 0)
             {   // hidden: the page returns to the pool now; re-entry reclaims one
@@ -1661,6 +1722,42 @@ public sealed unsafe partial class CasterPass : IExtenderService
                 CubeDynPage[slot] = page + 1;
                 if (bake != 0) { _cubeDynBakedPages++; FrameZones.Count(FrameZones.Ev.CubeDyn); }
             }
+            // CX-188 step 4: the PAIR TILES, in place of that page -- whatever the static branch above did,
+            // because their whole content is one mover each. The cull is the DIRECTIONAL one round the mover's
+            // own sphere (focus = its centre, reach = along = its radius), which is what keeps a tile to the
+            // one caster it frames, and the dynamic set is the only population it may admit. The lane goes
+            // NEGATIVE once they are queued: that is what makes every `uLocalDynPage[slot] > 0.5` reader treat
+            // this light as pageless (it is) and what tells CxPairBase and cx_pairdebt where its run starts.
+            // CX-188 CPU wave: ...and NOT every frame any more. A tile whose layer already holds this pair's
+            // depth is held exactly as a cube's dynamic face is: keyed on the pair, and re-baked on an EVENT
+            // inside its own cull volume -- which is why the event population here is the dynamic page's and
+            // not just this tile's own mover (a second mover walking through the tile, a mover leaving the
+            // dynamic set, a caster switched off) and why it unions this frame's with the baked frame's.
+            if (pairBase >= 0)
+            {
+                int pn = PairShadows.PairCountOf(slot);
+                bool pairWhole = true;
+                bool pairForce = invalidate || slotChanged || _rxForce;
+                for (int q = 0; q < pn && pairWhole; q++)
+                {
+                    int pi = pairBase + q;
+                    PairShadows.PairView(pi, out Matrix4x4 pvp, out Vector3 at, out float r);
+                    Vector3 dir = at - pos;
+                    float dl = dir.Length();
+                    Vector3 fwd = dl > 1e-4f ? dir / dl : new Vector3(0f, 0f, 1f);
+                    // the SAME predicate the sun's fits take, against the same (focus, reach, along) this
+                    // tile's own RenderView passes the gather -- so the tile's cull and its staleness test
+                    // cannot disagree except in the direction that costs a bake
+                    bool evt = EventInFit(at, fwd, r, 0f);
+                    if (!PairShadows.TileStale(pi, evt, pairForce)) { PairShadows.TileHeld(pi); continue; }
+                    pairWhole = RenderView(PairShadows.Tex, PairShadows.TileSize, pi, &pvp,
+                                           fwd, at, r, 0f, point: false, set: CasterGather.SetDynamic);
+                    if (pairWhole) PairShadows.TileBaked(pi, evt);
+                    _pairBakedTiles++;
+                }
+                if (!pairWhole) { scannedAll = false; break; }
+                CubeDynPage[slot] = -(pairBase + 1);
+            }
         }
         // Only a scan that reached every slot may consume the frame's invalidation: the break above leaves
         // the slots after it with no record of this frame's movers.
@@ -1760,6 +1857,9 @@ public sealed unsafe partial class CasterPass : IExtenderService
                    $"dynamic cube bakes ({(float)_cubeDynBakedFaces / _frames:F1} faces, {(float)_cubeDynSkipped / _frames:F1} pages held by cadence) per frame, dyn pool {DynPagesUsed()}/{_cubeDynPages} pages at " +
                    $"{_cubeDynSize}px = {_cubeDynPages * CubeFaces * (long)_cubeDynSize * _cubeDynSize * 4 / (1024 * 1024)} MB " +
                    $"beside the static array's {_cubeLights * CubeFaces * (long)_cubeSize * _cubeSize * 4 / (1024 * 1024)} MB) " +
+                   // CX-188 step 4: the tiles that stood in for those pages; PairShadows.Stats says over how
+                   // many lights, and PairDebt.Stats what the screen-space debt then cost.
+                   (_pairBakedTiles > 0 ? $"({(float)_pairBakedTiles / _frames:F1} pair tiles BAKED/frame) " : "") +
                    $"(sun {(float)_sunBakedViews / _frames:F1} re-baked, " +
                    $"{(float)_sunSkippedViews / _frames:F1} skipped" +
                    // #306: the static re-bake rate PER CASCADE LAYER is the texel snap's measured reuse
@@ -1871,7 +1971,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         CasterGather.DynDispatches = 0;
         _cubeLightsSum = 0; _viewSum = 0;
         _liveSum = 0; _visitSum = 0; _touchedSum = 0; _qShadow.Reset();
-        _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _cubeOffSlots = 0; _cubeHeldSlots = 0; _cubeRoamSlots = 0; _cubeTurnovers = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0; _cubeDynBakedFaces = 0;
+        _cubeBakedSlots = 0; _cubeSkippedSlots = 0; _cubeOffSlots = 0; _cubeHeldSlots = 0; _cubeRoamSlots = 0; _cubeTurnovers = 0; _moverSum = 0; _ghostSum = 0; _cubeDynBakedPages = 0; _cubeDynBakedFaces = 0; _pairBakedTiles = 0;
         _sunBakedViews = 0; _sunSkippedViews = 0;
         Array.Clear(_sunStaticL); _sunDynBakedViews = 0; _sunDynSkipped = 0; _cubeDynSkipped = 0;
         CasterGather.LayerDispatches = 0; CasterGather.LayerViews = 0;

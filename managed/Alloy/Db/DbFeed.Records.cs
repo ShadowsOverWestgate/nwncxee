@@ -200,6 +200,14 @@ public static unsafe partial class DbFeed
         bool fresh = SceneDb.PartSlot[p] < 0;
         int slot = AlloyRenderer.DbSeat(p, recipe);
         if (slot < 0) return;
+        // CX-188: the slot's texture memo's own edge. The draw-side resolve is skipped while the registry
+        // serial holds still, and the one thing that serial cannot see is this part's OVERRIDE column
+        // (SceneDb.PartTexId, written by Gob::ReplaceTexture, RestoreTexture and the PLT swaps -- each of
+        // which ends in SceneDb.Touch(obj, Dirty.Texture)). Material and Tree are in because either can
+        // re-point the recipe the resolve reads its slots from; Created is covered by the seat's unstamp and
+        // listed for the same reason.
+        if ((d & (Dirty.Created | Dirty.Tree | Dirty.Texture | Dirty.Material)) != Dirty.None)
+            AlloyRenderer.DbTexDirty(slot);
         if (fresh) LastSeated++; else LastRewritten++;
         if (!AlloyRenderer.DbStage(slot, data)) Retry(p);
     }

@@ -47,6 +47,12 @@ uniform float uAlphaCut;
 layout(location = 0) out vec4 frag;
 #include "cx_ssr.glsl"
 #include "cx_reflrec.glsl"
+// CX-188 (ADR 0029): the deferred G-buffer's lanes. CX_GBUF_OUT -- which only the CX_DEFERRED twin is built
+// with -- is what turns its four outputs on at locations 4..7; without it this is the reader's half alone.
+#include "cx_gbuf.glsl"
+// CX-188: the deferred pass's light record, read by a forward fragment lying on a deferred surface (blended only)
+layout(binding = 26) uniform usampler2D uLightRec;
+uniform int uLightRecOn;
 #include "cx_oitout.glsl"
 // Slot mask bits, matching AlloyRenderer's 1 << (slot - 1).
 const int CX_SLOT_NORMAL = 1, CX_SLOT_SPEC = 2, CX_SLOT_ROUGH = 4,

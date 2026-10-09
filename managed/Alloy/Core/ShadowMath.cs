@@ -98,6 +98,37 @@ public static partial class ShadowMath
         return view * proj * D3DToGlClipZ;
     }
 
+    /// <summary>Widening on the framed half-angle: the PCF disc reads off the silhouette, and a sphere fitted
+    /// exactly to the tile edge has nothing there to read.</summary>
+    public const float ConeSlack = 1.15f;
+    /// <summary>The widest half-angle a pair view takes; past it the cone is no cheaper than a cube face and the
+    /// projection's corners run away. A mover this close to its light keeps the dyn page.</summary>
+    public const float ConeMaxSin = 0.7f;
+
+    /// <summary>CX-188 step 4: one (static light, mover) PAIR view -- a perspective from
+    /// <paramref name="lightPos"/> framed on the sphere (<paramref name="at"/>, <paramref name="radius"/>) and
+    /// fitted to [<paramref name="near"/>, <paramref name="far"/>], where far is the light's own reach so the
+    /// mover's shadow is recorded all the way out. Same convention as <see cref="PointLightFaceViewProj"/> --
+    /// RH lookAt * D3D [0,1] perspective * the GL clip-z remap -- so a receiver compares
+    /// <c>clip.z / clip.w * 0.5 + 0.5</c> against the stored depth with no linearisation of its own.
+    /// <para>False = the sphere subtends more than <see cref="ConeMaxSin"/> (or engulfs the light): no pair view
+    /// exists for it and the caller must leave that light its dynamic cube page.</para></summary>
+    public static bool PairViewProj(Vector3 lightPos, Vector3 at, float radius, float near, float far,
+                                    out Matrix4x4 vp, out float halfSin)
+    {
+        vp = Matrix4x4.Identity; halfSin = 0f;
+        Vector3 d = at - lightPos;
+        float dist = d.Length();
+        if (!(dist > radius) || !(far > near) || !(radius > 0f)) return false;
+        halfSin = MathF.Min(radius / dist * ConeSlack, 1f);
+        if (halfSin > ConeMaxSin) return false;
+        Vector3 up = PerpendicularUp(d / dist);
+        Matrix4x4 view = Matrix4x4.CreateLookAt(lightPos, at, up);
+        Matrix4x4 proj = Matrix4x4.CreatePerspectiveFieldOfView(2f * MathF.Asin(halfSin), 1f, near, far);
+        vp = view * proj * D3DToGlClipZ;
+        return true;
+    }
+
     /// <summary>Inverse of the point-light face projection's stored depth: a device depth <paramref name="sd"/>
     /// (sampled from the cube, [0,1]) -&gt; the view-space distance along that face's major axis. <c>sd=0</c> maps to
     /// <paramref name="near"/>, <c>sd=1</c> to <paramref name="far"/>. The receiver uses the SAME formula to compare

@@ -16,7 +16,7 @@ internal static class UiKnobs
     internal static readonly KnobGroup G;
     internal static readonly Knob<int> Font, GridPx;
     internal static readonly Knob<string> Typeface;
-    internal static readonly Knob<bool> HoverFocus, Snap, EdgeSnap, TextEdit;
+    internal static readonly Knob<bool> HoverFocus, Snap, EdgeSnap, TextEdit, Streaming;
 
     static UiKnobs()
     {
@@ -38,6 +38,8 @@ internal static class UiKnobs
                             help: "Dragged windows stick to the screen edge and to each other.");
         TextEdit = G.Toggle("textedit", "Modern editing in game text boxes", true,
                             help: "The game's own text boxes get selection (mouse drag, double-click, Shift+arrows, Ctrl+A), Ctrl+C/X/V, and Ctrl+arrow/Backspace/Delete by word. Needs the Alloy renderer.");
+        Streaming = G.Toggle("streaming", "Show streaming progress", true,
+                             help: "A thin bar at the top of the screen while the area is still arriving after the load screen: textures, geometry and light charts. You can play meanwhile; it hides once everything has landed. Needs the Alloy renderer.");
     }
 }
 

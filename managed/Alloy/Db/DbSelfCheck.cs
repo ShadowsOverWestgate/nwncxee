@@ -156,6 +156,10 @@ internal static class DbSelfCheck
                            new MeshDef?[] { null, Quad("stag"), Quad("eagle") });
         var door = Model("cx_door", new[] { -1, 0, 0 }, new[] { NodeKind.Dummy, NodeKind.TriMesh, NodeKind.TriMesh },
                          new MeshDef?[] { null, Quad("face", -0.05f), Quad("face", 0.05f) });
+        // a compiled binary's rest tracks: one key each, as stock ashlw_072 carries on both twins
+        foreach (int i in new[] { 1, 2 })
+            shield.Nodes[i].Controllers = new[] { new ControllerTrack { Type = 8, Columns = 3, Times = new[] { 0f }, Values = new float[3] },
+                                                  new ControllerTrack { Type = 20, Columns = 4, Times = new[] { 0f }, Values = new float[] { 0, 0, 0, 1 } } };
         return DrawRecipe.TwinShadowed(shield, 1) && !DrawRecipe.TwinShadowed(shield, 2)
             && !DrawRecipe.TwinShadowed(door, 1) && !DrawRecipe.TwinShadowed(door, 2);
     }

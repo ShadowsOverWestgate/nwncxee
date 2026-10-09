@@ -79,14 +79,7 @@ internal static unsafe class FrameSnapshot
     private static readonly StandDown _down = new("FrameSnapshot");
     private static ExtenderLog? _log;
 
-    internal static void Attach(ExtenderLog log)
-    {
-        _log = log;
-        _pCurrentScene = (IntPtr*)Native.Sym(SymbolMap.CurrentScene);
-        if (_pCurrentScene == null)
-            log.Info("FrameSnapshot: `currentscene` unresolved -- the water stage cannot reach the scene's "
-                   + "environment map, and its reflection term stays dark (the pre-#339 look)");
-    }
+    internal static void Attach(ExtenderLog log) => _log = log;
 
     /// <summary>CX's own <c>solid_noise</c>, for the frames the engine's has no id in.
     /// <para>In DB mode the engine never asks for it: <c>Scene::Render</c> @0x5762d0 is what loads the
@@ -310,20 +303,13 @@ internal static unsafe class FrameSnapshot
 
     /// <summary>The environment-map texture id for this pass, or 0 when there is none to sample. CX-110:
     /// <see cref="AlloyEnvMap"/> makes the CHOICE (the area tileset's resref, else the engine's own
-    /// <c>chrome1</c> fallback) and Alloy holds the reference, so <c>Scene+0x1e8</c> is not read --
-    /// <c>view.envmap 0</c> reads it again, which is the A/B. The id is still re-fetched per bind for
-    /// <c>AurTex</c>'s reason: the pointer is borrowed and an area transition frees it.</summary>
-    private static int SceneEnvTid()
-    {
-        IntPtr scene = _pCurrentScene != null ? *_pCurrentScene : IntPtr.Zero;
-        return AlloyEnvMap.Tid(scene);
-    }
+    /// <c>chrome1</c> fallback) and holds it in the texture registry.</summary>
+    private static int SceneEnvTid() => AlloyEnvMap.Tid();
 
     /// <summary>Is the environment term live this pass? The stage reads it as a switch, because a missing
     /// env map must leave the surface shaded rather than multiplied by black.</summary>
     internal static int EnvOk => _envTid != 0 ? 1 : 0;
 
-    private static IntPtr* _pCurrentScene;
     private static int _envTid;
 
     /// <summary>Drop the noise sampler off its unit. The unit is shared with the soft-particle scene depth

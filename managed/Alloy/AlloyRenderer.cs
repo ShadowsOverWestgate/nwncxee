@@ -214,7 +214,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// content override (#92) that predates them, and simply do not get uploaded.</summary>
     internal struct LitLoc
     {
-        public int Oit, OitDim, OitBias, OitGob;
+        public int Oit, OitDim, OitGob, LightRecOn;
         public int Tex, Vp, Base, Cut, Viz, Ssao, SsaoOn, SsaoHalf, AoDirect, AoCutout,
                    SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex,   // CX-43: the rest of the receiver and the light curve ride CxPass
                    Probe, Capture, MirrorZ,          // MirrorZ: CX-51 the planar mirror's plane
@@ -355,12 +355,26 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     private static GpuQuery _qSamples;
     /// <summary>#336: SAMPLES_PASSED over the particle pass alone -- its overdraw against the viewport.</summary>
     private static GpuQuery _qPartSamples;
+    /// <summary>CX-188: samples the blended class's OIT accumulation wrote -- its overdraw, beside its GPU term.</summary>
+    private static GpuQuery _qBlendSamples;
+    /// <summary>The blended accumulation's triangles (PRIMITIVES_GENERATED) and its draw groups, per frame, for the period line.</summary>
+    private static GpuQuery _qBlendPrims;
+    /// <summary>The accumulation's fragment-shader invocations: oit 2 tests depth in the shader, so SAMPLES_PASSED
+    /// counts only the survivors and this is what the pass actually shades.</summary>
+    private static GpuQuery _qBlendFrags;
+    private static long _blendGroups;
+    private static int _blendFrames;
     /// <summary>#325: the timed GPU terms of the colour bracket, in pass order. Beams and the probe capture
     /// are untimed; the shadow bracket (<c>CasterPass</c>) and the cluster build (<c>AlloyLights</c>) run
     /// their own elapsed queries OUTSIDE every term by pass order, which is the premise the guard rests on.
     /// <para>#336: the three <c>*Key</c> terms are the keyhole-dissolving tails -- the prepass's second sweep
-    /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Weather, Ssr, Count }
+    /// and each opaque class's dissolve partition (#327) -- timed apart so "under a roof" has a number.</para>
+    /// <para>CX-188: the deferred pass is three dispatches, timed apart -- <c>DeferredShadow</c> is the
+    /// per-pixel visibility record (<see cref="DeferredShadows"/>), <c>Deferred</c> the light walk that reads
+    /// it, <c>PairDebt</c> the hot-light debt the walk's CX_NO_HOT no longer takes -- so
+    /// <c>shadow.deferredres</c> and <c>lightmap.moverlights</c> each have a number of their own rather than
+    /// one summed with the walk's.</para></summary>
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, BlendedComposite, BlendedHosted, BlendedDepth, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Weather, Ssr, Deferred, DeferredShadow, PairDebt, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -743,10 +757,9 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         // #165: ahead of every stand-down and every check below -- /alloy reports the renderer for a
         // misrendering session, so it must exist even in a session whose renderer never armed.
         RenderCommands.Register();
-        // Up here with the other unconditional checks, ahead of every stand-down: the static set's decision
-        // table and the record contract it submits from are ours and depend on no engine symbol, so a build
-        // that never arms still reports whether the arithmetic it ships is right. Advisory -- gpu.static is
-        // off by default, so a failing table must cost that path and not drop every user back to vanilla.
+        // Up here with the other unconditional checks, ahead of every stand-down: the scenery predicate and
+        // the record contract every path submits from are ours and depend on no engine symbol, so a build
+        // that never arms still reports whether the arithmetic it ships is right.
         StaticSelfCheck(log);
         CullPass.Init(log);
         StreamRing.Init(log);
@@ -755,6 +768,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         AlloyGate.Arm(log);
         PresentTarget.Attach(log);
         TriggerHighlight.Attach(log);
+        HighlightGlow.Attach(log);
         // #263: the config half of the verdict is the FIRST stand-down, ahead of every Attach and every
         // Install. Steps 4-7 replace engine paths rather than watching them -- Alloy performs the pool
         // upload, mints the texture handles, forces PLT compositing to the CPU -- so arming them in a
@@ -809,10 +823,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         RspShim.SelfCheck(log);
         // CX-85: the ported light-fade integrator, up here for the same reason -- pure arithmetic, wrong in
         // the same way on every client, and the shim's install is not reached without the engine symbols.
-        LightFade.SelfCheck(log);
         ShaderStages.SelfCheck(log);
         ShaderSource.SelfCheck(log);
         TriggerHighlight.SelfCheck(log);
+        HighlightGlow.SelfCheck(log);
         GuiCapture.SelfCheck(log);
         GuiStream.SelfCheck(log);
         NuiFlush.SelfCheck(log);
@@ -935,16 +949,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// <summary>The <c>alloy.consts</c> button: the scriptable block as the client table holds it NOW -- the
     /// numbers a hosted content stage gates on (snow, wet, rain).</summary>
     internal static void LogScriptables() => _log?.Info("AlloyRenderer: " + DescribeScriptables());
-
-    /// <summary>Is this the world Scene? A Scene's static tile BSP (<see cref="EngineLayout.SceneBspRoot"/>) is
-    /// written by <c>Scene::InitBSP</c> alone (@0x46c330; <c>Scene::Scene</c> zeroes it, and every
-    /// <c>SceneBSPAdd*</c> only inserts into an existing root). A GUI 3D panel's Scene -- which reaches the
-    /// same <c>Scene::RenderSinglePass</c> through <c>Camera::RenderScene</c>, off <c>Camera+0x90</c> -- is
-    /// built by <c>CGuiPanel::CreateSceneView</c> @0x68759e: <c>NewCAurScene("sceneGUI_&lt;panel&gt;")</c> +
-    /// camera + SetAmbient, no InitBSP, so its root stays null. This is also the engine's own test --
-    /// <c>ManageSceneBSP</c> @0x47fa80 early-outs on exactly it.</summary>
-    internal static bool IsWorldScene(IntPtr scene) =>
-        scene != IntPtr.Zero && new Scene(scene).BspRoot != IntPtr.Zero;
 
     /// <summary>#216: the terms <see cref="AlloyGate"/> reads out of this class. <c>_armed</c> is "the hooks
     /// installed"; the capability pair is "a program built and the multidraw entry points exist", both of
@@ -1105,9 +1109,11 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
     internal static void ContextLost()
     {
-        Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0;
+        Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; Programs._progLitDef = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0;
+        Programs.ForgetBlendAblate();
         Highlight.HighlightContextLost();
         TriggerHighlight.ContextLost();
+        HighlightGlow.ContextLost();
         _drawBuf = 0; _texHBuf = 0; _boneBuf = 0;
         MotionContextLost();
         DbFeed.ContextLost();   // R1-30: the feed's own GL-backed tables
@@ -1186,7 +1192,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         Counters._nullTexDraws = 0;
         Counters._skinDrawn = 0; Counters._skinNoPose = 0; Counters._boneHigh = 0;
         SkyBox.ResetPeriod();
-        SkyTick.ResetPeriod();
         GrassField.ResetPeriod();
         Beams.ResetPeriod();
         Halos.ResetPeriod();
@@ -1199,11 +1204,10 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
         ResetChasePeriod();
         Counters._ownDissolve = 0; Counters._ownFade = 0; Counters._skipFogTile = Counters._skipFogGob = 0;
         Counters._recWritten = 0; Counters._recStable = 0; PassBinds = 0; PassUploads = 0; PassBindsBorrowed = 0; Issue.WholeUploads = 0; Issue.WholeBytes = 0;
-        ResetStaticPeriod();
         Counters._nrmDeclared = Counters._nrmBound = 0;
         Array.Clear(Counters._drawsByClass);
         Counters._clusterOverflow = 0;
-        Counters._prepassDraws = 0; Counters._prepassSkipped = 0; Counters._prepassKeyed = 0; Counters._prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset();
+        Counters._prepassDraws = 0; Counters._prepassSkipped = 0; Counters._prepassKeyed = 0; Counters._prepassFeatDraws = 0; _qSamples.Reset(); _qPartSamples.Reset(); _qBlendSamples.Reset(); _qBlendPrims.Reset(); _qBlendFrags.Reset(); _blendGroups = 0; _blendFrames = 0;
         for (int i = 0; i < _qTerm.Length; i++) _qTerm[i].Reset(); _spanSum = 0; _spanN = 0;
     }
 
@@ -1211,7 +1215,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// drawn wrong.</summary>
     private static bool DbSelfChecks(ExtenderLog log)
         => DbGrid.SelfCheck(log) & DbFeed.SelfCheck(log) & DbInputs.SelfCheck(log) & DbGui.SelfCheck(log)
-           & DbLights.SelfCheck(log) & DbSky.SelfCheck(log) & DbEmitterChannels.SelfCheck(log);
+           & DbLights.SelfCheck(log) & DbSky.SelfCheck(log) & DbEmitterChannels.SelfCheck(log)
+           & DbKeyhole.SelfCheck(log) & Db.FrameHoist.SelfCheck(log);
 
     /// <summary>The [alloy] period line: every number the period tallied, in one statement. Its own
     /// method so <see cref="EndFrame"/> reads as the gate, the census and the reset it is (CX-708).
@@ -1345,7 +1350,6 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                    // CX-43: program switches that took the pass terms, and how many of them had to send the block
                    $"pass block {(float)PassBinds / Counters._frames:F1} binds/frame ({(float)PassBindsBorrowed / Counters._frames:F1} through another view's cluster table), {(float)PassUploads / Counters._frames:F1} sends/frame, " +
                    $"record table {Issue.WholeUploads} whole upload(s) ({Issue.WholeBytes >> 20} MiB) over {Counters._frames} frames, " +
-                   StaticNote() + ", " +
                    // #330: how much of the engine chase the view bounded away, and the poll audit.
                    ChaseNote() + ", " +
                    (Counters._watchEnrolled == 0 ? "" :
@@ -1387,7 +1391,14 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          (_qTerm[(int)GpuTerm.OpaqueKey].Measured ? $" (+ keyhole {GpuMs(GpuTerm.OpaqueKey):F2})" : "") +
                          $" / cutout {GpuMs(GpuTerm.Cutout):F2}" +
                          (_qTerm[(int)GpuTerm.CutoutKey].Measured ? $" (+ keyhole {GpuMs(GpuTerm.CutoutKey):F2})" : "") + " / " +
-                         $"grass {GpuMs(GpuTerm.Grass):F2} (+ depth {GpuMs(GpuTerm.GrassDepth):F2}) / sky {GpuMs(GpuTerm.Sky):F2} / blended {GpuMs(GpuTerm.Blended):F2} / " +
+                         $"grass {GpuMs(GpuTerm.Grass):F2} (+ depth {GpuMs(GpuTerm.GrassDepth):F2}) / sky {GpuMs(GpuTerm.Sky):F2} / blended {GpuMs(GpuTerm.Blended):F2}" +
+                         (_qTerm[(int)GpuTerm.BlendedComposite].Measured
+                             ? $" (accumulate" + (_qBlendSamples.Measured && Counters._lastPixels > 0 ? $", overdraw x{_qBlendSamples.Avg / Counters._lastPixels:F2}" : "")
+                               + (_blendFrames > 0 ? $", {_blendGroups / _blendFrames} groups" : "")
+                               + (_qBlendPrims.Measured ? $", {_qBlendPrims.Avg / 1000.0:F0}k tris" : "")
+                               + (_qBlendFrags.Measured && Counters._lastPixels > 0 ? $", shaded x{_qBlendFrags.Avg / Counters._lastPixels:F2}" : "")
+                               + $"; + composite {GpuMs(GpuTerm.BlendedComposite):F2}, hosted {GpuMs(GpuTerm.BlendedHosted):F2}, depth sweep {GpuMs(GpuTerm.BlendedDepth):F2})"
+                             : "") + " / " +
                          $"water {GpuMs(GpuTerm.Water):F2} / additive {GpuMs(GpuTerm.Additive):F2} (colour {colourMs:F2}) " +
                          $"/ particles {GpuMs(GpuTerm.Particles):F2}" +
                          (_qPartSamples.Measured && Counters._lastPixels > 0 ? $" (overdraw x{_qPartSamples.Avg / Counters._lastPixels:F2})" : "") +
@@ -1400,6 +1411,16 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          $" / water copy {GpuMs(GpuTerm.WaterCopy):F2}" +
                          // CX-51: the history copy alone; the march itself is inside opaque (A/B with /light ssr 0)
                          (_qTerm[(int)GpuTerm.Ssr].Measured ? $" / ssr {GpuMs(GpuTerm.Ssr):F2}" : "") +
+                         // CX-188: the deferred point-light dispatch. Read it against the lit colour terms
+                         // above: this is what light.deferred moved OUT of them (A/B with /light deferred 0).
+                         (_qTerm[(int)GpuTerm.Deferred].Measured ? $" / deferred {GpuMs(GpuTerm.Deferred):F2}" : "") +
+                         // CX-188 step 3: the per-pixel shadow record the walk above reads, apart from it
+                         // (A/B with /shadow deferredres and /shadow cap 0).
+                         (_qTerm[(int)GpuTerm.DeferredShadow].Measured
+                             ? $" / deferred shadows {GpuMs(GpuTerm.DeferredShadow):F2}" : "") +
+                         // CX-188 step 4: the hot-light debt -- what the deferred stage's CX_NO_HOT gave up
+                         // on the baked receivers, taken back once per pixel (A/B with /lightmap moverlights 0).
+                         (_qTerm[(int)GpuTerm.PairDebt].Measured ? $" / pair debt {GpuMs(GpuTerm.PairDebt):F3}" : "") +
                          (_qTerm[(int)GpuTerm.Weather].Measured ? $" / weather {GpuMs(GpuTerm.Weather):F3}" : "") +
                          $" (gpu terms total {GpuTermsTotal() + CasterPass.ShadowGpuMs:F2} incl. shadows {CasterPass.ShadowGpuMs:F2}; colour bracket span {GpuSpanMs:F2})" : "") +
                    // #121: captures per SESSION against frames per PERIOD. A number that tracks the frame

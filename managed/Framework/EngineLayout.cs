@@ -398,10 +398,6 @@ public static unsafe class EngineLayout
     public static readonly int PartParent = Field<CX.Engine.Part>("Part", "parent");
     /// <inheritdoc cref="MdlNodeId"/>
     public static readonly int PartNodeId = Field<int>("Part", "nodeId");
-    /// <summary>CX-56: non-zero here and <c>AnimateHierarchy</c> (Linux @0x499990, Windows rva 0x4fe90) does
-    /// NOT run the paired animation node's controllers over this part -- it only recurses into its children.
-    /// <c>Part::Part</c> (Linux @0x43c800) zeroes it. Same offset and same <c>== 0</c> test on both builds.</summary>
-    public static readonly int PartAnimateGate = Field<int>("Part", "animateGate");
     /// <summary>Part -&gt; Gob* (the instance the part belongs to; null for world geometry).</summary>
     public static readonly int PartGob = Field<CX.Engine.Gob>("Part", "gob");
     /// <summary>Part -&gt; Material*. Ghidra RenderDrawBucket @0x46d060 / PartTriMesh::Draw @0x4513d0.</summary>
@@ -470,7 +466,7 @@ public static unsafe class EngineLayout
     public static readonly int LightFlagB = Field<int>("PartLight", "flagB");
     /// <summary>The light's fade weight, 0..1: how much of this light the frame is lighting with.
     /// <c>LightManager::ControlLightsFade</c> @0x4c2050 was its only writer and CX-85's
-    /// <c>Alloy/Scene/LightFade.cs</c> is now, integrating it toward 1 for a light the frame wants and 0 for
+    /// CX-85's <c>LightFade</c> was, integrating it toward 1 for a light the frame wants and 0 for
     /// one it does not; <c>GetEmitterLighting</c> @0x4c1970 and <c>GetNearestLights</c> @0x4c15f0 scale a
     /// colour by it, and so do Alloy's area terms and its point-light snapshot.
     /// <para>NOT the shadow fade, which is <c>+0xa8</c>: <c>LightManager::GetShadowLights</c> @0x4c2910 is the
@@ -494,7 +490,7 @@ public static unsafe class EngineLayout
     /// <c>SetupLightsForThisPositionAndRadius</c> @0x4c1df0 (vtable +0x40), and
     /// <c>LightManager::EnableLights</c> @0x4c2d10 hands exactly this list to the fade integrator as the
     /// "wanted" set: an entry below <see cref="SymbolMap.LightMgrGetMaxLights"/> fades IN, one past it fades
-    /// out, one absent altogether snaps to zero. <see cref="LightFade"/> reads it for the same decision.
+    /// out, one absent altogether snaps to zero. CX-85's port read it for the same decision.
     /// <para>Measured on both builds, not assumed identical: Windows <c>EnableLights</c> (rva 0x7e890) passes
     /// <c>this + 0x60</c> and <c>this + 0x40</c> just as Linux does, and the count is the container's
     /// <c>+8</c> in <c>ControlLightsFade</c>'s the int at <c>+8</c> of its second argument on both.</para></summary>
@@ -923,6 +919,10 @@ public static unsafe class EngineLayout
     /// activating the panel and <c>HandleOptionsPanelClose</c> (the panel's close callback) passes 0. Stays 1 under
     /// the Game/Video/Controls sub-panels, which only hide the Options panel.</summary>
     public static readonly int InternalOptionsPanelOpen = Field<int>("CClientExoAppInternal", "optionsPanelOpen", Expect.Byte01);
+    /// <summary>CClientExoAppInternal -&gt; cutscene-mode int: <c>CClientExoAppInternal::SetCutsceneMode</c> (Linux @0x745580,
+    /// Windows rva 0x6df430, unexported) compares and stores its first argument here on both builds, and
+    /// <c>CClientExoApp::InCutscene</c> (Linux nm 0x638dc0; not exported on Windows) returns it.</summary>
+    public static readonly int InternalCutsceneMode = Field<int>("CClientExoAppInternal", "cutsceneMode", Expect.Byte01);
     /// <summary>CNWCPlayer -&gt; character (creature) name CExoString. <c>CClientExoAppInternal::GetPlayerByCreatureName</c>
     /// (Linux @0x642350, Windows rva 0x6d8910) strcmp()s <c>*(player+0x40)</c> after comparing the length at +0x48
     /// on both builds; the player/account name is the +0x10/+0x18 pair (<c>GetPlayerByPlayerName</c>, rva 0x6d8a20).</summary>
@@ -1133,7 +1133,7 @@ public static unsafe class EngineLayout
 
     // ---- PartLight: one more field in the +0x4 block ----
 
-    /// <summary>The lens-flare occlusion fade, and NOT <see cref="LightFade"/>: two distinct floats.
+    /// <summary>The lens-flare occlusion fade, and NOT <see cref="LightFade"/> (the PartLight weight): two distinct floats.
     /// <c>Scene::RenderLensFlares</c> @0x471860 integrates this one toward 1.0 at <c>3/s</c> while the light
     /// is unoccluded and multiplies the flare colour by it, while <c>LightManager::ControlLightsFade</c>
     /// @0x4c2050 scales the area terms by +0x90. #441 opened expecting one of the two to be wrong; the
@@ -1757,7 +1757,6 @@ public static unsafe class EngineLayout
     public static readonly int ListItems = Field("(abi)", "list.items");
     /// <inheritdoc cref="ListItems"/>
     public static readonly int ListItemCount = Field("(abi)", "list.count");
-
 
     // ================= Alloy: the renderer, textures, buffers and shim (#443, batch 3 of #429 section 2) ==
     // The last of section 2. Measured 2026-09-12: one FieldDump.java cycle over CNWCAnimBase/CRes/
@@ -3177,7 +3176,6 @@ public static unsafe class EngineLayout
     /// <see cref="CX.Engine.Camera.ViewVolume"/> concept.</para></summary>
     public static readonly int CamViewVolume = Field("Camera", "viewVolume");
 
-
     /// <summary>CClientExoAppInternal + 0x180: bit 0 = the "show mouse-over feedback" option, bit 1 =
     /// highlight-all (Tab) currently held. The engine tests the WHOLE word, which is why Tab plates even with
     /// the option off. The option's setter is one store on both builds
@@ -3526,16 +3524,8 @@ public static unsafe class EngineLayout
     public static readonly int NuiIdNodeElement = Field<IntPtr>("Nui::JSON::IdNode", "element");
 
     // ---- CX-108 lights ----
-    // Alloy's own light registry and selection (CX-108). Every value below is
-    // MEASURED on both binaries with objdump: LightManager is name-exported on Windows, so
-    // `PrioritizeLights` (rva 0x7ff60) reads there exactly as it does here and no Ghidra run was needed.
-
-    /// <summary><c>Part::AsPartLight()</c> -- the engine's own PartLight discriminator, a pure this-or-null
-    /// cast (<c>Part::AsPartLight</c> @0x444450 returns 0, <c>PartLight::AsPartLight</c> @0x452c50 returns
-    /// <c>this</c>). <c>SceneBSPAddPart</c> @0x47ca10 files a light by asking exactly this, and so does
-    /// Alloy's light registry over the <c>NonMeshParts</c> seam -- the light half of what
-    /// <see cref="PartAsTriMeshSlot"/> is to geometry. <c>tools/abi/vtable-slots.py Part</c> prints both.</summary>
-    public static readonly int PartAsLightSlot = Field("Part", "vtbl.AsPartLight", Expect.VtblSlot, sig: "PartLight()");
+    // The light priority terms. MEASURED on both binaries with objdump: LightManager is name-exported on
+    // Windows, so `PrioritizeLights` (rva 0x7ff60) reads there exactly as it does here.
 
     /// <summary>CX-108: the light's own priority OVERRIDE, and zero means "use the MDL node's"
     /// (<see cref="MdlLightPriority"/>). <c>LightManager::PrioritizeLights</c> @0x4c0940 is the reader;

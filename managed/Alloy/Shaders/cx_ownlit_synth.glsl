@@ -13,13 +13,21 @@ void main()
     //     light reaches. A pillar that casts nothing here is not writing depth; one that is black
     //     here but bright in the composite is being washed out by a second light.
     if (uViz == 5) { frag = vec4(vec3(CxLocalShadowViz(vWorld, N, vDepth)), 1.0); return; }
+    // CX-188: the one viz here that calls the walk, and the twin is never bound under /alloy viz -- left in,
+    // it would keep CxClusteredLightLm's registers alive in exactly the program built to be rid of them.
+#ifndef CX_DEFERRED
     if (uViz == 1) { frag = vec4(CxClusteredDiffuse(vWorld, N, vDepth), 1.0); return; }
+#endif
     if (uViz == 2)
     {
         float n = float(CxClusterN(CxCluster(vDepth))) / float(CX_CLUSTER_CAP);
         frag = vec4(n, 1.0 - n, 0.0, 1.0);
         return;
     }
+#ifdef CX_BLEND_FLAT
+    // /alloy bench's blended ladder, rung 1: the raster and the OIT write with no shading at all
+    frag = CxOitOut(vec4(vec3(0.0), 0.5)); return;
+#endif
     // Every explicit derivative BEFORE the first discard: a killed lane leaves its quad neighbours' dFdx
     // undefined, and the anchor and keyhole discards below are per-fragment.
     float aoSlope = fwidth(gl_FragCoord.z);

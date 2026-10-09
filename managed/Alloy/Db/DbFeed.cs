@@ -75,12 +75,7 @@ public static partial class DbFeed
         if (!Renderer.On) { _viewN = 0; return; }
         _frames++;
         long tDirty = FrameZones.Now;
-        MeshArena.Pump();
-        // CX-120: and the chart offers, on the arena's own edge -- while the loading screen is up and
-        // before any draw. See MeshChart.DripDb.
-        MeshChart.DripDb(DbChartOffersPerFrame);
-        DrawRecipe.Pump();
-        if (DrawRecipe.Reclassify() > 0) AlloyRenderer.DbReclassified();
+        Pumps();
         _lastRecWrites = TakeFrame();
         FrameZones.Add(FrameZones.Zone.DbDirty, tDirty);
         if (_viewN == 0) return;
@@ -111,17 +106,32 @@ public static partial class DbFeed
         if (!Renderer.On) { _viewN = 0; return; }
         _frames++;
         long tDirty = FrameZones.Now;
+        Pumps();
+        _lastRecWrites = TakeFrame();
+        FrameZones.Add(FrameZones.Zone.DbDirty, tDirty);
+    }
+
+    /// <summary>CX-188: the fold's three pumps, each bracketed. A still frame writes ~15 records and the fold
+    /// still read 0,7 ms, and a zone that holds the record walk AND three drains cannot say which of them that
+    /// is. Nested in <see cref="FrameZones.Zone.DbDirty"/> and not subtracted from it, so the period line
+    /// carries both the fold's total and the names inside it.</summary>
+    private static void Pumps()
+    {
         // The arena's own pump belongs to the FRAME, not to the world colour pass: a GUI-only frame (the main
         // menu, a panel session) still has meshes finishing on the worker, and leaving the pump inside the
         // world frame left them uncollected for as long as no world view was drawn.
+        long t = FrameZones.Now;
         MeshArena.Pump();
+        FrameZones.Add(FrameZones.Zone.ArenaPump, t);
         // CX-120: and the chart offers, on the arena's own edge -- while the loading screen is up and
         // before any draw. See MeshChart.DripDb.
+        t = FrameZones.Now;
         MeshChart.DripDb(DbChartOffersPerFrame);
+        FrameZones.Add(FrameZones.Zone.ChartDrip, t);
+        t = FrameZones.Now;
         DrawRecipe.Pump();
         if (DrawRecipe.Reclassify() > 0) AlloyRenderer.DbReclassified();
-        _lastRecWrites = TakeFrame();
-        FrameZones.Add(FrameZones.Zone.DbDirty, tDirty);
+        FrameZones.Add(FrameZones.Zone.RecipePump, t);
     }
 
     /// <summary>Close the frame's view recording: the snapshot has taken the list, so the next frame starts

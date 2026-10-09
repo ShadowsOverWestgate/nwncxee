@@ -21,6 +21,13 @@ bool CxGlossy(float rough) { return uLightOcc.x > 0.0 && rough < uLightOcc.y; }
 float cxRecvShadow = 1.0;
 // /alloy viz 51: hot lights this fragment ray-tested (x) and the ones whose ray hit a mover (y)
 vec2 cxHotViz = vec2(0.0);
+// CX-188 budget (light.fullmodel): this light's LIGHTING LOD -- 1 = the full model, 0 = the engine's own curve
+// and nothing else. It scales the three refinements that are shaped by a light you are standing in rather than
+// by the fifth lamp down the street: the near-field core (#142), the sphere-sized specular lobe (#139's
+// spread) and the subsurface leak (#375). The cluster walk sets it per light from the light's own share of the
+// pixel's brightest; every other caller of this library -- the bake, the shadow record, cx_material's film,
+// the pair debt -- leaves it 1, which is the pre-LOD body term for term.
+float cxLod = 1.0;
 // the share of a baked light's highlight the mirror lobes carry, the pages' one lobe the rest: 0 at the ceiling,
 // 1 at half of it. A cut there swapped the baked shadow for one cube tap wherever rain crossed the ceiling.
 float CxGlossW(float rough) { return uLightOcc.x > 0.0 ? 1.0 - smoothstep(0.5 * uLightOcc.y, uLightOcc.y, rough) : 0.0; }
@@ -84,6 +91,104 @@ uint CxClusterWalk(uint cl)
 #endif
     return CxClusterN(cl);
 }
+// CX-188: the walk's LIST SOURCE. Every count the walk reads and every index it fetches goes through these,
+// so one body serves two sources: a fragment's own froxel from the table above, or the per-tile list the
+// deferred compute pass culls for itself (cx_deferred_cs) over the same uLights. A stage that defines
+// CX_LIGHT_LIST supplies the seven after this library and gets its own source; every other program leaves it
+// undefined and reads the froxel table, term for term as before.
+#ifdef CX_LIGHT_LIST
+uint CxListN(uint cl);
+uint CxListLive(uint cl);
+uint CxListRefl(uint cl);
+uint CxListLiveCand(uint cl);
+uint CxListColdCand(uint cl);
+uint CxListWalk(uint cl);
+uint CxListIdx(uint cl, uint k);
+#else
+uint CxListN(uint cl) { return CxClusterN(cl); }
+uint CxListLive(uint cl) { return CxClusterLive(cl); }
+uint CxListRefl(uint cl) { return CxClusterRefl(cl); }
+uint CxListLiveCand(uint cl) { return CxClusterLiveCand(cl); }
+uint CxListColdCand(uint cl) { return CxClusterColdCand(cl); }
+uint CxListWalk(uint cl) { return CxClusterWalk(cl); }
+uint CxListIdx(uint cl, uint k) { return uClIdx[cl * CX_CLUSTER_CAP + k]; }
+#endif
+// CX-188 step 3: the walk's SHADOW SOURCE. A stage that has already evaluated this pixel's shadows once --
+// cx_deferred_cs, off the per-pixel visibility record cx_defshadow_cs wrote -- defines CX_SHADOW_SOURCE and
+// supplies this; it answers `have` false for a light the record does not hold. The visibility carries the
+// BUDGET's own dissolve (cx_shrec's CxShFade: a lane near the budget's edge is already faded toward 1, which
+// is what makes membership continuous) and nothing else -- not dfade, which the walk applies itself, so a
+// record shared between pixels never carries one pixel's distance fade to another. The budget's fade is a
+// function of position, so sharing it across a half-resolution block is the same bargain the visibility
+// already is. Undefined -- every forward program -- compiles the per-fragment cap below, term for term.
+#ifdef CX_SHADOW_SOURCE
+float CxShadowFetch(int slot, out bool have);
+/// CX-188 budget: 1 = this pixel has NO usable record, so the walk falls back to one hardware tap per shadowing
+/// light -- the pre-budget path, for the slivers the record misses (counted, never silent). 0 = the record IS
+/// the pixel's shadow budget and a light it does not hold is lit UNSHADOWED, which is what ends the hardware
+/// tap for a pixel's fifth-and-later shadowed light. The source sets it per pixel before the walk.
+float cxShMiss = 1.0;
+#endif
+/// CX-188 budget: how many lights may shadow one pixel, from <c>shadow.perpixel</c> (uShBudget) and capped at
+/// <paramref name="ceiling"/>, the walk's own structural limit. 0 on the knob -- and <c>shadow.cap 0</c>, the
+/// "every light, one hardware tap" escape -- means no budget, and the caller then reads back the ceiling.
+int CxShadowBudget(int ceiling)
+{
+    return uShBudget > 0.0 ? int(min(uShBudget, float(ceiling))) : ceiling;
+}
+/// The SCORE every per-pixel shadow budget ranks by -- higher is stronger, and the forward cap, the deferred
+/// record and the hot-light cap all order their candidates with this one function: a budget ranked one way and
+/// filled another does not hold what it says.
+/// <para>The quantity is the light's IRRADIANCE at the pixel -- the engine curve's <paramref name="att"/> times
+/// the linear colour's luminance -- and it is deliberately nothing else. It is a function of POSITION alone, so
+/// the contour that separates the lights keeping a shadow from the ones that do not is smooth in space and has
+/// the scale of a light's falloff. N.L is NOT in it, nor the subsurface leak, nor the relevance weight: a
+/// per-pixel SURFACE term would hang that contour off the normal map, and a budget whose membership follows
+/// bump detail speckles. (The caller takes the score before <c>relW</c> scales the colour, for the same
+/// reason.) The near-field core inside <c>att</c> carries the lighting LOD's weight when <c>light.hot</c> and
+/// <c>light.fullmodel</c> are both on, and the record evaluates it with <c>cxLod</c> 1 where the walk does not;
+/// the core has compact support inside <c>uHot.y</c> of the range, so the two scores can differ only for a
+/// light the pixel is standing inside, which is the one both rank first anyway. That is the whole extent of
+/// "one ranking" not being literally one number.</para>
+/// <para>With the budget OFF the score is <c>-f2</c>, which orders candidates exactly as the pre-budget cap and
+/// record did: negation is exact in IEEE, so `-f2 > -best` and `f2 < best` are the same comparison, ties
+/// included. That is what makes every knob's off position bit-identical to the pre-budget frame.</para>
+float CxLightRank(float att, vec3 cLin, float f2)
+{
+    return uShBudget > 0.0 ? att * dot(cLin, vec3(0.2126, 0.7152, 0.0722)) : -f2;
+}
+/// The score's own "nothing yet", below every value it can take (-f2 reaches -1 at a light's own reach).
+const float CX_RANK_NONE = -1e30;
+// CX-188 budget: the walk's own census -- x = lights that LIT this pixel, y = hardware shadow taps it still
+// paid, z = list ENTRIES the main loop touched -- for the period line's lights-per-pixel, taps-per-pixel and
+// entries-per-pixel. `x` counts lights that reached the pixel and faced it; `z` counts every entry the loop
+// read, so z - x is what the reach window, the relevance cut and the facing test rejected -- the number the
+// walk pays for and gets nothing back from. The relevance PRE-pass's own touches are not in z: it is a
+// separate walk of the candidate runs, and the ablation ladder is what prices it. Only cx_deferred_cs defines
+// CX_WALK_STATS; every other program compiles the walk with the three adds absent, not merely unexecuted.
+#ifdef CX_WALK_STATS
+vec3 cxWalkStats = vec3(0.0);
+#define CX_WALK_LIT() cxWalkStats.x += 1.0
+#define CX_WALK_TAP() cxWalkStats.y += 1.0
+#define CX_WALK_ENTRY() cxWalkStats.z += 1.0
+#else
+#define CX_WALK_LIT()
+#define CX_WALK_TAP()
+#define CX_WALK_ENTRY()
+#endif
+// CX-188: `/alloy bench`'s ABLATION ladder. `CX_ABLATE n` is injected after the #version line by
+// CX.Alloy.AblateProgram, for a bench step and nothing else, and it stops the walk after stage n while
+// handing back a cheap function of what that stage produced -- so the compiler cannot strip the stages
+// before it and (stage n - stage n-1) is that stage's own cost. 2 = the list source alone, 3 = + the
+// relevance pre-pass, 4 = + the light bodies with no shadow of any kind, 5 = + the shadow record fetch,
+// 6 = + cx_deferred_cs's transfer-weight combine, 7 = + its fill of a missed record, 8 = + the mirror tap;
+// the shipped program adds the film's statics. Stage 1 never calls this function (cx_deferred_cs owns that rung). No shipped
+// program defines it, so every one of them compiles this file exactly as it did before.
+#ifdef CX_ABLATE
+/// The sink's factor: small enough that the half-float target takes every ablated stage's contribution to
+/// zero, so the ladder changes the timing and not the picture.
+const float CX_ABL_EPS = 1e-30;
+#endif
 uint CxCluster(float viewDepth)
 {
     vec2 tile = CX_CLUSTER_XY;
@@ -187,6 +292,30 @@ float CxSpecBase(float NdotV, float rough)
     return rough * rough * 0.25 / mix(max(NdotV, CX_ANGLE_MIN), 1.0, CxSmithK(rough));
 }
 
+// CX-188 budget (light.floor): where a light stops being SEEN, as against where its authored radius ends. The
+// engine's curve is RANGE-NORMALISED and reaches zero only at f2 = 1, so a lamp whose overbright surplus went
+// into a 38 m radius is binned, walked and shadowed across all 38 m. uLightFloor is an ABSOLUTE display-linear
+// brightness; this solves the light's own on-screen importance for the f2 at which it falls to that floor:
+//     lum * (1 - f2) / (at.x + at.y * f2) = uLightFloor  ->  f2 = (lum - floor * at.x) / (lum + floor * at.y)
+// with lum the master gain times the daylight dim times the LINEAR luma of the colour. Linear, not
+// CxLightImportance's sRGB luma: that one is only ever read as a ratio, where the curve cancels, and an
+// absolute floor has to be in the units the display shows. The near-field core (uHot) has compact support
+// inside uHot.y of the range, a fraction of any cut, so it can only raise importance well inside the cut and
+// never move it.
+// <para>Radius-free by construction: the curve is normalised on the authored R, so the cut is a SHARE of every
+// light's own reach and the world radius is R * sqrt(cut). That is also why the cut is carried as a window on
+// f2 and the curve keeps the authored R -- shrinking the R the curve divides by would change the falloff's
+// SHAPE, which is the look, not the budget.</para>
+/// The f2 at which `cLin` (the light's LINEAR colour) drops under <c>light.floor</c>; 1e30 = no cut, which is
+/// what a zero floor reads as, so the window below is then exactly the pre-floor one.
+float CxReachCut(vec3 cLin)
+{
+    if (uLightFloor <= 0.0) return 1e30;
+    vec2 at = uAtten.x > 0.0 ? uAtten : vec2(1.0, 1.0);
+    float lum = uFalloff.x * uDayDim * dot(cLin, vec3(0.2126, 0.7152, 0.0722));
+    return clamp((lum - uLightFloor * at.x) / max(lum + uLightFloor * at.y, 1e-8), 0.0, 1.0);
+}
+
 // light.relevance: how brightly light `li` could reach `worldPos` -- CxPointLight's curve and reach fade
 // times the colour's luma, zero at and past the reach. Continuous in position, so a per-fragment cut on
 // it has no edge to draw. Ratios only: the global gain and the rim exponent cancel out of them.
@@ -235,11 +364,19 @@ bool CxPointLight(vec4 pr, vec3 c0, vec3 worldPos, vec3 N,
     // cutoff window is needed and a light still cannot pop against its own cull sphere.
     f2 = dd / rr;
     float fade = 1.0 - f2;
-    if (uReach > 0.0)
+    // The walk's WINDOW on f2, whichever is tighter: light.binreach's share of every light's authored radius,
+    // and light.floor's own per-light perceptual cut (CxReachCut). Both fade to exactly 0 at their edge over
+    // the last 30% of the window, so neither can draw a ring -- the one mechanism, now with a per-light source
+    // for the number. 1e30 from both (binreach 0 with reachfade off, floor 0) is the pre-window curve, term for
+    // term: the floor's window is its own knob's, not /light reachfade's.
+    float rw = min(uReach > 0.0 ? uReach * uReach : 1e30, CxReachCut(c));
+    // a light whose own brightness is already under the floor has NO reach: out before the fade divides by it
+    // (rw and f2 are both 0 at the light's own centre, and 0/0 is a NaN that would poison the whole pixel)
+    if (rw <= 0.0) return false;
+    if (rw < 1e29)
     {
-        float r2 = uReach * uReach;
-        if (f2 > r2) return false;
-        fade *= min((r2 - f2) / (r2 * 0.3), 1.0);   // to zero over the last 30% of the reach (in f2)
+        if (f2 > rw) return false;
+        fade *= min((rw - f2) / (rw * 0.3), 1.0);   // to zero over the last 30% of the window (in f2)
     }
     // Uniform-valued branch, so it is coherent across the whole draw and free -- and at the
     // shipped 1.0 the pow is not merely cheap but exactly skipped, which is what makes "vanilla"
@@ -254,7 +391,7 @@ bool CxPointLight(vec4 pr, vec3 c0, vec3 worldPos, vec3 N,
     if (uHot.x > 0.0)
     {
         float t = max(1.0 - f2 / (uHot.y * uHot.y), 0.0);
-        att += uHot.x * fade * t * t / at.x;
+        att += cxLod * uHot.x * fade * t * t / at.x;   // light.fullmodel: a faint light keeps the tail, not the core
     }
     att = max(att, 0.0);
     float invD = inversesqrt(max(dd, 1e-8));
@@ -276,7 +413,8 @@ bool CxPointLight(vec4 pr, vec3 c0, vec3 worldPos, vec3 N,
 // The unshadowed diffuse of one light: the wrapped Lambert term plus the stock subsurface leak.
 vec3 CxPointDiffuse(vec3 c, float att, float ndlRaw, float ndl)
 {
-    return c * (att * ndl) + c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y);
+    // the leak is the second of light.fullmodel's three refinements (cxLod; 1 everywhere but the walk's tail)
+    return c * (att * ndl) + c * (att * max(ndlRaw + uSss.x, 0.0) * uSss.y * cxLod);
 }
 
 // #674: a static light's record carries its cube slot PLUS this when it is in the lightmap pages
@@ -309,7 +447,98 @@ void CxMoverOwe(int slot, int ch, float lum, float ndlRaw, bool soft, vec3 world
 // and stop there (lightmap.movertaps 0, a diagnostic). Unset reads
 // 0, the off position, which is what a stale content override degrades to.
 uniform int uLmMovers;
+// CX-188 step 4: a stage that defines CX_NO_HOT has the whole HOT branch compiled OUT of the walk below --
+// no 16-sphere ray test, no dyn-page taps for a static light on a baked receiver, no hot tap cap, and `lmSub`
+// comes back zero. A hot static light then behaves exactly as a cold one here, and the debt it owes is taken
+// in screen space instead (cx_pairdebt). The DEFERRED stage defines it; the forward loop does not, so the
+// A/B keeps today's path for the captures, the transparents and every /alloy viz mode.
 
+#ifdef CX_LIGHT_LITE
+/// CX-188 step 5: the walk the FORWARD consumers get -- grass cards and blades, water, particles, weather.
+/// Same signature and same per-light arithmetic as the full walk below; what it leaves out is everything that
+/// exists for a BAKED opaque receiver, which now goes deferred (ADR 0029).
+/// <para>Unreachable here, so not compiled: every one of these calls arrives through CxClusteredLight or
+/// CxClusteredDiffuse, whose `baked` is 0, so `inPages` is false and with it the hot-light branch, its
+/// 16-sphere mover ray test, the CxMoverOwe debt and the mirror walk of baked statics -- `lmSub` is 0 by
+/// construction. The glossy mirror CANDIDATE goes too: none of these programs uploads uLightOcc, so it reads
+/// (0, 0) and CxGlossy is already false at every one of them, light.hidden or not.</para>
+/// <para>The shadow is ONE hardware tap per shadowing light -- no blocker search, no Vogel disc, no
+/// two-candidate cap to rank them with. That is the full walk's own `shadow.cap 0` path, which the lightbench
+/// measured cheaper than two PCSS candidates, and it shadows EVERY light rather than the cap's strongest two,
+/// so an evicted light here is shadowed where the full walk drew it lit. /shadow cubedist, /shadow floor, the
+/// per-slot fade, light.relevance and the program's own uLocalCubes (/particles shadows 0, the grass shadow
+/// knob) all still apply, term for term.</para>
+/// <para>CX-188 budget: <c>shadow.perpixel</c> does NOT reach this walk. What makes the budget invisible on the
+/// deferred path is the record dissolving its own edge (cx_shrec's CxShFade), and that needs the best score
+/// that did NOT fit -- which means ranking every candidate before any of them is tapped, i.e. named candidate
+/// slots, the registers step 5 exists to take back from these nine programs. A budget here without the
+/// dissolve would be the hard shadow boundary the dissolve exists to prevent. The receivers are grass, water,
+/// particles and raindrops, whose shadow is already the cheapest the pipeline has, and the measured cost the
+/// budget was for was the DEFERRED opaque walk's taps, not these.</para>
+vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,
+                        float rough, float specularity, float baked, float lmTexel, vec4 lmMover, vec4 lmPick, out vec3 spec, out vec3 lmSub)
+{
+    spec = vec3(0.0); lmSub = vec3(0.0);
+    uint cl = CxCluster(viewDepth);
+    uint n = CxListWalk(cl);
+    vec3 acc = vec3(0.0);
+    // shadow.cubedist, as above: a far fragment pays no cube fetch at all, the last quarter fades the cut out
+    float dfade = (uLocalPcss.w > 0.0 ? 1.0 - smoothstep(uLocalPcss.w * 0.75, uLocalPcss.w, viewDepth) : 1.0) * cxRecvShadow;
+    bool farSh = dfade <= 0.0;
+    // light.relevance, the same reference the full walk takes: a fragment reads the build's floor candidates
+    // alone, a VERTEX stage the whole list. The vertex case stays the whole list on purpose -- the candidate
+    // set changes per froxel and a vertex may sit outside its own, so a candidates-only reference there would
+    // band the blade colour on the cluster grid. The main loop below is the walk that got slimmer.
+    // CX-188 budget: the pre-walk also feeds light.fullmodel, whose cut is a share of the same brightest
+    float relMax = 0.0;
+    if (uRelevance.x > 0.0 || uFullModel > 0.0)
+    {
+#ifdef CX_CLUSTER_FRAG
+        if (uBounds > 0.5)
+        {
+            for (uint k = 0u, e = CxListLiveCand(cl); k < e; k++) relMax = max(relMax, CxLightImportance(CxListIdx(cl, k), worldPos));
+            for (uint k = CxListLive(cl), e = CxListColdCand(cl); k < e; k++) relMax = max(relMax, CxLightImportance(CxListIdx(cl, k), worldPos));
+        }
+        else
+#endif
+        for (uint k = 0u, nAll = CxListN(cl); k < nAll; k++) relMax = max(relMax, CxLightImportance(CxListIdx(cl, k), worldPos));
+    }
+    for (uint k = 0u; k < n; k++)
+    {
+        uint li = CxListIdx(cl, k);
+        // this light's share of the pixel's brightest: light.relevance's own quantity, and with it
+        // light.fullmodel's. Continuous in position and in the light set, so neither cut has an edge to draw
+        // and no light can POP as the ordering changes -- the share moves, it does not step.
+        float share = uRelevance.x > 0.0 || uFullModel > 0.0 ? CxLightImportance(li, worldPos) / max(relMax, 1e-8) : 1.0;
+        float relW = uRelevance.x > 0.0 ? smoothstep(uRelevance.x, uRelevance.y, share) : 1.0;
+        if (relW <= 0.0) continue;
+        // ...and the LIGHTING LOD: the full model above uFullModel of the brightest, fading in over the octave
+        // below it, so a light drifting across the cut loses its core, spread and leak gradually.
+        cxLod = uFullModel > 0.0 ? smoothstep(uFullModel * 0.5, uFullModel, share) : 1.0;
+        vec4 pr = uLights[li * 2u];
+        vec4 cs = uLights[li * 2u + 1u];
+        int slot = CxLightSlot(int(cs.w));
+        vec3 c, L; float att, f2, ndlRaw, ndl;
+        if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;
+        c *= relW;
+        if (slot == -2) { acc += c * att; continue; }   // the ambient class: c*att, no N.L, no shadow (vanilla)
+        if (ndl <= 0.0) continue;
+        vec3 dif = c * (att * ndl);
+        float spread = CxSrcSpread(sqrt(f2) * pr.w) * cxLod;   // the third refinement (light.fullmodel)
+        float lobe = CxSpecLobe(N, V, L, rough, specularity, spread);
+        vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L, spread);
+        vec3 unsh = CxPointDiffuse(c, att, ndlRaw, ndl);
+        if (slot < 0 || farSh) { acc += unsh; spec += spc; continue; }
+        // `false` is a literal, so the blocker search and both discs fold out of the inlined body
+        float sh = mix(1.0, CxLocalShadowQ(slot, worldPos, N, ndlRaw, onMover, viewDepth, false), dfade);
+        acc += unsh * mix(uLocalFloor, 1.0, sh);
+        spec += spc * sh;   // floor on diffuse only: a floored highlight is a wrong highlight
+    }
+    cxLod = 1.0;   // the walk's last light must not shade a later caller of the shared body (cx_material's film)
+    spec *= uDayDim;
+    return acc * uDayDim;
+}
+#else
 // Diffuse AND specular contribution of every light binned into this fragment's cluster, in ONE walk:
 // both terms want the same per-light colour, attenuation, N.L and cube-shadow fetch, and running the
 // cluster twice would pay for all four again. World space throughout: the Alloy pass has world
@@ -327,53 +556,83 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
     bool glossy = CxGlossy(rough);
     float glossW = CxGlossW(rough);
     // a baked receiver with no mirror to take skips every cold static outright -- they trail the list
-    uint n = baked > 0.5 && !glossy ? CxClusterLive(cl) : CxClusterWalk(cl);
-    uint base = cl * CX_CLUSTER_CAP;
+    uint n = baked > 0.5 && !glossy ? CxListLive(cl) : CxListWalk(cl);
     vec3 acc = vec3(0.0);
-    // #336: /shadow cap -- the cube taps a fragment may pay, chosen PER FRAGMENT by reach
-    // (f2 = dd/rr, the attenuation's own term): the capN lights reaching this fragment most
-    // strongly get a cube fetch, the rest draw unshadowed. Per fragment, never per froxel -- a
-    // per-froxel choice put the seam on the cluster grid, squares glued to the screen wherever four
-    // cube lights overlapped. The candidates are kept sorted; an evicted one is added unshadowed.
+#if defined(CX_ABLATE) && CX_ABLATE <= 3
+    // Ablation stage 2: the LIST SOURCE alone -- every length the walk reads and every entry of the walked
+    // run indexed, with no light body behind it. At stage 3 it sits BESIDE the relevance pre-pass rather
+    // than inside the loop the pre-pass feeds, so (stage 4 - stage 3) understates the light bodies by
+    // exactly the amount stage 2 itself reports. Said here because the summary line cannot say it.
+    float cxAbl = float(n) + float(CxListN(cl)) + float(CxListLive(cl))
+                + float(CxListLiveCand(cl)) + float(CxListColdCand(cl));
+    for (uint k = 0u; k < n; k++) cxAbl += float(CxListIdx(cl, k));
+#if CX_ABLATE == 2
+    spec = vec3(cxAbl); return vec3(cxAbl);
+#endif
+#endif
+    // #336: /shadow cap -- the cube taps a fragment may pay, chosen PER FRAGMENT by its CONTRIBUTION there
+    // (CxLightRank, the unshadowed diffuse's luminance): the capN lights lighting this fragment most strongly
+    // get a cube fetch, the rest draw unshadowed. Per fragment, never per froxel -- a per-froxel choice put the
+    // seam on the cluster grid, squares glued to the screen wherever four cube lights overlapped. The
+    // candidates are kept sorted; an evicted one is added unshadowed.
     // EXPERIMENT: the candidates used to be five local arrays indexed by a runtime variable in a
     // while loop -- what a shader compiler spills to scratch memory. Two named slots, A the strongest.
-    int capN = int(min(uLocalSoft.w, float(CX_CAP_MAX)));
+    // CX-188 budget: this walk's TWO named slots are its structural ceiling, so shadow.perpixel can only ever
+    // tighten the cap here -- the deferred record is where a budget of four lives.
+    int capN = min(int(min(uLocalSoft.w, float(CX_CAP_MAX))), CxShadowBudget(CX_CAP_MAX));
     // shadow.cubedist: a far fragment pays no cube fetch at all (the old pipeline's distance cut), the
     // last quarter fades so the cut has no edge; uLocalPcss.w = 0 is every fragment
     float dfade = (uLocalPcss.w > 0.0 ? 1.0 - smoothstep(uLocalPcss.w * 0.75, uLocalPcss.w, viewDepth) : 1.0) * cxRecvShadow;
     bool farSh = dfade <= 0.0;
-    float aF2 = 1e30, bF2 = 1e30; int aSlot = -1, bSlot = -1; float aNdl = 0.0, bNdl = 0.0;
+    float aLum = CX_RANK_NONE, bLum = CX_RANK_NONE; int aSlot = -1, bSlot = -1; float aNdl = 0.0, bNdl = 0.0;
     // the MIRROR candidate (light.hidden): the strongest lobe on a glossy fragment with a cube to tap.
     // ONE extra tap per fragment, after the loop, and only when the cap did not shadow it already --
     // a tap per lobe over the floor was the frame (rain = every ground fragment x every light).
     float mLum = CX_MIRROR_FLOOR; int mSlot = -1; float mNdl = 0.0; vec3 mSpc = vec3(0.0);
     vec3 R = reflect(-V, N);
     vec3 aLit = vec3(0.0), aSpc = vec3(0.0), bLit = vec3(0.0), bSpc = vec3(0.0);
-    // the same cap over HOT lights, ranked by the luminance they would take back: the capN strongest
-    // get the soft dyn shadow, the rest one tap per map (uncapped, 15 hot lights x 8 taps was the frame)
+#ifndef CX_NO_HOT
+    // the same cap over HOT lights: the capN strongest get the soft dyn shadow, the rest one tap per map
+    // (uncapped, 15 hot lights x 8 taps was the frame). CX-188 budget: hA/hB are the shared SCORE the cap
+    // orders by and hALum/hBLum the luminance the debt is actually taken out of -- one number used to do both
+    // jobs, which is why a change of ranking silently changed the debt.
     float hA = 0.0, hB = 0.0; int hASlot = -1, hBSlot = -1, hACh = 4, hBCh = 4; float hANdl = 0.0, hBNdl = 0.0;
+    float hALum = 0.0, hBLum = 0.0;
+#endif
     // light.relevance: the brightest light reaching this fragment, over the WHOLE list -- the live prefix moves
     // per froxel, the whole list only by lights that contribute exactly nothing here, so this is continuous.
     // A fragment reads the build's floor candidates alone: no other entry can be the brightest here.
+    // CX-188 budget: the pre-walk also feeds light.fullmodel, whose cut is a share of the same brightest
     float relMax = 0.0;
-    if (uRelevance.x > 0.0)
+    if (uRelevance.x > 0.0 || uFullModel > 0.0)
     {
 #ifdef CX_CLUSTER_FRAG
         if (uBounds > 0.5)
         {
-            for (uint k = 0u, e = CxClusterLiveCand(cl); k < e; k++) relMax = max(relMax, CxLightImportance(uClIdx[base + k], worldPos));
-            for (uint k = CxClusterLive(cl), e = CxClusterColdCand(cl); k < e; k++) relMax = max(relMax, CxLightImportance(uClIdx[base + k], worldPos));
+            for (uint k = 0u, e = CxListLiveCand(cl); k < e; k++) relMax = max(relMax, CxLightImportance(CxListIdx(cl, k), worldPos));
+            for (uint k = CxListLive(cl), e = CxListColdCand(cl); k < e; k++) relMax = max(relMax, CxLightImportance(CxListIdx(cl, k), worldPos));
         }
         else
 #endif
-        for (uint k = 0u, nAll = CxClusterN(cl); k < nAll; k++) relMax = max(relMax, CxLightImportance(uClIdx[base + k], worldPos));
+        for (uint k = 0u, nAll = CxListN(cl); k < nAll; k++) relMax = max(relMax, CxLightImportance(CxListIdx(cl, k), worldPos));
     }
+#if defined(CX_ABLATE) && CX_ABLATE == 3
+    // Ablation stage 3: the list source and the relevance / full-model PRE-PASS, and nothing of the loop.
+    spec = vec3(relMax); return vec3(cxAbl + relMax);
+#endif
     for (uint k = 0u; k < n; k++)
     {
-        uint li = uClIdx[base + k];
-        float relW = uRelevance.x > 0.0
-                   ? smoothstep(uRelevance.x, uRelevance.y, CxLightImportance(li, worldPos) / max(relMax, 1e-8)) : 1.0;
+        uint li = CxListIdx(cl, k);
+        CX_WALK_ENTRY();
+        // this light's share of the pixel's brightest: light.relevance's own quantity, and with it
+        // light.fullmodel's. Continuous in position and in the light set, so neither cut has an edge to draw
+        // and no light can POP as the ordering changes -- the share moves, it does not step.
+        float share = uRelevance.x > 0.0 || uFullModel > 0.0 ? CxLightImportance(li, worldPos) / max(relMax, 1e-8) : 1.0;
+        float relW = uRelevance.x > 0.0 ? smoothstep(uRelevance.x, uRelevance.y, share) : 1.0;
         if (relW <= 0.0) continue;
+        // ...and the LIGHTING LOD: the full model above uFullModel of the brightest, fading in over the octave
+        // below it, so a light drifting across the cut loses its core, spread and leak gradually.
+        cxLod = uFullModel > 0.0 ? smoothstep(uFullModel * 0.5, uFullModel, share) : 1.0;
         vec4 pr = uLights[li * 2u];
         vec4 cs = uLights[li * 2u + 1u];
         // the record's spare w carries this light's cube slot (-1 = it casts no shadow this frame),
@@ -392,12 +651,18 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         // and only while a mover stands under it (a dyn page this frame): a static light with no
         // mover is in the pages and costs this fragment nothing -- with the check on the mover knob
         // alone, 74 baked-away lights of 92 still ran the point-light body per fragment (run 8)
+#ifdef CX_NO_HOT
+        // CX-188 step 4: no hot branch in this stage at all -- the debt dispatch owes what it owes.
+        const bool hot = false;
+#else
         bool hot = inPages && !(farSh || uLmMovers == 0 || slot < 0 || uLocalDynPage[slot] < 0.5);
+#endif
         if (inPages && !hot && !mirror) continue;
         // ...and only a light the reflection vector points near: the lobe of a light outside that cone
         // is under the floor, and the point body is what 74 baked-away lights cost per fragment (run 8).
         // The cone widens with roughness: 20 deg at a puddle's 0.03, the hemisphere at the 0.5 ceiling.
         if (mirror && !hot && dot(R, normalize(pr.xyz - worldPos)) < 1.0 - 2.0 * rough) continue;
+#ifndef CX_NO_HOT
         if (hot)
         {   cxHotViz.x += 1.0;
             // the light-to-fragment ray misses every mover sphere: nothing on the page can shadow here,
@@ -420,12 +685,18 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
                 if (uLmMovers == 2) { if (!mirror) continue; hot = false; }   // lightmap.movertaps 0: the ray test alone
             }
         }
+#endif
         vec3 c, L; float att, f2, ndlRaw, ndl;
         if (!CxPointLight(pr, cs.rgb, worldPos, N, c, L, att, f2, ndlRaw, ndl)) continue;
+        // CX-188 budget: every budget's score, taken HERE -- before relW scales the colour and before any
+        // surface term joins it, which is what keeps the membership contour low-frequency (see CxLightRank).
+        float rank = CxLightRank(att, c, f2);
         c *= relW;
         // slot -2 = ambient class: vanilla adds c*att to the ambient term, no N.L, no shadow
         if (slot == -2) { if (!inPages) acc += c * att; continue; }
         if (ndl <= 0.0) continue;   // facing away: no light, and no reason to pay for a cube fetch
+        CX_WALK_LIT();
+#ifndef CX_NO_HOT
         if (hot)
         {
             // lmSub.x = the luminance a mover occludes, over the static lights with a mover under
@@ -434,25 +705,32 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
             // shadowed that light at this texel the subtraction overshoots (clamped at the caller);
             // the exact total needs every static light evaluated live, which was the opaque pass.
             float lum = dot(CxPointDiffuse(c, att, ndlRaw, ndl), vec3(0.2126, 0.7152, 0.0722));
+            // CX-188 budget: this cap ORDERS by the shared score and still CARRIES `lum`, the luminance the
+            // debt is taken out of -- two different jobs that used to be one number. With the budget off the
+            // score is -f2, which would re-order this cap, so off keeps its own pre-budget quantity and the
+            // frame is bit-identical there.
+            float hr = uShBudget > 0.0 ? rank : lum;
             int eSlot = slot, eCh = ch; float eNdl = ndlRaw, eLum = lum;   // the light this one displaces: itself by default; hard tap, as above
-            if (capN > 0 && lum > hA)
+            if (capN > 0 && hr > hA)
             {
-                if (capN >= 2) { eSlot = hBSlot; eCh = hBCh; eNdl = hBNdl; eLum = hB; hB = hA; hBSlot = hASlot; hBCh = hACh; hBNdl = hANdl; }
-                else { eSlot = hASlot; eCh = hACh; eNdl = hANdl; eLum = hA; }
-                hA = lum; hASlot = slot; hACh = ch; hANdl = ndlRaw;
+                if (capN >= 2) { eSlot = hBSlot; eCh = hBCh; eNdl = hBNdl; eLum = hBLum;
+                                 hB = hA; hBSlot = hASlot; hBCh = hACh; hBNdl = hANdl; hBLum = hALum; }
+                else { eSlot = hASlot; eCh = hACh; eNdl = hANdl; eLum = hALum; }
+                hA = hr; hASlot = slot; hACh = ch; hANdl = ndlRaw; hALum = lum;
             }
-            else if (capN >= 2 && lum > hB)
+            else if (capN >= 2 && hr > hB)
             {
-                eSlot = hBSlot; eCh = hBCh; eNdl = hBNdl; eLum = hB;
-                hB = lum; hBSlot = slot; hBCh = ch; hBNdl = ndlRaw;
+                eSlot = hBSlot; eCh = hBCh; eNdl = hBNdl; eLum = hBLum;
+                hB = hr; hBSlot = slot; hBCh = ch; hBNdl = ndlRaw; hBLum = lum;
             }
             CxMoverOwe(eSlot, eCh, eLum, eNdl, false, worldPos, N, dfade, lmMover, lmTexel, lmSub);
             if (!mirror) continue;
         }
+#endif
         vec3 dif = c * (att * ndl);
         // the source's own size, from what the curve already computed: dd = f2 * R^2, so the distance is
         // sqrt(f2) * R and no second length() is paid for it
-        float spread = CxSrcSpread(sqrt(f2) * pr.w);
+        float spread = CxSrcSpread(sqrt(f2) * pr.w) * cxLod;   // the third refinement (light.fullmodel)
         float lobe = CxSpecLobe(N, V, L, rough, specularity, spread);
         vec3 spc = dif * CX_LOOP_SPEC(lobe, N, V, L, spread);
         if (mirror) spc *= glossW;
@@ -471,6 +749,39 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         // rather than being fetched unshadowed; stock has no shadow to lose there, Alloy does
         vec3 unsh = CxPointDiffuse(c, att, ndlRaw, ndl);
         if (slot < 0 || farSh) { acc += unsh; spec += spc; continue; }
+#if defined(CX_ABLATE) && CX_ABLATE == 4
+        // Ablation stage 4: the light BODIES alone -- curve, N.L, lobe, subsurface leak -- with no shadow of
+        // any kind: no record fetch, no hardware tap, and (below) no mirror tap.
+        acc += unsh; spec += spc; continue;
+#endif
+#ifdef CX_SHADOW_SOURCE
+        {
+            // CX-188 step 3: the pixel's visibility was chosen and filtered once, before this walk. Matched by
+            // SLOT, so a light the record does not hold is one the record's own budget ranked out.
+            // CX-188 budget: and a light past the budget lights the pixel UNSHADOWED. That is not a step: the
+            // record already faded the lane holding the budget's WEAKEST light toward unshadowed as its score
+            // fell toward the best score that did not fit (CxShFade), so the light leaving the record had
+            // dissolved before it left. Membership is the RECORD's alone -- this walk never re-ranks, which is
+            // what keeps the half-resolution record's choice and the full-resolution walk's from disagreeing.
+            // The hardware tap is compiled only into CX_SH_INLOOP, the variant the "every light" escapes run
+            // (shadow.cap 0, shadow.perpixel 0, or no record this frame), where dropping the lights past the
+            // record would be a hole rather than a budget. The shipped program has no tap in this loop at all:
+            // a pixel the record missed fills its own before the walk (cx_deferred_cs), because the tap's mere
+            // presence here cost the pass 2.7 ms while it ran on ~1% of pixels.
+            bool have; float v = CxShadowFetch(slot, have);
+#ifdef CX_SH_INLOOP
+            if (!have && (cxShMiss > 0.0 || uShBudget <= 0.0))
+            {
+                CX_WALK_TAP();
+                v = CxLocalShadowQ(slot, worldPos, N, ndlRaw, onMover, viewDepth, false);
+            }
+#endif
+            float sh = mix(1.0, v, dfade);
+            acc += unsh * mix(uLocalFloor, 1.0, sh); spec += spc * sh;
+            if (mSlot == slot) mSlot = -1;   // shadowed here: no mirror tap owed
+            continue;
+        }
+#else
         // cap 0 = every light, at the hardware tap: a soft shadow INSIDE the loop is inlined per light
         // and its registers are the loop's (lightbench: -23% on the lit stage with only hard taps here)
         if (capN <= 0)
@@ -480,20 +791,24 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
             if (mSlot == slot) mSlot = -1;   // shadowed here: no mirror tap owed
             continue;
         }
-        if (f2 < aF2)
+        // CX-188 budget: ranked by CxLightRank, the one score the record and the hot cap also order by -- with
+        // the budget off that score IS -f2, so this chain is the pre-budget one, comparison for comparison.
+        if (rank > aLum)
         {   // new strongest: A moves to B (capN 2) or is evicted unshadowed (capN 1); old B is evicted
             if (capN >= 2) { if (bSlot >= 0) { acc += bLit; spec += bSpc; }
-                             bF2 = aF2; bSlot = aSlot; bNdl = aNdl; bLit = aLit; bSpc = aSpc; }
+                             bLum = aLum; bSlot = aSlot; bNdl = aNdl; bLit = aLit; bSpc = aSpc; }
             else if (aSlot >= 0) { acc += aLit; spec += aSpc; }
-            aF2 = f2; aSlot = slot; aNdl = ndlRaw; aLit = unsh; aSpc = spc;
+            aLum = rank; aSlot = slot; aNdl = ndlRaw; aLit = unsh; aSpc = spc;
         }
-        else if (capN >= 2 && f2 < bF2)
+        else if (capN >= 2 && rank > bLum)
         {
             if (bSlot >= 0) { acc += bLit; spec += bSpc; }
-            bF2 = f2; bSlot = slot; bNdl = ndlRaw; bLit = unsh; bSpc = spc;
+            bLum = rank; bSlot = slot; bNdl = ndlRaw; bLit = unsh; bSpc = spc;
         }
         else { acc += unsh; spec += spc; }
+#endif
     }
+#ifndef CX_SHADOW_SOURCE
     if (aSlot >= 0)
     {
         float sh = mix(1.0, CxLocalShadow(aSlot, worldPos, N, aNdl, onMover, viewDepth), dfade);
@@ -504,19 +819,26 @@ vec3 CxClusteredLightLm(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float on
         float sh = mix(1.0, CxLocalShadow(bSlot, worldPos, N, bNdl, onMover, viewDepth), dfade);
         acc += bLit * mix(uLocalFloor, 1.0, sh); spec += bSpc * sh;
     }
-    CxMoverOwe(hASlot, hACh, hA, hANdl, true, worldPos, N, dfade, lmMover, lmTexel, lmSub);
-    CxMoverOwe(hBSlot, hBCh, hB, hBNdl, true, worldPos, N, dfade, lmMover, lmTexel, lmSub);
+#endif
+#ifndef CX_NO_HOT
+    CxMoverOwe(hASlot, hACh, hALum, hANdl, true, worldPos, N, dfade, lmMover, lmTexel, lmSub);
+    CxMoverOwe(hBSlot, hBCh, hBLum, hBNdl, true, worldPos, N, dfade, lmMover, lmTexel, lmSub);
+#endif
     // the mirror tap: the strongest lobe's shadow, taken back out of the unshadowed sum it went into. The
     // hardware tap alone -- a highlight has no penumbra worth a blocker search
+#if !defined(CX_ABLATE) || CX_ABLATE >= 8
     if (mSlot >= 0 && mSlot != aSlot && mSlot != bSlot)
         spec -= mSpc * (1.0 - mix(1.0, CxLocalShadowQ(mSlot, worldPos, N, mNdl, onMover, viewDepth, false), dfade));
+#endif
     // a baked shadow keeps uLocalFloor of its light (cx_bake_f), so a mover's takes back only the rest
     // (the channel shares in y were baked without the floor already)
     lmSub.x *= 1.0 - uLocalFloor;
     // the daylight ratio; lmSub stays in the undimmed units the caller's baked term is compared in
+    cxLod = 1.0;   // the walk's last light must not shade a later caller of the shared body (cx_material's film)
     spec *= uDayDim;
     return acc * uDayDim;
 }
+#endif
 // The pre-#674 signature: an unbaked receiver, every light live.
 vec3 CxClusteredLight(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float onMover,
                         float rough, float specularity, out vec3 spec)

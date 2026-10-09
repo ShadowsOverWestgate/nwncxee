@@ -1207,7 +1207,7 @@ internal static unsafe partial class OwnedTextures
     internal static int WhiteName => (int)_white;
 
     /// <summary>Spend at most <see cref="RebuildBudget"/> engine texture builds, on the frame anchor where
-    /// <c>Beams.Enroll</c> and <c>SkyBox.Enroll</c> already run: once a frame, before the Alloy bracket, with
+    /// <c>Beams.Enroll</c> already runs: once a frame, before the Alloy bracket, with
     /// the ENGINE's context current. That last part is not incidental -- <c>BuildAndStore</c> re-runs the
     /// engine's own upload (<c>SetActiveTexture</c>, <c>AurTextureBindTID</c>,
     /// <c>RenderInterface::CreateTexture</c>) and the engine caches what it thinks is bound, so running it

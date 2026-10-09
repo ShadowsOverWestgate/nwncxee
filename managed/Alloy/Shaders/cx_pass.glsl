@@ -40,5 +40,8 @@ layout(std140, binding = 0) uniform CxPass
     float uDayDim;            // 1 / the daylight ratio: every lamp term's scale, 1 at night and indoors
     vec2 uRelevance;          // light.relevance: (cut, full) as shares of the fragment's brightest light; x = 0 keeps all
     float uBounds;            // 1 = the cluster table was built for this pass's own view: a fragment may stop at its bounds
+    float uShBudget;          // shadow.perpixel: lights a PIXEL may shadow at all -- the rest light it unshadowed; 0 = no budget
+    float uLightFloor;        // light.floor: the absolute display-linear brightness a light's reach ends at; 0 = the authored radius
+    float uFullModel;         // light.fullmodel: share of the pixel's brightest a light keeps the full model above; 0 = every light
 };
 #endif

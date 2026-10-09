@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using CX.Alloy.Db;
 using CX.Engine;
 using CX.Framework;
 
@@ -24,18 +25,8 @@ namespace CX.Alloy;
 /// calls exactly once per area load. That avoids needing <c>CNWCArea+0x290</c> at all, and it is the natural
 /// invalidation edge: a new area means a new resref.</para>
 /// <para><b>Two-step on purpose.</b> The hook only COPIES the resref -- 17 bytes of data with no lifetime --
-/// because it runs deep inside the area load. The texture is looked up in <see cref="Tick"/>, once per world
-/// frame in ENGINE context ahead of the frame anchor, because the lookup can BUILD a texture and building one
-/// inside Alloy's 4.6 bracket would upload it into the wrong context (<c>engine-state-cache-traps</c>).</para>
-/// <para><b>What Alloy owns is the resref, never the pointer.</b> <c>AurTextureGet</c> returns a BORROWED
-/// <c>CAurTexture*</c> and the engine frees AND RELOADS its textures on an area transition as well as on a
-/// module unload (agent memory <c>aurtexture-lifetime</c>, a twice-cored crash). A pointer cached across one
-/// of those both dangles and names the wrong object, and taking a reference over it does not help: the
-/// release that would pair with it cannot be made safely once the object is gone. So the first cut of this
-/// class -- <c>LoadTexture</c> once per area, held -- was wrong twice over, and the fix is the rule that
-/// already applies everywhere else in Alloy: keep the NAME, re-fetch the pointer every world frame, and let
-/// <see cref="AurTex.Tid"/> refuse a stale one. The lookup is a resref-keyed resman hit; nothing is
-/// allocated and no reference is taken, so there is nothing to release.</para>
+/// because it runs deep inside the area load. The texture is acquired from <see cref="TexRegistry"/> at the
+/// next world frame (<see cref="Present"/>), which holds it for the area and releases it at the next adopt.</para>
 /// </remarks>
 internal static unsafe class AlloyEnvMap
 {
@@ -53,9 +44,8 @@ internal static unsafe class AlloyEnvMap
 
     private static ExtenderLog? _log;
     private static TileSetGetFn* _tileSetSlot;
-    /// <summary>THIS frame's borrowed <c>CAurTexture*</c>. Written once per world frame by <see cref="Tick"/>
-    /// and read only inside that frame -- see the class remarks for why it is never carried across one.</summary>
-    private static IntPtr _tex;
+    /// <summary>The name in force, held in the texture registry until the next adopt releases it.</summary>
+    private static TexId _tex;
     private static byte* _resref;      // ResRefBytes of native memory: the name in force
     private static byte* _wanted;      // ...and what the last area load asked for (empty = the fallback)
     private static byte* _fallback;    // ...and the engine's own fallback name, zero-filled once
@@ -65,8 +55,6 @@ internal static unsafe class AlloyEnvMap
     private static bool _missing, _onFallback;
     private static long _adopts, _fallbacks, _failures;
 
-    /// <summary>Alloy's choice is driving. Off sends every reader back to <c>Scene+0x1e8</c>.</summary>
-    internal static bool Owned => _armed && ViewKnobs.EnvMap.V;
 
     internal static void Attach(ExtenderLog log)
     {
@@ -88,25 +76,23 @@ internal static unsafe class AlloyEnvMap
     {
         _log = log;
         if (!EngineLayout.Require(log, "AlloyEnvMap", "CNWTileSet")) return;
-        if (EngineFn.AurTextureGet == null || EngineFn.TileSetGetEnvMapResRef == null)
+        if (EngineFn.TileSetGetEnvMapResRef == null)
         {
-            log.Always("AlloyEnvMap: AurTextureGet or CNWTileSet::GetEnvMapResRef unresolved "
-                       + "-- the environment map stays the ENGINE's choice (Scene+0x1e8)");
+            log.Always("AlloyEnvMap: CNWTileSet::GetEnvMapResRef unresolved -- shiny surfaces and water have "
+                       + "NO environment map this session");
             return;
         }
         _tileSetSlot = hooks.ChainTileSetGet(&OnGetTileSet, TileSetPriority);
         if (_tileSetSlot == null)
         {
             log.Always("AlloyEnvMap: CNWTileSetManager::GetTileSet did not chain -- CX cannot see which "
-                       + "tileset an area loads, so the environment map stays the ENGINE's choice");
+                       + "tileset an area loads, so shiny surfaces and water have NO environment map this session");
             return;
         }
         _armed = true;
         // The fallback is a valid answer before any area has loaded (the main menu's vista), so ask for it now.
         Want(null);
-        AdoptWanted();
-        log.Info("AlloyEnvMap: armed -- the area's environment map and its chrome1 fallback are CX's choice "
-                 + "(view.envmap 0 reads the engine's Scene+0x1e8 instead)");
+        log.Info("AlloyEnvMap: armed -- the area's environment map and its chrome1 fallback are CX's choice");
     }
 
     /// <summary>The area load's one ask for its tileset. Cold -- once per area -- and it only copies the
@@ -127,7 +113,7 @@ internal static unsafe class AlloyEnvMap
         return tileset;
     }
 
-    /// <summary>Note the resref the next <see cref="Tick"/> should adopt, or null for the fallback. Nothing is
+    /// <summary>Note the resref the next <see cref="Present"/> should adopt, or null for the fallback. Nothing is
     /// looked up here.
     /// <para>ALWAYS dirty, even for a name identical to the one in force: an area edge is what clears the
     /// "this name does not resolve" latch, and two adjacent areas sharing a tileset must still re-adopt (the
@@ -143,9 +129,15 @@ internal static unsafe class AlloyEnvMap
     /// force, and clear the refusal latch. Cold: once per area edge.</summary>
     private static void AdoptWanted()
     {
+        Choose();
+        Hold();
+    }
+
+    /// <summary><see cref="AdoptWanted"/>'s bookkeeping half: the name and the latches, no texture touched.</summary>
+    private static void Choose()
+    {
         bool fallback = _wanted[0] == 0;
-        byte* src = fallback ? _fallback : _wanted;
-        for (int i = 0; i < ResRefBytes; i++) _resref[i] = src[i];
+        Copy(fallback ? _fallback : _wanted);
         _onFallback = fallback;
         _missing = false;
         _dirty = false;
@@ -153,65 +145,56 @@ internal static unsafe class AlloyEnvMap
         if (fallback) _fallbacks++;
     }
 
-    /// <summary>Once per world frame, from <see cref="RspShim.Run"/>, in ENGINE context and ahead of the frame
-    /// anchor: adopt a new area's name if one arrived, then FETCH this frame's pointer. The fetch is a
-    /// resref-keyed resman hit and takes no reference -- see the class remarks for why it is per frame.</summary>
-    internal static void Tick(IntPtr scene)
+    /// <summary>Once per world frame, before anything samples it: adopt a new area's name if one arrived, and
+    /// fall back to <c>chrome1</c> when the tileset's name fails to load, as <c>Scene::Render</c> @0x4762d0
+    /// does. Both failing is said once; the next area edge lifts the latch.</summary>
+    private static void Step()
     {
         if (!_armed) return;
         if (_dirty) AdoptWanted();
-        _tex = _missing ? IntPtr.Zero : Fetch(_resref);
-        if (_tex == IntPtr.Zero && !_onFallback)
+        if (_missing || !TexRegistry.Final(_tex)) return;
+        if (!_onFallback)
         {
-            // The engine's own order: the tileset's name first, chrome1 second. A tileset that names nothing
-            // and a name that does not resolve take the same branch, which is what vanilla does.
-            for (int i = 0; i < ResRefBytes; i++) _resref[i] = _fallback[i];
+            Copy(_fallback);
+            Hold();
             _onFallback = true;
             _fallbacks++;
-            _tex = Fetch(_resref);
+            return;
         }
-        if (_tex != IntPtr.Zero || _missing) return;
-        // CX-45: the chosen name and the engine's own fallback both refused. Say it once and stop probing; the
-        // next area edge lifts the latch.
         _missing = true;
         _failures++;
-        _log?.Always($"AlloyEnvMap: neither the tileset's environment map nor {FallbackResref} resolved -- "
-                     + "shiny surfaces and water have NO reflection this area (view.envmap 0 for the engine's)");
+        _log?.Always($"AlloyEnvMap: neither the tileset's environment map nor {FallbackResref} loaded -- "
+                     + "shiny surfaces and water have NO environment map this area");
     }
 
-    /// <summary>The engine's resref-keyed lookup, exactly as <c>AurTextureGetFallbackEnvironmentMap</c>
-    /// @0x48e430 makes it: name in both slots, no out parameter, no flags, no reference taken.</summary>
-    private static IntPtr Fetch(byte* name)
-        => name[0] == 0 ? IntPtr.Zero : EngineFn.AurTextureGet(name, IntPtr.Zero, name, null, 0, 0);
-
-    /// <summary>The GL texture id for this frame's environment map, or 0 for none. The pointer behind it was
-    /// fetched by THIS frame's <see cref="Tick"/>, and <see cref="AurTex.Tid"/> validates it anyway.</summary>
-    internal static int Tid(IntPtr scene)
+    private static void Copy(byte* name)
     {
-        if (!Owned) return scene == IntPtr.Zero ? 0 : AurTex.Tid(new CX.Engine.Scene(scene).EnvMap.Ptr);
-        return _tex == IntPtr.Zero ? 0 : AurTex.Tid(_tex);
+        for (int i = 0; i < ResRefBytes; i++) _resref[i] = name[i];
     }
 
-    /// <summary>Is there an environment map at all? The shader reads it as a switch, so a missing one must
-    /// leave the surface shaded rather than multiplied by black.</summary>
-    internal static bool Present(IntPtr scene)
+    /// <summary>Acquire the name in force from the registry and release the one it replaces.</summary>
+    private static void Hold()
     {
-        if (!Owned) return scene != IntPtr.Zero && !new CX.Engine.Scene(scene).EnvMap.IsNull;
-        return _tex != IntPtr.Zero;
+        TexId was = _tex;
+        _tex = _resref[0] == 0 ? default : TexRegistry.Acquire(System.Text.Encoding.ASCII.GetString(_resref, Len(_resref)));
+        if (!was.IsNull) TexRegistry.Release(was);
     }
 
-    /// <summary>The world went away -- a part-table wipe, an area change or a module unload. The pointer is
-    /// dropped (never released: nothing was ever taken) and the name re-adopted, which also lifts the
-    /// "does not resolve" latch. The RESREF survives, so the next world frame gets the same choice back.
-    /// <para>Wired to BOTH the pass roll-call's world edge and <see cref="AlloyRenderer.EndFrame"/>'s module
-    /// edge. Neither is strictly required now that the pointer is re-fetched per frame -- what they buy is the
-    /// retry of a name that did not resolve, and belt-and-braces against a cached pointer creeping back
-    /// in.</para></summary>
-    internal static void Revoke()
+    /// <summary>The GL texture for the environment map this frame, or 0 while it is loading or missing.</summary>
+    internal static int Tid() => TexRegistry.TryDrawable(_tex, out uint name, out _) ? (int)name : 0;
+
+    /// <summary>Is there an environment map at all this frame? The shader reads it as a switch, so a missing
+    /// one must leave the surface shaded rather than multiplied by black. Steps the choice first: this is
+    /// the frame's first reader.</summary>
+    internal static bool Present()
     {
-        _tex = IntPtr.Zero;
-        _dirty = true;
+        Step();
+        return Tid() != 0;
     }
+
+    /// <summary>The world went away -- a part-table wipe, an area change or a module unload. The name is
+    /// re-adopted at the next frame, which also lifts the "does not load" latch.</summary>
+    internal static void Revoke() => _dirty = true;
 
     /// <inheritdoc cref="Revoke"/>
     internal static void ModuleUnloaded() => Revoke();
@@ -224,13 +207,12 @@ internal static unsafe class AlloyEnvMap
 
     internal static string Describe()
     {
-        if (!_armed) return "engine's (Scene+0x1e8)";
-        if (!ViewKnobs.EnvMap.V) return "off -- engine's Scene+0x1e8";
+        if (!_armed) return "NONE (unarmed)";
         string name = _resref != null && _resref[0] != 0
             ? System.Text.Encoding.ASCII.GetString(_resref, Len(_resref)) : "(none)";
         string s = $"on, {name}{(_onFallback ? " (fallback)" : "")}";
         if (_missing) s += " NOT RESOLVED";
-        else if (_tex == IntPtr.Zero) s += " not fetched yet";
+        else if (Tid() == 0) s += " loading";
         s += $", {_adopts} area adopts";
         if (_fallbacks > 0) s += $", {_fallbacks} fallbacks";
         if (_failures > 0) s += $", {_failures} FAILURES";
@@ -276,7 +258,7 @@ internal static unsafe class AlloyEnvMap
         check.Expect(_dirty, "an area edge asks for a re-adopt");
         check.Expect(_wanted[0] == (byte)'t' && _wanted[1] == (byte)'s' && _wanted[2] == 0,
                      "...and the name is copied, NUL included");
-        AdoptWanted();
+        Choose();
         check.Expect(!_dirty && !_onFallback && !_missing && Same(_resref, _wanted),
                      "adopting takes the tileset's own name and lifts the refusal latch");
         Want(other);
@@ -284,7 +266,7 @@ internal static unsafe class AlloyEnvMap
 
         // An empty name is the engine's "this tileset declares none" -- the fallback, not a hole.
         Want(null);
-        AdoptWanted();
+        Choose();
         check.Expect(_onFallback && Same(_resref, _fallback), "an empty tileset name adopts chrome1");
         check.Expect(Same(_wanted, _resref) == false || _wanted[0] == 0, "...without pretending the tileset asked for it");
         check.Expect(FallbackResref == "chrome1", "the fallback is the engine's own chrome1");
@@ -292,12 +274,10 @@ internal static unsafe class AlloyEnvMap
         // A refusal latches and a world edge lifts it -- otherwise a missing resref is probed every frame.
         _missing = true;
         Revoke();
-        AdoptWanted();
+        Choose();
         check.Expect(!_missing, "a world edge lifts the refusal latch");
-        check.Expect(_tex == IntPtr.Zero, "...and drops the frame's pointer (nothing to release: none was taken)");
 
         _onFallback = onFb; _missing = miss; _dirty = dirty0;
-        _tex = IntPtr.Zero;
         Want(null);
         _armed = armed;
         log.Info(check.Ok ? "AlloyEnvMap.SelfCheck: passed (resref bookkeeping, fallback rule)"

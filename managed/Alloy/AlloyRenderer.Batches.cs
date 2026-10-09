@@ -149,9 +149,16 @@ public sealed unsafe partial class AlloyRenderer
         // controls too (measured: 405 of 1830). They all fail the frustum, so this costs work rather than
         // correctness -- but it is work every frame, and the scene is the cheapest possible test. Read live
         // rather than cached at seat time: an object can be re-parented between scenes.
-        if (!DbInPassScene(_oDbPart[i]))
+        // CX-188: both verdicts off ONE object chase. They were a function each, and each re-read
+        // _oDbPart[i], re-loaded SceneDb.PartObj[part] and re-asked DbTable.Valid for the same object: six
+        // dependent loads at a scattered index per routed candidate where four answer the pair.
+        int part = _oDbPart[i];
+        DbId obj = SceneDb.PartObj[part];
+        if (!SceneDb.Objects.Valid(obj) || SceneDb.ObjScene[obj.Index].Value != _dbPassScene.Value)
         { Counters._skipForeignScene++; return false; }
-        if (!DbPartShown(_oDbPart[i]))
+        // CX-120: ...and the part's LOD ALTERNATE, 0 meaning "in every alternate".
+        byte tree = SceneDb.PartLodTree[part];
+        if (tree != 0 && tree != SceneDb.ObjLodShown[obj.Index])
         { Counters._skipLod++; SetCastOk(i, false); return false; }
         if (samp) FrameZones.AddSampled(FrameZones.Zone.Ident, t0, ChaseEvery);
         return true;
@@ -254,20 +261,6 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>CX-120: the scene this pass is drawing. Set by the DB world pass before the route walk; a
     /// DB slot of any other scene is skipped, which is what keeps one view from drawing another's objects.</summary>
     internal static DbId _dbPassScene;
-
-    /// <summary>Is this DB part's object in the scene this pass is drawing?</summary>
-    private static bool DbInPassScene(int part)
-    {
-        DbId o = SceneDb.PartObj[part];
-        return SceneDb.Objects.Valid(o) && SceneDb.ObjScene[o.Index].Value == _dbPassScene.Value;
-    }
-
-    /// <summary>CX-120: is this DB part in the alternate its object is showing? 0 = in every alternate.</summary>
-    private static bool DbPartShown(int part)
-    {
-        byte tree = SceneDb.PartLodTree[part];
-        return tree == 0 || tree == SceneDb.ObjLodShown[SceneDb.PartObj[part].Index];
-    }
 
     /// <summary>CX-120: the object-wide alpha multiplier the engine path read by chasing the gob's fade
     /// owner (<c>AlloyCensus.GobAlphaMul</c>). One column load: the tint's w.</summary>
@@ -657,10 +650,9 @@ public sealed unsafe partial class AlloyRenderer
     private static void UnstampRecord(int i)
     {
         _gate[i].RecGen = 0;   // 0 = never built; the epoch starts at 1
-        // #322 (review): the draw-arg cache dies on the same edge. Enrolment does NOT bump _recEpoch --
-        // this per-slot unstamp, fired on every re-tenant and every drifted keep, is the only signal that
-        // _oVdo/_oItem may have been re-pointed under the cache.
-        _cGen[i] = 0;
+        // CX-188: and the texture memo with it -- a re-tenanted slot's handles and tids describe its
+        // predecessor, and this is the one signal that _oDbRecipe may have been re-pointed under them.
+        _recTexStamp[i] = 0;
         UnstampChase(i);
     }
 
@@ -668,18 +660,30 @@ public sealed unsafe partial class AlloyRenderer
     /// promotes the frame to a wholesale upload, which is correct and merely more expensive.</summary>
     private static void MarkRecordDirty(int slot) => MarkRecordDirty(slot, ref _stageCounters[0]);
 
-    /// <summary>#331: advance every cycle texture behind an owned record. A step is picked up inline by the
-    /// stage's texDirty test; a DROPPED controller (its ref died) un-registers its records here (cold) so
-    /// they re-resolve and re-register with a live ref. Main thread, before the batch build.</summary>
+    /// <summary>#331: advance every cycle texture the engine is animating. Main thread, before the batch build.
+    /// <para>CX-188 (review): the per-record controller COLUMN is gone. <c>_recCtl</c> was written by the
+    /// engine-path stage, which the scene database replaced, and <c>CycleTextures.Register</c> -- the only
+    /// thing that ever produced a controller for a record -- has no caller left in the tree: a DB part
+    /// resolves its textures through <see cref="TexRegistry"/> by <c>TexId</c> and holds no
+    /// <c>CAurTexture*</c> to register. So the drop scan was testing an array that can only hold zeros, and
+    /// #331's "re-resolve the records behind a dropped controller" had quietly stopped existing. Deleted
+    /// rather than left as a no-op loop over the whole table.</para>
+    /// <para>The tick itself STAYS: it is the engine's own animated-texture advance and the
+    /// <c>[alloy]</c> line reports its count and steps. If anything ever re-arms <c>Register</c>, the drop
+    /// funnel has to come back with it -- so a drop that nothing can act on is said out loud rather than
+    /// swallowed, because the symptom otherwise is a frozen animated texture with nothing in the log.</para></summary>
     private static void TickCycleTextures()
     {
         CycleTextures.Tick();
-        var dropped = CycleTextures.Dropped;
-        if (dropped.Length == 0) return;
-        NoteTexStalePending();
-        for (int i = 0; i < _ownCount; i++)
-            if (_recCtl[i] != IntPtr.Zero && dropped.IndexOf(_recCtl[i]) >= 0) { _recCtl[i] = IntPtr.Zero; _gate[i].TexStale = true; }
+        if (CycleTextures.Dropped.Length == 0 || _cycleDropSaid) return;
+        _cycleDropSaid = true;
+        _log?.Always("AlloyRenderer: CycleTextures dropped a controller, but no record holds one -- the "
+                   + "per-record controller column went with the engine-path stage (CX-188), so nothing "
+                   + "re-resolved. Whatever re-armed CycleTextures.Register must restore that funnel, or the "
+                   + "textures behind it freeze");
     }
+    /// <summary>Said once: a dropped cycle controller with no record column to act on.</summary>
+    private static bool _cycleDropSaid;
     private static void MarkRecordDirty(int slot, ref StageCounters c)
     {
         c.RecWritten++;
@@ -747,6 +751,11 @@ public sealed unsafe partial class AlloyRenderer
         BeginCasterTouched();
         int chunks = Math.Min(_stageThreads, StagePool.MaxChunks - 1) + 1;
         _stageRouted = routed; _stageLighting = lightingOn;
+        // CX-188: one read for the phase -- see _stageTexSerial.
+        _stageTexSerial = TexRegistry.TableSerial;
+        // ...and the instrument for the skip it gates: a serial that moves every frame re-resolves the whole
+        // table every frame, which is the skip bought back. The period line carries both numbers.
+        if (_stageTexSerial != _texSerialWas) { _texSerialMoves++; _texSerialWas = _stageTexSerial; }
         fixed (float* data = _dData)
         {
             if (chunks > 1 && StagePool.Run(chunks, _log))
@@ -784,7 +793,6 @@ public sealed unsafe partial class AlloyRenderer
             bool lit = row.Lit;
             bool dis = row.Dis;
             int tid = row.Tid, slots = row.Slots;
-            LoadSlotTids(i, slotTid);
             int idxCount = row.IdxCount;
             int v = row.Vao;
             float* r = data + (long)i * DrawFloats;
@@ -837,6 +845,11 @@ public sealed unsafe partial class AlloyRenderer
             bool sameSlots = groups != 0 && merge;
             if (!merge)
             {
+                // CX-188: the map tids are gathered only for the batches that can CUT on them. A merged lit
+                // batch samples its maps off the handle block per draw, so Issue binds none of them
+                // (`handles` there is this same predicate) and _gTexN's row is dead state -- where the gather
+                // was six scattered loads and the compare six more, per draw, for every lit draw in the frame.
+                LoadSlotTids(i, slotTid);
                 sameSlots = groups != 0;
                 for (int s = 0; sameSlots && s < MapSlots; s++)
                     sameSlots = _gTexN[(groups - 1) * MapSlots + s] == slotTid[s];
@@ -869,7 +882,7 @@ public sealed unsafe partial class AlloyRenderer
                 _gFeat[groups] = feat; _gDis[groups] = dis;
                 _gCls[groups] = (byte)cls; _gSrc[groups] = row.Src; _gDst[groups] = row.Dst; _gWash[groups] = row.Wash;
                 _gNoCull[groups] = noCull; _gGob[groups] = gobKey;
-                for (int s = 0; s < MapSlots; s++) _gTexN[groups * MapSlots + s] = slotTid[s];
+                if (!merge) for (int s = 0; s < MapSlots; s++) _gTexN[groups * MapSlots + s] = slotTid[s];
                 groups++;
                 keyLit = lit; keyVao = vKey; keyTex = tidKey; keyMode = mode; keyFeat = feat; keyDis = dis;
                 keyCls = cls; keyBlend = blend; keyNoCull = noCull; keyGob = gobKey;
@@ -1095,9 +1108,7 @@ public sealed unsafe partial class AlloyRenderer
     internal struct StageCounters
     {
         public long OwnDissolve, NrmDeclared, NrmBound, RecStable, RecWritten;
-        public long StFrozen, StSettled, StThawed;
-        public long MxChased, MxCached, DisAsked, DisCached, DisBoxed, DisNoFeat, DisGobUnpierced, DisNoLit;
-        public long PollMissDis, PollMissBox;
+        public long MxChased, MxCached, DisAsked, DisNoFeat, DisNoLit;
         public bool CastChanged;
     }
     private static readonly StageCounters[] _stageCounters = new StageCounters[StagePool.MaxChunks];
@@ -1105,10 +1116,8 @@ public sealed unsafe partial class AlloyRenderer
     {
         Counters._ownDissolve += c.OwnDissolve; Counters._nrmDeclared += c.NrmDeclared; Counters._nrmBound += c.NrmBound;
         Counters._recStable += c.RecStable; Counters._recWritten += c.RecWritten;
-        _stFrozen += c.StFrozen; _stSettled += c.StSettled; _stThawed += c.StThawed;
-        _mxChased += c.MxChased; _mxCached += c.MxCached; _disAsked += c.DisAsked; _disCached += c.DisCached;
-        _disBoxed += c.DisBoxed; _disNoFeat += c.DisNoFeat; _disGobUnpierced += c.DisGobUnpierced; _disNoLit += c.DisNoLit;
-        _pollMissDis += c.PollMissDis; _pollMissBox += c.PollMissBox;
+        _mxChased += c.MxChased; _mxCached += c.MxCached; _disAsked += c.DisAsked;
+        _disNoFeat += c.DisNoFeat; _disNoLit += c.DisNoLit;
         if (c.CastChanged) CasterGen++;
         c = default;
     }

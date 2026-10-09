@@ -133,7 +133,6 @@ internal static unsafe partial class GrassField
     };
 
     private static ExtenderLog? _log;
-    private static DoBinBucketFn _origBin;
     private static ReloadGrassFn _origReload;
     private static AurTextureGetFn _aurGet;
     /// <summary><c>binbucket</c> (the BSP walk's active bins) and <c>g_GrassInfo</c> (the material records)
@@ -325,30 +324,14 @@ internal static unsafe partial class GrassField
         }
 
         Array.Fill(_slot, -1);
-        BorderInstall(log);
-        _origBin = hooks.InstallDoBinBucket(&OnDoBinBucket);
         _origReload = hooks.InstallReloadGrass(&OnReloadGrass);
-        if (_origBin == null || _origReload == null)
+        if (_origReload == null)
         {
             _off = true;
-            log.Info("GrassField: the grass hooks did not install -- grass stays vanilla");
+            log.Info("GrassField: the grass reload hook did not install -- grass stays vanilla");
             return;
         }
         log.Info($"GrassField: armed -- Alloy instanced grass, {Describe()} (/grass tunes it)");
-    }
-
-    /// <summary>The vanilla grass site. Skipped outright on a pass the Alloy grass already drew -- which
-    /// retires the per-frame CPU wind rewrite over every bin in the area along with the draw, and that is
-    /// most of what makes the replacement cheaper than the original. Any pass we did not draw (vanilla render
-    /// mode, Alloy pass stood down, a GUI 3D panel's Scene, no program) falls straight through to the engine,
-    /// so the fallback needs no separate switch.</summary>
-    [UnmanagedCallersOnly]
-    private static void OnDoBinBucket(IntPtr scene)
-    {
-        if (_origBin == null) return;
-        if (AlloyRenderer.IsWorldScene(scene) && AlloyRenderer.DrewThisPass
-            && _drawnGen == AlloyRenderer.PassGen) return;
-        _origBin(scene);
     }
 
     /// <summary>Every bin and triangle list the cache holds is freed inside here (area load, a grass option
@@ -1837,7 +1820,7 @@ internal static unsafe partial class GrassField
            $"backlight {Grass.Backlight.V:0.##} sheen {Grass.Sheen.V:0.##} " +
            $"({_patchCount} patches, {_faceCount} faces / {_bladesResident} blades resident; " +
            $"{(_samples > 1 ? $"{_samples}x MSAA, alpha-to-coverage live" : "no MSAA, dithered edge")}" +
-           $"{(_anyFlat ? ", A TEXTURE HAS NO MIPS" : "")}) {DescribeBorder()}";
+           $"{(_anyFlat ? ", A TEXTURE HAS NO MIPS" : "")})";
 
     // ---- diagnostics -------------------------------------------------------------------------
 

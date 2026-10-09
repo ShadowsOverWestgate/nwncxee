@@ -1,4 +1,9 @@
 
+// CX-188: the SYNTHESIS half, from here to CxSpecColor, reads the lit fragment stage's own slot-mask and
+// floor constants (cx_ownlit_head). The deferred compute pass (cx_deferred_cs) composes this file for the
+// lobes and CxFilmStatics alone -- its material came off the G-buffer, already synthesised -- so it defines
+// CX_NO_SYNTH and compiles none of it. Every fragment stage leaves it undefined and gets what it always had.
+#ifndef CX_NO_SYNTH
 /// A material that authors nothing -- no Specularity, no spec or roughness map, i.e. typically no .mtr.
 /// Its lobe is stock's, but held at F0 at every angle: legacy content was never made for a grazing Fresnel rise.
 bool CxBareMaterial(vec3 declared, int slots)
@@ -62,6 +67,7 @@ vec3 CxSpecColor(vec4 declared, vec3 base, float metal, int slots)
     // scales it -- inc_material.shd's own reasoning, in its own words
     return mix(vec3(min(1.0, max(base.r, max(base.g, base.b)) / CX_MID_GREY)), base, metal);
 }
+#endif
 
 // ---- ADR 0026: the modern material model ----------------------------------------------------------
 // Every roughness below is in the ENGINE's units (alpha = rough), whatever the content declared it in:
@@ -121,11 +127,15 @@ vec3 CxMultiScatter(vec3 f0, float NoV, float perceptual)
 /// highlight must widen by, from the screen-space variance of the surface normal, so a lobe narrower
 /// than a pixel does not crawl. The geometric normal, and taken ahead of every discard: a cutout kills
 /// quad lanes, and a derivative across a killed lane is undefined.
+/// CX-188: a screen derivative, so it belongs to a fragment stage -- the deferred pass reads the widened
+/// roughness off the G-buffer instead (CX_NO_SYNTH).
+#ifndef CX_NO_SYNTH
 float CxSpecAAKernel(vec3 n)
 {
     vec3 dx = dFdx(n), dy = dFdy(n);
     return min(0.5 * (dot(dx, dx) + dot(dy, dy)), 0.18);
 }
+#endif
 
 /// Lagarde's specular occlusion: how much of the ambient reflection an occlusion value `ao` leaves, which
 /// is less than `ao` itself for a glossy lobe looking into a crevice and more for a rough one.
@@ -198,15 +208,14 @@ float CxSheenLobe(vec3 N, vec3 V, vec3 L, float a)
 vec3 CxFilmStatics(vec3 worldPos, vec3 N, vec3 V, float viewDepth, float coat, float coatRough, float onMover)
 {
     uint cl = CxCluster(viewDepth);
-    uint live = CxClusterLive(cl);
-    uint last = min(live + CxClusterRefl(cl), CX_CLUSTER_CAP);
-    uint base = cl * CX_CLUSTER_CAP;
+    uint live = CxListLive(cl);
+    uint last = min(live + CxListRefl(cl), CX_CLUSTER_CAP);
     vec3 acc = vec3(0.0), bSpc = vec3(0.0);
     float bLum = 0.0, bNdl = 0.0;
     int bSlot = -1;
     for (uint k = live; k < last; k++)
     {
-        uint li = uClIdx[base + k];
+        uint li = CxListIdx(cl, k);
         vec4 pr = uLights[li * 2u];
         vec4 cs = uLights[li * 2u + 1u];
         vec3 c, L; float att, f2, ndlRaw, ndl;

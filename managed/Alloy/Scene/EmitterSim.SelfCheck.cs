@@ -14,7 +14,7 @@ internal static unsafe partial class EmitterSim
     /// Off-device: every part of the simulation that is a DECISION rather than a read. The step is driven
     /// through an <see cref="Emitter"/> snapshot, which is what both sources produce, and the pool is the real
     /// one -- so the whole thing runs on a machine with no client and no GL.
-    /// <para>CX-120 adds the check that matters most to this ticket: <see cref="BothSources"/> fills ONE
+    /// <para>CX-120 added the check that matters most to this ticket: <see cref="BothSources"/> fills ONE
     /// parameter set through both fillers and runs the same fountain from each, so "the DB path behaves like
     /// the engine path" is a measurement rather than a claim.</para>
     /// <para>What is NOT covered, and cannot be: <c>Part::GetWorld</c>, <c>Gob::GetAdjustedScale</c>, the wind
@@ -217,7 +217,7 @@ internal static unsafe partial class EmitterSim
         // every overlapping pair of alpha plumes and nothing else says so.
         Reset();
         _tabN = 4;
-        for (int i = 0; i < 4; i++) { _tab[i] = default; _tab[i].Part = -1; _tab[i].Em = (IntPtr)(i + 1); }
+        for (int i = 0; i < 4; i++) { _tab[i] = default; _tab[i].Part = i + 1; }
         _tab[0].Dist = 9f; _tab[1].Dist = 1f; _tab[2].Dist = 5f; _tab[3].Dist = 5f;
         // The two at equal distance share a Gob, so the tiebreak reaches them; 3 declares the lower order.
         _tab[2].Gob = (IntPtr)0x1000; _tab[2].Order = 7;
@@ -237,17 +237,6 @@ internal static unsafe partial class EmitterSim
           "...but two UNRELATED emitters at one distance keep bucket order: the tiebreak needs a shared Gob");
         check.Expect(!Before(0, 0), "the comparator is irreflexive, or the insertion sort walks off the front");
 
-        // ---- the bounce: the segment-triangle test and the reflection. Both are decisions of ours (the
-        // engine asks Scene::HitCheck for the first and its three literals shape the second), and both fail
-        // INVISIBLY -- a floor that never reports a hit looks exactly like a floor nobody bounced on.
-        BounceWorld.Check(check);
-        Reset();
-        e = Params(ModeFountain);
-        e.BirthRate = 0f; e.Life = 10f;
-        s = Slot0(in e);
-        slot = ref _tab[0];
-        slot.Cap = 4;
-        Floor(check, ref slot, 0.5f);
 
         // ---- the block's edge. The engine has NO per-emitter ceiling -- it births from the recycle list and,
         // when that is empty, from operator new with nothing to stop it (FountainEmitter::Update @0x4b1c70) --
@@ -288,19 +277,21 @@ internal static unsafe partial class EmitterSim
         check.Expect(Block(0) == 1 && Block(-5) == 1, "...and is never zero or negative, whatever Want returned");
 
         BothSources(check);
+        ParamCacheSelfCheck(check);
 
         Reset();
         log.Info(check.Ok ? "EmitterSim.SelfCheck: passed" : "EmitterSim.SelfCheck: FAILED");
     }
 
-    /// <summary>CX-120: <b>the two fillers, over one emitter.</b> The same thirty parameters are stated twice
-    /// -- once in a synthetic engine <c>PartEmitter</c>/<c>MdlNodeEmitter</c> pair and once as a parsed
-    /// <see cref="EmitterDef"/> with the matching controller rest keys -- and the check asserts that the two
-    /// snapshots agree field for field, and then that two hundred frames of the same fountain run from each
-    /// produce the same particles.
-    /// <para>This is the whole argument that CX-120 did not change mode 0: if the engine filler is a
-    /// transcription and the step reads nothing but the snapshot, then the step cannot have changed. The
-    /// field comparison pins the first half and the simulated run pins the second.</para></summary>
+    /// <summary><b>The filler, over one emitter:</b> thirty parameters stated as a parsed
+    /// <see cref="EmitterDef"/> with the matching controller rest keys, read back through
+    /// <see cref="FillDb"/>, and then the slot keys the database re-tenants on.
+    /// <para>CX-188: the A/B is gone with <c>FillEngine</c>. It stated the same thirty parameters a second
+    /// time in a synthetic engine <c>PartEmitter</c>/<c>MdlNodeEmitter</c> pair and asserted the two
+    /// snapshots agreed field for field and ran 200 identical frames -- which was the argument that CX-120
+    /// did not change mode 0. Nothing fills a snapshot from a <c>PartEmitter</c> any more (the one caller was
+    /// this check), so the engine half had no subject left. The three field names that mean something else in
+    /// the MDL are still asserted below, because those are <see cref="FillDb"/>'s own mapping.</para></summary>
     private static void BothSources(Checker check)
     {
         Reset();
@@ -314,25 +305,6 @@ internal static unsafe partial class EmitterSim
                     Comb = 3f, A0 = 0.9f, A1 = 0.1f, Fps = 12f, F0 = 1f, F1 = 5f,
                     SX0 = 0.5f, SX1 = 1.5f, SY0 = 0.2f, SY1 = 0.7f, Bnc = 0.4f;
         const int Flags = FRandom | FInheritVel;
-
-        // ---- the engine side ----
-        IntPtr em = Fake(out IntPtr nodePtr);
-        var ev = new PartEmitter(em);
-        var node = new MdlNodeEmitter(nodePtr);
-        ev.BirthRate = Rate; ev.Life = Life; ev.Velocity = Vel; ev.RandVel = RandV; ev.Spread = Spread;
-        ev.Spin = Spin; ev.Gravity = Mass; ev.SpawnX = XSize; ev.SpawnY = YSize; ev.DeadSpace = Threshold;
-        ev.BlurLength = Blur; ev.BoltDelay = BoltDelay; ev.BoltRadius = BoltRadius; ev.ZigZag = BoltScale;
-        ev.P2pDrag = Drag; ev.P2pGrav = Grav; ev.Bezier2 = Bez2; ev.Bezier3 = Bez3; ev.CombineTime = Comb;
-        ev.AlphaStart = A0; ev.AlphaEnd = A1; ev.Fps = Fps; ev.FrameStart = F0; ev.FrameEnd = F1;
-        ev.SizeStartX = SX0; ev.SizeEndX = SX1; ev.SizeStartY = SY0; ev.SizeEndY = SY1; ev.Bounce = Bnc;
-        ev.ColorStart = new Vector3(1f, 0.5f, 0.25f); ev.ColorEnd = new Vector3(0f, 0.25f, 1f);
-        ev.Type = 0; ev.Blend = 2; ev.LifeInterp = 1;
-        ev.Pos = new Vector3(10f, 20f, 3f); ev.Orient = new Quat { W = 1f };
-        new CX.Engine.Part(em).Scale = 1f;   // zeroed memory otherwise; a real Part is seeded to 1
-        node.Flags = Flags;
-        node.GridX = 4; node.GridY = 2; node.Loop = 1; node.NoCull = 1;
-        node.ConeCap = 0.75f; node.WindStrength = 1.25f; node.WindFalloff = 2.5f;
-        Declare(node, "Fountain");
 
         // ---- the database side ----
         ModelDef m = DbModel(Flags);
@@ -350,15 +322,8 @@ internal static unsafe partial class EmitterSim
         SceneDb.ObjWorld[obj.Index] = SceneDb.PartWorld[part];
         SceneDb.ObjRot[obj.Index] = Quaternion.Identity;
 
-        Emitter a = default, d = default;
-        bool okA = FillEngine(em, ref a);
-        bool okD = FillDb(part, ref d);
-        check.Expect(okA && okD, "both fillers accept the same emitter");
-
-        string? diff = FirstDiff(in a, in d);
-        check.Expect(diff == null,
-          "the engine views and the parsed model + controller rest keys fill the SAME snapshot -- which is "
-          + $"what makes the DB path the same simulation and not a second one (first difference: {diff ?? "none"})");
+        Emitter d = default;
+        check.Expect(FillDb(part, ref d), "the filler accepts the emitter");
         // The three field names that mean something else in the file. Getting any of them wrong is silent:
         // the emitter simply behaves as if the parameter were zero.
         check.Expect(d.ConeCap == 0.75f && d.WindStrength == 1.25f && d.WindFalloff == 2.5f,
@@ -368,28 +333,6 @@ internal static unsafe partial class EmitterSim
           "...and the engine's deadSpace -- the p2p arrival radius -- is the MDL's `threshold` CONTROLLER "
           + "(file id 188 -> PartEmitter+0xd4)");
 
-        // ---- and now the step itself, from each snapshot, over the same stream ----
-        Reset();
-        int sa = Slot0(in a);
-        _tab[sa].Rng = 0x5eed;
-        for (int i = 0; i < 200; i++) Tick(ref _tab[sa], ref a, 1f / 60f);
-        int liveA = _tab[sa].Live;
-        var posA = new Vector3[liveA];
-        var ageA = new float[liveA];
-        for (int i = 0; i < liveA; i++) { posA[i] = At(ref _tab[sa], i).Pos; ageA[i] = At(ref _tab[sa], i).Age; }
-
-        Reset();
-        int sd = Slot0(in d);
-        _tab[sd].Rng = 0x5eed;
-        for (int i = 0; i < 200; i++) Tick(ref _tab[sd], ref d, 1f / 60f);
-        int liveD = _tab[sd].Live;
-        bool match = liveA == liveD && liveA > 0;
-        for (int i = 0; match && i < liveA; i++)
-            match = At(ref _tab[sd], i).Pos == posA[i] && At(ref _tab[sd], i).Age == ageA[i];
-        check.Expect(match,
-          $"200 frames of one fountain run from either filler produce the same particles ({liveA} vs {liveD}) "
-          + "-- bit for bit, including the spawn rectangle's and the launch cone's RNG draws");
-
         // The slot keys: a DB part index the database re-tenants must not inherit the dead emitter's block.
         uint gen = SceneDb.PartObj[part].Gen;
         int k1 = FindDb(part, gen);
@@ -397,9 +340,15 @@ internal static unsafe partial class EmitterSim
         int k2 = FindDb(part, gen + 1);
         check.Expect(k2 != k1 || _tab[k2].Live == 0,
           "...and a re-tenanted part index takes a fresh slot rather than the dead emitter's particles");
+        check.Expect(_slotOfPart[part] == k2 + 1,
+          "...and the part -> slot map names the LIVE slot, so the O(1) lookup and the generation check agree");
         ForgetDbPart(part);
         check.Expect(_tab[k1].Part < 0 || _tab[k2].Part < 0,
           "a destroyed part releases its slot on the edge, not on a stale sweep");
+        check.Expect(_slotOfPart[part] == 0,
+          "...and a closed slot's map entry goes with it, or the next tenant of that part index would be "
+          + "handed the dead emitter's slot without its generation ever being asked");
+        MapSelfCheck(check);
 
         SceneDb.Parts.Free(ph);
         SceneDb.Objects.Free(obj);
@@ -407,63 +356,175 @@ internal static unsafe partial class EmitterSim
         SceneDb.Objects.TakeDirty();
         DbInputs.Reset();
         Reset();
-        NativeMemory.Free(em.ToPointer());
     }
 
-    /// <summary>The first field on which two snapshots disagree, or null. Named rather than a bare boolean:
-    /// a failing field comparison over fifty members is only actionable if it says WHICH member.</summary>
-    private static string? FirstDiff(in Emitter a, in Emitter d)
+    /// <summary>CX-188: the two per-frame skips the fill now takes -- the rest keys memoised on the node and
+    /// the cull that runs ahead of the snapshot. Each assertion is the smallest thing that fails if the skip
+    /// ever hides a real change: a model or node swapped under a part, an animation's write, the memo's
+    /// sharing between parts of one model, and the cull's verdict against the full fill's own numbers.</summary>
+    private static void ParamCacheSelfCheck(Checker check)
     {
-        if (a.Flags != d.Flags) return $"Flags {a.Flags:x} vs {d.Flags:x}";
-        if (a.Mode != d.Mode) return $"Mode {a.Mode} vs {d.Mode}";
-        if (a.Type != d.Type) return $"Type {a.Type} vs {d.Type}";
-        if (a.Blend != d.Blend) return $"Blend {a.Blend} vs {d.Blend}";
-        if (a.LifeInterp != d.LifeInterp) return $"LifeInterp {a.LifeInterp} vs {d.LifeInterp}";
-        if (a.Loop != d.Loop) return $"Loop {a.Loop} vs {d.Loop}";
-        if (a.NoCull != d.NoCull) return $"NoCull {a.NoCull} vs {d.NoCull}";
-        if (a.Splat != d.Splat) return "Splat";
-        if (a.Tinted != d.Tinted) return "Tinted";
-        if (a.GridX != d.GridX) return $"GridX {a.GridX} vs {d.GridX}";
-        if (a.GridY != d.GridY) return $"GridY {a.GridY} vs {d.GridY}";
-        if (a.ConeCap != d.ConeCap) return $"ConeCap {a.ConeCap} vs {d.ConeCap}";
-        if (a.WindStrength != d.WindStrength) return $"WindStrength {a.WindStrength} vs {d.WindStrength}";
-        if (a.WindFalloff != d.WindFalloff) return $"WindFalloff {a.WindFalloff} vs {d.WindFalloff}";
-        if (a.Chunk != d.Chunk) return "Chunk";
-        if (a.BirthRate != d.BirthRate) return $"BirthRate {a.BirthRate} vs {d.BirthRate}";
-        if (a.Life != d.Life) return $"Life {a.Life} vs {d.Life}";
-        if (a.Velocity != d.Velocity) return $"Velocity {a.Velocity} vs {d.Velocity}";
-        if (a.RandVel != d.RandVel) return $"RandVel {a.RandVel} vs {d.RandVel}";
-        if (a.Spread != d.Spread) return $"Spread {a.Spread} vs {d.Spread}";
-        if (a.Spin != d.Spin) return $"Spin {a.Spin} vs {d.Spin}";
-        if (a.Gravity != d.Gravity) return $"Gravity {a.Gravity} vs {d.Gravity}";
-        if (a.Bounce != d.Bounce) return $"Bounce {a.Bounce} vs {d.Bounce}";
-        if (a.CombineTime != d.CombineTime) return $"CombineTime {a.CombineTime} vs {d.CombineTime}";
-        if (a.P2pDrag != d.P2pDrag) return $"P2pDrag {a.P2pDrag} vs {d.P2pDrag}";
-        if (a.P2pGrav != d.P2pGrav) return $"P2pGrav {a.P2pGrav} vs {d.P2pGrav}";
-        if (a.Bezier2 != d.Bezier2) return $"Bezier2 {a.Bezier2} vs {d.Bezier2}";
-        if (a.Bezier3 != d.Bezier3) return $"Bezier3 {a.Bezier3} vs {d.Bezier3}";
-        if (a.DeadSpace != d.DeadSpace) return $"DeadSpace {a.DeadSpace} vs {d.DeadSpace}";
-        if (a.SpawnX != d.SpawnX) return $"SpawnX {a.SpawnX} vs {d.SpawnX}";
-        if (a.SpawnY != d.SpawnY) return $"SpawnY {a.SpawnY} vs {d.SpawnY}";
-        if (a.BlurLength != d.BlurLength) return $"BlurLength {a.BlurLength} vs {d.BlurLength}";
-        if (a.BoltDelay != d.BoltDelay) return $"BoltDelay {a.BoltDelay} vs {d.BoltDelay}";
-        if (a.BoltRadius != d.BoltRadius) return $"BoltRadius {a.BoltRadius} vs {d.BoltRadius}";
-        if (a.ZigZag != d.ZigZag) return $"ZigZag {a.ZigZag} vs {d.ZigZag}";
-        if (a.AlphaStart != d.AlphaStart) return $"AlphaStart {a.AlphaStart} vs {d.AlphaStart}";
-        if (a.AlphaEnd != d.AlphaEnd) return $"AlphaEnd {a.AlphaEnd} vs {d.AlphaEnd}";
-        if (a.Fps != d.Fps) return $"Fps {a.Fps} vs {d.Fps}";
-        if (a.FrameStart != d.FrameStart) return $"FrameStart {a.FrameStart} vs {d.FrameStart}";
-        if (a.FrameEnd != d.FrameEnd) return $"FrameEnd {a.FrameEnd} vs {d.FrameEnd}";
-        if (a.SizeStartX != d.SizeStartX) return $"SizeStartX {a.SizeStartX} vs {d.SizeStartX}";
-        if (a.SizeEndX != d.SizeEndX) return $"SizeEndX {a.SizeEndX} vs {d.SizeEndX}";
-        if (a.SizeStartY != d.SizeStartY) return $"SizeStartY {a.SizeStartY} vs {d.SizeStartY}";
-        if (a.SizeEndY != d.SizeEndY) return $"SizeEndY {a.SizeEndY} vs {d.SizeEndY}";
-        if (a.ColorStart != d.ColorStart) return $"ColorStart {a.ColorStart} vs {d.ColorStart}";
-        if (a.ColorEnd != d.ColorEnd) return $"ColorEnd {a.ColorEnd} vs {d.ColorEnd}";
-        if (a.WorldPos != d.WorldPos) return $"WorldPos {a.WorldPos} vs {d.WorldPos}";
-        if (a.Scale != d.Scale) return $"Scale {a.Scale} vs {d.Scale}";
-        if (a.PartScale != d.PartScale) return $"PartScale {a.PartScale} vs {d.PartScale}";
-        return null;
+        Reset();
+
+        check.Expect(_chIds.Length == ChCount && _chBlock.Length == ChCount
+                  && _chIds[ChBirthRate] == Ctl.EmBirthRate && _chIds[ChLifeExp] == Ctl.EmLifeExp
+                  && _chIds[ChColorStart] == Ctl.EmColorStart && _chIds[ChColorEnd] == Ctl.EmColorEnd
+                  && _chIds[ChSizeEnd] == Ctl.EmSizeEnd && _chIds[ChSizeMidY] == Ctl.EmSizeMidY
+                  && _chIds[ChDetonate] == Ctl.EmDetonate && _chIds[ChMass] == Ctl.EmMass,
+          "every Ch* ordinal addresses its own controller id -- an ordinal off by one silently reads another "
+          + "parameter's keys");
+        bool blocks = true;
+        for (int ord = 0; ord < ChCount; ord++)
+            blocks &= _chBlock[ord] == DbEmitterChannels.ChannelOf(_chIds[ord]);
+        check.Expect(blocks, "...and resolves to the channel DbEmitterChannels files that id under");
+        check.Expect(_chBlock[ChSizeMid] < 0 && _chBlock[ChSizeMidY] < 0 && _chBlock[ChBirthRate] >= 0,
+          "sizeMid/sizeMidY are no animatable channel of that sink, so they are always the node's rest key");
+
+        ModelDef m = TwoEmitters(11f, 22f);
+        DbId obj = SceneDb.Objects.Alloc();
+        DbFeed.InitObject(obj.Index);
+        DbId ph = SceneDb.Parts.Alloc();
+        int part = ph.Index;
+        DbFeed.InitPart(part);
+        SceneDb.PartObj[part] = obj;
+        SceneDb.PartModel[part] = m;
+        SceneDb.PartNode[part] = 1;
+        SceneDb.PartScale[part] = 1f;
+        SceneDb.ObjScale[obj.Index] = 1f;
+        SceneDb.PartWorld[part] = Matrix4x4.CreateTranslation(1f, 2f, 3f);
+        SceneDb.ObjWorld[obj.Index] = SceneDb.PartWorld[part];
+        SceneDb.ObjRot[obj.Index] = Quaternion.Identity;
+
+        Emitter e = default;
+        check.Expect(FillDb(part, ref e) && e.BirthRate == 11f, "the node's own rest keys fill the snapshot");
+
+        check.Expect(m.Nodes[1].EmRest != null && m.Nodes[2].EmRest == null,
+          "the keys are memoised on the NODE the fill read, and on no other");
+
+        // The node of a part changes: a different NodeDef, so a different memo. Nothing has to be told.
+        SceneDb.PartNode[part] = 2;
+        check.Expect(FillDb(part, ref e) && e.BirthRate == 22f,
+          "a part whose NODE changed reads the new node's keys -- a memo keyed by the PART would have kept the "
+          + "old node's birth rate forever");
+        SceneDb.PartNode[part] = 1;
+        check.Expect(FillDb(part, ref e) && e.BirthRate == 11f, "...and changing it back reads back");
+
+        // The model changes (a re-tenanted part index is the same thing): again a different NodeDef.
+        ModelDef m2 = TwoEmitters(33f, 44f);
+        SceneDb.PartModel[part] = m2;
+        check.Expect(FillDb(part, ref e) && e.BirthRate == 33f,
+          "a part whose MODEL changed reads the new model's keys, which is also what a recycled part index "
+          + "does -- the memo cannot go stale, because it is a function of the node and nothing else");
+        SceneDb.PartModel[part] = m;
+
+        // One memo per NODE, shared: 400 torches of one model must not hold 400 identical blocks.
+        DbId ph2 = SceneDb.Parts.Alloc();
+        int twin = ph2.Index;
+        DbFeed.InitPart(twin);
+        SceneDb.PartObj[twin] = obj;
+        SceneDb.PartModel[twin] = m;
+        SceneDb.PartNode[twin] = 1;
+        SceneDb.PartScale[twin] = 1f;
+        Vector4[]? memo = m.Nodes[1].EmRest;
+        Emitter t2 = default;
+        check.Expect(FillDb(twin, ref t2) && t2.BirthRate == 11f
+                  && ReferenceEquals(m.Nodes[1].EmRest, memo),
+          "a second part of the same model reads the SAME memo rather than resolving a block of its own");
+
+        // The animation. The rest keys are memoised; what a controller writes never is.
+        FillDb(part, ref e);
+        DbEmitterChannels.Write(part, Ctl.EmBirthRate, new Vector4(99f, 0f, 0f, 0f), 1f);
+        check.Expect(FillDb(part, ref e) && e.BirthRate == 99f,
+          "an animated channel reaches the very next fill -- the memo holds REST keys and the block is read "
+          + "live, so an emitter whose rate is keyed still ramps");
+        float animRadius = e.ViewRadius;
+        DbEmitterChannels.Write(part, Ctl.EmSizeEnd, new Vector4(40f, 0f, 0f, 0f), 1f);
+        FillDb(part, ref e);
+        check.Expect(e.ViewRadius > animRadius, "...and an animated SIZE widens the view radius with it");
+
+        // The cull pre-pass: its three outputs against the full fill's own.
+        check.Expect(CullDb(part, out Vector3 cp, out float cr, out int cm)
+                  && cp == e.WorldPos && cr == e.ViewRadius && cm == e.Mode,
+          "the cull pre-pass and the full fill agree bit for bit on the position, the radius and the mode -- "
+          + "two verdicts would cull an emitter the draw still expects, or step one the cull dropped");
+        DbEmitterChannels.Forget(part);
+        check.Expect(FillDb(part, ref e) && e.BirthRate == 11f && CullDb(part, out _, out cr, out _)
+                  && cr == e.ViewRadius,
+          "a dropped animation block leaves both reading the rest keys again, still in agreement");
+
+        // ...and both refuse the same emitter, so the walk's no-def verdict still counts one thing.
+        SceneDb.PartNode[part] = 0;
+        check.Expect(!CullDb(part, out _, out _, out _) && !FillDb(part, ref e),
+          "a node with no emitter declaration is refused by the cull and the fill alike");
+
+        SceneDb.Parts.Free(ph);
+        SceneDb.Parts.Free(ph2);
+        SceneDb.Objects.Free(obj);
+        SceneDb.Parts.TakeDirty();
+        SceneDb.Objects.TakeDirty();
+        Reset();
+    }
+
+    /// <summary>Two emitter nodes on one model, with different birth rates: the only way to state "the part's
+    /// node changed" to the rest-key memo.</summary>
+    private static ModelDef TwoEmitters(float rate1, float rate2)
+    {
+        var m = new ModelDef { Name = "cx_emitcache", ContentHash = 0xCAC4E };
+        var root = new NodeDef { Name = "root", Index = 0, Kind = NodeKind.Dummy };
+        m.Nodes = new[] { root, EmitNode("puff", 1, rate1), EmitNode("puff2", 2, rate2) };
+        m.NodeByName["root"] = 0; m.NodeByName["puff"] = 1; m.NodeByName["puff2"] = 2;
+        return m;
+    }
+
+    private static NodeDef EmitNode(string name, int index, float rate)
+        => new()
+        {
+            Name = name, Index = index, Parent = 0, Kind = NodeKind.Emitter,
+            Emitter = new EmitterDef { Update = "Fountain", Render = "Normal", Blend = "Lighten" },
+            Controllers = new[]
+            {
+                Ctl1(Ctl.EmBirthRate, rate), Ctl1(Ctl.EmLifeExp, 2f), Ctl1(Ctl.EmVelocity, 1f),
+                Ctl1(Ctl.EmSizeStart, 0.5f), Ctl1(Ctl.EmSizeEnd, 1f), Ctl1(Ctl.EmMass, 1f),
+            },
+        };
+
+    /// <summary>CX-188: the part -> slot map against the one thing it must never do -- hand a part a slot that
+    /// is not its own. The eviction arm is the dangerous one: a full table reclaims the emitter longest unseen,
+    /// and if the evicted part kept its map entry it would later be given a slot another emitter is burning in,
+    /// silently inheriting its particles and its texture reference.</summary>
+    private static void MapSelfCheck(Checker check)
+    {
+        Reset();
+        // A full table, so the next ask has to reclaim rather than grow. The parts need not be live: FindDb
+        // keys on the index alone, which is exactly the property the map has to preserve.
+        for (int p = 1; p <= MaxEmitters; p++) FindDb(p, 1u);
+        check.Expect(_tabN == MaxEmitters && _slotOfPart[1] == 1 && _slotOfPart[MaxEmitters] == MaxEmitters,
+          "a full table maps every part to its own slot");
+        // Take only reclaims a slot nothing has walked for a frame; the walk's own counter is what says so.
+        _frame += 4;
+        int s = FindDb(MaxEmitters + 1, 1u);
+        check.Expect(s == 0, "a full table gives the newcomer the slot longest unseen (the first, all tied)");
+        check.Expect(_slotOfPart[1] == 0,
+          "...and the evicted part's map entry is gone, not left pointing at the newcomer's slot");
+        check.Expect(_slotOfPart[MaxEmitters + 1] == s + 1, "...which is the newcomer's own");
+        check.Expect(FindDb(MaxEmitters + 1, 1u) == s && FindDb(2, 1u) == 1,
+          "every other part still finds the slot it had");
+        // The map is an INDEX, not the authority: Slot.Part and Slot.Gen are the keys. A part whose entry
+        // drifted has to find its own slot through the scan's part match -- a second slot for a part that
+        // already has one would draw its particles twice and leak the first slot's texture reference, on a
+        // path with no counter to say so.
+        _slotOfPart[3] = 0;
+        int had = _tabN;
+        check.Expect(FindDb(3, 1u) == 2 && _tabN == had && _slotOfPart[3] == 3,
+          "a part whose map entry went missing finds its own slot in the scan and re-maps it, rather than "
+          + "being handed a second one");
+        _slotOfPart[4] = 1;
+        check.Expect(FindDb(4, 1u) == 3 && _tabN == had && _slotOfPart[4] == 4,
+          "...and an entry naming ANOTHER part's slot is no entry at all");
+        Reset();
+        check.Expect(_slotOfPart[2] == 0 && _slotOfPart[MaxEmitters] == 0,
+          "an area edge or context loss empties the map with the table -- a surviving entry would point into "
+          + "slots the next area re-tenants");
     }
 
     /// <summary>The database twin of <see cref="BothSources"/>'s engine emitter: one emitter node whose
@@ -529,23 +590,9 @@ internal static unsafe partial class EmitterSim
         _tabN = 1;
         _tab[0] = default;
         _tab[0].Part = e.Part;
-        _tab[0].Em = e.Em;
         _tab[0].Rng = 0x1234567u;
         Open(ref _tab[0], in e);
         return 0;
-    }
-
-    /// <summary>A zeroed <c>LightningEmitter</c> and the <c>MdlNodeEmitter</c> it points at, big enough for
-    /// every field this file reads or writes on either. One block, so one free.</summary>
-    private static IntPtr Fake(out IntPtr node)
-    {
-        const int emSize = 0x280;                  // not-an-offset: sizeof(LightningEmitter), rounded up
-        const int nodeSize = 0x200;                // not-an-offset: sizeof(MdlNodeEmitter), rounded up
-        byte* p = (byte*)NativeMemory.Alloc(emSize + nodeSize);
-        NativeMemory.Clear(p, emSize + nodeSize);
-        node = (IntPtr)(p + emSize);
-        new CX.Engine.Part((IntPtr)p).Node = new MdlNode(node);
-        return (IntPtr)p;
     }
 
     /// <summary>One fountain frame, in <see cref="Advance"/>'s order with the mover left out: the mover reads
@@ -554,59 +601,6 @@ internal static unsafe partial class EmitterSim
     {
         FountainAge(ref slot, ref e, dt);
         FountainBirth(ref slot, ref e, dt);
-    }
-
-    /// <summary>Write a model's <c>update</c> literal into the fake node, which is what
-    /// <see cref="FillEngine"/> reads to pick the mode.</summary>
-    private static void Declare(MdlNodeEmitter node, string mode)
-    {
-        Span<byte> u = node.Update;
-        for (int i = 0; i < u.Length; i++) u[i] = (byte)(i < mode.Length ? mode[i] : 0);
-    }
-
-    /// <summary>The reflection, driven through <see cref="Land"/> itself against a synthetic level floor:
-    /// the grid needs a live Scene, the arithmetic does not, and the arithmetic is the part that is a
-    /// decision. Calling the real function rather than a copy is the point -- a copy would keep passing
-    /// after someone edited the original.</summary>
-    private static void Floor(Checker check, ref Slot slot, float co)
-    {
-        Vector3 up = new(0f, 0f, 1f);
-        Particle p = Take(ref slot);
-        Clear(p);
-        p.Vel = new Vector3(0.5f, 0f, -2f);
-        Land(co, p, up, 1f / 60f);
-        check.Expect(MathF.Abs(p.Vel.Z - 2f * BounceLoss * co) < 1e-5f
-                     && MathF.Abs(p.Vel.X - 0.5f * BounceLoss) < 1e-5f,
-          "a bounce off a level floor mirrors Z, keeps the tangent, and applies restitution to Z ONLY "
-          + "(the flat 0.75 loss lands on all three)");
-        check.Expect(p.Splat == 0,
-          "a 0.5-restitution bounce off a 2/s impact is still moving, so the particle does not land");
-
-        // At 10fps the frame-rate factor is its 0.5 floor -- clamp(0.033/dt, 0.5, 1) -- which is what stops
-        // a stuttering frame launching debris, and the only way to see it is through the same function.
-        Particle q = Take(ref slot);
-        Clear(q);
-        q.Vel = new Vector3(0f, 0f, -2f);
-        Land(co, q, up, 1f / 10f);
-        check.Expect(MathF.Abs(q.Vel.Z - 2f * BounceLoss * co * MinBounceScale) < 1e-5f,
-          "...and at 10fps Z takes the 0.5 floor of that factor as well");
-
-        Particle w = Take(ref slot);
-        Clear(w);
-        w.Vel = new Vector3(0f, 0f, -0.4f);
-        Land(0.1f, w, up, 1f / 60f);
-        check.Expect(w.Splat == 1 && MathF.Abs(w.Pos.Z - LandLift) < 1e-6f && w.SplatNormal == up,
-          "a weak bounce falls under the squared-speed threshold: the splat freezes, lifts off the face and "
-          + "takes the contact normal as its own");
-        check.Expect(MathF.Abs(w.Quat.W - 1f) < 1e-5f,
-          "...and its quad lies in the contact plane -- RotationArc from +Z onto a level floor is identity");
-
-        Particle z = Take(ref slot);
-        Clear(z);
-        z.Vel = new Vector3(3f, 0f, -9f);
-        Land(0f, z, up, 1f / 60f);
-        check.Expect(z.Vel == Vector3.Zero && z.Splat == 1,
-          "a zero restitution stops the particle dead and lands it, however fast it arrived");
     }
 
     private static Span<byte> Lit(string s)

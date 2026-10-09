@@ -7,7 +7,7 @@ namespace CX.Alloy;
 
 /// <summary>
 /// The Aurora calls that pass or return a <c>Vector</c> or <c>Quaternion</c> BY VALUE (CX-86's simulation, CX-82's
-/// glow), and the two argument lists each of them needs. Same shape and same reason as <see cref="EmitterLighting"/>: a 12-byte
+/// glow), and the two argument lists each of them needs. Same shape and same reason as the deleted <c>EmitterLighting</c>: a 12-byte
 /// three-float struct is classified into xmm0 (x, y) + xmm1 (z) by SysV with no hidden buffer, while Win64
 /// passes and returns one through a pointer -- so no single declared signature describes them and the
 /// generator's <c>sret</c> ordering does not apply either (it assumes both platforms use a buffer).
@@ -29,7 +29,8 @@ namespace CX.Alloy;
 /// </remarks>
 internal static unsafe class AurXform
 {
-    /// <inheritdoc cref="EmitterLighting.V3"/>
+    /// <summary>A three-float value classified the way SysV classifies it -- xmm0 carries x and y, xmm1
+    /// carries z. <c>Vector3</c>'s ABI is the runtime's to choose, so the layout is declared here instead.</summary>
     [StructLayout(LayoutKind.Sequential)]
     internal struct V3 { public float X, Y, Z; }
 

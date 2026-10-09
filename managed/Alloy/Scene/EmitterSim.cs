@@ -86,10 +86,8 @@ internal static unsafe partial class EmitterSim
     /// change, so they are resolved once when the slot is taken rather than per frame.</summary>
     private struct Slot
     {
-        public IntPtr Em;
-        /// <summary>CX-120: the database part this slot belongs to, or -1 in engine mode. A slot is keyed by
-        /// ONE of the two -- a pointer the engine owns, or a part index the database owns -- and
-        /// <see cref="Gen"/> is what makes the second safe across a recycle.</summary>
+        /// <summary>CX-120: the database part this slot belongs to, or -1 for a free slot.
+        /// <see cref="Gen"/> is what makes it safe across a recycle.</summary>
         public int Part;
         /// <summary>The <see cref="DbId"/> generation of the object that owned <see cref="Part"/> when the slot
         /// was taken. A part index the database re-tenanted is a different emitter, and inheriting its
@@ -130,6 +128,20 @@ internal static unsafe partial class EmitterSim
 
     private static readonly Slot[] _tab = new Slot[MaxEmitters];
     private static int _tabN;
+    /// <summary>CX-188: DB mode's slot index by part, plus one -- zero for "this part has no slot". The walk
+    /// asked <see cref="FindDb"/> once per in-view emitter and that was a LINEAR scan of the whole table, so
+    /// the lookup alone was O(emitters^2) and measured 11,4% self of the main thread's on-CPU samples
+    /// (<c>perf-0927</c>, 12 s of a still camera).
+    /// <para>Written in exactly three places, which is what keeps it from drifting out of step with
+    /// <see cref="Slot.Part"/>: <see cref="FindDb"/> when a part takes or re-finds a slot, <see cref="Unmap"/>
+    /// when a slot stops being that part's (<see cref="Reset(int)"/>, the walk's failed <see cref="Open"/>) and
+    /// <see cref="Reset()"/> for the whole table at an area edge or context loss.</para>
+    /// <para><b>It is an index, never the authority.</b> <see cref="Slot.Part"/> and <see cref="Slot.Gen"/>
+    /// stay the keys: a map entry naming a slot that holds another part is treated as no entry, and a MISSING
+    /// entry falls into the scan with its own part match intact -- so neither kind of drift can hand an
+    /// emitter a stranger's particles or a second slot of its own. The cost of one is a scan on that
+    /// frame.</para></summary>
+    private static readonly int[] _slotOfPart = new int[SceneDb.MaxParts];
     /// <summary>Bucket indices in DRAW order -- back to front, which is what the blended class needs.</summary>
     private static readonly int[] _order = new int[MaxEmitters];
     private static int _orderN;
@@ -152,13 +164,13 @@ internal static unsafe partial class EmitterSim
     /// running inside it, which is what CX-81 tier 1 exists to remove.</summary>
     internal static bool Armed { get; private set; }
     /// <summary>The first symbol that did not resolve, or null. Read by <see cref="RspShim.Install"/>, the
-    /// way <see cref="DoorFade"/> and <see cref="LightFade"/> are.</summary>
+    /// way <see cref="DoorFade"/> is.</summary>
     internal static string? Missing { get; private set; }
     private static bool _poolWarned;
 
     private static int _resets;
     private static int _frame;
-    private static int _emitters, _particles, _spawned, _died, _chunk, _bounced, _p2pNoTarget,
+    private static int _emitters, _particles, _spawned, _died, _chunk, _p2pNoTarget,
                        _capped, _poolResets, _reclaimed, _full, _foreign;
     /// <summary>The largest block any emitter's own parameters asked for this period, and births actually
     /// LOST to a full block -- the pair that says whether our ceiling costs a visible particle.</summary>
@@ -201,7 +213,6 @@ internal static unsafe partial class EmitterSim
         _animate = EngineFn.AnimateParticles;
         _renderNothing = EngineFn.RenderNothing;
         AurXform.Resolve();
-        BounceWorld.Install(log);
 
         // Item 7 of the standards review: this used to name CurrentScene for an unresolved CAMERA.
         // CX-104: emitterbucket is NOT on this list any more. The population is SceneParts' registry, and the
@@ -239,6 +250,7 @@ internal static unsafe partial class EmitterSim
     internal static void StepDb(DbId scene, int frame)
     {
         if (!Armed || !Enabled.V || _dt == null) return;
+        long tEmit = FrameZones.Now;
         bool stepping = frame != _dbFrame;
         _dbFrame = frame;
         if (stepping) _frame++;
@@ -285,20 +297,39 @@ internal static unsafe partial class EmitterSim
                 DumpSkipped(de.Part, de.Obj, scene);
                 continue;
             }
-            if (!FillDb(de.Part, ref e)) { _dbNoDef++; Census(de.Part, "no-def"); continue; }
-            if (e.ViewRadius < _dbRMin) _dbRMin = e.ViewRadius;
-            if (e.ViewRadius > _dbRMax) _dbRMax = e.ViewRadius;
-            bool inView = !cull || InView(in e);
+            // CX-188: the CULL first, the full snapshot after. An out-of-view emitter is not stepped -- it
+            // `continue`s below, and did before this change -- so filling it was pure waste on the whole
+            // off-screen population: thirty-odd channel reads, the p2p target walk and an engine scale call
+            // per emitter per frame. The cull wants the world position and the view radius, which is ten
+            // channel reads, and CullDb derives both exactly as FillDb does.
+            if (!CullDb(de.Part, out Vector3 pos, out float radius, out int mode))
+            { _dbNoDef++; Census(de.Part, "no-def"); continue; }
+            if (radius < _dbRMin) _dbRMin = radius;
+            if (radius > _dbRMax) _dbRMax = radius;
+            bool inView = !cull || InView(pos, radius);
             // A lightning emitter is the p2p edge's one visible consumer, so it is dumped on its own
             // budget rather than losing its line to the first dozen torches.
-            if (_dbDumped < DbDumpMax || (e.Mode == ModeLightning && _dbBoltDumped++ < DbDumpMax))
-                DumpDb(in e, inView, eye);
-            if (!inView) { _outOfView++; CensusE(in e, "culled"); continue; }
+            bool dump = _dbDumped < DbDumpMax || (mode == ModeLightning && _dbBoltDumped++ < DbDumpMax);
+            if (!inView)
+            {
+                _outOfView++;
+                // Both diagnostics want the parameters, and both are one-shots under a budget -- so a culled
+                // emitter is filled on the frames it has a line to say, and on no others.
+                bool told = dump && FillDb(de.Part, ref e);
+                if (told) DumpDb(in e, false, eye);
+                if (Census(de.Part, "culled") && (told || FillDb(de.Part, ref e))) CensusParams(in e);
+                continue;
+            }
+            // Unreachable as the two stand: CullDb accepted this emitter on the same two conditions FillDb
+            // refuses on. Kept, and counted the same way, because the alternative is trusting that they stay
+            // in step -- and a snapshot silently skipped would draw last frame's particles.
+            if (!FillDb(de.Part, ref e)) { _dbNoDef++; Census(de.Part, "no-def"); continue; }
+            if (dump) DumpDb(in e, true, eye);
             _inView++;
             int s = FindDb(de.Part, de.Obj.Gen);
             if (s < 0) { _full++; continue; }
             ref Slot slot = ref _tab[s];
-            if (!slot.Opened && !Open(ref slot, in e)) { slot.Part = -1; _full++; continue; }
+            if (!slot.Opened && !Open(ref slot, in e)) { Unmap(slot.Part, s); slot.Part = -1; _full++; continue; }
             slot.Seen = _frame;
             e.M = slot.Mut;
 
@@ -341,6 +372,7 @@ internal static unsafe partial class EmitterSim
                              _ptrs + slot.Base, slot.Live);
         }
         if (stepping) Reclaim();
+        FrameZones.Add(FrameZones.Zone.Emit, tEmit);
     }
 
     /// <summary>The feed frame the DB walk last stepped on, so two world views of one frame do not advance the
@@ -400,6 +432,14 @@ internal static unsafe partial class EmitterSim
     private static void CensusE(in Emitter e, string verdict)
     {
         if (!Census(e.Part, verdict)) return;
+        CensusParams(in e);
+    }
+
+    /// <summary>The parameter half of a census line, for a verdict <see cref="Census"/> has already accepted --
+    /// the split exists because the CULLED verdict now fills its snapshot only once the verdict is known to be
+    /// worth a line.</summary>
+    private static void CensusParams(in Emitter e)
+    {
         _log?.Always($"EmitterSim: [db census] ...rate={e.BirthRate:F2} life={e.Life:F2} mode={e.Mode} "
                    + $"type={e.Type} size={e.SizeStartX:F2} vel={e.Velocity:F2} faded={e.Faded} "
                    + $"loop={e.Loop} chunk={e.Chunk}");
@@ -569,7 +609,7 @@ internal static unsafe partial class EmitterSim
     /// step. A flame that never shows is one of these.</summary>
     private static int _held, _idle, _fadeExit, _rate0, _chunkLive;
 
-    /// <summary>Six inward-facing camera planes, rebuilt once per <see cref="Step"/>. False = no camera to
+    /// <summary>Six inward-facing camera planes, rebuilt once per <see cref="StepDb"/>. False = no camera to
     /// build them from, and every registered emitter is stepped -- an instrument that cannot see may not hide
     /// the world.</summary>
     private static readonly float[] _viewPlanes = new float[24];
@@ -591,10 +631,8 @@ internal static unsafe partial class EmitterSim
     /// @0x47a290: the emitter's WORLD position (taken fresh by the snapshot rather than off last frame's cached
     /// <c>PartEmitter+0x1e8</c>) against its own view radius, one sphere-vs-plane test per plane. Finer than the
     /// engine's, which also required the emitter's whole BSP node to be in the frustum.</summary>
-    private static bool InView(in Emitter e)
+    private static bool InView(Vector3 pos, float r)
     {
-        Vector3 pos = e.WorldPos;
-        float r = e.ViewRadius;
         fixed (float* planes = _viewPlanes)
             for (int i = 0; i < 6; i++)
             {
@@ -640,28 +678,6 @@ internal static unsafe partial class EmitterSim
         return _tab[a].Order < _tab[b].Order;
     }
 
-    /// <summary>This emitter's slot, taking a fresh one if it has none. Reuses a tombstone first, then grows,
-    /// then reclaims the emitter longest unseen -- an emitter left behind by the camera never destructs, so
-    /// without that last step one busy area would fill the table permanently.</summary>
-    private static int Find(IntPtr em)
-    {
-        int free = -1, stale = -1, oldest = int.MaxValue;
-        for (int i = 0; i < _tabN; i++)
-        {
-            if (_tab[i].Em == em) return i;
-            if (_tab[i].Em == IntPtr.Zero && _tab[i].Part < 0) { if (free < 0) free = i; }
-            else if (_tab[i].Seen < oldest) { oldest = _tab[i].Seen; stale = i; }
-        }
-        int s = Take(free, stale, oldest);
-        if (s < 0) return -1;
-        Reset(s);
-        _tab[s].Em = em;
-        _tab[s].Part = -1;
-        // A per-emitter seed, not a shared stream: two torches on one wall must not birth in lockstep, and a
-        // SelfCheck must be able to drive one emitter reproducibly.
-        _tab[s].Rng = Mix((uint)(ulong)em ^ 0x9e3779b9u);
-        return s;
-    }
 
     /// <summary>CX-120: the same search over DATABASE keys. <paramref name="gen"/> is the owning object's
     /// handle generation, so a part index the database has re-tenanted takes a fresh slot instead of inheriting
@@ -669,26 +685,54 @@ internal static unsafe partial class EmitterSim
     private static int FindDb(int part, uint gen)
     {
         int free = -1, stale = -1, oldest = int.MaxValue;
-        for (int i = 0; i < _tabN; i++)
+        // CX-188: the part's own slot, in one load. The scan below is reached only when this part has none --
+        // which is the frame it appears, not every frame it burns.
+        int at = (uint)part < (uint)_slotOfPart.Length ? _slotOfPart[part] - 1 : -1;
+        if (at >= 0 && at < _tabN && _tab[at].Part == part)
         {
-            if (_tab[i].Part == part)
+            if (_tab[at].Gen == gen) return at;
+            Close(at);
+            free = at;
+        }
+        else
+        {
+            for (int i = 0; i < _tabN; i++)
             {
-                if (_tab[i].Gen == gen) return i;
-                Close(i);
-                free = i;
-                break;
+                // The part match stays IN the scan, and that is what makes a drifted map cost one scan and
+                // nothing else. Without it the part would be handed a SECOND slot while the first still holds
+                // its particles and its texture reference -- double the particles, a leaked registry ref, and
+                // no counter on the path to say so. With it, the scan finds the slot and re-maps it.
+                if (_tab[i].Part == part)
+                {
+                    if (_tab[i].Gen == gen)
+                    {
+                        if ((uint)part < (uint)_slotOfPart.Length) _slotOfPart[part] = i + 1;
+                        return i;
+                    }
+                    Close(i);
+                    free = i;
+                    break;
+                }
+                if (_tab[i].Part < 0) { if (free < 0) free = i; }
+                else if (_tab[i].Seen < oldest) { oldest = _tab[i].Seen; stale = i; }
             }
-            if (_tab[i].Em == IntPtr.Zero && _tab[i].Part < 0) { if (free < 0) free = i; }
-            else if (_tab[i].Seen < oldest) { oldest = _tab[i].Seen; stale = i; }
         }
         int s = Take(free, stale, oldest);
         if (s < 0) return -1;
         Reset(s);
-        _tab[s].Em = IntPtr.Zero;
         _tab[s].Part = part;
         _tab[s].Gen = gen;
         _tab[s].Rng = Mix((uint)part * 0x9e3779b9u + gen + 1u);
+        if ((uint)part < (uint)_slotOfPart.Length) _slotOfPart[part] = s + 1;
         return s;
+    }
+
+    /// <summary>Slot <paramref name="s"/> is no longer <paramref name="part"/>'s: drop the map entry, but only
+    /// if it is still the one pointing here. Two slots never hold one part, so a map entry that names another
+    /// slot belongs to a later tenant and clearing it would orphan a live emitter.</summary>
+    private static void Unmap(int part, int s)
+    {
+        if ((uint)part < (uint)_slotOfPart.Length && _slotOfPart[part] == s + 1) _slotOfPart[part] = 0;
     }
 
     /// <summary>Pick the slot a fresh emitter takes: a tombstone, then growth, then the one longest unseen.
@@ -706,6 +750,7 @@ internal static unsafe partial class EmitterSim
     {
         if (_tab[s].Chunk && _tab[s].Cap > 0) FreeChunks(_tab[s].Base, _tab[s].Cap);
         Close(s);
+        if (_tab[s].Part >= 0) Unmap(_tab[s].Part, s);
         _tab[s] = default;
         _tab[s].Part = -1;
         _tab[s].Seen = _frame;
@@ -723,7 +768,7 @@ internal static unsafe partial class EmitterSim
     private static bool Open(ref Slot slot, in Emitter e)
     {
         slot.Opened = true;
-        slot.Gob = e.Em != IntPtr.Zero ? new CX.Engine.Part(e.Em).Gob.Ptr : (IntPtr)(nint)e.Obj.Value;
+        slot.Gob = (IntPtr)(nint)e.Obj.Value;
         slot.Order = e.RenderOrder;
         slot.Mode = e.Mode;
         slot.Mover = (e.Flags & FP2P) == 0 ? MoveStandard
@@ -893,7 +938,7 @@ internal static unsafe partial class EmitterSim
     {
         if (_tabN == 0) return;
         int i = _frame % _tabN;
-        if ((_tab[i].Em != IntPtr.Zero || _tab[i].Part >= 0) && _tab[i].Seen < _frame - StaleFrames) Reset(i);
+        if (_tab[i].Part >= 0 && _tab[i].Seen < _frame - StaleFrames) Reset(i);
     }
 
     /// <summary>Frames an emitter may go unseen before its slot is dropped. Long enough that turning the
@@ -906,6 +951,8 @@ internal static unsafe partial class EmitterSim
     /// reference, so both go here rather than waiting for the stale sweep.</summary>
     internal static void ForgetDbPart(int part)
     {
+        int at = (uint)part < (uint)_slotOfPart.Length ? _slotOfPart[part] - 1 : -1;
+        if (at >= 0 && at < _tabN && _tab[at].Part == part) { Reset(at); return; }
         for (int i = 0; i < _tabN; i++)
             if (_tab[i].Part == part) { Reset(i); return; }
     }
@@ -932,7 +979,7 @@ internal static unsafe partial class EmitterSim
     {
         uint v = TexOf(ref slot, slot.Part);
         if (v == 0) return 0;
-        TexRegistry.TryResident(new TexId(v), out uint name, out _);
+        TexRegistry.TryDrawable(new TexId(v), out uint name, out _);
         return name;
     }
 
@@ -941,51 +988,18 @@ internal static unsafe partial class EmitterSim
     internal static void Reset()
     {
         _resets++;
-        for (int i = 0; i < _tabN; i++) { Close(i); _tab[i] = default; _tab[i].Part = -1; }
+        for (int i = 0; i < _tabN; i++)
+        {
+            Close(i);
+            if (_tab[i].Part >= 0) Unmap(_tab[i].Part, i);
+            _tab[i] = default; _tab[i].Part = -1;
+        }
         _tabN = 0; _orderN = 0; _slotTop = 0; _dbFrame = -1;
         // Same reason Empty() does it: Particles holds a raw Particle* array per captured emitter and draws a
         // one-frame-stale slot, so rewinding the arena under it has to drop its table. The registry happens
         // to revoke Particles too, but relying on that order would make this correct by luck.
         Particles.Forget();
-        // The collision set describes the AREA, and an area edge is exactly what invalidates it.
-        BounceWorld.Reset();
     }
-
-    /// <summary><c>/emitsim dump</c>: the next <see cref="Step"/> walks every scene gob within
-    /// <see cref="DumpReach"/> of the camera and logs each emitter in its trees. Driven from the GOBS, not the
-    /// registry, so an emitter the registry never took is listed too. Cold and on demand, so it allocates.</summary>
-    private static bool _dump;
-    private const float DumpReach = 30f;
-    private const int DumpMax = 96;
-
-    /// <summary>The birthrate this animation keys for the node with <paramref name="id"/> at <paramref name="t"/>:
-    /// NaN when the animation has no such node, -1 when the node carries no birthrate track.</summary>
-    private static float Keyed(IntPtr anode, int id, float t)
-    {
-        if (anode == IntPtr.Zero) return float.NaN;
-        var n = new MdlNode(anode);
-        if (n.NodeId == id)
-        {
-            IntPtr c = n.Controllers;
-            for (int k = 0; c != IntPtr.Zero && k < n.ControllerCount; k++)
-            {
-                IntPtr ck = c + k * EngineLayout.NewControllerStride;
-                if (new NewController(ck).Id == EngineLayout.EmBirthRate && AnimKeys.Float(ck, anode, t, out float v))
-                    return v;
-            }
-            return -1f;
-        }
-        IntPtr* kids = (IntPtr*)n.Children;
-        for (int k = 0; kids != null && k < n.ChildCount; k++)
-        {
-            float v = Keyed(kids[k], id, t);
-            if (!float.IsNaN(v)) return v;
-        }
-        return float.NaN;
-    }
-
-    private static string NodeName(IntPtr node)
-        => node == IntPtr.Zero ? "-" : Marshal.PtrToStringAnsi(node + EngineLayout.MdlNodeName) ?? "?";
 
     /// <summary>Stats for the period line.</summary>
     internal static string Stats(int frames)
@@ -1000,9 +1014,12 @@ internal static unsafe partial class EmitterSim
         if (_chunk != 0) s += $" chunk={_chunk} (with engine particles {_chunkLive})";
         s += $" silent exits/frame: fade={(float)_fadeExit / f:F1} rate0={(float)_rate0 / f:F1} other-empty={(float)_idle / f:F1}"
            + $" (held, drawn but not stepped: {(float)_held / f:F1})";
-        if (_bounced != 0) s += $" bounce={_bounced}";
         if (_p2pNoTarget != 0) s += $" p2p-untargeted={_p2pNoTarget}";
-        if (DbTargets != 0) s += $" p2p-targeted={DbTargets}";
+        // CX-188: IN VIEW, and the clause says so. The target walk is part of the full snapshot, which the
+        // walk now takes only for an emitter it keeps -- so this counts the targeted emitters that were
+        // stepped, not every targeted emitter in the area. A counter whose population changed under it and
+        // kept its old name is a counter that lies.
+        if (DbTargets != 0) s += $" p2p-targeted={DbTargets} (in view; the target walk is part of the fill)";
         // Per frame, like em= and parts= beside it: a period total here read as an alarm (523) for what is
         // half an emitter a frame. The peak is what MaxPerEmitter would have to be raised to; CAP-LOST is
         // births actually dropped, which is the part that is a bug -- vanilla has no ceiling to drop them at.
@@ -1029,7 +1046,6 @@ internal static unsafe partial class EmitterSim
         if (_resets != 0) s += $" TABLE-RESETS={_resets}";
         if (_windRefused != 0) s += $" NO-WIND={_windRefused} (Alloy's wind field is not armed)";
         if (_gustRefused != 0) s += $" NO-GUST={_gustRefused} (a detonation moved no air)";
-        if (Bouncing.V) s += " bounce STOOD DOWN (no tile collision geometry yet)";
         return s;
     }
 
@@ -1039,7 +1055,7 @@ internal static unsafe partial class EmitterSim
     /// and whether, the line was built.</summary>
     internal static void ResetPeriod()
     {
-        _emitters = 0; _particles = 0; _spawned = 0; _died = 0; _chunk = 0; _bounced = 0;
+        _emitters = 0; _particles = 0; _spawned = 0; _died = 0; _chunk = 0;
         DbTargets = 0;
         _p2pNoTarget = 0; _capped = 0; _poolResets = 0; _reclaimed = 0; _full = 0; _foreign = 0;
         _capPeak = 0; _capLost = 0;

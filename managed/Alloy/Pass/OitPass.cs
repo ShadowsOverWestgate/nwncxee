@@ -29,10 +29,6 @@ internal static unsafe class OitPass
     /// <summary>Mode 2 frames the weighted pair stays written after an overflow reads back (CX-7).
     /// ponytail: a fixed ~2 s at 60 fps, unmeasured; tie it to the overflow rate if bursts outlast it.</summary>
     private const long NetFrames = 120;
-    /// <summary>The depth slack the linked-list append gives a wash batch, standing in for the polygon offset
-    /// IssueColour sets for it (which the GL applies after shading, where <c>gl_FragCoord.z</c> cannot see it).
-    /// ponytail: one constant in window z, unmeasured; make it slope-scaled if far decals still drop out.</summary>
-    internal const float WashBias = 2e-5f;
     /// <summary>Mode 2's object table for the frame: a creature's parts share one id, and the resolve composites
     /// the nearest node of an id once, so a ghosted creature is translucent as a whole rather than per part.
     /// ponytail: 255 ids a frame, first come; a 256th object gets 0 (per-part again). Linear scan, ~100 batches.</summary>
@@ -116,9 +112,9 @@ internal static unsafe class OitPass
         if (_linked && _net) _netRuns++;
         int cur; Gl.GetIntegerv(Gl.FRAMEBUFFER_BINDING, &cur); _restoreFbo = cur;
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, _fbo);
-        // Mode 2 attaches no depth: the append's own compare is the depth test, and a depth texture that is
-        // sampled while attached is decompressed by the driver, which taxed the NEXT frame's opaque pass.
-        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, _linked ? 0 : depthTex, 0);
+        // Both modes test against the scene depth in hardware, read-only. Nothing in the bracket may SAMPLE it: a
+        // depth texture sampled while attached is decompressed by the driver, which taxed the next frame's opaque pass.
+        Gl.FramebufferTexture2D(Gl.FRAMEBUFFER, Gl.DEPTH_ATTACHMENT, Gl.TEXTURE_2D, depthTex, 0);
         uint* bufs = stackalloc uint[2] { Gl.COLOR_ATTACHMENT0, Gl.COLOR_ATTACHMENT1 };
         if (!_net) { bufs[0] = Gl.NONE; bufs[1] = Gl.NONE; }
         Gl.DrawBuffers(2, bufs);
@@ -145,10 +141,8 @@ internal static unsafe class OitPass
             Gl.BindVertexArray(PostChain.FullscreenVao);
             Gl.DrawArrays(Gl.TRIANGLES, 0, 3);
             Gl.BindVertexArray(0);
-            Gl.ColorMask(1, 1, 1, 1);   // and the depth test stays OFF: the shader compare is the test in mode 2
+            Gl.ColorMask(1, 1, 1, 1); Gl.Enable(Gl.DEPTH_TEST);
             Gl.MemoryBarrier(Gl.SHADER_STORAGE_BARRIER_BIT);
-            Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.OitDepth); Gl.BindTexture(Gl.TEXTURE_2D, depthTex);
-            Gl.ActiveTexture(Gl.TEXTURE0);
             _linkedRuns++;
             if (!_engagedLogged) { _engagedLogged = true; _log?.Info($"OitPass: mode 2 engaged -- {_w}x{_h}, cap {_cap}, heads {_heads}, nodes {_nodes}"); }
         }

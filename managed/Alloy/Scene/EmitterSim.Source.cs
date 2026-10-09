@@ -51,24 +51,17 @@ internal struct EmitMut
 /// its basis once PER PARTICLE; a two-source property would branch there. A snapshot pays for the branch once
 /// per emitter and leaves the inner loops reading plain fields -- which is also what makes the two sources
 /// provably interchangeable (<c>EmitterSim.SelfCheck</c> runs the same step over both).</para>
-/// <para><b>Mode 0 is a transcription.</b> <see cref="EmitterSim.FillEngine"/> reads exactly the fields the
-/// pre-CX-120 code read, in the same order, and <see cref="EmitterSim.StoreEngine"/> writes back exactly the
-/// ones it wrote. The one consolidation is the transform: <c>Part::GetWorld</c> and <c>Gob::GetPosition</c> are
-/// called once here instead of up to three times inside the step, which cannot change a value because neither
-/// moves within a frame.</para></summary>
+/// <para>CX-188: there is one source left. <c>FillEngine</c>, the transcription of what the pre-CX-120 code
+/// read off the engine's <c>PartEmitter</c>/<c>MdlNodeEmitter</c>, had one caller -- the parity self-check --
+/// so no production snapshot has come from an engine emitter since the seam took the scene graph.</para></summary>
 internal struct Emitter
 {
-    /// <summary>The engine <c>PartEmitter*</c>, or zero in DB mode.</summary>
-    internal IntPtr Em;
-    /// <summary>The database part index, or -1 in engine mode. The discriminant.</summary>
+    /// <summary>The database part index, or -1 for an unfilled snapshot.</summary>
     internal int Part;
     /// <summary>The owning database object, in DB mode.</summary>
     internal DbId Obj;
     /// <summary>The database's chunk-spawn scene, in DB mode.</summary>
     internal DbId Scene;
-
-    /// <summary>True when this snapshot came from the scene database.</summary>
-    internal bool Db => Part >= 0;
 
     // ---- the node's own declarations ----
     internal int Flags;
@@ -118,7 +111,6 @@ internal struct Emitter
     /// <summary>The detonation REQUEST, cleared by the explosion step.</summary>
     internal bool Detonate;
     /// <summary>Engine mode: how many particles the engine's own list holds (the chunk census).</summary>
-    internal int EngineCount;
 
     /// <summary>The simulation's own state.</summary>
     internal EmitMut M;
@@ -130,135 +122,6 @@ internal static unsafe partial class EmitterSim
     /// @0x4aafc0 is <c>flags &gt;&gt; 3 &amp; 1</c> and <c>IsSplat</c> @0x4ab070 is <c>flags &gt;&gt; 9 &amp;
     /// 1</c> -- read off the word with the other nine rather than through two more calls.</summary>
     private const int FTinted = 1 << 3, FSplat = 1 << 9;
-
-    /// <summary>Fill a snapshot from the ENGINE's views. A literal transcription of what the pre-CX-120
-    /// simulation read, in its order; <paramref name="e"/>'s mutable half comes from the engine's own fields,
-    /// so an emitter the engine's walk stepped last frame continues from where it left off.
-    /// <para>False means the emitter has no model node, which is the one case the old <c>Open</c>/<c>Advance</c>
-    /// pair bailed on.</para></summary>
-    internal static bool FillEngine(IntPtr em, ref Emitter e)
-    {
-        var ev = new PartEmitter(em);
-        var part = new CX.Engine.Part(em);
-        var node = new MdlNodeEmitter(part.Node.Ptr);
-        if (node.IsNull) return false;
-        CX.Engine.Gob gob = part.Gob;
-
-        e = default;
-        e.Em = em;
-        e.Part = -1;
-
-        e.Flags = node.Flags;
-        e.RenderOrder = node.RenderOrder;
-        e.Chunk = node.ChunkModel[0] != 0;
-        e.Loop = node.Loop != 0;
-        e.NoCull = node.NoCull != 0;
-        e.Splat = (e.Flags & FSplat) != 0;
-        e.Tinted = (e.Flags & FTinted) != 0;
-        e.ConeCap = node.ConeCap;
-        e.WindStrength = node.WindStrength;
-        e.WindFalloff = node.WindFalloff;
-        e.GridX = node.GridX;
-        e.GridY = node.GridY;
-        e.Mode = ModeOf(node.Update);
-
-        e.Type = ev.Type;
-        e.Blend = ev.Blend;
-        e.LifeInterp = ev.LifeInterp;
-        e.BirthRate = ev.BirthRate;
-        e.Life = ev.Life;
-        e.Velocity = ev.Velocity;
-        e.RandVel = ev.RandVel;
-        e.Spread = ev.Spread;
-        e.Spin = ev.Spin;
-        e.Gravity = ev.Gravity;
-        e.Bounce = ev.Bounce;
-        e.CombineTime = ev.CombineTime;
-        e.P2pDrag = ev.P2pDrag;
-        e.P2pGrav = ev.P2pGrav;
-        e.Bezier2 = ev.Bezier2;
-        e.Bezier3 = ev.Bezier3;
-        e.DeadSpace = ev.DeadSpace;
-        e.SpawnX = ev.SpawnX;
-        e.SpawnY = ev.SpawnY;
-        e.BlurLength = ev.BlurLength;
-        e.BoltDelay = ev.BoltDelay;
-        e.BoltRadius = ev.BoltRadius;
-        e.ZigZag = ev.ZigZag;
-        e.AlphaStart = ev.AlphaStart;
-        e.AlphaEnd = ev.AlphaEnd;
-        e.Fps = ev.Fps;
-        e.FrameStart = ev.FrameStart;
-        e.FrameEnd = ev.FrameEnd;
-        e.SizeStartX = ev.SizeStartX;
-        e.SizeEndX = ev.SizeEndX;
-        e.SizeStartY = ev.SizeStartY;
-        e.SizeEndY = ev.SizeEndY;
-        e.ViewRadius = ev.ViewRadius;
-        e.ColorStart = ev.ColorStart;
-        e.ColorEnd = ev.ColorEnd;
-
-        // The transform, once. The engine's Part::GetWorld is pure within a frame, so folding its three call
-        // sites into one cannot change a value -- only the count.
-        if (_getWorld != null)
-        {
-            Vector3 wp;
-            Quat wq;
-            _getWorld(em, &wp, (float*)&wq);
-            e.WorldPos = wp; e.WorldRot = wq;
-        }
-        else
-        {
-            // Off-device only. Install refuses to arm without Part::GetWorld, so a live frame never gets
-            // here; the self-check's synthetic emitter has no tree to walk and states its own transform.
-            e.WorldPos = ev.Pos; e.WorldRot = ev.Orient;
-        }
-        e.HasOwner = !gob.IsNull;
-        if (e.HasOwner)
-        {
-            e.OwnerPos = gob.Position;
-            e.OwnerRot = gob.Rot;
-            e.ForceAnimated = gob.IsForceAnimated() != 0;
-            e.Scale = gob.GetAdjustedScale();
-        }
-        else
-        {
-            e.OwnerPos = part.Pos;
-            e.Scale = 1f;
-        }
-        e.PartScale = part.Scale;
-
-        CX.Engine.Gob target = ev.P2pTarget;
-        e.HasTarget = !target.IsNull;
-        if (e.HasTarget)
-        {
-            AurXform.V3 t = AurXform.Position(target.Ptr);
-            e.TargetPos = new Vector3(t.X, t.Y, t.Z);
-            e.TargetRot = AurXform.Orientation(target.Ptr);
-        }
-        e.Detonate = ev.Detonate != 0;
-        e.EngineCount = ev.Count;
-
-        e.M.Pos = ev.Pos;
-        e.M.Orient = ev.Orient;
-        e.M.PrevPos = ev.PrevPos;
-        e.M.PrevRot = ev.PrevRot;
-        e.M.PrevWorldPos = ev.PrevWorldPos;
-        e.M.PrevWorldRot = ev.PrevWorldRot;
-        Span<float> b = ev.Basis;
-        e.M.Bx = new Vector3(b[0], b[1], b[2]);
-        e.M.By = new Vector3(b[3], b[4], b[5]);
-        e.M.Bz = new Vector3(b[6], b[7], b[8]);
-        e.M.P2pLeftover = ev.P2pLeftover;
-        e.M.SpawnAcc = ev.SpawnAcc;
-        e.M.ModeClock = ev.ModeClock;
-        e.M.Seeded = ev.Seeded;
-        e.M.Birthing = ev.Birthing;
-        var bolt = new LightningEmitter(em);
-        e.M.BoltLastDelta = bolt.LastDelta;
-        e.M.BoltLastPos = bolt.LastPos;
-        return true;
-    }
 
     /// <summary>Fill a snapshot from the scene DATABASE: the parsed model's <see cref="EmitterDef"/> for what
     /// the file declares, the node's REST keys blended with whatever an animation has written
@@ -282,9 +145,10 @@ internal static unsafe partial class EmitterSim
         DbId obj = SceneDb.PartObj[part];
         if (!SceneDb.Objects.Valid(obj)) return false;
         int o = obj.Index;
+        Vector4[] rest = RestOf(nd);
+        int b = DbEmitterChannels.BlockOf(part);
 
         e = default;
-        e.Em = IntPtr.Zero;
         e.Part = part;
         e.Obj = obj;
         e.Scene = SceneDb.ObjScene[o];
@@ -309,43 +173,45 @@ internal static unsafe partial class EmitterSim
         // engine's index-domain interpolation is dead code on this build. Matched rather than invented.
         e.LifeInterp = 1;
 
-        e.AlphaEnd = Ch1(part, nd, Ctl.EmAlphaEnd, 0f);
-        e.AlphaStart = Ch1(part, nd, Ctl.EmAlphaStart, 0f);
-        e.BirthRate = Ch1(part, nd, Ctl.EmBirthRate, 0f);
-        e.Bounce = Ch1(part, nd, Ctl.EmBounceCo, 0f);
-        e.ColorEnd = Ch3(part, nd, Ctl.EmColorEnd);
-        e.ColorStart = Ch3(part, nd, Ctl.EmColorStart);
-        e.CombineTime = Ch1(part, nd, Ctl.EmCombineTime, 0f);
-        e.P2pDrag = Ch1(part, nd, Ctl.EmDrag, 0f);
-        e.Fps = Ch1(part, nd, Ctl.EmFps, 0f);
-        e.FrameEnd = Ch1(part, nd, Ctl.EmFrameEnd, 0f);
-        e.FrameStart = Ch1(part, nd, Ctl.EmFrameStart, 0f);
-        e.P2pGrav = Ch1(part, nd, Ctl.EmGrav, 0f);
-        e.Life = Ch1(part, nd, Ctl.EmLifeExp, 0f);
-        e.Gravity = Ch1(part, nd, Ctl.EmMass, 0f);
-        e.Bezier2 = Ch1(part, nd, Ctl.EmP2PBezier2, 0f);
-        e.Bezier3 = Ch1(part, nd, Ctl.EmP2PBezier3, 0f);
-        e.Spin = Ch1(part, nd, Ctl.EmParticleRot, 0f);
-        e.RandVel = Ch1(part, nd, Ctl.EmRandVel, 0f);
-        e.SizeStartX = Ch1(part, nd, Ctl.EmSizeStart, 0f);
-        e.SizeEndX = Ch1(part, nd, Ctl.EmSizeEnd, 0f);
-        e.SizeStartY = Ch1(part, nd, Ctl.EmSizeStartY, 0f);
-        e.SizeEndY = Ch1(part, nd, Ctl.EmSizeEndY, 0f);
-        e.Spread = Ch1(part, nd, Ctl.EmSpread, 0f);
-        e.DeadSpace = Ch1(part, nd, Ctl.EmThreshold, 0f);
-        e.Velocity = Ch1(part, nd, Ctl.EmVelocity, 0f);
-        e.SpawnX = Ch1(part, nd, Ctl.EmXSize, 0f);
-        e.SpawnY = Ch1(part, nd, Ctl.EmYSize, 0f);
-        e.BlurLength = Ch1(part, nd, Ctl.EmBlurLength, 0f);
-        e.BoltDelay = Ch1(part, nd, Ctl.EmLightningDelay, 0f);
-        e.BoltRadius = Ch1(part, nd, Ctl.EmLightningRadius, 0f);
-        e.ZigZag = Ch1(part, nd, Ctl.EmLightningScale, 0f);
-        e.Detonate = Ch1(part, nd, Ctl.EmDetonate, 0f) != 0f;
+        e.AlphaEnd = Ch1(rest, b, ChAlphaEnd);
+        e.AlphaStart = Ch1(rest, b, ChAlphaStart);
+        e.BirthRate = Ch1(rest, b, ChBirthRate);
+        e.Bounce = Ch1(rest, b, ChBounceCo);
+        e.ColorEnd = Ch3(rest, b, ChColorEnd);
+        e.ColorStart = Ch3(rest, b, ChColorStart);
+        e.CombineTime = Ch1(rest, b, ChCombineTime);
+        e.P2pDrag = Ch1(rest, b, ChDrag);
+        e.Fps = Ch1(rest, b, ChFps);
+        e.FrameEnd = Ch1(rest, b, ChFrameEnd);
+        e.FrameStart = Ch1(rest, b, ChFrameStart);
+        e.P2pGrav = Ch1(rest, b, ChGrav);
+        e.Life = Ch1(rest, b, ChLifeExp);
+        e.Gravity = Ch1(rest, b, ChMass);
+        e.Bezier2 = Ch1(rest, b, ChP2PBezier2);
+        e.Bezier3 = Ch1(rest, b, ChP2PBezier3);
+        e.Spin = Ch1(rest, b, ChParticleRot);
+        e.RandVel = Ch1(rest, b, ChRandVel);
+        e.SizeStartX = Ch1(rest, b, ChSizeStart);
+        e.SizeEndX = Ch1(rest, b, ChSizeEnd);
+        e.SizeStartY = Ch1(rest, b, ChSizeStartY);
+        e.SizeEndY = Ch1(rest, b, ChSizeEndY);
+        e.Spread = Ch1(rest, b, ChSpread);
+        e.DeadSpace = Ch1(rest, b, ChThreshold);
+        e.Velocity = Ch1(rest, b, ChVelocity);
+        e.SpawnX = Ch1(rest, b, ChXSize);
+        e.SpawnY = Ch1(rest, b, ChYSize);
+        e.BlurLength = Ch1(rest, b, ChBlurLength);
+        e.BoltDelay = Ch1(rest, b, ChLightningDelay);
+        e.BoltRadius = Ch1(rest, b, ChLightningRadius);
+        e.ZigZag = Ch1(rest, b, ChLightningScale);
+        e.Detonate = Ch1(rest, b, ChDetonate) != 0f;
 
         Matrix4x4 w = SceneDb.PartWorld[part];
         e.WorldPos = new Vector3(w.M41, w.M42, w.M43);
         e.WorldRot = RotationOf(in w);
-        e.ViewRadius = ViewRadiusOf(in e, Ch1(part, nd, Ctl.EmSizeMid, 0f), Ch1(part, nd, Ctl.EmSizeMidY, 0f));
+        e.ViewRadius = ViewRadiusOf(e.Gravity, e.Life, e.Velocity, e.RandVel,
+                                    e.SizeStartX, e.SizeEndX, e.SizeStartY, e.SizeEndY,
+                                    Ch1(rest, b, ChSizeMid), Ch1(rest, b, ChSizeMidY));
 
         e.HasOwner = true;
         e.OwnerPos = SceneDb.ObjWorld[o].Translation;
@@ -358,7 +224,6 @@ internal static unsafe partial class EmitterSim
         // stream writes fade x reveal per part), so a tile being unloaded takes its flames with it.
         e.Faded = SceneDb.PartFade[part] < 1f;
         TargetOf(part, o, ref e);
-        e.EngineCount = 0;
 
         e.M.Pos = e.WorldPos;
         e.M.Orient = e.WorldRot;
@@ -391,6 +256,36 @@ internal static unsafe partial class EmitterSim
         }
     }
 
+    /// <summary>CX-188: <b>just enough of the fill to answer the cull</b> -- the emitter's world position and
+    /// its view radius, and the update mode the dump budget keys on. Ten channel reads against the full fill's
+    /// thirty-odd plus a target walk, an owner transform and an engine scale call.
+    /// <para>The culled emitter needs nothing else: it has always <c>continue</c>d before <c>Advance</c>, so an
+    /// off-screen emitter is not stepped today either -- filling it was waste, not caution. The verdict is bit
+    /// identical to the full fill's, because the position and the radius come from the same columns through
+    /// the same <see cref="ViewRadiusOf"/>.</para>
+    /// <para>False for the same two reasons <see cref="FillDb"/> is false -- no emitter declaration on the
+    /// node, or a dead owner -- so the walk's <c>no-def</c> count keeps its meaning.</para></summary>
+    internal static bool CullDb(int part, out Vector3 pos, out float radius, out int mode)
+    {
+        pos = default; radius = 0f; mode = ModeSingle;
+        ModelDef? m = SceneDb.PartModel[part];
+        int n = SceneDb.PartNode[part];
+        NodeDef? nd = m != null && (uint)n < (uint)m.Nodes.Length ? m.Nodes[n] : null;
+        EmitterDef? d = nd?.Emitter;
+        if (nd == null || d == null) return false;
+        if (!SceneDb.Objects.Valid(SceneDb.PartObj[part])) return false;
+        Vector4[] rest = RestOf(nd);
+        int b = DbEmitterChannels.BlockOf(part);
+        Matrix4x4 w = SceneDb.PartWorld[part];
+        pos = new Vector3(w.M41, w.M42, w.M43);
+        radius = ViewRadiusOf(Ch1(rest, b, ChMass), Ch1(rest, b, ChLifeExp), Ch1(rest, b, ChVelocity),
+                              Ch1(rest, b, ChRandVel), Ch1(rest, b, ChSizeStart), Ch1(rest, b, ChSizeEnd),
+                              Ch1(rest, b, ChSizeStartY), Ch1(rest, b, ChSizeEndY),
+                              Ch1(rest, b, ChSizeMid), Ch1(rest, b, ChSizeMidY));
+        mode = ModeOf(d.Update);
+        return true;
+    }
+
     /// <summary><c>PartEmitter::CalculateRadius</c> @0x4ac350, in its non-p2p arm: the distance a particle can
     /// travel over its own lifetime under its launch speed and its gravity, plus the half-diagonal of the
     /// largest quad the emitter can reach. The engine caches it in <c>PartEmitter+0x214</c>; DB mode has no
@@ -401,34 +296,113 @@ internal static unsafe partial class EmitterSim
     /// the other is a vector read off <c>PartEmitter+0x200</c> whose field this stream could not name. A p2p
     /// emitter's radius is the distance to its target, which DB mode has no target edge for at all.</para>
     /// </summary>
-    private static float ViewRadiusOf(in Emitter e, float sizeMid, float sizeMidY)
+    private static float ViewRadiusOf(float mass, float life, float vel, float randVel,
+                                      float sizeStartX, float sizeEndX, float sizeStartY, float sizeEndY,
+                                      float sizeMid, float sizeMidY)
     {
-        float accel = MathF.Abs(e.Gravity * Gravity);
-        float life = MathF.Max(e.Life, 0f);
-        float travel = accel * 0.5f * life * life + (e.Velocity + e.RandVel) * life;
-        float hx = MathF.Max(sizeMid, MathF.Max(e.SizeEndX, e.SizeStartX)) * 0.5f;
-        float hy = MathF.Max(sizeMidY, MathF.Max(e.SizeEndY, e.SizeStartY)) * 0.5f;
+        float accel = MathF.Abs(mass * Gravity);
+        float l = MathF.Max(life, 0f);
+        float travel = accel * 0.5f * l * l + (vel + randVel) * l;
+        float hx = MathF.Max(sizeMid, MathF.Max(sizeEndX, sizeStartX)) * 0.5f;
+        float hy = MathF.Max(sizeMidY, MathF.Max(sizeEndY, sizeStartY)) * 0.5f;
         if (hy <= 0f) hy = hx;
         return travel + MathF.Sqrt(hx * hx + hy * hy);
     }
 
-    /// <summary>This part's animated value for one controller, or the node's own rest key when no animation has
-    /// written it. One table lookup and one array read per parameter.</summary>
-    private static float Ch1(int part, NodeDef nd, int type, float def)
+    // ---- the parameter cache (CX-188) ------------------------------------------------------------------
+
+    /// <summary>The controller ids the DB fill reads, one per <c>Ch*</c> ordinal below -- the ordinal IS the
+    /// index into this table and into <see cref="NodeDef.EmRest"/>. Keep the two in step; the self-check
+    /// asserts every pair.</summary>
+    private static readonly int[] _chIds =
     {
-        ControllerTrack? c = nd.Controller(type);
-        float rest = c != null && c.Values.Length > 0 ? c.Values[0] : def;
-        return DbEmitterChannels.Value(part, type, new Vector4(rest, 0f, 0f, 0f)).X;
+        Ctl.EmAlphaEnd, Ctl.EmAlphaStart, Ctl.EmBirthRate, Ctl.EmBounceCo, Ctl.EmColorEnd, Ctl.EmColorStart,
+        Ctl.EmCombineTime, Ctl.EmDrag, Ctl.EmFps, Ctl.EmFrameEnd, Ctl.EmFrameStart, Ctl.EmGrav,
+        Ctl.EmLifeExp, Ctl.EmMass, Ctl.EmP2PBezier2, Ctl.EmP2PBezier3, Ctl.EmParticleRot, Ctl.EmRandVel,
+        Ctl.EmSizeStart, Ctl.EmSizeEnd, Ctl.EmSizeStartY, Ctl.EmSizeEndY, Ctl.EmSpread, Ctl.EmThreshold,
+        Ctl.EmVelocity, Ctl.EmXSize, Ctl.EmYSize, Ctl.EmBlurLength, Ctl.EmLightningDelay,
+        Ctl.EmLightningRadius, Ctl.EmLightningScale, Ctl.EmDetonate, Ctl.EmSizeMid, Ctl.EmSizeMidY,
+    };
+
+    private const int ChAlphaEnd = 0, ChAlphaStart = 1, ChBirthRate = 2, ChBounceCo = 3, ChColorEnd = 4,
+                      ChColorStart = 5, ChCombineTime = 6, ChDrag = 7, ChFps = 8, ChFrameEnd = 9,
+                      ChFrameStart = 10, ChGrav = 11, ChLifeExp = 12, ChMass = 13, ChP2PBezier2 = 14,
+                      ChP2PBezier3 = 15, ChParticleRot = 16, ChRandVel = 17, ChSizeStart = 18,
+                      ChSizeEnd = 19, ChSizeStartY = 20, ChSizeEndY = 21, ChSpread = 22, ChThreshold = 23,
+                      ChVelocity = 24, ChXSize = 25, ChYSize = 26, ChBlurLength = 27,
+                      ChLightningDelay = 28, ChLightningRadius = 29, ChLightningScale = 30,
+                      ChDetonate = 31, ChSizeMid = 32, ChSizeMidY = 33, ChCount = 34;
+
+    /// <summary>Ordinal -> the channel index <see cref="DbEmitterChannels"/> files that controller under, or -1
+    /// for one it does not carry (<c>sizeMid</c> and <c>sizeMidY</c>, which no animation can write -- so they
+    /// are always the node's rest key).</summary>
+    private static readonly int[] _chBlock = BuildChBlock();
+
+    /// <summary>Ordinals whose rest key is a THREE-column read. The two fillers build their rest values by
+    /// different rules -- a 1-column track's rest is <c>Values[0]</c> and a colour's is zero unless the track
+    /// states all three -- and losing that distinction would silently change a colour with a short track.
+    /// </summary>
+    private static bool Ch3Rest(int ord) => ord == ChColorEnd || ord == ChColorStart;
+
+    private static int[] BuildChBlock()
+    {
+        var t = new int[ChCount];
+        for (int ord = 0; ord < ChCount; ord++) t[ord] = DbEmitterChannels.ChannelOf(_chIds[ord]);
+        return t;
     }
 
-    /// <inheritdoc cref="Ch1"/>
-    private static Vector3 Ch3(int part, NodeDef nd, int type)
+    /// <summary>CX-188: this NODE's rest keys, in <c>Ch*</c> ordinals, resolved on first sight and memoised on
+    /// the node itself (<see cref="NodeDef.EmRest"/>). Every read used to call <see cref="NodeDef.Controller"/>,
+    /// a linear search of the node's controller list, about thirty times per emitter per frame: 4,3% self of
+    /// the main thread's on-CPU samples (<c>perf-0927</c>), under a <see cref="FillDb"/> that ran for every
+    /// emitter in the area whether it was on screen or not.
+    /// <para><b>Keyed by the node, so there is no invalidation edge.</b> The keys are a pure function of
+    /// <see cref="NodeDef.Controllers"/>, which is immutable once parsed -- so a part whose model or node
+    /// changes, a part index the database re-tenants and a re-parsed model all read a DIFFERENT
+    /// <see cref="NodeDef"/> and therefore a different memo, with nothing to invalidate and no edge for a
+    /// writer to miss. The memo dies with the model the cache drops.</para>
+    /// <para><b>What an animation writes is never here.</b> <see cref="DbEmitterChannels"/>'s block is read
+    /// live on every fill (<see cref="Val"/>), asked once per emitter rather than once per channel, so an
+    /// emitter whose rate or size is keyed still ramps.</para>
+    /// <para>One array per distinct emitter NODE, at first sight -- the accepted first-sight cost, like the
+    /// model parse that produced the node. Four hundred torches of one model share one.</para></summary>
+    private static Vector4[] RestOf(NodeDef nd)
     {
-        ControllerTrack? c = nd.Controller(type);
-        var rest = c != null && c.Values.Length >= 3
-                 ? new Vector4(c.Values[0], c.Values[1], c.Values[2], 0f) : Vector4.Zero;
-        Vector4 v = DbEmitterChannels.Value(part, type, rest);
+        Vector4[]? r = nd.EmRest;
+        if (r != null) return r;
+        var t = new Vector4[ChCount];
+        for (int ord = 0; ord < ChCount; ord++)
+        {
+            ControllerTrack? c = nd.Controller(_chIds[ord]);
+            t[ord] = Ch3Rest(ord)
+                ? c != null && c.Values.Length >= 3
+                      ? new Vector4(c.Values[0], c.Values[1], c.Values[2], 0f) : Vector4.Zero
+                : new Vector4(c != null && c.Values.Length > 0 ? c.Values[0] : 0f, 0f, 0f, 0f);
+        }
+        // Published only once filled: the resolve is idempotent, so two threads racing cost one duplicate
+        // array and no reader can see a half-written one.
+        nd.EmRest = t;
+        return t;
+    }
+
+    /// <summary>This part's animated value for one controller, or the node's own rest key when no animation has
+    /// written it. <paramref name="b"/> is <see cref="DbEmitterChannels.BlockOf"/>, asked once per fill.</summary>
+    private static float Ch1(Vector4[] rest, int b, int ord) => Val(rest, b, ord).X;
+
+    /// <inheritdoc cref="Ch1"/>
+    private static Vector3 Ch3(Vector4[] rest, int b, int ord)
+    {
+        Vector4 v = Val(rest, b, ord);
         return new Vector3(v.X, v.Y, v.Z);
+    }
+
+    /// <summary><see cref="DbEmitterChannels.Value"/>'s own rule, with the two lookups it repeated per channel
+    /// hoisted out: the block's value when this part is animated and the channel is one it carries, the rest
+    /// key otherwise.</summary>
+    private static Vector4 Val(Vector4[] rest, int b, int ord)
+    {
+        int ch = _chBlock[ord];
+        return b >= 0 && ch >= 0 ? DbEmitterChannels.At(b, ch) : rest[ord];
     }
 
     /// <summary>The rotation half of a world matrix, with the scale divided out. The database stores a part's

@@ -94,6 +94,18 @@ internal static class TextureSlots
     internal const uint CoverDepth = MapBase;
     /// <summary>The scene depth the soft-particle fade reads.</summary>
     internal const uint SceneDepth = 15;
+    /// <summary>CX-188 (ADR 0029): the four G-buffer lanes and the frame depth, read by the DEFERRED COMPUTE
+    /// program (<see cref="DeferredLights"/>) and by nothing else. The MAP BLOCK's units, on
+    /// <see cref="CoverDepth"/>'s and <see cref="HiZ"/>'s shared argument: the dispatch is a compute program
+    /// that runs BETWEEN two draw passes, binds no material map of its own, and every draw program rebinds its
+    /// whole slot set at the program switch that opens each pass. It still puts texture 0 back on all five.</summary>
+    internal const uint Gbuf0 = MapBase, Gbuf1 = MapBase + 1, Gbuf2 = MapBase + 2, Gbuf3 = MapBase + 3,
+                        GbufDepth = MapBase + 4;
+    /// <summary>CX-188 step 3: the per-pixel shadow visibility record (<see cref="DeferredShadows"/>), read by
+    /// the deferred lighting dispatch alone. The map block's last two units, on <see cref="Gbuf0"/>'s argument
+    /// and <see cref="GrassGround"/>'s -- the grass program is a later pass that rebinds its own, and this one
+    /// puts texture 0 back on both.</summary>
+    internal const uint ShadowVis = MapBase + 5, ShadowKey = MapBase + 6;
     /// <summary>#642: the two shadow cube arrays again, through a sampler object with no compare mode, for the
     /// receiver's blocker search. Past the 0..15 budget on purpose: every unit below is spent, and every driver
     /// Alloy has met reports 32 per stage. The lib binds them by <c>layout(binding)</c>; the bind site asks
@@ -139,6 +151,19 @@ internal static class TextureSlots
     /// below is spent in the lit bracket -- and declared with <c>layout(binding)</c> in <c>cx_plt.glsl</c>,
     /// so no bind-time <c>glUniform1i</c> can miss it.</summary>
     internal const uint PltPalette = 19;
+
+    /// <summary>CX-188 step 4 (<see cref="PairShadows"/>): the (static light, mover) pair depth atlas. Read by
+    /// the debt dispatch and -- for an unbaked receiver whose light traded its dyn page for tiles -- by
+    /// <c>CxLocalShadowQ</c>, so by every program that lights. Past the 0..15 budget for
+    /// <see cref="LocalShadowRaw"/>'s reason and declared with <c>layout(binding)</c> in
+    /// <c>cx_pairshad.glsl</c>, so no bind-time <c>glUniform1i</c> can miss it; re-bound at every lighting
+    /// bind beside the pair table.</summary>
+    internal const uint PairMap = 28;
+
+    /// <summary>CX-188: the deferred pass's light record (<see cref="GBuffer.TexLight"/>), read by the lit stage's
+    /// blended draws. Past the 0..15 budget for <see cref="LocalShadowRaw"/>'s reason and declared with
+    /// <c>layout(binding)</c> in <c>cx_ownlit_head.glsl</c>; bound for the blended class by <see cref="Issue"/>.</summary>
+    internal const uint LightRec = 26;
 
     /// <summary>The map samplers, in unit order from <see cref="MapBase"/>. This array IS the bind order the
     /// lit program's link-time <c>glUniform1i</c> loop walks -- there is no second copy of it.</summary>
@@ -190,6 +215,7 @@ internal static class TextureSlots
         check.Expect(SmaaStage.WeightFs.Contains("uniform sampler2D uSearch;"), $"{AaSearch} uSearch (aa weights)");
         check.Expect(SmaaStage.BlendStageFs.Contains("uniform sampler2D uBlend;"), $"{AaBlend} uBlend (aa stage)");
         check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSsao;"), $"{Ssao} uSsao (lit program)");
+        check.Expect(AlloyRenderer.OwnedLitFsHead.Contains($"layout(binding = {LightRec}) uniform usampler2D uLightRec;"), $"{LightRec} uLightRec (lit program)");
         check.Expect(AlloyRenderer.OwnedLitFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SsaoDepth} uSceneDepth (lit program)");
         check.Expect(GrassField.GrassVs.Contains("uniform sampler2D uPushTex;"), $"{GrassPush} uPushTex (grass program)");
         check.Expect(GrassField.GrassFsHead.Contains("uniform sampler2D uGround;"), $"{GrassGround} uGround (grass program)");
@@ -201,9 +227,34 @@ internal static class TextureSlots
         check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbColor;"), $"{SnapshotColor} uFbColor");
         check.Expect(FrameSnapshot.FsHead.Contains("uniform sampler2D uFbDepth;"), $"{SnapshotDepth} uFbDepth");
         check.Expect(AlloyRenderer.OitOutFs.Contains("uniform sampler2D uOitDepth;"), $"{OitDepth} uOitDepth (blended output)");
-        check.Expect(AlloyRenderer.OitOutFs.Contains("uniform ivec2 uOitDim;") && AlloyRenderer.OitOutFs.Contains("uniform float uOitBias;") && AlloyRenderer.OitOutFs.Contains("uniform int uOitGob;"), "uOitDim/uOitBias/uOitGob are what OitPass.Upload and IssueColour write");
+        check.Expect(AlloyRenderer.OitOutFs.Contains("uniform ivec2 uOitDim;") && AlloyRenderer.OitOutFs.Contains("uniform int uOitGob;"), "uOitDim/uOitGob are what OitPass.Upload and IssueColour write");
         check.Expect(Particles.ParticleFsHead.Contains("uniform sampler2D uSceneDepth;"), $"{SceneDepth} uSceneDepth");
         check.Expect(Weather.SplashVs.Contains("uniform sampler2D uCoverDepth;"), $"{CoverDepth} uCoverDepth (splash program)");
+        // CX-188: the deferred pass declares its five by layout(binding), so no bind-time glUniform1i can miss
+        // one -- but the units still have to be the ones C# binds, which is what this pins.
+        string deferred = ShaderStages.Source(DeferredLights.ShdCs);
+        check.Expect(deferred.Contains($"layout(binding = {Gbuf0}) uniform usampler2D uGb0;")
+          && deferred.Contains($"layout(binding = {Gbuf1}) uniform usampler2D uGb1;")
+          && deferred.Contains($"layout(binding = {Gbuf2}) uniform usampler2D uGb2;")
+          && deferred.Contains($"layout(binding = {Gbuf3}) uniform sampler2D uGb3;")
+          && deferred.Contains($"layout(binding = {GbufDepth}) uniform sampler2D uGbDepth;"),
+          $"{Gbuf0}..{GbufDepth} uGb0..uGb3 + uGbDepth (deferred program)");
+        check.Expect(deferred.Contains("uniform samplerCubeArrayShadow uLocalShadow;")
+          && deferred.Contains("uniform samplerCubeArrayShadow uLocalDynShadow;"),
+          "the deferred program composes the local-shadow receiver whose units it binds at link");
+        // CX-188 step 3: the visibility record -- the lighting pass READS it on these two units, and the shadow
+        // pass that WRITES it reads the same five G-buffer units the lighting pass does.
+        check.Expect(deferred.Contains($"layout(binding = {ShadowVis}) uniform sampler2D uShVis;")
+          && deferred.Contains($"layout(binding = {ShadowKey}) uniform usampler2D uShKey;"),
+          $"{ShadowVis}/{ShadowKey} uShVis + uShKey (deferred program)");
+        string defshadow = ShaderStages.Source(DeferredShadows.ShdCs);
+        check.Expect(defshadow.Contains($"layout(binding = {Gbuf0}) uniform usampler2D uGb0;")
+          && defshadow.Contains($"layout(binding = {GbufDepth}) uniform sampler2D uGbDepth;")
+          && defshadow.Contains("uniform samplerCubeArrayShadow uLocalShadow;")
+          && defshadow.Contains("uniform samplerCubeArrayShadow uLocalDynShadow;"),
+          $"{Gbuf0}..{GbufDepth} uGb0 + uGbDepth and the cube arrays (deferred shadow program)");
+        check.Expect(ShadowKey == GrassGround && ShadowVis > GbufDepth,
+          $"{ShadowVis}/{ShadowKey} the record's units leave the map block");
 
         // ...and the units themselves. MapSamplers is what the lit program's bind loop walks, so a name added
         // there without a unit to put it on would silently land on the probe's.
@@ -224,6 +275,13 @@ internal static class TextureSlots
           && PltPalette != LightmapBake.UnitA && PltPalette != LightmapBake.UnitB && PltPalette != LightmapBake.UnitC,
           $"{PltPalette} uPltPal collides with a unit above the 0..15 budget (16/17 local shadow, 18 wetness, "
           + $"{LightmapBake.UnitA}..{LightmapBake.UnitC} the lightmap bake)");
+        // CX-188 step 4: the pair atlas and the pair table, against the GLSL every lighting program compiles.
+        check.Expect(ShaderSource.Get("cx_pairshad.glsl").Contains($"layout(binding = {PairMap}) uniform sampler2DArrayShadow uPairMap;"),
+          $"{PairMap} uPairMap (pair shadow atlas)");
+        check.Expect(ShaderSource.Get("cx_pairbuf.glsl").Contains($"layout(std430, binding = {PairShadows.Binding}) readonly buffer CxPairBuf"),
+          $"SSBO {PairShadows.Binding} CxPairBuf (this frame's pair tiles)");
+        check.Expect(PairMap > PltPalette && PairMap != LightmapBake.UnitA && PairMap != LightmapBake.UnitB
+          && PairMap != LightmapBake.UnitC, $"{PairMap} uPairMap collides with a unit above the 0..15 budget");
         return check.Ok;
     }
 }

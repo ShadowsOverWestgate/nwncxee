@@ -177,6 +177,18 @@ internal static class ShaderContract
 
     private static bool IsIdent(char c) => char.IsLetterOrDigit(c) || c == '_';
 
+    /// <summary>CX-188 step 5 (ADR 0029): every stage head that sets <c>CX_LIGHT_LITE</c> -- the forward
+    /// consumers of the point-light walk, vertex and fragment both.</summary>
+    private static readonly string[] LightLiteHeads =
+    {
+        "cx_grass_vhead.glsl", "cx_grass_fhead.glsl", "cx_gblade_vhead.glsl", "cx_gblade_fhead.glsl",
+        "cx_water_fhead.glsl", "cx_part_vhead.glsl", "cx_part_fhead.glsl", "cx_wx_vhead.glsl", "cx_wx_sphead.glsl",
+    };
+
+    /// <summary>...and that each of them still sets it. A head that lost the line renders identically and
+    /// silently compiles the baked receiver's whole walk back into a blade of grass.</summary>
+    private static bool LightLiteSet => LightLiteHeads.All(h => ShaderSource.Get(h).Contains("#define CX_LIGHT_LITE 1"));
+
     /// <summary>The body of <paramref name="src"/>'s <c>CxPass</c> declaration from its layout qualifier to
     /// the closing brace, comments and whitespace dropped; null when it declares none.</summary>
     private static string? PassMembers(string src)
@@ -217,7 +229,8 @@ internal static class ShaderContract
             ("uFalloff", AlloyRenderer.PbFalloff), ("uWrap", AlloyRenderer.PbWrap), ("uZ", AlloyRenderer.PbZ),
             ("uAtten", AlloyRenderer.PbAtten), ("uHot", AlloyRenderer.PbHot), ("uSss", AlloyRenderer.PbSss),
             ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim), ("uRelevance", AlloyRenderer.PbRelevance),
-            ("uBounds", AlloyRenderer.PbBounds) };
+            ("uBounds", AlloyRenderer.PbBounds), ("uShBudget", AlloyRenderer.PbShBudget),
+            ("uLightFloor", AlloyRenderer.PbLightFloor), ("uFullModel", AlloyRenderer.PbFullModel) };
         foreach ((string name, int off) in pinned)
         {
             int at = Std140Offset(members, name, out int size);
@@ -437,6 +450,11 @@ internal static class ShaderContract
                   && MaterialLib.Contains("vec3 s = lobe * cxSpecScale;")
                   && OwnedLitFsHead.Contains("#define CX_LIT_MATERIAL 1")
                   && AlloyLights.FragmentLib.Contains("vec3 CxClusteredLight(")
+                  // CX-188 step 5: the walk is bracketed into a slim half for the forward consumers and the
+                  // full one for everything else, the forward opaque lit stage included -- the A/B at
+                  // light.deferred 0 is only an A/B while this program keeps the walk it is compared against.
+                  && AlloyLights.FragmentLib.Contains("#ifdef CX_LIGHT_LITE")
+                  && !OwnedLitFsHead.Contains("CX_LIGHT_LITE") && LightLiteSet
                   // #143: the wrapped-diffuse helper, and the sun actually going THROUGH it --
                   // a lit tail that keeps the raw dot is the punctual terminator back with no other sign.
                   && AlloyLights.FragmentLib.Contains("float CxWrap(float ndl, float w)")
@@ -526,7 +544,8 @@ internal static class ShaderContract
                   // #142: the near-field term, and the guard that makes an unset uHot mean "off". A stage
                   // that lost it renders every light flat at the gain the BODY wants -- which is the exact
                   // symptom the term exists to fix, and says nothing.
-                  && AlloyLights.FragmentLib.Contains("att += uHot.x * fade * t * t / at.x;")
+                  // CX-188 budget: cxLod is light.fullmodel's weight, 1 at every caller but the walk's faint tail
+                  && AlloyLights.FragmentLib.Contains("att += cxLod * uHot.x * fade * t * t / at.x;")
                   && AlloyLights.FragmentLib.Contains("max(1.0 - f2 / (uHot.y * uHot.y), 0.0)")
                   && AlloyLights.FragmentLib.Contains("f2 = dd / rr;")
                   // ...and the fallback pair, so a program that never gets uAtten falls back instead of

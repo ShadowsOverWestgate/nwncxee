@@ -82,8 +82,8 @@ internal static class ShaderStages
 
         """;
 
-    /// <summary>Every overridable resref with the header its dumped copy carries. All thirty-six: four owned,
-    /// two water, the sky stage Alloy compiles the content's own sky into (CX-88), two grass cards and two procedural grass blades (CX-24), the cluster build, two caster, four post-chain stages and the post stack's gamma
+    /// <summary>Every overridable resref with the header its dumped copy carries. All thirty-nine: four owned,
+    /// two water, the sky stage Alloy compiles the content's own sky into (CX-88), two grass cards and two procedural grass blades (CX-24), the cluster build, the deferred point-light pass and its per-pixel shadow pass (CX-188), two caster, four post-chain stages and the post stack's gamma
     /// stage (#375), the taa stage (#389), the cel stage, the sharpen and vibrance stages (CX-93), the hosted post chain (#352), the halo pair and the weather stages -- the shared drop vertex stage with its rain and snow
     /// fragment pair, and the splash pass's own vertex/fragment pair (CX-102). #261 deleted one with SkyComposite and #339 deleted the water tessellation pair with the
     /// custom sea; <see cref="SelfCheck"/> asserts the count, so this prose and that assert have to move
@@ -101,6 +101,9 @@ internal static class ShaderStages
         (GrassField.ShdBladeVs,            Banner),
         (GrassField.ShdBladeFs,            Banner),
         (AlloyLights.ShdClusterCs,         Banner),
+        (DeferredLights.ShdCs,             Banner),
+        (DeferredShadows.ShdCs,            Banner),
+        (PairDebt.ShdCs,                   Banner),
         (CasterPass.ShdCastVs,             Banner + Invariant + Record + CasterRecord),
         (CasterPass.ShdCastFs,             Banner),
         (PostChain.ShdPostVs,              Banner),
@@ -191,7 +194,7 @@ internal static class ShaderStages
     /// that declares it. A missing switch arm is otherwise invisible until a program builds from "".</summary>
     internal static bool SelfCheck(ExtenderLog log)
     {
-        bool ok = All.Length == 36 && BindlessRef.Length <= ShaderResource.ResRefBytes;
+        bool ok = All.Length == 39 && BindlessRef.Length <= ShaderResource.ResRefBytes;
         foreach ((string r, string header) in All)
         {
             string src = Source(r);

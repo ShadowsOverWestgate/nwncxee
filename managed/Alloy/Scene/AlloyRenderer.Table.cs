@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System;
+using CX.Alloy.Db;
 using System.Numerics;
 using CX.Framework;
 using CX.Graphics;
@@ -295,8 +296,37 @@ public sealed unsafe partial class AlloyRenderer
     /// every frame by the batch key (a bind-path batch cuts on its textures) even when the record itself
     /// does not move.</summary>
     private static readonly int[] _recTid = new int[MaxOwned];
-    /// <summary>#331: the CycleTID controller behind the diffuse, or zero. A step marks the record texture-stale.</summary>
-    private static readonly IntPtr[] _recCtl = new IntPtr[MaxOwned];
+    /// <summary>CX-188: the <see cref="TexRegistry.TableSerial"/> this slot's textures were last resolved
+    /// under; 0 is "never, or ask again". While it matches, <c>StageDbPart</c> serves the slot's eight
+    /// handles, its bind-path tid and its map-slot tids from the memos instead of re-resolving them.
+    /// <para>Two invalidation edges, both wired. (1) Anything in the registry that can change an answer bumps
+    /// <see cref="TexRegistry.TableSerial"/>, which busts every slot at once -- a retire, an arrival, a
+    /// dropped handle, a kind discovery, a failure, a context loss. (2) This part's own override column
+    /// (<c>SceneDb.PartTexId</c>, written by <c>Gob::ReplaceTexture</c> and the PLT swaps) only moves under a
+    /// <c>Dirty.Texture</c> fold, which calls <see cref="DbTexDirty"/>; a reseat or a recipe change goes
+    /// through <see cref="UnstampRecord"/>, which zeroes it with the rest of the slot's stamps. A resolve that
+    /// did not SETTLE (a white stand-in, a slot still loading) stamps 0 and is asked again next frame.</para>
+    /// <para>The LIVE check is <see cref="StaleAudit"/>, which already re-derives the env-map bit, the PLT
+    /// flag and the whole handle block from the database on a cadence and names the slot that disagrees -- so
+    /// a skip that ever hid a real change reports itself rather than flickering. Off device,
+    /// <c>TexRegistry.SelfCheck</c> asserts the serial's bump on each registry edge.</para></summary>
+    private static readonly int[] _recTexStamp = new int[MaxOwned];
+    /// <summary>CX-188: the registry serial the whole stage phase resolves against, read ONCE per phase --
+    /// the registry is quiet while the walk runs (its writers are the game thread and the bracket's Drain,
+    /// and the pool's workers run with the game thread parked in <c>StagePool.Run</c>), so a per-part read
+    /// would be 12,7k reads of one unchanging int.</summary>
+    private static int _stageTexSerial;
+    /// <summary>CX-188: frames this period whose <see cref="_stageTexSerial"/> differed from the previous
+    /// frame's, and the value it is compared against. The skip's own instrument: the serial is meant to move
+    /// on a texture EVENT (a transcode drip, an area load), so a count near the frame count means something
+    /// is bumping it per frame and every slot re-resolves anyway.</summary>
+    private static long _texSerialMoves;
+    private static int _texSerialWas;
+    /// <summary>CX-188: this slot's texture answers may have changed for a reason the registry serial cannot
+    /// see -- its part's own override column. Called from the record fold for every part carrying
+    /// <c>Dirty.Texture</c> (or a create/tree/material mark, which can re-point the recipe under it).</summary>
+    internal static void DbTexDirty(int slot)
+    { if ((uint)slot < (uint)_recTexStamp.Length) _recTexStamp[slot] = 0; }
     /// <summary>This slot has a map slot whose texture had no GL id at its last resolve. NOT stale: the
     /// texture is re-asked on the slot's colour cadence and the record rewritten only once it has an id. It
     /// used to ride <see cref="RouteGate.TexStale"/>, and a map the engine never queues (nothing binds it under
@@ -315,11 +345,51 @@ public sealed unsafe partial class AlloyRenderer
         var svTid = new int[4]; Array.Copy(_recTid, svTid, 4);
         var svS = new int[4 * MapSlots]; Array.Copy(_recTidS, svS, 4 * MapSlots);
         var svStale = new bool[4];
+        var svStamp = new int[4]; Array.Copy(_recTexStamp, svStamp, 4);
         for (int i = 0; i < 4; i++) { svStale[i] = _gate[i].TexStale; _gate[i].TexStale = false; }
         Array.Clear(_recTid, 0, 4); Array.Clear(_recTidS, 0, 4 * MapSlots);
         _recTid[1] = 77; _recTidS[3 * MapSlots + 2] = 77; _recTid[2] = 78;
         NoteOwnedNameRetired(77);
         bool ok = !_gate[0].TexStale && _gate[1].TexStale && !_gate[2].TexStale && _gate[3].TexStale;
+        // CX-188: the stage's CLEAR (DbStage, beside the tid memos) is sound only because the memo moves with
+        // it. Clear with the memo still on the retired name and the next retire finds the slot again; clear
+        // after the memo moved and there is nothing left to find, which is what lets the gate go back down.
+        _gate[1].TexStale = false;
+        NoteOwnedNameRetired(77);
+        ok &= _gate[1].TexStale;
+        _recTid[1] = 81; _gate[1].TexStale = false;
+        NoteOwnedNameRetired(77);
+        ok &= !_gate[1].TexStale;
+        _recTid[1] = 77; _gate[1].TexStale = true;
+
+        // CX-188 (review): ...and the mark must RESET THE MEMO. A slot whose texture stamp still holds the
+        // current serial skips the whole resolve block in StageDbPart -- the handle block, the tid and the
+        // clear with them -- so a retire that marks without resetting the stamp binds the retired name,
+        // keeps the zeroed handle and force-routes the slot for the rest of the session. None of these three
+        // paths is a registry event, so the serial cannot catch it: MarkTexStale is the one funnel.
+        _stageTexSerial = TexRegistry.TableSerial;
+        for (int i = 0; i < 4; i++) { _gate[i].TexStale = false; _recTexStamp[i] = _stageTexSerial; }
+        NoteOwnedNameRetired(77);
+        ok &= _gate[1].TexStale && _recTexStamp[1] == 0 && _gate[3].TexStale && _recTexStamp[3] == 0
+              && !_gate[0].TexStale && _recTexStamp[0] == _stageTexSerial
+              && !_gate[2].TexStale && _recTexStamp[2] == _stageTexSerial;
+        for (int i = 0; i < 4; i++) { _gate[i].TexStale = false; _recTexStamp[i] = _stageTexSerial; }
+        var retNames = new List<uint> { 78 };
+        NoteOwnedNamesRetired(retNames, new HashSet<uint>());
+        ok &= _gate[2].TexStale && _recTexStamp[2] == 0 && !_gate[1].TexStale && _recTexStamp[1] == _stageTexSerial;
+        // ZeroHandle's own funnel: the dying VALUE is matched in the handle block, so the slot it sits in is
+        // marked AND un-memoised -- a zeroed handle that is never re-resolved is the radeonsi page fault.
+        const ulong fakeDying = 0xD1E1A5E0u;   // not-an-offset: a stand-in handle value, never dereferenced
+        for (int i = 0; i < 4; i++) { _gate[i].TexStale = false; _recTexStamp[i] = _stageTexSerial; }
+        ulong svH = _dTexH[2 * 8 + 3]; long svZeroed = HandlesZeroed;
+        _dTexH[2 * 8 + 3] = fakeDying;
+        ZeroHandle(fakeDying);
+        ok &= _gate[2].TexStale && _recTexStamp[2] == 0 && _dTexH[2 * 8 + 3] == 0
+              && !_gate[1].TexStale && _recTexStamp[1] == _stageTexSerial;
+        _dTexH[2 * 8 + 3] = svH; HandlesZeroed = svZeroed;
+        _recTid[1] = 77; _recTidS[3 * MapSlots + 2] = 77; _recTid[2] = 78;
+        for (int i = 0; i < 4; i++) _gate[i].TexStale = i == 1 || i == 3;
+
         // #386: a swap renames in place and queues the two records, once each
         int svSwapN = _swapN; _swapN = 0;
         NoteOwnedNameSwapped(77, 79); NoteOwnedNameSwapped(79, 80);
@@ -328,7 +398,8 @@ public sealed unsafe partial class AlloyRenderer
         _recSwapped[1] = _recSwapped[3] = false; _swapN = svSwapN;
         Array.Copy(svTid, _recTid, 4); Array.Copy(svS, _recTidS, 4 * MapSlots); _ownCount = sv;
         for (int i = 0; i < 4; i++) _gate[i].TexStale = svStale[i];
-        log.Info(ok ? "AlloyRenderer.SelfCheckNameRetired: passed" : "AlloyRenderer.SelfCheckNameRetired: FAILED -- a retired name did not mark exactly its records");
+        Array.Copy(svStamp, _recTexStamp, 4);
+        log.Info(ok ? "AlloyRenderer.SelfCheckNameRetired: passed" : "AlloyRenderer.SelfCheckNameRetired: FAILED -- a retired name did not mark exactly its records, or marked one without resetting its texture memo");
     }
 
     /// <summary>#386: an owned name was REPLACED by another for the same content (the transcode swap, an
@@ -390,6 +461,17 @@ public sealed unsafe partial class AlloyRenderer
     internal static void NoteTexStalePending() => _texStalePending = true;
     private static volatile bool _texStalePending;
 
+    /// <summary>CX-188: the texture MARK and the texture MEMO move together, always -- the one funnel every
+    /// setter of <see cref="RouteGate.TexStale"/> goes through.
+    /// <para>The mark is repaired by <c>StageDbPart</c>'s resolve, and that resolve is skipped while
+    /// <see cref="_recTexStamp"/> still holds the current <see cref="TexRegistry.TableSerial"/>. None of the
+    /// marking paths is a registry event -- the owned-texture retire drip, the engine-name handle cache's
+    /// <c>DropHandle</c> and the cycle-controller drop all bump no serial -- so marking without resetting the
+    /// stamp skips the block, never clears the mark, binds the retired name or the zeroed handle, and
+    /// force-routes the slot for the rest of the session. Exactly the fault the clear was added to end,
+    /// through a different door.</para></summary>
+    private static void MarkTexStale(int i) { _gate[i].TexStale = true; _recTexStamp[i] = 0; }
+
     /// <summary>Mark every record that minted a handle on <paramref name="name"/>. Cold (once per retired
     /// name), MaxOwned x 8 int compares.</summary>
     internal static void NoteOwnedNameRetired(uint name)
@@ -398,9 +480,9 @@ public sealed unsafe partial class AlloyRenderer
         int n = (int)name;
         for (int i = 0; i < _ownCount; i++)
         {
-            if (_recTid[i] == n) { _gate[i].TexStale = true; continue; }
+            if (_recTid[i] == n) { MarkTexStale(i); continue; }
             for (int s = 0; s < MapSlots; s++)
-                if (_recTidS[i * MapSlots + s] == n) { _gate[i].TexStale = true; break; }
+                if (_recTidS[i * MapSlots + s] == n) { MarkTexStale(i); break; }
         }
     }
     /// <summary>The Drain-time form: every name about to lose its handle, marked in one scan. Replaces the
@@ -419,11 +501,11 @@ public sealed unsafe partial class AlloyRenderer
         for (int i = 0; i < _ownCount; i++)
             {
                 int t = _recTid[i];
-                if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { _gate[i].TexStale = true; continue; }
+                if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { MarkTexStale(i); continue; }
                 for (int k = 0; k < MapSlots; k++)
                 {
                     t = _recTidS[i * MapSlots + k];
-                    if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { _gate[i].TexStale = true; break; }
+                    if ((uint)t < _nameMark.Length && _nameMark[t] != 0) { MarkTexStale(i); break; }
                 }
             }
         foreach (uint n in names) _nameMark[n] = 0;
@@ -452,7 +534,7 @@ public sealed unsafe partial class AlloyRenderer
             if (_dTexH[j] != v) continue;
             _dTexH[j] = 0;
             // the full re-resolve, not ApplySwaps: that one skips a block whose slot 0 reads 0 as "unlit"
-            _gate[j >> 3].TexStale = true;
+            MarkTexStale(j >> 3);
             MarkRecordDirty(j >> 3);
             _texHDirty = true;
             HandlesZeroed++;
@@ -519,7 +601,6 @@ public sealed unsafe partial class AlloyRenderer
     private static readonly int[] _cIdx = new int[MaxOwned];
     private static readonly nint[] _cOff = new nint[MaxOwned];
     private static readonly int[] _cBase = new int[MaxOwned];
-    private static readonly int[] _cGen = new int[MaxOwned];
     /// <summary>Blended candidates of this pass and their squared distance from the eye, before the sort.</summary>
     private static readonly int[] _blend = new int[MaxOwned];
     private static readonly float[] _blendKey = new float[MaxOwned];

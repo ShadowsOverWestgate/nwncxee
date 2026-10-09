@@ -1,6 +1,8 @@
 using System;
 using System.Numerics;
 using CX.Engine;
+using CX.Framework;
+using CX.Services.Camera;
 
 namespace CX.Alloy.Db;
 
@@ -37,8 +39,37 @@ internal static unsafe class DbKeyhole
             System.Span<float> pl = c.KeyholePlane;
             p0 = pl[0]; p1 = pl[1]; p2 = pl[2]; p3 = pl[3];
         }
-        if (on == 0) { _off++; }
+        Write(on, cut, p0, p1, p2, p3, order, n, slotPart, camera);
+    }
+
+    /// <summary>The column itself, over camera words already read. Split from the shell read so the
+    /// self-check can exercise both arms -- the shell is engine memory and there is none off-device.</summary>
+    private static void Write(byte on, float cut, float p0, float p1, float p2, float p3,
+                             int[] order, int n, int[] slotPart, DbId camera)
+    {
+        // With the aperture shut the verdict is 1f for every part whatever the plane and the cut say, so the
+        // words are zeroed out of the key: an indoor camera that shut the hole must not keep re-writing the
+        // column because its stale plane drifts.
+        if (on == 0) { _off++; cut = 0f; p0 = 0f; p1 = 0f; p2 = 0f; p3 = 0f; }
         else _armed++;
+        // CX-188: O(changed), not O(14k ordered records) a frame. Every input of the loop below is in this key:
+        //   - the camera's six keyhole words, and which camera they came off;
+        //   - the slot SET (AlloyRenderer.DbSetGen: a seat or a release, which is what moves _oDbPart and the
+        //     order itself) and the order's length;
+        //   - the world boxes the verdict tests (AlloyRenderer.BoxGen -- a box that MOVED, not a re-send);
+        //   - the LOD swaps (DbAnim.LodGen). Both alternates stay live across a swap, so it marks Dirty.Tree
+        //     and nothing else: the ordered set can change identity with DbSetGen and n both standing still.
+        // The column is seeded to 1f and reset to 1f when a part record is freed (DbFeed.Records), so a part
+        // this skip never reaches is opaque, which is what the walk would have written.
+        if (_lastCam == camera.Value && _lastOn == on && _lastCut == cut
+            && _lastP0 == p0 && _lastP1 == p1 && _lastP2 == p2 && _lastP3 == p3
+            && _lastSet == AlloyRenderer.DbSetGen && _lastBox == AlloyRenderer.BoxGen
+            && _lastLod == DbAnim.LodGen && _lastN == n)
+        { _skipped++; return; }
+        _lastCam = camera.Value; _lastOn = on; _lastCut = cut;
+        _lastP0 = p0; _lastP1 = p1; _lastP2 = p2; _lastP3 = p3;
+        _lastSet = AlloyRenderer.DbSetGen; _lastBox = AlloyRenderer.BoxGen;
+        _lastLod = DbAnim.LodGen; _lastN = n;
         for (int k = 0; k < n; k++)
         {
             int i = order[k];
@@ -46,7 +77,14 @@ internal static unsafe class DbKeyhole
             if (part < 0) continue;
             SceneDb.PartDissolve[part] = on != 0 && Dissolves(part, i, on, p0, p1, p2, p3, cut) ? 0f : 1f;
         }
+        _sweeps++;
     }
+
+    /// <inheritdoc cref="Write(byte, float, float, float, float, float, int[], int, int[], DbId)"/>
+    private static uint _lastCam;
+    private static byte _lastOn;
+    private static float _lastCut, _lastP0, _lastP1, _lastP2, _lastP3;
+    private static int _lastSet = -1, _lastBox = -1, _lastLod = -1, _lastN = -1;
 
     /// <summary>The engine's verdict for one database part, over the world box the stage already wrote
     /// (<c>_oBox</c>, filled when the slot is seated and refreshed on every move, so it is never unwritten).</summary>
@@ -84,12 +122,14 @@ internal static unsafe class DbKeyhole
         int p8 = AlloyLights.GlobalShaderParami(8), p9 = AlloyLights.GlobalShaderParami(9);
         bool on = p8 != 0 && p9 != 0 && sc != 0;
         if (!on) { cam.KeyholeState = 0; SayOnce(p8, p9, sc, default, 0f, 0f); return; }
+        if (!SceneDb.Cameras.Valid(camId) || !SceneDb.Objects.Valid(SceneDb.CamFollow[camId.Index]) || Directed())
+        { cam.KeyholeState = 0; _directed++; return; }
         // The target and the near plane come from the DATABASE, not off the shell. Measured: a CX camera
         // shell carries near = 0 and its scene carries skyPos = (0,0,0), because both are filled by engine
         // paths DB mode replaces -- so the engine's own expression would centre the hole on the origin at a
         // zero camera range. The database's answers are the same two quantities: the followed object is what
         // the chase camera is built over, and FrameInputs.CamNear is the near this frame was projected with.
-        System.Numerics.Vector3 target = Target(camId, sc);
+        System.Numerics.Vector3 target = SceneDb.ObjPos[SceneDb.CamFollow[camId.Index].Index];
         // The rendered eye, for the same reason the aperture's terms take it: the shell's own position word is
         // not where the view was built (measured 17,46 from the PC at the PC's height, against an eye 14 units
         // above it), and a plane pushed back by the wrong distance cuts at the wrong depth.
@@ -116,22 +156,17 @@ internal static unsafe class DbKeyhole
         SayOnce(p8, p9, sc, target, dist, near, 1);
     }
 
-    /// <summary>What the hole is centred on: the camera's followed object, falling back to the scene's sky
-    /// anchor (which is what vanilla reads) when there is no object to ask.</summary>
-    private static System.Numerics.Vector3 Target(DbId camId, nint sc)
+    /// <summary>Is the camera someone else's than the player's -- the free camera, or the engine's cutscene flag
+    /// (<c>CClientExoApp::InCutscene</c>, the int <c>SetCutsceneMode</c> @0x745580 stores)? A directed shot shows
+    /// the scene whole: no roof is cut.</summary>
+    private static bool Directed()
     {
-        if (SceneDb.Cameras.Valid(camId))
-        {
-            // CamFOLLOW, not CamObj. CamObj is the camera's OWN object -- its position is the camera's, which
-            // is what this read, so uPlayerPos was the eye and the shader's floor clamp
-            // (world.z - 1 - uPlayerPos.z) zeroed the level for every roof below the camera: the whole keyhole
-            // cut, refused on one wrong column. Measured against mode 0: player (17,00 4,00 0,00) there,
-            // (1,68 4,00 14,36) -- the eye exactly -- here.
-            DbId obj = SceneDb.CamFollow[camId.Index];
-            if (SceneDb.Objects.Valid(obj)) return SceneDb.ObjPos[obj.Index];
-        }
-        return sc == 0 ? default : new Scene(sc).SkyPos;
+        if (FreeCameraService.Active) return true;
+        IntPtr app = CameraService.App();
+        return app != IntPtr.Zero && new CClientExoApp(app).Internal.CutsceneMode != 0;
     }
+
+    private static long _directed;
 
     private static bool _said;
     private static int _calls;
@@ -193,7 +228,90 @@ internal static unsafe class DbKeyhole
         _rtWrites++;
     }
 
-    private static long _armed, _off, _cut, _rtWrites;
+    private static long _armed, _off, _cut, _rtWrites, _skipped, _sweeps;
 
-    internal static string Stats() => $"dbkeyhole: {_armed} passes armed / {_off} with the aperture shut, {_cut} part dissolves, {_rtWrites} runtime fills";
+    internal static string Stats() => $"dbkeyhole: {_armed} passes armed / {_off} with the aperture shut ({_directed} for a directed or unfollowing camera), {_cut} part dissolves, {_rtWrites} runtime fills, {_sweeps} column sweep(s) / {_skipped} pass(es) skipped (nothing the verdict reads moved)";
+
+    /// <summary>Off-device: the SKIP, which is the only thing here that can be wrong without looking wrong --
+    /// a stale dissolve column is a roof that stays open (or shut) after the camera moved.
+    /// <para>BOTH arms. The shut arm writes 1f over the order; the ARMED arm is reached with a non-tile
+    /// subject, which <see cref="Dissolves"/> refuses before the engine call -- so the camera words go through
+    /// the key and the verdict still needs no engine memory. Both directions in each arm: the skip must skip
+    /// when nothing it reads moved, and must NOT skip when the slot set, a world box, a LOD swap or any
+    /// camera word did.</para></summary>
+    internal static bool SelfCheck(ExtenderLog log)
+    {
+        var check = new Checker(log, "DbKeyhole.SelfCheck");
+        // Save and restore the live key: this runs inside a session whose next pass must not inherit it.
+        var was = (_lastCam, _lastOn, _lastCut, _lastP0, _lastP1, _lastP2, _lastP3,
+                   _lastSet, _lastBox, _lastLod, _lastN);
+
+        DbId obj = SceneDb.Objects.Alloc();
+        if (obj.IsNull) { log.Info("DbKeyhole.SelfCheck: FAILED -- no object slot"); return false; }
+        if (!SceneDb.Parts.AllocRange(1, out int part))
+        { SceneDb.Objects.Free(obj); log.Info("DbKeyhole.SelfCheck: FAILED -- no part slot"); return false; }
+        SceneDb.PartObj[part] = obj;
+        // NOT a tile: Dissolves refuses a non-tile part before it reaches PartTable.KeyholeDissolvesBox, which
+        // is engine code there is none of off-device. That refusal is what makes the armed arm checkable.
+        SceneDb.ObjFlags[obj.Index] &= ~ObjFlag.Tile;
+        var order = new[] { 0 };
+        var slotPart = new[] { part };
+
+        // ---- the aperture SHUT ----
+        SceneDb.PartDissolve[part] = 0f;
+        _lastSet = -1; _lastBox = -1; _lastLod = -1; _lastN = -1; _lastCam = 0;
+        Write(0, 0f, 0f, 0f, 0f, 0f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 1f, "a shut aperture writes every ordered part opaque");
+
+        // Nothing the verdict reads has moved, so the second pass must not touch the column at all.
+        SceneDb.PartDissolve[part] = 0.25f;
+        Write(0, 0f, 0f, 0f, 0f, 0f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 0.25f,
+                     "a pass with nothing changed re-wrote the dissolve column -- the skip is not skipping");
+        // ...and a camera word moving while the hole is SHUT must still not re-write it: the verdict does not
+        // read the plane or the cut in that arm, and a stale plane drifts every frame.
+        Write(0, 7f, 1f, 2f, 3f, 4f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 0.25f,
+                     "a shut aperture's drifting plane re-wrote the column -- the words are not zeroed out of the key");
+
+        // ---- each edge in the key breaks the skip ----
+        AlloyRenderer.DbSetGen++;
+        Write(0, 0f, 0f, 0f, 0f, 0f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 1f, "a slot-set edge did not re-write the column");
+        SceneDb.PartDissolve[part] = 0.25f;
+        AlloyRenderer.BoxGen++;
+        Write(0, 0f, 0f, 0f, 0f, 0f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 1f, "a world-box change did not re-write the column");
+        SceneDb.PartDissolve[part] = 0.25f;
+        DbAnim.LodGen++;
+        Write(0, 0f, 0f, 0f, 0f, 0f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 1f,
+                     "a LOD swap did not re-write the column -- a swap changes which seated slot the order "
+                   + "carries and moves neither DbSetGen nor the order's length");
+
+        // ---- the aperture ARMED ----
+        SceneDb.PartDissolve[part] = 0.25f;
+        Write(1, 3f, 0f, 0f, 1f, -2f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 1f,
+                     "arming the aperture did not re-write the column (the ON byte is not in the key)");
+        SceneDb.PartDissolve[part] = 0.25f;
+        Write(1, 3f, 0f, 0f, 1f, -2f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 0.25f, "an armed pass with the same camera words re-walked");
+        Write(1, 4f, 0f, 0f, 1f, -2f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 1f, "the keyhole CUT is not in the key -- the hole would "
+                                                     + "cut at the previous frame's depth");
+        SceneDb.PartDissolve[part] = 0.25f;
+        Write(1, 4f, 0f, 0f, 1f, -2.5f, order, 1, slotPart, default);
+        check.Expect(SceneDb.PartDissolve[part] == 1f, "the keyhole PLANE is not in the key -- the hole would "
+                                                     + "stay where the camera last was");
+
+        SceneDb.Parts.FreeRange(part, 1);
+        SceneDb.Objects.Free(obj);
+        SceneDb.Parts.TakeDirty(); SceneDb.Objects.TakeDirty();
+        (_lastCam, _lastOn, _lastCut, _lastP0, _lastP1, _lastP2, _lastP3,
+         _lastSet, _lastBox, _lastLod, _lastN) = was;
+        log.Info(check.Ok ? "DbKeyhole.SelfCheck: passed"
+                          : "DbKeyhole.SelfCheck: FAILED -- the dissolve column's skip would hide a real change");
+        return check.Ok;
+    }
 }

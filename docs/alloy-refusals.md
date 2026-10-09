@@ -110,8 +110,9 @@ the reason and the restart, and the mode stays where it booted. First reason win
 ## Who reads the verdict
 
 `AlloyGate.Alloy`, and nothing else, gates: the shim's take-the-frame branch (`AlloyRenderer.Armed4Shim`),
-enrollment, the #132 frame anchor, `PartTable.Live`, `CasterPass`, `ShadowService` (which is what puts the
-engine's stencil shadows back) and `SceneInputs`.
+enrollment, the #132 frame anchor, `CasterPass` and `SceneInputs`. (`ShadowService`, which used to put the
+engine's stencil shadows back, went in CX-188: the engine renderer module whose draws it suppressed does not
+run at all when CX owns the scene graph.)
 
 ## Exercising the forced-failure paths
 

@@ -48,10 +48,11 @@ public static unsafe partial class MeshArena
     /// weights for <see cref="Fmt.Skinned"/>.</summary>
     private static readonly int[] StrideOf = { 10, 15 };
 
-    /// <summary>Vertices one format's section may hold (2M x 40 B = 80 MiB for the static one; the skinned
-    /// section is far smaller in practice -- one copy per distinct creature mesh, not per creature).
+    /// <summary>Vertices one format's section may hold (4M x 40 B = 160 MiB for the static one, grown on demand;
+    /// the skinned section is far smaller in practice -- one copy per distinct creature mesh, not per creature).
+    /// 2M filled in a 27x24 city with 1654 placeables (2026-10-08) and every mesh after it drew nothing.
     /// ponytail: a section past its ceiling refuses and counts; there is no spill to a second VBO.</summary>
-    private const int MaxVerts = 1 << 21;
+    private const int MaxVerts = 1 << 22;
     /// <summary>Indices the shared element arena may hold (8M x 2 B = 16 MiB).</summary>
     private const int MaxIndices = 8 << 20;
     /// <summary>A mesh past this cannot be addressed by a 16-bit index. The engine's own vertex count is a
@@ -63,8 +64,8 @@ public static unsafe partial class MeshArena
     private static readonly object _gate = new();
 
     /// <summary>Why a mesh has no range. Counted and named on the period line, never a quiet hole.</summary>
-    internal enum Refusal : byte { None, Empty, TooManyVerts, Section, Elements, Table }
-    private static readonly string[] RefusalName = { "none", "empty", "verts-over-64k", "section-full", "element-full", "table-full" };
+    internal enum Refusal : byte { None, Empty, TooManyVerts, Section, Elements, Table, Again }
+    private static readonly string[] RefusalName = { "none", "empty", "verts-over-64k", "section-full", "element-full", "table-full", "again-unchanged" };
 
     /// <summary>One distinct mesh in the arena: where its vertices are, its three LOD index runs (BYTE offsets
     /// into the shared element arena; a zero count means the simplifier declined that level), its own-space
@@ -287,6 +288,8 @@ public static unsafe partial class MeshArena
             _byMesh.Remove(mesh);
             if (mesh.Indices.Length < 3 || mesh.Positions.Length == 0) return Refuse(Refusal.Empty);
             if (mesh.Positions.Length > MaxMeshVerts) return Refuse(Refusal.TooManyVerts);
+            // the feed re-asks a refused part every frame; skip the allocating hash + LOD cut until the arena changes
+            if (mesh.ArenaRefused == _epoch) return Refuse(Refusal.Again);
         }
 
         // The content hash and the LOD cut are the expensive half and touch nothing shared, so they run OFF
@@ -312,6 +315,7 @@ public static unsafe partial class MeshArena
             }
             int id = Build(mesh, skinned ? skin : null, c1, c2, i0, i1, n1, i2, n2);
             if (id >= 0) _byMesh[mesh] = (id, _ranges[id].Gen);
+            else mesh.ArenaRefused = _epoch;
             return id;
         }
     }

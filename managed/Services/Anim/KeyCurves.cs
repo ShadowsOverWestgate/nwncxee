@@ -67,31 +67,6 @@ public sealed unsafe class KeyCurveService : IExtenderService
         return _rotation(ctrl, t, node, rot);
     }
 
-    /// <summary>CX-106 re-seat: the same answer <see cref="OnVector"/> gives, as a DIRECT call for the owned
-    /// animation runtime -- which never calls <see cref="SymbolMap.CtrlGetVector"/>, so the hook above cannot
-    /// fire on that path. The hook stays for <c>anim.owned 0</c>; this is the only other entry.
-    /// <para>True = the curve answered and <paramref name="v"/> is final (position scale already applied).</para></summary>
-    internal static bool OwnedVector(IntPtr ctrl, IntPtr node, float t, out Vector3 v)
-    {
-        v = default;
-        if (_positionScale == null || !AnimKnobs.Curves.V) return false;
-        if (!Track(ctrl, node, VectorKeys, out float* times, out float* values, out int n)) return false;
-        if (!Position(times, values, n, t, out Vector3 p)) return false;
-        v = new NewController(ctrl).Id == EngineLayout.PartPos ? p * *_positionScale : p;
-        return true;
-    }
-
-    /// <summary>CX-106 re-seat: <see cref="OnRotation"/> as a direct call. <inheritdoc cref="OwnedVector"/></summary>
-    internal static bool OwnedRotation(IntPtr ctrl, IntPtr node, float t, out Quat rot)
-    {
-        rot = default;
-        if (!AnimKnobs.Curves.V) return false;
-        if (!Track(ctrl, node, RotationKeys, out float* times, out float* values, out int n)) return false;
-        if (!Turn(times, values, n, t, out Quaternion q)) return false;
-        rot = q;
-        return true;
-    }
-
     /// <summary>The controller's key times and values in its node's pool, when it is a linear track
     /// <paramref name="width"/> floats wide; anything else (Bezier, another width) is the engine's.</summary>
     private static bool Track(IntPtr ctrl, IntPtr node, byte width, out float* times, out float* values, out int n)

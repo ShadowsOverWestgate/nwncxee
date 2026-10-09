@@ -241,8 +241,14 @@ internal static unsafe partial class LightmapBake
             Gl.ActiveTexture(Gl.TEXTURE0);
         }
         Gl.Uniform1i(locPages, live ? _layers : 0);
-        if (locMovers >= 0) Gl.Uniform1i(locMovers, !Lightmap.Movers.V ? 0 : Lightmap.MoverTaps.V ? 1 : 2);
+        if (locMovers >= 0) Gl.Uniform1i(locMovers, MoverMode);
     }
+
+    /// <summary>The light walk's <c>uLmMovers</c>: 0 = a baked receiver skips static lights outright, 1 = a hot
+    /// one takes its mover's shadow back out of the baked term, 2 = the ray test alone (the
+    /// <c>lightmap.movertaps</c> diagnostic). CX-188: the deferred pass reads the lanes off the G-buffer and
+    /// binds no pages, so it needs this one number without the rest of <see cref="BindForDraw"/>.</summary>
+    internal static int MoverMode => !Lightmap.Movers.V ? 0 : Lightmap.MoverTaps.V ? 1 : 2;
 
     /// <summary>The staging loop's one call per charted draw: a slot the bake has not seen enrols -- its key
     /// is computed against the settled static set and it either shares a landed rect, joins a rect's queue or
@@ -1385,7 +1391,6 @@ internal static unsafe partial class LightmapBake
         // CX-56: _loadArmed is deliberately untouched -- it says the CURRENT area's lights are all spawned,
         // which a revoke does not change, so the set this reopens re-closes on the very next walk.
         SetHash = 0; _setN = 0; _stN = 0; _seen.Clear(); _seenPtr.Clear(); Reopen(); _rekeyPending = false;
-        VoidClasses();
     }
 
     /// <summary>The context is gone: forget every name; the next frame rebuilds and re-packs.</summary>
@@ -1404,7 +1409,7 @@ internal static unsafe partial class LightmapBake
          : _down.Failed ? $"bake FAILED: {_down.Reason}"
          : (LoadRefusals > 0 ? $"bake: {LoadRefusals} area load(s) the engine refused; " : "bake: ")
            + $"pages {_layers}/{_cap}, {_landed} rects landed ({_landedHits} from cache), {_pending} pending, {_pastCap} past the cap; "
-           + $"static lights {CensusStatic} (tile {CensusTile}, placeable {CensusPlaceable}) animated {CensusAnimated} (anim-driven {CensusAnimRun}) dynamic {CensusDynamic}";
+           + $"static lights {CensusStatic} dynamic {CensusDynamic}";
 
     /// <summary>One clause of the Alloy period line.</summary>
     internal static string Stats(int frames)
@@ -1421,13 +1426,12 @@ internal static unsafe partial class LightmapBake
                    + TierStats()
                    + $", charted draws/frame {_drewBaked / frames} baked / {_drewNoRect / frames} no rect / {_drewPending / frames} pending / {_drewRefused / frames} refused"
                    + (_drewLandedUnbaked > 0 ? $" / {_drewLandedUnbaked / frames} LANDED BUT UNBAKED" : "")
-                   + $", census static {CensusStatic} (tile {CensusTile}, placeable {CensusPlaceable}) animated {CensusAnimated} (anim-driven {CensusAnimRun}) dynamic {CensusDynamic} skipped {CensusSkipped}"
+                   + $", census static {CensusStatic} dynamic {CensusDynamic}"
                    + $", alloc bake {_allocRun >> 20} MiB / cache thread {_cache.Allocated >> 20} MiB" 
                    + (_areaKey != 0 ? $", area cache {(_areaAdopted ? "hit" : "miss")} ({_areaAdoptedRects} adopted, {_areaNew} new)" : "")
                    + (_areaKeyless + _areaLate + _areaDrift > 0 ? $", area cache refused {_areaKeyless} keyless / {_areaLate} late / {_areaDrift} drifted" : "")
                    + (_areaSnapped + _areaSnapLost + _areaSnapCapped > 0 ? $", area plan pages read back whole {_areaSnapped} ({_areaSnapLost} lost to the edge, {_areaSnapCapped} plan(s) past the union cap)" : "")
                    + PhaseStats()
-                   + (_clsFull > 0 ? $", {_clsFull} lights past the class table" : "")
                    + (_cslEdges > 0 ? $", {_cslEdges} ComputeStaticLighting edges" : "");
         _drewBaked = _drewNoRect = _drewRefused = _drewPending = _drewLandedUnbaked = 0;
         _qBake.Reset(); _bakeSkips = 0; _allocRun = 0; _evicted = 0; _cache.Allocated = 0; _cslEdges = 0; _bakeSteps = 0; _pageMs = 0; _pageMsN = 0;

@@ -61,7 +61,11 @@ public static unsafe partial class DbAnim
 
     /// <summary>Does light part <paramref name="p"/> keep moving: a multi-key colour, radius or multiplier
     /// track on its model node, or on an animation that has posed it. Mode 0's <c>LightmapBake.Drives</c> +
-    /// <c>AnimationDrives</c>; a single-key track settles and is not motion.</summary>
+    /// <c>AnimationDrives</c>; a single-key track settles and is not motion.
+    /// <para>CX-188: the model-node half is <see cref="NodeDef.LitKeyed"/>, memoised on the node. This is asked
+    /// once per light per <c>DbLights.Walk</c> and again per <c>Halos.EnrollDb</c> -- O(lights in the area),
+    /// every frame, still camera or not -- and the controller-array scan it used to do was 1.66% of the game
+    /// thread in the 146-light measurement, the largest O(world) term left outside the draw itself.</para></summary>
     public static bool LitMoving(int p)
     {
         if ((uint)p >= (uint)SceneDb.MaxParts) return false;
@@ -69,10 +73,7 @@ public static unsafe partial class DbAnim
         ModelDef? m = SceneDb.PartModel[p];
         int node = SceneDb.PartNode[p];
         if (m == null || (uint)node >= (uint)m.Nodes.Length) return false;
-        foreach (ControllerTrack c in m.Nodes[node].Controllers)
-            if (c.Times.Length > 1 && (c.Type == Ctl.LightColor || c.Type == Ctl.LightRadius || c.Type == Ctl.LightMultiplier))
-                return true;
-        return false;
+        return m.Nodes[node].LitKeyed;
     }
 
     /// <summary>CX-116: install a colour on a light part the way <c>Gob::ControlPartLightColor</c> @0x4436d0

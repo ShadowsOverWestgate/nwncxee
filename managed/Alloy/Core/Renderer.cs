@@ -25,7 +25,8 @@ internal static class Renderer
     internal static readonly Knob<float> Scale, Weld, Lod, GradedBlend;
     internal static readonly Knob<string> Highlight, DrawHooks, DumpTex;
     internal static readonly Knob<bool> PltVerify;
-    internal static readonly Knob<bool> TileDissolve, Bcn, Hdr, Gl46, OwnedTex, PltCpu, TexSingle, DdsRead, HandleDrop, OwnedGeom,
+    internal static readonly Knob<bool> TexPreview;
+    internal static readonly Knob<bool> Bcn, Hdr, Gl46, OwnedTex, PltCpu, TexSingle, DdsRead, HandleDrop, OwnedGeom,
                                         Spirv, VanillaBridge, HostFs, OwnSkin, DumpShaders, GlDebug, EngineZones,
                                         NwSyncRead, Gui, Movie;
     internal static readonly Knob<int> Border, Oit, OitLayers, TexCache, Bindless, BcnDrip, TexPrefetch, TexDelete, MaxElements, RasterRead, TexStream, TexLoad, ModelLoad, MdlCache,
@@ -36,7 +37,7 @@ internal static class Renderer
     internal static readonly Knob<bool> CullWatch;
     internal static readonly Knob<float> LodHyst;
     internal static readonly Knob<int> Viz, Threads, Cull, HlChan, OitViz;
-    internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap, Doors;
+    internal static readonly KnobButton Consts, FrameDumpBtn, ShaderDump, Snap;
     // ---- CX-120 seam-scene ----
     /// <summary>ADR 0028 section 5's render thread. Boot, and default OFF until the live harness clears it:
     /// what it moves is Alloy's whole GL context to a second thread, and the things that still reach the
@@ -100,8 +101,6 @@ internal static class Renderer
         Lod = G.Slider("lod", "Cull models smaller than", 0f, 8f, 0.5f, 1f, "px", Tier.Advanced,
                        help: "Distant models whose projected size is under this many pixels are skipped.",
                        changed: AlloyRenderer.InvalidateRecords);
-        TileDissolve = G.Toggle("tiledissolve", "Dissolve tile props hiding the camera", true, Tier.Advanced,
-                                help: "Off = only walls dissolve, as in the stock game.", changed: AlloyRenderer.InvalidateRecords);
         Border = G.Slider("border", "Neighbouring-area ring", 5, 40, 5, 15, "tiles", Tier.Advanced, Effect.Restart,
                           help: "Tiles drawn past the area edge so the horizon is not empty; the stock game draws 5.");
         G.Section("Transparency");
@@ -114,6 +113,8 @@ internal static class Renderer
                               effect: Effect.Restart, format: AutoInt, parse: ParseAutoInt);
         Bindless = G.Dropdown("bindless", "Bindless textures", new[] { -1, 1, 0 }, -1, tier: Tier.Advanced, effect: Effect.Restart,
                               help: "Auto turns them off on Zink.", format: AutoOnOff, parse: ParseAutoOnOff);
+        TexPreview = G.Toggle("texpreview", "Low-resolution texture previews", true, Tier.Advanced, Effect.Live,
+                              help: "While an area streams in, every texture first shows a small blurred version of itself, then sharpens when the full one lands. Off: a texture shows white until it has fully loaded.");
         Bcn = G.Toggle("bcn", "Compress textures on load", true, Tier.Advanced, Effect.Restart,
                        help: "Re-encodes uncompressed textures as BC1/BC3: 3–4× less VRAM, a little load-time CPU.");
 
@@ -228,7 +229,6 @@ internal static class Renderer
         Snap = G.Button("snap", "snap", FrameTap.Arm, Tier.ChatOnly);
         // CX-89: every visible door's fade alpha against mindooralpha -- the instrument for "doors still
         // take a click", which no screenshot shows.
-        Doors = G.Button("doors", "doors", DoorFade.Arm, Tier.ChatOnly);
         // CX-118: chain the engine's own Scene::HitCheck to measure what a vanilla cast costs and to print
         // the records it fills -- the live cross-check on the CHitInfo layout rows and the only number the
         // CX cast's own benchmark can honestly be compared against.

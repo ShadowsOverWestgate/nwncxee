@@ -100,11 +100,55 @@ public sealed class NodeDef
     public EmitterDef? Emitter;
     public ReferenceDef? Reference;
 
+    /// <summary>CX-188: a consumer's resolved memo of this node's EMITTER rest keys -- the first key of every
+    /// animatable emitter controller, laid out in the channel ordinals of <c>CX.Alloy.EmitterSim</c>, which is
+    /// the one consumer that reads it. <c>Mdl</c> neither fills nor interprets it: the layout belongs to
+    /// whoever resolved it.
+    /// <para>It lives on the NODE because that is what it is a pure function of -- <see cref="Controllers"/>,
+    /// immutable once the parser returns them. So there is no invalidation edge at all, and a node four
+    /// hundred torches share resolves once instead of four hundred times. The particle fill read those keys
+    /// about thirty times per emitter per frame through <see cref="Controller"/>, which is a linear search of
+    /// this list: 4,3% self of the main thread's on-CPU samples (<c>perf-0927</c>, 12 s of a still camera).</para>
+    /// <para>This is an exception to the "immutable once parsed" contract, beside
+    /// <see cref="ModelDef.Name"/>, <see cref="ModelDef.Super"/> and <see cref="LitKeyed"/>'s memo -- the same
+    /// pattern as that one, computed by the consumer rather than inside the node, and the only one a CONSUMER
+    /// writes. It keeps the contract's promise that any thread may read a model: the resolve is idempotent and
+    /// the array is published only once it is filled, so two threads racing cost one duplicate array and never
+    /// a half-written one.</para></summary>
+    public Vector4[]? EmRest;
+
     /// <summary>The first controller of <paramref name="type"/>, or null.</summary>
     public ControllerTrack? Controller(int type)
     {
         foreach (ControllerTrack c in Controllers) if (c.Type == type) return c;
         return null;
+    }
+
+    /// <summary>Memo for <see cref="LitKeyed"/>: 0 not yet asked, 1 no, 2 yes. A node's controller array is
+    /// immutable once parsed, so this needs no invalidation edge -- it is collected with the model.
+    /// <para>A memo rather than state -- <see cref="EmRest"/> beside it is the other one -- and the race is
+    /// benign BY CONSTRUCTION, not by argument: the value is a pure function of the immutable array, a byte
+    /// store is atomic, and 0 is the only value that
+    /// means "ask again" -- so two threads racing both compute the same answer and either store wins.</para></summary>
+    private byte _litKeyed;
+
+    /// <summary>Does a MULTI-KEY light track drive this node (colour, radius or multiplier), i.e. does its
+    /// light never settle? Asked once per light per frame by the bake's static verdict and again by the halo
+    /// enrolment, where the array scan was 1.7% of the frame on its own in a 146-light area (CX-188); the
+    /// answer is a property of the parsed node, so it is computed once and kept.</summary>
+    public bool LitKeyed
+    {
+        get
+        {
+            if (_litKeyed != 0) return _litKeyed == 2;
+            bool keyed = false;
+            foreach (ControllerTrack c in Controllers)
+                if (c.Times.Length > 1
+                 && (c.Type == Ctl.LightColor || c.Type == Ctl.LightRadius || c.Type == Ctl.LightMultiplier))
+                { keyed = true; break; }
+            _litKeyed = keyed ? (byte)2 : (byte)1;
+            return keyed;
+        }
     }
 }
 
@@ -152,6 +196,9 @@ public sealed class MeshDef
     /// <summary>Model-space bounds of this mesh, its average point and its total face area.</summary>
     public Vector3 BMin, BMax, Average;
     public float Radius, SurfaceArea;
+    /// <summary><c>MeshArena.Epoch</c> when the arena last refused this mesh, 0 never: a retry at the same
+    /// value is refused without re-hashing.</summary>
+    internal int ArenaRefused;
 
     /// <summary>What the file authored, before the post-process paired positions with UVs. Non-null whenever
     /// the source stated it (every ASCII mesh, and a binary one for the arrays it still carries).</summary>

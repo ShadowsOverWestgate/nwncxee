@@ -61,6 +61,7 @@ public static unsafe partial class HitTestCheck
         ok &= GuiPick(log);
         ok &= Grid(log);
         ok &= Recycle(log);
+        ok &= ReMark(log);
         ok &= Scene(log);
         ok &= Bench(log);
         log.Info(ok ? "HitTest.SelfCheck: passed" : "HitTest.SelfCheck: see failures above");
@@ -335,6 +336,56 @@ public static unsafe partial class HitTestCheck
             ok = Fail(log, "a floor probe over the recycled floor found no ground (the Z=9 sentinel case)");
         else if (r.Obj != live)
             ok = Fail(log, $"the floor probe answered record {r.Obj.Value}, not the new tenant {live.Value}");
+
+        Fixture.Tear();
+        return ok;
+    }
+
+    /// <summary>CX-188: the RE-MARK -- a second mark on a record that is already on the dirty list, carrying a
+    /// bit it already had and driving no compose. Nothing the fold's stamp used to compare could see it: the
+    /// dirty bits do not change when an already-set bit is re-OR'd, the list does not grow (one entry per
+    /// slot per take), and the compose count stands still. That blind spot is why the frame boundary folded
+    /// with <c>full: true</c> -- 798 <see cref="HitBounds.Refresh"/> calls a frame in a still scene to catch
+    /// a case that happens a handful of times a session (a text box's width and height set in one breath).
+    /// <para>The stamp is <see cref="DbTable.MarkClock"/> now, so this must refresh and the full fold is gone.
+    /// If this check ever fails, a re-marked record keeps a stale hit box: it is clicked where it WAS.</para></summary>
+    private static bool ReMark(ExtenderLog log)
+    {
+        bool ok = true;
+        var world = Fixture.Build();
+        var at = new Vector3(600f, 600f, 0f);
+        DbId o = Fixture.Floor(world.Scene, at);
+        int i = o.Index;
+
+        // Settled: one fold has seen this record, so its stamp is current.
+        SceneDb.Objects.TakeDirty();
+        SceneDb.Objects.Mark(i, Dirty.Xform);
+        HitFeed.Fold();
+        float z0 = SceneDb.HitObjBMax[i].Z;
+        long refreshed = HitBounds.Refreshed;
+        HitFeed.Fold();
+        if (HitBounds.Refreshed != refreshed)
+            ok = Fail(log, "a second fold over an unchanged entry refreshed it anyway -- the stamp is not "
+                         + "skipping, and the whole still-frame saving is gone");
+
+        // The re-mark: the world matrices move (as a compose would have left them), the SAME dirty bit is
+        // re-OR'd, and nothing composes. Neither the bits, the list length nor the compose count moves.
+        Dirty bits = SceneDb.Objects.DirtyAt(i);
+        int takes = SceneDb.Objects.DirtyTakes, n = SceneDb.Objects.DirtyCount;
+        int serial = DbAnim.ComposeCount[i];
+        int first = SceneDb.ObjPartFirst[i];
+        for (int p = first; p < first + SceneDb.ObjPartCount[i]; p++)
+            SceneDb.PartWorld[p] *= Matrix4x4.CreateTranslation(0f, 0f, 10f);
+        SceneDb.Objects.Mark(i, Dirty.Xform);
+        if (SceneDb.Objects.DirtyAt(i) != bits || SceneDb.Objects.DirtyTakes != takes
+            || SceneDb.Objects.DirtyCount != n || DbAnim.ComposeCount[i] != serial)
+            ok = Fail(log, "the re-mark moved one of the signals it is supposed to be invisible to -- this "
+                         + "case is testing nothing");
+
+        HitFeed.Fold();
+        if (MathF.Abs(SceneDb.HitObjBMax[i].Z - z0 - 10f) > 1e-3f)
+            ok = Fail(log, $"the fold did not refresh a RE-MARKED record: its hit box tops out at "
+                         + $"{SceneDb.HitObjBMax[i].Z} and the geometry at {z0 + 10f}");
 
         Fixture.Tear();
         return ok;

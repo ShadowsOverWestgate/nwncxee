@@ -232,13 +232,11 @@ internal static unsafe partial class EmitterSim
         e.Detonate = false;
     }
 
-    /// <summary>A detonation's point-source gust. Engine mode pushes it into the scene's
-    /// <c>WindManager</c>, which <see cref="AlloyWind"/> hooks and therefore sees. DB mode has no engine
-    /// Scene to reach the manager through, so it goes straight into Alloy's own list -- the same list, the
-    /// same four arguments, and the strength <c>ExplosionEmitter::Update</c> @0x4b259e pins at 1.0.</summary>
+    /// <summary>A detonation's point-source gust. There is no engine Scene to reach the
+    /// <c>WindManager</c> through, so it goes straight into Alloy's own list -- the same list, the same four
+    /// arguments, and the strength <c>ExplosionEmitter::Update</c> @0x4b259e pins at 1.0.</summary>
     private static void Gust(in Emitter e, IntPtr scene, float radius, float falloff)
     {
-        if (e.Db || scene == IntPtr.Zero)
         {
             if (!AlloyWind.Owned) { _gustRefused++; return; }
             Vector3 p = e.M.Pos;

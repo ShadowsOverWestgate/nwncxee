@@ -1,0 +1,608 @@
+using System;
+using System.Numerics;
+using CX.Framework;
+using CX.Graphics;
+
+namespace CX.Alloy;
+
+/// <summary>CX-188 step 4 (ADR 0029): the (static light, mover) PAIR tiles -- the planner and the atlas. A
+/// creature standing under a baked static light owes the lightmap the shadow the bake never saw, and the
+/// forward loop pays that per fragment per light: up to <see cref="CasterPass.DynSpheres"/> segment-vs-sphere
+/// tests, then cube taps on the light's dynamic page (the -10.1 ms <c>lightmap.movers 0</c> measures on the
+/// heavy plaza). This class replaces the page with something the shadow's own size: per
+/// (light, mover) pair, one small perspective depth tile framed on the mover's sphere and fitted to the
+/// light's reach, baked through <see cref="CasterPass"/>'s existing layered path over the DYNAMIC set alone.
+/// <para><b>The budget is per MOVER, not per light.</b> A creature under four lamps casts four shadows; the
+/// <c>lightmap.moverlights</c> strongest are the ones anybody sees, and the rest are what made the old shape
+/// unbounded. <see cref="AddLight"/> collects this frame's candidate lights, <see cref="AddMover"/> ranks them
+/// at each mover by the engine's own curve times luma (cx_lightbuild's ranking), and <see cref="Commit"/>
+/// emits the surviving pairs GROUPED BY CUBE SLOT -- which is what lets a reader walk one light's run and what
+/// lets the debt pass fold two movers of one light into one <c>min()</c>.</para>
+/// <para>A paired light publishes <c>CubeDynPage[slot]</c> NEGATIVE: <c>-(first pair + 1)</c>. Every existing
+/// reader tests <c>&lt; 0.5</c> or <c>&gt; 0.5</c> and so reads it as having no page, which is the truth. The
+/// readers that want those movers back are <c>cx_pairdebt</c> (a baked receiver of the deferred frame) and
+/// <c>CxLocalShadowQ</c> (an unbaked one). <b>Nothing is paired unless the deferred pass is live</b>
+/// (<see cref="On"/>): with <c>light.deferred 0</c> the frame is bit-identical to today's.</para></summary>
+internal static unsafe class PairShadows
+{
+    /// <summary>Pairs the atlas may ever hold. <see cref="CasterPass.MaxBakeViews"/> must cover this plus the
+    /// frame's cube faces and cascades; 512 leaves it ~380 of headroom. ponytail: a bigger atlas wants that
+    /// queue grown with it, and the layered flush then chunks more often.</summary>
+    internal const int MaxPairs = 512;
+    /// <summary>Floats per pair record, in <c>cx_pairbuf.glsl</c>'s std430 layout: mat4 vp, vec4 pr, vec4 col,
+    /// vec4 sph, vec4 ix.</summary>
+    internal const int RecFloats = 32;
+    /// <summary><c>cx_pairbuf.glsl</c>'s SSBO binding point. SHARED with <see cref="EnvProbe"/>'s writeonly SH output,
+    /// which binds it around its own dispatch and unbinds after; every pair reader rebinds through
+    /// <see cref="BindAtlas"/>, so a new SH dispatch between that bind and a pair read corrupts a shadow matrix.</summary>
+    internal const uint Binding = 28;
+    /// <summary>Movers one light may pair with. Past it the light keeps its page: a lamp with seventeen
+    /// creatures under it is cheaper as one cube than as seventeen tiles, and the count says so out loud.</summary>
+    internal const int MaxPerLight = CasterPass.DynSpheres;
+    /// <summary>Candidate lights one frame ranks -- the cube budget, which is every light that could have a
+    /// tile at all (a pair tap needs the slot's published geometry).</summary>
+    private const int MaxLights = CasterPass.MaxCubes;
+
+    /// <summary>Tile texels the mover sphere is inflated by before the volume test, on top of
+    /// <see cref="ShadowMath.ConeSlack"/>: the soft disc (1), its bilinear texel (1) and the normal offset at
+    /// its slope ceiling (<c>CX_PAIR_NORMAL_OFFSET</c> 1 + <c>CX_PAIR_SLOPE_OFFSET</c> 0.75 x
+    /// <c>CX_PAIR_SLOPE_MAX</c> 2). Everything the tap can reach past the sphere's own cone.</summary>
+    internal const float PadTexels = 1f + 1f + 1f + 0.75f * 2f;
+    /// <summary>...and a flat metre allowance under it, as the dyn spheres take (<c>CasterPass.HotPadM</c>).</summary>
+    internal const float PadMetres = 0.05f;
+
+    /// <summary>Pairs this frame's plan committed -- what the bake walks and what the GPU table holds.</summary>
+    internal static int Count { get; private set; }
+    /// <summary>The depth atlas, 0 until the first claim allocated it. One 2D-array layer per pair.</summary>
+    internal static uint Tex { get; private set; }
+    /// <summary>A tile's side in texels.</summary>
+    internal static int TileSize => _tile;
+
+    /// <summary>Is the feature armed this frame? <c>lightmap.moverlights</c> above zero, the creature-shadow
+    /// master on, the taps diagnostic not standing them down -- and the DEFERRED pass live, because the debt
+    /// these tiles feed is taken there and nowhere else. One predicate, read by the planner and by the debt
+    /// pass, so the bake and the receiver can never disagree about who owns a light's movers.</summary>
+    internal static bool On => Lightmap.MoverLights.V > 0 && Lightmap.Movers.V && Lightmap.MoverTaps.V
+                               && !_atlasFailed && !PairDebt.StoodDown && DeferredLights.Active;
+
+    private static ExtenderLog? _log;
+    private static int _tile = 128, _cap = 256;
+    private static bool _booted, _atlasFailed;
+    private static uint _buf;
+
+    /// <summary>The GPU table: <c>uPairN</c> plus three pad words, then <see cref="RecFloats"/> per pair.</summary>
+    private const int HeaderFloats = 4;
+    private static readonly float[] _rec = new float[HeaderFloats + MaxPairs * RecFloats];
+    private static readonly Matrix4x4[] _vp = new Matrix4x4[MaxPairs];
+    /// <summary>Per pair, the mover sphere it frames (xyz centre, w the UNPADDED radius): the bake view's own
+    /// cull volume, which is what keeps a tile to the one caster it frames.</summary>
+    private static readonly Vector4[] _at = new Vector4[MaxPairs];
+    /// <summary>Per pair, the light it is framed from and the mover it frames -- the two IDENTITIES the view
+    /// matrix cannot tell apart (two creatures of one size standing in one another's place have the same
+    /// <see cref="_vp"/>). Read only by the staleness key.</summary>
+    private static readonly IntPtr[] _atLight = new IntPtr[MaxPairs];
+    private static readonly int[] _atMover = new int[MaxPairs];
+    /// <summary>Per cube slot, this frame's first pair plus one (0 = none). The table CubePass publishes as the
+    /// negative lane of <c>CubeDynPage</c>.</summary>
+    private static readonly int[] _base = new int[CasterPass.MaxCubes];
+
+    // --- the staleness key, one row per ATLAS LAYER: what the layer's depth was baked from (CX-188 CPU wave)
+    private static readonly IntPtr[] _kLight = new IntPtr[MaxPairs];
+    private static readonly int[] _kMover = new int[MaxPairs];
+    private static readonly Matrix4x4[] _kVp = new Matrix4x4[MaxPairs];
+    private static readonly Vector4[] _kAt = new Vector4[MaxPairs];
+    private static readonly bool[] _kBaked = new bool[MaxPairs], _kEvt = new bool[MaxPairs];
+    private static readonly int[] _kSeq = new int[MaxPairs];
+    /// <summary>The frame <see cref="Begin"/> opened, so a layer's key can be required to be LAST frame's.</summary>
+    private static int _seq;
+
+    // --- the plan's own frame state, all fixed-size and never allocated on a frame
+    private static int _nLights;
+    private static readonly int[] _lSlot = new int[MaxLights];
+    private static readonly Vector4[] _lPr = new Vector4[MaxLights];     // the AREA light's (pos, R)
+    private static readonly Vector3[] _lCol = new Vector3[MaxLights];
+    private static readonly float[] _lFar = new float[MaxLights], _lLuma = new float[MaxLights];
+    private static readonly int[] _lSet = new int[MaxLights];
+    private static readonly int[] _lN = new int[MaxLights];
+    private static readonly IntPtr[] _lId = new IntPtr[MaxLights];
+    private static readonly Vector4[] _lMover = new Vector4[MaxLights * MaxPerLight];
+    /// <summary>Per kept (light, mover), the mover's caster SLOT -- its identity across frames, which is what
+    /// lets a light's run be emitted in an order that does not depend on the arrival order of the dynamic
+    /// walk. Nothing drawn reads the order (a reader min()s the whole run), so sorting it is free stability.</summary>
+    private static readonly int[] _lMoverId = new int[MaxLights * MaxPerLight];
+    /// <summary>Lights whose mover list filled: they keep their page, and the count is on the period line.</summary>
+    private static int _planFull;
+
+    private static int _gen, _upGen = -1;
+    private static long _pairs, _slots, _refused, _overflow, _frames, _moversRanked, _crowded;
+    /// <summary>Tiles whose layer already held this exact pair's depth and so were not queued, and movers the
+    /// ranking never ran because every candidate light's list was already full.</summary>
+    private static long _held, _late;
+
+    internal static void Attach(ExtenderLog log) => _log = log;
+
+    internal static void Forget()
+    {
+        Tex = 0; _buf = 0; _atlasFailed = false; _upGen = -1; Count = 0; _nLights = 0;
+        Array.Clear(_base);
+        ForgetKeys();
+    }
+
+    /// <summary>No atlas layer may be read as holding a bake: the storage is gone, or the frame's bakes never
+    /// landed. Every tile re-bakes on the next committing frame.</summary>
+    private static void ForgetKeys() => Array.Clear(_kBaked);
+
+    internal static string Stats(int frames)
+    {
+        long p = _pairs, s = _slots, rf = _refused, o = _overflow, f = _frames, mr = _moversRanked, cr = _crowded;
+        long hl = _held, lt = _late;
+        _pairs = _slots = _refused = _overflow = _frames = _moversRanked = _crowded = _held = _late = 0;
+        float n = MathF.Max(frames, 1);
+        return _atlasFailed ? "pair tiles STOOD DOWN (no atlas)"
+             : !On ? $"pair tiles off ({(Lightmap.MoverLights.V <= 0 ? "lightmap.moverlights 0" : "light.deferred off")})"
+             : f == 0 ? "pair tiles idle"
+             : $"pair tiles {p / n:F1}/frame over {s / n:F1} lights at {_tile}px "
+             + $"({p * 100f / MathF.Max(f, 1) / _cap:F0}% of {_cap}, {hl / n:F1} HELD (the layer already held "
+             + $"that pair), {mr / n:F1} movers ranked, {lt / n:F1} ranked nothing (every light full), "
+             + $"{o / n:F2} lights past the atlas, {rf / n:F2} unframeable, {cr / n:F2} too crowded -- those keep their page)";
+    }
+
+    // --- the planner, inside CasterPass's cube scan
+
+    /// <summary>Once per cube scan, before <see cref="AddLight"/>: this frame's plan is empty and no slot is
+    /// paired. A frame that never commits leaves every <c>CubeDynPage</c> lane positive, which is the whole off
+    /// switch for every reader.</summary>
+    internal static void Begin(int frameSeq)
+    {
+        // a table that HELD pairs and now does not must still be re-uploaded: uPairN is the gate every
+        // reader takes, and a stale non-zero one would outlive the frame that earned it
+        if (Count > 0) _gen++;
+        _seq = frameSeq;
+        Count = 0; _nLights = 0; _planFull = 0; _nFullLights = 0;
+        Array.Clear(_base);
+        if (!_booted)
+        {
+            _booted = true;
+            _tile = Math.Clamp(Lightmap.PairSize.Boot, 32, 512);
+            _cap = Math.Clamp(Lightmap.PairCount.Boot, 16, MaxPairs);
+        }
+        if (On) _frames++;
+    }
+
+    /// <summary>The frame's bakes did not land (<see cref="CasterPass"/>'s layered flush failed): no light may
+    /// be read as paired, so the lanes go positive and every one of them falls back to its page -- which this
+    /// frame is also unbaked, so it is a one-frame blink of the creature shadows, never a shadow in the wrong
+    /// place.</summary>
+    internal static void Stand() { Count = 0; Array.Clear(_base); ForgetKeys(); }
+
+    /// <summary>Offer one of this frame's cube-slotted lights as a pair candidate. Returns false when the light
+    /// cannot be one -- the feature is off, it is not in the lightmap pages, it is ambient, it has no reach, or
+    /// the candidate table is full -- in which case it keeps its dynamic page exactly as before. Cold-ish: one
+    /// walk of the area light records per seated slot, over two flat arrays, allocation-free.</summary>
+    internal static bool AddLight(int slot, IntPtr id, Vector3 pos, float far)
+    {
+        if (!On || slot < 0 || slot >= CasterPass.MaxCubes || _nLights >= MaxLights) return false;
+        if (!(far > CasterPass.CubeNearPlane) || id == IntPtr.Zero) return false;
+        IntPtr[] ids = FrameInputs.AreaLightId;
+        bool[] stat = FrameInputs.AreaLightStatic, amb = FrameInputs.AreaLightAmbient;
+        int n = Math.Min(FrameInputs.LightCount, ids.Length);
+        for (int i = 0; i < n; i++)
+        {
+            if (ids[i] != id) continue;
+            if (!stat[i] || amb[i]) return false;
+            Vector4 pr = FrameInputs.AreaLightPosRange[i];
+            if (!(pr.W > 0f)) return false;
+            Vector3 col = FrameInputs.AreaLightColor[i];
+            float luma = col.X * 0.299f + col.Y * 0.587f + col.Z * 0.114f;
+            if (!(luma > 0f)) return false;
+            int at = _nLights++;
+            _lSlot[at] = slot; _lPr[at] = new Vector4(pos, pr.W); _lCol[at] = col; _lFar[at] = far;
+            _lLuma[at] = luma; _lSet[at] = FrameInputs.AreaLightSetIndex[i]; _lN[at] = 0; _lId[at] = id;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Rank this frame's candidate lights at one mover and keep the <c>lightmap.moverlights</c>
+    /// strongest -- the engine's own curve times luma, which is how <c>cx_lightbuild</c> and the walk itself
+    /// rank a light's importance. Each kept (light, mover) is a pair candidate. Hot (per mover per frame) and
+    /// allocation-free: K is at most 4, so the keep is two named slots deep at the shipped default and a
+    /// four-element insertion at the ceiling.</summary>
+    internal static void AddMover(float cx, float cy, float cz, float r, int moverId)
+    {
+        if (!On || _nLights == 0 || !(r > 0f)) return;
+        if (!float.IsFinite(cx + cy + cz + r)) return;
+        int K = Math.Clamp(Lightmap.MoverLights.V, 0, 4);
+        if (K == 0) return;
+        // Every candidate light's list is already full, so the ranking below can only produce picks the keep
+        // discards: 530 of them a frame on the plaza, each paying a walk of every candidate light. Exactly
+        // equivalent -- the discard is the whole of what the walk would have achieved -- and the movers it
+        // skips are counted on their own, because they are NOT "ranked" and the old counter said they were.
+        if (_nFullLights >= _nLights) { _late++; return; }
+        _moversRanked++;
+        Rank(cx, cy, cz, r, K, moverId);
+    }
+
+    /// <summary>Candidate lights whose mover list has filled, so <see cref="AddMover"/> can tell that no
+    /// ranking can still land anywhere. Maintained by the one place a list grows.</summary>
+    private static int _nFullLights;
+
+    /// <summary>The ranking itself -- the one copy, so <see cref="SelfCheck"/> cannot pass against arithmetic
+    /// the frame does not run. The K strongest candidates at (<paramref name="cx"/>, <paramref name="cy"/>,
+    /// <paramref name="cz"/>), descending, each taking this mover into its own list.</summary>
+    private static void Rank(float cx, float cy, float cz, float r, int K, int moverId)
+    {
+        Vector2 at = AlloyLights.Atten;
+        if (!(at.X > 0f)) at = new Vector2(1f, 1f);
+        // the K strongest, descending. Four stack slots: K is at most 4 by the knob's own range.
+        float* sc = stackalloc float[4];
+        int* pick = stackalloc int[4];
+        int have = 0;
+        for (int i = 0; i < _nLights; i++)
+        {
+            Vector4 pr = _lPr[i];
+            float dx = cx - pr.X, dy = cy - pr.Y, dz = cz - pr.Z;
+            float dd = dx * dx + dy * dy + dz * dz;
+            // the mover must be inside the light's LIT sphere, as the page claim's own test asks it
+            float reach = pr.W + r;
+            if (dd > reach * reach) continue;
+            float f2 = dd / (pr.W * pr.W);
+            if (f2 >= 1f) continue;
+            // cx_lightbuild's Importance, term for term: the engine's curve at the mover times the light's luma
+            float s = (1f - f2) / (at.X + at.Y * f2) * _lLuma[i];
+            if (!(s > 0f)) continue;
+            int j;
+            if (have < K) { j = have; have++; }
+            else if (s > sc[K - 1]) j = K - 1;
+            else continue;
+            while (j > 0 && sc[j - 1] < s) { sc[j] = sc[j - 1]; pick[j] = pick[j - 1]; j--; }
+            sc[j] = s; pick[j] = i;
+        }
+        for (int j = 0; j < have; j++)
+        {
+            int li = pick[j];
+            if (_lN[li] >= MaxPerLight) { _planFull++; continue; }
+            // Admitted on ARRIVAL -- a full list drops the newest, exactly as before -- but INSERTED by the
+            // mover's identity, so the run's order is a function of its membership and not of the order the
+            // dynamic walk happened to visit in. Nothing drawn reads the order (a reader min()s the whole
+            // run), and a run that reorders every frame would make every layer key miss.
+            int b = li * MaxPerLight, k = _lN[li]++;
+            while (k > 0 && _lMoverId[b + k - 1] > moverId)
+            { _lMover[b + k] = _lMover[b + k - 1]; _lMoverId[b + k] = _lMoverId[b + k - 1]; k--; }
+            _lMover[b + k] = new Vector4(cx, cy, cz, r); _lMoverId[b + k] = moverId;
+            if (_lN[li] >= MaxPerLight) _nFullLights++;
+        }
+    }
+
+    /// <summary>Turn the plan into this frame's pair table: per candidate light, a tile per mover it kept, ALL
+    /// OR NOTHING -- the dynamic page is the only other place that light's movers would be recorded, so one
+    /// unframeable mover leaves the whole light on its page. Emitted grouped by light (and so by cube slot),
+    /// which is the order every reader depends on. Candidates come in the cube scan's RANK order, so when the
+    /// atlas fills it is the farthest lights that keep their pages. The only GL here is the atlas allocation,
+    /// on the first committing frame of a session.</summary>
+    internal static void Commit()
+    {
+        if (!On || _nLights == 0) return;
+        if (_planFull > 0) _crowded += _planFull;
+        for (int i = 0; i < _nLights; i++)
+        {
+            int boxes = _lN[i];
+            if (boxes <= 0) continue;
+            if (Count + boxes > _cap) { _overflow++; continue; }
+            if (!EnsureAtlas()) return;
+            int at = Count;
+            Vector3 pos = new(_lPr[i].X, _lPr[i].Y, _lPr[i].Z);
+            float far = _lFar[i];
+            bool whole = true;
+            for (int q = 0; q < boxes && whole; q++)
+            {
+                Vector4 m = _lMover[i * MaxPerLight + q];
+                var c = new Vector3(m.X, m.Y, m.Z);
+                float dist = (c - pos).Length();
+                float near = MathF.Max(dist - m.W, CasterPass.CubeNearPlane);
+                if (!ShadowMath.PairViewProj(pos, c, m.W, near, far, out Matrix4x4 vp, out float halfSin))
+                { whole = false; break; }
+                int pi = at + q;
+                _vp[pi] = vp; _at[pi] = new Vector4(c, m.W);
+                _atLight[pi] = _lId[i]; _atMover[pi] = _lMoverId[i * MaxPerLight + q];
+                // the world size of one tile texel per unit of distance from the light: 2 tan(halfFov) / size
+                float texel = 2f * halfSin / MathF.Sqrt(MathF.Max(1f - halfSin * halfSin, 1e-6f)) / _tile;
+                // the volume test's sphere: the cone's own slack plus everything the tap reads past it
+                float pad = PadMetres + PadTexels * texel * dist;
+                fixed (float* d = _rec)
+                {
+                    float* w = d + HeaderFloats + (long)pi * RecFloats;
+                    Buffer.MemoryCopy(&vp, w, 64, 64);
+                    w[16] = _lPr[i].X; w[17] = _lPr[i].Y; w[18] = _lPr[i].Z; w[19] = _lPr[i].W;
+                    w[20] = _lCol[i].X; w[21] = _lCol[i].Y; w[22] = _lCol[i].Z; w[23] = texel;
+                    w[24] = c.X; w[25] = c.Y; w[26] = c.Z; w[27] = m.W * ShadowMath.ConeSlack + pad;
+                    w[28] = pi; w[29] = 1f / _tile; w[30] = _lSlot[i]; w[31] = _lSet[i];
+                }
+            }
+            if (!whole) { _refused++; continue; }
+            Count = at + boxes;
+            _base[_lSlot[i]] = at + 1;
+            _gen++; _pairs += boxes; _slots++;
+        }
+        if (Count > 0) { _rec[0] = BitConverter.Int32BitsToSingle(Count); _gen++; }
+    }
+
+    /// <summary>This slot's first pair, or -1 when it has none and keeps its dynamic page. Read by
+    /// <see cref="CasterPass"/> to publish the lane and to queue the bakes.</summary>
+    internal static int Pairs(int slot)
+        => slot >= 0 && slot < _base.Length && _base[slot] > 0 ? _base[slot] - 1 : -1;
+
+    /// <summary>This slot is not paired after all -- the cube scan found it hidden or roaming after the plan
+    /// committed, so it keeps its dynamic page. Its tiles stay in the table unbaked and unreferenced: the lane
+    /// stays positive, and no reader can reach a pair whose slot has no lane.</summary>
+    internal static void Drop(int slot)
+    {
+        if (slot >= 0 && slot < _base.Length) _base[slot] = 0;
+    }
+
+    /// <summary>How many pairs slot <paramref name="slot"/> owns -- its run's length in the table.</summary>
+    internal static int PairCountOf(int slot)
+    {
+        int at = Pairs(slot);
+        if (at < 0) return 0;
+        int n = 0;
+        while (at + n < Count && (int)_rec[HeaderFloats + (at + n) * RecFloats + 30] == slot) n++;
+        return n;
+    }
+
+    /// <summary>One committed pair's bake view: the projection to record it with, and the mover sphere it
+    /// frames (the view's own cull volume).</summary>
+    internal static void PairView(int pi, out Matrix4x4 vp, out Vector3 at, out float radius)
+    {
+        vp = _vp[pi]; at = new Vector3(_at[pi].X, _at[pi].Y, _at[pi].Z); radius = _at[pi].W;
+    }
+
+    /// <summary>CX-188 CPU wave: must this pair's atlas layer be re-baked, or does it already hold this exact
+    /// tile's depth? Before this the answer was always yes -- 84 tiles a frame of the 184 views the still
+    /// plaza baked, every one of them re-recording a creature that had not moved. The key is every input the
+    /// layer's depth is a function of: the light (its identity, and through <paramref name="pi"/>'s view
+    /// projection its position and reach), the mover (its identity, centre and radius -- the view's own cull
+    /// volume), that projection itself, and the LAYER, so an atlas reshuffle that lands a pair somewhere else
+    /// re-bakes rather than inheriting another pair's depth.
+    /// <para><b>Invalidation edges.</b> <paramref name="evt"/>: a mover, a dynamic-set flip or a ghost inside
+    /// the tile's cull volume -- the same population and the same `now | the frame it was baked` union the
+    /// cube's dynamic page takes per face, which is also what makes a still-standing creature's tile re-bake
+    /// every frame it breathes (a skinned caster is a mover unconditionally). <paramref name="forced"/>: the
+    /// frame's blanket invalidate, the slot's re-key, the receiver-cull force. A GAP: the key must be last
+    /// frame's, so a frame that dropped the pair (hidden, roaming, a broken scan) or never held it leaves
+    /// nothing to match -- which is what keeps the event union honest across the gap. And
+    /// <see cref="ForgetKeys"/>, on a context loss, a fresh atlas, and a flush whose bakes never landed.</para></summary>
+    internal static bool TileStale(int pi, bool evt, bool forced)
+    {
+        if (pi < 0 || pi >= Count) return true;
+        if (forced || evt || _kEvt[pi] || !_kBaked[pi] || _kSeq[pi] != _seq - 1) return true;
+        return _kLight[pi] != _atLight[pi] || _kMover[pi] != _atMover[pi]
+            || _kAt[pi] != _at[pi] || _kVp[pi] != _vp[pi];
+    }
+
+    /// <summary>The tile baked: the layer holds this pair's depth, keyed, together with the events it was
+    /// baked among -- so the next frame re-bakes once more to clear whatever moved out of it.</summary>
+    internal static void TileBaked(int pi, bool evt)
+    {
+        if (pi < 0 || pi >= Count) return;
+        _kLight[pi] = _atLight[pi]; _kMover[pi] = _atMover[pi]; _kAt[pi] = _at[pi]; _kVp[pi] = _vp[pi];
+        _kBaked[pi] = true; _kEvt[pi] = evt; _kSeq[pi] = _seq;
+    }
+
+    /// <summary>The tile was not queued because its layer already held it: carry the key forward to this
+    /// frame, so the next frame may match against it in turn.</summary>
+    internal static void TileHeld(int pi)
+    {
+        if (pi < 0 || pi >= Count) return;
+        _kSeq[pi] = _seq; _held++;
+    }
+
+    private static bool EnsureAtlas()
+    {
+        if (Tex != 0) return true;
+        if (_atlasFailed) return false;
+        uint t; Gl.CreateTextures(Gl.TEXTURE_2D_ARRAY, 1, &t);
+        Gl.DrainErrors();   // an earlier pass's error must not be read as this allocation's
+        Gl.TextureStorage3D(t, 1, Gl.DEPTH_COMPONENT24, _tile, _tile, _cap);
+        if (Gl.GetError() != 0)
+        {
+            Gl.DeleteTextures(1, &t);
+            _atlasFailed = true;
+            _log?.Always($"PairShadows: a {_tile}x{_tile}x{_cap} depth array could not be allocated -- hot "
+                       + "static lights keep their dynamic cube pages and the deferred frame owes them nothing "
+                       + "(lightmap.paircount / lightmap.pairsize size it)");
+            return false;
+        }
+        // LINEAR + depth-compare IS the filter: one hardware 2x2 comparison per fetch, as the cubes take it
+        Gl.TextureParameteri(t, Gl.TEXTURE_MIN_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_MAG_FILTER, Gl.LINEAR);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_COMPARE_MODE, (int)Gl.COMPARE_REF_TO_TEXTURE);
+        Gl.TextureParameteri(t, Gl.TEXTURE_COMPARE_FUNC, (int)Gl.LEQUAL);
+        Tex = t;
+        ForgetKeys();   // fresh storage holds no bake, whatever the keys say (#241's rule for the cubes)
+        _log?.Info($"PairShadows: pair atlas {_cap} x {_tile}x{_tile} depth "
+                 + $"({(long)_cap * _tile * _tile * 4 / (1024 * 1024)} MB; lightmap.paircount / lightmap.pairsize)");
+        return true;
+    }
+
+    /// <summary>From <see cref="AlloyLights.BindForDraw"/> -- every program that lights, plus the debt
+    /// dispatch: the pair table and the tile atlas. Bound whether or not anything is paired, because the
+    /// table's own <c>uPairN</c> is the gate <c>CxPairBase</c> reads and a stale binding would make it
+    /// garbage. Leaves unit 0 current.</summary>
+    internal static void BindAtlas()
+    {
+        Gl.EnsureStorage(ref _buf, (long)(HeaderFloats + MaxPairs * RecFloats) * sizeof(float), false);
+        if (_gen != _upGen)
+        {
+            _upGen = _gen;
+            // Count 0 still uploads the header: uPairN has to read zero on a frame that paired nothing.
+            if (Count <= 0) _rec[0] = BitConverter.Int32BitsToSingle(0);
+            fixed (float* r = _rec)
+                Gl.NamedBufferSubData(_buf, IntPtr.Zero,
+                                      (IntPtr)((long)(HeaderFloats + Math.Max(Count, 0) * RecFloats) * sizeof(float)), r);
+        }
+        Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, Binding, _buf);
+        Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.PairMap);
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, Tex);
+        Gl.ActiveTexture(Gl.TEXTURE0);
+    }
+
+    /// <summary>Off-device: the pair frustum frames its mover and stops at the light's reach, the per-mover
+    /// budget keeps the strongest lights, the table's grouping holds, and the GLSL contract matches these
+    /// constants.</summary>
+    internal static bool SelfCheck(ExtenderLog log)
+    {
+        var check = new Checker(log);
+        var light = new Vector3(0f, 0f, 0f);
+        var at = new Vector3(10f, 0f, 2f);
+        const float r = 1f, far = 30f;
+        float near = MathF.Max((at - light).Length() - r, 0.05f);
+        check.Expect(ShadowMath.PairViewProj(light, at, r, near, far, out Matrix4x4 vp, out float hs),
+                     "a mover 10 m from its light frames");
+        Vector3 c = ShadowMath.WorldToLightNdc(vp, at);
+        check.Expect(MathF.Abs(c.X) < 1e-3f && MathF.Abs(c.Y) < 1e-3f && c.Z > -1f && c.Z < 1f,
+                     $"the mover's centre is mid-tile ({c.X:F3},{c.Y:F3},{c.Z:F3})");
+        // the rim lands on whichever tile axis the light's own basis puts it on, so the test is its radius
+        Vector3 rim = ShadowMath.WorldToLightNdc(vp, at + new Vector3(0f, r, 0f));
+        float rimR = MathF.Sqrt(rim.X * rim.X + rim.Y * rim.Y);
+        check.Expect(rimR > 0.5f && rimR < 1f, $"the sphere's rim is inside the tile with room for the disc ({rimR:F3})");
+        Vector3 past = ShadowMath.WorldToLightNdc(vp, Vector3.Normalize(at) * (far + 1f));
+        check.Expect(past.Z > 1f, $"a point past the light's reach is past the far plane ({past.Z:F3})");
+        check.Expect(!ShadowMath.PairViewProj(light, new Vector3(0.5f, 0f, 0f), 1f, 0.05f, far, out _, out _),
+                     "a mover round its light has no pair view");
+        check.Expect(!ShadowMath.PairViewProj(light, at, 8f, near, far, out _, out _),
+                     "a mover subtending more than the cone ceiling has none either");
+        check.Expect(hs > r / (at - light).Length(), "the framed half-angle carries the disc's slack");
+
+        check.Expect(RecFloats == 32 && HeaderFloats == 4, "the record and the header are the sizes the GLSL declares");
+        check.Expect(MaxPairs <= 1024 - 64 * 6, "the atlas fits inside CasterPass's bake-view queue beside the cube faces");
+        check.Expect(MaxPerLight <= CasterPass.DynSpheres,
+                     "a light's mover list cannot outrun the dyn spheres its page would have held");
+        string buf = ShaderSource.Get("cx_pairbuf.glsl"), lib = ShaderSource.Get("cx_pairshad.glsl");
+        check.Expect(buf.Contains($"layout(std430, binding = {Binding}) readonly buffer CxPairBuf")
+                  && buf.Contains("struct CxPair { mat4 vp; vec4 pr; vec4 col; vec4 sph; vec4 ix; };"),
+                     "the pair table's binding and layout are the ones C# stages");
+        check.Expect(lib.Contains($"layout(binding = {TextureSlots.PairMap}) uniform sampler2DArrayShadow uPairMap;"),
+                     "the atlas is on the unit C# binds");
+        // the lane that says "paired": negative, so every existing `< 0.5` reader is left alone by construction
+        check.Expect(lib.Contains("int at = pg < -0.5 ? int(-pg) - 1 : -1;"),
+                     "CxPairBase decodes the NEGATIVE CubeDynPage lane");
+        string ls = ShaderSource.Get("cx_localshadow.glsl");
+        check.Expect(ls.Contains("vd = CxPairVis(slot, worldPos, N, ndlRaw, soft);"),
+                     "an unbaked receiver gets its movers back through the pair tiles");
+        // ...and that tap is GUARDED. Unguarded it would inline into every program that lights, which is
+        // exactly what the reverted attempt (504b6e0) measured as 7.8 ms on the feature's own OFF baseline.
+        check.Expect(ls.Contains("#ifdef CX_PAIR_RECV") && ls.IndexOf("#ifdef CX_PAIR_RECV", StringComparison.Ordinal)
+                                                          < ls.IndexOf("vd = CxPairVis", StringComparison.Ordinal),
+                     "the pair tap is behind CX_PAIR_RECV, so only the deferred stages compile it");
+        check.Expect(ShaderSource.Get("cx_deferred_cs.glsl").Contains("#define CX_PAIR_RECV 1")
+                  && ShaderSource.Get("cx_pairdebt.glsl").Contains("#define CX_PAIR_RECV 1")
+                  // step 3's record pass is the deferred path's shadow verdict for an UNBAKED receiver, so it
+                  // is the third stage that needs the tap -- CxLocalShadowQ is not what the walk calls there
+                  && ShaderSource.Get("cx_defshadow_cs.glsl").Contains("#define CX_PAIR_RECV 1")
+                  && !ShaderStages.Source(AlloyRenderer.ShdLitFs).Contains("#define CX_PAIR_RECV"),
+                     "CX_PAIR_RECV is the three deferred stages' and not the forward lit stage's");
+        check.Expect(ls.Contains("vd = CxPairVis(slot, worldPos, N, ndlRaw, false);"),
+                     "the FAST filter takes the pair tap too, which is where the deferred record comes from");
+        check.Expect(ShaderSource.Get("cx_deferred_cs.glsl").Contains("#define CX_NO_HOT 1"),
+                     "the deferred stage compiles the walk's hot branch out");
+        check.Expect(ShaderSource.Get("cx_lightfrag.glsl").Contains("#ifdef CX_NO_HOT")
+                  && ShaderSource.Get("cx_lightfrag.glsl").Contains("const bool hot = false;"),
+                     "cx_lightfrag honours CX_NO_HOT");
+
+        // the per-mover budget itself, on a made-up frame: three lights of falling luma round one mover, and
+        // the two strongest are the ones kept. Driven through the real Add/Commit path with no GL in it.
+        check.Expect(BudgetCheck(out string why), why);
+        KeyCheck(check);
+        log.Info(check.Ok ? "PairShadows.SelfCheck: passed" : "PairShadows.SelfCheck: FAILED");
+        return check.Ok;
+    }
+
+    /// <summary>The layer key, off the committed table: a tile whose every input is unchanged is HELD, and
+    /// each input ON ITS OWN flips it back to stale -- which is the whole of what makes the skip safe. Drives
+    /// <see cref="TileStale"/> / <see cref="TileBaked"/> exactly as the frame's bake loop does, with no GL and
+    /// no atlas.</summary>
+    private static void KeyCheck(Checker check)
+    {
+        int savedCount = Count, savedSeq = _seq;
+        var vp = Matrix4x4.CreateTranslation(1f, 2f, 3f);
+        Count = 2;
+        void Seed(int seq)
+        {
+            _seq = seq;
+            _vp[0] = vp; _at[0] = new Vector4(1f, 2f, 3f, 0.5f);
+            _atLight[0] = (IntPtr)0x1234; _atMover[0] = 7;
+        }
+        _kBaked[0] = _kBaked[1] = false;
+        Seed(10);
+        check.Expect(TileStale(0, false, false), "an unbaked layer is stale");
+        TileBaked(0, false);
+        Seed(11);
+        check.Expect(!TileStale(0, false, false), "the same pair on the very next frame is HELD");
+        // ...and one input at a time, each off that held baseline
+        Seed(11); _atLight[0] = (IntPtr)0x5678;
+        check.Expect(TileStale(0, false, false), "another light framing the same mover is stale");
+        Seed(11); _atMover[0] = 8;
+        check.Expect(TileStale(0, false, false), "another mover of the same size in the same place is stale");
+        Seed(11); _at[0] = new Vector4(1f, 2f, 3f, 0.6f);
+        check.Expect(TileStale(0, false, false), "a grown mover sphere is stale");
+        Seed(11); _at[0] = new Vector4(1.1f, 2f, 3f, 0.5f);
+        check.Expect(TileStale(0, false, false), "a moved mover centre is stale");
+        Seed(11); _vp[0] = Matrix4x4.CreateTranslation(1f, 2f, 3.5f);
+        check.Expect(TileStale(0, false, false), "a re-framed view projection is stale");
+        Seed(11);
+        check.Expect(TileStale(0, true, false), "an event inside the tile's own cull volume is stale");
+        check.Expect(TileStale(0, false, true), "a forced frame (invalidate, re-key, rx force) is stale");
+        Seed(12);
+        check.Expect(TileStale(0, false, false), "a frame's gap since the key is stale");
+        // the event union, as the dynamic page's per-face mask takes it: the frame AFTER an event bakes once
+        // more, because that is what clears whatever moved out of the tile
+        Seed(13); TileBaked(0, true);
+        Seed(14);
+        check.Expect(TileStale(0, false, false), "the frame after an event bakes again to clear it");
+        TileBaked(0, false);
+        Seed(15);
+        check.Expect(!TileStale(0, false, false), "...and the frame after that is held again");
+        // an atlas reshuffle: the same pair at another LAYER inherits nothing
+        _vp[1] = _vp[0]; _at[1] = _at[0]; _atLight[1] = _atLight[0]; _atMover[1] = _atMover[0];
+        check.Expect(TileStale(1, false, false), "the same pair moved to another atlas layer is stale");
+        check.Expect(TileStale(5, false, false), "a layer past the committed count is stale");
+        _kBaked[0] = _kBaked[1] = false;
+        Count = savedCount; _seq = savedSeq;
+    }
+
+    /// <summary>The ranking alone, off the frame-input arrays: three lights at the same distance with falling
+    /// luma, one mover between them, <c>lightmap.moverlights</c> 2 -- the two brightest must be the ones that
+    /// keep it. No GL: the atlas is never touched because <see cref="On"/> is false in a headless check, so
+    /// this drives <see cref="AddMover"/>'s arithmetic directly.</summary>
+    private static bool BudgetCheck(out string why)
+    {
+        _nLights = 0; _planFull = 0; _nFullLights = 0;
+        Vector2 at = AlloyLights.Atten;
+        if (!(at.X > 0f)) at = new Vector2(1f, 1f);
+        for (int i = 0; i < 3; i++)
+        {
+            _lSlot[i] = i; _lPr[i] = new Vector4(i * 4f, 0f, 0f, 20f); _lFar[i] = 20f;
+            _lCol[i] = new Vector3(1f - 0.3f * i); _lLuma[i] = 1f - 0.3f * i; _lSet[i] = i; _lN[i] = 0;
+        }
+        _nLights = 3;
+        // the frame's own ranking with the On gate (false headless) stepped round: the mover sits 4 m from
+        // light 1, so distance alone would rank it first -- luma is what must decide, as the walk's does
+        Rank(4f, 0f, 0f, 0.5f, 2, 0);
+        bool ok = _lN[0] == 1 && _lN[1] == 1 && _lN[2] == 0;
+        why = ok ? "the per-mover budget keeps the two strongest lights by curve x luma"
+                 : $"the per-mover budget kept {_lN[0]}/{_lN[1]}/{_lN[2]} instead of 1/1/0";
+        // ...and a light's run comes out in its movers' IDENTITY order whatever order they arrived in: a run
+        // that reorders when the dynamic walk does would make every layer key miss (CX-188 CPU wave).
+        _lN[0] = 0;
+        Rank(0.5f, 0f, 0f, 0.5f, 1, 9);
+        Rank(0.5f, 0f, 0f, 0.5f, 1, 4);
+        if (ok && !(_lN[0] == 2 && _lMoverId[0] == 4 && _lMoverId[1] == 9))
+        { ok = false; why = $"the light's run came out {_lMoverId[0]},{_lMoverId[1]} instead of 4,9 ({_lN[0]} kept)"; }
+        _nLights = 0; _nFullLights = 0; Array.Clear(_base); Count = 0;
+        return ok;
+    }
+
+}

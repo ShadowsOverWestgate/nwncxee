@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace CX.Framework;
 
@@ -48,8 +49,18 @@ public static class FrameZones
         /// sound, the camera, and whatever the loop does between them. The scene render runs FROM the AI
         /// update, so <c>Ai</c> is reported minus every renderer bracket it contains.</summary>
         Net, Res, Ai, Gui,
-        /// <summary>DB mode's frame boundary (<c>SeamDraw.OnBoundary</c>) minus the renderer brackets it contains:
-        /// the settle compose, the hit fold, the dirty fold, the snapshot publish and the GUI views.</summary>
+        /// <summary>DB mode's frame boundary (<c>SeamDraw.OnBoundary</c>) minus every TOP-LEVEL bracket it
+        /// contains -- the subtraction is <see cref="TopLevelTicks"/> over THIS ROW, so it is all of them, and
+        /// the three the boundary actually enters on the game thread are <see cref="Shadow"/> and
+        /// <see cref="Alloy"/> through the world view's pass chain (single-threaded arm only -- on the render
+        /// thread they land in that row instead) and <see cref="Ui"/> through the window roll-call, which runs
+        /// in both arms of the boundary: before the publish when the render thread is live, after the draw
+        /// when it is not. Everything else the boundary does is INSIDE this number: the snapshot publish
+        /// (<see cref="Publish"/>), the fold it drives (<see cref="DbFold"/> = <see cref="Settle"/> +
+        /// <see cref="HitFold"/> + <see cref="DbDirty"/> + the trigger enrolment + the wind fold), the GUI
+        /// panel views (<see cref="DbGuiDraw"/>), the captured-layer flush (<see cref="GuiFlush"/>) and the
+        /// roll-call's own head and tail (<see cref="UiEdge"/> -- nested, so NOT subtracted). Those are the
+        /// breakdown; the summary here used to claim they were subtracted and they never were.</summary>
         Seam,
 
         /// <summary>Split marker, not a bracket.</summary>
@@ -197,10 +208,60 @@ public static class FrameZones
         /// ONLY because <c>Scene::HitCheckGob</c> @0x45f860 takes the bucket branch unconditionally on a world
         /// scene, so this is the bill the CX hit test deletes. <c>/alloy gobbucket 0</c> is the A/B. Named for the engine global, not to be read as a sibling of <see cref="Build"/>'s bucket work.</summary>
         GobBucket,
-        /// <summary>CX-120: nested in <see cref="Alloy"/>, DB mode only -- the fold of the scene database's
-        /// dirty lists into the renderer's records (<c>DbFeed.TakeFrame</c>). Reads about 0 in a still scene,
-        /// which is the change-driven build's whole claim.</summary>
+        /// <summary>CX-120: nested in <see cref="DbFold"/> (so in <see cref="Seam"/>) -- <c>DbFeed.FoldFrame</c>:
+        /// the three pumps plus the fold of the scene database's dirty lists into the renderer's records
+        /// (<c>DbFeed.TakeFrame</c>). The record fold itself reads about 0 in a still scene, which is the
+        /// change-driven build's whole claim -- so a non-zero number here with nothing moving is the PUMPS,
+        /// which is what <see cref="ArenaPump"/>, <see cref="ChartDrip"/> and <see cref="RecipePump"/> name.
+        /// (The one other caller, <c>DbFeed.Present</c>, brackets it the same way; nothing calls that.)</summary>
         DbDirty,
+        /// <summary>CX-188: inside <see cref="DbDirty"/> (NOT subtracted): <c>MeshArena.Pump</c> -- collecting
+        /// whatever the mesh workers finished.</summary>
+        ArenaPump,
+        /// <summary>CX-188: inside <see cref="DbDirty"/> (NOT subtracted): <c>MeshChart.DripDb</c>, the chart
+        /// offer drip.</summary>
+        ChartDrip,
+        /// <summary>CX-188: inside <see cref="DbDirty"/> (NOT subtracted): <c>DrawRecipe.Pump</c> plus
+        /// <c>DrawRecipe.Reclassify</c> -- the recipe intern drain and the coverage re-ask.</summary>
+        RecipePump,
+        /// <summary>CX-188: nested in <see cref="Seam"/> -- <c>RenderSnapshot.Publish</c> net of the
+        /// <see cref="DbFold"/> it invokes. What is left is the dirty-count copy, the four <c>TakeDirty</c>
+        /// calls and the handshake wait for a frame the renderer still holds.</summary>
+        Publish,
+        /// <summary>CX-188: nested in <see cref="Publish"/> and subtracted from it -- the whole fold the
+        /// publisher drives on the game thread: <see cref="Settle"/>, <c>DbFeed.FoldFrame</c>
+        /// (<see cref="DbDirty"/>), the trigger-highlight enrolment and the engine reads hoisted into the
+        /// fold (<c>SceneFeed.FoldWind</c>). Its own number, minus those children, is those last two.</summary>
+        DbFold,
+        /// <summary>CX-188: nested in <see cref="DbFold"/> -- <c>DbAnim.Settle</c>, the boundary's last
+        /// compose, net of the <see cref="HitFold"/> it runs at its end.</summary>
+        Settle,
+        /// <summary>CX-188: nested in <see cref="Settle"/> and subtracted from it -- <c>HitFeed.Fold</c> at the
+        /// FRAME BOUNDARY (the hit bounds and the hit index re-derived from the frame's change set).</summary>
+        HitFold,
+        /// <summary>CX-188: nested in <see cref="Ai"/> (NOT subtracted) -- the OTHER <c>HitFeed.Fold</c> site,
+        /// the once-per-frame fold at the end of <c>DbAnim.Animate</c>. Separate from <see cref="HitFold"/>
+        /// because the two sit in different zones and only one of them is the boundary's.</summary>
+        HitFoldAi,
+        /// <summary>CX-188: nested in <see cref="Seam"/> -- <c>DbGui.Draw</c> summed over the frame's GUI panel
+        /// views (the member walk, the streaming prescan and the quad issue).</summary>
+        DbGuiDraw,
+        /// <summary>CX-188: nested in <see cref="Seam"/> -- <c>GuiCapture.Lead</c> + <c>GuiPass.FlushNow</c>:
+        /// issuing the frame's captured GUI layers after the last view.</summary>
+        GuiFlush,
+        /// <summary>CX-188: nested in <see cref="Alloy"/> (NOT subtracted) -- <c>DbKeyhole.Write</c>, the
+        /// dissolve column over the pass's draw order.</summary>
+        Keyhole,
+        /// <summary>CX-188: nested in <see cref="Ui"/>'s caller and NOT in <see cref="Ui"/> itself -- the head
+        /// and tail of <c>UiHostService.DrawWindows</c> that the Ui bracket excludes: the session gate, the
+        /// UI-scale sync and font re-bake, the viewport query, and the engine state hand-back.</summary>
+        UiEdge,
+        /// <summary>CX-188: nested in <see cref="Alloy"/> (NOT subtracted) -- <c>EmitterSim.StepDb</c>, the
+        /// whole owned particle walk: the registry walk, the cull, the per-emitter step, the draw sort and the
+        /// enrolment. With nothing moving it was 28,9% INCLUSIVE of the main thread's on-CPU samples
+        /// (<c>perf-0927</c>: 12 s, still camera, ~3,5 ms of a 17,5 ms frame) and no zone named it, so the
+        /// period line read it as part of the Alloy tower.</summary>
+        Emit,
         /// <summary>CX-120: nested in <see cref="Alloy"/>, DB mode only -- one view's visible-set query over
         /// the database index (<c>DbFeed.Visible</c>). The one cost a still frame still pays.</summary>
         DbVis,
@@ -208,15 +269,56 @@ public static class FrameZones
         /// rebuilt after a slot-set edge (the DB equivalent of an enrolment). Reads 0 on a frame in which
         /// nothing was created or destroyed.</summary>
         DbOrder,
+        /// <summary>CX-188: nested in <see cref="Ai"/>, DB mode only -- <c>DbAnim.Animate</c> summed over the
+        /// frame's scene animates and its out-of-band ones (the member walk, the queue advance, the pose, the
+        /// dangly solve, the part walk and the compose), net of the <see cref="HitFoldAi"/> it runs at its end.
+        /// This is the
+        /// <c>Scene::Animate</c> slot's whole cost, which <see cref="Ai"/> otherwise reports mixed in with the
+        /// SP server's own AI step.</summary>
+        Anim,
 
         Count,
     }
 
     private const int N = (int)Zone.Count;
-    private static readonly long[] _frame = new long[N];    // this frame's ticks, per zone
-    private static readonly long[] _sum = new long[N];      // the period's
-    private static readonly long[] _worst = new long[N];    // ...and the worst single frame's, snapshotted
-    private static readonly long[] _worstDrew = new long[N]; // ...and the worst that reached the scene render
+
+    /// <summary>CX-188: accumulator ROWS, one per thread that brackets independently -- the game thread and,
+    /// with <c>alloy.renderthread=1</c>, Alloy's render thread. Every array below is row-major
+    /// (<c>row * N + zone</c>), and <see cref="Add"/> credits the CALLING thread's row.
+    /// <para>Two threads over one set of accumulators is not merely imprecise, it inverts the instrument: the
+    /// residual is <c>frame time - every top-level zone</c>, so a render thread drawing 7 ms CONCURRENTLY with
+    /// a 10 ms simulation would make <c>other</c> read negative and the period line unreadable. With rows, row
+    /// 0 is still a partition of the game thread's frame and keeps its residual; row 1 is the render thread's
+    /// own wall, reported beside it rather than subtracted from it.</para>
+    /// <para>The fold in <see cref="EndFrame"/> reads both rows from the game thread. That is race-free
+    /// because of the frame protocol, not by luck: <c>SeamDraw</c> drains the render thread (the published
+    /// frame is released) BEFORE the present, and <see cref="EndFrame"/> runs at the present, so the render
+    /// thread is parked in <c>RenderSnapshot.Take</c> with nothing to accumulate. A protocol change that lets
+    /// the renderer run across the present would make row 1 lose at most one frame of ticks to the next
+    /// period -- never a torn value: each cell is one aligned <c>long</c>.</para></summary>
+    public const int Rows = 2;
+    /// <summary>The game thread's row -- the default for every thread, so a thread that never claims a row of
+    /// its own is attributed here and nothing goes missing.</summary>
+    public const int RowGame = 0;
+    /// <summary>Alloy's render thread's row.</summary>
+    public const int RowRender = 1;
+
+    /// <summary>Which row this thread's brackets land in. Thread-static and zero by default, so the game
+    /// thread needs no call and <see cref="Add"/> stays two array writes.</summary>
+    [ThreadStatic] private static int _row;
+
+    /// <summary>Attribute this thread's brackets to <paramref name="row"/> from now on. Called once, by the
+    /// thread itself, as the first thing it does -- a row claimed from another thread would set that
+    /// thread's.</summary>
+    public static void UseRow(int row) => _row = (uint)row < Rows ? row : RowGame;
+
+    /// <summary>The row the calling thread accumulates into.</summary>
+    public static int CurrentRow => _row;
+
+    private static readonly long[] _frame = new long[Rows * N];    // this frame's ticks, per row per zone
+    private static readonly long[] _sum = new long[Rows * N];      // the period's
+    private static readonly long[] _worst = new long[Rows * N];    // ...and the worst single frame's, snapshotted
+    private static readonly long[] _worstDrew = new long[Rows * N]; // ...and the worst that reached the scene render
     private static long _dtSum, _dtWorst, _dtWorstDrew;
     private static int _frames;
 
@@ -281,7 +383,7 @@ public static class FrameZones
     private const int NE = (int)Ev.Count;
     private static readonly int[] _ev = new int[NE];
     private static readonly long[] _evSum = new long[NE], _evHitch = new long[NE];
-    private static readonly long[] _hitch = new long[N];
+    private static readonly long[] _hitch = new long[Rows * N];
     private static long _dtHitch, _dtNoStall;
     /// <summary>GPU span per frame, attributed by age: the stamp result for a frame arrives some frames later,
     /// so a ring of hitch verdicts pairs it with the frame it measured. ponytail: a declined stamp slips the
@@ -304,27 +406,30 @@ public static class FrameZones
     /// <summary>Count an event this frame. Hot: one array add.</summary>
     public static void Count(Ev e, int n = 1) => _ev[(int)e] += n;
 
-    /// <summary>Ticks this zone has accumulated so far THIS frame -- the value a parent bracket samples
-    /// before and after its child so it can subtract it.</summary>
-    public static long Ticks(Zone z) => _frame[(int)z];
+    /// <summary>Ticks this zone has accumulated so far THIS frame ON THIS THREAD -- the value a parent
+    /// bracket samples before and after its child so it can subtract it. Per row, because a parent must
+    /// subtract the child IT contains and not one another thread opened at the same moment.</summary>
+    public static long Ticks(Zone z) => _frame[_row * N + (int)z];
 
     public static long Now => Stopwatch.GetTimestamp();
 
     /// <summary>Close a bracket opened at <paramref name="t0"/>, optionally minus ticks a nested bracket
     /// already claimed. Never accumulates negative: a child measured across a boundary this parent did not
     /// span would otherwise credit the parent time it did not spend.</summary>
-    /// <summary>Every top-level zone's ticks this frame, for a bracket that must subtract the ones it contains.</summary>
+    /// <summary>Every top-level zone's ticks this frame ON THIS THREAD, for a bracket that must subtract the
+    /// ones it contains.</summary>
     public static long TopLevelTicks()
     {
         long s = 0;
-        for (int i = 0; i < (int)Zone.Nested; i++) s += _frame[i];
+        int b = _row * N;
+        for (int i = 0; i < (int)Zone.Nested; i++) s += _frame[b + i];
         return s;
     }
 
     public static void Add(Zone z, long t0, long minus = 0)
     {
         long dt = Stopwatch.GetTimestamp() - t0 - minus;
-        if (dt > 0) _frame[(int)z] += dt;
+        if (dt > 0) _frame[_row * N + (int)z] += dt;
     }
 
     /// <summary>#324: close a bracket taken on 1-in-<paramref name="every"/> iterations of a walk, credited
@@ -333,19 +438,24 @@ public static class FrameZones
     public static void AddSampled(Zone z, long t0, int every)
     {
         long dt = Stopwatch.GetTimestamp() - t0;
-        if (dt > 0) _frame[(int)z] += dt * every;
+        if (dt > 0) _frame[_row * N + (int)z] += dt * every;
     }
 
     /// <summary>Drop this frame's brackets without folding them into the period -- the loading-screen and
-    /// main-menu case. Without it the first in-module frame after a menu would carry the menu's ticks.</summary>
-    public static void Discard() { Array.Clear(_frame, 0, N); ReadSched(); Array.Copy(_scNow, _scLast, (int)Sc.Count); }
+    /// main-menu case. Without it the first in-module frame after a menu would carry the menu's ticks.
+    /// Every row: a discarded frame discards the renderer's half too.</summary>
+    public static void Discard() { Array.Clear(_frame, 0, Rows * N); ReadSched(); Array.Copy(_scNow, _scLast, (int)Sc.Count); }
 
     /// <summary>Did this frame reach the scene render at all? A frame with every renderer zone at zero spent
-    /// its time somewhere no bracket here can see -- in practice engine asset loading.</summary>
+    /// its time somewhere no bracket here can see -- in practice engine asset loading.
+    /// <para>Every row, not the game thread's: with a render thread live the renderer's zones are row 1, and
+    /// asking row 0 alone would call every drawn frame a stall.</para></summary>
     private static bool Drew()
     {
-        for (int i = 0; i < (int)Zone.Nested; i++)
-            if (i != (int)Zone.Ui && i != (int)Zone.Present && i < (int)Zone.Net && _frame[i] != 0) return true;
+        for (int r = 0; r < Rows; r++)
+            for (int i = 0; i < (int)Zone.Nested; i++)
+                if (i != (int)Zone.Ui && i != (int)Zone.Present && i < (int)Zone.Net && _frame[r * N + i] != 0)
+                    return true;
         return false;
     }
 
@@ -519,7 +629,10 @@ public static class FrameZones
 
     /// <summary>The BLAME column: per hitch frame, the top-level zone with the largest excess over the previous
     /// period's mean frame -- or <c>diffuse</c> when no zone holds half the excess, which is the slow-thread
-    /// signature the hitch row's average cannot show (it blurs twenty different spikes into a uniform one).</summary>
+    /// signature the hitch row's average cannot show (it blurs twenty different spikes into a uniform one).
+    /// <para>Row 0 only, deliberately: blame answers "where did the GAME thread's frame go", and that is the
+    /// thread whose wall the frame time measures. A render thread's spike reaches the frame through a publish
+    /// wait, which is row 0's <c>Seam</c>, and the render row on the period line is where it is read.</para></summary>
     private static readonly long[] _mean = new long[N];
     private static readonly int[] _blame = new int[(int)Zone.Nested + 1];
     private static void Blame()
@@ -542,8 +655,8 @@ public static class FrameZones
         _dtSum += dt; _frames++;
         double msNow = dt * 1000.0 / Stopwatch.Frequency;
         if (msNow <= StallMs) { _dtNoStall += dt; _framesNoStall++; }
-        if (dt > _dtWorst) { _dtWorst = dt; Array.Copy(_frame, _worst, N); }
-        if (dt > _dtWorstDrew && Drew()) { _dtWorstDrew = dt; Array.Copy(_frame, _worstDrew, N); }
+        if (dt > _dtWorst) { _dtWorst = dt; Array.Copy(_frame, _worst, Rows * N); }
+        if (dt > _dtWorstDrew && Drew()) { _dtWorstDrew = dt; Array.Copy(_frame, _worstDrew, Rows * N); }
         if (_enrollMarked && _enrollN < _enrollTicks.Length) _enrollTicks[_enrollN++] = _frame[(int)Zone.Enroll];
         _enrollMarked = false;
         double ms = dt * 1000.0 / Stopwatch.Frequency;
@@ -551,7 +664,7 @@ public static class FrameZones
         if (hitch) { _hitchN++; _dtHitch += dt; Blame(); }
         if (ExtenderLog.Enabled) Sched(dt, hitch);
         _hitchRing[(_frames - 1) & 15] = hitch;
-        for (int i = 0; i < N; i++) { _sum[i] += _frame[i]; if (hitch) _hitch[i] += _frame[i]; _frame[i] = 0; }
+        for (int i = 0; i < Rows * N; i++) { _sum[i] += _frame[i]; if (hitch) _hitch[i] += _frame[i]; _frame[i] = 0; }
         for (int e = 0; e < NE; e++) { _evSum[e] += _ev[e]; if (hitch) _evHitch[e] += _ev[e]; _ev[e] = 0; }
     }
 
@@ -592,7 +705,7 @@ public static class FrameZones
         sb.Append(" || events/frame all|hitch:");
         for (int e = 0; e < NE; e++)
             sb.Append($" {(Ev)e} {(double)_evSum[e] / frames:F1}|{(_hitchN > 0 ? (double)_evHitch[e] / _hitchN : 0):F1}");
-        Array.Clear(_hitch, 0, N); Array.Clear(_evSum, 0, NE); Array.Clear(_evHitch, 0, NE);
+        Array.Clear(_hitch, 0, Rows * N); Array.Clear(_evSum, 0, NE); Array.Clear(_evHitch, 0, NE);
         _dtHitch = 0; _hitchN = 0;
         return sb.ToString();
     }
@@ -624,21 +737,51 @@ public static class FrameZones
     /// frame's, and the worst frame that actually rendered. <c>other</c> is the residual -- frame time minus
     /// every top-level zone -- and a large one is itself the finding (engine simulation, input, 2D UI: work
     /// no Alloy bracket can see). The third row is dropped when it IS the second one, which is the ordinary
-    /// case; it appearing at all means the worst frame of the period never reached the scene render.</summary>
+    /// case; it appearing at all means the worst frame of the period never reached the scene render.
+    /// <para>With <c>alloy.renderthread=1</c> a fourth clause appears: the RENDER thread's own row, which is
+    /// not a partition of the frame and so carries no residual. The pair to read is the game row's wall
+    /// against it -- a frame should cost <c>max</c> of the two, and a render row larger than the game row with
+    /// a large <c>Seam</c> beside it is the renderer being the bottleneck.</para></summary>
     public static string Period()
     {
         int frames = Math.Max(_frames, 1);
         string line = "FrameZones: [zones] " + Row(_sum, _dtSum, frames)
-                    + " || worst frame " + Row(_worst, _dtWorst, 1);
-        if (_dtWorstDrew != _dtWorst) line += " || worst that RENDERED " + Row(_worstDrew, _dtWorstDrew, 1);
+                    + RenderClause(_sum, frames)
+                    + " || worst frame " + Row(_worst, _dtWorst, 1) + RenderClause(_worst, 1);
+        if (_dtWorstDrew != _dtWorst)
+            line += " || worst that RENDERED " + Row(_worstDrew, _dtWorstDrew, 1) + RenderClause(_worstDrew, 1);
         line += EnrollP99();
         line += HitchLine();   // before the frame reset: the event columns average over this period's frames
         line += $" || over {_frames} presents";
-        Array.Clear(_sum, 0, N); Array.Clear(_worst, 0, N); Array.Clear(_worstDrew, 0, N);
+        Array.Clear(_sum, 0, Rows * N); Array.Clear(_worst, 0, Rows * N); Array.Clear(_worstDrew, 0, Rows * N);
         _dtSum = 0; _dtWorst = 0; _dtWorstDrew = 0; _frames = 0;
         return line;
     }
 
+    /// <summary>The render thread's row, or nothing at all when it never ran -- an empty clause is how the
+    /// single-threaded reading stays byte-identical to what it was before rows existed.</summary>
+    private static string RenderClause(long[] t, int frames)
+    {
+        // The TOTAL is the top-level zones, because that is the row's wall. Whether to print at all asks the
+        // WHOLE row: a render thread whose brackets are all nested ones (every zone under Alloy, with the
+        // Alloy bracket itself opened on the game thread by some future arrangement) would sum to zero
+        // top-level and vanish from the line while plainly having run.
+        long total = 0, any = 0;
+        for (int i = 0; i < (int)Zone.Nested; i++) total += t[N + i];
+        for (int i = 0; i < N; i++) if (i != (int)Zone.Nested) any += t[N + i];
+        if (any == 0) return "";
+        double k = 1000.0 / Stopwatch.Frequency / frames;
+        var sb = new System.Text.StringBuilder($" || render thread {total * k:F1}ms =");
+        for (int i = 0; i < N; i++)
+        {
+            if (i == (int)Zone.Nested || t[N + i] == 0) continue;
+            sb.Append($" {(Zone)i}:{t[N + i] * k:F1}");
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>The GAME row of <paramref name="t"/> -- row 0, which is the one the frame time partitions and
+    /// therefore the only one with a residual. The render row is <see cref="RenderClause"/>'s.</summary>
     private static string Row(long[] t, long dt, int frames)
     {
         double k = 1000.0 / Stopwatch.Frequency / frames;
@@ -657,15 +800,88 @@ public static class FrameZones
         return sb.ToString();
     }
 
+    /// <summary>Every accumulator back to boot state -- both zone rows, the period, the worst-frame latches,
+    /// the hitch ledger and its ring, the blame baseline, the event counters, the GPU-span pairing, the
+    /// scheduler deltas and the enrolment population. For the self-checks, which synthesise frames: one place
+    /// to restore from, because a restore spelled as a list of fields is a list that falls out of step with
+    /// the fields.</summary>
+    private static void ResetAll()
+    {
+        Array.Clear(_frame); Array.Clear(_sum); Array.Clear(_worst); Array.Clear(_worstDrew);
+        Array.Clear(_hitch); Array.Clear(_mean); Array.Clear(_blame);
+        Array.Clear(_ev); Array.Clear(_evSum); Array.Clear(_evHitch);
+        Array.Clear(_hitchRing); Array.Clear(_scAll); Array.Clear(_scHitch);
+        _dtSum = 0; _dtWorst = 0; _dtWorstDrew = 0; _dtHitch = 0; _dtNoStall = 0;
+        _frames = 0; _hitchN = 0; _framesNoStall = 0;
+        _wallAll = 0; _wallHitch = 0;
+        _gpuSum = 0; _gpuHitch = 0; _gpuN = 0; _gpuHitchN = 0;
+        _enrollN = 0; _enrollMarked = false;
+        _hitchMs = 16.7f;
+    }
+
+    /// <summary>Off-device: CX-188's per-thread rows, on a REAL second thread (a row claimed on the calling
+    /// thread would prove nothing about thread-statics). What must hold: the second thread's bracket lands in
+    /// row 1 and NOT in row 0, the game row's residual is untouched by it, a parent on one thread does not
+    /// subtract a child opened on the other, and the period line grows a render clause only when row 1 ran.
+    /// <para>This is the check the two-thread frame rests on: if rows leaked, <c>other</c> would go negative
+    /// on every frame the render thread drew and the whole instrument would be unreadable exactly when it is
+    /// needed most.</para></summary>
+    private static void RowSelfCheck(ExtenderLog log)
+    {
+        var check = new Checker(log, "FrameZones.RowSelfCheck");
+        long f = Stopwatch.Frequency;
+        long t0 = Stopwatch.GetTimestamp() - f;
+        Add(Zone.Alloy, t0);                        // the game thread's row
+        long gameAlloy = _frame[(int)Zone.Alloy];
+        check.Expect(gameAlloy >= f, "the calling thread accumulates into row 0 with no claim of its own");
+
+        long childSeen = -1, rowSeen = -1;
+        var t = new Thread(() =>
+        {
+            UseRow(RowRender);
+            rowSeen = CurrentRow;
+            // The parent/child subtraction must be per row: Zone.Alloy is a second away on ROW 0, and a
+            // parent here that saw it would subtract a second it never spent.
+            childSeen = Ticks(Zone.Alloy);
+            Add(Zone.Alloy, Stopwatch.GetTimestamp() - f);
+        });
+        t.Start(); t.Join();
+        check.Expect(rowSeen == RowRender, "a thread that claims a row keeps it");
+        check.Expect(childSeen == 0, "Ticks() is the CALLING thread's row, so a parent subtracts only its own child");
+        check.Expect(_frame[(int)Zone.Alloy] == gameAlloy, "the render thread's bracket did not land in the game row");
+        check.Expect(_frame[N + (int)Zone.Alloy] >= f, "...it landed in row 1");
+
+        EndFrame(f);
+        check.Expect(_sum[(int)Zone.Alloy] >= f && _sum[N + (int)Zone.Alloy] >= f,
+                     "EndFrame folds BOTH rows into the period");
+        string line = Period();
+        check.Expect(line.Contains("render thread ") && line.Contains("other:"),
+                     "the period line carries the render clause beside the game row's residual");
+        // ...and with row 1 empty it must read exactly as it did before rows existed.
+        Add(Zone.Alloy, Stopwatch.GetTimestamp() - f);
+        EndFrame(f);
+        check.Expect(!Period().Contains("render thread "), "no render clause on a single-threaded period");
+        Array.Clear(_frame, 0, Rows * N); Array.Clear(_sum, 0, Rows * N);
+        Array.Clear(_worst, 0, Rows * N); Array.Clear(_worstDrew, 0, Rows * N);
+        // ONE place, not a list to keep in step: a term this check leaves behind is one the suite below reads
+        // as a finding. The two Period() calls above re-key the BLAME baseline off this check's own synthetic
+        // frames, which is how the first version of it made the real suite report its deliberate Alloy spike
+        // as `diffuse`; the hitch ring and the GPU-span pairing are the same hazard with no assertion on them
+        // yet, which is exactly why they belong in a reset nobody has to remember.
+        ResetAll();
+        log.Info(check.Ok ? "FrameZones.RowSelfCheck: passed"
+                          : "FrameZones.RowSelfCheck: FAILED -- zone rows are not per thread, so with "
+                          + "alloy.renderthread=1 the residual and the blame column would both be nonsense");
+    }
+
     /// <summary>Off-device: subtraction, worst-frame capture and the period reset. All three are load-bearing
     /// -- a parent that failed to subtract its child would double-count the Alloy frame into the shim (which
     /// is exactly the reading this ticket is correcting), and an averaged-away worst frame is the spike the
     /// whole instrument exists to name.</summary>
     public static void SelfCheck(ExtenderLog log)
     {
-        Array.Clear(_frame, 0, N); Array.Clear(_sum, 0, N);
-        Array.Clear(_worst, 0, N); Array.Clear(_worstDrew, 0, N);
-        _dtSum = 0; _dtWorst = 0; _dtWorstDrew = 0; _frames = 0;
+        ResetAll();
+        RowSelfCheck(log);
 
         long f = Stopwatch.Frequency;
         // A bracket whose child claimed more than the parent spent contributes NOTHING -- never a negative,

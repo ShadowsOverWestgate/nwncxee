@@ -38,6 +38,7 @@ public static unsafe partial class DbAnim
             Carried(check);
             Refilled(check);
             Still(check);
+            SkinTail(check);
             Skin(check);
             LookAtEase(check);
             Lights(check);
@@ -502,7 +503,7 @@ public static unsafe partial class DbAnim
     {
         ModelDef m = Chain();
         DbId scene = SceneDb.Scenes.Alloc();
-        DbId obj = Subject(m, scene, out _);
+        DbId obj = Subject(m, scene, out int first);
         SceneDb.Objects.TakeDirty();
         _dirtyUpTo = 0;
         ComposePending();
@@ -540,9 +541,88 @@ public static unsafe partial class DbAnim
         SceneDb.ObjFlags[obj.Index] &= ~ObjFlag.Static;
         SceneDb.Parts.TakeDirty(); _partDirtyUpTo = 0;
 
+        // CX-188: the PART-only signal, which is the one change the object's own staleness test cannot see.
+        // Dropping Settle's _poseGen bump is only safe because of it, and the hazard is both ways round: a
+        // mark that stops recomposing is a stale pose, and a mark that recomposes forever is the 977-object
+        // walk coming back through the part list instead of the object list.
+        TakeComposeCounts();
+        int mid = first + 1;
+        SceneDb.PartPos[mid] = new Vector3(0f, 0f, 5f);
+        SceneDb.Parts.Mark(mid, Dirty.Anim);
+        ComposePending();
+        (objects, parts) = TakeComposeCounts();
+        check.Expect(objects == 1, "a part marked after its object's compose recomposes that object");
+        check.Expect(NearV(Translation(SceneDb.PartWorld[first + 2]),
+                           Translation(SceneDb.ObjWorld[obj.Index]) + new Vector3(0f, 0f, 6f)),
+                     "...and the part below it rides the new pose");
+        // The boundary re-walks the WHOLE part list, and the same mark must not buy a second compose.
+        _partDirtyUpTo = 0;
+        ComposePending();
+        (objects, parts) = TakeComposeCounts();
+        check.Expect(objects == 0 && parts == 0, "...the same mark, re-walked at the boundary, composes nothing");
+        // ...but a SECOND mark on that entry -- which appends nothing to the list and adds no new bit, so
+        // neither the list length nor the dirty bits move -- must still be caught by the re-walk.
+        SceneDb.PartPos[mid] = new Vector3(0f, 0f, 7f);
+        SceneDb.Parts.Mark(mid, Dirty.Anim);
+        _partDirtyUpTo = 0;
+        ComposePending();
+        (objects, parts) = TakeComposeCounts();
+        check.Expect(objects == 1, "...and a RE-mark of an entry behind the cursor recomposes it");
+        check.Expect(NearV(Translation(SceneDb.PartWorld[first + 2]),
+                           Translation(SceneDb.ObjWorld[obj.Index]) + new Vector3(0f, 0f, 8f)),
+                     "...with the pose that second mark carried");
+        SceneDb.Parts.TakeDirty(); _partDirtyUpTo = 0;
+
         Drop(obj);
         SceneDb.Scenes.Free(scene);
     }
+
+    /// <summary>CX-188: a creature's step composes its part tree ONCE. The pose layer's compose runs inside
+    /// <see cref="StepObject"/> and the tail still owes the skin palette, which used to be bought by
+    /// re-asserting <see cref="ObjAnim.Moved"/> -- and that recomposed the whole range a second time. The two
+    /// are keyed separately now; this fails if either half is lost, because a tail that no longer skins does
+    /// not count and a tail that recomposes counts a second object.</summary>
+    private static void SkinTail(Checker check)
+    {
+        ModelDef m = Chain();
+        DbId scene = SceneDb.Scenes.Alloc();
+        SetSceneGate(scene, true);
+        DbId obj = Subject(m, scene, out int _);
+        int i = obj.Index;
+        SceneDb.ObjFlags[i] |= ObjFlag.Creature;
+        PlayAnimation(obj, "wave", 1f, RunFlags.NoFadeIn, 0f);
+
+        var before = PoseBefore; var after = PoseAfter;
+        // The layer's shape in the measured frame: it paces the runs (so the object is marked moved) and then
+        // corrects nothing, which is every frame in which no procedural correction is due.
+        PoseBefore = &LayerPaced;
+        PoseAfter = &LayerQuiet;
+        try
+        {
+            SceneDb.Objects.TakeDirty(); _dirtyUpTo = 0;
+            ComposePending();
+            TakeComposeCounts();
+            int skinOnly = _skinOnly;
+            _animAt[i] = 0;
+            StepObject(obj, 1f / 60f, 0);
+            var (objects, _) = TakeComposeCounts();
+            check.Expect(objects == 1, "a creature's step composes its part tree exactly once");
+            check.Expect(_skinOnly == skinOnly + 1,
+                         "...and its tail still re-skins, from the matrices that compose wrote");
+            check.Expect((_flags[i] & ObjAnim.SkinDue) == 0, "...and the skin debt is consumed, not carried");
+        }
+        finally { PoseBefore = before; PoseAfter = after; }
+
+        Drop(obj);
+        SetSceneGate(scene, false);
+        SceneDb.Scenes.Free(scene);
+    }
+
+    /// <summary>The pose layer's <c>PoseBefore</c> for <see cref="SkinTail"/>: it wrote a pose column.</summary>
+    private static bool LayerPaced(DbId obj, float dt) => true;
+
+    /// <summary>The pose layer's <c>PoseAfter</c> for <see cref="SkinTail"/>: nothing to correct.</summary>
+    private static bool LayerQuiet(DbId obj, float dt) => false;
 
     // ================= 6: skin palettes =================
 
@@ -893,9 +973,19 @@ public static unsafe partial class DbAnim
         check.Expect(LitMoving(lp), "a two-key light track is motion: the bake keeps the light dynamic");
         check.Expect(Settled(obj), "a no-fade-in run is settled at once");
         SceneDb.PartLitAnim[lp] = LitRadius;
-        m.Nodes[2].Controllers = new[] { new ControllerTrack { Type = Ctl.LightRadius, Columns = 1, Times = new[] { 0f }, Values = new[] { 2f } } };
+        // A SECOND model, not this node's controller array rewritten: LitMoving's node half is memoised on the
+        // NodeDef (NodeDef.LitKeyed), which is sound only because a parsed node is immutable -- so a fixture
+        // that mutated one would test something production cannot do, and would hide the memo's one failure
+        // mode instead of catching it. Two nodes, two answers, which is also the test that it is per node.
+        ModelDef settled = Chain();
+        settled.Nodes[2].Kind = NodeKind.Light;
+        settled.Nodes[2].Light = new LightDef();
+        settled.Nodes[2].Controllers = new[]
+            { new ControllerTrack { Type = Ctl.LightRadius, Columns = 1, Times = new[] { 0f }, Values = new[] { 2f } } };
+        SceneDb.PartModel[lp] = settled;
         check.Expect(!LitMoving(lp), "a single-key track settles: the light is bakeable");
-        m.Nodes[2].Controllers = new[] { colour, radius };
+        SceneDb.PartModel[lp] = m;
+        check.Expect(LitMoving(lp), "...and the multi-key node still reads as motion (the memo is per node)");
 
         // Half weight blends over the column, from the rest key on the first write.
         SceneDb.PartLitAnim[lp] = 0;
