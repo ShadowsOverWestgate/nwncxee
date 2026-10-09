@@ -215,6 +215,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     internal struct LitLoc
     {
         public int Oit, OitDim, OitGob, LightRecOn;
+        public int AlphaMip;   // CX-191
         public int Tex, Vp, Base, Cut, Viz, Ssao, SsaoOn, SsaoHalf, AoDirect, AoCutout,
                    SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex,   // CX-43: the rest of the receiver and the light curve ride CxPass
                    Probe, Capture, MirrorZ,          // MirrorZ: CX-51 the planar mirror's plane
@@ -374,7 +375,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// it, <c>PairDebt</c> the hot-light debt the walk's CX_NO_HOT no longer takes -- so
     /// <c>shadow.deferredres</c> and <c>lightmap.moverlights</c> each have a number of their own rather than
     /// one summed with the walk's.</para></summary>
-    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, BlendedComposite, BlendedHosted, BlendedDepth, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Weather, Ssr, Deferred, DeferredShadow, PairDebt, Count }
+    internal enum GpuTerm { Prepass, PrepassKey, PrepassFeat, PrepassRetest, Ao, Opaque, OpaqueKey, Cutout, CutoutKey, Grass, GrassDepth, Sky, Blended, BlendedComposite, BlendedHosted, BlendedDepth, Water, Additive, Particles, Motion, Post, Cull, HiZ, Beams, WaterCopy, Weather, Ssr, Deferred, DeferredShadow, PairDebt, Coverage, Count }
     /// <summary>One elapsed query per term. TIME_ELAPSED cannot nest: until #325 the colour timer wrapped
     /// the grass and water ones, the inner End closed it early, and both inner meters wedged on a stale sample.</summary>
     private static readonly GpuQuery[] _qTerm = new GpuQuery[(int)GpuTerm.Count];
@@ -1109,7 +1110,7 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
     /// (<c>Programs.cs:18</c>), so it has to be re-derived rather than carried.</para></summary>
     internal static void ContextLost()
     {
-        Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; Programs._progLitDef = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0;
+        Programs._prog46 = 0; Programs._progLit46 = 0; Programs._progLitHost = 0; Programs._progLitList = 0; Programs._progLitDef = 0; Programs._progLitMask = 0; OitPass.ListsArmed = false; Programs._progDepth = 0; Programs._progDepthKey = 0; Programs._progDepthFeat = 0; Programs._progWater = 0;
         Programs.ForgetBlendAblate();
         Highlight.HighlightContextLost();
         TriggerHighlight.ContextLost();
@@ -1414,6 +1415,8 @@ public sealed unsafe partial class AlloyRenderer : IExtenderService
                          // CX-188: the deferred point-light dispatch. Read it against the lit colour terms
                          // above: this is what light.deferred moved OUT of them (A/B with /light deferred 0).
                          (_qTerm[(int)GpuTerm.Deferred].Measured ? $" / deferred {GpuMs(GpuTerm.Deferred):F2}" : "") +
+                         // CX-189: the coverage layer -- seed, the forward-lit A2C draws and the resolve, together
+                         (_qTerm[(int)GpuTerm.Coverage].Measured ? $" / a2c {GpuMs(GpuTerm.Coverage):F2}" : "") +
                          // CX-188 step 3: the per-pixel shadow record the walk above reads, apart from it
                          // (A/B with /shadow deferredres and /shadow cap 0).
                          (_qTerm[(int)GpuTerm.DeferredShadow].Measured

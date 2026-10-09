@@ -68,6 +68,9 @@ public sealed unsafe partial class AlloyRenderer
     /// radix digit, so each class occupies a contiguous run of <see cref="_order"/> and each pass owns a
     /// contiguous run of batches.</summary>
     private static readonly byte[] _oCls = new byte[MaxOwned];
+    /// <summary>CX-189: a cutout part whose material asks for alpha-to-coverage. Routed to the tail of the
+    /// cutout run so <see cref="CoverageLayer"/> can take it as one batch range.</summary>
+    private static readonly bool[] _oA2c = new bool[MaxOwned];
     /// <summary>The bucket this part was captured in, for the one-owner audit alone: an UNMATCHED part is
     /// one we drew that the engine's iterator never walked, and "which bucket did it come from" is the only
     /// question that separates a suppression gap from geometry the engine simply culled this frame.</summary>
@@ -591,6 +594,9 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#327: ...and, for the opaque classes only, whether the keyhole dissolves the entry this
     /// frame -- chased at route so the class run can be partitioned on it (see <see cref="RouteParts"/>).</summary>
     private static readonly bool[] _passDis = new bool[MaxOwned];
+    /// <summary>CX-189: the route's alpha-to-coverage cutouts and their dissolve bit, held until the cutout run is out.</summary>
+    private static readonly int[] _a2cTmp = new int[MaxOwned];
+    private static readonly bool[] _a2cDis = new bool[MaxOwned];
     /// <summary>#322: the draw-arg cache -- index count, byte offset and base vertex as read off the VDO
     /// item tables the last time this slot staged. Valid while stamped with the live epoch AND the stamp
     /// survives <c>UnstampRecord</c>, which fires on every re-tenant and drifted keep -- the only edges that
@@ -623,6 +629,8 @@ public sealed unsafe partial class AlloyRenderer
     /// batch has to be droppable whole. Prepass depth for a wall the colour pass punches through would cull
     /// the room behind it.</summary>
     internal static readonly bool[] _gDis = new bool[MaxOwned];
+    /// <summary>CX-189: the batch is an alpha-to-coverage cutout (<see cref="_oA2c"/>); these close the cutout range.</summary>
+    internal static readonly bool[] _gA2c = new bool[MaxOwned];
     /// <summary>#379 follow-up: did the depth prepass ACTUALLY draw this batch? Set by
     /// <c>DepthPrepassPass</c> as it walks, not predicted from the class -- the SSAO consumer gate was a
     /// second copy of the prepass's skip conditions and drifted from it (a door read "in the depth" while
@@ -645,6 +653,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>#325: where the cutout run begins inside the opaque set, so the opaque pass can time the two
     /// classes apart. Equals <see cref="_gOpaqueEnd"/> when nothing staged as cutout.</summary>
     private static int _gCutoutStart;
+    /// <summary>CX-189: where the alpha-to-coverage batches begin inside the cutout run; <see cref="_gOpaqueEnd"/> when none.</summary>
+    internal static int _gA2cStart;
     internal static int _drawN;
     // #125: the sky's own draw list, staged after the batch records and issued one draw at a time -- a
     // skybox is a handful of parts and each carries its own captured matrix, so there is nothing to group.

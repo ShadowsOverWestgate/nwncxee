@@ -65,6 +65,9 @@ internal static partial class DrawRecipe
     /// recipe every frame and resolving a <c>.mtr</c> there would be a dictionary lookup per recipe per
     /// frame.</summary>
     private static readonly bool[] _declWater = new bool[Max];
+    /// <summary>CX-189: the material's <c>NWN_ALPHA_MODE 2</c> -- draw this part through alpha-to-coverage
+    /// (<see cref="RecipeFlag.Coverage"/>) instead of blending it. Kept per recipe for <see cref="Reclassify"/>.</summary>
+    private static readonly bool[] _coverage = new bool[Max];
 
     internal static int Count => _n;
 
@@ -260,7 +263,9 @@ internal static partial class DrawRecipe
         // its environment map (w_metal_tex.txi: `envmaptexture TTR01__ref01`, 80% of its texels graded;
         // ashlw_031: a tenth of them at 164), and vanilla answers OPAQUE for an env-mapped material outright
         // -- GetIsOpaque returns the HasEnvMap flag itself and never looks at the texture.
-        return AlloyClasses.Of(water, additive, opaque, declared, false);
+        // CX-189: NWN_ALPHA_MODE 2 is the author saying "coverage, not blending" -- a declared transparency
+        // on the same material is the vanilla fallback for clients without it, so it does not make this blended.
+        return AlloyClasses.Of(water, additive, opaque, declared && !_coverage[r], false);
     }
 
     /// <summary>Is this material DECLARED water, i.e. water by a term the MODEL carries? The <c>.mtr</c>'s
@@ -314,6 +319,8 @@ internal static partial class DrawRecipe
         if (hintAdditive || TexRegistry.TxiDecal(d)) _flags[r] &= ~RecipeFlag.Lit;
         else _flags[r] |= RecipeFlag.Lit;
         _cls[r] = (byte)ClassOf(r, additive, declared);
+        if (_coverage[r] && _cls[r] == (byte)AlloyClass.Cutout) _flags[r] |= RecipeFlag.Coverage;
+        else _flags[r] &= ~RecipeFlag.Coverage;
     }
 
     private static int _classSerial = -1;
@@ -349,6 +356,9 @@ internal static partial class DrawRecipe
         bool additive = nd.ContentFlags != 0 && mesh.RenderHint.Equals("additive", StringComparison.OrdinalIgnoreCase);
         _src[r] = BlendSrcAlpha; _dst[r] = additive ? BlendOne : BlendInvSrcAlpha;
         _declWater[r] = DeclaredWater(mesh);
+        // Material::GetTexture @0x5c5810: the .mtr's texture wins wherever it states one.
+        MtrDef? mtr = MtrDef.Of(mesh);
+        _coverage[r] = mtr is { AlphaMode: 2 };
         // TransparencyHint > 0 is the model's own "this is see-through" (the engine's child-order sort key);
         // a mesh with no alpha anywhere and no hint is genuinely opaque.
         bool declared = mesh.TransparencyHint > 0;
@@ -395,8 +405,6 @@ internal static partial class DrawRecipe
         for (int k = 0; k < ParamFloats; k++) _param[r * ParamFloats + k] = 0f;
         ResetExt(r);
         int mask = 0;
-        // Material::GetTexture @0x5c5810: the .mtr's texture wins wherever it states one.
-        MtrDef? mtr = MtrDef.Of(mesh);
         for (int s = 0; s < TexSlots; s++)
         {
             string name = mtr != null && mtr.Textures[s].Length > 0 ? mtr.Textures[s]
@@ -539,7 +547,8 @@ internal enum RecipeFlag : ushort
     Env = 1 << 1,
     /// <summary>The material's <c>twosided</c>: draws with face culling off.</summary>
     TwoSided = 1 << 2,
-    /// <summary>A graded-alpha cutout re-filed as blended (<c>gradedblend</c>), drawn with no depth write.</summary>
+    /// <summary>A graded-alpha cutout re-filed as blended, drawn with no depth write. ponytail: nothing sets it since
+    /// !797 retired the <c>gradedblend</c> reroute; the wash path behind it is dormant until something does.</summary>
     Wash = 1 << 3,
     /// <summary>A dangly mesh: a permanent shadow mover, posed by the solver.</summary>
     Dangly = 1 << 4,
@@ -555,4 +564,6 @@ internal enum RecipeFlag : ushort
     Fades = 1 << 9,
     /// <summary>The mesh's texture rotates (<c>rotatetexture</c>).</summary>
     RotateTexture = 1 << 10,
+    /// <summary>CX-189: a cutout whose material asks for alpha-to-coverage (<c>NWN_ALPHA_MODE 2</c>).</summary>
+    Coverage = 1 << 11,
 }

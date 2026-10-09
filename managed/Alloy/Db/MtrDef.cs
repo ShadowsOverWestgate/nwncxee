@@ -26,8 +26,11 @@ public sealed class MtrDef
     /// 3 <c>normaltangents</c>.</summary>
     public int RenderHint;
     public string ShaderVs = "", ShaderFs = "", ShaderGs = "";
-    /// <summary><c>parameter &lt;name&gt; &lt;float&gt;...</c>, in file order.</summary>
+    /// <summary><c>parameter float|int &lt;name&gt; &lt;value&gt;...</c>, in file order (the engine's own
+    /// <c>Parse(char*, MaterialParameter&amp;)</c> @0x5c5310 reads the type word first and drops any other).</summary>
     public readonly List<(string Name, float[] Values)> Parameters = new();
+    /// <summary>CX-189: <c>parameter int NWN_ALPHA_MODE n</c>, 0 when absent. 2 asks for alpha-to-coverage.</summary>
+    public int AlphaMode;
     public bool Transparency, TwoSided, Volumetric;
     /// <summary><c>sample_framebuffer</c>: the engine parses it as an INT, not a flag.</summary>
     public int SampleFramebuffer;
@@ -107,6 +110,11 @@ public sealed class MtrDef
         if (Is(key, "sample_framebuffer")) { m.SampleFramebuffer = Int(rest, m.SampleFramebuffer); return; }
         if (Is(key, "parameter"))
         {
+            int s1 = rest.IndexOfAny(' ', '\t');
+            if (s1 < 0) return;
+            ReadOnlySpan<char> type = rest[..s1];
+            if (!Is(type, "float") && !Is(type, "int")) return;
+            rest = rest[(s1 + 1)..].TrimStart();
             int s2 = rest.IndexOfAny(' ', '\t');
             if (s2 < 0) return;
             string pn = new(rest[..s2]);
@@ -123,6 +131,7 @@ public sealed class MtrDef
                 tail = e < 0 ? default : tail[(e + 1)..];
             }
             m.Parameters.Add((pn, vals.ToArray()));
+            if (pn.Equals("NWN_ALPHA_MODE", StringComparison.OrdinalIgnoreCase) && vals.Count > 0) m.AlphaMode = (int)vals[0];
         }
     }
 

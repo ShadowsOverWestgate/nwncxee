@@ -283,7 +283,7 @@ internal static unsafe class Issue
         float boundCut = float.NaN;   // per PROGRAM: reset on every UseProgram below
         int litBase = -1, litCut = -1, litOitGob = -1; // the bound lit program's, whichever of the two it is
         int litSsaoOn = -1, litAoDirect = -1;
-        if (boundProg is 1 or 3 or 4 or 5)
+        if (boundProg is 1 or 3 or 4 or 5 or 6)
         {
             ref LitLoc H = ref LitLocOf(boundProg);
             litBase = H.Base; litCut = H.Cut; litOitGob = H.OitGob;
@@ -322,8 +322,10 @@ internal static unsafe class Issue
             // forward loop: a capture or the mirror (no G-buffer to read back), any /alloy viz (so every debug
             // view stays truthful), a hosted body, and the blended range through the OIT twin.
             bool deferred = lit && !water && !hosted && !lists && viz == 0 && !_capturing
-                            && g < _gOpaqueEnd && DeferredLights.Active;
-            int wantProg = water ? 2 : hosted ? 3 : lists ? 4 : deferred ? 5 : lit ? 1 : 0;
+                            && g < _gOpaqueEnd && DeferredLights.Active && !_forwardOnly;
+            // CX-189: the coverage layer draws forward, through the mask variant when it shapes its own samples
+            int wantProg = water ? 2 : hosted ? 3 : lists ? 4 : deferred ? 5
+                         : lit ? (_coverPass && CoverageLayer.Masked ? 6 : 1) : 0;
             if (boundProg != wantProg)
             {
                 boundProg = wantProg;
@@ -358,12 +360,14 @@ internal static unsafe class Issue
                 {
                     ref LitLoc L = ref LitLocOf(wantProg);
                     Gl.UseProgram(hosted ? Programs._progLitHost : lists ? Programs._progLitList
-                                  : deferred ? Programs._progLitDef : Programs._progLit46);
+                                  : deferred ? Programs._progLitDef : wantProg == 6 ? Programs._progLitMask : Programs._progLit46);
+                    if (wantProg == 6) Gl.Uniform1i(Programs._litMaskSamples, CoverageLayer.Samples);
                     Gl.Uniform1i(L.Tex, 0);
                     Gl.UniformMatrix4fv(L.Vp, 1, 0, vpRaw);
                     AlloyLights.BindForDraw();
                     Gl.Uniform1i(L.Viz, viz);
                     Gl.Uniform1f(L.AoCutout, Ao.Cutout.V);
+                    Gl.Uniform1f(L.AlphaMip, Renderer.CutMip.V);
                     OitPass.Upload(L.Oit, L.OitDim, _oitOn);
                     Gl.Uniform1i(L.LightRecOn, _lightRec ? 1 : 0);
                     Gl.Uniform1i(L.Capture, _capturing ? (_planar ? 2 : 1) : 0);
@@ -395,6 +399,7 @@ internal static unsafe class Issue
                     float* white = stackalloc float[3] { 1f, 1f, 1f };
                     Gl.Uniform3fv(Programs._locTint, 1, white);    // ...and white, which is Mat()'s ordinary branch
                     Gl.Uniform1f(Programs._locSkyFog, 0f);
+                    Gl.Uniform1f(Programs._locAlphaMip, Renderer.CutMip.V);
                     Gl.Uniform1i(Programs._locViz, viz);
                     OitPass.Upload(Programs._locOit, Programs._locOitDim, _oitOn); boundOitGob = -1;
                     Gl.UniformMatrix4fv(Programs._locVp, 1, 0, vpRaw);
@@ -415,7 +420,7 @@ internal static unsafe class Issue
                     Gl.Uniform1f(litAoDirect, ssao > 0 ? SsaoPass.Direct : 0f);
                 }
             }
-            float cut = AlloyClasses.Discard(_gCls[g]);
+            float cut = _coverPass ? CoverageLayer.Cut : AlloyClasses.Discard(_gCls[g]);
             if (cut != boundCut) { Gl.Uniform1f(water ? Programs._watCut : lit ? litCut : Programs._locCut, cut); boundCut = cut; }
             // ...and the blend state, per batch, because the opaque PASS now mixes both: a plain opaque batch
             // draws with GL_BLEND off and a cutout batch with it on and the material's own pair, which is
@@ -503,13 +508,21 @@ internal static unsafe class Issue
         if (boundOffset) Gl.Disable(Gl.POLYGON_OFFSET_FILL);
     }
 
-    /// <summary>The uniform locations of one of the four lit programs, keyed by the issue loop's
-    /// <c>wantProg</c>: 1 plain, 3 hosted (#350), 4 the OIT-lists twin (#490), 5 the deferred twin (CX-188).
-    /// One place, because two sites in the loop pick from the same four.</summary>
+    /// <summary>The uniform locations of one of the five lit programs, keyed by the issue loop's
+    /// <c>wantProg</c>: 1 plain, 3 hosted (#350), 4 the OIT-lists twin (#490), 5 the deferred twin (CX-188),
+    /// 6 the A2C mask variant (CX-189). One place, because two sites in the loop pick from the same five.</summary>
     private static ref LitLoc LitLocOf(int which)
         => ref (which == 3 ? ref Programs._litH
               : ref (which == 4 ? ref Programs._litL
-                   : ref (which == 5 ? ref Programs._litD : ref Programs._lit)));
+                   : ref (which == 5 ? ref Programs._litD
+                        : ref (which == 6 ? ref Programs._litM : ref Programs._lit))));
+
+    /// <summary>CX-189: the batches being issued are <see cref="CoverageLayer"/>'s, cut at the layer's threshold
+    /// rather than the class's (and through the mask variant when it is on). Set around the layer's one issue call.</summary>
+    internal static bool _coverPass;
+    /// <summary>CX-189: the batches draw after the deferred pass (the coverage tail, layered or not), so never through
+    /// the deferred twin -- its point lights would go to a G-buffer nobody reads any more.</summary>
+    internal static bool _forwardOnly;
 
     /// <summary>CX-188: the blended class's lit fragments may take the deferred pass's light record (set by the
     /// frame around the blended pass only, with the record bound on <see cref="TextureSlots.LightRec"/>).</summary>

@@ -106,7 +106,7 @@ public static unsafe class Gl
                       FRAMEBUFFER_ATTACHMENT_OBJECT_NAME = 0x8CD1, RENDERBUFFER = 0x8D41,
                       ATTACHMENT_TEXTURE = 0x1702, FRAMEBUFFER_SRGB = 0x8DB9;
     public const uint DEPTH_COMPONENT = 0x1902, DEPTH_COMPONENT24 = 0x81A6, DEPTH_COMPONENT16 = 0x81A5, UNSIGNED_INT = 0x1405;
-    public const uint DEPTH_BUFFER_BIT = 0x0100, COLOR_BUFFER_BIT = 0x4000, LESS = 0x0201, LEQUAL = 0x0203, GREATER = 0x0204, NONE = 0;
+    public const uint DEPTH_BUFFER_BIT = 0x0100, COLOR_BUFFER_BIT = 0x4000, LESS = 0x0201, LEQUAL = 0x0203, GREATER = 0x0204, ALWAYS = 0x0207, NONE = 0;
     /// <summary>GL_EQUAL. #364: the highlight mask tests a cutout batch against the depth its own colour
     /// pass wrote with the discard applied, so only the surviving fragments match.</summary>
     public const uint EQUAL = 0x0202;
@@ -180,6 +180,8 @@ public static unsafe class Gl
     /// samples. Each sample is still written whole or not at all, so it is antialiasing without ever
     /// producing a partially transparent depth-writing fragment. Inert where SAMPLES is 1.</summary>
     public const uint SAMPLE_ALPHA_TO_COVERAGE = 0x809E;
+    /// <summary>CX-189: the implementation's sample ceiling for a multisampled target.</summary>
+    public const uint MAX_SAMPLES = 0x8D57;
     public const uint TEXTURE_COMPARE_MODE = 0x884C, TEXTURE_COMPARE_FUNC = 0x884D, COMPARE_REF_TO_TEXTURE = 0x884E;
     // clustered forward+ on the Alloy path (#83): compute dispatch, SSBOs and the GPU timer for the
     // cluster-build budget. All 4.6-core, so they exist only inside the #80 share-listed context.
@@ -532,6 +534,8 @@ public static unsafe class Gl
     /// a resize is delete + create, never a respecify.</summary>
     public static delegate* unmanaged<uint, int, uint, int, int, void> TextureStorage2D;
     public static delegate* unmanaged<uint, int, uint, int, int, int, void> TextureStorage3D;
+    /// <summary>glTextureStorage2DMultisample: texture, samples, internalFormat, width, height, fixedSampleLocations.</summary>
+    public static delegate* unmanaged<uint, int, uint, int, int, byte, void> TextureStorage2DMultisample;
     /// <summary>glTextureSubImage2D: texture, level, x, y, w, h, format, type, data.</summary>
     public static delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void> TextureSubImage2D;
     /// <summary>glTextureSubImage3D: texture, level, x, y, z, w, h, depth, format, type, data.</summary>
@@ -766,6 +770,7 @@ public static unsafe class Gl
         UnmapNamedBuffer = (delegate* unmanaged<uint, byte>)P("glUnmapNamedBuffer");
         TextureStorage2D = (delegate* unmanaged<uint, int, uint, int, int, void>)P("glTextureStorage2D");
         TextureStorage3D = (delegate* unmanaged<uint, int, uint, int, int, int, void>)P("glTextureStorage3D");
+        TextureStorage2DMultisample = (delegate* unmanaged<uint, int, uint, int, int, byte, void>)P("glTextureStorage2DMultisample");
         TextureSubImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, uint, void*, void>)P("glTextureSubImage2D");
         TextureSubImage3D = (delegate* unmanaged<uint, int, int, int, int, int, int, int, uint, uint, void*, void>)P("glTextureSubImage3D");
         CompressedTextureSubImage2D = (delegate* unmanaged<uint, int, int, int, int, int, uint, int, void*, void>)P("glCompressedTextureSubImage2D");

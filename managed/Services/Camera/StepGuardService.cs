@@ -56,7 +56,6 @@ public sealed unsafe class StepGuardService : IExtenderService
     [UnmanagedCallersOnly]
     private static int OnWalkUpdateLocation(IntPtr cre)
     {
-        if (!Walk.Enabled.V) return (*_next)(cre);
         IntPtr mgr = *(IntPtr*)_appMgr;
         IntPtr app = mgr == IntPtr.Zero ? IntPtr.Zero : *(IntPtr*)mgr;
         CClientExoAppInternal intern = app == IntPtr.Zero ? default : new CClientExoApp(app).Internal;
@@ -100,11 +99,11 @@ public sealed unsafe class StepGuardService : IExtenderService
         return d2 > 0f && d2 < MaxStep * MaxStep;
     }
 
-    /// <summary>The /knobs note and the group's status: the refusal ledger split by the driving flag, which answers
+    /// <summary>The /knobs note: the refusal ledger split by the driving flag, which answers
     /// whether refusals ever fire on a drive segment (§6.2) or only on waypoint steps.</summary>
     internal static string Report()
         => FormattableString.Invariant(
-            $"step guard: {(Walk.Enabled.V ? "on" : "off")} | {(_live ? _probeOk ? "live" : "probe failed" : "no player step yet")} | {_steps} step(s) passed, {_walkRefusals} walk + {_driveRefusals} drive step(s) refused");
+            $"step guard: {(_live ? _probeOk ? "live" : "probe failed" : "no player step yet")} | {_steps} step(s) passed, {_walkRefusals} walk + {_driveRefusals} drive step(s) refused");
 
     /// <summary>The step classifier off-device: stationary and teleport-sized moves pass untested, a walk step is tested.</summary>
     public static void SelfCheck(ExtenderLog log)

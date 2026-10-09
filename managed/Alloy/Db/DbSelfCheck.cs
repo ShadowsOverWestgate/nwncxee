@@ -714,14 +714,17 @@ internal static class DbSelfCheck
                           + "texture10 stone_x\n"
                           + "renderhint NormalAndSpecMapped\n"
                           + "customShaderVS cx_my_v\n"
-                          + "parameter roughness 0.4 0.5\n"
+                          + "parameter float roughness 0.4 0.5\n"
+                          + "parameter int NWN_ALPHA_MODE 2\n"
+                          + "parameter untyped 1\n"
                           + "twosided 1\n";
         MtrDef m = MtrDef.Parse(Encoding.ASCII.GetBytes(text), "stone");
         if (m.Textures[0] != "stone_d" || m.Textures[1] != "stone_n" || m.Textures[10] != "stone_x") return false;
         if (m.Textures[2].Length != 0) return false;
         if (m.RenderHint != 2 || m.ShaderVs != "cx_my_v" || !m.TwoSided || m.Transparency) return false;
-        if (m.Parameters.Count != 1 || m.Parameters[0].Name != "roughness"
+        if (m.Parameters.Count != 2 || m.Parameters[0].Name != "roughness"
             || m.Parameters[0].Values.Length != 2 || MathF.Abs(m.Parameters[0].Values[1] - 0.5f) > 1e-6f) return false;
+        if (m.AlphaMode != 2) return false;
         if (MtrDef.Hint("none") != 1 || MtrDef.Hint("normaltangents") != 3 || MtrDef.Hint("whatever") != 0) return false;
 
         // the part's material folds the file in: its texture name wins over the mesh's, and so does its hint

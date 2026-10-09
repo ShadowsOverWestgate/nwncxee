@@ -45,6 +45,11 @@ internal enum PassId
     /// reads the G-buffer the opaque and cutout passes wrote and adds the point lights into the HDR target. After
     /// both writers and BEFORE grass, whose root blend copies the lit frame under each blade.</summary>
     DeferredLights,
+    /// <summary>CX-189: the alpha-to-coverage layer (<see cref="CoverageLayer"/>) -- the cutout run's
+    /// <c>NWN_ALPHA_MODE 2</c> tail, drawn forward into a multisampled copy of the finished lit frame and resolved
+    /// back. After the deferred lights so the background its uncovered samples hold is final, and BEFORE grass
+    /// (whose root blend copies the frame under each blade) and every pass that tests the depth it writes back.</summary>
+    CoverageOwned,
     /// <summary>#127: Alloy grass -- GPU-instanced blades over the engine's own bin geometry, replacing
     /// <c>Scene::DoBinBucket</c> outright. A cutout class: alpha discard, depth write ON, GL_BLEND OFF, so
     /// no grass fragment is ever partially transparent AND depth-writing and #106's punch-through cannot
@@ -170,6 +175,7 @@ internal static class FrameGraph
         (PassId.SkyOwned,        Bracket.Colour),
         (PassId.CutoutOwned,     Bracket.Colour),
         (PassId.DeferredLights,  Bracket.Colour),
+        (PassId.CoverageOwned,   Bracket.Colour),
         (PassId.GrassOwned,      Bracket.Colour),
         (PassId.Reflections,     Bracket.Colour),
         (PassId.BlendedOwned,    Bracket.Colour),

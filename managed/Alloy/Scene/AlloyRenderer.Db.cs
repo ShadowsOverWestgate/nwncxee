@@ -127,6 +127,7 @@ public sealed unsafe partial class AlloyRenderer
         if ((rf & RecipeFlag.Lit) != 0 && (of & (ObjFlag.Static | ObjFlag.Sky)) == ObjFlag.Static)
             MeshArena.WantBake(DrawRecipe.Range(recipe));
         _oCls[i] = (byte)DrawRecipe.Cls(recipe);
+        _oA2c[i] = (rf & RecipeFlag.Coverage) != 0;
         _oSrc[i] = (byte)DrawRecipe.Src(recipe); _oDst[i] = (byte)DrawRecipe.Dst(recipe);
         _oWash[i] = (rf & RecipeFlag.Wash) != 0 ? (byte)1 : (byte)0;
         _oNoCull[i] = (rf & RecipeFlag.TwoSided) != 0;
@@ -239,9 +240,10 @@ public sealed unsafe partial class AlloyRenderer
             DbWriteTexRot(i, SceneDb.PartObj[_oDbPart[i]].Index, recipe, DrawRecipe.Flags(recipe));
             // ...and the .txi's blend pair and fullbright flag, which an offer that waited reads late.
             bool lit = (DrawRecipe.Flags(recipe) & RecipeFlag.Lit) != 0 && _lighting;
+            bool a2c = (DrawRecipe.Flags(recipe) & RecipeFlag.Coverage) != 0;
             if (_oCls[i] == cls && _oCos[i] == wasCos && _oSin[i] == wasSin
-                && _oDst[i] == DrawRecipe.Dst(recipe) && _oLit[i] == lit) continue;
-            _oCls[i] = cls; _oLit[i] = lit;
+                && _oDst[i] == DrawRecipe.Dst(recipe) && _oLit[i] == lit && _oA2c[i] == a2c) continue;
+            _oCls[i] = cls; _oLit[i] = lit; _oA2c[i] = a2c;
             _oSrc[i] = (byte)DrawRecipe.Src(recipe); _oDst[i] = (byte)DrawRecipe.Dst(recipe);
             // The slot moves between passes, so its staged record and batch row are both stale.
             UnstampRecord(i);

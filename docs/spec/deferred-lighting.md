@@ -67,7 +67,7 @@ keep the full walk's registers allocated in the very programs the step exists to
 
 ## Frame order
 
-`DepthPrepass -> AmbientOcclusion -> OpaqueOwned -> SkyOwned -> CutoutOwned -> DeferredLights -> GrassOwned -> Reflections -> ...`
+`DepthPrepass -> AmbientOcclusion -> OpaqueOwned -> SkyOwned -> CutoutOwned -> DeferredLights -> CoverageOwned -> GrassOwned -> Reflections -> ...`
 
 `DeferredLights` is one pass and two dispatches: the shadow record (`DeferredShadows`, `cx_defshadow_cs`) and then
 the light walk (`DeferredLights`, `cx_deferred_cs`), each with its own GPU term.

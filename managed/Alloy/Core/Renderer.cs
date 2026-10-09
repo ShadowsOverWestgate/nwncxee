@@ -22,8 +22,14 @@ internal static class Renderer
     /// and no engine <c>Scene</c>/<c>Gob</c>/<c>Part</c> exists. Off is vanilla. <c>alloy.enabled</c>'s Boot value,
     /// frozen for the session.</summary>
     internal static bool On => Enabled.Boot;
-    internal static readonly Knob<float> Scale, Weld, Lod, GradedBlend;
+    internal static readonly Knob<float> Scale, Weld, Lod;
+    /// <summary>CX-191: how strongly the cutout test makes up for the alpha a mip averages away (<c>cx_alphamip.glsl</c>).</summary>
+    internal static readonly Knob<float> CutMip;
     internal static readonly Knob<string> Highlight, DrawHooks, DumpTex;
+    /// <summary>CX-189: the alpha-to-coverage layer's sample count (<see cref="CoverageLayer"/>), and whether it
+    /// shapes the mask itself (per-primitive rotation, so stacked equal-alpha cards both show).</summary>
+    internal static readonly Knob<int> A2c;
+    internal static readonly Knob<bool> A2cMask;
     internal static readonly Knob<bool> PltVerify;
     internal static readonly Knob<bool> TexPreview;
     internal static readonly Knob<bool> Bcn, Hdr, Gl46, OwnedTex, PltCpu, TexSingle, DdsRead, HandleDrop, OwnedGeom,
@@ -105,6 +111,13 @@ internal static class Renderer
                        help: "Distant models whose projected size is under this many pixels are not drawn at all.",
                        changed: AlloyRenderer.InvalidateRecords)
                .Ladder(Quality.Detail, 2f, 1.5f, 1f, 0.5f);
+        A2c = G.Dropdown("a2c", "Alpha-to-coverage samples", new[] { 0, 2, 4, 8 }, 4, new[] { "off", "2x", "4x", "8x" }, tier: Tier.Advanced,
+                         help: "Materials that ask for alpha-to-coverage (often hair) get soft, layered edges from this many "
+                             + "samples per pixel. Off draws them with the hard cutout edge every other leaf has.");
+        A2cMask = G.Toggle("a2cmask", "a2cmask", false, Tier.ChatOnly);
+        CutMip = G.Slider("cutmip", "Distant cut-out fill", 0f, 1f, 0.05f, 0.25f, tier: Tier.Advanced,
+                          help: "Leaves, fences and other cut-out textures thin out and shimmer with distance as their alpha "
+                              + "averages away. This keeps them as full as they are up close. 0 is the stock test.");
         TexPreview = G.Toggle("texpreview", "Low-resolution texture previews", true, Tier.Advanced, Effect.Live,
                               help: "While an area streams in, every texture first shows a small blurred version of itself, then sharpens when the full one lands. Off: a texture shows white until it has fully loaded.");
 
@@ -177,7 +190,6 @@ internal static class Renderer
         HostFs = G.Toggle("hostfs", "hostfs", true, Tier.ChatOnly, Effect.Restart);
         OwnSkin = G.Toggle("ownskin", "ownskin", true, Tier.ChatOnly, Effect.Restart);
         ClusterCap = G.Slider("clustercap", "clustercap", 8, 128, 1, 128, tier: Tier.ChatOnly, effect: Effect.Restart);
-        GradedBlend = G.Slider("gradedblend", "gradedblend", 0f, 1f, 0.01f, 0.15f, tier: Tier.ChatOnly, effect: Effect.Restart);
         DumpTex = G.Text("dumptex", "dumptex", "", Tier.ChatOnly, Effect.Restart);
         DumpShaders = G.Toggle("dumpshaders", "dumpshaders", false, Tier.ChatOnly, Effect.Restart);
         GlDebug = G.Toggle("gldebug", "gldebug", false, Tier.ChatOnly, Effect.Restart);

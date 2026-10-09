@@ -31,7 +31,7 @@ public sealed unsafe partial class AlloyRenderer
     /// time, that is the upgrade.</para></summary>
     private static int RouteParts()
     {
-        int n = 0, nb = 0;
+        int n = 0, nb = 0, na = 0;
         PrepareVisible();
         OccludeFrame();   // #537: the hit fan this walk tags occluders from
         fixed (float* sph = _dSph)
@@ -68,12 +68,16 @@ public sealed unsafe partial class AlloyRenderer
                 if (samp) FrameZones.AddSampled(FrameZones.Zone.Fade, tFade, ChaseEvery);
                 if (alpha < 1f)
                 { Counters._ownFade++; _blend[nb] = i; _blendAlpha[nb] = alpha; _blendKey[nb] = BlendKey(i); nb++; continue; }
+                if (_oA2c[i] && c == (int)AlloyClass.Cutout) { _a2cTmp[na] = i; _a2cDis[na] = dis; na++; continue; }
                 if (dis) { _orderTmp[nd++] = i; continue; }
                 _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = false; n++;
             }
             for (int d = 0; d < nd; d++)
             { int i = _orderTmp[d]; _pass[n] = i; _passCls[n] = _oCls[i]; _passAlpha[n] = 1f; _passDis[n] = true; n++; }
         }
+        // CX-189: the alpha-to-coverage cutouts close the cutout run, after its keyhole tail
+        for (int a = 0; a < na; a++)
+        { int i = _a2cTmp[a]; _pass[n] = i; _passCls[n] = (byte)AlloyClass.Cutout; _passAlpha[n] = 1f; _passDis[n] = _a2cDis[a]; n++; }
         AuditVisible(n, sph);
         {
         int[] list = RouteRange((int)AlloyClass.Blended, out int from, out int to);
@@ -729,7 +733,7 @@ public sealed unsafe partial class AlloyRenderer
         int groups = 0, n = 0;
         int keyVao = -1, keyTex = -1, keyFeat = -1, keyCls = -1, keyBlend = -1;
         uint keyMode = 0;
-        bool keyLit = false, keyDis = false, keyNoCull = false;
+        bool keyLit = false, keyDis = false, keyNoCull = false, keyA2c = false;
         IntPtr keyGob = IntPtr.Zero;
         // #322 step 1: attribute the Build monolith before drawing any phase boundary -- Scan is the
         // routing walk, Restage everything after it. No behaviour change; the [zones] line gains the split.
@@ -739,7 +743,7 @@ public sealed unsafe partial class AlloyRenderer
         FrameZones.Add(FrameZones.Zone.Scan, tScan);
         long tRestage = FrameZones.Now;
         bool dumping = FrameDump.Begin();
-        _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = 0;
+        _gCutoutStart = _gOpaqueEnd = _gBlendEnd = _gWaterEnd = _gA2cStart = 0;
         _mvN = 0; _mvSkinned = false; _mvDangly = false;   // #392: this pass's mover list, whether or not a velocity pass consumes it
         // #242: the persistent buffer grows to the high-water ownership count and never shrinks. A growth
         // reallocates it, so everything in it goes back up on this frame rather than only the movers.
@@ -841,6 +845,8 @@ public sealed unsafe partial class AlloyRenderer
             // A blended batch never straddles two creatures: the frame prepasses and colours each run of
             // one gob's batches as a unit, so the gob is a key term here and a tag on the batch.
             IntPtr gobKey = row.GobKey;
+            // CX-189: an alpha-to-coverage cutout draws in its own layer, so it never shares a batch
+            bool a2c = cls == (int)AlloyClass.Cutout && _oA2c[i];
             // #153: under bindless a LIT batch no longer splits on its textures -- the handles ride the
             // record, so one multidraw spans every texture in the class. Feat/dis stay in the key only for
             // the depth prepass's whole-batch drop; unlit parts keep the bind path and the full key.
@@ -860,7 +866,7 @@ public sealed unsafe partial class AlloyRenderer
             }
             if (!sameSlots || lit != keyLit || vKey != keyVao || tidKey != keyTex || mode != keyMode
                 || feat != keyFeat || dis != keyDis || cls != keyCls || blend != keyBlend
-                || noCull != keyNoCull || gobKey != keyGob)
+                || noCull != keyNoCull || gobKey != keyGob || a2c != keyA2c)
             {
                 // #292 (AC6): what the cull term cost. Counted as the batches it OPENED on its own -- every
                 // other key term agreed and only the culling state differed -- so the line reports the split
@@ -885,11 +891,11 @@ public sealed unsafe partial class AlloyRenderer
                 _gLit[groups] = lit; _gVao[groups] = vKey; _gTex[groups] = tid; _gMode[groups] = mode;
                 _gFeat[groups] = feat; _gDis[groups] = dis;
                 _gCls[groups] = (byte)cls; _gSrc[groups] = row.Src; _gDst[groups] = row.Dst; _gWash[groups] = row.Wash;
-                _gNoCull[groups] = noCull; _gGob[groups] = gobKey;
+                _gNoCull[groups] = noCull; _gGob[groups] = gobKey; _gA2c[groups] = a2c;
                 if (!merge) for (int s = 0; s < MapSlots; s++) _gTexN[groups * MapSlots + s] = slotTid[s];
                 groups++;
                 keyLit = lit; keyVao = vKey; keyTex = tidKey; keyMode = mode; keyFeat = feat; keyDis = dis;
-                keyCls = cls; keyBlend = blend; keyNoCull = noCull; keyGob = gobKey;
+                keyCls = cls; keyBlend = blend; keyNoCull = noCull; keyGob = gobKey; keyA2c = a2c;
             }
             
             _dCount[n] = idxCount;
@@ -943,6 +949,8 @@ public sealed unsafe partial class AlloyRenderer
             if (_gCls[g] > (byte)AlloyClass.Blended && g < _gBlendEnd) _gBlendEnd = g;
             if (_gCls[g] > (byte)AlloyClass.Water && g < _gWaterEnd) _gWaterEnd = g;
         }
+        _gA2cStart = _gOpaqueEnd;
+        while (_gA2cStart > _gCutoutStart && _gA2c[_gA2cStart - 1]) _gA2cStart--;
         _drawN = n;
         if (dumping) FrameDump.Finish(groups, _log);
         FrameZones.Add(FrameZones.Zone.Restage, tRestage);

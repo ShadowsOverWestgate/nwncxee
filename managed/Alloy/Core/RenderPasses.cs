@@ -292,6 +292,13 @@ internal static class RenderPasses
         }, log);
         r.Register(new PassLifecycle
         {
+            Name = "a2c",
+            Attach = CoverageLayer.Attach,
+            ContextLost = CoverageLayer.Forget,
+            Stats = CoverageLayer.Stats,
+        }, log);
+        r.Register(new PassLifecycle
+        {
             Name = "oit",
             Attach = OitPass.Init,
             ContextLost = OitPass.ContextLost,

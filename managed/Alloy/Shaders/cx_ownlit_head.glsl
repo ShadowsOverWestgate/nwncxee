@@ -13,6 +13,7 @@ flat in int vDraw;             // this fragment's CxDraw record: the material co
 #include "cx_keyfogdecl.glsl"
 #include "cx_chartbuf.glsl"
 #include "cx_plt.glsl"
+#include "cx_alphamip.glsl"
 uniform sampler2D uTex;
 #define CX_ARRIVE_SECONDS 0.6   // CX-52: a streamed diffuse's fade-in, see the diffuse sample
 #define CX_ARRIVE_MIPS 6.0      // ...starting this many mips blurred
@@ -45,6 +46,22 @@ uniform float uAoCutout;       // /ao cutout: how much of it a CUTOUT receiver t
 // -1.0 (no test) on opaque and additive.
 uniform float uAlphaCut;
 layout(location = 0) out vec4 frag;
+#ifdef CX_A2C_MASK
+// CX-189: the coverage layer's own mask. Hardware alpha-to-coverage gives equal alpha one sample pattern,
+// so a second hair card at the same alpha lands on the same samples and vanishes; rotating the pattern by a
+// hash of the primitive keeps the count and moves the samples. Spatial only: it must hold with TAA off.
+uniform int uA2cSamples;
+int CxA2cMask(float a)
+{
+    int n = clamp(uA2cSamples, 1, 8);
+    int k = clamp(int(a * float(n) + 0.5), 0, n);
+    uint h = uint(vDraw) * 0x9E3779B9u ^ uint(gl_PrimitiveID) * 0x85EBCA6Bu;
+    h ^= h >> 15; h *= 0x2C1B3C6Du; h ^= h >> 12;
+    int r = int(h % uint(n));
+    int full = (1 << n) - 1, m = (1 << k) - 1;
+    return ((m << r) | (m >> (n - r))) & full;
+}
+#endif
 #include "cx_ssr.glsl"
 #include "cx_reflrec.glsl"
 // CX-188 (ADR 0029): the deferred G-buffer's lanes. CX_GBUF_OUT -- which only the CX_DEFERRED twin is built

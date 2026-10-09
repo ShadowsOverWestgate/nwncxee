@@ -473,6 +473,9 @@ public sealed unsafe partial class AlloyRenderer
                     CutoutOwnedPass(_gOpaqueEnd, &vp, viewport, near, far);
                     GBuffer.Detach();
                     break;
+                case PassId.CoverageOwned:
+                    if (_a2cHeld) CoverageOwnedPass(&vp, viewport, near, far);
+                    break;
                 case PassId.DeferredLights:
                     // CX-188: two dispatches, timed apart -- step 3's per-pixel shadow record first, then the
                     // light walk that reads it. The walk needs the record's barrier, so they neither reorder
@@ -818,6 +821,7 @@ public sealed unsafe partial class AlloyRenderer
         Gl.Disable(Gl.BLEND); _blendOn = false;
         Gl.UseProgram(Programs._progDepthFeat);
         Gl.UniformMatrix4fv(Programs._depthFeatVp, 1, 0, (float*)vp);
+        Gl.Uniform1f(Programs._depthFeatMip, Renderer.CutMip.V);
         Gl.Uniform1i(Programs._depthFeatTex, 0);
         Gl.ActiveTexture(Gl.TEXTURE0);
         UploadFeatureTerms(Programs._depthFeatFeat, viewport);
@@ -1022,6 +1026,7 @@ public sealed unsafe partial class AlloyRenderer
                     bound = true;
                     Gl.UseProgram(Programs._progDepthFeat);
                     Gl.UniformMatrix4fv(Programs._depthFeatVp, 1, 0, (float*)vp);
+                    Gl.Uniform1f(Programs._depthFeatMip, Renderer.CutMip.V);
                     Gl.Uniform1i(Programs._depthFeatTex, 0);
                     Gl.ActiveTexture(Gl.TEXTURE0);
                     UploadFeatureTerms(Programs._depthFeatFeat, viewport);
@@ -1064,6 +1069,8 @@ public sealed unsafe partial class AlloyRenderer
         if (f == (int)ShaderFeature.Flowmap || f == (int)ShaderFeature.RoofKn || f == (int)ShaderFeature.RoofKnM) return false;
         // a blended class must not write depth ahead of the colour pass: it would occlude what it blends over
         if (AlloyClasses.Blends(_gCls[g])) return false;
+        // CX-189: nor a coverage cutout -- a 0.2-cut depth laid first would hide the background its fringe blends over
+        if (_gA2c[g]) return false;
         return _gCls[g] == (byte)AlloyClass.Cutout || ShaderFeatures.OutOfPrepass(f);
     }
 
@@ -1090,10 +1097,86 @@ public sealed unsafe partial class AlloyRenderer
     /// SAMPLES_PASSED count, which stays #119's opaque-set overdraw baseline.</para></summary>
     private static void CutoutOwnedPass(int opaqueEnd, Matrix4x4* vp, int* viewport, float near, float far)
     {
-        if (opaqueEnd <= _gCutoutStart) return;
+        // CX-189: the coverage tail waits for its own layer whenever one can arm; a capture draws it here, cut
+        _a2cHeld = !_capturing && _gA2cStart < opaqueEnd && CoverageLayer.Armed;
+        if (!_capturing && !_a2cHeld) CoverageLayer.Idle();
         Gl.DepthMask(1);
         Gl.DepthFunc(Gl.LEQUAL);
-        IssueClass(_gCutoutStart, opaqueEnd, GpuTerm.Cutout, GpuTerm.CutoutKey, vp, viewport, near, far);
+        if (_gA2cStart > _gCutoutStart)
+            IssueClass(_gCutoutStart, _gA2cStart, GpuTerm.Cutout, GpuTerm.CutoutKey, vp, viewport, near, far);
+        // ...and a tail the layer is not taking, on its own term: it sits past the keyhole partition IssueClass splits on
+        if (_a2cHeld || _gA2cStart >= opaqueEnd) return;
+        GpuBegin(GpuTerm.Coverage);
+        Issue.IssueColour(_gA2cStart, opaqueEnd, vp, viewport, near, far);
+        GpuEnd(GpuTerm.Coverage);
+    }
+
+    /// <summary>CX-189: <see cref="CutoutOwnedPass"/> left the <c>NWN_ALPHA_MODE 2</c> tail for the coverage layer.</summary>
+    private static bool _a2cHeld;
+
+    /// <summary>CX-189 <see cref="PassId.CoverageOwned"/>: the held coverage tail through <see cref="CoverageLayer"/>,
+    /// scissored to its parts' screen rectangle. A layer that will not open this frame still draws the parts, as
+    /// cutouts straight into the frame -- forward lit, since the G-buffer has closed.</summary>
+    private static void CoverageOwnedPass(Matrix4x4* vp, int* viewport, float near, float far)
+    {
+        _a2cHeld = false;
+        CoverageRect(vp, viewport, out int x, out int y, out int w, out int h);
+        if (w <= 0 || h <= 0) return;
+        GpuBegin(GpuTerm.Coverage);
+        bool layer = CoverageLayer.Begin(viewport, x, y, w, h);
+        Issue._coverPass = layer;
+        Issue._forwardOnly = true;
+        Gl.DepthMask(1);
+        Gl.DepthFunc(Gl.LEQUAL);
+        Issue.IssueColour(_gA2cStart, _gOpaqueEnd, vp, viewport, near, far);
+        Issue._coverPass = false;
+        Issue._forwardOnly = false;
+        if (layer) CoverageLayer.End(viewport);
+        GpuEnd(GpuTerm.Coverage);
+    }
+
+    /// <summary>The viewport-space rectangle the coverage tail's bounding spheres project into, padded a pixel.
+    /// A part with no cull sphere of its own (skinned, dangly, a displacing feature -- most hair) takes its
+    /// object's world sphere, whose radius the exporter wrote over the animated geometry. ponytail: a part with
+    /// neither, or one reaching behind the eye, takes the whole frame.</summary>
+    private static void CoverageRect(Matrix4x4* vp, int* viewport, out int x, out int y, out int w, out int h)
+    {
+        float lx = 1f, ly = 1f, hx = -1f, hy = -1f;
+        bool full = false;
+        fixed (float* sph = _dSph)
+        {
+            for (int g = _gA2cStart; g < _gOpaqueEnd && !full; g++)
+                for (int k = _gStart[g], e = k + _gLen[g]; k < e && !full; k++)
+                {
+                    int slot = _dSlot[k];
+                    float* sp = sph + (long)slot * 4;
+                    var s = new Vector4(sp[0], sp[1], sp[2], sp[3]);
+                    if (s.W >= NeverCull)
+                    {
+                        int part = _oDbPart[slot];
+                        s = part >= 0 ? SceneDb.ObjSphere[SceneDb.PartObj[part].Index] : default;
+                        if (!(s.W > 0f)) { full = true; break; }
+                    }
+                    float r = s.W;
+                    for (int c = 0; c < 8; c++)
+                    {
+                        var p = new Vector4(s.X + ((c & 1) != 0 ? r : -r), s.Y + ((c & 2) != 0 ? r : -r),
+                                            s.Z + ((c & 4) != 0 ? r : -r), 1f);
+                        Vector4 q = Vector4.Transform(p, *vp);
+                        if (q.W <= 1e-4f) { full = true; break; }
+                        float nx = q.X / q.W, ny = q.Y / q.W;
+                        lx = MathF.Min(lx, nx); hx = MathF.Max(hx, nx);
+                        ly = MathF.Min(ly, ny); hy = MathF.Max(hy, ny);
+                    }
+                }
+        }
+        if (full) { lx = -1f; ly = -1f; hx = 1f; hy = 1f; }
+        lx = MathF.Max(lx, -1f); ly = MathF.Max(ly, -1f); hx = MathF.Min(hx, 1f); hy = MathF.Min(hy, 1f);
+        if (hx <= lx || hy <= ly) { x = 0; y = 0; w = 0; h = 0; return; }
+        int x0 = (int)MathF.Floor((lx * 0.5f + 0.5f) * viewport[2]) - 1, x1 = (int)MathF.Ceiling((hx * 0.5f + 0.5f) * viewport[2]) + 1;
+        int y0 = (int)MathF.Floor((ly * 0.5f + 0.5f) * viewport[3]) - 1, y1 = (int)MathF.Ceiling((hy * 0.5f + 0.5f) * viewport[3]) + 1;
+        x0 = Math.Max(x0, 0); y0 = Math.Max(y0, 0); x1 = Math.Min(x1, viewport[2]); y1 = Math.Min(y1, viewport[3]);
+        x = viewport[0] + x0; y = viewport[1] + y0; w = x1 - x0; h = y1 - y0;
     }
 
     /// <summary>#336: one opaque class's batches under two GPU terms -- the plain run, then the keyhole

@@ -70,6 +70,8 @@ internal static unsafe class Programs
     /// <summary>#126: <c>uAlphaCut</c> on each colour program -- the engine's <c>fAlphaDiscardValue</c>, set
     /// per batch from the batch's class.</summary>
     internal static int _locCut = -1;
+    /// <summary>CX-191: <c>uAlphaMip</c> on the fullbright and feature-depth programs (the lit ones carry it in <see cref="LitLoc"/>).</summary>
+    internal static int _locAlphaMip = -1, _depthFeatMip = -1;
 
     internal static LitLoc _lit, _litH, _litL, _litD;
     /// <summary>The lit program WITH the OIT append block (OitPass.WithLists), or 0. Bound only for lit batches inside a
@@ -80,6 +82,12 @@ internal static unsafe class Programs
     /// written instead. 0 = no twin, which is what stands the deferred pass down. Bound for the opaque and
     /// cutout lit batches of the main view; every other lit draw keeps the forward loop.</summary>
     internal static uint _progLitDef;
+    /// <summary>CX-189: the lit program with <c>CX_A2C_MASK</c> -- the coverage layer's own sample mask
+    /// (<c>alloy.a2cmask</c>). Built on the layer's first ask; 0 until then or after a refusal.</summary>
+    internal static uint _progLitMask;
+    internal static LitLoc _litM;
+    internal static int _litMaskSamples = -1;
+    private static bool _maskFailed;
     /// <summary>#350: the lit program WITH the hosted content bodies, or 0 (hosting off, no hosted feature, or
     /// its build failed -- hosted materials then draw the plain lit path through <see cref="_progLit46"/>).</summary>
     internal static uint _progLitHost;
@@ -193,6 +201,8 @@ internal static unsafe class Programs
         if (_progLitHost != 0) Gl.DeleteProgram(_progLitHost);
         if (_progLitList != 0) Gl.DeleteProgram(_progLitList);
         if (_progLitDef != 0) Gl.DeleteProgram(_progLitDef);
+        if (_progLitMask != 0) Gl.DeleteProgram(_progLitMask);
+        _progLitMask = 0; _maskFailed = false;
         if (_progWater != 0) Gl.DeleteProgram(_progWater);
         _progLit46 = 0; _progLitHost = 0; _progLitList = 0; _progLitDef = 0; _progWater = 0; OitPass.ListsArmed = false;
         if (_blendAbl != null) foreach (uint p in _blendAbl) if (p != 0) Gl.DeleteProgram(p);
@@ -230,7 +240,7 @@ internal static unsafe class Programs
             _locTex = GlProgram.Loc(prog, "uTex"); _locViz = GlProgram.Loc(prog, "uViz"); _locOit = GlProgram.Loc(prog, "uOit");
             _locOitDim = GlProgram.Loc(prog, "uOitDim"); _locOitGob = GlProgram.Loc(prog, "uOitGob");
             Gl.UseProgram(prog); Gl.Uniform1i(GlProgram.Loc(prog, "uOitDepth"), (int)TextureSlots.OitDepth);
-            _locCut = GlProgram.Loc(prog, "uAlphaCut");
+            _locCut = GlProgram.Loc(prog, "uAlphaCut"); _locAlphaMip = GlProgram.Loc(prog, "uAlphaMip");
             _locTint = GlProgram.Loc(prog, "uTint");
             _locSkyFog = GlProgram.Loc(prog, "uSkyFog");
             _locFeat = FeatLocs(prog);
@@ -264,6 +274,7 @@ internal static unsafe class Programs
         _progDepthFeat = prog;
         _depthFeatVp = GlProgram.Loc(prog, "uVP"); _depthFeatBase = GlProgram.Loc(prog, "uDrawBase");
         _depthFeatTex = GlProgram.Loc(prog, "uTex"); _depthFeatCut = GlProgram.Loc(prog, "uAlphaCut");
+        _depthFeatMip = GlProgram.Loc(prog, "uAlphaMip");
         _depthFeatFeat = FeatLocs(prog);
         _log?.Info("AlloyRenderer: feature depth prepass ready -- cutout and wind-displaced batches write depth (/alloy prepassfeat 0 disables)");
         return true;
@@ -482,6 +493,25 @@ internal static unsafe class Programs
         return true;
     }
 
+    /// <summary>CX-189: build <see cref="_progLitMask"/> from the lit program's own final text. False = no lit
+    /// program yet, or the variant refused (latched, logged once): the layer falls back to hardware coverage.</summary>
+    internal static bool EnsureMaskProgram()
+    {
+        if (_progLitMask != 0) return true;
+        if (_maskFailed || _litFsSrc == null || _litVsSrc == null) return false;
+        _progLitMask = GlProgram.Graphics(_litVsSrc, AblateProgram.WithDefine(_litFsSrc, "CX_A2C_MASK 1"), _log,
+                                          "AlloyRenderer lit program (A2C mask)", host: false);
+        if (_progLitMask == 0)
+        {
+            _maskFailed = true;
+            _log?.Info("AlloyRenderer: the A2C mask variant did not build -- alloy.a2cmask stands down, hardware coverage draws the layer");
+            return false;
+        }
+        _litM = LitLocs(_progLitMask);
+        _litMaskSamples = GlProgram.Loc(_progLitMask, "uA2cSamples");
+        return true;
+    }
+
     /// <summary>Context loss: every variant name is gone with the context.</summary>
     internal static void ForgetBlendAblate() { _blendAbl = null; _blendProg = 0; _blendList = 0; }
 
@@ -499,7 +529,7 @@ internal static unsafe class Programs
         var L = new LitLoc();
         L.Vp = GlProgram.Loc(prog, "uVP"); L.Base = GlProgram.Loc(prog, "uDrawBase");
         L.Tex = GlProgram.Loc(prog, "uTex");
-        L.Cut = GlProgram.Loc(prog, "uAlphaCut");
+        L.Cut = GlProgram.Loc(prog, "uAlphaCut"); L.AlphaMip = GlProgram.Loc(prog, "uAlphaMip");
         L.Viz = GlProgram.Loc(prog, "uViz"); L.Oit = GlProgram.Loc(prog, "uOit"); L.OitDim = GlProgram.Loc(prog, "uOitDim"); L.OitGob = GlProgram.Loc(prog, "uOitGob"); L.LightRecOn = GlProgram.Loc(prog, "uLightRecOn");
         L.SunTex = GlProgram.Loc(prog, "uSunShadow"); L.SunDynTex = GlProgram.Loc(prog, "uSunDynShadow");
         L.CubeTex = GlProgram.Loc(prog, "uLocalShadow"); L.CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow");

@@ -46,7 +46,7 @@ internal struct AlloyCandidate
     /// the blended and additive passes translate to <c>glBlendFunc</c>. Part of the batch key: one multidraw
     /// carries one blend state.</summary>
     public int Src, Dst;
-    /// <summary>A wash: a graded-alpha diffuse re-filed from Cutout to Blended (<c>gradedblend</c>). Draws with the
+    /// <summary>A wash: a graded-alpha diffuse re-filed from Cutout to Blended (the retired <c>gradedblend</c> reroute; nothing files one since !797). Draws with the
     /// depth mask OFF, because a wash occludes nothing -- vanilla gets the same picture from the model's
     /// <c>transparencyhint</c> child order, which Alloy's distance sort does not reproduce.</summary>
     public bool Wash;

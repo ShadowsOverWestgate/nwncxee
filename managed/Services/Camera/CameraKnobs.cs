@@ -9,7 +9,7 @@ internal static class CameraKnobs
 {
     internal static void Declare()
     {
-        _ = CameraModes.ByMode; _ = Walls.G; _ = FreeCam.G; _ = TabTarget.G; _ = Walk.G;
+        _ = CameraModes.ByMode; _ = Walls.G; _ = FreeCam.G; _ = TabTarget.G;
     }
 
     internal const float FovMin = 10f, FovMax = 120f;
@@ -62,7 +62,8 @@ internal static class CameraKnobs
           && CameraModes.Chase.LagRot.Tier == Tier.ChatOnly
           && CameraModes.Chase.LagZoom.Tier == Tier.ChatOnly && CameraModes.Chase.LagZoom.Default == 0.02f,
           "Smoothing is lagpos, the one row; rotation and zoom lag are cfg-only and the zoom keeps its stock step");
-        check.Expect(CameraModes.Chase.G.PanelStatus != null && Walk.G.PanelStatus == null, "the live-mode line is the panel's; the step guard's ledger is not");
+        check.Expect(CameraModes.Chase.G.PanelStatus != null, "the live-mode line is the panel's");
+        check.Expect(KnobGroup.Find("walk.enabled") == null, "the step guard has no off switch: it is not a preference");
         log.Info(check.Ok ? "CameraKnobs.SelfCheck: passed" : "CameraKnobs.SelfCheck: FAILED");
     }
 }
@@ -329,23 +330,6 @@ internal static class TabTarget
         Objects = G.Toggle("objects", "Include placeables and doors", false,
                            help: "Tab can also lock a lever, chest or door.");
         Range = G.Slider("range", "Maximum range", 5f, 80f, 1f, 30f, "m", help: "Tab ignores anything farther from you than this.");
-    }
-}
-
-/// <summary>The <c>walk</c> group (CX-682): the step guard's master. Read hot by <see cref="StepGuardService"/>;
-/// the status is its refusal ledger.</summary>
-internal static class Walk
-{
-    internal static readonly KnobGroup G;
-    internal static readonly Knob<bool> Enabled;
-
-    static Walk()
-    {
-        G = KnobGroup.Declare("walk", "Controls", "Movement", order: 530, master: "Stop at closed doors",
-            masterHelp: "Every step your character takes is re-tested against the area's walkmesh and its doors, closed doors solid, exactly as the game tests a click. A step that would cross a closed door is refused, so your character can never stand on the far side of one -- on any server. Off, the stock walk runs untouched.",
-            header: "The stock client tests only where a walk starts, not each step along the server's path, which is how a character ends up past a closed door.");
-        Enabled = G.Master!;
-        G.Status = StepGuardService.Report;
     }
 }
 

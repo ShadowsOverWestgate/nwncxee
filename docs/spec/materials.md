@@ -88,6 +88,31 @@ parameter float CxClearcoat 0.8
 parameter float CxClearcoatRoughness 0.15
 ```
 
+## Soft cut-out edges: `NWN_ALPHA_MODE 2`
+
+Every alpha-tested texel in the game is either fully there or fully gone, with the cut at alpha 0.2.
+Fine detail like layered hair cards looks like paper cut-outs under that rule. Add this line to any
+material and Alloy draws it with alpha-to-coverage instead (CX-189):
+
+```
+parameter int NWN_ALPHA_MODE 2
+```
+
+The texture's alpha becomes how much of each pixel the surface covers, sampled 2, 4 or 8 times per
+pixel (`alloy.a2c`, default 4x), so a fine strand fades out rather than breaking up. The part still
+writes depth, so it sorts correctly against everything else and needs no blending. Shadows keep the
+0.2 cut.
+
+`transparency 1` on the same material is fine: vanilla still draws it that way. Alloy draws a
+coverage material as an ordinary cutout when `alloy.a2c` is off.
+
+Cards stacked at the same alpha land on the same samples, so the back one disappears. If your model
+does that, `alloy.a2cmask 1` gives every triangle its own sample pattern. Use it for testing; it is
+not a player setting.
+
+It suits hair, fur, lace, chains and other small, detailed cut-outs. Each pixel it covers is lit outside the
+deferred path, so whole canopies in the mode will cost frame time.
+
 ## Player settings
 
 `light.brdf` (Modern materials) turns all of this on and off. Off is the stock shading exactly, the

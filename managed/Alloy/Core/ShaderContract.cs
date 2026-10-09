@@ -578,8 +578,11 @@ internal static class ShaderContract
                   // #126: the cutout, in both colour stages -- and spelled the engine's way, so a stage that
                   // kept the uniform but lost the >= 0.0 guard would discard every fragment of the OPAQUE
                   // set (which passes -1.0) and render an empty world.
-                  && OwnedFs.Contains("if (uAlphaCut >= 0.0 && t.a <= uAlphaCut) discard;")
-                  && OwnedLitFsMain.Contains("if (uAlphaCut >= 0.0 && coverage <= uAlphaCut) discard;")
+                  // CX-191: through the mip-level compensation, the same call in the feature prepass so its
+                  // depth and the GL_EQUAL colour draw keep the same holes
+                  && OwnedFs.Contains("if (uAlphaCut >= 0.0 && CxAlphaMip(t.a, du1, du2, vec2(textureSize(uTex, 0)), uLodBias) <= uAlphaCut) discard;")
+                  && OwnedLitFsMain.Contains("if (uAlphaCut >= 0.0 && CxAlphaMip(coverage, du1, du2, vec2(textureSize(uTex, 0)), uLodBias) <= uAlphaCut) discard;")
+                  && DepthFeatFs.Contains("if (CxAlphaMip(texture(uTex, vUV, uLodBias).a, du1, du2, vec2(textureSize(uTex, 0)), uLodBias) * mul <= uAlphaCut) discard;")
                   // #294: and COVERAGE is what the lit stage cuts and blends on, never the raw texel alpha.
                   // On an env-mapped material that channel is reflectivity (it becomes envLevel), and the
                   // engine spends it once: inc_standard.shd:289 multiplies only .rgb through there. A stage

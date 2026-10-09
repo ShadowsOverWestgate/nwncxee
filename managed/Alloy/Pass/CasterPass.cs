@@ -720,6 +720,8 @@ public sealed unsafe partial class CasterPass : IExtenderService
     /// masked casters then stay out of every bake.</summary>
     private static uint _progMask;
     private static int _locMaskVp = -1, _locMaskTex = -1, _locMaskCut = -1, _locMaskDither = -1, _locMaskEnv = -1;
+    /// <summary>CX-191: <c>uAlphaMip</c> on the four masked caster programs (<c>alloy.cutmip</c>).</summary>
+    private static int _locMaskMip = -1, _locMaskHMip = -1, _locLayerMaskMip = -1, _locLayerMaskHMip = -1;
     /// <summary>The masked depth program that samples the mask through the record's bindless handle
     /// (<c>uTexH</c> slot 0) instead of a bound unit, so masked batches no longer split per texture.
     /// Built only when the renderer's bindless path is armed; <c>/shadow maskh 0</c> is the A/B.</summary>
@@ -740,7 +742,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         {
             _progMaskH = GlProgram.Graphics(CastMaskHVs, CastMaskHFs, _log, "CasterPass handle-masked depth program");
             if (_progMaskH == 0) { _maskHFailed = true; return; }
-            _locMaskHVp = GlProgram.Loc(_progMaskH, "uVP"); _locMaskHCut = GlProgram.Loc(_progMaskH, "uAlphaCut"); _locMaskHDither = GlProgram.Loc(_progMaskH, "uDither"); _locMaskHEnv = GlProgram.Loc(_progMaskH, "uEnvAlpha");
+            _locMaskHVp = GlProgram.Loc(_progMaskH, "uVP"); _locMaskHCut = GlProgram.Loc(_progMaskH, "uAlphaCut"); _locMaskHDither = GlProgram.Loc(_progMaskH, "uDither"); _locMaskHEnv = GlProgram.Loc(_progMaskH, "uEnvAlpha"); _locMaskHMip = GlProgram.Loc(_progMaskH, "uAlphaMip");
             _listVer++;
             _log?.Info("CasterPass: handle-sampled masks armed -- masked batches merge per VAO (/shadow maskh 0 is the A/B)");
         }
@@ -748,7 +750,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         {
             _progLayerMaskH = GlProgram.Graphics(CastLayerMaskHVs, CastMaskHFs, _log, "CasterPass layered handle-masked depth program");
             if (_progLayerMaskH == 0) { _maskHFailed = true; return; }
-            _locLayerMaskHCut = GlProgram.Loc(_progLayerMaskH, "uAlphaCut"); _locLayerMaskHDither = GlProgram.Loc(_progLayerMaskH, "uDither"); _locLayerMaskHEnv = GlProgram.Loc(_progLayerMaskH, "uEnvAlpha");
+            _locLayerMaskHCut = GlProgram.Loc(_progLayerMaskH, "uAlphaCut"); _locLayerMaskHDither = GlProgram.Loc(_progLayerMaskH, "uDither"); _locLayerMaskHEnv = GlProgram.Loc(_progLayerMaskH, "uEnvAlpha"); _locLayerMaskHMip = GlProgram.Loc(_progLayerMaskH, "uAlphaMip");
             _listVer++;
         }
     }
@@ -2275,7 +2277,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             {
                 _locMaskVp = GlProgram.Loc(_progMask, "uVP");
                 _locMaskTex = GlProgram.Loc(_progMask, "uTex");
-                _locMaskCut = GlProgram.Loc(_progMask, "uAlphaCut"); _locMaskDither = GlProgram.Loc(_progMask, "uDither"); _locMaskEnv = GlProgram.Loc(_progMask, "uEnvAlpha");
+                _locMaskCut = GlProgram.Loc(_progMask, "uAlphaCut"); _locMaskDither = GlProgram.Loc(_progMask, "uDither"); _locMaskEnv = GlProgram.Loc(_progMask, "uEnvAlpha"); _locMaskMip = GlProgram.Loc(_progMask, "uAlphaMip");
             }
             else _log?.Info("CasterPass: the masked depth program failed to build -- cutout casters cast no " +
                             "shadow at all this session (they would otherwise cast their whole quad)");
@@ -2361,7 +2363,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         }
         _progLayer = p; _progLayerMask = pm;
         _locLayerMaskTex = GlProgram.Loc(pm, "uTex");
-        _locLayerMaskCut = GlProgram.Loc(pm, "uAlphaCut"); _locLayerMaskDither = GlProgram.Loc(pm, "uDither"); _locLayerMaskEnv = GlProgram.Loc(pm, "uEnvAlpha");
+        _locLayerMaskCut = GlProgram.Loc(pm, "uAlphaCut"); _locLayerMaskDither = GlProgram.Loc(pm, "uDither"); _locLayerMaskEnv = GlProgram.Loc(pm, "uEnvAlpha"); _locLayerMaskMip = GlProgram.Loc(pm, "uAlphaMip");
         _log?.Info("CasterPass: layered bake armed -- every stale view in one command buffer per target, " +
                    "gl_Layer from the view table (/shadow layered 0 is the per-view A/B)");
     }
@@ -2474,6 +2476,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             if (mode != 0 && _gCut[g] != boundCut)
             {
                 boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locLayerMaskCut : _locLayerMaskHCut, boundCut);
+                Gl.Uniform1f(mode == 1 ? _locLayerMaskMip : _locLayerMaskHMip, Renderer.CutMip.V);
                 Gl.Uniform1i(mode == 1 ? _locLayerMaskDither : _locLayerMaskHDither, _maskDither);
                 Gl.Uniform1i(mode == 1 ? _locLayerMaskEnv : _locLayerMaskHEnv, boundCut == EnvAlphaDiscard ? 1 : 0);
             }
@@ -3309,6 +3312,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
             if (mode != 0 && _gCut[g] != boundCut)
             {
                 boundCut = _gCut[g]; Gl.Uniform1f(mode == 1 ? _locMaskCut : _locMaskHCut, boundCut);
+                Gl.Uniform1f(mode == 1 ? _locMaskMip : _locMaskHMip, Renderer.CutMip.V);
                 Gl.Uniform1i(mode == 1 ? _locMaskDither : _locMaskHDither, _maskDither);
                 Gl.Uniform1i(mode == 1 ? _locMaskEnv : _locMaskHEnv, boundCut == EnvAlphaDiscard ? 1 : 0);
             }

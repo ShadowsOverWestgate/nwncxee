@@ -613,9 +613,11 @@ rung). `alloy`'s `PanelStatus` is the renderer's own line ("Running: Alloy / Van
 | alloy.scale | Render scale | S | 0.25–2.00 step 0.05 · 1.00 | U | L | — | Size of the 3D frame relative to your screen. Below 1 renders fewer pixels and upscales (faster); above 1 supersamples (sharper, slower). The UI is never scaled. |
 | alloy.highlight | Selection highlight | D | glow / outline · **outline** | U | L | — | How a selected or hovered object is marked: an outline with a light fill, or a soft glow around the object. |
 | alloy.lod | Skip models smaller than | S | 0–8 px step 0.5 · 1.0 | A | L | — | Distant models whose projected size is under this many pixels are not drawn at all. Ladders on `quality.detail`. |
+| alloy.cutmip | Distant cut-out fill | S | 0–1 step 0.05 · 0.25 | A | L | — | Leaves, fences and other cut-out textures thin out and shimmer with distance as their alpha averages away. This keeps them as full as they are up close. 0 is the stock test. |
 | alloy.texpreview | Low-resolution texture previews | T | on | A | L | — | While an area streams in, every texture first shows a small blurred version of itself, then sharpens when the full one lands. Off: a texture shows white until it has fully loaded. |
-| alloy.gui / weld / border / oit / oitlayers / texcache / bindless / bcn / hdr / gl46 / drawhooks / ownedtex / pltcpu / pltverify / bcndrip / texprefetch / texsingle / texstream / ddsread / texload / modelload / mdlcache / rasterread / nwsyncread / texdelete / handledrop / ownedgeom / maxelements / spirv / vanillabridge / hostfs / ownskin / clustercap / gradedblend / dumptex / dumpshaders / gldebug / renderthread / swapprobe / framediff / paritydump / staleaudit / glsync / skipbuckets / enginezones | — | T, S, D, X | as declared | C | mostly R | — | capability gates, budgets and bisects |
-| alloy.movie / light / prepass / viz / threads / aotest / cull / retest / hldiag / hlchan / poll / prepasskey / prepassfeat / depthequal / idtarget / blenddepth / gpumeter / vislist / washtest / oitviz / cullwatch / lodhyst / hitcheck | — | T, S | as declared | C | L | — | live path switches and visualisers |
+| alloy.a2c | Alpha-to-coverage samples | D | off / 2x / 4x / 8x · 4x | A | L | — | Materials that ask for alpha-to-coverage (`NWN_ALPHA_MODE 2`, often hair) get soft, layered edges from this many samples per pixel. Off draws them with the hard cutout edge every other leaf has. |
+| alloy.gui / weld / border / oit / oitlayers / texcache / bindless / bcn / hdr / gl46 / drawhooks / ownedtex / pltcpu / pltverify / bcndrip / texprefetch / texsingle / texstream / ddsread / texload / modelload / mdlcache / rasterread / nwsyncread / texdelete / handledrop / ownedgeom / maxelements / spirv / vanillabridge / hostfs / ownskin / clustercap / dumptex / dumpshaders / gldebug / renderthread / swapprobe / framediff / paritydump / staleaudit / glsync / skipbuckets / enginezones | — | T, S, D, X | as declared | C | mostly R | — | capability gates, budgets and bisects |
+| alloy.movie / a2cmask / light / prepass / viz / threads / aotest / cull / retest / hldiag / hlchan / poll / prepasskey / prepassfeat / depthequal / idtarget / blenddepth / gpumeter / vislist / washtest / oitviz / cullwatch / lodhyst / hitcheck | — | T, S | as declared | C | L | — | live path switches and visualisers |
 | alloy.consts / framedump / bench / shaderdump / snap / hitbench | — | B | — | C | — | — | dumps and measurements (`bench` steps the GPU-cost settings and logs a `[bench]` table) |
 | lod.enabled | Automatic mesh detail | T | on | **C** | L | — | cfg-only: distant walls and floors are drawn from a simplified copy of their own mesh. Off draws every model at full detail at every distance, which is what the game does. |
 | lod.px1 | Full detail above | S | 50–2000 px step 10 · 500 | A | L | — | A mesh wider than this on screen is drawn exactly as authored. Ladders on `quality.detail`. |
@@ -846,7 +848,6 @@ ends up past a closed door." The refusal ledger is the diagnostic `Status`, not 
 
 | key | label | kind | range · default | tier | eff | section | help |
 |---|---|---|---|---|---|---|---|
-| walk.enabled | Stop at closed doors | T | on | U | L | — | Every step your character takes is re-tested against the area's walkmesh and its doors, closed doors solid, exactly as the game tests a click. A step that would cross a closed door is refused, so your character can never stand on the far side of one -- on any server. Off, the stock walk runs untouched. |
 
 **Hotkeys** — group `hotkeys` (540). `PanelStatus` = `Status` = "Approved on this server: F5,
 Ctrl+Q …" / none.
@@ -949,7 +950,6 @@ is not "the stock one draws", it is "nothing draws". The caveat is what the buil
 | Camera modes | `<mode>.enabled` | U · live | ninth `Gate` value; restore `_fovFirst`. |
 | Mouse-look | `<mode>.mouselook` | U · live | `Release()` on the off edge; per mode, not a group. |
 | Tab-target | tabtarget.enabled | U · live | off (the default) = stock Tab and clicks; the lock and a pending preview cast drop on the off edge. |
-| Walk guard | walk.enabled | U · live | off = the stock untested walk. |
 | Hotkeys | hotkeys.enabled | U · live | gate the actions, never the hooks or the advertise. |
 | General, About, Preset, Lights, Ambient occlusion, Effects, Image, Walls, Free camera | none | — | the header says why. |
 

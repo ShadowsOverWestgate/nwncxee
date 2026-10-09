@@ -18,7 +18,7 @@ public sealed unsafe partial class CasterPass
         // ...and the cutout stage really discards, at the engine's own threshold. A masked batch drawn by a
         // stage that lost the test writes the whole quad into the shadow map, which is the artefact the
         // masked path exists to remove and looks exactly like the pass working.
-        bool ok = CastMaskFs.Contains("if (t <= uAlphaCut) discard;")
+        bool ok = CastMaskFs.Contains("vec2(textureSize(uTex, 0)), 0.0) <= uAlphaCut) discard;")
                   && CastMaskFs.Contains("uniform float uAlphaCut;")
                   && CastMaskFs.Contains("uniform int uDither;") && CastMaskHFs.Contains("uniform int uDither;")
                   // #363: the stochastic discard, on the SAME sampled alpha, in both mask stages
@@ -27,7 +27,7 @@ public sealed unsafe partial class CasterPass
                   // The handle-masked stages: the same discard, the mask off the record's handle block at
                   // slot 0, the record index from gl_BaseInstance in both packings.
                   && CastMaskHFs != CastMaskHFsSrc
-                  && CastMaskHFs.Contains("if (t <= uAlphaCut) discard;")
+                  && CastMaskHFs.Contains("vec2(textureSize(uTex, 0)), 0.0) <= uAlphaCut) discard;")
                   // ...and both dither on the colour pass's blend weight, the record alpha included
                   && CastMaskFs.Contains("float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;")
                   && CastMaskHFs.Contains("float a = (uEnvAlpha != 0 ? 1.0 : t) * vAlpha;")

@@ -106,6 +106,11 @@ internal static class TextureSlots
     /// and <see cref="GrassGround"/>'s -- the grass program is a later pass that rebinds its own, and this one
     /// puts texture 0 back on both.</summary>
     internal const uint ShadowVis = MapBase + 5, ShadowKey = MapBase + 6;
+    /// <summary>CX-189: the coverage layer's seed (the lit frame and its depth) and depth write-back (the layer's
+    /// multisampled depth), read by <see cref="CoverageLayer"/>'s two full-screen programs alone. The map block's
+    /// units, on <see cref="Gbuf0"/>'s argument: those programs run between draw passes and bind no material
+    /// map, every draw program rebinds its slot set, and the layer puts texture 0 back on both.</summary>
+    internal const uint CoverSeed = MapBase, CoverSeedDepth = MapBase + 1;
     /// <summary>#642: the two shadow cube arrays again, through a sampler object with no compare mode, for the
     /// receiver's blocker search. Past the 0..15 budget on purpose: every unit below is spent, and every driver
     /// Alloy has met reports 32 per stage. The lib binds them by <c>layout(binding)</c>; the bind site asks
