@@ -8,6 +8,7 @@ layout(location = 2) in vec4 iPos;      // xyz world root, w rotation about Z
 layout(location = 3) in vec4 iParam;    // x scale (blade height), y atlas cell 0..3, z rank in [0,1), w bend
 layout(location = 4) in vec4 iNrm;      // xyz the normal of the ground face the blade stands on (CX-24)
 #include "cx_featdecl.glsl"
+#include "cx_gsway.glsl"
 uniform mat4 uVP;
 uniform vec3 uEyePos;
 uniform vec2 uFade;                     // (full-density radius, cut-off radius) in world units

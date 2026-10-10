@@ -44,8 +44,12 @@ public sealed unsafe partial class CasterPass
                                                          ShadowMath.LatchUpX(ref _coverUpX, dir));
         bool stale = _frameInvalidate || !_coverBaked || vp != _coverKeyVp;
         if (!stale) { CoverHeld++; CoverVp = vp; _coverStamp = _frameSeq; return; }
+        // CX-50: full detail, like the lightmap's scratch cube. This map is not a shadow -- the weather
+        // reads it as geometry, for where rain and snow stop, where a puddle may form and whether a grass
+        // blade is sheltered -- and a simplified roof edge moves all three. Its fit is the whole
+        // precipitation range, so its texels are coarse and nearly every caster would thin.
         if (RenderView(_gl.DepthTex, _mapSize, CoverLayer, &vp, dir, c, radius, margin, point: false,
-                       set: CasterGather.SetStatic))
+                       set: CasterGather.SetStatic, detail: false))
         {
             _coverBaked = true; _coverKeyVp = vp; _coverC = c; _coverCValid = true; _coverNew = true;
             CoverVp = vp; _coverStamp = _frameSeq; CoverBakes++;

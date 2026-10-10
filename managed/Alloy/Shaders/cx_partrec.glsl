@@ -14,9 +14,9 @@
 // pairs with i ^ j and only the LOWER of the two swaps, so within one step every element belongs
 // to exactly one pair and the stride loop cannot race itself. The tail past the particle count is
 // padded with +inf, which sorts to the end and is never written back.
-// The record and its buffer, as the vertex stage and the sort read it -- one text, so the
-// two cannot disagree about the layout RecFloats stages.
-// #261: one particle. Six vec4, std430 -- see Particles.RecFloats for the C# side of this layout.
+// The record and its buffer, as the vertex stage, the velocity arm and the sort read it -- one text, so
+// none of them can disagree about the layout RecFloats stages.
+// #261: one particle. Seven vec4, std430 -- see Particles.RecFloats for the C# side of this layout.
 struct CxParticle
 {
     vec4 posCol;      // xyz = near centre (world), w = RGBA8 colour as raw bits
@@ -25,5 +25,7 @@ struct CxParticle
     vec4 upType;      // xyz = scaled up axis (world),    w = render type
     vec4 centre;      // xyz = the particle's OWN centre, which the facing direction is taken from
     vec4 uv;          // u0, u1, v0, v1
+    vec4 prev;        // CX-48: xyz = the centre this particle had LAST frame (its own centre where there is
+                      // no previous frame to take one from), w unused
 };
 layout(std430, binding = 10) readonly buffer CxParticleBuf { CxParticle particles[]; };

@@ -93,8 +93,10 @@ public sealed unsafe partial class AlloyRenderer
         StageCounters snap = c;
 
         // ---- geometry: three integers off the arena, and the VAO its format shares ----
-        int lod = DbLodOf(i);
-        if (!MeshArena.Draw(DrawRecipe.Range(recipe), lod, out uint vao, out int baseVertex,
+        // CX-50: the BASE run, always. The level this frame draws is the batch row's -- picked off the cull
+        // sphere, which only this slot's own record block below makes current, and applied by the batch walk
+        // (ArenaLevelRuns) on the main thread. A shadow view picks its own level per caster in the gather.
+        if (!MeshArena.Draw(DrawRecipe.Range(recipe), 0, out uint vao, out int baseVertex,
                             out nint off, out int idxCount, out int level) || idxCount <= 0)
         { _dbNoRange++; Inc(ref Counters._skipRange); return Skipped; }
         _cOff[i] = off; _cBase[i] = baseVertex; _cIdx[i] = idxCount;

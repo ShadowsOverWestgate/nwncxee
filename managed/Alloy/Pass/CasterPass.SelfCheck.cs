@@ -258,6 +258,13 @@ public sealed unsafe partial class CasterPass
                 _liveDyn[i] = i == 1;   // #305: the set flag, one of each, so a swap fails
             }
             uint* src = stackalloc uint[2 * CasterGather.SrcUints];
+            // CX-50: the WHOLE record, every word of it. Filled with a sentinel first, because stackalloc is
+            // not zeroed and the staging array is not either: a word StageOne leaves alone is whatever the
+            // last staging left there, which for a level's (count, first) is another mesh's geometry.
+            for (int w = 0; w < 2 * CasterGather.SrcUints; w++) src[w] = 2989u;
+            StageOne(src, 0, 0, 0, 0); StageOne(src, 1, 1, 1, 1);
+            bool whole = true;
+            for (int w = 0; w < 2 * CasterGather.SrcUints; w++) whole &= src[w] != 2989u;
             StageOne(src, 0, 0, 0, 0);
             _liveOff[1] = true; StageOne(src, 1, 1, 1, 1);
             bool off = src[CasterGather.SrcUints] == 0;
@@ -267,7 +274,11 @@ public sealed unsafe partial class CasterPass
                         && src[CasterGather.SrcUints] == 31
                         && src[CasterGather.SrcUints + 3] == 4101 && src[CasterGather.SrcUints + 4] == 1
                         && src[CasterGather.SrcUints + 5] == 1 && src[CasterGather.SrcUints + CasterGather.SetFlagWord] == 1
-                        && off;
+                        && off && whole
+                        // CX-50: a caster with no coarse run of its own stages zeros, which is what makes
+                        // every view's pick fall back to its base run rather than to a stale pair.
+                        && src[CasterGather.Cnt1Word] == 0 && src[CasterGather.First1Word] == 0
+                        && src[CasterGather.Cnt2Word] == 0 && src[CasterGather.First2Word] == 0;
             // SL1/SL2: the per-frame word rewrite, and the per-batch dynamic population it maintains. The
             // rewrite is what a frame does INSTEAD of re-reading all 37k staged draws, and the population is
             // what lets a view's set skip a batch outright -- both silent when wrong (a caster at another
@@ -299,6 +310,25 @@ public sealed unsafe partial class CasterPass
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: the per-frame staged-word rewrite does not track the live entry"); }
             if (!idle)
             { ok = false; log.Info("CasterPass.SelfCheck FAIL: a batch the view's set empties is not the one the skip names"); }
+
+            // CX-50: the per-level bake tally's readout, over hand-set counts against a hand-written line.
+            // The figure is per SAMPLED VIEW, so the period's totals divide by the samples that produced
+            // them -- a tally that stopped dividing reads as a bake that grew with the period length.
+            long[] tris = CasterGather.SampledTris;
+            long kTris0 = tris[0], kTris1 = tris[1], kTris2 = tris[2];
+            long kSamples = CasterGather.Samples, kSamplesDyn = CasterGather.SamplesDyn;
+            tris[0] = 300; tris[1] = 200; tris[2] = 100;
+            CasterGather.Samples = 1; CasterGather.SamplesDyn = 1;
+            string tline = SampledTriLine();
+            tris[0] = 0; tris[1] = 0; tris[2] = 0;
+            string tzero = SampledTriLine();
+            CasterGather.Samples = 0; CasterGather.SamplesDyn = 0;
+            string tnone = SampledTriLine();
+            tris[0] = kTris0; tris[1] = kTris1; tris[2] = kTris2;
+            CasterGather.Samples = kSamples; CasterGather.SamplesDyn = kSamplesDyn;
+            if (tline != ", baked 150/100/50 tris per sampled view at detail 0/1/2"
+                || tzero != ", no triangles baked in the sampled views" || tnone.Length != 0)
+            { ok = false; log.Info($"CasterPass.SelfCheck FAIL: the per-level bake tally reads '{tline}'"); }
 
             // S8: the dynamic source is a VERBATIM copy of the staged movers -- same batch id, same output
             // base, same index range -- because that is the whole argument for dispatching over it: a survivor
@@ -405,6 +435,10 @@ public sealed unsafe partial class CasterPass
             WriteDynSpheres(0, 0, box, Vector3.Zero, 40f);
             if (!held) { ok = false; log.Info("CasterPass.SelfCheck FAIL: a mover falls outside every hot-path sphere, or the fold swallows the square"); }
         }
+
+        // CX-49: run unconditionally and last -- it names the pin that drifted, which the && chain above
+        // would swallow.
+        ok &= PcssCheck(log);
 
         log.Info(ok
             ? "CasterPass.SelfCheck: passed"

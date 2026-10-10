@@ -36,6 +36,33 @@ internal static partial class DrawRecipe
 
     private static readonly Dictionary<(ModelDef, int), int> _byNode = new();
     private static int _n;
+    /// <summary>Who holds each recipe slot and the retired ones on their way back -- one owner for the ownership
+    /// rules. A retired slot waits two <see cref="Pump"/>s (<c>Retiring</c>, <c>Cooling</c>) before <c>Free</c>, so
+    /// the feed fold that releases every draw slot still seated on it runs first.</summary>
+    private sealed class SlotState
+    {
+        public readonly List<int> Retiring = new(), Cooling = new();
+        public readonly Stack<int> Free = new();
+        /// <summary>Parts naming each recipe (<see cref="SceneDb.PartRecipe"/>, written only through
+        /// <see cref="Assign"/>). A slot is never retired while one does.</summary>
+        public readonly int[] Users = new int[Max];
+        /// <summary>Handed out and not yet retired: a second retire is refused, so no slot reaches two owners.</summary>
+        public readonly bool[] Held = new bool[Max];
+        /// <summary>Its model was evicted (or its dynamic owner let go) while a part still named it.</summary>
+        public readonly bool[] Orphan = new bool[Max];
+        /// <summary>Bumped at each hand-out, so a holder of (slot, gen) can tell its recipe from a later tenant's.</summary>
+        public readonly uint[] Gen = new uint[Max];
+        public int RetiredInUse, DoubleRetire;
+        public CX.Framework.ExtenderLog? Log;
+    }
+    private static SlotState _own = new();
+
+    /// <summary>The log the ownership refusals are said on. Set by the feed.</summary>
+    internal static CX.Framework.ExtenderLog? Log { get => _own.Log; set => _own.Log = value; }
+
+    /// <summary>Slot <paramref name="r"/>'s current hand-out generation.</summary>
+    internal static uint Gen(int r) => (uint)r < Max ? _own.Gen[r] : 0;
+
     /// <summary>Recipes whose arena range was not resident at their last ask, as a drained list rather than a
     /// walk of the whole table. A range that lands leaves the list; nothing re-polls what is resident.</summary>
     private static readonly int[] _rangeWait = new int[Max];
@@ -77,7 +104,60 @@ internal static partial class DrawRecipe
     /// (<see cref="RecipeFlag.Coverage"/>) instead of blending it. Kept per recipe for <see cref="Reclassify"/>.</summary>
     private static readonly bool[] _coverage = new bool[Max];
 
-    internal static int Count => _n;
+    /// <summary>Recipes in use: the slots ever handed out, less the retired ones waiting or free.</summary>
+    internal static int Count => _n - _own.Free.Count - _own.Retiring.Count - _own.Cooling.Count;
+
+    /// <summary>A slot for a new recipe: a retired one past its quarantine, else a fresh one; -1 when full.</summary>
+    private static int Take()
+    {
+        int r;
+        if (_own.Free.Count > 0) r = _own.Free.Pop();
+        else if (_n < Max) r = _n++;
+        else { Spilled++; return -1; }
+        _own.Held[r] = true; _own.Orphan[r] = false; _own.Gen[r]++;
+        return r;
+    }
+
+    /// <summary>Point part <paramref name="p"/> at recipe <paramref name="r"/> (-1 = none). The one writer of
+    /// <see cref="SceneDb.PartRecipe"/>: it keeps the per-slot user count the retire paths read.</summary>
+    internal static void Assign(int p, int r)
+    {
+        int was = SceneDb.PartRecipe[p];
+        if (was == r) return;
+        SceneDb.PartRecipe[p] = r;
+        if ((uint)r < Max) _own.Users[r]++;
+        if ((uint)was < Max && --_own.Users[was] <= 0)
+        {
+            _own.Users[was] = 0;
+            if (_own.Orphan[was]) Retire(was);
+        }
+    }
+
+    /// <summary>Hand slot <paramref name="r"/> back: its range and texture references go, and it enters the
+    /// quarantine. Refused, and counted, for a slot that is not held.</summary>
+    private static void Retire(int r)
+    {
+        if (!_own.Held[r]) { _own.DoubleRetire++; return; }
+        _own.Held[r] = false; _own.Orphan[r] = false;
+        if (_range[r] >= 0) MeshArena.Release(_range[r]);
+        _range[r] = -1;
+        for (int s = 0; s < TexSlots; s++)
+        {
+            int o = r * TexSlots + s;
+            TexRegistry.Release(new TexId(_texId[o]));
+            _texId[o] = 0; _tex[o] = "";
+            if (_texWait[o] != 0) { _texWait[o] = 0; _texPending--; }
+        }
+        _model[r] = null; _mesh[r] = null;
+        _rangeQueued[r] = false;
+        _own.Retiring.Add(r);
+        Retired++;
+    }
+
+    /// <summary>A retire refused because the slot was not held: it would have reached the free list twice.</summary>
+    internal static int DoubleRetire => _own.DoubleRetire;
+    /// <summary>Recipes whose model was evicted while a part still named them: kept until that part lets go.</summary>
+    internal static int RetiredInUse { get => _own.RetiredInUse; set => _own.RetiredInUse = value; }
 
     /// <summary>How many recipes actually have a resolved diffuse, and how many are drawing the white stand-in.
     /// "Most surfaces are untextured" is a question about these two numbers and nothing else.</summary>
@@ -193,8 +273,8 @@ internal static partial class DrawRecipe
         }
         if (mesh == null || !mesh.Render || mesh.Indices.Length == 0) return -1;
         if (TwinShadowed(model, node)) { TwinRefused++; return -1; }
-        if (_n >= Max) { Spilled++; return -1; }
-        r = _n++;
+        r = Take();
+        if (r < 0) return -1;
         _byNode[(model, plan ? ~node : node)] = r;
         _model[r] = model; _node[r] = node; _mesh[r] = mesh;
         Fill(r, nd, mesh);
@@ -206,6 +286,10 @@ internal static partial class DrawRecipe
     /// frame rather than on the next area change. Allocation-free.</summary>
     internal static int Pump()
     {
+        foreach (int c in _own.Cooling) _own.Free.Push(c);
+        _own.Cooling.Clear();
+        _own.Cooling.AddRange(_own.Retiring);
+        _own.Retiring.Clear();
         int landed = 0;
         // R1-7: the ranges that were NOT resident, drained. The whole-table walk this replaces re-asked the
         // arena for every recipe every frame, inside the frame's own dirty fold.
@@ -453,21 +537,18 @@ internal static partial class DrawRecipe
     {
         for (int r = 0; r < _n; r++)
         {
-            if (!ReferenceEquals(_model[r], model)) continue;
-            if (_range[r] >= 0) MeshArena.Release(_range[r]);
-            _range[r] = -1;
-            for (int s = 0; s < TexSlots; s++)
-            {
-                int o = r * TexSlots + s;
-                TexRegistry.Release(new TexId(_texId[o]));
-                _texId[o] = 0; _tex[o] = "";
-                if (_texWait[o] != 0) { _texWait[o] = 0; _texPending--; }
-            }
+            if (!ReferenceEquals(_model[r], model) || _own.Orphan[r]) continue;
             if (_byNode.TryGetValue((model, _node[r]), out int a) && a == r) _byNode.Remove((model, _node[r]));
             if (_byNode.TryGetValue((model, ~_node[r]), out int b) && b == r) _byNode.Remove((model, ~_node[r]));
-            _model[r] = null; _mesh[r] = null;
-            _rangeQueued[r] = false;
-            Retired++;
+            if (_own.Users[r] > 0)
+            {
+                _own.Orphan[r] = true;
+                if (_own.RetiredInUse++ < 8)
+                    Log?.Always($"DrawRecipe: model '{model.Name}' was evicted while {_own.Users[r]} part(s) still draw "
+                              + $"node {_node[r]} -- the recipe is kept until they let go (a model reference was dropped too early)");
+                continue;
+            }
+            Retire(r);
         }
     }
 

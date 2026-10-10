@@ -35,7 +35,8 @@ internal static class Grass
                            new[] { "Procedural blades", "Game textures" }, changed: GrassField.Rebake,
                            help: "Procedural blades: dense, individually shaded 3D blades coloured from the area's grass. "
                                + "Game textures: the area's own grass pictures, as the stock game draws them. "
-                               + "Grass textures that look like flowers stay as pictures either way.");
+                               + "Grass textures that look like flowers stay as pictures either way.")
+                .Ladder(Quality.Preset, Quality.Classic(StyleTextures, StyleBlades));
         Density = G.Slider("density", "Density", 0f, 4f, 0.25f, 2f, help: "Blades per patch relative to the stock game.",
                            changed: GrassField.Rebake)
                    .Ladder(Quality.Grass, 0.75f, 1.25f, 2f, 3f);

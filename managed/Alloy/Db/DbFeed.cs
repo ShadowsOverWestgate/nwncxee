@@ -39,7 +39,7 @@ public static partial class DbFeed
     internal static DbId ViewScene(int k) => _viewScene[k];
     internal static DbId ViewCamera(int k) => _viewCam[k];
 
-    internal static void Attach(ExtenderLog log) { _log = log; }
+    internal static void Attach(ExtenderLog log) { _log = log; DrawRecipe.Log = log; }
 
     /// <summary>The game asked to render <paramref name="scene"/> through <paramref name="camera"/> (a camera's
     /// <c>RenderScene</c>); record the view, in order, for this frame's snapshot. Allocation-free, and it draws
@@ -210,6 +210,8 @@ public static partial class DbFeed
         => $"dbfeed: frames {_frames} rec-writes {_lastRecWrites} visible {LastVisible} retry {Retrying} "
          + $"recipes {DrawRecipe.Count} (diffuse {DrawRecipe.DiffuseCensus().resolved}/{DrawRecipe.DiffuseCensus().named} resolved, {DrawRecipe.DiffuseCensus().standIn} stand-in) grid {DbGrid.Filed}/{DbGrid.Movers}/{DbGrid.Unboxed} {DrawRecipe.WaterNote()}"
          + (DrawRecipe.Spilled > 0 ? $" RECIPES SPILLED {DrawRecipe.Spilled}" : "")
+         + (DrawRecipe.RetiredInUse > 0 ? $" RECIPES EVICTED IN USE {DrawRecipe.RetiredInUse}" : "")
+         + (DrawRecipe.DoubleRetire > 0 ? $" RECIPES RETIRED TWICE {DrawRecipe.DoubleRetire}" : "")
          + (DrawRecipe.TwinRefused > 0 ? $" twin-shadowed {DrawRecipe.TwinRefused}" : "")
          + (DrawRecipe.BoxGrown > 0 ? $" box-grown {DrawRecipe.BoxGrown} (first {DrawRecipe.BoxGrownFirst})" : "")
          + (DrawRecipe.Retired > 0 ? $" retired {DrawRecipe.Retired}" : "")

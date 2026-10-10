@@ -147,7 +147,7 @@ internal static unsafe class TaaStage
         check.Expect(StageFs.Contains("uniform float uSharp;") && StageFs.Contains("h * 4.0 - n") && StageFs.Contains("if (uSharp > 0.0)"),
           "the copy-out carries the unsharp mask and is the raw history at taasharp 0");
         check.Expect(Post.TaaSharp.Default > 0f && Post.TaaSharp.Min == 0f, "post.taasharp ships sharpening, and 0 is the A/B back to the raw resolve");
-        check.Expect(Post.Taa.Default, "TAA is the DEFAULT anti-aliaser: a fresh cx.cfg resolves temporally and SMAA stands aside");
+        check.Expect(Post.Taa.RungValue(Quality.Shipped), "TAA is the DEFAULT anti-aliaser: a fresh cx.cfg resolves temporally and SMAA stands aside");
         check.Expect(TaaFs.Contains("vec2 velPx = CxDilatedVel(vUV, vsz);") && TaaFs.Contains("vec2 huv = vUV + velPx / vsz;")
           && TaaFs.Contains("vec2 vsz = vec2(textureSize(uVel, 0));"),
           "velocity becomes uv through the VELOCITY target's size, not the frame's (#391)");

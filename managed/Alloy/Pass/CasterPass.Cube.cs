@@ -771,7 +771,11 @@ public sealed unsafe partial class CasterPass
         {
             Matrix4x4 vp = ShadowMath.PointLightFaceViewProj(pos, f, near, far);
             bool ok = CasterGather.Active
-                ? GatherSubmit(tex, size, f, &vp, ShadowMath.CubeFaceForward(f), pos, far, 0f, true, CasterGather.SetStatic, false)
+                // CX-50: full detail, thresholds 0. This cube is baked ONCE into the lightmap, so its
+                // triangles are no part of the frame budget, and a coarser caster here would quietly move
+                // baked lighting -- and the bake's cache keys say nothing about a detail level.
+                ? GatherSubmit(tex, size, f, &vp, ShadowMath.CubeFaceForward(f), pos, far, 0f, true,
+                               0f, 0f, CasterGather.SetStatic, false)
                 : ClearLayer(tex, size, f);
             if (!ok) return false;
         }

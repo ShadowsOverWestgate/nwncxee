@@ -183,6 +183,27 @@ internal static unsafe partial class GrassField
         check.Expect(_off && !CastsInto(0), "arming from chat cannot clear the resolution latch");
         _off = off0; Grass.Enabled.V = on0;
 
+        // ---- CX-48: the sway, and last frame's. The oracle is the embedded GLSL against the hand-written
+        // expressions below: one text states the sway (so the two frames cannot evaluate different curves),
+        // each vertex path calls it twice -- this clock and last frame's -- and each reconstructs a previous
+        // world position from the second call.
+        check.Expect(SwayGlsl.Contains("(sin(t * 1.7 + phase) + 0.4 * sin(t * 3.9 + phase * 2.3)) * 0.5")
+          && SwayGlsl.Contains("float(uPrevTimeOfDay % 3600000)"),
+          "the sway and the previous clock are stated once, in the library both vertex paths include");
+        check.Expect(ShaderContract.SwaySafe(GrassVmain) && ShaderContract.SwaySafe(BladeVmain),
+          "both grass vertex paths reconstruct last frame's blade from last frame's clock");
+        check.Expect(GrassVmain.Contains("float sway = CxGrassSway(t, phase) * bend;")
+          && BladeVmain.Contains("float sway = CxGrassSway(tw, phase);"),
+          "...and draw THIS frame's blade through the same library call, so the two differ only by the clock");
+        check.Expect(GrassVmain.Contains("vPrev = uPrevVP * vec4(iPos.xyz + pPrev, 1.0);")
+          && BladeVmain.Contains("CxBladeCurve(root, leanPrev, h, press, t, Tprev) + across * side * width * 0.5"),
+          "the previous position rides this frame's widening, push and width: the sway term is what moves");
+        check.Expect(GrassDepthFs.Contains("frag = vec4(CxMotionVec(vCur, vPrev), 0.0, 0.0);")
+          && BladeDepthFs.Contains("frag = vec4(CxMotionVec(vCur, vPrev), 0.0, 0.0);"),
+          "both velocity stages write the shared convention, behind the coverage decision that drew the blade");
+        check.Expect(!ShaderContract.SwaySafe("void main() { gl_Position = uVP * vec4(aPos, 1.0); }"),
+          "a vertex stage with no previous blade in it is refused, and its class keeps the camera's field");
+
         log.Info(check.Ok ? "GrassField.SelfCheck: passed" : "GrassField.SelfCheck: FAILED");
     }
 }

@@ -278,7 +278,7 @@ public static unsafe partial class DbFeed
         bool plan = SceneDb.PartMerged[p] || (SceneDb.PartMeshDef[p] is MeshDef pm && (uint)node < (uint)m.Nodes.Length
                                               && !ReferenceEquals(pm, m.Nodes[node].Mesh));
         r = DrawRecipe.Intern(m, node, plan);
-        SceneDb.PartRecipe[p] = r;
+        DrawRecipe.Assign(p, r);
         return r;
     }
 
@@ -382,7 +382,7 @@ public static unsafe partial class DbFeed
         if (SceneDb.PartSlot[p] >= 0) { AlloyRenderer.DbRelease(p); LeakedJoins++; }
         DbInputs.PartDestroyed(p);
         SceneDb.PartSlot[p] = -1;
-        SceneDb.PartRecipe[p] = -1;
+        DrawRecipe.Assign(p, -1);
         SceneDb.PartFade[p] = 1f;
         SceneDb.PartDissolve[p] = 1f;
         SceneDb.PartBoneBase[p] = -1;

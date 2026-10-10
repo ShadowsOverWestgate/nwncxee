@@ -8,7 +8,8 @@ here=$(cd "$(dirname "$0")/.." && pwd)
   echo "==============================="
   echo
   echo "The extender itself is MIT licensed. It links funchook (GPLv2+ with a linking"
-  echo "exception), diStorm3 (BSD 3-clause) and xatlas (MIT). It ships, as separate"
+  echo "exception), diStorm3 (BSD 3-clause) and xatlas (MIT), and embeds the SMAA lookup"
+  echo "tables (MIT) and the DejaVu Sans font (Bitstream Vera license). It ships, as separate"
   echo "unmodified libraries, OpenAL Soft 1.25.2 (LGPL-2.1: libopenal.so.1 / cx_openal.dll,"
   echo "source at https://github.com/kcat/openal-soft/releases/tag/1.25.2 -- replace the file"
   echo "with any compatible build of your own) and Steam Audio 4.8.1 (Apache-2.0:"
@@ -23,6 +24,10 @@ here=$(cd "$(dirname "$0")/.." && pwd)
   cat "$here/third_party/funchook/distorm/COPYING"; echo
   echo "----- xatlas (https://github.com/jpcy/xatlas) -----"; echo
   cat "$here/native/xatlas/LICENSE"; echo
+  echo "----- SMAA (https://github.com/iryoku/smaa) -----"; echo
+  cat "$here/third_party/smaa/LICENSE.txt"; echo
+  echo "----- DejaVu fonts (https://dejavu-fonts.github.io) -----"; echo
+  cat "$here/third_party/dejavu/LICENSE.txt"; echo
   echo "----- OpenAL Soft (https://github.com/kcat/openal-soft) -----"; echo
   cat "$here/build/deps/openal-soft-1.25.2/COPYING"; echo
   echo "OpenAL Soft carries these inside it:"; echo

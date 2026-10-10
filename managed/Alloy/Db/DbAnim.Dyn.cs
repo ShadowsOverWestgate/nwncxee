@@ -54,6 +54,14 @@ public static unsafe partial class DbAnim
     /// <summary>Per part: its PRIVATE mesh-arena range, so the solved vertices are what the draw reads. -1
     /// until the first solve asks for one.</summary>
     private static readonly int[] _dynRange = new int[SceneDb.MaxParts];
+    /// <summary>Per part: the private recipe it took (plus one) and that slot's hand-out generation, so the drop
+    /// retires THAT recipe -- the part's current one may already be a new tenant's.</summary>
+    private sealed class DynRecipeState
+    {
+        public readonly int[] Recipe = new int[SceneDb.MaxParts];
+        public readonly uint[] Gen = new uint[SceneDb.MaxParts];
+    }
+    private static DynRecipeState _dynRecipe = new();
     private static int _dynNoRange;
 
     /// <summary>The private arena range holding <paramref name="part"/>'s solved vertices, or -1.</summary>
@@ -142,8 +150,10 @@ public static unsafe partial class DbAnim
             return;
         }
         _dynRange[part] = range + 1;
+        _dynRecipe.Recipe[part] = recipe + 1;
+        _dynRecipe.Gen[part] = DrawRecipe.Gen(recipe);
         _dynRangeTaken = true;
-        SceneDb.PartRecipe[part] = recipe;
+        DrawRecipe.Assign(part, recipe);
         SceneDb.TouchPart(part, Dirty.Anim);
     }
 
@@ -188,11 +198,13 @@ public static unsafe partial class DbAnim
         if (_dyn[part] != 0) NativeMemory.Free((void*)_dyn[part]);
         if (_dynUv[part] != 0) NativeMemory.Free((void*)_dynUv[part]);
         if (_velo[part] != 0) NativeMemory.Free((void*)_velo[part]);
-        if (_dynRange[part] > 0)
+        if (_dynRecipe.Recipe[part] > 0)
         {
-            DrawRecipe.RetireDynamic(SceneDb.PartRecipe[part], _dynRange[part] - 1);
-            SceneDb.PartRecipe[part] = -1;
+            int r = _dynRecipe.Recipe[part] - 1;
+            if (SceneDb.PartRecipe[part] == r) DrawRecipe.Assign(part, -1);
+            DrawRecipe.RetireDynamic(r, _dynRecipe.Gen[part]);
         }
+        _dynRecipe.Recipe[part] = 0;
         _dyn[part] = 0; _dynUv[part] = 0; _dynN[part] = 0; _dynGen[part] = 0; _velo[part] = 0;
         _dynRange[part] = 0;
         SceneDb.PartLitAnim[part] = 0;

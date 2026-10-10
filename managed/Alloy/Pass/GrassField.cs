@@ -578,6 +578,8 @@ internal static unsafe partial class GrassField
             if (msaa) Gl.Disable(Gl.SAMPLE_ALPHA_TO_COVERAGE);
         }
         AlloyRenderer.GpuEnd(AlloyRenderer.GpuTerm.Grass);
+        // CX-48: what was drawn, for the velocity sweep that re-issues it later in the frame.
+        NoteIssued(eye, nearDist, farDist, ground);
         if (ground && _groundDiag > 0) GroundDiagAfter(viewport);
         // the drawn count, for Stats: copied GPU-side into a persistent map, read a frame or more late, never waited on
         if (_gl.Stat != null)

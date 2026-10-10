@@ -52,6 +52,8 @@ def _defaults(key, get):
         return os.path.expanduser("~/ghidra")
     if key == "NWN_DECOMP":
         return os.path.expanduser("~/nwn-decomp")
+    if key == "RELEASE_SIGN_KEY":
+        return os.path.expanduser("~/.ssh/cx-release")
     if key == "NEVERBLENDER":
         return str(sib / "neverblender/NeverBlender")
     return None

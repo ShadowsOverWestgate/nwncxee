@@ -163,8 +163,8 @@ public sealed unsafe partial class AlloyRenderer
     /// <summary>The <c>CxPass</c> block's binding point, <c>layout(std140, binding = 0)</c> in
     /// <c>cx_pass.glsl</c>. No other Alloy block uses the uniform-buffer namespace.</summary>
     internal const uint PassBinding = 0;
-    /// <summary>The block's std140 size, 3604 by glslang reflection, rounded to a vec4.</summary>
-    internal const int PassBytes = 3616;
+    /// <summary>The block's std140 size, 3620 by glslang reflection, rounded to a vec4.</summary>
+    internal const int PassBytes = 3632;
     /// <summary>Member byte offsets in <c>CxPass</c>, read off glslang's std140 reflection of
     /// <c>cx_pass.glsl</c>. The declaration is pinned by <see cref="ShaderContract.SelfCheck"/>; reorder a
     /// member and these move with it. The two float arrays are std140's 16-byte stride.</summary>
@@ -174,7 +174,8 @@ public sealed unsafe partial class AlloyRenderer
                        PbProbeMips = 3468, PbDir = 3472, PbProbeGain = 3484, PbLocalPlane = 3488, PbSceneEnv = 3496,
                        PbTile = 3504, PbGrid = 3520, PbReach = 3532, PbFalloff = 3536, PbWrap = 3548, PbZ = 3552,
                        PbAtten = 3560, PbHot = 3568, PbSss = 3576, PbWrapN = 3584, PbDayDim = 3588, PbRelevance = 3592,
-                       PbBounds = 3600, PbShBudget = 3604, PbLightFloor = 3608, PbFullModel = 3612;
+                       PbBounds = 3600, PbShBudget = 3604, PbLightFloor = 3608, PbFullModel = 3612,
+                       PbSunPenum = 3616, PbSearchTaps = 3620;
     /// <summary>The sun terms the last staged pass block carried -- the cascade count, the fourth column of
     /// <c>uSunVp[0]</c> and the live focus. The receiver's own witness, for the <c>[sunrx]</c> clause on
     /// <c>CasterPass</c>'s period line.</summary>
@@ -300,6 +301,12 @@ public sealed unsafe partial class AlloyRenderer
         // with no taa to integrate it), disc taps; w = the view depth past which no cube is read (0 = none)
         PassVec(b, PbLocalPcss, _rawSampler != 0 ? AlloyLights.ShadowSource : 0f,
                 PostStack.TaaLive ? (_frameSeq * 0.618034f) % 1f : 0f, Shadows.Taps.V, AlloyLights.ShadowDist);
+        // CX-49: the sun's own source size, as penumbra texels per unit of stored cascade depth -- the same
+        // "no raw view, no search" gate the cubes take, and the same temporal phase and tap count out of
+        // uLocalPcss above. A caller that fills the block itself (the lightmap bake) leaves it zero, which
+        // the receiver reads as the fixed four-tap cross.
+        *(float*)(b + PbSunPenum) = _rawSampler != 0 ? CasterPass.SunPenumbraScale : 0f;
+        *(float*)(b + PbSearchTaps) = Shadows.Search.V;
         // Pixels -> world radius per unit view depth, so the shader compares its disc against the
         // screen without knowing the projection. 0 (no perspective this pass) = the disc everywhere.
         float discZ = _lodScale > 0f ? AlloyLights.ShadowDiscPx / _lodScale : 0f;
@@ -337,9 +344,11 @@ public sealed unsafe partial class AlloyRenderer
     /// when the shader never takes the fetch (see NullShadow).</summary>
     internal static void BindSunMaps()
     {
+        if (!_rawProbed) ProbeRawSampler();
         bool fresh = CasterPass.CascadesFresh;
+        uint stat = SunShadowOr(fresh ? CasterPass.CascadeTex : 0);
         Gl.ActiveTexture(Gl.TEXTURE0 + SunUnit);
-        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, SunShadowOr(fresh ? CasterPass.CascadeTex : 0));
+        Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, stat);
         // The dynamic half rides the same publish, on BOTH units the table assigns it (the grass
         // program's unit 10 is its displacement field, so grass reads the array off unit 13 instead).
         uint dyn = SunShadowOr(fresh ? CasterPass.SunDynTex : 0);
@@ -347,6 +356,13 @@ public sealed unsafe partial class AlloyRenderer
         Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, dyn);
         Gl.ActiveTexture(Gl.TEXTURE0 + SunDynUnitGrass);
         Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, dyn);
+        if (_rawSampler != 0)
+        {   // CX-49: the same two arrays on the raw units; the sampler object bound there strips the compare
+            Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.SunShadowRaw);
+            Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, stat);
+            Gl.ActiveTexture(Gl.TEXTURE0 + TextureSlots.SunShadowDynRaw);
+            Gl.BindTexture(Gl.TEXTURE_2D_ARRAY, dyn);
+        }
         Gl.ActiveTexture(Gl.TEXTURE0);       // leave unit 0 current: the batch loop rebinds diffuse textures
     }
 
@@ -380,8 +396,12 @@ public sealed unsafe partial class AlloyRenderer
     {
         _rawProbed = true;
         int units = 0; Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &units);
+        // The CUBE threshold, which is the cube units' own and nothing else's: the sun's two raw views sit
+        // higher and stand down on their own at link time (Programs.WithoutSunSoft), so a driver that can
+        // seat the cubes keeps their contact hardening whatever it can do for the sun.
         if (units <= (int)TextureSlots.LocalShadowDynRaw || Gl.GenSamplers == null || Gl.SamplerParameteri == null || Gl.BindSampler == null)
-        { _log?.Info($"AlloyRenderer: shadow blocker search OFF -- {units} fragment texture units, needs {TextureSlots.LocalShadowDynRaw + 1}"); return; }
+        { _log?.Info($"AlloyRenderer: shadow blocker search OFF (hard edges, no contact hardening) -- " +
+                     $"{units} fragment texture units, needs {TextureSlots.LocalShadowDynRaw + 1}"); return; }
         uint s; Gl.GenSamplers(1, &s);
         Gl.SamplerParameteri(s, Gl.TEXTURE_COMPARE_MODE, 0);   // GL_NONE: a depth, not a verdict
         Gl.SamplerParameteri(s, Gl.TEXTURE_MIN_FILTER, Gl.NEAREST);
@@ -389,7 +409,16 @@ public sealed unsafe partial class AlloyRenderer
         Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_S, Gl.CLAMP_TO_EDGE);
         Gl.SamplerParameteri(s, Gl.TEXTURE_WRAP_T, Gl.CLAMP_TO_EDGE);
         Gl.BindSampler(TextureSlots.LocalShadowRaw, s); Gl.BindSampler(TextureSlots.LocalShadowDynRaw, s);
+        // CX-49: the sun's two raw units take the same sampler object -- a 2D array of depth read as a depth
+        // rather than a verdict is the same ask as the cube's. Bound whatever the fragment-unit count, which
+        // is legal (a bind is capped by MAX_COMBINED_TEXTURE_IMAGE_UNITS, floor 80) and unread where the lit
+        // program never declared the samplers.
+        Gl.BindSampler(TextureSlots.SunShadowRaw, s); Gl.BindSampler(TextureSlots.SunShadowDynRaw, s);
         _rawSampler = s;
+        _log?.Info($"AlloyRenderer: shadow blocker search ON -- {units} fragment texture units, raw views on "
+                   + $"{TextureSlots.LocalShadowRaw}/{TextureSlots.LocalShadowDynRaw} (cubes) and "
+                   + $"{TextureSlots.SunShadowRaw}/{TextureSlots.SunShadowDynRaw} (sun cascades, "
+                   + $"{(units >= Programs.SunSoftUnitsNeed ? "declared" : "NOT declared on this driver")})");
     }
 
     /// <summary>Point the cube units at <see cref="CasterPass"/>'s static and dynamic arrays (the null stand-in

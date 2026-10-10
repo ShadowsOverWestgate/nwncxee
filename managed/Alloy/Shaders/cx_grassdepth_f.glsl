@@ -14,6 +14,11 @@ uniform int uCast;                      // 1 = a shadow view: no keyhole (its de
 uniform float uEdge;
 uniform vec4 uLod;                      // x = the full-density radius the hard far edge starts inside
 out vec4 frag;
+#ifdef CX_MOTION
+in vec4 vCur;
+in vec4 vPrev;
+#include "cx_motionout.glsl"
+#endif
 #include "cx_keyhole.glsl"
 #include "cx_grassfetch.glsl"
 #include "cx_grassdither.glsl"
@@ -31,5 +36,11 @@ void main()
     if (uSoftEdge != 0 && cov < 0.5) discard;
     if (keep < 1.0 && CxGrassDither() > keep) discard;
     if (uCast == 0 && CxKeyhole(1.0, vWorld, vDepth) < 0.0) discard;
+#ifdef CX_MOTION
+    // CX-48: the velocity FIELD, not the depth -- behind the same coverage decision, so a velocity texel
+    // is painted exactly where a blade fragment survived.
+    frag = vec4(CxMotionVec(vCur, vPrev), 0.0, 0.0);
+#else
     frag = vec4(0.0, 0.0, 0.0, uMsaa != 0 ? cov : 1.0);
+#endif
 }

@@ -24,6 +24,8 @@ internal static unsafe class MotionVectors
         public int W, H;
         public int LocDepth, LocInvVp, LocPrevVp, LocSize, LocJitter;
         public bool Built, Failed;
+        /// <summary>Has the one line about the effect classes' own vectors been said on this context?</summary>
+        public bool EffectsSaid;
     }
 
     /// <summary>The camera history, which the WORLD owns: an area transition replaces it, so the next frame
@@ -39,7 +41,23 @@ internal static unsafe class MotionVectors
         /// <see cref="RollHistory"/>, so a second armed pass in the same frame cannot roll it again.</summary>
         public Matrix4x4 PendingPrev;
         public int PendingSeq = -1;
+        /// <summary>The previous camera THIS frame's field was reprojected against, held past
+        /// <see cref="RollHistory"/> for the late sweep that corrects the field over grass and particles.</summary>
+        public Matrix4x4 FieldPrevVp;
+        /// <summary>This frame's world clock, kept so the next frame has one to be the previous of.</summary>
+        public int Clock;
+        /// <summary>The world clock of the frame <see cref="FieldPrevVp"/> came from: what a late sweep
+        /// evaluates the analytic sway at to put last frame's blade back.</summary>
+        public int FieldPrevClock;
+        public bool HasClock;
+        /// <summary>The frame both of the two above were taken on. A second armed pass in one frame must not
+        /// re-take either: by then <see cref="RollHistory"/> has advanced the camera to this frame's.</summary>
+        public int ClockSeq = -1;
     }
+
+    /// <summary>The wrap <c>CxClock</c> applies to the world clock, mirrored here because the previous clock
+    /// rides over as the same int: across the wrap last frame's number is the larger one.</summary>
+    private const int ClockWrap = 3600000;
 
     private static MotionGlState _gl = new();
     private static MotionHistoryState _hist = new();
@@ -54,6 +72,10 @@ internal static unsafe class MotionVectors
     internal static uint Tex => _gl.Tex;
     /// <summary>Last frame's UNJITTERED view-projection, for the mover sweep -- valid after Run.</summary>
     internal static Matrix4x4 PrevVp => _hist.PrevVp;
+    /// <inheritdoc cref="MotionHistoryState.FieldPrevVp"/>
+    internal static Matrix4x4 FieldPrevVp => _hist.FieldPrevVp;
+    /// <inheritdoc cref="MotionHistoryState.FieldPrevClock"/>
+    internal static int FieldPrevClock => _hist.FieldPrevClock;
     /// <summary>Did the pass paint this frame? False until Run has produced a target the consumers may read.</summary>
     internal static bool Painted { get; private set; }
     /// <summary>Stood down on this context (program or target): the TAA jitter gates on it, so a frame with no
@@ -61,6 +83,19 @@ internal static unsafe class MotionVectors
     internal static bool Failed => _gl.Failed;
 
     internal static void Attach(ExtenderLog log) => _log = log;
+
+    /// <inheritdoc cref="MotionGlState.EffectsSaid"/>
+    internal static bool EffectsSaid => _gl.EffectsSaid;
+
+    /// <summary>The first sweep on this context says which classes it found a velocity program for, once.
+    /// A session without this line is one where TAA reads the ground's vectors over grass and particles.
+    /// Cold by construction: the caller composes <paramref name="what"/> only while the flag is clear.</summary>
+    internal static void SayEffects(string what)
+    {
+        if (_gl.EffectsSaid) return;
+        _gl.EffectsSaid = true;
+        _log?.Info($"MotionVectors: the effect sweep is live -- {what}");
+    }
 
     /// <summary>Context loss: the names are gone, and so is the history they were built against.</summary>
     internal static void Forget()
@@ -82,6 +117,9 @@ internal static unsafe class MotionVectors
         if (!_gl.Built) EnsureProgram();
         if (_gl.Prog == 0 || !EnsureTarget(viewport[2], viewport[3])) return;
         if (!_hist.HasPrev) { _hist.PrevVp = *vpClean; _hist.HasPrev = true; }
+        // CX-48: the camera and the clock the late sweep reconstructs previous positions with, taken
+        // together and before the roll, so both describe the same previous frame.
+        NoteField(AlloyRenderer.TimeOfDay, frameSeq);
         if (frameSeq != _camSeq) NoteCamera(vpClean, frameSeq);
         if (!Matrix4x4.Invert(*vp, out Matrix4x4 inv)) return;
         Matrix4x4 prev = _hist.PrevVp;
@@ -144,6 +182,22 @@ internal static unsafe class MotionVectors
         _hist.PendingSeq = -1;
     }
 
+    /// <summary>Adopt the camera and the world clock this frame's field is reprojected against, ONCE per
+    /// frame, so a reconstructed previous position and the camera it goes through are one frame's -- a second
+    /// armed pass must re-take neither, <see cref="RollHistory"/> having advanced the camera by then. A reset
+    /// frame, and the frame the clock wraps on, take a zero step rather than a whole sway period.</summary>
+    internal static void NoteField(int clock, int frameSeq)
+    {
+        if (frameSeq == _hist.ClockSeq) return;
+        _hist.ClockSeq = frameSeq;
+        _hist.FieldPrevVp = _hist.PrevVp;
+        int prev = _hist.HasClock ? _hist.Clock : clock;
+        if (clock % ClockWrap < prev % ClockWrap) prev = clock;
+        _hist.FieldPrevClock = prev;
+        _hist.Clock = clock;
+        _hist.HasClock = true;
+    }
+
     private static void NoteCamera(Matrix4x4* vpClean, int frameSeq)
     {
         if (_camSeq >= 0)
@@ -199,6 +253,10 @@ internal static unsafe class MotionVectors
     /// previous clip w absorbs whatever w the inverse left -- and one divide gives the previous NDC.</summary>
     internal static string CameraFs => ShaderSource.Get("cx_motioncam_f.glsl");
 
+    /// <summary>The convention as a LIBRARY, for the stages that correct the field while they draw their own
+    /// class -- grass and particles. One text, so a late writer cannot disagree with the two stages above.</summary>
+    internal static string MotionOut => ShaderSource.Get("cx_motionout.glsl");
+
     /// <summary>Off-device: the stage text carries its convention and its bounds, and the history edge
     /// resets.</summary>
     internal static bool SelfCheck(ExtenderLog log)
@@ -229,6 +287,32 @@ internal static unsafe class MotionVectors
         _hist.HasPrev = true; _hist.LastSeq = 7;
         Revoke();
         check.Expect(!_hist.HasPrev && _hist.LastSeq == -1, "Revoke drops the previous camera");
+        // CX-48: the field's previous frame, off a hand-written sequence of world clocks and cameras. Every
+        // expected value here is a literal from that sequence, not a second computation of the roll.
+        _hist.PrevVp = Matrix4x4.CreateTranslation(1f, 0f, 0f);
+        NoteField(1000, 1);
+        check.Expect(FieldPrevClock == 1000, "the first frame's previous clock is its own: a zero sway step, not a jump from zero");
+        check.Expect(FieldPrevVp.M41 == 1f, "...and the camera the field is reprojected against is the history's");
+        _hist.PrevVp = Matrix4x4.CreateTranslation(2f, 0f, 0f);
+        NoteField(1040, 2);
+        check.Expect(FieldPrevClock == 1000 && FieldPrevVp.M41 == 2f, "...then the previous FRAME's clock, and the camera beside it");
+        // The roll has by now advanced the camera, which is exactly what a second pass must not pick up.
+        _hist.PrevVp = Matrix4x4.CreateTranslation(9f, 0f, 0f);
+        NoteField(1080, 2);
+        check.Expect(FieldPrevClock == 1000 && FieldPrevVp.M41 == 2f,
+          "...and a second armed pass inside one frame re-takes neither the clock nor the camera");
+        NoteField(1080, 3);
+        check.Expect(FieldPrevClock == 1040 && FieldPrevVp.M41 == 9f, "...the next frame takes both again");
+        NoteField(3600040, 4);
+        check.Expect(FieldPrevClock == 3600040, "the hourly wrap takes a zero step rather than a whole sway period");
+        Revoke();
+        NoteField(5000, 5);
+        check.Expect(FieldPrevClock == 5000, "an area transition takes a zero step: the grass of another area is not this blade's history");
+        check.Expect(MotionOut.Contains("(prev.xy / prev.w - (cur.xy / cur.w - uJitter)) * 0.5 * uSize")
+          && MotionOut.Contains("isnan(v)") && MotionOut.Contains("clamp(v, -uSize, uSize)"),
+          "the library the late writers share carries the two fullscreen stages' convention and their bounds");
+        check.Expect((int)PassId.GrassOwned < (int)PassId.PostProcess && (int)PassId.ParticlesOwned < (int)PassId.PostProcess,
+          "grass and particles draw before the one site that corrects the field, so the sweep there sees this frame's own");
         log.Info(check.Ok ? "MotionVectors.SelfCheck: passed" : "MotionVectors.SelfCheck: FAILED");
         return check.Ok;
     }

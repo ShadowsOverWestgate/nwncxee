@@ -23,21 +23,25 @@ internal static class Post
         Exposure = G.Slider("exposure", "Exposure", 0.25f, 4f, 0.05f, 1f,
                             help: "Overall brightness before tone mapping. 1 is neutral.");
         G.Section("Bloom");
-        Bloom = G.Slider("bloom", "Bloom", 0f, 0.5f, 0.01f, 0.06f, help: "Glow around bright lights. 0 is off.");
+        Bloom = G.Slider("bloom", "Bloom", 0f, 0.5f, 0.01f, 0.06f, help: "Glow around bright lights. 0 is off.")
+                .Ladder(Quality.Preset, Quality.Classic(0f, 0.06f));
         G.Section("Tone");
         Tonemap = G.Dropdown("tonemap", "Tone mapping", new[] { PostChain.TonemapShoulder, PostChain.TonemapAces, PostChain.TonemapNeutral },
                              PostChain.TonemapAces,
                              help: "How bright values above white are compressed.",
-                             format: v => v switch { PostChain.TonemapShoulder => "shoulder", PostChain.TonemapNeutral => "neutral", _ => "aces" });
+                             format: v => v switch { PostChain.TonemapShoulder => "shoulder", PostChain.TonemapNeutral => "neutral", _ => "aces" })
+                  .Ladder(Quality.Preset, Quality.Classic(PostChain.TonemapShoulder, PostChain.TonemapAces));
         G.Section("Anti-aliasing");
-        Taa = G.Toggle("taa", "Temporal anti-aliasing", true, help: "Smooths edges over several frames.");
+        Taa = G.Toggle("taa", "Temporal anti-aliasing", true, help: "Smooths edges over several frames.")
+              .Ladder(Quality.Preset, Quality.Classic(false, true));
         Taa.Changed = () => { if (Taa.V) TaaStage.Reset(); };
         G.Section("Bloom");
         Threshold = G.Slider("threshold", "Bloom threshold", 0f, 4f, 0.05f, 1f, tier: Tier.Advanced);
         Knee = G.Slider("knee", "Bloom knee", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced);
         G.Section("Tone");
         AcesMix = G.Slider("acesmix", "ACES mix", 0f, 1f, 0.05f, 0.5f, tier: Tier.ChatOnly, help: "Only affects ACES tone mapping.");
-        TmKnee = G.Slider("tmknee", "Shoulder knee", 0f, 1f, 0.05f, 0.8f, tier: Tier.ChatOnly, help: "Only affects shoulder and ACES tone mapping.");
+        TmKnee = G.Slider("tmknee", "Shoulder knee", 0f, 1f, 0.05f, 0.8f, tier: Tier.ChatOnly, help: "Only affects shoulder and ACES tone mapping.")
+                 .Ladder(Quality.Preset, Quality.Classic(1f, 0.8f));
         Dither = G.Slider("dither", "Output dither", 0f, 2f, 0.1f, 1f, tier: Tier.ChatOnly);
         G.Section("Anti-aliasing");
         TaaSharp = G.Slider("taasharp", "TAA sharpness", 0f, 1f, 0.05f, 0.3f, tier: Tier.Advanced,

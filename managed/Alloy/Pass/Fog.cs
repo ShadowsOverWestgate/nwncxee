@@ -18,7 +18,7 @@ internal static class Fog
             masterHelp: "Fog that takes the sky's colour, glows toward the sun and thins with height. Off, every dial "
                       + "below reads 0 and the area author's own flat fog colour draws, as the stock game shows it.",
             order: 344, title: "Fog");
-        Enabled = G.Master!;
+        Enabled = G.Master!.Ladder(Quality.Preset, Quality.Classic(false, true));
         G.Status = SceneFog.Describe;
 
         G.Section("Colour");

@@ -650,11 +650,13 @@ option turns this on and off."
 | shadow.enabled | Enable Alloy shadows | T | on | **C** | R | — | cfg-only: real-time sun cascades and point-light shadow cubes. Off, no surface takes a shadow from CX at all. |
 | shadow.dist | Sun shadow distance | S | 20–400 m step 10 · 120 | A | L | Sun | How far from you the sun casts shadows. Cost does not depend on area size. Ladders on `quality.shadows`. |
 | shadow.size | Sun shadow resolution | D | 512 / 1024 / 2048 / 4096 · 2048 | A | R | Sun | Per-cascade map size. Larger is sharper and slower. Ladders on `quality.shadows`. |
+| shadow.sunangle | Sun angular size | S | 0–5 deg step 0.05 · 0.53 | A | L | Sun | How wide the sun looks in the sky, which is what sets how fast its shadows soften away from whatever casts them: 0.53 is the real sun, larger is softer everywhere. 0 turns the blocker search off and every sun shadow takes the fixed, cheapest edge. Ladders on `quality.shadows`. |
 | shadow.cubes | Shadow-casting lights | S | 0–64 step 4 · 32 | A | R | Point lights | How many nearby lights cast shadows at once. Lower on a small card. Ladders on `quality.shadows`. |
 | shadow.cubesize | Point-light shadow resolution | D | 128 / 256 / 512 / 1024 / 2048 · 512 | A | R | Point lights | Per-face size of each light's shadow cube. Ladders on `quality.shadows`. |
 | shadow.cubedist | Point-light shadow distance | S | 0–200 m step 5 · 30 | A | L | Point lights | A light farther than this casts no shadow, and no fragment farther than this reads one; shadows fade over the last quarter. 0 = every light in the budget. Ladders on `quality.shadows`. |
-| shadow.soft | Shadow softness | S | 0–16 step 0.25 · 4 | A | L | Point lights | Widest blur of point-light shadows; the blur narrows toward the caster's contact. 0 is hard-edged and cheapest. Ladders on `quality.shadows`. |
-| shadow.cascades / floor / dynsize / dyncount / dynmin / sundyn / discpx / taps / cap / perpixel / deferredres / near / csmbias / fade / fadeslots / mask / maskholes / maskgraded / maskdither / focusdist / staticcap / dynhold / dynfull / sunfull / sunlatch / dynranks / casters / stage / gather / receiver / rebake / split / layered / refreshall / dynsrc / dynevents / itemdirty / flipcollect / maskh / trace | — | T, S, D | as declared | C | casters / stage / dynsize / dyncount / sundyn R, rest L | — | cascade count, the per-pixel and mover budgets, the cut-out masks, the bake cadence, the bisects |
+| shadow.soft | Shadow softness | S | 0–16 step 0.25 · 4 | A | L | Point lights | Widest blur of point-light and sun shadows, in shadow-map texels; the blur narrows toward the caster's contact. 0 is hard-edged and cheapest. Ladders on `quality.shadows`. |
+| shadow.search | Blocker search taps | S | 1–16 step 1 · 16 | C | L | Point lights | How many taps look for what is casting the shadow, which is what lets the blur narrow toward the caster. Fewer is cheaper and guesses the width off less of the map. Ladders on `quality.shadows`. |
+| shadow.cascades / floor / dynsize / dyncount / dynmin / sundyn / discpx / taps / cap / perpixel / deferredres / near / csmbias / fade / fadeslots / mask / maskholes / maskgraded / maskdither / focusdist / staticcap / dynhold / dynfull / sunfull / sunlatch / dynranks / casters / stage / gather / receiver / rebake / split / layered / refreshall / dynsrc / dynevents / itemdirty / flipcollect / maskh / trace / detail | — | T, S, D | as declared | C | casters / stage / dynsize / dyncount / sundyn R, rest L | — | cascade count, the per-pixel and mover budgets, the cut-out masks, the bake cadence, the bisects |
 | shadow.movers | — | B | — | C | — | — | dump the mover list next frame |
 | ao.radius | Radius | S | 0.1–2 m step 0.05 · 0.6 | U | L | — | How far occlusion reaches: 0.6 darkens corners and feet; larger is a room-wide gloom. Ladders on `quality.ao`. |
 | ao.strength | Strength | S | 0.5–4 step 0.1 · 2.2 | U | L | — | Multiplied by the game's AO intensity slider. |
@@ -878,7 +880,8 @@ the preset. Rungs, low / medium / high / ultra:
 
 **quality.shadows** → `shadow.dist` 60 / 90 / 120 / 200 m · `shadow.size` 512 / 1024 / 2048 /
 4096 · `shadow.cascades` 2 / 3 / 4 / 4 · `shadow.cubes` 8 / 16 / 32 / 48 · `shadow.cubesize`
-128 / 256 / 512 / 1024 · `shadow.cubedist` 15 / 20 / 30 / 50 m · `shadow.soft` 0 / 2 / 4 / 6.
+128 / 256 / 512 / 1024 · `shadow.cubedist` 15 / 20 / 30 / 50 m · `shadow.soft` 0 / 2 / 4 / 6 ·
+`shadow.sunangle` 0 / 0 / 0.53 / 0.53 deg · `shadow.search` 4 / 8 / 16 / 16.
 
 **quality.lighting** → `light.binreach` 0.5 / 0.65 / 0.8 / 1 · `light.bincap` 16 / 24 / 0 / 0
 (0 = no cap) · `light.relevance` 0.03 / 0.02 / 0.01 / 0.005 · `light.floor` 0.001 / 0.0005 /

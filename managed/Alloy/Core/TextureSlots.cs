@@ -99,6 +99,13 @@ internal static class TextureSlots
     /// driver Alloy has met reports 32 per stage. The lib binds them by <c>layout(binding)</c>, so a
     /// strict-16 driver would fail the lit link -- which the limits line names.</summary>
     internal const uint LocalShadowRaw = 16, LocalShadowDynRaw = 17;
+    /// <summary>The two sun cascade arrays again, through that same no-compare sampler, for the sun's own
+    /// blocker search -- the HIGHEST units Alloy binds, taking the lit stage's claim to 0..30 of the 32 every
+    /// driver it has met reports. Declared by <c>layout(binding)</c>, only where a stage asks for the soft
+    /// sun filter, so no vertex stage spends a unit on them.</summary>
+    // ponytail: the upgrade, when the lit stage next needs a unit, is the bindless handle the diffuse
+    // already takes, or one cascade array holding the static and dynamic layers end to end.
+    internal const uint SunShadowRaw = 29, SunShadowDynRaw = 30;
     /// <summary>R2: the area wetness map (<see cref="Weather"/>), read by the lit stage and the grass blade.
     /// Past the 0..15 budget for <see cref="LocalShadowRaw"/>'s reason -- every unit below is spent in the lit
     /// bracket -- and declared by <c>layout(binding)</c>, so no bind-time <c>glUniform1i</c> can miss it.</summary>
@@ -146,6 +153,31 @@ internal static class TextureSlots
     internal static readonly string[] MapSamplers =
         { "uNrmTex", "uSpecTex", "uRoughTex", "uHeightTex", "uIllumTex", "uFlowTex", "uAoTex" };
 
+    /// <summary>Every texture unit a <c>layout(binding)</c> sampler declaration in <paramref name="src"/>
+    /// claims, in source order and with repeats. Declarations behind a <c>#ifdef</c> count too: the text
+    /// cannot say which the preprocessor keeps, so an exempt one has to be named by its caller.</summary>
+    private static System.Collections.Generic.IEnumerable<uint> Claimed(string src)
+    {
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                     src, @"layout\(binding\s*=\s*(\d+)\)\s*uniform\s+\w*sampler\w*\s+\w+\s*;"))
+            yield return uint.Parse(m.Groups[1].Value);
+    }
+
+    /// <summary>The first unit two of those declarations both claim, named with both samplers; null when
+    /// every unit is claimed once.</summary>
+    private static string? DoubleClaimed(string src)
+    {
+        var seen = new System.Collections.Generic.Dictionary<string, string>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                     src, @"layout\(binding\s*=\s*(\d+)\)\s*uniform\s+\w*sampler\w*\s+(\w+)\s*;"))
+        {
+            string unit = m.Groups[1].Value, name = m.Groups[2].Value;
+            if (seen.TryGetValue(unit, out string? first) && first != name) return $"{unit} is {first} and {name}";
+            seen[unit] = name;
+        }
+        return null;
+    }
+
     /// <summary>Assert the table against the GLSL that actually compiled: every slot's sampler must be
     /// declared by the stage that reads it, and the units must not overlap. False = do not arm -- a slot
     /// disagreement renders as dropped draws or a diffuse sampled as a normal map, neither of which says
@@ -171,6 +203,29 @@ internal static class TextureSlots
           $"{LocalShadowRaw} uLocalShadowRaw");
         check.Expect(AlloyLights.LocalShadowLib.Contains($"layout(binding = {LocalShadowDynRaw}) uniform samplerCubeArray uLocalDynShadowRaw;"),
           $"{LocalShadowDynRaw} uLocalDynShadowRaw");
+        check.Expect(AlloyLights.SunShadowLib.Contains($"layout(binding = {SunShadowRaw}) uniform sampler2DArray uSunShadowRaw;"),
+          $"{SunShadowRaw} uSunShadowRaw");
+        check.Expect(AlloyLights.SunShadowLib.Contains($"layout(binding = {SunShadowDynRaw}) uniform sampler2DArray uSunDynShadowRaw;"),
+          $"{SunShadowDynRaw} uSunDynShadowRaw");
+        // ...and the general form of the same question, asked of the composed lit stage rather than of a
+        // hand-kept list of neighbours: no two sampler declarations may claim one unit. A list goes stale
+        // (the sun's raw views were first written onto the weather shelter's and noise's units, which the
+        // consts above said nothing about, and two sampler types on one unit is a draw that vanishes).
+        string litDecls = ShaderSource.Get(AlloyRenderer.ShdLitFs + ".glsl");
+        check.Expect(DoubleClaimed(litDecls) is null, $"two samplers claim one unit in {AlloyRenderer.ShdLitFs}: {DoubleClaimed(litDecls)}");
+        // ...and the two unit BUDGETS the lit program is linked against. Every unit it claims is either under
+        // the plain program's need or one of the soft sun's two on top -- except uPairMap, which only the
+        // deferred shadow pass's CX_PAIR_RECV compiles in, so it is named here rather than counted.
+        check.Expect(!litDecls.Contains("#define CX_PAIR_RECV"), $"{PairMap} uPairMap is exempt only while the lit stage never defines CX_PAIR_RECV");
+        foreach (uint u in Claimed(litDecls))
+            check.Expect(u < Programs.LitUnitsNeed || u == SunShadowRaw || u == SunShadowDynRaw || u == PairMap,
+              $"unit {u} is claimed in {AlloyRenderer.ShdLitFs} but sits above Programs.LitUnitsNeed ({Programs.LitUnitsNeed})");
+        check.Expect(SunShadowDynRaw + 1 == Programs.SunSoftUnitsNeed,
+          $"the soft sun's need is {Programs.SunSoftUnitsNeed} fragment units, its highest view is {SunShadowDynRaw}");
+        check.Expect(Programs.LitUnitsNeed < Programs.SunSoftUnitsNeed
+          && ShaderSource.Get(AlloyRenderer.ShdLitFs + ".glsl").Contains(Programs.SunSoftDefine)
+          && !Programs.WithoutSunSoft(litDecls).Contains(Programs.SunSoftDefine),
+          "the soft sun filter is removable: the stage carries the define and Programs.WithoutSunSoft takes it out");
         check.Expect(Weather.MapLib.Contains($"layout(binding = {WetMap}) uniform sampler2D uWxMap;")
           && ShaderStages.Source(AlloyRenderer.ShdLitFs).Contains($"layout(binding = {WetMap}) uniform sampler2D uWxMap;")
           && GrassField.EmbeddedFs.Contains($"layout(binding = {WetMap}) uniform sampler2D uWxMap;"),

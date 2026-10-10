@@ -43,6 +43,23 @@ public static partial class ShadowMath
             check.Expect(CascadeRadius(i, cascades, maxDist) > CascadeRadius(i - 1, cascades, maxDist), $"cascade {i} radius grows");
         check.Expect(CascadeRadius(cascades - 1, cascades, maxDist) == maxDist, "outermost cascade == max distance");
         check.Expect(CascadeRadius(0, 1, maxDist) == maxDist, "single cascade == max distance");
+
+        // CX-49: the sun's penumbra scale, against HAND GEOMETRY -- no call to the code under test on the
+        // expected side. A 2048-texel cascade fitted to a 60 m radius spans 120 m of stored depth at
+        // 0.0585938 m per texel; the real sun is 0.53 deg wide, so a blocker 20 m in front of the receiver
+        // (a sixth of that range) casts a penumbra of radius 20 * tan(0.265 deg) = 0.0925031 m = 1.57872 texels.
+        check.Expect(MathF.Abs(SunPenumbraScale(0.53f, 2048) * (20f / 120f) - 1.57872f) < 1e-3f,
+              "sun penumbra: a 20 m gap under a 0.53 deg sun on a 120 m cascade == 1.579 texels");
+        // ...the same metres on half the map size are half the texels.
+        check.Expect(MathF.Abs(SunPenumbraScale(0.53f, 1024) * (20f / 120f) - 0.78936f) < 1e-3f,
+              "sun penumbra: half the map size == half the texels for the same gap");
+        // A 2 deg artist's sun is 3.77x the real one, not 2x: it is the tangent of the HALF angle that scales.
+        check.Expect(MathF.Abs(SunPenumbraScale(2f, 2048) - 35.748f) < 1e-2f,
+              "sun penumbra: 2 deg == 35.75 texels per unit of stored depth");
+        // The three inputs the receiver must read as "no blocker search, take the fixed cross".
+        check.Expect(SunPenumbraScale(0f, 2048) == 0f && SunPenumbraScale(-1f, 2048) == 0f
+              && SunPenumbraScale(0.53f, 0) == 0f, "sun penumbra: no angle or no map == 0 (search off)");
+
         bool upX = false;
         check.Expect(!LatchUpX(ref upX, new Vector3(0.2f, 0f, -0.98f)) && LatchUpX(ref upX, new Vector3(0.1f, 0f, -0.995f))
                      && LatchUpX(ref upX, new Vector3(0.17f, 0f, -0.985f)) && !LatchUpX(ref upX, new Vector3(0.25f, 0f, -0.97f)),

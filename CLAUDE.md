@@ -234,9 +234,8 @@ shrink. Adding a rule means adding its gate in the same change, and one line her
   change, not as a follow-up -- and removing it means removing its tools, comments and messages too, so no
   log line, help text or doc comment still describes something that is gone.
 - **NEVER GUESS.** Always verify with a Ghidra decompilation.
-- **Hook with funchook, NOT NativeHookRegistry.** The ported `server-hooking` skill
-  describes the server's registry, which does not exist here. Take its RE mindset
-  and Before/After/SkipOriginal semantics, not its C# API.
+- **Hook with funchook, NOT NativeHookRegistry.** The server's hook registry does not exist
+  here. Take its Before/After/SkipOriginal semantics, not its C# API.
 - **Hot hooks allocate nothing.** NativeAOT GC runs on whatever thread the hook
   fired on; the render/main loop stutters if it pauses there. Input/network hooks
   are cold -- fine. Frame/GL hooks are hot -- be careful.
@@ -300,7 +299,6 @@ CX is client-only. A server that wants a CX packet implements its receive end in
 the *same classes* on client and server, so server-side struct/field knowledge transfers; the hook mechanism
 does not (the client uses funchook). Shadows over Westgate's server is the reference implementation of the
 hotkey, UI-policy and nameplate packets (`docs/hotkeys-server-contract.md`, `docs/ui-policy-contract.md`).
-`.claude/skills/` holds server skills ported from it, with a README on what adapts to the client.
 
 ## Status
 

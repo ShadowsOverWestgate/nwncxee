@@ -10,11 +10,12 @@ internal static class Shadows
 {
     internal static readonly KnobGroup G;
     internal static readonly Knob<bool> Enabled, SunDyn, Casters, Gather, Receiver, Rebake, Split, Layered, RefreshAll, DynSrc,
-                                        DynEvents, ItemDirty, FlipCollect, MaskH, Trace;
-    internal static readonly Knob<float> Dist, Soft, Floor, DiscPx, Near, CsmBias, MaskHoles, MaskGraded, FocusDist, DynMin, CubeDist;
+                                        DynEvents, ItemDirty, FlipCollect, MaskH, Trace, Detail;
+    internal static readonly Knob<float> Dist, Soft, Floor, DiscPx, Near, CsmBias, MaskHoles, MaskGraded, FocusDist, DynMin, CubeDist,
+                                         SunAngle;
     internal static readonly Knob<int> Cascades, Size, Cubes, CubeSize, DynSize, DynCount, Cap, Fade, FadeSlots,
                                        Mask, MaskDither, StaticCap, DynHold, DynFull, SunFull, SunLatch, DynRanks,
-                                       Stage, Taps, DeferredRes, PerPixel;
+                                       Stage, Taps, DeferredRes, PerPixel, Search;
     internal static readonly KnobButton Movers;
 
     static Shadows()
@@ -37,6 +38,16 @@ internal static class Shadows
                               effect: Effect.Restart,
                               help: "More cascades = sharper shadows near you at the same distance.")
                     .Ladder(Quality.Shadows, 2, 3, 4, 4);
+        // CX-49: the sun's source size, which is what makes its shadows harden toward the caster. An angle,
+        // where a point light's own source is a world-unit radius (light.radius) -- the one shadow term the
+        // sun cannot share with the cubes. The texel ceiling and the tap budget it DOES share (soft, taps).
+        SunAngle = G.Slider("sunangle", "Sun angular size", 0f, 5f, 0.05f, 0.53f, "deg", Tier.Advanced,
+                            help: "How wide the sun looks in the sky, which is what sets how fast its shadows soften away "
+                                + "from whatever casts them: 0.53 is the real sun, larger is softer everywhere. 0 turns the "
+                                + "blocker search off and every sun shadow takes the fixed, cheapest edge.")
+                   // The sun lights every outdoor fragment, so this is the costliest shadow dial there is:
+                   // off below the top two rungs, where the fixed cross is what the card can afford.
+                   .Ladder(Quality.Shadows, 0f, 0f, 0.53f, 0.53f);
         G.Section("Point lights");
         Cubes = G.Slider("cubes", "Shadow-casting lights", 0, CasterPass.MaxCubes, 4, 32, tier: Tier.Advanced,
                          effect: Effect.Restart,
@@ -51,7 +62,8 @@ internal static class Shadows
                                 + "reads one; shadows fade out over the last quarter. 0 = every light in the budget, at any distance.")
                     .Ladder(Quality.Shadows, 15f, 20f, 30f, 50f);
         Soft = G.Slider("soft", "Shadow softness", 0f, 16f, 0.25f, 4f, tier: Tier.Advanced,
-                        help: "Widest blur of point-light shadows; the blur narrows toward the caster's contact. 0 is hard-edged and cheapest.")
+                        help: "Widest blur of point-light and sun shadows, in shadow-map texels; the blur narrows toward the "
+                            + "caster's contact. 0 is hard-edged and cheapest.")
                 .Ladder(Quality.Shadows, 0f, 2f, 4f, 6f);
         Floor = G.Slider("floor", "Shadow floor", 0f, 1f, 0.05f, 0.35f, tier: Tier.ChatOnly,
                          help: "How much of a point light still reaches its own shadow, tinted by the light. 0 = black cutouts.");
@@ -64,7 +76,13 @@ internal static class Shadows
         DiscPx = G.Slider("discpx", "Softness cutoff", 0f, 16f, 0.5f, 0f, "px", Tier.ChatOnly,
                           help: "Below this screen radius the blur stands down. 0 = never (consistent softness at every distance).");
         Taps = G.Slider("taps", "Shadow blur taps", 0, 16, 1, 8, tier: Tier.ChatOnly,
-                        help: "Disc taps per shadowing light. 0 = no blur.");
+                        help: "Disc taps per shadowing light, and per sun cascade. 0 = no blur.");
+        // CX-49: the ring the blocker search spends before the disc -- the cost that buys the contact
+        // hardening, on both receivers (the sun caps it at CX_SUN_SEARCH, which it pays per outdoor fragment).
+        Search = G.Slider("search", "Blocker search taps", 1, 16, 1, 16, tier: Tier.ChatOnly,
+                          help: "How many taps look for what is casting the shadow, which is what lets the blur narrow "
+                              + "toward the caster. Fewer is cheaper and guesses the width off less of the map.")
+                  .Ladder(Quality.Shadows, 4, 8, 16, 16);
         Cap = G.Slider("cap", "Softened shadows per pixel", 0, 2, 1, 2, tier: Tier.ChatOnly,
                        help: "How many of a pixel's shadowed lights get the soft, contact-hardened filter; the rest take a "
                            + "single hardware tap. 0 = every light one hardware tap, and it stands the per-pixel budget "
@@ -124,6 +142,9 @@ internal static class Shadows
         FlipCollect = G.Toggle("flipcollect", "flipcollect", false, Tier.ChatOnly);
         MaskH = G.Toggle("maskh", "maskh", true, Tier.ChatOnly, changed: CasterPass.ListChanged);
         Trace = G.Toggle("trace", "trace", false, Tier.ChatOnly);
+        // the thresholds are not in any bake's key, so a change has to invalidate the held static maps --
+        // otherwise the A/B measures the detail the maps were already baked at
+        Detail = G.Toggle("detail", "detail", true, Tier.ChatOnly, changed: CasterPass.ShadowInvalidate);
         Movers = G.Button("movers", "movers", CasterPass.DumpMoversNext, Tier.ChatOnly);
     }
 }

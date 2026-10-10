@@ -43,5 +43,7 @@ layout(std140, binding = 0) uniform CxPass
     float uShBudget;          // shadow.perpixel: lights a PIXEL may shadow at all -- the rest light it unshadowed; 0 = no budget
     float uLightFloor;        // light.floor: the absolute display-linear brightness a light's reach ends at; 0 = the authored radius
     float uFullModel;         // light.fullmodel: share of the pixel's brightest a light keeps the full model above; 0 = every light
+    float uSunPenum;          // CX-49: sun penumbra TEXELS per unit of stored cascade depth (ShadowMath.SunPenumbraScale); 0 = no blocker search
+    float uSearchTaps;        // CX-49: shadow.search -- blocker-search ring taps, both receivers; 0 in a self-filled block reads as the ring's own ceiling
 };
 #endif

@@ -77,11 +77,11 @@ internal static unsafe partial class Particles
     /// alpha-over, so a glow behind a dust cloud brightens; <c>particles.batch=0</c> is the A/B.</summary>
     private const int ClsPunch = 0, ClsBlend = 1, ClsAdd = 2, ClsCount = 3;
 
-    /// <summary>One particle RECORD, in floats: six <c>vec4</c>s, std430,
-    /// <c>{pos.xyz, col} {far.xyz, colFar} {right.xyz, soft} {up.xyz, type} {centre.xyz, -} {u0,u1,v0,v1}</c>,
-    /// the two colours as <c>uintBitsToFloat</c>. Everything is WORLD space -- the build applies the
-    /// emitter's model matrix to the centre and its two axes, four transforms cheaper than the corners.</summary>
-    private const int RecFloats = 24;
+    /// <summary>One particle RECORD, in floats: seven <c>vec4</c>s, std430, <c>{pos.xyz, col} {far.xyz,
+    /// colFar} {right.xyz, soft} {up.xyz, type} {centre.xyz, -} {u0,u1,v0,v1} {prev.xyz, -}</c>, the two
+    /// colours as <c>uintBitsToFloat</c>. All WORLD space -- the build transforms the centre and the two
+    /// axes, cheaper than the corners -- and <c>prev</c> is where that centre was LAST frame.</summary>
+    private const int RecFloats = 28;
     /// <summary>The SSBO binding points this pass owns. 4/9 are the world draw's, 0-3 the light rig's,
     /// 5-7 the caster's, 12-16 <see cref="CullPass"/>'s; 10/11 are the record and index buffers the vertex
     /// stage names, and the two descriptor buffers take the next free pair above the cull's.</summary>
@@ -107,7 +107,7 @@ internal static unsafe partial class Particles
     /// remaining emitters rather than merging groups that must not merge.</summary>
     private const int MaxGroups = 4096;
     /// <summary>Record-buffer growth, in records: start here, double until the frame fits, stop at the cap
-    /// (96 bytes each, so the cap is 48MB) and stand the pass down rather than truncating.</summary>
+    /// (112 bytes each, so the cap is 56MB) and stand the pass down rather than truncating.</summary>
     private const int MinRecs = 1024, MaxRecs = 1 << 19;
 
     /// <summary>One captured emitter. Only the identity and the transform are held; everything the build
@@ -143,6 +143,9 @@ internal static unsafe partial class Particles
         /// own walk.</summary>
         public IntPtr* Parts;
         public int PartCount;
+        /// <summary>The pass counter at the frame this emitter's block was last BUILT. Last frame's centres
+        /// are only in the mirror while this says the mirror was written last frame.</summary>
+        public int BuiltFrame;
         /// <summary>FNV-1a over the block as it was last UPLOADED. Equal means the engine's simulation
         /// produced the same records this frame, so the block is not re-sent. Zero means "never uploaded",
         /// which is why the allocator sets it to zero on every reassignment.</summary>
@@ -232,6 +235,10 @@ internal static unsafe partial class Particles
         public AlloyRenderer.FeatLoc FogLoc;
         public int LocView = -1, LocProj = -1, LocTex = -1, LocCut = -1, LocAdditive = -1,
                    LocSoftOn = -1, LocDepthTex = -1, LocEmissive = -1, LocLit = -1, LocViz = -1;
+        /// <summary>The velocity arm: the same two stages with CX_MOTION compiled in. 0 = the class keeps
+        /// the camera's own vectors.</summary>
+        public uint MotionProg;
+        public int MLocView = -1, MLocProj = -1, MLocPrevVp = -1, MLocJitter = -1, MLocSize = -1, MLocTex = -1;
         /// <summary>The light rig's own uniform locations, in the order <see cref="AlloyLights"/> and
         /// <see cref="AlloyRenderer"/> want them handed back.</summary>
         public int LSunTex = -1, LSunDynTex = -1, LCubeTex = -1, LCubeCount = -1, LCubeDynTex = -1,
@@ -519,6 +526,7 @@ internal static unsafe partial class Particles
         }
 
         int cls = -1, cull = -1;
+        uint texName = 0;
         IntPtr texObj = IntPtr.Zero;
         bool texDb = false;
         float emis = float.NaN;
@@ -553,14 +561,28 @@ internal static unsafe partial class Particles
                 // CX-120: a DB emitter's texture is Alloy's own -- a GL name from TexRegistry, bound
                 // directly. There is no CAurTexture to resolve, no animation controller to tick and no
                 // engine bind cache to keep honest.
-                if (texDb) Gl.BindTexture(Gl.TEXTURE_2D, (uint)(nint)texObj);
+                if (texDb) { Gl.BindTexture(Gl.TEXTURE_2D, (uint)(nint)texObj); texName = (uint)(nint)texObj; }
                 // The engine's own bind, on unit 0, frame -1 ("whatever the controller says") -- exactly the
                 // call Material::BindAllStandardTextures makes. It resolves the referenced texture, takes the
                 // id off the RESOLVED object, and ticks the animation controller. A raw glBindTexture of the
                 // Material's own id skips all three, which is how a smoke emitter ended up drawing another
                 // effect's artwork.
-                else _bindInUnit(texObj, 0, -1);
+                else
+                {
+                    _bindInUnit(texObj, 0, -1);
+                    // CX-48: only the engine's resolve hides the name it landed on. Asked once per texture
+                    // CHANGE and only when there is a velocity sweep to use it -- client state, no stall --
+                    // and it is the one way to bind that texture again without ticking its controller twice.
+                    texName = 0;
+                    if (_gl.MotionProg != 0)
+                    {
+                        int nm = 0;
+                        Gl.GetIntegerv(Gl.TEXTURE_BINDING_2D, &nm);
+                        texName = (uint)nm;
+                    }
+                }
             }
+            _motion.TexName[gi] = texName;
             if (_gEmis[gi] != emis) { emis = _gEmis[gi]; Gl.Uniform1f(_gl.LocEmissive, emis); }
             // Six vertices a particle, expanded from gl_VertexID -- there is no vertex buffer any more.
             Gl.DrawArrays(Gl.TRIANGLES, _gStart[gi] * 6, _gParts[gi] * 6);
@@ -584,6 +606,8 @@ internal static unsafe partial class Particles
         for (int i = 0; i < _drawN; i++)
             if (_wrote[i] > 0) { _tab[_sSlot[_draw[i]]].IssuedGen = AlloyRenderer.PassGen; _emitters++; }
         _groups += groups;
+        // CX-48: what was drawn, for the velocity sweep that re-issues it later in the frame.
+        NoteMotionGroups(groups);
     }
 
     /// <summary>Resolve every captured emitter into (texture, class, cull, particle count), dropping the
@@ -872,6 +896,10 @@ internal static unsafe partial class Particles
         IntPtr* parts = e.Parts;
         float u0 = 0f, u1 = 1f, v0 = 0f, v1 = 1f;
         float* p = dst;
+        // Is the mirror's own content last frame's? A slice reassigned (Hash 0) or an emitter the pass did
+        // not build last frame holds some other frame's particles, which is no history at all.
+        bool fresh = e.Hash == 0 || e.BuiltFrame != _frame - 1;
+        e.BuiltFrame = _frame;
 
         for (int i = 0; i < count; i++)
         {
@@ -992,7 +1020,9 @@ internal static unsafe partial class Particles
                 right = Vector3.TransformNormal(right, e.Model);
                 up = Vector3.TransformNormal(up, e.Model);
             }
-            Put(ref p, pos, col, far, colFar, right, soft, up, vizType, centre, u0, u1, v0, v1);
+            // Last frame's centre for THIS record slot, out of the mirror before the write overwrites it.
+            Put(ref p, pos, col, far, colFar, right, soft, up, vizType, centre, u0, u1, v0, v1,
+                PrevCentre(fresh, new Vector3(p[16], p[17], p[18]), centre));
         }
         return (int)(p - dst) / RecFloats;
     }
@@ -1002,7 +1032,7 @@ internal static unsafe partial class Particles
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void Put(ref float* p, in Vector3 pos, uint col, in Vector3 far, uint colFar,
                             in Vector3 right, float soft, in Vector3 up, float type,
-                            in Vector3 centre, float u0, float u1, float v0, float v1)
+                            in Vector3 centre, float u0, float u1, float v0, float v1, in Vector3 prev)
     {
         p[0] = pos.X; p[1] = pos.Y; p[2] = pos.Z; *(uint*)(p + 3) = col;
         p[4] = far.X; p[5] = far.Y; p[6] = far.Z; *(uint*)(p + 7) = colFar;
@@ -1010,6 +1040,7 @@ internal static unsafe partial class Particles
         p[12] = up.X; p[13] = up.Y; p[14] = up.Z; p[15] = type;
         p[16] = centre.X; p[17] = centre.Y; p[18] = centre.Z; p[19] = 0f;
         p[20] = u0; p[21] = u1; p[22] = v0; p[23] = v1;
+        p[24] = prev.X; p[25] = prev.Y; p[26] = prev.Z; p[27] = 0f;
         p += RecFloats;
     }
 
@@ -1169,6 +1200,7 @@ internal static unsafe partial class Particles
         Gl.Uniform1i(_gl.LSunDynTex, (int)AlloyRenderer.SunDynUnit);
         Gl.Uniform1i(_gl.LCubeTex, (int)AlloyRenderer.CubeUnit);
         Gl.Uniform1i(_gl.LCubeDynTex, (int)AlloyRenderer.CubeDynUnit);
+        BuildMotionProgram();
         return true;
     }
 
@@ -1344,6 +1376,7 @@ internal static unsafe partial class Particles
     {
         Forget();
         _gl = new PartGlState();
+        _motion = new PartMotionState();   // its texture names are that context's
         if (_recs != null) { NativeMemory.Free(_recs); _recs = null; }
         if (_idx != null) { NativeMemory.Free(_idx); _idx = null; }
         _recsCap = 0; _idxCap = 0;

@@ -255,7 +255,7 @@ internal static unsafe partial class Weather
           && lit.IndexOf("float wxWet = 0.0", StringComparison.Ordinal) < lit.IndexOf("vec3 base = albedo * matDiffuse;", StringComparison.Ordinal),
           "the surface splice sits after synthesis and before the lighting reads albedo/rough/spec");
         check.Expect(lit.Contains("uniform vec3 uFogSkyColor;") && lit.IndexOf("float sunVis = ", StringComparison.Ordinal) < lit.IndexOf("if (wxSnow > 0.0)\n            {\n                // scatter", StringComparison.Ordinal)
-          && lit.IndexOf("vec3 ambient = ", StringComparison.Ordinal) < lit.IndexOf("ambient += uFogSkyColor", StringComparison.Ordinal),
+          && lit.IndexOf("vec3 ambient = ", StringComparison.Ordinal) < lit.IndexOf("ambient += wxFill", StringComparison.Ordinal),
           "the snow light block sees the sky colour, the sun visibility and the ambient it adds to");
         check.Expect(lit.Contains("uniform int uOit;") && lit.IndexOf("uniform int uOit;", StringComparison.Ordinal) < lit.IndexOf("uCoverEsmP.z > 0.5 && uOit == 0", StringComparison.Ordinal),
           "the exposure read sees the OIT mode before it picks the filtered map");

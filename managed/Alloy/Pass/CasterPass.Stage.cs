@@ -198,6 +198,13 @@ public sealed unsafe partial class CasterPass
         r[5] = (uint)start;
         // #305: the set flag the dispatch filter reads -- which of the two arrays this caster belongs in.
         r[CasterGather.SetFlagWord] = _liveDyn[i] ? 1u : 0u;
+        // CX-50: ...and the same mesh's two coarse runs, out of which each view's dispatch picks one. Read
+        // HERE rather than carried in the live list: the staging is rebuilt whenever the list moves, and a
+        // level is a property of the range for its whole life (the simplifier runs inside Acquire), so this
+        // is no staler than the base run beside it -- which the same walk reads the same way.
+        AlloyRenderer.DbCasterLevels(_liveSlot[i], out uint c1, out uint f1, out uint c2, out uint f2);
+        r[CasterGather.Cnt1Word] = c1; r[CasterGather.First1Word] = f1;
+        r[CasterGather.Cnt2Word] = c2; r[CasterGather.First2Word] = f2;
     }
 
     /// <summary>Stage the whole frame once, in batch order, and publish it. Everything per-view that is not
@@ -327,13 +334,13 @@ public sealed unsafe partial class CasterPass
     /// survived.</summary>
     private static bool GatherSubmit(uint tex, int size, int layer, Matrix4x4* vp,
                                      Vector3 lightDir, Vector3 focus, float reach, float margin, bool point,
-                                     int set, bool receiver)
+                                     float lodR1, float lodR2, int set, bool receiver)
     {
         // PRE-cull figures: the survivors are the GPU's, and asking would be the readback this pass exists
         // to not do -- the latent sample on the period line is what reports them.
         _submitCreatures = _gCreatures;
         if (!BeginTarget(tex, size, layer)) return false;
-        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, point, set, receiver,
+        CasterGather.Dispatch(focus, lightDir, reach, reach + margin, point, lodR1, lodR2, set, receiver,
                               dynSrc: set == CasterGather.SetDynamic);
         // unit 0 is where the cutout stage samples; nothing else in this bracket moves the active unit
         Gl.ActiveTexture(Gl.TEXTURE0);
@@ -373,6 +380,19 @@ public sealed unsafe partial class CasterPass
         Gl.BindVertexArray(0);
         Gl.BindFramebuffer(Gl.FRAMEBUFFER, 0);
         return true;
+    }
+
+    /// <summary>The period's triangles baked per detail level, per sampled view -- the bake's twin of
+    /// <c>MeshLod.Drew</c>, off the gather's own latent count sample. Empty where no view was sampled, so a
+    /// driver without the readback entry points loses the figure and nothing else.</summary>
+    private static string SampledTriLine()
+    {
+        long n = CasterGather.Samples + CasterGather.SamplesDyn;
+        if (n <= 0) return "";
+        long[] t = CasterGather.SampledTris;
+        if (t[0] + t[1] + t[2] == 0) return ", no triangles baked in the sampled views";
+        return $", baked {t[0] / n}/{t[1] / n}/{t[2] / n} tris per sampled view at detail 0/1/2"
+             + (Shadows.Detail.V ? "" : " (per-view detail OFF: /shadow detail 1)");
     }
 
     /// <summary>Is a caster sphere outside this cube face's 90deg pyramid? <paramref name="t"/> is its depth

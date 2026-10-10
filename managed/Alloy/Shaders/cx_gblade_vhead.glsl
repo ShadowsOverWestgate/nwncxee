@@ -7,6 +7,7 @@ layout(location = 4) in vec4 iNrm;      // xyz the ground's normal, w fade (1 = 
 #include "cx_featdecl.glsl"
 #include "cx_keyfogdecl.glsl"
 #include "cx_gbladebuf.glsl"
+#include "cx_gsway.glsl"
 uniform mat4 uVP;
 uniform vec4 uLod;             // x full-density radius, y keep floor, z width exponent, w height exponent
 uniform vec2 uSnow;            // y = winter look

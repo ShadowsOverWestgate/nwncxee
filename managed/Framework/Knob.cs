@@ -301,6 +301,10 @@ public sealed class Knob<T> : Knob
         return c.Compare(v, Min) >= 0 && c.Compare(v, Max) <= 0;
     }
 
+    /// <summary>The default under the driver's choice <paramref name="i"/>, read without moving anything: the
+    /// declared default when this knob is no ladder member.</summary>
+    internal T RungValue(int i) => _rungs != null && (uint)i < (uint)_rungs.Length ? _rungs[i] : Default;
+
     internal override void Rung(int i)
     {
         if (_rungs == null || (uint)i >= (uint)_rungs.Length) return;

@@ -310,10 +310,24 @@ internal static unsafe class Programs
 
     /// <summary>What the owned stages ask of the driver beyond the GL 4.6 floor: three vertex-stage SSBO
     /// blocks (draw, draw index, bones; floor 0) and the fragment sampler budget the lit stage declares. The
-    /// bind sites spend units 0..15, but the lit stage declares three past it by <c>layout(binding)</c> (the
-    /// raw cube arrays and the wetness map), so the honest need is the highest of those plus one.</summary>
-    private static readonly int TexUnitsNeed = (int)TextureSlots.WetMap + 1;
+    /// bind sites spend units 0..15; past them the lit stage claims by <c>layout(binding)</c> up to the
+    /// weather track map, so the honest need is that plus one.</summary>
+    internal static readonly int LitUnitsNeed = (int)Weather.TrackUnit + 1;
+    /// <summary>...and what the SOFT SUN filter asks on top: two more, for the raw cascade views, the highest
+    /// units Alloy binds. A driver short of these keeps the lit program -- <see cref="WithoutSunSoft"/> takes
+    /// the define out so the two samplers are never declared -- and the sun falls back to its fixed cross.</summary>
+    internal static readonly int SunSoftUnitsNeed = (int)TextureSlots.SunShadowDynRaw + 1;
     private const int VsSsboNeed = 3;
+
+    /// <summary>The define that compiles the sun's blocker search and disc into a stage. It lives in
+    /// <c>cx_ownlit_head.glsl</c>, so a dumped stage and any override built from one carry it.</summary>
+    internal const string SunSoftDefine = "#define CX_SUN_SOFT 1";
+
+    /// <summary><paramref name="fs"/> with <see cref="SunSoftDefine"/> commented out: the soft sun path
+    /// compiles to <c>CxSunTaps</c> alone and the two raw cascade samplers are not declared, which is what a
+    /// driver short of <see cref="SunSoftUnitsNeed"/> units needs in order to link the lit program at all.</summary>
+    internal static string WithoutSunSoft(string fs)
+        => fs.Replace(SunSoftDefine, "// CX-49: the soft sun filter is OFF -- too few fragment texture units for its raw cascade views");
 
     /// <summary>Build the lit variant. A failure disarms lit ownership for the session (and the next
     /// enrollment hands every lit part back to the engine) -- never a silent fallback to fullbright, which
@@ -348,13 +362,27 @@ internal static unsafe class Programs
             Gl.GetIntegerv(Gl.MAX_SHADER_STORAGE_BUFFER_BINDINGS, &bindings);
             Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &units);
             int needBind = (int)CasterGather.BindView + 1;
-            bool short_ = vsBlocks < VsSsboNeed || bindings < needBind || units < TexUnitsNeed;
+            bool short_ = vsBlocks < VsSsboNeed || bindings < needBind || units < LitUnitsNeed;
             _log?.Info($"AlloyRenderer: driver limits -- vertex SSBO blocks {vsBlocks} (needs {VsSsboNeed}, GL 4.6 floor 0), " +
-                       $"SSBO bindings {bindings} (needs {needBind}, floor 8), fragment texture units {units} (needs {TexUnitsNeed}, floor 16)" +
+                       $"SSBO bindings {bindings} (needs {needBind}, floor 8), fragment texture units {units} " +
+                       $"(needs {LitUnitsNeed}, {SunSoftUnitsNeed} for the sun's blocker search, floor 16)" +
                        (short_ ? " -- BELOW ALLOY'S NEED: expect link failures on this driver" : ""));
         }
         string litFs = ShaderStages.Source(ShdLitFs);
         if (_bindless) litFs = BindlessFs(litFs);
+        // CX-49: the sun's two raw cascade views are the highest units Alloy binds, and a layout(binding)
+        // past MAX_TEXTURE_IMAGE_UNITS is a LINK error -- which would cost the whole lit program, not just
+        // the search. So the define comes out on a driver that cannot seat them, and the sun keeps its fixed
+        // cross. A content override of the stage carries its own copy of the define and is not rewritten
+        // here, exactly as the bindless rewrite below is not.
+        int litUnits = 0;
+        Gl.GetIntegerv(Gl.MAX_TEXTURE_IMAGE_UNITS, &litUnits);
+        if (litUnits < SunSoftUnitsNeed)
+        {
+            litFs = WithoutSunSoft(litFs);
+            _log?.Info($"AlloyRenderer: the sun's blocker search is OFF -- {litUnits} fragment texture units, "
+                     + $"needs {SunSoftUnitsNeed}; sun shadows take the fixed four-tap cross (point-light cubes are unaffected)");
+        }
         // #350: from the hosted regions' STUBS -- the program every lit batch draws with carries no content
         // body; the second build below carries them for the batches that need them.
         uint prog = GlProgram.Graphics(ShdLitVs, ShaderStages.Source(ShdLitVs), ShdLitFs, litFs,

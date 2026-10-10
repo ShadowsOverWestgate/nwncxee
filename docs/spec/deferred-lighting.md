@@ -249,6 +249,10 @@ that fails to link stands `light.deferred` down for the session. Deviations from
   sliver with no record texel near it at all keeps its lights unshadowed;
 - `shadow.cap 1` and `2` mean the same on the deferred path.
 
+The SUN is not in the record at all. Its cascades are sampled in the lit fragment stage, and the deferred
+twin IS that stage, so the sun's own blocker search and disc (`shadow.sunangle`, `cx_sunshadow.glsl`) are the
+same code on both paths and need no deviation list of their own.
+
 ## The lighting budget
 
 Alloy used to light every pixel as though every light were the hero light: each light reaching a pixel got the

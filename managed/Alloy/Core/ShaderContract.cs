@@ -37,6 +37,13 @@ internal static class ShaderContract
         return 16 * (decl.Split("mat4").Length - 1) + 4 * (decl.Split("vec4").Length - 1) == floats;
     }
 
+    /// <summary>Does this grass vertex stage reconstruct last frame's blade? An override without it links
+    /// CLEANLY, writes nothing to the velocity outs and leaves the camera's field standing over every blade
+    /// -- exactly the smear the sweep exists to remove. Named terms, so an override may restyle the sway as
+    /// long as it says where last frame's is.</summary>
+    public static bool SwaySafe(string vs)
+        => vs.Contains("CxGrassSway(CxPrevClock() * uWindSpeed, phase)") && vs.Contains("vPrev = uPrevVP");
+
     /// <summary>Does this stage pair carry the cutout and the per-draw alpha? An override without them links
     /// CLEANLY -- the record did not grow, the clip expression did not change, and <c>glUniform1f</c> on a -1
     /// location is a legal no-op -- and ships a world with no alpha discard and a constant 1.0 alpha: grass as
@@ -181,7 +188,8 @@ internal static class ShaderContract
             ("uAtten", AlloyRenderer.PbAtten), ("uHot", AlloyRenderer.PbHot), ("uSss", AlloyRenderer.PbSss),
             ("uWrapN", AlloyRenderer.PbWrapN), ("uDayDim", AlloyRenderer.PbDayDim), ("uRelevance", AlloyRenderer.PbRelevance),
             ("uBounds", AlloyRenderer.PbBounds), ("uShBudget", AlloyRenderer.PbShBudget),
-            ("uLightFloor", AlloyRenderer.PbLightFloor), ("uFullModel", AlloyRenderer.PbFullModel) };
+            ("uLightFloor", AlloyRenderer.PbLightFloor), ("uFullModel", AlloyRenderer.PbFullModel),
+            ("uSunPenum", AlloyRenderer.PbSunPenum), ("uSearchTaps", AlloyRenderer.PbSearchTaps) };
         foreach ((string name, int off) in pinned)
         {
             int at = Std140Offset(members, name, out int size);

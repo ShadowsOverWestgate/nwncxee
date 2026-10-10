@@ -151,8 +151,7 @@ internal static unsafe partial class Particles
         // layout that drifts from RecFloats reads every particle's fields out of its neighbour.
         check.Expect(ParticleVsHead.Contains($"binding = {BindRecs}) readonly buffer CxParticleBuf")
           && ParticleVsHead.Contains($"binding = {BindIdx}) readonly buffer CxParticleIdx")
-          && ParticleVsMain.Contains("gl_VertexID / 6")
-          && RecFloats == 24,
+          && ParticleVsMain.Contains("gl_VertexID / 6"),
           "the vertex stage expands from the record and index buffers this pass binds");
 
         // ---- the classifier, and with it the ticket's punch-through requirement.
@@ -240,6 +239,28 @@ internal static unsafe partial class Particles
         _off = true; Enabled.V = true;
         check.Expect(_off && Stats(1).StartsWith("no particles (Alloy pass unavailable)"), "arming from chat cannot clear the resolution latch");
         _off = off0; Enabled.V = on0;
+
+        // ---- the record's seventh vec4 (CX-48). The GLSL struct and the C# stride are one contract, and
+        // the oracle for each is the other artifact: RecordSafe counts the declaration in the embedded
+        // stage text against the stride the build writes. The negative case is a hand-written six-vec4
+        // struct -- the record as it was before the previous centre joined it.
+        check.Expect(ShaderContract.RecordSafe(ShaderSource.Get("cx_partrec.glsl"), "CxParticle", RecFloats),
+          "the particle record's GLSL declaration adds up to the stride the build stages");
+        check.Expect(RecFloats == 28, "...and that stride is seven vec4: the six the quad is expanded from, plus last frame's centre");
+        check.Expect(!ShaderContract.RecordSafe(
+            "struct CxParticle\n{\n vec4 a; vec4 b; vec4 c; vec4 d; vec4 e; vec4 f;\n};\n", "CxParticle", RecFloats),
+          "a six-vec4 override is refused: it would read every record one vec4 short of the stride");
+        check.Expect(MotionVmain.Contains("vPrev = uPrevVP * vec4(world - (p.centre.xyz - p.prev.xyz), 1.0);")
+          && MotionFmain.Contains("frag = vec4(CxMotionVec(vCur, vPrev), 0.0, 0.0);"),
+          "the velocity arm moves the whole quad by the centre's own step and writes the shared convention");
+        // Last frame's centre, off hand-written positions: a slot with no previous frame behind it, a step,
+        // and a step too large to be one particle's own movement (a recycled pool slot).
+        check.Expect(PrevCentre(true, new Vector3(0f), new Vector3(5f, 6f, 7f)) == new Vector3(5f, 6f, 7f),
+          "an emitter not built last frame takes this frame's centre: a zero step, not a jump from another frame's particles");
+        check.Expect(PrevCentre(false, new Vector3(1f, 2f, 3f), new Vector3(1f, 2f, 4f)) == new Vector3(1f, 2f, 3f),
+          "...a slot that was built last frame keeps the centre it held");
+        check.Expect(PrevCentre(false, new Vector3(100f, 0f, 0f), new Vector3(1f, 2f, 3f)) == new Vector3(1f, 2f, 3f),
+          "...and a step no particle could have taken is a recycled slot, which takes a zero step too");
 
         log.Info(check.Ok ? "Particles.SelfCheck: passed" : "Particles.SelfCheck: FAILED");
     }

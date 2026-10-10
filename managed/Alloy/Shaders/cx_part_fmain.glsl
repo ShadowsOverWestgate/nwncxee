@@ -1,6 +1,14 @@
 void main()
 {
     vec4 c = vColor * texture(uTex, vUv);
+#ifdef CX_MOTION
+    // CX-48: the velocity FIELD, not the colour. Written only where the sprite is mostly opaque: a faint
+    // edge texel is mostly the background, and it must keep the background's own vector. Alpha is the
+    // weight in all three blend classes (additive blends SRC_ALPHA, ONE), so one threshold serves them.
+    if (c.a < CX_MOTION_CUT) discard;
+    frag = vec4(CxMotionVec(vCur, vPrev), 0.0, 0.0);
+    return;
+#endif
     if (uViz == 2)
     {
         // Flat and opaque-ish: the quads as QUADS. A soft smoke texture hides everything about the

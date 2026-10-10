@@ -731,7 +731,7 @@ internal static unsafe class PostChain
         {
             check.Expect(Post.G.Get("hdr") == null && Post.G.Get("scale") == null && Post.G.Get("aotemporal") == null,
               "hdr, scale and aotemporal are not post knobs: hdr is the Renderer's boot setting, the other two are alloy.scale and ao.temporal");
-            check.Expect(Post.Tonemap.Default == TonemapAces && Post.Tonemap.FormatDefault() == "aces" && Post.Tonemap.RangeText() == "shoulder, aces, neutral",
+            check.Expect(Post.Tonemap.RungValue(Quality.Shipped) == TonemapAces && Post.Tonemap.RangeText() == "shoulder, aces, neutral",
               "the tonemap knob stores the operator index and formats its name");
             check.Expect(Post.Tonemap.TryParse("shoulder", out int tm) && tm == TonemapShoulder && Post.Tonemap.TryParse("0", out tm) && tm == TonemapShoulder
               && Post.Tonemap.TryParse("neutral", out tm) && tm == TonemapNeutral,
@@ -810,7 +810,7 @@ internal static unsafe class PostChain
             // The debug VIEWS default off, so /post reset (every Default) clears a stray /post viz with the rest.
             // /post motion stays off because TAA arms the pass itself; /post taa is ON -- it is the default
             // anti-aliaser, and reset must put it back rather than leave the frame on SMAA.
-            check.Expect(!Post.Motion.Default && Post.Taa.Default && Post.Viz.Default == 0 && !Post.ClearViz.Default,
+            check.Expect(!Post.Motion.Default && Post.Taa.RungValue(Quality.Shipped) && Post.Viz.Default == 0 && !Post.ClearViz.Default,
               "the debug views default OFF and taa defaults ON: reset restores the shipped anti-aliaser");
 
             // The shoulder, in C#, mirroring the GLSL: identity below the knee, and never past 1.

@@ -18,14 +18,22 @@ internal static unsafe class CasterGather
     /// dispatch also reads, because the bounds are the colour cull's own.</summary>
     internal const uint BindSrc = 17, BindCmd = 18, BindCount = 19;
 
+    // CX-50: ...and the two COARSE runs of the same mesh, out of which every view picks one by its own texel
+    // size. ONE record per caster whatever levels it has: the staging, its batch regions, the command buffer
+    // and the thread count are all per caster, and a record per level would multiply every one of them --
+    // four more words per record is the cheaper half of that trade. A level a mesh does not have is a zero
+    // count, and the dispatch then bakes the finer run it does have, so a caster never bakes nothing.
     /// <summary>Uints per source record, and their order -- index count, first index, base vertex, OWNERSHIP
     /// slot (the sphere index, and the <c>baseInstance</c> the depth stages read <c>uDraw</c> through), batch,
-    /// batch output base, and the DYNAMIC flag: 1 = this caster is a mover this frame, which is what
-    /// <see cref="Dispatch"/>'s set filter tests. Otherwise <see cref="CullPass.SrcUints"/>'s layout.</summary>
-    internal const int SrcUints = 7;
+    /// batch output base, the DYNAMIC flag (1 = a mover this frame, which the set filter tests), then count
+    /// and first index at detail level 1 and at level 2. Otherwise <see cref="CullPass.SrcUints"/>'s layout.</summary>
+    internal const int SrcUints = 11;
     /// <summary>The source word that carries the set flag -- the one word the standing staging rewrites
     /// per frame, so its index is a contract shared with <c>GatherCs</c>.</summary>
     internal const int SetFlagWord = 6;
+    /// <summary>The coarse runs' words, a contract shared with both dispatches: count then first index,
+    /// level 1 then level 2.</summary>
+    internal const int Cnt1Word = 7, First1Word = 8, Cnt2Word = 9, First2Word = 10;
 
     /// <summary>Which half of the population a dispatch admits. <see cref="SetAll"/> = no filter (the
     /// sun, and the combined bake <c>/shadow split 0</c> restores); <see cref="SetStatic"/> = still casters
@@ -34,6 +42,12 @@ internal static unsafe class CasterGather
     internal const int SetAll = 0, SetStatic = 1, SetDynamic = 2;
     /// <summary>Uints per <c>DrawElementsIndirectCommand</c>. Fixed by GL.</summary>
     internal const int CmdUints = 5, CmdBytes = CmdUints * 4;
+    /// <summary>Count-buffer words past the per-batch counts: the receiver-cull tally, then triangles baked
+    /// at each detail level. A shared contract with both dispatches, which index them off <c>uGroups</c>.</summary>
+    internal const int CountExtra = 1 + MeshLod.Levels;
+    /// <summary>Where one level's triangle tally sits in the count buffer -- past the per-batch counts and
+    /// the receiver word. The one expression: both dispatches spell it and <see cref="Sample"/> reads it.</summary>
+    internal static int TriWord(int groups, int level) => groups + 1 + level;
     private const int GroupSize = 64;
     /// <summary>Command/count buffer pairs rotated per VIEW, against a write-after-read: view K's indirect
     /// draws source their commands from one pair while view K+Rotation's dispatch rewrites it. Reusing a pair
@@ -62,9 +76,12 @@ internal static unsafe class CasterGather
         public uint Prog;
         public bool Failed;
         public int UDrawN, UPoint, UFocus, UDir, UReach, UAlong, UCull, USet, URx, UGroups, UPlanes;
+        /// <summary>The view's two detail thresholds: a caster whose bound clears the first bakes its base
+        /// run, the second its middle one, below both its coarsest.</summary>
+        public int ULodR1, ULodR2;
         public uint SrcBuf;
         public int SrcCap;
-        /// <summary>The DYNAMIC source: just the staged records whose set flag is 1, same 7-word layout and
+        /// <summary>The DYNAMIC source: just the staged records whose set flag is 1, the same layout and
         /// their OWN batch id and output base, so a dynamic view's dispatch covers a few hundred draws.</summary>
         public uint DynSrcBuf;
         public int DynSrcCap, DynDrawN;
@@ -117,6 +134,10 @@ internal static unsafe class CasterGather
     /// <summary>Of the sampled view's staged draws, how many the receiver-frustum test rejected
     /// (the word after the per-batch counts, <c>uCnt[uGroups]</c>).</summary>
     internal static long SampledRx;
+    /// <summary>Triangles the sampled views baked at each detail level, per view, over the period: the
+    /// bake's answer to <c>MeshLod.Drew</c>. Levels 1 and 2 reading 0 in a dense outdoor area means every
+    /// cascade is still baking full detail.</summary>
+    internal static readonly long[] SampledTris = new long[MeshLod.Levels];
     /// <summary>Frames whose staged source matched the persistent buffer byte for byte, so nothing was
     /// uploaded -- the number that says the per-frame upload is really gone.</summary>
     internal static long UploadsSkipped, Uploads;
@@ -159,6 +180,8 @@ internal static unsafe class CasterGather
         _gl.URx = GlProgram.Loc(_gl.Prog, "uRx");
         _gl.UGroups = GlProgram.Loc(_gl.Prog, "uGroups");
         _gl.UPlanes = GlProgram.Loc(_gl.Prog, "uPlanes");
+        _gl.ULodR1 = GlProgram.Loc(_gl.Prog, "uLodR1");
+        _gl.ULodR2 = GlProgram.Loc(_gl.Prog, "uLodR2");
         _log?.Info("CasterGather: armed -- shadow caster selection in compute over the shared CxCullSphere " +
                    "bounds, glMultiDrawElementsIndirectCount submission (/shadow gather 0 disables the cull)");
         return true;
@@ -223,7 +246,7 @@ internal static unsafe class CasterGather
         for (int i = 0; i < Rotation; i++)
         {
             Gl.EnsureStorage(ref _gl.CmdBuf[i], (long)drawN * CmdBytes, drawN > _gl.CmdCap);
-            Gl.EnsureStorage(ref _gl.CntBuf[i], (long)(groups + 1) * sizeof(uint), groups > _gl.CntCap);
+            Gl.EnsureStorage(ref _gl.CntBuf[i], (long)(groups + CountExtra) * sizeof(uint), groups > _gl.CntCap);
         }
         if (drawN > _gl.CmdCap) _gl.CmdCap = drawN;
         if (groups > _gl.CntCap) _gl.CntCap = groups;
@@ -235,10 +258,11 @@ internal static unsafe class CasterGather
     /// cascade fit's axis test; a <see cref="AlloyRenderer.NeverCull"/> sphere is exempt from the reach
     /// tests -- the same exemption, from the same buffer, the colour cull applies.</summary>
     internal static void Dispatch(Vector3 focus, Vector3 dir, float reach, float along, bool point,
+                                  float lodR1, float lodR2,
                                   int set = SetAll, bool receiver = false, bool dynSrc = false)
     {
         _gl.At = (_gl.At + 1) % Rotation;
-        Gl.ZeroBuffer(_gl.CntBuf[_gl.At], (long)(_gl.Groups + 1) * sizeof(uint));
+        Gl.ZeroBuffer(_gl.CntBuf[_gl.At], (long)(_gl.Groups + CountExtra) * sizeof(uint));
         // S8: the source, and with it the thread count. Everything downstream is indexed by the records'
         // OWN batch and output base, so the shorter source writes into the same regions.
         bool dyn = dynSrc && DynamicReady;
@@ -264,6 +288,8 @@ internal static unsafe class CasterGather
         Gl.Uniform3fv(_gl.UDir, 1, v);
         Gl.Uniform1f(_gl.UReach, reach);
         Gl.Uniform1f(_gl.UAlong, along);
+        Gl.Uniform1f(_gl.ULodR1, lodR1);
+        Gl.Uniform1f(_gl.ULodR2, lodR2);
         Gl.DispatchCompute((uint)((drawN + GroupSize - 1) / GroupSize), 1, 1);
         // The commands are consumed as indirect state and the counts as parameter-buffer state; neither is in
         // the shader-storage class, so SHADER_STORAGE alone leaves both undefined.
@@ -306,10 +332,10 @@ internal static unsafe class CasterGather
         _gl.Dispatched = false;
         int w = _readSeq % GpuReadback.Slots, r = (_readSeq + 1) % GpuReadback.Slots;
         _readSeq++;
-        if (_gl.Groups + 1 > _counts.Length)
+        if (_gl.Groups + CountExtra > _counts.Length)
         {
             int cap = _counts.Length;
-            while (cap < _gl.Groups + 1) cap *= 2;
+            while (cap < _gl.Groups + CountExtra) cap *= 2;
             _counts = new uint[cap];
         }
         // a regrow drops every slot in flight, so none is read at a size it was not written at
@@ -318,7 +344,7 @@ internal static unsafe class CasterGather
         // No extra barrier: the dispatch's own MemoryBarrier names BUFFER_UPDATE_BARRIER_BIT, which is the
         // bit that orders shader-storage writes before buffer-copy reads, and it stands between the last
         // dispatch's atomicAdds and this copy in command order.
-        _gl.SampleRead.Copy(_gl.SampleBuf, 0, w, 0, (long)(_gl.Groups + 1) * sizeof(uint));
+        _gl.SampleRead.Copy(_gl.SampleBuf, 0, w, 0, (long)(_gl.Groups + CountExtra) * sizeof(uint));
         _gl.SampleRead.Fence(w);
         _gl.ReadN[w] = _gl.Groups; _gl.ReadDrawN[w] = _gl.SampleDrawN > 0 ? _gl.SampleDrawN : _gl.DrawN;
         _gl.ReadViews[w] = _gl.SampleViews; _gl.ReadRxViews[w] = _gl.SampleRxViews; _gl.ReadDyn[w] = _gl.SampleDyn;
@@ -332,6 +358,9 @@ internal static unsafe class CasterGather
         // tally over the views that carried the flag.
         int views = Math.Max(_gl.ReadViews[r], 1), rxViews = Math.Max(_gl.ReadRxViews[r], 1);
         long keptV = Math.Min(kept / views, _gl.ReadDrawN[r]), rx = Math.Min(c[_gl.ReadN[r]] / rxViews, _gl.ReadDrawN[r]);
+        // CX-50: ...and the triangles the sampled view(s) baked at each level, per view like the rest -- the
+        // bake's twin of MeshLod.Drew. A chunk's counts cover every view it dispatched, hence the divide.
+        for (int k = 0; k < MeshLod.Levels; k++) SampledTris[k] += c[TriWord(_gl.ReadN[r], k)] / views;
         if (_gl.ReadDyn[r])
         { SampledKeptDyn += keptV; SampledRxDyn += rx; SampledStagedDyn += _gl.ReadDrawN[r]; SamplesDyn++; }
         else
@@ -349,9 +378,12 @@ internal static unsafe class CasterGather
     /// <see cref="AlloyRenderer.MaxOwned"/>.</summary>
     internal const uint BindView = 20;
     internal const int ViewShift = 18;
-    /// <summary>Floats per view-table record: mat4 vp + (focus, reach) + (dir, along) + (spare, point, set,
-    /// layer). std430 gives this struct no padding.</summary>
-    internal const int ViewFloats = 28;
+    /// <summary>Floats per view-table record: mat4 vp + (focus, reach) + (dir, along) + (receiver, point,
+    /// set, layer) + (the two detail thresholds, two spare). std430 gives this struct no padding.</summary>
+    internal const int ViewFloats = 32;
+    /// <summary>The staged view's words the layered dispatch reads its detail thresholds at -- a contract
+    /// shared with <c>CxView.d</c>, which <c>CasterPass.StageView</c> fills.</summary>
+    internal const int ViewLodR1 = 28, ViewLodR2 = 29;
 
     /// <summary>The view table's GLSL declaration, shared by the layered dispatch and both layered depth
     /// stages -- <c>AlloyRenderer.DrawBufDecl</c>'s pattern, so the three cannot drift apart.</summary>
@@ -402,11 +434,11 @@ internal static unsafe class CasterGather
         for (int i = 0; i < Rotation; i++)
         {
             Gl.EnsureStorage(ref _gl.LyCmd[i], cmds * CmdBytes, growCmd);
-            Gl.EnsureStorage(ref _gl.LyCnt[i], (long)(_gl.Groups + 1) * sizeof(uint), growCnt);
+            Gl.EnsureStorage(ref _gl.LyCnt[i], (long)(_gl.Groups + CountExtra) * sizeof(uint), growCnt);
         }
         if (growCmd) _gl.LyCmdCap = cmds;
         if (growCnt) _gl.LyCntCap = _gl.Groups;
-        Gl.ZeroBuffer(_gl.LyCnt[_gl.LyAt], (long)(_gl.Groups + 1) * sizeof(uint));
+        Gl.ZeroBuffer(_gl.LyCnt[_gl.LyAt], (long)(_gl.Groups + CountExtra) * sizeof(uint));
 
         Gl.UseProgram(_gl.LayerProg);
         Gl.BindBufferBase(Gl.SHADER_STORAGE_BUFFER, BindSrc, dyn ? _gl.DynSrcBuf : _gl.SrcBuf);
@@ -452,6 +484,36 @@ internal static unsafe class CasterGather
     /// and the point-light face cull. Spliced, then the slope is interpolated over the whole text.</summary>
     private static string ReceiverCullLib => ShaderSource.Get("cx_recvcull.glsl");
 
+    // CX-50: the per-view detail pick, spliced into BOTH dispatches from this one text so they cannot drift.
+    // The thresholds are BOUNDS, not pixels: the CPU already divided its two pixel thresholds by the view's
+    // world units per shadow texel, so the pick is two compares. lq is the caster's own bound, over its
+    // distance from the light for a cube face (a 90deg face spans 2d at depth d, so its texels grow with
+    // it). The ladder is MeshArena.Draw's, term for term -- level 2 falls back to level 1 and then to the
+    // base run -- so a level the simplifier declined bakes the finer one and never nothing. Two cases need
+    // no arithmetic at all and fall out of it: thresholds of 0 (detail off) and a bound exempt from the cull
+    // (1e30, a posed skin or a dangly), both of which keep the base run.
+    // ponytail: that exemption is the ceiling -- a creature or a dangly bakes full detail into every view,
+    // however far, because the bound this reads is the COLOUR cull's and the colour cull exempts them. The
+    // upgrade is a 12th word carrying _liveR, the geometric caster radius, which the live list already
+    // holds; it is left out because character shadows are the ones a regression would show in first.
+    /// <summary>The detail pick's GLSL, with the view's focus, its point flag and its two bound thresholds
+    /// spelled as the calling dispatch reads them. Leaves <c>cnt</c>/<c>first</c> declared: the command
+    /// write takes them instead of the record's level-0 words.</summary>
+    private static string LodPick(string focus, string point, string r1, string r2) => "\n" + $$"""
+                uint cnt = uSrc[b], first = uSrc[b + 1u], lvl = 0u;
+                if (cnt != 0u && {{r1}} > 0.0)
+                {
+                    float lq = {{point}} ? s.w / max(length(s.xyz - {{focus}}), 1e-4) : s.w;
+                    if (lq < {{r1}})
+                    {
+                        uint c1 = uSrc[b + {{Cnt1Word}}u], c2 = uSrc[b + {{Cnt2Word}}u];
+                        if (lq < {{r2}} && c2 != 0u) { cnt = c2; first = uSrc[b + {{First2Word}}u]; lvl = 2u; }
+                        else if (c1 != 0u) { cnt = c1; first = uSrc[b + {{First1Word}}u]; lvl = 1u; }
+                    }
+                }
+                atomicAdd(uCnt[uint(uGroups) + 1u + lvl], cnt / 3u);
+        """ + "\n";
+
     /// <summary>The cull. One thread per staged draw; a survivor appends into its batch's own output region
     /// with an <c>atomicAdd</c>, so every batch keeps its boundaries and only its interior order moves. Both
     /// view tests are the CPU reference's, term for term, and the cone test is conservative BY CONSTRUCTION:
@@ -474,13 +536,15 @@ internal static unsafe class CasterGather
         uniform float uAlong;
         uniform int uRx;
         uniform int uGroups;
+        uniform float uLodR1;
+        uniform float uLodR2;
 
         """ + ReceiverCullLib + """
         void main()
         {
             uint i = gl_GlobalInvocationID.x;
             if (i >= uint(uDrawN)) return;
-            uint b = i * 7u;
+            uint b = i * 11u;
             // #305: the set filter, ahead of the cull and NOT gated on uCull -- which half of the split a
             // caster belongs in is what the two arrays' contents mean, not a cull /shadow gather 0 may waive.
             if (uSet == 1 && uSrc[b + 6u] != 0u) return;
@@ -516,11 +580,12 @@ internal static unsafe class CasterGather
                 if (offAxis || offEnds) return;
                 if (rx && CxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }
             }
+        """ + LodPick("uFocus", "uPoint != 0", "uLodR1", "uLodR2") + """
             uint o = uSrc[b + 5u] + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
-            uCmd[q] = uSrc[b];             // count
+            uCmd[q] = cnt;                 // count, at this view's detail level
             uCmd[q + 1u] = 1u;             // instanceCount
-            uCmd[q + 2u] = uSrc[b + 1u];   // firstIndex, in INDICES
+            uCmd[q + 2u] = first;          // firstIndex, in INDICES
             uCmd[q + 3u] = uSrc[b + 2u];   // baseVertex
             uCmd[q + 4u] = uint(slot);     // baseInstance IS the ownership slot the depth stages read uDraw at
         }
@@ -552,7 +617,7 @@ internal static unsafe class CasterGather
             uint i = gl_GlobalInvocationID.x;
             uint vi = gl_GlobalInvocationID.y;
             if (i >= uint(uDrawN) || vi >= uint(uViewN)) return;
-            uint b = i * 7u;
+            uint b = i * 11u;
             vec4 vc = uViewTbl[vi].c;
             int set = int(vc.z);
             if (set == 1 && uSrc[b + 6u] != 0u) return;
@@ -587,11 +652,12 @@ internal static unsafe class CasterGather
                 if (offAxis || offEnds) return;
                 if (rx && CxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }
             }
+        """ + LodPick("uViewTbl[vi].a.xyz", "vc.y != 0.0", "uViewTbl[vi].d.x", "uViewTbl[vi].d.y") + """
             uint o = uSrc[b + 5u] * uint(uViewN) + atomicAdd(uCnt[uSrc[b + 4u]], 1u);
             uint q = o * 5u;
-            uCmd[q] = uSrc[b];             // count
+            uCmd[q] = cnt;                 // count, at this view's detail level
             uCmd[q + 1u] = 1u;             // instanceCount
-            uCmd[q + 2u] = uSrc[b + 1u];   // firstIndex, in INDICES
+            uCmd[q + 2u] = first;          // firstIndex, in INDICES
             uCmd[q + 3u] = uSrc[b + 2u];   // baseVertex
             uCmd[q + 4u] = uint(slot) | (vi << 18u);   // baseInstance = ownership slot | view index
         }
@@ -605,9 +671,22 @@ internal static unsafe class CasterGather
            && LayerCs.Contains("offAxis = dot(perp, perp) > (reach + r) * (reach + r);")
            && LayerCs.Contains($"binding = {CullPass.BindSphere}") && LayerCs.Contains("CxCullSphere")
            && LayerCs.Contains("if (uCull != 0 && s.w < 1e29)")
-           && LayerCs.Contains("uint b = i * 7u;")
+           && LayerCs.Contains($"uint b = i * {SrcUints}u;")
            && LayerCs.Contains("if (set == 1 && uSrc[b + 6u] != 0u) return;")
            && LayerCs.Contains("if (set == 2 && uSrc[b + 6u] == 0u) return;")
+           // CX-50: the detail pick, reading this view's own thresholds out of the view table's d lane --
+           // whose float offsets are pinned against the struct DECLARATION both depth stages share -- and
+           // the command taking the PICKED run. A pick whose result nothing reads is full detail
+           // everywhere, silently, and a lane one float over is another view's thresholds.
+           && ViewTblDecl.Contains("struct CxView { mat4 vp; vec4 a; vec4 b; vec4 c; vec4 d; };")
+           && ViewFloats == 32 && ViewLodR1 == 28 && ViewLodR2 == 29
+           && LayerCs.Contains("float lq = vc.y != 0.0 ? s.w / max(length(s.xyz - uViewTbl[vi].a.xyz), 1e-4) : s.w;")
+           && LayerCs.Contains("if (lq < uViewTbl[vi].d.x)")
+           && LayerCs.Contains("if (lq < uViewTbl[vi].d.y && c2 != 0u) { cnt = c2; first = uSrc[b + 10u]; lvl = 2u; }")
+           && LayerCs.Contains("else if (c1 != 0u) { cnt = c1; first = uSrc[b + 8u]; lvl = 1u; }")
+           && LayerCs.Contains("atomicAdd(uCnt[uint(uGroups) + 1u + lvl], cnt / 3u);")
+           && LayerCs.Contains("uint c1 = uSrc[b + 7u], c2 = uSrc[b + 9u];")
+           && LayerCs.Contains("uCmd[q] = cnt;") && LayerCs.Contains("uCmd[q + 2u] = first;")
            // the pack: the shift is ViewShift on both sides, the batch region scales by the view count, and
            // the slot rides the low bits the depth stage masks back out
            && LayerCs.Contains($"uCmd[q + 4u] = uint(slot) | (vi << {ViewShift}u);")
@@ -643,11 +722,29 @@ internal static unsafe class CasterGather
            && GatherCs.Contains("if (rx && CxShadowMisses(s.xyz, r0, p1, r1)) { atomicAdd(uCnt[uGroups], 1u); return; }")
            && GatherCs.Contains("if (dist <= r) rx = false;")
            && GatherCs.Contains("p1 = s.xyz + uDir * max(0.0, uAlong - t);")
-           // #305: the set filter reads the staged dynamic flag at the 7-uint stride, in BOTH directions --
+           // #305: the set filter reads the staged dynamic flag at the record stride, in BOTH directions --
            // a filter that lost either arm bakes the same caster into both arrays, and min() then hides it.
-           && GatherCs.Contains("uint b = i * 7u;") && SrcUints == 7
+           // CX-50: ...and the stride is the one the staging writes, spelled as a LITERAL in the GLSL and
+           // interpolated here, so a record that grows on one side only fails this.
+           && GatherCs.Contains("uint b = i * 11u;") && SrcUints == 11
            && GatherCs.Contains("if (uSet == 1 && uSrc[b + 6u] != 0u) return;")
            && GatherCs.Contains("if (uSet == 2 && uSrc[b + 6u] == 0u) return;")
+           // CX-50: the detail pick, and the command taking the PICKED run rather than the record's level-0
+           // words -- a pick whose result nothing reads is full detail everywhere, silently. Every word index
+           // is a LITERAL in the GLSL against the const the staging writes at, so the two cannot renumber
+           // apart; the ladder is MeshArena.Draw's (level 2 where it exists, else level 1, else the base
+           // run); and an entry turned OFF (count 0) stays off at every level.
+           && Cnt1Word == 7 && First1Word == 8 && Cnt2Word == 9 && First2Word == 10
+           && GatherCs.Contains("float lq = uPoint != 0 ? s.w / max(length(s.xyz - uFocus), 1e-4) : s.w;")
+           && GatherCs.Contains("if (lq < uLodR1)")
+           && GatherCs.Contains("if (lq < uLodR2 && c2 != 0u) { cnt = c2; first = uSrc[b + 10u]; lvl = 2u; }")
+           && GatherCs.Contains("else if (c1 != 0u) { cnt = c1; first = uSrc[b + 8u]; lvl = 1u; }")
+           // ...and the per-level tally sits past the batch counts and the receiver word, where Sample reads it
+           && GatherCs.Contains($"atomicAdd(uCnt[uint(uGroups) + {TriWord(0, 0)}u + lvl], cnt / 3u);")
+           && CountExtra == 4 && MeshLod.Levels == 3
+           && GatherCs.Contains("uint c1 = uSrc[b + 7u], c2 = uSrc[b + 9u];")
+           && GatherCs.Contains("if (cnt != 0u && uLodR1 > 0.0)")
+           && GatherCs.Contains("uCmd[q] = cnt;") && GatherCs.Contains("uCmd[q + 2u] = first;")
            && GatherCs.Contains($"binding = {BindSrc}") && GatherCs.Contains($"binding = {BindCmd}")
            && GatherCs.Contains($"binding = {BindCount}");
 }

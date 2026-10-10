@@ -17,6 +17,20 @@ bool CxBladeKeyholed(vec3 root, vec4 clip)
     return lvl >= CX_KH_PUNCH;
 }
 
+// The blade's curve: a quadratic Bezier over (root, bend, tip) whose tip comes DOWN as the blade leans
+// rather than stretching away from it, plus the tangent along it. One text, so last frame's blade is this
+// same shape under last frame's lean.
+vec3 CxBladeCurve(vec3 root, vec2 lean, float h, float press, float t, out vec3 T)
+{
+    float ll = min(length(lean), h * 0.95);
+    lean = ll > 0.0 ? normalize(lean) * ll : lean;
+    vec3 p0 = root, p2 = root + vec3(lean, sqrt(max(h * h - ll * ll, 0.0)) * (1.0 - press));
+    vec3 p1 = root + vec3(lean * 0.3, (p2.z - root.z) * 0.65);
+    float u = 1.0 - t;
+    T = normalize(2.0 * u * (p1 - p0) + 2.0 * t * (p2 - p1) + vec3(0.0, 0.0, 1e-4));
+    return u * u * p0 + 2.0 * t * u * p1 + t * t * p2;
+}
+
 void main()
 {
     vLight = vec3(0.0);
@@ -56,8 +70,10 @@ void main()
     float mag = length(dir);
     if (mag < 1e-4) { dir = vec2(0.7071, 0.7071); mag = 0.35; } else dir /= mag;
     float tw = CxClock() * uWindSpeed, phase = dot(root.xy, vec2(0.21, 0.17));
-    float sway = (sin(tw * 1.7 + phase) + 0.4 * sin(tw * 3.9 + phase * 2.3)) * 0.5;
-    lean += dir * sway * clamp(iParam.w * mag * uWindGain, 0.0, 1.0) * 0.45 * h;
+    // the gust this blade takes, and the same scale last frame's sway takes
+    float gust = clamp(iParam.w * mag * uWindGain, 0.0, 1.0) * 0.45 * h;
+    float sway = CxGrassSway(tw, phase);
+    lean += dir * sway * gust;
     vec2 puv = (root.xy - uPushWindow.xy) * uPushWindow.z;
     float press = 0.0;
     if (uPushGain > 0.0 && puv.x > 0.0 && puv.y > 0.0 && puv.x < 1.0 && puv.y < 1.0)
@@ -66,14 +82,9 @@ void main()
         lean += (field.rg * 2.0 - 1.0) * uPushGain * h;
         press = min(field.b * uPushGain, 0.9);
     }
-    // the blade keeps its length as it leans: the tip comes down, it does not stretch
-    float ll = min(length(lean), h * 0.95);
-    lean = ll > 0.0 ? normalize(lean) * ll : lean;
-    vec3 p0 = root, p2 = root + vec3(lean, sqrt(max(h * h - ll * ll, 0.0)) * (1.0 - press));
-    vec3 p1 = root + vec3(lean * 0.3, (p2.z - root.z) * 0.65);
+    vec3 T;
+    vec3 P = CxBladeCurve(root, lean, h, press, t, T);
     float u = 1.0 - t;
-    vec3 P = u * u * p0 + 2.0 * t * u * p1 + t * t * p2;
-    vec3 T = normalize(2.0 * u * (p1 - p0) + 2.0 * t * (p2 - p1) + vec3(0.0, 0.0, 1e-4));
 
     // wider when seen edge-on, so a blade never thins to a sub-pixel sliver that TAA has to rebuild
     vec3 V = normalize(uEyePos - P);
@@ -92,6 +103,15 @@ void main()
     vNrm = N;
     gl_Position = uVP * vec4(P, 1.0);
     vDepth = gl_Position.w;
+#ifdef CX_MOTION
+    // CX-48: last frame's blade -- the same sway at last frame's clock through the same curve, over this
+    // frame's width and this frame's push field (which is not kept from frame to frame).
+    vec2 leanPrev = lean + dir * (CxGrassSway(CxPrevClock() * uWindSpeed, phase) - sway) * gust;
+    vec3 Tprev;
+    vec3 Pprev = CxBladeCurve(root, leanPrev, h, press, t, Tprev) + across * side * width * 0.5;
+    vCur = gl_Position;
+    vPrev = uPrevVP * vec4(Pprev, 1.0);
+#endif
     if (uCast == 0 && CxBladeKeyholed(root, uVP * vec4(root, 1.0)))
     { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
     if (uVLit != 0)

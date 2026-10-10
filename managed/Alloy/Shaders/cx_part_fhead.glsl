@@ -18,5 +18,12 @@ uniform int uSoftOn;        // 0 = no depth copy this pass, so no fade
 // uViz: /particles viz: 1 = tint by render type, 2 = flat, no texture. #336: the light rig's terms
 // are the VERTEX stage's now; this stage only applies vLight. The libraries still compose in below
 // for CxLinear.
+#ifdef CX_MOTION
+in vec4 vCur;
+in vec4 vPrev;
+// a sprite texel below this is mostly the background behind it, which keeps its own vector
+const float CX_MOTION_CUT = 0.5;
+#include "cx_motionout.glsl"
+#endif
 #include "cx_scenedepth.glsl"
 #include "cx_fogdecl.glsl"

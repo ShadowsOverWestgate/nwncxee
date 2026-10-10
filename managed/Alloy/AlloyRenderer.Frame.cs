@@ -638,11 +638,18 @@ public sealed unsafe partial class AlloyRenderer
                     // #388: the camera velocity target, off the finished depth and this pass's
                     // view-projection. Its own GPU term, ahead of the post one -- TIME_ELAPSED
                     // queries cannot nest.
-                    if (PostChain.MotionWanted && !motionRan && !_capturing)
+                    if (PostChain.MotionWanted && !_capturing)
                     {
                         GpuBegin(GpuTerm.Motion);
-                        MotionVectors.Run(PostChain.DepthTex, &vp, &vpClean, jx, jy, viewport, PostChain.Fbo, _frameSeq);
-                        MoverMotionPass(&vp, jx, jy, viewport);
+                        if (!motionRan)
+                        {
+                            MotionVectors.Run(PostChain.DepthTex, &vp, &vpClean, jx, jy, viewport, PostChain.Fbo, _frameSeq);
+                            MoverMotionPass(&vp, jx, jy, viewport);
+                        }
+                        // CX-48: grass and particles correct the field over their own pixels. Here, past both
+                        // of the camera field's sites and past the classes themselves, so what the resolve
+                        // reads is complete whichever site painted it.
+                        EffectMotionPass(&vp, &view, &proj, jx, jy, viewport);
                         GpuEnd(GpuTerm.Motion);
                     }
                     // #493: the vis-ID viz over the finished frame, before the resolve reads it.

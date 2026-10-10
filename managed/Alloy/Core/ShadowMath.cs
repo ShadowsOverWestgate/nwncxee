@@ -60,6 +60,18 @@ public static partial class ShadowMath
         return maxDist / (1 << (count - 1 - i));
     }
 
+    /// <summary>The sun's penumbra scale -- shadow-map TEXELS of penumbra radius per unit of STORED depth
+    /// between receiver and blocker, for a sun of angular diameter <paramref name="angleDeg"/> over a
+    /// <paramref name="mapSize"/>-texel cascade. One number for every cascade, since a cascade's depth range
+    /// over its texel is always the map size. 0 for a non-positive input: the receiver reads that as no search.</summary>
+    public static float SunPenumbraScale(float angleDeg, int mapSize)
+    {
+        if (angleDeg <= 0f || mapSize <= 0) return 0f;
+        // the HALF angle: the penumbra's radius subtends the source's radius, as a point light's estimate
+        // scales by its source radius and not its diameter
+        return MathF.Tan(angleDeg * (MathF.PI / 360f)) * mapSize;
+    }
+
     /// <summary>
     /// One face of a point light's depth cube: a 90&deg; perspective from <paramref name="lightPos"/> along
     /// face <paramref name="face"/> (0..5 = +X,-X,+Y,-Y,+Z,-Z), fitted to [<paramref name="near"/>,

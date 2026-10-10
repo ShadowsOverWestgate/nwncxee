@@ -99,7 +99,7 @@ internal static partial class DbInputs
             SceneDb.PartObj[p] = obj;
             SceneDb.PartModel[p] = m;
             SceneDb.PartNode[p] = 3;
-            SceneDb.PartRecipe[p] = DrawRecipe.Intern(m, 3);
+            DrawRecipe.Assign(p, DrawRecipe.Intern(m, 3));
             SceneDb.PartWorld[p] = Matrix4x4.CreateTranslation(10f, 20f, 30f);
         }
         ulong ka = LightmapKey(a), kb = LightmapKey(b);
@@ -117,9 +117,10 @@ internal static partial class DbInputs
         check.Expect(LightmapKey(b) != ka,
                      "...and one that moved more than the step does");
         SceneDb.PartNode[b] = 1;
-        SceneDb.PartRecipe[b] = SceneDb.PartRecipe[a];
+        DrawRecipe.Assign(b, SceneDb.PartRecipe[a]);
         check.Expect(LightmapKey(b) != ka, "a different node of one model is a different key");
 
+        DrawRecipe.Assign(a, -1); DrawRecipe.Assign(b, -1);
         SceneDb.Parts.Free(h1); SceneDb.Parts.Free(h2);
         SceneDb.Objects.Free(obj);
         SceneDb.Parts.TakeDirty(); SceneDb.Objects.TakeDirty();

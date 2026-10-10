@@ -44,7 +44,7 @@ public sealed unsafe partial class AlloyRenderer
                 // part fading by its OWN alpha still casts), and this is the frame's one chase of it.
                 float fade = TileFade(i, tri);
                 // #546: an unexplored tile (fog-of-war ramp at 0) is not drawn at all, as vanilla skips a
-
+                // tile whose fade reached 0 (ProcessTriMeshParts @0x480d40 draws only a positive fade).
                 if (fade <= 0f)
                 {
                     Counters._skipFogTile++;
@@ -756,7 +756,14 @@ public sealed unsafe partial class AlloyRenderer
             // enrol the slot. It belongs here rather than in the stage walk for the reason the comment
             // above gives about the other two lookups: this loop is main-thread, the stage walk is not,
             // and both the chart table and the bake's rect tables are main-thread only.
-            if (chartArmed && DbBakeable(i)) DbChart(i, lvl, ref idxOff, ref baseVertex, ref idxCount);
+            // CX-50: ...and the plain range's own coarser run where no chart answered. The stage resolved the
+            // BASE run (it runs on a worker, before the record block makes this frame's sphere current), so
+            // the level the row earned is applied HERE, where the charted copy's already was -- which is why
+            // every uncharted DB part drew full detail at every distance while the tally said level 0.
+            // DrawRecipe.Range is a raw array index, so the recipe is read and guarded once for both.
+            int dbRecipe = _oDbRecipe[i];
+            DbRuns(i, dbRecipe >= 0 ? Db.DrawRecipe.Range(dbRecipe) : -1, lvl, chartArmed,
+                   ref idxOff, ref baseVertex, ref idxCount, ref drawn);
             if (MeshLod.On) MeshLod.Drew(drawn, idxCount);
             _oLodBit[i] = DbArenaVaoBit;
             // #123: the feature joins the batch key. Not for binding -- it rides in the per-draw record --
@@ -1192,21 +1199,44 @@ public sealed unsafe partial class AlloyRenderer
     /// same arena section with the chart lane filled, so picking it is three integers, and
     /// <see cref="LightmapBake.Enrol"/> on the back of it is the whole of baked lighting -- nothing else mints
     /// a rect. Main thread; offers are budgeted, since each takes the arena lock and allocates the job.</summary>
-    private static void DbChart(int i, int lvl, ref nint idxOff, ref int baseVertex, ref int idxCount)
+    private static bool DbChart(int i, int range, int lvl, ref nint idxOff, ref int baseVertex, ref int idxCount, ref int drawn)
     {
-        int recipe = _oDbRecipe[i];
-        if (recipe < 0) return;
-        int range = Db.DrawRecipe.Range(recipe);
-        if (range < 0) return;
+        if (range < 0) return false;
         if (MeshChart.Range(ref _oChart[i], MeshChart.DbSlot, range, lvl,
-                            out int cb, out nint co, out int cc, out _) && cc > 0)
+                            out int cb, out nint co, out int cc, out int clvl) && cc > 0)
         {
-            idxOff = co; baseVertex = cb; idxCount = cc;
+            idxOff = co; baseVertex = cb; idxCount = cc; drawn = clvl;
             MeshChart.Drew(cc);
             LightmapBake.Enrol(i, MeshChart.DbSlot, range);
-            return;
+            return true;
         }
         if (_dbOfferBudget > 0 && MeshChart.HasRoom() && MeshChart.OfferDb(range)) _dbOfferBudget--;
+        return false;
+    }
+
+    /// <summary>The run a DB draw takes, in order: the charted copy of this mesh where one has LANDED (the
+    /// same lookup that enrols the slot for the lightmap), else the plain range's own run at the level the
+    /// batch row earned. A chart that has not landed -- or was refused, which is for the session -- must
+    /// fall through: most of a scene is bakeable, so an <c>else</c> here is full detail for every tile.</summary>
+    internal static void DbRuns(int i, int range, int lvl, bool chartArmed,
+                                ref nint idxOff, ref int baseVertex, ref int idxCount, ref int drawn)
+    {
+        if (chartArmed && DbBakeable(i)
+            && DbChart(i, range, lvl, ref idxOff, ref baseVertex, ref idxCount, ref drawn)) return;
+        if (lvl > 0) ArenaLevelRuns(range, lvl, ref idxOff, ref baseVertex, ref idxCount, ref drawn);
+    }
+
+    /// <summary>An arena range's index run at detail level <paramref name="lvl"/>, in place of the base run
+    /// the stage resolved. A level the simplifier declined falls back to the finest that exists, so a part
+    /// never draws nothing; <paramref name="drawn"/> carries the level actually served, which is what the
+    /// per-level tally counts. False = nothing to substitute and the base run stands.</summary>
+    internal static bool ArenaLevelRuns(int range, int lvl, ref nint idxOff, ref int baseVertex,
+                                        ref int idxCount, ref int drawn)
+    {
+        if (range < 0 || !Db.MeshArena.Runs(range, lvl, out int bv, out nint off, out int cnt, out int level)
+            || cnt <= 0) return false;
+        idxOff = off; baseVertex = bv; idxCount = cnt; drawn = level;
+        return true;
     }
 
 }

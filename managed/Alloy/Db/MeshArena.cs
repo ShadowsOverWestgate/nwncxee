@@ -637,6 +637,19 @@ public static unsafe partial class MeshArena
         return r.Cnt0 > 0;
     }
 
+    /// <summary>The range's two GENERATED runs, raw and with no fallback: byte offset and count at level 1
+    /// and at level 2, both 0 for a level the simplifier declined. What a caller picking a level per VIEW
+    /// needs -- it has to know which levels exist. <see cref="Runs"/>'s own snapshot read.</summary>
+    internal static bool Levels(int range, out nint off1, out int cnt1, out nint off2, out int cnt2)
+    {
+        off1 = 0; cnt1 = 0; off2 = 0; cnt2 = 0;
+        Pub?[] pub = _pub;
+        Pub? r = (uint)range < (uint)pub.Length ? pub[range] : null;
+        if (r == null) return false;
+        off1 = r.Off1; cnt1 = r.Cnt1; off2 = r.Off2; cnt2 = r.Cnt2;
+        return true;
+    }
+
     /// <summary>The mesh's own-space box and bounding sphere. False = no such range.</summary>
     internal static bool Bounds(int range, out Vector3 bmin, out Vector3 bmax, out Vector3 center, out float radius)
     {

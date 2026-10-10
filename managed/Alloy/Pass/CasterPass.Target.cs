@@ -79,6 +79,9 @@ public sealed unsafe partial class CasterPass
     private static readonly Matrix4x4[] _qVp = new Matrix4x4[MaxBakeViews];
     private static readonly Vector3[] _qFocus = new Vector3[MaxBakeViews], _qDir = new Vector3[MaxBakeViews];
     private static readonly float[] _qReach = new float[MaxBakeViews], _qAlong = new float[MaxBakeViews];
+    /// <summary>The queued view's two detail thresholds, resolved from its texel size where every other
+    /// per-view term is -- so the layered and per-view paths pick the same level for the same caster.</summary>
+    private static readonly float[] _qLodR1 = new float[MaxBakeViews], _qLodR2 = new float[MaxBakeViews];
     private static int _qN;
     /// <summary>One chunk's staged view table, in <see cref="CasterGather.ViewFloats"/> layout.</summary>
     private static readonly float[] _viewStage = new float[MaxBakeViews * CasterGather.ViewFloats];
@@ -326,7 +329,7 @@ public sealed unsafe partial class CasterPass
     }
 
     /// <summary>One queued view into the chunk's staged table, in the layout the dispatch and the layered
-    /// vertex stage both read (mat4 vp; focus/reach; dir/along; spare/point/set/layer).</summary>
+    /// vertex stage both read (mat4 vp; focus/reach; dir/along; receiver/point/set/layer; detail).</summary>
     private static void StageView(float* dst, int vi, int k)
     {
         float* r = dst + (long)vi * CasterGather.ViewFloats;
@@ -337,6 +340,8 @@ public sealed unsafe partial class CasterPass
         r[25] = _qPoint[k] ? 1f : 0f;
         r[26] = _qSet[k];
         r[27] = _qLayer[k];
+        r[CasterGather.ViewLodR1] = _qLodR1[k];
+        r[CasterGather.ViewLodR2] = _qLodR2[k];
     }
 
     /// <summary>The layered pass's batch loop: <see cref="GatherSubmit"/>'s state walk minus the per-view
@@ -416,7 +421,8 @@ public sealed unsafe partial class CasterPass
     /// not publish. The layer is cleared even when nothing survives -- uncleared is LAST frame's depth.</summary>
     private static bool RenderView(uint tex, int size, int layer,
                                    Matrix4x4* vp, Vector3 lightDir, Vector3 focus, float reach, float margin,
-                                   bool point, int set = CasterGather.SetAll, bool receiver = false)
+                                   bool point, int set = CasterGather.SetAll, bool receiver = false,
+                                   bool detail = true)
     {
         // zeroed ahead of every early-out: a view that bakes nothing staged no creatures, and a stale count
         // would be re-added per cube face
@@ -424,6 +430,16 @@ public sealed unsafe partial class CasterPass
         if (!_gStaged) return false;
         LastViews++;
         if (!CasterGather.Active) return ClearLayer(tex, size, layer);   // an EMPTY world still bakes: the clear is the bake
+        // CX-50: this view's two detail thresholds, where every other per-view term of the gather is resolved
+        // -- one funnel, so the layered and per-view paths cannot pick different levels for one caster. An
+        // ORTHO view's texel is its fit over the map (CascadeTexel's own expression, and a pair tile's);
+        // a 90deg cube face spans 2d at depth d, so its texel is per unit of DISTANCE and the dispatch
+        // divides the caster's bound by that distance.
+        // /shadow detail 0 is the A/B for the whole of it: thresholds of 0 bake every caster's base run,
+        // which is what the pass did before, with the colour path's own detail left alone. A view that is
+        // not a shadow passes detail: false and takes that same base run -- see the cover pass.
+        MeshLod.ShadowThresholds(detail && Shadows.Detail.V ? point ? 2f / size : 2f * reach / size : 0f,
+                                 out float lodR1, out float lodR2);
         // #307: under the layered bake a stale view is QUEUED, not submitted -- the flush after the pass
         // loop renders every queued view of a target in one layered pass. The optimistic true is covered by
         // the flush-failure handling, which publishes nothing for the frame. An overflowing queue renders
@@ -434,10 +450,11 @@ public sealed unsafe partial class CasterPass
             _qTex[_qN] = tex; _qSize[_qN] = size; _qLayer[_qN] = layer; _qVp[_qN] = *vp;
             _qFocus[_qN] = focus; _qDir[_qN] = lightDir; _qReach[_qN] = reach; _qAlong[_qN] = reach + margin;
             _qPoint[_qN] = point; _qSet[_qN] = set; _qRx[_qN] = receiver;
+            _qLodR1[_qN] = lodR1; _qLodR2[_qN] = lodR2;
             _qN++;
             return true;
         }
-        return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point, set, receiver);
+        return GatherSubmit(tex, size, layer, vp, lightDir, focus, reach, margin, point, lodR1, lodR2, set, receiver);
     }
 
     private static bool FboChecked(uint tex)

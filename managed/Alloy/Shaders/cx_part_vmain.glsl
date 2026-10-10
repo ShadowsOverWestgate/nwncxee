@@ -34,6 +34,15 @@ void main()
     vViewZ = -vp.z;
     gl_Position = uProj * vp;
 
+#ifdef CX_MOTION
+    // CX-48: the velocity arm. The whole quad moves by its centre's own step -- which is what the stretched
+    // and linked types do too, whose far end is another point entirely -- so the previous corner is this
+    // corner translated back. The size and the facing basis are this frame's.
+    vCur = gl_Position;
+    vPrev = uPrevVP * vec4(world - (p.centre.xyz - p.prev.xyz), 1.0);
+    return;
+#endif
+
     // #148's terms, the ones grass runs, on the hemispherical billboard normal -- per vertex (#336).
     // Only the alpha-blended class is lit: smoke, dust and fog are media a torch should pick out,
     // while additive and punch-through emit their own light and were never lit in vanilla either.

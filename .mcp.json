@@ -11,10 +11,6 @@
         "PLANE_WORKSPACE_SLUG": "shadows-over-westgate",
         "PLANE_API_KEY": "${PLANE_API_KEY}"
       }
-    },
-    "westgate-wiki": {
-      "type": "http",
-      "url": "https://westgate.pw/mcp"
     }
   }
 }

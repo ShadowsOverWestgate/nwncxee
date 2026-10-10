@@ -7,3 +7,5 @@ NWNCX:EE (CX) @VERSION@. Optional add-on for Neverwinter Nights: Enhanced Editio
 **Uninstall**: Windows, delete version.dll. Linux, clear the launch option.
 
 It worked if you see an attribution text in top left corner in the main menu.
+
+**Verify**: `SHA256SUMS.sig` signs `SHA256SUMS` with the key in the repository's `packaging/allowed_signers`. Steps in the README.

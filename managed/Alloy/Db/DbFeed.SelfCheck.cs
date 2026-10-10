@@ -26,12 +26,16 @@ public static unsafe partial class DbFeed
             Recycle(check);
             VisibleSet(check);
             DrawOrder(check, log);
+            RecipeReuse(check);
         }
         finally
         {
             _inSelfCheck = false;
             ResetForSelfCheck();
             DbGrid.Reset();
+            // the fixture parts let go of their recipes first, as a real part's InitPart does before its model goes
+            for (int p = 0; p < SceneDb.MaxParts; p++)
+                if (ReferenceEquals(SceneDb.PartModel[p], _fixtureModel)) DrawRecipe.Assign(p, -1);
             DrawRecipe.Forget(_fixtureModel!);
             _fixtureModel = null;
             DbInputs.Reset();
@@ -391,6 +395,65 @@ public static unsafe partial class DbFeed
         {
             AlloyRenderer.DbTableRestore(snap);
         }
+    }
+
+    /// <summary>A retired recipe slot is held out for one <see cref="DrawRecipe.Pump"/> and handed out after the
+    /// second; one a live part still names is not handed out at all; and a late dynamic drop leaves the slot's next
+    /// tenant alone. Oracle: the slot indices the first interns returned.</summary>
+    private static void RecipeReuse(Checker check)
+    {
+        ModelDef a = OneMeshModel("cx_selfcheck_ra"), b = OneMeshModel("cx_selfcheck_rb"), c = OneMeshModel("cx_selfcheck_rc");
+        int ra = DrawRecipe.Intern(a, 1, plan: false);
+        check.Expect(ra >= 0, "the fixture node interned a recipe");
+        DrawRecipe.Forget(a);
+        DrawRecipe.Pump();
+        int rb = DrawRecipe.Intern(b, 1, plan: false);
+        check.Expect(rb >= 0 && rb != ra, "a retired slot is not reused before the fold that releases its draw slots");
+        DrawRecipe.Pump();
+        int rc = DrawRecipe.Intern(c, 1, plan: false);
+        check.Expect(rc == ra, $"a retired slot is reused after it (got {rc}, retired {ra})");
+        DrawRecipe.Forget(b);
+        DrawRecipe.Forget(c);
+
+        // the fixture's own eviction-in-use is on purpose: kept off the log and the period line
+        var log = DrawRecipe.Log;
+        int inUse = DrawRecipe.RetiredInUse;
+        DrawRecipe.Log = null;
+        ModelDef d = OneMeshModel("cx_selfcheck_rd"), e = OneMeshModel("cx_selfcheck_re"), f = OneMeshModel("cx_selfcheck_rf");
+        DbId h = SceneDb.Parts.Alloc();
+        int rd = DrawRecipe.Intern(d, 1, plan: false);
+        DrawRecipe.Assign(h.Index, rd);
+        DrawRecipe.Forget(d);
+        DrawRecipe.Pump(); DrawRecipe.Pump();
+        int re = DrawRecipe.Intern(e, 1, plan: false);
+        check.Expect(rd >= 0 && re != rd, "a recipe a live part still names is not handed to another model");
+        DrawRecipe.Assign(h.Index, -1);
+        DrawRecipe.Pump(); DrawRecipe.Pump();
+        int rf = DrawRecipe.Intern(f, 1, plan: false);
+        check.Expect(rf == rd, $"...and is once the part lets go (got {rf}, held {rd})");
+        SceneDb.Parts.Free(h);
+        DrawRecipe.Forget(e); DrawRecipe.Forget(f);
+        DrawRecipe.Log = log;
+        DrawRecipe.RetiredInUse = inUse;
+
+        ModelDef g = OneMeshModel("cx_selfcheck_rg"), k = OneMeshModel("cx_selfcheck_rk");
+        int range = MeshArena.AcquireDynamic(g.Nodes[1].Mesh!, 0x5E1F_C4EC_0000_0001UL);
+        int rg = DrawRecipe.InternDynamic(g, 1, range);
+        uint gen = DrawRecipe.Gen(rg);
+        DrawRecipe.Forget(g);   // the model goes first, and its eviction retires the private recipe
+        DrawRecipe.Pump(); DrawRecipe.Pump();
+        int rk = DrawRecipe.Intern(k, 1, plan: false);
+        check.Expect(rg >= 0 && rk == rg, $"the evicted private recipe's slot is reused (got {rk}, retired {rg})");
+        DrawRecipe.RetireDynamic(rg, gen);   // ...and then its part's drop arrives late
+        check.Expect(DrawRecipe.Range(rk) >= 0, "a late dynamic drop leaves the slot's new tenant alone");
+        DrawRecipe.Forget(k);
+    }
+
+    private static ModelDef OneMeshModel(string name)
+    {
+        var m = new ModelDef { Name = name };
+        m.Nodes = new[] { new NodeDef { Name = "root", Index = 0, Kind = NodeKind.Dummy }, MeshNode("a", 1) };
+        return m;
     }
 
     /// <summary>The one model every case here uses, so the teardown has exactly one thing to retire.</summary>

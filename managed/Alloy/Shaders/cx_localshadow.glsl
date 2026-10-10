@@ -69,7 +69,13 @@ uniform float uLocalMedia;
 // Below this radius (in texels) the disc stands down to the hardware tap: a fragment in contact.
 const float CX_LOCAL_DISC_MIN = 0.25;
 const float CX_LOCAL_DISC_WORLD_MAX = 64.0;   // #674 bake: the world-minimum disc's ceiling in cube texels
-const int CX_LOCAL_SEARCH = 4;
+// CX-49: the CEILING on ring taps in the blocker search -- shadow.search picks the count under it, and
+// ladders on the quality tier. Four (the pre-CX-49 count, now the low rung) read one tap per quadrant,
+// which on a wide ceiling missed whole casters and estimated the penumbra off whichever quadrant held one.
+const int CX_LOCAL_SEARCH = 16;
+// shadow.search, under that ceiling. A caller that fills the pass block itself (the lightmap bake) leaves
+// the member zero, which reads here as the ceiling -- the bake is offline and wants the best estimate.
+int CxSearchTaps() { int n = int(uSearchTaps); return n > 0 ? min(n, CX_LOCAL_SEARCH) : CX_LOCAL_SEARCH; }
 // #642: the per-fragment dither the disc spins by. Interleaved gradient noise on the pixel where a
 // fragment head declares CX_FS; a vertex stage (grass, weather, particles compile this lib there
 // too) has no gl_FragCoord, and a head that forgets the define gets the coarser hash, not a
@@ -100,12 +106,17 @@ mat2 CxSpin(int n, float rot, float radius)
 // The stored window depth back to a major-axis distance: the inverse of the `ref` line below.
 float CxCubeDist(float z, float near, float far) { return near / max(1.0 - z * (far - near) / far, 1e-4); }
 // #642: the penumbra radius in texels, 0 .. uLocalSoft.x -- PCSS: the mean depth of the blockers found
-// by CX_LOCAL_SEARCH raw reads on a fixed ring at the ceiling radius (plus `mc`, the centre read the
-// caller already has), then (receiver - blocker) / blocker scaled by the source radius. The ring is
+// by CX_LOCAL_SEARCH raw reads on a ring (plus `mc`, the centre read the caller already has), then
+// (receiver - blocker) / blocker scaled by the source radius. The ring is
 // NOT dithered: neighbouring fragments must agree on the penumbra, or the edge speckles where one
 // fragment blurs and the next takes the hard tap (seen live). A search that finds no blocker is a
 // hard tap; uLocalPcss.x = 0 (no raw view on this driver) is the ceiling everywhere. `full` = every
 // read found a blocker: the disc would only re-confirm the shadow the hardware tap already holds.
+// CX-49: the ring's RADIUS comes off the source size and the two depths rather than sitting at the
+// ceiling. The centre read already has a blocker depth, and the widest penumbra a blocker at mc can cast
+// on a receiver at m is src * (m - mc) / mc world units, so a ring wider than that samples texels whose
+// casters cannot reach this fragment at all. A centre that found nothing keeps the ceiling, which is the
+// only honest bound where no depth is in hand yet.
 float CxPenumbra(samplerCubeArray raw, float layer, vec3 d, vec3 u1, vec3 v1,
                  float m, float mc, float near, float far, float texel, out bool full)
 {
@@ -114,9 +125,11 @@ float CxPenumbra(samplerCubeArray raw, float layer, vec3 d, vec3 u1, vec3 v1,
     if (src <= 0.0) return uLocalSoft.x;
     float sum = 0.0, n = 0.0;
     if (mc < m) { sum += mc; n += 1.0; }
-    mat2 ring = CxSpin(CX_LOCAL_SEARCH, 0.0, texel * uLocalSoft.x);
+    float sr = mc < m ? min(uLocalSoft.x, src * (m - mc) / (mc * texel)) : uLocalSoft.x;
+    int ns = CxSearchTaps();
+    mat2 ring = CxSpin(ns, 0.0, texel * sr);
     vec2 dir = vec2(1.0, 0.0);
-    for (int k = 0; k < CX_LOCAL_SEARCH; k++)
+    for (int k = 0; k < ns; k++)
     {
         vec2 o = ring * (sqrt(float(k) + 0.5) * dir);
         dir = CxVogelTurn(dir);
@@ -124,7 +137,7 @@ float CxPenumbra(samplerCubeArray raw, float layer, vec3 d, vec3 u1, vec3 v1,
         if (mk < m) { sum += mk; n += 1.0; }
     }
     if (n <= 0.0) return 0.0;
-    full = n > float(CX_LOCAL_SEARCH);
+    full = n > float(ns);
     float mb = sum / n;
     return clamp((m - mb) / mb * src / texel, 0.0, uLocalSoft.x);
 }

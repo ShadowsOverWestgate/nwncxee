@@ -462,11 +462,33 @@ def check_material(g):
 # resref, the depth-only ones (no resref) by the class and constant they were reached by. #339 took the
 # tessellation out with the custom water shader: water is a plain vertex/fragment pair again, like every
 # other class here.
+def define(src, text):
+    """CX.Alloy.ShaderStages.WithDefine, character for character: the #define goes immediately after the
+    #version line, whatever that line says. A stage with no version line is a stage this would splice
+    nothing into and link as the shipped program, which would report a variant as checked when it was
+    not -- so it raises instead."""
+    v = src.index("#version")
+    e = src.index("\n", v) + 1
+    return src[:e] + f"#define {text}\n" + src[e:]
+
+
 def ablate(src, n):
-    """CX.Alloy.ShaderStages.WithDefine's own splice: `#define CX_ABLATE n` immediately after the #version
-    line. The ablation variants are built only by an `/alloy bench` step, so this is the one place a rung
-    that stopped compiling is caught before someone runs the bench and loses that rung of the ladder."""
-    return src.replace("#version 460 core\n", f"#version 460 core\n#define CX_ABLATE {n}\n", 1)
+    """The ablation variants are built only by an `/alloy bench` step, so this is the one place a rung that
+    stopped compiling is caught before someone runs the bench and loses that rung of the ladder."""
+    return define(src, f"CX_ABLATE {n}")
+
+
+def mot(src):
+    """The velocity arm of a stage (CX.Alloy.GrassField.MotionDefine): what turns a grass path's or the
+    particle pass's stages into the program that writes the field instead of the picture."""
+    return define(src, "CX_MOTION 1")
+
+
+def nosun(src):
+    """CX.Alloy.Programs.WithoutSunSoft: the one define that compiles the sun's blocker search and disc out.
+    A driver short of the two raw cascade views links THIS text, so the no-soft-sun arm has to compile and
+    link too -- it is the fallback that keeps a lit program at all on such a driver."""
+    return src.replace("#define CX_SUN_SOFT 1", "// CX-49: the soft sun filter is OFF -- too few fragment texture units for its raw cascade views")
 
 
 # CX-188: each ablated pass's ladder length -- the rungs CX.Alloy.Ablation can be asked for, which is what
@@ -484,6 +506,10 @@ def programs(g):
         "caster depth": (g["cx_cast_vs"], g["cx_cast_fs"]),
         "caster depth (alpha-tested)": (g["cx_castmask_v"], g["cx_castmask_f"]),
         "clustered lit": (g["cx_ownlit_vs"], g["cx_ownlit_fs"]),
+        # CX-49: the arm Programs.WithoutSunSoft builds where the driver cannot seat the sun's raw cascade
+        # views -- plain and deferred, because the twins are spliced from whichever text the lit build used
+        "clustered lit (no soft sun)": (g["cx_ownlit_vs"], nosun(g["cx_ownlit_fs"])),
+        "clustered lit (no soft sun, deferred twin)": (g["cx_ownlit_vs"], nosun(g["cx_ownlit_fs"]).replace("#version 460 core\n", "#version 460 core\n#define CX_DEFERRED 1\n#define CX_GBUF_OUT 1\n", 1)),
         "clustered lit (OIT lists)": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_OIT_LISTS 1\n", 1)),
         # CX-188: the deferred twin -- the same two defines Programs.WithDeferred injects, in the same place
         "clustered lit (deferred twin)": (g["cx_ownlit_vs"], g["cx_ownlit_fs"].replace("#version 460 core\n", "#version 460 core\n#define CX_DEFERRED 1\n#define CX_GBUF_OUT 1\n", 1)),
@@ -525,6 +551,10 @@ def programs(g):
         "grass scatter": (g["cx_grass_c"],),
         "grass blades": (g["cx_gblade_vs"], g["cx_gblade_fs"]),
         "grass blade depth": (g["cx_gblade_vs"], g["cx_gblade_df"]),
+        # CX-48: the velocity arm of each grass path -- GrassField.Motion's define, in the same place
+        "grass motion vectors": (mot(g["cx_grass_vs"]), mot(g["cx_grassdepth_f"])),
+        "grass blade motion vectors": (mot(g["cx_gblade_vs"]), mot(g["cx_gblade_df"])),
+        "particle motion vectors": (mot(g["cx_part_v"]), mot(g["cx_part_f"])),
         "clustered light build": (g["cx_cluster_cs"],),
         "deferred lights": (g["cx_deferred_cs"],),
         # CX-188: the film's own dispatch (DeferredLights._progFilm), and the "every light" escapes' variant

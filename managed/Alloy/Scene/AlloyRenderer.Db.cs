@@ -372,7 +372,7 @@ public sealed unsafe partial class AlloyRenderer
                    + (firstBad.Length > 0 ? $" | FIRST REFUSAL: {firstBad}" : ""));
     }
 
-    /// <summary>A DB slot's index range, for a consumer that would otherwise walk the VDO item tables.
+    /// <summary>A DB slot's BASE index range, for a consumer that would otherwise walk the VDO item tables.
     /// <para>Resolved live off the arena, never out of <c>_dCount</c>/<c>_dOff</c>/<c>_dBase</c>: those are
     /// indexed by DRAW rank and rewritten by every batch build, so reading them by slot hands a caster another
     /// part's mesh. The arena's offset is in BYTES of <c>GL_UNSIGNED_SHORT</c>, so the index form is half.</para></summary>
@@ -381,12 +381,34 @@ public sealed unsafe partial class AlloyRenderer
         idxCount = 0; first = 0; baseVert = 0;
         if (!DbSlot(slot)) return false;   // the one already defined above: this slot holds a DB part
         int range = DrawRecipe.Range(_oDbRecipe[slot]);
-        if (range < 0 || !MeshArenaDraw.Draw(range, DbLodOf(slot), out int n, out nint off, out int bv) || n <= 0)
+        if (range < 0 || !MeshArenaDraw.Draw(range, 0, out int n, out nint off, out int bv) || n <= 0)
             return false;
         idxCount = n;
         first = (uint)((long)off / 2);
         baseVert = (uint)bv;
         return true;
+    }
+
+    /// <summary>An arena range's two coarse runs in the staged record's form -- counts and FIRST INDICES, as
+    /// <see cref="DbCasterRange"/> spells them, because the indirect command takes elements where the arena
+    /// stores bytes. A count of 0 is a level the simplifier declined, and the dispatch that reads the record
+    /// bakes the finer run it does have.</summary>
+    internal static bool ArenaLevels(int range, out uint cnt1, out uint first1, out uint cnt2, out uint first2)
+    {
+        cnt1 = 0; first1 = 0; cnt2 = 0; first2 = 0;
+        if (range < 0 || !MeshArena.Levels(range, out nint o1, out int n1, out nint o2, out int n2)) return false;
+        cnt1 = (uint)n1; first1 = (uint)((long)o1 / 2);
+        cnt2 = (uint)n2; first2 = (uint)((long)o2 / 2);
+        return true;
+    }
+
+    /// <summary>A DB caster's two coarse runs, for the staging the per-view dispatch picks a level out of.
+    /// False (and zeros) = not a DB part, so it bakes its one range in every view.</summary>
+    internal static bool DbCasterLevels(int slot, out uint cnt1, out uint first1, out uint cnt2, out uint first2)
+    {
+        cnt1 = 0; first1 = 0; cnt2 = 0; first2 = 0;
+        return DbSlot(slot)
+               && ArenaLevels(DrawRecipe.Range(_oDbRecipe[slot]), out cnt1, out first1, out cnt2, out first2);
     }
 
     /// <summary>A DB caster's alpha-mask texture: the recipe's diffuse, the same texture the colour pass binds.
@@ -429,7 +451,8 @@ public sealed unsafe partial class AlloyRenderer
         int recipe = _oDbRecipe[i];
         int range = DrawRecipe.Range(recipe);
         if (range < 0) { _dbNoRange++; return false; }
-        if (!MeshArenaDraw.Draw(range, DbLodOf(i), out _, out _, out _))
+        // the BASE run is the residency probe; the drawn level is the batch row's (CX-50)
+        if (!MeshArenaDraw.Draw(range, 0, out _, out _, out _))
         { _dbNoRange++; return false; }
 
         DbId obj = SceneDb.PartObj[part];
@@ -469,12 +492,6 @@ public sealed unsafe partial class AlloyRenderer
         DbWriteSphere(i, in f);
         return true;
     }
-
-    /// <summary>Which LOD of the part's arena range this frame draws: always 0. Alloy's AUTOMATIC mesh LOD
-    /// still runs (the batch row picks a level from the cull sphere's screen radius), so a distant DB part is
-    /// already thinned; what is missing is the MODEL's own authored alternates, which seam-anim owns.
-    /// ponytail: authored LOD alternates unused; the hook is one <see cref="SceneDb.ObjLodShown"/> read.</summary>
-    private static int DbLodOf(int i) => 0;
 
     /// <summary>The DB-mode stable half: the same record fields <c>WriteStable</c> writes, sourced from the
     /// recipe and the object's flags instead of <c>_oTri</c>'s vtable and <c>_oGob</c>'s attachment chain.</summary>

@@ -19,16 +19,21 @@ internal static class Lod
         G = KnobGroup.Declare("lod", "Graphics", "Quality", master: "Automatic mesh detail",
             masterHelp: "Distant walls and floors are drawn from a simplified copy of their own mesh. "
                       + "Off draws every model at full detail at every distance, which is what the game does.",
-            masterTier: Tier.ChatOnly, order: 304, title: "Model detail");
+            masterTier: Tier.ChatOnly, order: 304, title: "Model detail",
+            masterChanged: CasterPass.ShadowInvalidate);
         G.Status = MeshLod.Describe;
         Px1 = G.Slider("px1", "Full detail above", 50f, 2000f, 10f, 500f, "px", Tier.Advanced,
-                       help: "A mesh wider than this on screen is drawn exactly as authored.")
+                       help: "A mesh wider than this on screen is drawn exactly as authored.",
+                       changed: CasterPass.ShadowInvalidate)
                .Ladder(Quality.Detail, 800f, 650f, 500f, 300f);
         Px2 = G.Slider("px2", "Lowest detail below", 10f, 1000f, 10f, 150f, "px", Tier.Advanced,
-                       help: "Below this a mesh is drawn from its smallest copy. Between the two it takes the middle one.")
+                       help: "Below this a mesh is drawn from its smallest copy. Between the two it takes the middle one.",
+                       changed: CasterPass.ShadowInvalidate)
                .Ladder(Quality.Detail, 300f, 220f, 150f, 80f);
+        // every row here feeds the SHADOW views' thresholds too, and no static bake is keyed on them
         Bias = G.Slider("bias", "Detail bias", 0.25f, 4f, 0.05f, 1f, tier: Tier.ChatOnly,
-                        help: "Scales both thresholds' effect: above 1 keeps detail further away, below 1 drops it sooner.");
+                        help: "Scales both thresholds' effect: above 1 keeps detail further away, below 1 drops it sooner.",
+                        changed: CasterPass.ShadowInvalidate);
     }
 }
 
@@ -292,6 +297,27 @@ internal static unsafe class MeshLod
         return px >= MathF.Min(Lod.Px2.V, Lod.Px1.V) ? 1 : 2;
     }
 
+    /// <summary>The two bound thresholds a SHADOW view's detail pick compares a caster against:
+    /// <see cref="Level"/>'s curve with <paramref name="texel"/>, the view's world units per shadow texel, in
+    /// place of the screen projection. 0/0 = every caster bakes the base run (detail off, or a view with no
+    /// texel size of its own).</summary>
+    internal static void ShadowThresholds(float texel, out float r1, out float r2)
+    {
+        r1 = 0f; r2 = 0f;
+        // a non-finite texel (a view with no map size yet) must fall to the BASE run, not past both
+        // thresholds into the coarsest one, which is what an infinite texel divides out to
+        if (!On || !(texel > 0f) || !float.IsFinite(texel)) return;
+        // px = bound * k, so the two pixel thresholds divide straight through into bounds
+        float k = 2f * MathF.Max(Lod.Bias.V, 0.01f) / texel;
+        r1 = Lod.Px1.V / k;
+        r2 = MathF.Min(Lod.Px2.V, Lod.Px1.V) / k;
+    }
+
+    /// <summary>The level a bound of <paramref name="q"/> earns against them -- a radius for a cascade, a
+    /// radius over the distance from the light for a cube face, whose texels grow with it. The expression
+    /// both gather dispatches spell, so a check can run the ladder the GPU runs.</summary>
+    internal static int ShadowLevel(float q, float r1, float r2) => q >= r1 ? 0 : q >= r2 ? 1 : 2;
+
     /// <summary>This mesh's generated range at <paramref name="lod"/>, falling back to the coarser level's
     /// neighbour when one was declined. False means "draw the engine's own range", which every caller must be
     /// able to do -- there is no level a mesh is obliged to have.</summary>
@@ -383,6 +409,79 @@ internal static unsafe class MeshLod
         check.Expect(!Range(7, 4, 1, out _, out _, out _), "a mesh with no entry answered a range");
         _table.Remove(KeyOf(7, 3));
         _used = savedUsed; _ebo = savedEbo;
+
+        // CX-50: the colour draw's level substitution, over two REAL arena ranges. The oracle is the fixture:
+        // index runs of 12/6/3 shorts, so a hit at a level is that level's own hand-written count, and the
+        // range that was given no coarse run must serve its base run at ANY requested level -- never nothing.
+        ushort[] full = { 0, 1, 2, 0, 2, 3, 1, 2, 3, 0, 1, 3 }, half = { 0, 1, 2, 1, 2, 3 }, fifth = { 0, 1, 3 };
+        var verts = new float[4 * MeshChart.Stride];
+        int three = Db.MeshArena.AcquireRaw(0xC50_0001, Db.MeshArena.Fmt.Static, 4, verts,
+                                            full, 12, half, 6, fifth, 3, default, default);
+        int one = Db.MeshArena.AcquireRaw(0xC50_0002, Db.MeshArena.Fmt.Static, 4, verts,
+                                          full, 12, null, 0, null, 0, default, default);
+        nint ro = 0; int rb = 0, rc = 0, rl = 0;
+        check.Expect(AlloyRenderer.ArenaLevelRuns(three, 2, ref ro, ref rb, ref rc, ref rl) && rc == 3 && rl == 2,
+          "a level-2 draw does not take the level-2 run");
+        nint roTwo = ro;
+        rc = 0; rl = 0;
+        check.Expect(AlloyRenderer.ArenaLevelRuns(three, 1, ref ro, ref rb, ref rc, ref rl) && rc == 6 && rl == 1,
+          "a level-1 draw does not take the level-1 run");
+        check.Expect(ro != roTwo, "two levels of one mesh draw from the same byte offset");
+        rc = 0; rl = 0;
+        check.Expect(AlloyRenderer.ArenaLevelRuns(one, 2, ref ro, ref rb, ref rc, ref rl) && rc == 12 && rl == 0,
+          "a mesh with no coarse run does not fall back to its base run");
+        rc = 0; rl = 0;
+        check.Expect(!AlloyRenderer.ArenaLevelRuns(-1, 2, ref ro, ref rb, ref rc, ref rl) && rc == 0,
+          "a slot with no arena range substituted a run anyway");
+        // CX-50: ...and the ORDER the colour draw applies them in. A chart that has not landed must still
+        // fall through to the level run: a bakeable part (most of a scene) whose chart is absent or refused
+        // took the chart branch, missed, and kept full detail. Slot 0 holds no DB part here, so DbBakeable
+        // refuses and the fall-through is the path taken -- the same path a chart MISS takes, by
+        // construction: DbChart returning false is the only other way into it.
+        check.Expect(!AlloyRenderer.DbSlot(0), "the order check's stand-in slot holds a DB part");
+        ro = 0; rb = 0; rc = 0; rl = 0;
+        AlloyRenderer.DbRuns(0, three, 2, chartArmed: true, ref ro, ref rb, ref rc, ref rl);
+        check.Expect(rc == 3 && rl == 2, "a chart that has not landed does not fall through to the level run");
+        rc = 0; rl = 0;
+        AlloyRenderer.DbRuns(0, three, 0, chartArmed: false, ref ro, ref rb, ref rc, ref rl);
+        check.Expect(rc == 0, "a draw at level 0 substituted a run");
+        rc = 0; rl = 0;
+        AlloyRenderer.DbRuns(0, -1, 2, chartArmed: false, ref ro, ref rb, ref rc, ref rl);
+        check.Expect(rc == 0, "a slot with no recipe substituted a run");
+
+        // CX-50: ...and the runs a shadow view picks among, in INDICES (the indirect command takes elements,
+        // where the arena stores bytes). The fixture is the oracle twice over: the two counts are its own,
+        // and its runs were appended back to back, so level 2 starts exactly 6 INDICES after level 1 -- 12
+        // if these were still byte offsets.
+        check.Expect(AlloyRenderer.ArenaLevels(three, out uint sc1, out uint sf1, out uint sc2, out uint sf2)
+                     && sc1 == 6 && sc2 == 3 && sf2 - sf1 == 6,
+          "the staged coarse runs are not the fixture's two generated runs in index form");
+        check.Expect(AlloyRenderer.ArenaLevels(one, out uint oc1, out _, out uint oc2, out _) && oc1 == 0 && oc2 == 0,
+          "a mesh the simplifier declined twice reports a coarse run anyway");
+        Db.MeshArena.Release(three); Db.MeshArena.Release(one);
+
+        // CX-50: the shadow view's level curve. The oracle is arithmetic done by hand: at a 40 u cascade fit
+        // over a 2048 map a texel is 2*40/2048 = 0,0390625 u, so a bound of r spans 2r/0,0390625 px -- 614 px
+        // at 12 u (full detail above 500), 256 px at 5 u, 51 px at 1 u (lowest detail below 150). A cube
+        // face's texel is 2d/size, so the same 256 px falls to a 20 u bound 40 u from a 512 light.
+        float sPx1 = Lod.Px1.V, sPx2 = Lod.Px2.V, sBias = Lod.Bias.V;
+        bool sMaster = Lod.G.Master is { V: true };
+        if (Lod.G.Master != null) Lod.G.Master.V = true;
+        Lod.Px1.V = 500f; Lod.Px2.V = 150f; Lod.Bias.V = 1f;
+        ShadowThresholds(2f * 40f / 2048f, out float c1t, out float c2t);
+        check.Expect(ShadowLevel(12f, c1t, c2t) == 0 && ShadowLevel(5f, c1t, c2t) == 1 && ShadowLevel(1f, c1t, c2t) == 2,
+          "a cascade's detail levels do not follow its texel size");
+        check.Expect(ShadowLevel(1e30f, c1t, c2t) == 0, "a bound exempt from the cull does not bake full detail");
+        ShadowThresholds(2f / 512f, out float f1t, out float f2t);
+        check.Expect(ShadowLevel(20f / 10f, f1t, f2t) == 0 && ShadowLevel(20f / 40f, f1t, f2t) == 1
+                     && ShadowLevel(2f / 40f, f1t, f2t) == 2,
+          "a cube face's detail levels do not follow its distance");
+        ShadowThresholds(0f, out float z1, out float z2);
+        check.Expect(z1 == 0f && z2 == 0f && ShadowLevel(0f, z1, z2) == 0, "a view with no texel size does not bake full detail");
+        ShadowThresholds(float.PositiveInfinity, out float i1, out float i2);
+        check.Expect(ShadowLevel(0.001f, i1, i2) == 0, "a view with no map size bakes the coarsest run instead of the base one");
+        if (Lod.G.Master != null) Lod.G.Master.V = sMaster;
+        Lod.Px1.V = sPx1; Lod.Px2.V = sPx2; Lod.Bias.V = sBias;
 
         // the table's own round trip, no worker: claim, file under the claim, refuse a stale sig, forget one slot
         var t = new SlotJobTable<Job, Entry>(8, 1);

@@ -5,6 +5,11 @@ layout(std430, binding = 11) readonly buffer CxParticleIdx { uint partIdx[]; };
 uniform mat4 uView;
 uniform mat4 uProj;
 uniform vec3 uEye;
+#ifdef CX_MOTION
+uniform mat4 uPrevVP;       // CX-48: last frame's view-projection, unjittered
+out vec4 vCur;              // this vertex's clip position, and last frame's
+out vec4 vPrev;
+#endif
 
 out vec4 vColor;
 out vec2 vUv;

@@ -551,6 +551,10 @@ public sealed unsafe partial class CasterPass : IExtenderService
                       $"{(float)CasterGather.SampledRx / CasterGather.Samples:F0} receiver-culled " +
                       $"(latent sample; {_rxEpochs} camera epochs forced the dyn views)"
                     : "") +
+                   // CX-50: ...and what those kept draws BAKED, per detail level -- the bake's twin of
+                   // MeshLod.Drew, off the same latent sample. 0 at levels 1 and 2 outdoors means every
+                   // view is still baking full detail.
+                   SampledTriLine() +
                    // S8: the dynamic source's samples on their own -- averaging ~438 staged draws with ~37k
                    // would describe neither population.
                    (CasterGather.SamplesDyn > 0
@@ -601,6 +605,7 @@ public sealed unsafe partial class CasterPass : IExtenderService
         CasterGather.SampledKeptDyn = 0; CasterGather.SampledStagedDyn = 0;
         CasterGather.SamplesDyn = 0; CasterGather.SampledRxDyn = 0;
         CasterGather.SampledKept = 0; CasterGather.SampledStaged = 0; CasterGather.Samples = 0; CasterGather.SampledRx = 0; _rxEpochs = 0;
+        Array.Clear(CasterGather.SampledTris);
         CasterGather.UploadsSkipped = 0; CasterGather.Uploads = 0;
     }
 

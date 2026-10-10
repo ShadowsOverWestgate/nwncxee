@@ -114,7 +114,8 @@ internal static class Lighting
         G.Section("Materials");
         Brdf = G.Toggle("brdf", "Modern materials", true, Tier.ChatOnly,
                         help: "Energy-conserving highlights, reflections that brighten at grazing angles and fade in crevices, and the "
-                            + "extra material layers (metal, clear coat, sheen, glow) a .mtr can declare for Alloy. Off is the stock shading exactly.");
+                            + "extra material layers (metal, clear coat, sheen, glow) a .mtr can declare for Alloy. Off is the stock shading exactly.")
+               .Ladder(Quality.Preset, Quality.Classic(false, true));
         AmbientDir = G.Slider("ambientdir", "Directional ambient", 0f, 1f, 0.05f, 0.5f, tier: Tier.Advanced,
                               help: "Ambient light takes its direction from the surroundings (sky above, ground below) at the area's own "
                                   + "brightness. 0 is the stock sun-facing shading.");

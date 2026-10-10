@@ -35,15 +35,14 @@ void main()
     if (mag < 1e-4) { dir = vec2(0.7071, 0.7071); mag = 0.35; }
     else dir /= mag;
     float t = CxClock() * uWindSpeed;
-    // Two frequencies so the field ripples instead of pulsing, phased by world position so
-    // neighbouring blades lean together and distant ones do not.
     float phase = dot(iPos.xy, vec2(0.21, 0.17));
-    float sway = (sin(t * 1.7 + phase) + 0.4 * sin(t * 3.9 + phase * 2.3)) * 0.5;
     // The amplitude is CLAMPED to a fraction of the blade's own height before it scales anything:
     // areaGlobalWind is an unbounded world vector, and an area that sets a big one must bend the
     // grass, not launch it.
     float amp = clamp(iParam.w * mag * uWindGain, 0.0, 1.0) * 0.35 * iParam.x;
-    sway *= aPos.z * aPos.z * amp;
+    // root-anchored (z^2, so the base never leaves the ground), and the same scale last frame's sway takes
+    float bend = aPos.z * aPos.z * amp;
+    float sway = CxGrassSway(t, phase) * bend;
     p.xy += dir * sway;
     p.z -= abs(sway) * 0.25;            // a leaning blade is shorter, or it stretches
 
@@ -81,6 +80,17 @@ void main()
     vWorld = iPos.xyz + p;
     gl_Position = uVP * vec4(vWorld, 1.0);
     vDepth = gl_Position.w;
+#ifdef CX_MOTION
+    // CX-48: last frame's blade -- the same sway at last frame's clock, over this frame's widening and
+    // this frame's push field (which is not kept from frame to frame), so a blade bent by a passing
+    // creature carries its sway term alone.
+    float swayPrev = CxGrassSway(CxPrevClock() * uWindSpeed, phase) * bend;
+    vec3 pPrev = p;
+    pPrev.xy += dir * (swayPrev - sway);
+    pPrev.z -= (abs(swayPrev) - abs(sway)) * 0.25;
+    vCur = gl_Position;
+    vPrev = uPrevVP * vec4(iPos.xyz + pPrev, 1.0);
+#endif
     // Grass shades best off an up-ish normal with a per-blade tilt: a true card normal turns half
     // the field black whenever the sun is not behind the camera, which is not what a lawn does. CX-24: "up"
     // is the ground the tuft stands on, and the normal rounds outward across the card (a lit side and a

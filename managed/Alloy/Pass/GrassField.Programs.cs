@@ -18,11 +18,14 @@ internal static unsafe partial class GrassField
     {
         public uint Vao, FaceBuf, PatchBuf, MatBuf, OutBuf, CmdBuf, StatBuf, Prog, ProgDepth;
         public uint ProgScatter, ProgBlade, ProgBladeDepth;
+        /// <summary>The velocity arm of each path -- the same vertex text with CX_MOTION compiled in.
+        /// 0 = that path keeps the camera's own vectors.</summary>
+        public uint ProgMotion, ProgBladeMotion;
         /// <summary>The persistent map of <see cref="StatBuf"/>: the command counts copied after every draw, read
         /// by <see cref="Stats"/> a frame or more late without a sync.</summary>
         public uint* Stat;
-        public Loc Loc, LocD, LocB, LocBD;
-        public AlloyRenderer.FeatLoc FeatLoc, FeatLocD, FeatLocB, FeatLocBD;
+        public Loc Loc, LocD, LocB, LocBD, LocM, LocBM;
+        public AlloyRenderer.FeatLoc FeatLoc, FeatLocD, FeatLocB, FeatLocBD, FeatLocM, FeatLocBM;
         public ScatterLoc LocS;
         /// <summary>Two sampler objects because a texture with no mip chain is mipmap-INCOMPLETE under a mipmap
         /// min filter and samples black, so the filter follows the texture; a sampler leaves the engine's own sampling alone.</summary>
@@ -47,6 +50,7 @@ internal static unsafe partial class GrassField
         public int CoverVp, CoverLayer, WxEdge, WxCache;   // R5: the cover map's own shelter test, shared with the lit stage
         public int Frame, Vp, Eye, Fade, Tex, MatAmb, MatDif, Lit, WindGain, WindSpeed, Msaa, Edge, Lod, Shade, Viz, Tuft, VLit, Cast, CastWidth, RootAo, GroundTint, Ground, GroundOn, GroundViz, SoftEdge, Snow;
         public int PushTex, PushGain, PushWindow;
+        public int PrevVp, PrevTime, Jitter, MSize;   // CX-48: the velocity arm's own four
         public int SunTex, SunDynTex, CubeTex, CubeCount, CubeDynTex;   // CX-43: the rest of the receiver rides CxPass
     }
     /// <summary>The scatter's uniforms.</summary>
@@ -148,9 +152,11 @@ internal static unsafe partial class GrassField
     /// <summary>The grass stage splices content too; the module edge drops it for a rebuild.</summary>
     internal static void DropProgram()
     {
-        foreach (uint p in (ReadOnlySpan<uint>)[_gl.Prog, _gl.ProgDepth, _gl.ProgScatter, _gl.ProgBlade, _gl.ProgBladeDepth])
+        foreach (uint p in (ReadOnlySpan<uint>)[_gl.Prog, _gl.ProgDepth, _gl.ProgScatter, _gl.ProgBlade,
+                                               _gl.ProgBladeDepth, _gl.ProgMotion, _gl.ProgBladeMotion])
             if (p != 0) Gl.DeleteProgram(p);
         _gl.Prog = 0; _gl.ProgDepth = 0; _gl.ProgScatter = 0; _gl.ProgBlade = 0; _gl.ProgBladeDepth = 0;
+        _gl.ProgMotion = 0; _gl.ProgBladeMotion = 0;
     }
 
     private static bool EnsureProgram()
@@ -189,6 +195,7 @@ internal static unsafe partial class GrassField
             // beside uTex and GL refuses every depth draw
             ShadowUnits(in _gl.LocD);
         }
+        BuildMotion(vs);
         if (!EnsureScatter()) return false;
         _gl.Loc = Locate(prog);
         _gl.FeatLoc = Programs.FeatLocs(prog);
@@ -228,6 +235,7 @@ internal static unsafe partial class GrassField
                 Gl.UseProgram(_gl.ProgBladeDepth);
                 ShadowUnits(in _gl.LocBD);
             }
+            BuildBladeMotion(bvsSrc);
         }
         uint c = GlProgram.Compute(ScatterCs, _log, "GrassField scatter");
         if (c == 0) return _down.Fail(_log, "the grass scatter program is unavailable", "grass falls back to the engine's own draw");
@@ -242,6 +250,40 @@ internal static unsafe partial class GrassField
         };
         return true;
     }
+
+    /// <summary>The card path's velocity program: the SAME vertex text the colour pass draws with (an
+    /// override's own sway included) and the depth stage's coverage decision, both with their velocity arm
+    /// compiled in. Refused unless that text reconstructs last frame's blade -- a stage without it writes
+    /// nothing and leaves the camera's field standing over every card.</summary>
+    private static void BuildMotion(string vs)
+    {
+        if (!ShaderContract.SwaySafe(vs))
+        { _log?.Info("GrassField: the grass vertex stage carries no previous blade -- cards keep the camera's vectors"); return; }
+        _gl.ProgMotion = GlProgram.Graphics(ShaderStages.WithDefine(vs, MotionDefine), ShaderStages.WithDefine(GrassDepthFs, MotionDefine), _log, "GrassField grass motion vectors");
+        if (_gl.ProgMotion == 0) { _log?.Info("GrassField: the card velocity program is unavailable -- cards keep the camera's vectors"); return; }
+        _gl.LocM = Locate(_gl.ProgMotion);
+        _gl.FeatLocM = Programs.FeatLocs(_gl.ProgMotion);
+        Gl.UseProgram(_gl.ProgMotion);
+        Gl.Uniform1i(_gl.LocM.Tex, 0);
+        ShadowUnits(in _gl.LocM);
+    }
+
+    /// <inheritdoc cref="BuildMotion"/>
+    private static void BuildBladeMotion(string bvs)
+    {
+        if (!ShaderContract.SwaySafe(bvs))
+        { _log?.Info("GrassField: the blade vertex stage carries no previous blade -- blades keep the camera's vectors"); return; }
+        _gl.ProgBladeMotion = GlProgram.Graphics(ShaderStages.WithDefine(bvs, MotionDefine), ShaderStages.WithDefine(BladeDepthFs, MotionDefine), _log, "GrassField blade motion vectors");
+        if (_gl.ProgBladeMotion == 0) { _log?.Info("GrassField: the blade velocity program is unavailable -- blades keep the camera's vectors"); return; }
+        _gl.LocBM = Locate(_gl.ProgBladeMotion);
+        _gl.FeatLocBM = Programs.FeatLocs(_gl.ProgBladeMotion);
+        Gl.UseProgram(_gl.ProgBladeMotion);
+        ShadowUnits(in _gl.LocBM);
+    }
+
+    /// <summary>The define that compiles a stage's velocity arm in, spliced by <c>ShaderStages.WithDefine</c>.
+    /// <c>check-shaders.py</c> makes the same splice, so both arms are link-checked.</summary>
+    internal const string MotionDefine = "CX_MOTION 1";
 
     internal static string ScatterCs => ShaderSource.Get("cx_grass_c.glsl");
 
@@ -260,6 +302,8 @@ internal static unsafe partial class GrassField
             Msaa = GlProgram.Loc(prog, "uMsaa"), Edge = GlProgram.Loc(prog, "uEdge"),
             PushTex = GlProgram.Loc(prog, "uPushTex"), PushGain = GlProgram.Loc(prog, "uPushGain"),
             PushWindow = GlProgram.Loc(prog, "uPushWindow"),
+            PrevVp = GlProgram.Loc(prog, "uPrevVP"), PrevTime = GlProgram.Loc(prog, "uPrevTimeOfDay"),
+            Jitter = GlProgram.Loc(prog, "uJitter"), MSize = GlProgram.Loc(prog, "uSize"),
             SunTex = GlProgram.Loc(prog, "uSunShadow"), SunDynTex = GlProgram.Loc(prog, "uSunDynShadow"),
             CubeTex = GlProgram.Loc(prog, "uLocalShadow"), CubeDynTex = GlProgram.Loc(prog, "uLocalDynShadow"),
             CubeCount = GlProgram.Loc(prog, "uLocalCubes"),
@@ -298,4 +342,15 @@ internal static unsafe partial class GrassField
     /// pass keeps, and early-Z discards the hidden blades before the light and shadow taps. Its alpha output
     /// still feeds alpha-to-coverage where the target is multisampled.</summary>
     internal static string GrassDepthFs => ShaderSource.Get("cx_grassdepth_f.glsl");
+
+    /// <summary>The blade cascade-depth stage, which is the blade VELOCITY stage under CX_MOTION.</summary>
+    internal static string BladeDepthFs => ShaderSource.Get("cx_gblade_df.glsl");
+
+    /// <summary>The sway library both vertex paths include -- one text for this frame's blade and last
+    /// frame's -- and the two vertex mains, for the suite that asserts both carry it.</summary>
+    internal static string SwayGlsl => ShaderSource.Get("cx_gsway.glsl");
+    /// <inheritdoc cref="SwayGlsl"/>
+    internal static string GrassVmain => ShaderSource.Get("cx_grass_vmain.glsl");
+    /// <inheritdoc cref="SwayGlsl"/>
+    internal static string BladeVmain => ShaderSource.Get("cx_gblade_vmain.glsl");
 }

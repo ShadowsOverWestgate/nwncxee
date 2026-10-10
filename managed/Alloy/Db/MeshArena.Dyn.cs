@@ -132,40 +132,27 @@ public static unsafe partial class MeshArena
 /// its solved vertices with no change to the record feed -- the feed reads the part's recipe, and this is it.</summary>
 internal static partial class DrawRecipe
 {
-    /// <summary>Retired dynamic recipe slots, waiting to be handed out again. Only recipes
-    /// <see cref="InternDynamic"/> made ever enter it: the per-(model, node) ones are interned for the model's
-    /// lifetime and <c>_byNode</c> names them.</summary>
-    private static readonly System.Collections.Generic.Stack<int> _dynFree = new();
-
-    /// <summary>Give a private recipe back, with the arena range it named. The slot is left INERT -- no mesh,
-    /// no range -- so <see cref="Pump"/>'s "re-ask for a range that has not landed" pass skips it, and nothing
-    /// holds the <see cref="ModelDef"/> it pinned.</summary>
-    internal static void RetireDynamic(int r, int range)
+    /// <summary>Give back the private recipe <see cref="InternDynamic"/> handed out as (<paramref name="r"/>,
+    /// <paramref name="gen"/>), with its range. A slot its model's eviction already retired -- or retired and
+    /// handed on -- took the range with it, so nothing is released twice; one a part still names waits for it.</summary>
+    internal static void RetireDynamic(int r, uint gen)
     {
-        if (range >= 0) MeshArena.Release(range);
-        if ((uint)r >= (uint)_n) return;
-        // Only a PRIVATE recipe may be retired: a shared one is still every other instance's.
-        if (_byNode.ContainsValue(r)) return;
-        _mesh[r] = null;
-        _model[r] = null;
-        _range[r] = -1;
-        _dynFree.Push(r);
+        if ((uint)r >= (uint)_n || _own.Gen[r] != gen || !_own.Held[r]) return;
+        if (_own.Users[r] > 0) { _own.Orphan[r] = true; return; }
+        Retire(r);
     }
 
     /// <summary>A private copy of node <paramref name="node"/>'s recipe pointing at <paramref name="range"/>;
     /// -1 when the node draws nothing or the table is full. Called from the game thread like the fold, so no
-    /// second writer and the fixed-size table never reallocates. <para>ponytail: a slot freed and re-interned
-    /// draws the new recipe against the old range for one frame the renderer still holds -- a glitch, not a corruption.</para></summary>
+    /// second writer and the fixed-size table never reallocates.</summary>
     internal static int InternDynamic(ModelDef model, int node, int range)
     {
         if ((uint)node >= (uint)model.Nodes.Length || range < 0) return -1;
         NodeDef nd = model.Nodes[node];
         MeshDef? mesh = nd.Mesh;
         if (mesh == null || !mesh.Render || mesh.Indices.Length == 0) return -1;
-        int r;
-        if (_dynFree.Count > 0) r = _dynFree.Pop();
-        else if (_n < Max) r = _n++;
-        else { Spilled++; return -1; }
+        int r = Take();
+        if (r < 0) return -1;
         // Deliberately NOT filed in _byNode: another instance of this model must get its own.
         _model[r] = model; _node[r] = node; _mesh[r] = mesh;
         Fill(r, nd, mesh);
